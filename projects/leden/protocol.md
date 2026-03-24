@@ -152,6 +152,161 @@ A sturdy reference is NOT a capability — it's a *claim* that you once held one
 
 ---
 
+## Version Negotiation
+
+The first thing two endpoints do. Before capabilities, before bootstrap, before anything — agree on what protocol version to speak.
+
+### Handshake
+
+Happens at Layer 1 (Session establishment), immediately after transport connects.
+
+```
+Client                                Server
+   |                                     |
+   |  Hello(min=1, max=3, ext=[...])     |
+   |────────────────────────────────────>|
+   |                                     |
+   |  Welcome(version=3, ext=[...])      |
+   |<────────────────────────────────────|
+   |                                     |
+   |  (session established, proceed      |
+   |   to bootstrap)                     |
+```
+
+Or if incompatible:
+
+```
+Client                                Server
+   |                                     |
+   |  Hello(min=4, max=5, ext=[...])     |
+   |────────────────────────────────────>|
+   |                                     |
+   |  Incompatible(server_min=1,         |
+   |               server_max=3)         |
+   |<────────────────────────────────────|
+   |                                     |
+   |  (connection closed)                |
+```
+
+The server picks the highest version both sides support. If there's no overlap, the connection fails with a clear error that tells the client what versions the server does support. No guessing.
+
+### Version Semantics
+
+**Major versions** — breaking changes. New major = new protocol. Old and new cannot interoperate without explicit support from both sides.
+
+**Minor versions** — additive only. New message types, new optional fields, new extensions. Old endpoints ignore what they don't understand. A v1.3 endpoint can talk to a v1.1 endpoint — the v1.1 side just won't use the new features.
+
+This means: deploy new servers first (they support old + new minor), clients upgrade at their pace.
+
+### Extensions
+
+Not everything belongs in the core protocol. Extensions are optional features negotiated during the handshake.
+
+```
+Hello(min=1, max=1, ext=[content_store, observation, compression_lz4])
+Welcome(version=1, ext=[content_store, observation])
+```
+
+Both sides advertise what they support. The session uses the intersection. The content store (content.md) and observation (observation.md) are extensions — not every endpoint needs them.
+
+Extensions have their own versioning. `content_store_v2` is a different extension from `content_store_v1`. Keeps the negotiation flat and simple.
+
+### What This Prevents
+
+- **Silent incompatibility.** You find out immediately, not three messages in when something doesn't parse.
+- **Forced lockstep upgrades.** Minor versions are backward-compatible. You don't need to upgrade the entire fleet at once.
+- **Feature creep in core.** Extensions keep optional features out of the base protocol. An embedded device running bare Leden doesn't pay for observation support it doesn't need.
+
+---
+
+## Error Model
+
+Every protocol needs to answer: what happens when things go wrong?
+
+### Error Levels
+
+| Level | Where | Example | Handled by |
+|-------|-------|---------|------------|
+| Transport | Layer 0 | Connection dropped | Session reconnection (Layer 1) |
+| Protocol | Layer 1-2 | Malformed message, invalid session token | Session termination or reset |
+| Capability | Layer 2 | Revoked capability, permission denied | Error response to caller |
+| Application | Layer 3 | Method failed, object not found | Error response with details |
+
+Transport and protocol errors are infrastructure — the endpoint handles them or dies. Capability and application errors are the interesting ones because they propagate to the caller and interact with promises.
+
+### Error Structure
+
+Every error has three parts:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `code` | enum | Machine-readable category. Protocol-defined set + application extension. |
+| `message` | string | Human-readable explanation. For logs and debugging, not for branching on. |
+| `data` | optional bytes | Structured detail. Application-specific. Opaque to the protocol. |
+
+### Protocol Error Codes
+
+These are the errors the protocol itself defines. Applications can extend with their own codes in the `Application` range.
+
+| Code | Meaning |
+|------|---------|
+| `CapabilityRevoked` | The capability was revoked between issuance and use |
+| `CapabilityExpired` | Time-limited capability past its expiry |
+| `PermissionDenied` | Capability doesn't grant this operation |
+| `ObjectNotFound` | The referenced object doesn't exist (or was destroyed) |
+| `MethodNotFound` | The object doesn't support this method |
+| `RateLimited` | Too many requests. Backpressure at the application level. |
+| `EndpointUnavailable` | The hosting endpoint is unreachable |
+| `Timeout` | No response within the deadline |
+| `VersionMismatch` | Incompatible protocol version (from handshake) |
+| `MalformedMessage` | Message doesn't parse |
+| `Application(u32)` | Application-defined. The protocol routes it but doesn't interpret it. |
+
+### Promise Rejection
+
+This is the critical part. Promises are first-class in the protocol (promise pipelining). When a promise can't be fulfilled, it's **rejected** — and rejection propagates.
+
+```
+A calls B.method1() → promise P1
+A calls P1.method2() → promise P2  (pipelined)
+A calls P2.method3() → promise P3  (pipelined)
+
+B.method1() fails with PermissionDenied:
+  P1 = Rejected(PermissionDenied)
+  P2 = Rejected(PermissionDenied)   ← automatic
+  P3 = Rejected(PermissionDenied)   ← automatic
+```
+
+The error from the root cause propagates through the entire pipeline. The caller gets the original error, not "P2 failed because P1 failed." No wrapping, no nesting — the root cause flows through.
+
+This is E's "broken promise" semantics. A broken promise infects everything that depends on it. Simple and correct.
+
+### Promise Resolution on Endpoint Failure
+
+The open question from before, now answered. When an endpoint goes down while holding pending promises, the behavior depends on the promise's **resolution policy**, set at creation time:
+
+| Policy | Behavior | Use when |
+|--------|----------|----------|
+| `fail` | Reject with `EndpointUnavailable` after timeout | Default. Fast feedback. Most RPCs. |
+| `retry` | Hold pending, retry when session reconnects | Idempotent operations where you'd rather wait than fail. |
+| `expire` | Reject with `Timeout` after a deadline | Time-sensitive operations. "If this doesn't complete in 5s, I don't want it." |
+
+The default is `fail`. You opt into `retry` or `expire` when you know the semantics justify it. No silent hangs.
+
+### Error Handling at Session Boundaries
+
+When a session drops and reconnects:
+
+1. Capabilities survive (sturdy references, already specified).
+2. Pending promises with `fail` policy are rejected immediately.
+3. Pending promises with `retry` policy are re-sent automatically on reconnect.
+4. Pending promises with `expire` policy are rejected if past their deadline.
+5. Active observations (see observation.md) are re-established from the last known state.
+
+The caller doesn't need to track which promises were in-flight. The session handles it.
+
+---
+
 ## Serialization
 
 The wire format is undecided. Requirements:
@@ -171,6 +326,4 @@ Candidates: MessagePack, Cap'n Proto, FlatBuffers, Protocol Buffers. Decision de
 
 2. **Distributed revocation latency.** The optimistic/pessimistic/synchronous strategy per capability is right in principle. Needs concrete message types and flows for each.
 
-3. **Promise resolution on endpoint failure.** If an endpoint goes down while holding pending promises, what happens? Timeout and error, retry on reconnect, or propagate failure. Probably context-dependent.
-
-4. **Capability GC.** When no one holds a reference, the capability should be cleaned up. Distributed reference counting with cycle detection (from E). Needs specification.
+3. **Capability GC.** When no one holds a reference, the capability should be cleaned up. Distributed reference counting with cycle detection (from E). Needs specification.
