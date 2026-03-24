@@ -21,7 +21,15 @@ Every unit of every asset is accounted for. The ledger always balances. Minting 
 - The total supply of any asset type is always computable from the log
 - Duplication is impossible: you can't create value without the minting authority
 
-### Decision: Per-Domain Sovereignty
+### Verifiable Minting
+
+Every `create` and `destroy` Transform must be backed by a [Raido](../raido/) script. The script is content-addressed — any domain can fetch it and re-execute to verify the mint or burn independently.
+
+This is not optional. General transforms (transfer, mutate, split, merge) can use trust-based Proofs or optionally verifiable Raido Proofs. But minting and burning — the operations that change total supply — are always verifiable. If you can't re-execute the minting logic, you can't audit supply. And if you can't audit supply, Law 1 is just a claim.
+
+A domain still writes its own minting logic. Sovereignty is over *policy* (what to mint, when, how much), not over *auditability* (whether the policy is verifiable). You can mint whatever you want. You just can't hide how.
+
+### Per-Domain Sovereignty
 
 Each domain mints independently. Cross-domain value is market-determined through bilateral exchange. No shared mint authority — that would reintroduce centralization.
 
@@ -136,17 +144,17 @@ Each domain checks the other's Proofs during cross-domain operations. Domain B r
 
 Bilateral verification is strong for operations that cross boundaries. It's the equivalent of a bank verifying a wire transfer.
 
-### Level 3: Network-Wide (Probabilistic)
+### Level 3: Network-Wide (Structural + Probabilistic)
 
-There is no global enforcer. A domain can lie about internal activity that never crosses a boundary. If Domain A secretly mints a million units but only circulates ten externally, no one can see the hidden supply.
+There is no global enforcer. But [verifiable minting](#verifiable-minting) closes the biggest gap: every mint and burn is a Raido script that any trading partner can re-execute. A domain can't secretly inflate supply — the minting logic is content-addressed and independently verifiable.
 
-What makes large-scale fraud detectable:
+What remains undetectable: internal activity that never crosses a boundary *and* doesn't involve minting or burning. A domain that mutates objects internally without exporting them is opaque. That's fine — if it never crosses a boundary, it doesn't affect anyone else.
+
+What makes remaining fraud detectable:
 
 - **Overlapping partial views.** Every domain that trades with A accumulates a partial view of A's economy. These views overlap. If A's self-reported numbers don't reconcile with what its trading partners have independently witnessed, the discrepancy surfaces through [audit gossip](README.md#supply-audit).
 - **Proof chain inclusion.** Supply audits include Proof chains. A verifying domain can check that the events it witnessed appear in A's published chain. Missing events mean a fraudulent audit.
-- **Raido verification.** For domains that negotiate [verifiable transforms](README.md#verifiable-transforms), the computation itself is re-executable. This converts trust-based verification into mechanical verification.
-
-This is the village reputation model. Not omniscience — probabilistic detection that scales with the number of trading partners. A hermit domain can cheat invisibly. A major trading hub cannot.
+- **Verifiable minting scripts.** Mint and burn operations are Raido scripts. A supply audit now includes not just totals but the scripts that produced them. Re-execute the scripts, check the totals. This is mechanical, not trust-based.
 
 ### What This Means in Practice
 
@@ -154,8 +162,8 @@ This is the village reputation model. Not omniscience — probabilistic detectio
 |-----------|----------|-----------|
 | Violations within a domain | Prevented | Runtime enforcement |
 | Violations in cross-domain ops | Detected and rejected | Bilateral Proof verification |
-| Hidden internal fraud (small scale) | Undetectable | Accepted limitation |
-| Hidden internal fraud (large scale) | Probabilistically detectable | Gossip, partial views, audit chains |
-| Computational fraud | Mechanically verifiable | Raido re-execution (optional) |
+| Supply inflation/deflation | Mechanically verifiable | Raido-backed mint/burn (required) |
+| Hidden internal mutations | Undetectable | Accepted — doesn't affect other domains |
+| Computational fraud (general) | Mechanically verifiable | Raido re-execution (optional for non-mint transforms) |
 
-I'm not claiming global consistency. I'm claiming that the enforcement model matches real-world economics: local bookkeeping is exact, bilateral transactions are verified, and large-scale fraud is caught because liars can't keep their stories straight across many independent observers.
+The enforcement model has no "trust me" gap for supply. Minting is verifiable by construction. General transforms can optionally be verifiable too (domains negotiate this bilaterally). Internal mutations that never cross boundaries are the only blind spot, and they're harmless.
