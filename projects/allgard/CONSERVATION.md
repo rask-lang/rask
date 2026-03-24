@@ -21,15 +21,13 @@ Every unit of every asset is accounted for. The ledger always balances. Minting 
 - The total supply of any asset type is always computable from the log
 - Duplication is impossible: you can't create value without the minting authority
 
-### Open Question
+### Decision: Per-Domain Sovereignty
 
-Are domains sovereign over their own supply? Can Domain A mint independently of Domain B? Options:
+Each domain mints independently. Cross-domain value is market-determined through bilateral exchange. No shared mint authority — that would reintroduce centralization.
 
-1. **Per-domain supply**: each domain mints independently. Cross-domain value is market-determined. Simple, but currencies fragment.
-2. **Shared supply with delegated minting**: a protocol-level asset type with minting authority delegated to domains. Complex, but unified economy.
-3. **Hybrid**: domains mint local assets freely, cross-domain assets require shared authority.
+Commodity money emerges naturally: assets with intrinsic utility become de facto currencies. The protocol provides auditability (this law), asset type registration (catalog observation), and bilateral exchange. Convention handles the rest.
 
-I lean toward option 3. Local economies should be free. Cross-domain trade needs a shared unit of account.
+See [Domain Sovereignty over Supply](README.md#domain-sovereignty-over-supply) for full rationale.
 
 ## Law 2: Singular Ownership
 

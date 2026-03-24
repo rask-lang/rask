@@ -43,8 +43,11 @@ Allgard defines the federation model. Midgard adds game-specific concerns:
 
 ## Open Questions
 
-- **Domain sovereignty over supply**: can one domain mint independently of another, or is there a global mint authority?
-- **Cross-domain transfer routing**: bilateral or through a clearinghouse?
 - **Designed entropy**: what are the value sinks? Without them, economies inflate.
-- **Wire format**: shared concern with Leden — MessagePack, Cap'n Proto, FlatBuffers?
-- **Bootstrapping**: ✅ Resolved — seed nodes, zero trust, bilateral reputation. See [Allgard bootstrapping](../allgard/README.md#bootstrapping).
+- **Wire format**: deferred — shared concern with Leden. Implementation detail.
+
+## Resolved
+
+- **Domain sovereignty over supply**: per-domain minting, bilateral exchange, commodity money emerges. See [Allgard](../allgard/README.md#domain-sovereignty-over-supply).
+- **Cross-domain transfer routing**: bilateral with introduction or intermediary chains. See [Allgard](../allgard/README.md#cross-domain-transfer-routing).
+- **Bootstrapping**: seed nodes, zero trust, bilateral reputation. See [Allgard](../allgard/README.md#bootstrapping).

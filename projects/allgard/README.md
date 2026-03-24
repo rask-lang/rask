@@ -58,6 +58,9 @@ No step requires permission from a central authority. See [Bootstrapping](#boots
 | Delegation | Non-transitive by default | Keeps the authority graph manageable. Explicit re-delegation. |
 | Sovereignty | Domains are authoritative for hosted objects | No global state to coordinate. Each domain runs its own rules on top of the universal laws. |
 | Enforcement | Bilateral verification | No global enforcer. Bad actors get excluded by reputation. |
+| Supply | Per-domain sovereignty | No shared mint authority. Cross-domain value is market-determined. |
+| Transfer routing | Bilateral, with introduction or intermediary chains | No clearinghouse. Reach distant domains through mutual contacts. |
+| Bootstrapping | Seed nodes, zero trust | No approval, no registry, no trust anchor. Reputation is emergent. |
 
 ## Specs
 
@@ -109,8 +112,35 @@ I'm not specifying a reputation system. Domains decide for themselves who to tru
 
 The Conservation Laws give domains something concrete to verify: did this Proof check out? Did this transfer balance? That's the raw signal. What domains do with that signal is their business.
 
+## Domain Sovereignty over Supply
+
+Each domain mints its own assets independently. No shared mint authority, no protocol-level currency, no central bank.
+
+Cross-domain value is market-determined. If Domain A's "iron ingot" is worth 3 of Domain B's "gold coins," that's between A and B. The protocol doesn't enforce exchange rates — bilateral trade agreements do.
+
+**Why not a shared currency?** Because "shared minting authority" is centralization. Who runs it? Who sets issuance rates? Every answer reintroduces a central party that the architecture explicitly rejects.
+
+**What about fragmentation?** It happens. That's the honest cost of sovereignty. In practice, commodity money emerges — assets with intrinsic utility (crafting materials, fuel, compute credits) become de facto currencies because they're useful, scarce, and fungible. Nobody decrees it. Markets discover it.
+
+What the protocol provides:
+- **Asset type registration** — domains publish what they mint and its properties (via catalog observation from bootstrapping)
+- **Bilateral exchange** — two domains agree on rates for a specific trade
+- **Conservation Law 1** — every domain's supply is auditable (`total_minted - total_burned = total_existing`)
+
+Convention handles the rest.
+
+## Cross-Domain Transfer Routing
+
+Bilateral. Direct domain-to-domain transfers over Leden sessions.
+
+If Domain A wants to send an object to Domain C and they've never met, two paths:
+
+1. **Introduction.** A asks a mutual contact B to introduce it to C (Leden's `Introduce` operation). A and C establish a direct relationship, then transfer. B is out of the loop after the introduction.
+
+2. **Intermediary chain.** A transfers the object to B, B transfers to C. B holds the object briefly during transit. This requires an **escrow transform** — A transfers to B with a condition: "forward to C within N seconds, or it returns to me." This composes from existing primitives: Transform + Grant + expiry.
+
+No routing protocol. No clearinghouse. If you need to reach a distant domain, you go through domains you both know. The gossip layer (Leden discovery) tells you who knows whom.
+
 ## Open Questions
 
-- **Domain sovereignty over supply**: can one domain mint independently of another, or is there a shared mint authority for cross-domain assets?
-- **Cross-domain transfer routing**: bilateral or through a clearinghouse?
-- **Wire format**: shared concern with Leden — MessagePack, Cap'n Proto, FlatBuffers?
+- **Wire format**: shared concern with Leden — deferred. Implementation detail that doesn't affect the model. See [Leden](../leden/README.md).
