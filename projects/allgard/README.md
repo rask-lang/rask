@@ -33,9 +33,12 @@ The name is Old Norse: *all* + *garðr*. All the gards, together.
 ├──────────────────────────────────┤
 │  Leden                           │  Wire protocol: capabilities, sessions, gossip
 └──────────────────────────────────┘
+        ↕ Raido (optional extension: verifiable transforms)
 ```
 
 Applications implement domain logic on top of Allgard's model. Allgard's model rides on Leden's protocol. Each layer is independent — you could use Leden without Allgard, or define a different federation model on top of Leden.
+
+[Raido](../raido/) is a cross-cutting extension, not a layer. Domains that both support Raido can verify each other's transform logic mechanically instead of relying on bilateral trust alone. See [Verifiable Transforms](#verifiable-transforms).
 
 ## How a Gard Joins
 
@@ -164,6 +167,38 @@ If Domain A wants to send an object to Domain C and they've never met, two paths
 2. **Intermediary chain.** A transfers the object to B, B transfers to C. B holds the object briefly during transit. This requires an **escrow transform** — A transfers to B with a condition: "forward to C within N seconds, or it returns to me." This composes from existing primitives: Transform + Grant + expiry.
 
 No routing protocol. No clearinghouse. If you need to reach a distant domain, you go through domains you both know. The gossip layer (Leden discovery) tells you who knows whom.
+
+## Verifiable Transforms
+
+Conservation Law 4 requires every Transform to carry a Proof. For simple operations (transfer ownership, burn), the Proof is a signature and a causal link. The receiving domain checks the signature, verifies the chain, done.
+
+But some Transforms have *logic* — crafting recipes, damage calculations, economic formulas. Today those are trust-based: Domain A says "I ran this transform and here's the result." Domain B checks the Proof structure but can't independently verify the computation. B trusts A or doesn't.
+
+[Raido](../raido/) changes this. A verifiable transform includes:
+
+1. A Raido script (content-addressed bytecode chunk)
+2. The inputs to the script
+3. The outputs (the claimed result)
+
+The receiving domain fetches the script (Leden content store), re-executes with the same inputs. Raido's determinism guarantees identical output. If the result matches, the transform is mechanically verified. If not, the Proof is fraudulent.
+
+### What This Gives You
+
+- **Law 4 (Causal Ordering)** goes from "check the receipt" to "re-run the computation." Proofs for scripted transforms become independently verifiable.
+- **Bilateral trust** becomes **bilateral verification** for any transform backed by a Raido script.
+- **Supply audits** can include verifiable minting/burning logic — not just "I claim these totals" but "here's the script that computes them, run it yourself."
+
+### What This Doesn't Change
+
+- Simple transforms (transfer, burn) don't need Raido. Signature + causal link is sufficient.
+- Raido is an optional extension. Domains negotiate "verifiable-transform" as a Leden capability. Domains that don't support it fall back to trust-based Proofs.
+- Domain sovereignty is preserved. A domain can still run private logic internally. Verifiable transforms only apply to cross-domain Proofs where both sides opt in.
+
+### Capability Negotiation
+
+Two domains agree to verifiable transforms during Leden capability negotiation. They agree on a Raido chunk format version. From then on, cross-domain Proofs for scripted transforms include the script hash, inputs, and outputs. The receiving domain re-executes to verify.
+
+This is the same pattern as observation in Leden — negotiated, optional, composable. No domain is forced to support it. But domains that do can offer stronger trust guarantees, which matters for reputation.
 
 ## Open Questions
 

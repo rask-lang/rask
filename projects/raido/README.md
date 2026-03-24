@@ -8,6 +8,8 @@ Independent project. Deterministic scripting VM with Rask-flavored syntax. Lives
 
 Serializable state. Fixed-point arithmetic. Sandboxed — the host controls all capabilities.
 
+Raido is also the verification engine for [Allgard's verifiable transforms](../allgard/README.md#verifiable-transforms). Two domains that both support Raido can mechanically verify each other's scripted transforms instead of relying on trust alone. See [Protocol Role](#protocol-role).
+
 **Rask-flavored syntax.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures, `try`/`else` error handling. No type annotations, no ownership, no `ensure`.
 
 ## Why Raido
@@ -126,6 +128,25 @@ const result = try process(42) else |e| {
 | [vm/architecture.md](vm/architecture.md) | Register VM, arena, instruction set, upvalue storage, serialization |
 | [vm/chunk-format.md](vm/chunk-format.md) | Bytecode format, imports/exports, validation, content identity |
 | [vm/interop.md](vm/interop.md) | Host API, vtables, host functions, scoped bindings, error propagation |
+
+## Protocol Role
+
+Raido is independent — usable by any host, no dependency on Allgard or Leden. But its properties (determinism, serializable state, content-addressed bytecode) make it a natural fit as a verification engine for federated systems.
+
+[Allgard](../allgard/) defines verifiable transforms as an optional extension. The flow:
+
+1. Domain A publishes a Raido script as a content-addressed chunk
+2. A cross-domain Transform references the script hash + inputs + outputs
+3. Domain B fetches the script, re-executes with the same inputs
+4. Determinism guarantees identical output — the Proof is mechanically verified
+
+This turns Allgard's trust-based Proofs (Conservation Law 4) into independently verifiable ones for any transform backed by a Raido script. Simple transforms (transfer, burn) don't need this — signature + causal link is sufficient.
+
+**What Raido provides:** deterministic execution, content-addressed identity (chunk format), versioned serialization.
+
+**What Raido doesn't know about:** Allgard primitives, Leden sessions, federation semantics. It's a VM. The protocol integration is Allgard's concern.
+
+Capability negotiation happens at the Leden layer — two domains agree "we both support Raido v*N* verification." Allgard defines what that means semantically. Raido just executes bytecode and returns the same answer every time.
 
 ## Resolved
 
