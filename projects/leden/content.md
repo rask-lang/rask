@@ -117,7 +117,7 @@ An object might have both: mutable state (managed through the capability protoco
 
 ## What This Doesn't Cover
 
-- **Blob discovery across unconnected endpoints.** If A has a blob and B wants it, but A and B have no session, how does B find A? That's Allgard's job (or a DHT, or static config).
+- **Blob discovery across unconnected endpoints.** If A has a blob and B wants it, but A and B have no session, how does B find A? Gossip discovery (see [discovery.md](discovery.md)) helps — B can learn about A through the peer table. But content-specific routing (who has which blob) is a layer above basic peer discovery.
 - **Encryption at rest.** The content store deals with bytes. Encrypting them before storage is application policy.
 - **Garbage collection.** When no reference points to a blob, it can be cleaned up. Distributed GC is already an open problem in the protocol spec — content blobs inherit that problem.
 - **Streaming.** Live audio/video is not content-addressed (it doesn't exist yet). That's a different protocol concern.

@@ -1,6 +1,6 @@
 # Midgard
 
-Virtual world architecture. A concrete example of Raido, Leden, and Allgard working together.
+Virtual world architecture. A concrete example of Raido and Leden working together.
 
 Midgard is an application — it uses the infrastructure projects, it doesn't define them.
 
@@ -8,8 +8,7 @@ Midgard is an application — it uses the infrastructure projects, it doesn't de
 
 | Project | Role in Midgard |
 |---------|----------------|
-| **Allgard** | Each world region is a gard. Registry knows which regions exist and where. Discovery lets new regions join. |
-| **Leden** | The protocol between gards — sessions, capabilities, object references. |
+| **Leden** | The protocol between gards — sessions, capabilities, object references. Gossip discovery lets new regions join and find each other. |
 | **Raido** | User-generated content. Entity scripts, modding, NPC AI. Sandboxed, deterministic, serializable. |
 
 ## Core Model
