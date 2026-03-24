@@ -8,8 +8,8 @@ Midgard is an application — it uses the infrastructure projects, it doesn't de
 
 | Project | Role in Midgard |
 |---------|----------------|
-| **Allgard** | Each world region is a gard. Isolation, supervision, location transparency. |
-| **Leden** | Transport between gards — whether same machine or across a network. |
+| **Allgard** | Each world region is a gard. Registry knows which regions exist and where. Discovery lets new regions join. |
+| **Leden** | The protocol between gards — sessions, capabilities, object references. |
 | **Raido** | User-generated content. Entity scripts, modding, NPC AI. Sandboxed, deterministic, serializable. |
 
 ## Core Model
