@@ -91,6 +91,7 @@ See [protocol.md](protocol.md) for full specification of each layer.
 | Spec | What it covers |
 |------|----------------|
 | [protocol.md](protocol.md) | Full protocol layer specification, operations, persistence, serialization |
+| [content.md](content.md) | Content-addressed blob storage, lazy fetching, chunking |
 
 ## Open Questions
 
