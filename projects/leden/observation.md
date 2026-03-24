@@ -141,8 +141,16 @@ If the server doesn't support observation, `Observe` calls return `MethodNotFoun
 - **Cross-endpoint observation relay.** Observer on A wants to watch an object on B, routed through C. The protocol handles this through capability delegation — C introduces A to B, A observes directly. No relay.
 - **Observation persistence.** Should observations survive endpoint restarts? Currently: no. Observations are session-scoped. Sturdy references let you re-establish them, but they don't auto-resume across restarts. This might be wrong for some use cases — open to revisiting.
 
-## Open Questions
+## Resolved
 
-- **Observation on promises.** Can you observe the result of a promise that hasn't resolved yet? "When this promise resolves, start observing the result." Feels natural with promise pipelining, but adds complexity — the observation can't start until the promise resolves, so there's a gap.
-- **Observation groups.** Subscribe to many objects in one operation. Reduces round trips for "I just entered a region with 200 entities." Probably worth doing, but the semantics of partial failure (3 of 200 fail) need thought.
-- **Server-initiated observation.** Currently observation is client-pull ("I want to watch this"). Should the server be able to push an observation onto a client? "You're in this region now, here are the objects you should be watching." Capability model says no — the client decides what it observes. But it's a common pattern.
+**Observation on promises.** Yes. `Observe` accepts a promise reference. The server queues the observation and activates it when the promise resolves. If the promise rejects, the observation returns the same error. The gap between resolution and first update is handled by the existing snapshot-on-subscribe behavior — the observer gets a snapshot as soon as the observation activates.
+
+This composes naturally with promise pipelining: "fetch the region, then observe it" is one round trip.
+
+**Observation groups.** Yes. `ObserveBatch(refs[])` subscribes to many objects in one message. Returns per-item results — same pattern as `Reattach`. Partial failure is per-item: 197 succeed, 3 return `ObjectNotFound`, the observer handles each independently. No all-or-nothing semantics.
+
+`UnobserveBatch(ids[])` for the matching teardown.
+
+**Server-initiated observation.** No. The capability model is clear: the client decides what it observes. Holding a reference is permission; exercising it is a choice.
+
+The server-push pattern ("you're in this region, here are the objects") is handled differently: the server sends the client a batch of object references. The client subscribes to the ones it cares about. Two messages instead of one, but the authority model stays clean. The server suggests; the client decides.

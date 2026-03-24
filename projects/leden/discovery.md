@@ -145,9 +145,19 @@ Welcome(version=1, ext=[discovery])
 
 If an endpoint doesn't support discovery, it simply doesn't participate in gossip. It can still be connected to directly if you know its address. It just won't be found automatically.
 
-## Open Questions
+## Resolved
 
-- **Metadata schema.** What metadata should be standardized vs. application-defined? "region" and "role" seem universal enough. But standardizing too much defeats the purpose of keeping discovery simple.
-- **Gossip protocol tuning.** Fanout (how many peers to tell per round), probe interval, suspect timeout, down threshold. These need to be configurable per deployment. Defaults should work for 10-1000 endpoints.
-- **Large networks.** Gossip scales to thousands, maybe tens of thousands. Beyond that, full peer tables get expensive. Hierarchical gossip (gossip within a zone, summarize across zones) might be needed. Not designing for this now — YAGNI until proven otherwise.
-- **NAT traversal.** Endpoints behind NAT can't be directly connected to by peers who only know their external address. STUN/TURN/ICE or relay through a public endpoint? This is a transport concern but discovery needs to be aware of it (don't gossip unreachable addresses).
+**Metadata schema.** No standardized keys. All metadata is application-defined string key-value pairs. Standardizing "region" or "role" assumes we know what applications need — we don't. Applications that care about a common vocabulary can publish their own conventions. The protocol just carries the bytes.
+
+The only protocol-level metadata is already in the peer table entry: `endpoint_id`, `addresses`, `last_seen`, `generation`. That's enough for discovery. Everything else is application concern.
+
+**NAT traversal.** Relay through a public endpoint. Leden already has sessions and introductions — a NAT'd endpoint establishes an outbound session to a public endpoint, which relays messages on its behalf. This composes from existing mechanics: the public endpoint introduces the NAT'd endpoint to others, who then communicate through the relay session.
+
+Discovery must not gossip unreachable addresses. A NAT'd endpoint advertises its relay's address plus a session identifier, not its private IP. The relay adds one hop of latency. For endpoints that need direct connections, standard hole-punching (coordinated through the relay) can establish a direct transport — but this is a transport-layer optimization, not a protocol requirement.
+
+STUN/TURN/ICE are heavy. A Leden relay is lighter because it already speaks the protocol — no translation layer.
+
+## Deferred
+
+- **Gossip protocol tuning.** Fanout, probe interval, suspect timeout, down threshold. All configurable per deployment. Sensible defaults will come from implementation experience, not spec work. Target: 10–1000 endpoints for defaults.
+- **Large networks.** Hierarchical gossip (intra-zone full gossip, inter-zone summaries) is the known solution. Not designing it now — YAGNI until someone actually runs 10,000+ endpoints.

@@ -41,10 +41,25 @@ Allgard defines the federation model. Midgard adds game-specific concerns:
 - **CRDTs.** Single-owner-at-a-time (Conservation Law 2) eliminates concurrent mutation.
 - **ACLs.** Capability possession is permission.
 
-## Open Questions
+## Designed Entropy
 
-- **Designed entropy**: what are the value sinks? Without them, economies inflate.
-- **Wire format**: deferred — shared concern with Leden. Implementation detail.
+Value sinks prevent inflation (Conservation Law 3). Without them, supply only grows. Midgard's sinks:
+
+| Sink | Mechanism |
+|------|-----------|
+| **Crafting loss** | Combining items consumes some inputs. 3 iron bars → 1 sword, not 3 iron bars ↔ 1 sword. |
+| **Repair costs** | Maintaining equipment consumes resources. Skip repairs, item degrades. |
+| **Item decay** | Some asset types have a lifespan. Consumables, buffs, temporary enchantments. |
+| **Transaction fees** | Cross-domain transfers cost something. Small, but bounds spam and drains supply. |
+| **Training costs** | Learning abilities consumes resources. Permanent character progression as a value sink. |
+
+The specific sinks are domain policy — each Midgard domain chooses its own rates. Conservation Law 3 just requires that sinks are declared in the transform type, not hidden. A domain that claims "free repairs" and quietly destroys inventory is violating the law.
+
+Sinks should be tunable, not fixed. A domain running a casual server wants low decay. A hardcore server wants high decay. The protocol doesn't care — it just enforces that declared sinks match actual destruction.
+
+## Deferred
+
+- **Wire format**: shared concern with Leden. Implementation detail.
 
 ## Resolved
 

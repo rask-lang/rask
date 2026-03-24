@@ -122,10 +122,14 @@ An object might have both: mutable state (managed through the capability protoco
 - **Garbage collection.** When no reference points to a blob, it can be cleaned up. Distributed GC is already an open problem in the protocol spec — content blobs inherit that problem.
 - **Streaming.** Live audio/video is not content-addressed (it doesn't exist yet). That's a different protocol concern.
 
-## Open Questions
+## Resolved
 
-- **Hash algorithm.** SHA-256 is the default. BLAKE3 is faster. Does performance matter enough at the protocol level, or is this a transport optimization?
-- **Chunk size.** 256KB is a guess. Too small = too many chunks = overhead. Too large = poor dedup, no partial fetch benefit. Needs benchmarking.
-- **Manifest format.** How does the chunk list / Merkle tree get serialized? This is wire format, tied to the serialization decision in the protocol spec.
-- **Cross-endpoint cache coordination.** Should endpoints advertise what blobs they have? Or is "just ask and see" good enough? Advertising scales poorly. Asking has latency.
-- **Content types.** Should the content store know about types (image, mesh, script), or is everything opaque bytes with type info in the object reference? Leaning opaque — keep the store simple.
+**Content types.** Opaque bytes. The content store doesn't interpret content — it stores and fetches blobs. Type information lives in the object reference (Layer 3). This keeps the store simple and avoids baking in assumptions about what kinds of data people will store.
+
+**Cross-endpoint cache coordination.** "Just ask." An endpoint requests a blob by hash. The peer has it or doesn't. No advertising, no bloom filters, no cache registries. Advertising scales poorly and adds protocol complexity for marginal latency savings. If the first peer doesn't have it, ask the next one, or fall back to origin. Simple, predictable, good enough.
+
+## Deferred
+
+- **Hash algorithm.** SHA-256 is the safe default. BLAKE3 is faster. Doesn't affect the protocol design — the hash is opaque to everything except the content store. Pick during implementation, fix per protocol version.
+- **Chunk size.** 256KB is the starting point. Needs benchmarking with real workloads. The protocol just says "fixed-size chunks" — the specific size is a versioned parameter.
+- **Manifest format.** Depends on wire format decision. Deferred with it.

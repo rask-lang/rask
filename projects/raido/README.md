@@ -138,8 +138,11 @@ const result = try process(42) else |e| {
 | Closure upvalues | **Arena-allocated.** Closures hold arena offsets. | No heap cells, no GC. Multiple closures sharing a variable point to the same arena slot. Serializable as part of arena contents. |
 | Host ref field access | **Vtable.** Field name → slot index at compile time. | No string hashing at runtime. One indexed function pointer call per access. Slot indices stable because field order declared by host. |
 
-## Open Questions
+## Resolved
 
-- **String encoding depth.** Current spec is ASCII-only for `upper`/`lower`, byte-indexed for `sub`/`byte`. Is this enough or do scripts need Unicode-aware operations? Leaning no — keeps implementation tiny.
-- **Map growth strategy.** Open addressing with linear probing, but load factor threshold and growth factor not specified.
-- **Serialization migration.** Version header exists but no policy for forward/backward compatibility or migration between versions.
+**String encoding depth.** ASCII-only for case operations (`upper`/`lower`), byte-indexed for slicing (`sub`/`byte`). No Unicode-aware operations in the VM. If a script needs Unicode (rare for game scripting, modding, rules), the host provides it as a host function. Keeps the VM tiny and deterministic — Unicode case mapping tables are large and version-dependent.
+
+## Deferred
+
+- **Map growth strategy.** Load factor threshold and growth factor need benchmarking. Open addressing with linear probing is decided; the tuning constants are implementation detail.
+- **Serialization migration.** Version header exists. Forward/backward compatibility policy depends on how the format evolves in practice. Premature to specify migration rules before the first format change.
