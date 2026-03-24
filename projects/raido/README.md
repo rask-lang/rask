@@ -8,6 +8,8 @@ Independent project. Deterministic scripting VM with Rask-flavored syntax. Lives
 
 Serializable state. Fixed-point arithmetic. Sandboxed — the host controls all capabilities.
 
+Raido is also the verification engine for [Allgard's verifiable transforms](../allgard/README.md#verifiable-transforms). Two domains that both support Raido can mechanically verify each other's scripted transforms instead of relying on trust alone. See [Protocol Role](#protocol-role).
+
 **Rask-flavored syntax.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures, `try`/`else` error handling. No type annotations, no ownership, no `ensure`.
 
 ## Why Raido
@@ -127,6 +129,25 @@ const result = try process(42) else |e| {
 | [vm/chunk-format.md](vm/chunk-format.md) | Bytecode format, imports/exports, validation, content identity |
 | [vm/interop.md](vm/interop.md) | Host API, vtables, host functions, scoped bindings, error propagation |
 
+## Protocol Role
+
+Raido is independent — usable by any host, no dependency on Allgard or Leden. But its properties (determinism, serializable state, content-addressed bytecode) make it a natural fit as a verification engine for federated systems.
+
+[Allgard](../allgard/) defines verifiable transforms as an optional extension. The flow:
+
+1. Domain A publishes a Raido script as a content-addressed chunk
+2. A cross-domain Transform references the script hash + inputs + outputs
+3. Domain B fetches the script, re-executes with the same inputs
+4. Determinism guarantees identical output — the Proof is mechanically verified
+
+This turns Allgard's trust-based Proofs (Conservation Law 4) into independently verifiable ones for any transform backed by a Raido script. Simple transforms (transfer, burn) don't need this — signature + causal link is sufficient.
+
+**What Raido provides:** deterministic execution, content-addressed identity (chunk format), versioned serialization.
+
+**What Raido doesn't know about:** Allgard primitives, Leden sessions, federation semantics. It's a VM. The protocol integration is Allgard's concern.
+
+Capability negotiation happens at the Leden layer — two domains agree "we both support Raido v*N* verification." Allgard defines what that means semantically. Raido just executes bytecode and returns the same answer every time.
+
 ## Resolved
 
 | Question | Decision | Rationale |
@@ -138,8 +159,11 @@ const result = try process(42) else |e| {
 | Closure upvalues | **Arena-allocated.** Closures hold arena offsets. | No heap cells, no GC. Multiple closures sharing a variable point to the same arena slot. Serializable as part of arena contents. |
 | Host ref field access | **Vtable.** Field name → slot index at compile time. | No string hashing at runtime. One indexed function pointer call per access. Slot indices stable because field order declared by host. |
 
-## Open Questions
+## Resolved
 
-- **String encoding depth.** Current spec is ASCII-only for `upper`/`lower`, byte-indexed for `sub`/`byte`. Is this enough or do scripts need Unicode-aware operations? Leaning no — keeps implementation tiny.
-- **Map growth strategy.** Open addressing with linear probing, but load factor threshold and growth factor not specified.
-- **Serialization migration.** Version header exists but no policy for forward/backward compatibility or migration between versions.
+**String encoding depth.** ASCII-only for case operations (`upper`/`lower`), byte-indexed for slicing (`sub`/`byte`). No Unicode-aware operations in the VM. If a script needs Unicode (rare for game scripting, modding, rules), the host provides it as a host function. Keeps the VM tiny and deterministic — Unicode case mapping tables are large and version-dependent.
+
+## Deferred
+
+- **Map growth strategy.** Load factor threshold and growth factor need benchmarking. Open addressing with linear probing is decided; the tuning constants are implementation detail.
+- **Serialization migration.** Version header exists. Forward/backward compatibility policy depends on how the format evolves in practice. Premature to specify migration rules before the first format change.

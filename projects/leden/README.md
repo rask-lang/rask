@@ -98,6 +98,6 @@ See [protocol.md](protocol.md) for full specification of each layer.
 | [content.md](content.md) | Content-addressed blob storage, lazy fetching, chunking |
 | [observation.md](observation.md) | Push-based observation of object state changes |
 
-## Open Questions
+## Deferred
 
-- **Wire format.** MessagePack, Cap'n Proto, FlatBuffers, Protocol Buffers? Must have schema evolution, compact binary, cross-language support, existing tooling.
+- **Wire format.** MessagePack, Cap'n Proto, FlatBuffers, Protocol Buffers? Must have schema evolution, compact binary, cross-language support, existing tooling. Doesn't affect protocol design — pick during implementation.

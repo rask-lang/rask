@@ -1,50 +1,29 @@
 # Midgard
 
-Virtual world architecture. A concrete example of Raido, Allgard, and Leden working together.
+Virtual world architecture. A concrete example of [Raido](../raido/), [Allgard](../allgard/), and [Leden](../leden/) working together.
 
-Midgard is an application — it uses the infrastructure projects, it doesn't define them.
+Midgard is an application — it uses the infrastructure projects, it doesn't define them. For the federation model, see [Allgard](../allgard/README.md). For capabilities and protocol mapping, see [OCAP.md](OCAP.md).
 
-## How It Uses the Stack
+## What Midgard Adds
 
-| Project | Role in Midgard |
-|---------|----------------|
-| **Leden** | Wire protocol between gards — sessions, capabilities, object references. Gossip discovery lets new regions join and find each other. |
-| **Allgard** | Federation model — the six primitives (Object, Owner, Domain, Transform, Proof, Grant) and Conservation Laws. Midgard adds game-specific rules on top. |
-| **Raido** | User-generated content. Entity scripts, modding, NPC AI. Sandboxed, deterministic, serializable. |
+Game-specific concerns on top of the federation model:
 
-## Architecture
+- **Game object types** — swords, characters, regions, currency. Concrete types with game semantics mapped to Allgard Objects.
+- **Lockstep simulation** — deterministic lockstep for small groups (2-16 participants). Raido's fixed-point arithmetic and seedable PRNG guarantee bitwise-identical results across machines.
+- **UGC sandboxing** — entity scripts, modding, NPC AI via Raido. Scripts get only the references the host hands them. Fuel-limited.
+- **Verifiable crafting** — crafting recipes, damage formulas, and economic transforms are Raido scripts. Cross-domain crafting is [verifiable](../allgard/README.md#verifiable-transforms) — the receiving domain re-executes the script to confirm the result.
+- **Cross-domain rate limiting** — Conservation Law 5 is per-domain. Coordinated abuse from multiple domains needs application-level policy.
 
-**Identity and inventory** — federated, like Matrix. You own your data on your home domain (or self-host). Portable between domains.
+## Value Sinks
 
-**Real-time interaction** — deterministic lockstep between peers for small groups (2-16 participants). Raido's fixed-point arithmetic and seedable PRNG guarantee bitwise-identical results across machines.
+Midgard's concrete sinks for [Conservation Law 3](../allgard/CONSERVATION.md#law-3-conservation-of-exchange):
 
-**Persistent world state** — single-owner model (Allgard Conservation Law 2). Only the owning domain can mutate an object. Sidesteps concurrent mutation entirely.
+| Sink | Mechanism |
+|------|-----------|
+| **Crafting loss** | 3 iron bars → 1 sword, not 3 ↔ 1. |
+| **Repair costs** | Equipment degrades without upkeep. |
+| **Item decay** | Consumables, buffs, temporary enchantments expire. |
+| **Transaction fees** | Cross-domain transfers cost something. |
+| **Training costs** | Learning abilities consumes resources. |
 
-**UGC sandboxing** — Raido. Scripts get only the references the host hands them. Fuel-limited. Full VM state is serializable — scripts can be checkpointed, migrated, replayed.
-
-**Cross-domain communication** — Allgard's model over Leden's protocol. Holding a reference to an object IS your permission to interact with it. No ACLs, no identity checks, no blockchain.
-
-## What Midgard Adds to Allgard
-
-Allgard defines the federation model. Midgard adds game-specific concerns:
-
-- **Game object types**: swords, characters, regions — concrete types with game semantics
-- **Game-specific value sinks**: crafting loss, repair costs, item decay (designed entropy per Conservation Law 3)
-- **Raido integration**: VM snapshots travel as opaque Object content. Determinism guarantees bitwise-identical replay on the receiving end.
-- **Lockstep simulation**: real-time interaction model for small groups, built on Raido's deterministic execution
-- **Cross-domain rate limiting policy**: Conservation Law 5 is per-domain. Coordinated abuse from multiple domains needs application-level policy.
-- **Non-transitive delegation policy**: if Owner A grants Owner B authority, B can't re-delegate to C without explicit permission. Keeps the authority graph manageable for game economies.
-
-## What This Doesn't Need
-
-- **Blockchain.** Allgard's capability model is the trust model. No global consensus required.
-- **CRDTs.** Single-owner-at-a-time (Conservation Law 2) eliminates concurrent mutation.
-- **ACLs.** Capability possession is permission.
-
-## Open Questions
-
-- **Domain sovereignty over supply**: can one domain mint independently of another, or is there a global mint authority?
-- **Cross-domain transfer routing**: bilateral or through a clearinghouse?
-- **Designed entropy**: what are the value sinks? Without them, economies inflate.
-- **Wire format**: shared concern with Leden — MessagePack, Cap'n Proto, FlatBuffers?
-- **Bootstrapping**: how does first capability exchange happen between unknown domains?
+Rates are per-domain — casual servers low, hardcore servers high.

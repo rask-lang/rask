@@ -124,6 +124,12 @@ A Proof must establish:
 
 Proofs are the trust-bootstrapping mechanism. When two Domains that have never interacted want to exchange Objects, Proofs are how they verify legitimacy without trusting each other.
 
+### Verifiable Proofs
+
+For Transforms backed by [Raido](../raido/) scripts, a Proof can include the script hash, inputs, and outputs. The receiving Domain fetches the script and re-executes — determinism guarantees identical results. This turns a trust-based Proof into a mechanically verifiable one.
+
+Verifiable Proofs are an optional extension. Both Domains must negotiate "verifiable-transform" as a Leden capability. See [Verifiable Transforms](README.md#verifiable-transforms).
+
 ## Grant
 
 Scoped, optionally time-limited authority delegation. An attenuated capability.

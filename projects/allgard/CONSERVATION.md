@@ -21,15 +21,13 @@ Every unit of every asset is accounted for. The ledger always balances. Minting 
 - The total supply of any asset type is always computable from the log
 - Duplication is impossible: you can't create value without the minting authority
 
-### Open Question
+### Decision: Per-Domain Sovereignty
 
-Are domains sovereign over their own supply? Can Domain A mint independently of Domain B? Options:
+Each domain mints independently. Cross-domain value is market-determined through bilateral exchange. No shared mint authority — that would reintroduce centralization.
 
-1. **Per-domain supply**: each domain mints independently. Cross-domain value is market-determined. Simple, but currencies fragment.
-2. **Shared supply with delegated minting**: a protocol-level asset type with minting authority delegated to domains. Complex, but unified economy.
-3. **Hybrid**: domains mint local assets freely, cross-domain assets require shared authority.
+Commodity money emerges naturally: assets with intrinsic utility become de facto currencies. The protocol provides auditability (this law), asset type registration (catalog observation), and bilateral exchange. Convention handles the rest.
 
-I lean toward option 3. Local economies should be free. Cross-domain trade needs a shared unit of account.
+See [Domain Sovereignty over Supply](README.md#domain-sovereignty-over-supply) for full rationale.
 
 ## Law 2: Singular Ownership
 
@@ -56,14 +54,18 @@ The "minus sinks" clause is critical — fees, depreciation, processing costs ar
 
 ### Designed Entropy
 
-Planned value sinks prevent inflation:
+Without value sinks, supply only grows. Every mint adds, nothing subtracts, and the economy inflates to meaninglessness. Sinks are the counterweight — planned destruction that keeps the system in equilibrium.
 
-- **Processing fees**: operations that consume value
-- **Maintenance costs**: upkeep drains on long-lived assets
-- **Transaction fees**: cross-domain transfers cost something
-- **Decay**: some asset types degrade over time
+Categories of sinks:
 
-The specific sinks are domain policy. The Conservation Law just says they must be explicit and auditable.
+- **Processing fees**: operations that consume value (crafting, refining, combining)
+- **Maintenance costs**: upkeep drains on long-lived assets (repair, storage, hosting)
+- **Transaction fees**: cross-domain transfers cost something. Small, but bounds spam and drains supply.
+- **Decay**: some asset types degrade over time (consumables, temporary grants, perishable goods)
+
+The specific sinks are domain policy — a game domain has crafting loss, a compute domain has CPU credits. The Conservation Law doesn't dictate which sinks exist. It requires that sinks are declared in the transform type, not hidden. A domain that claims "free repairs" and quietly destroys inventory is violating the law.
+
+Sinks should be tunable per domain. The law enforces that declared sinks match actual destruction.
 
 ## Law 4: Causal Ordering
 
