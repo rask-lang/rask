@@ -1,8 +1,8 @@
 # Midgard's Use of Capabilities
 
-How Midgard applies Leden's capability protocol to virtual world communication.
+How Midgard applies Allgard's federation model and Leden's capability protocol to virtual world communication.
 
-The protocol mechanics (layers, operations, persistence) live in [Leden](../leden/). This document covers Midgard-specific decisions on top of that protocol.
+The federation primitives (Object, Owner, Domain, Transform, Proof, Grant) live in [Allgard](../allgard/PRIMITIVES.md). The protocol mechanics (layers, operations, persistence) live in [Leden](../leden/). This document covers Midgard-specific decisions on top.
 
 ## Trust Model
 
@@ -10,7 +10,16 @@ Object capability security is the trust model. Holding a reference to an object 
 
 This fits virtual worlds naturally: a player holding a reference to a sword can use it. A domain hosting objects is authoritative for them. Cross-domain trade is bilateral, not a global ledger update.
 
-## How Midgard Maps to Leden
+## How Midgard Maps to the Stack
+
+| Allgard primitive | Midgard meaning |
+|-------------------|----------------|
+| Object | A game entity (sword, character, region, currency) |
+| Owner | A player, NPC, or automated system |
+| Domain | A world region or server shard |
+| Transform | A game action (attack, trade, craft, move) |
+| Proof | Evidence of a valid game action for cross-domain trust |
+| Grant | Permission to interact with another player's items or enter a region |
 
 | Leden concept | Midgard meaning |
 |---------------|----------------|
@@ -29,11 +38,11 @@ This fits virtual worlds naturally: a player holding a reference to a sword can 
 5. Domain X produces a **Proof** of the transfer
 6. Owner B's home **Domain Y** receives the Proof and registers the sword
 
-Every step uses Leden protocol operations. Midgard adds Conservation Law enforcement on top.
+Every step uses Allgard primitives over Leden protocol operations.
 
 ## Midgard-Specific Concerns
 
-These are application policy, not protocol:
+These are application policy, not federation model:
 
 - **Rate limiting across domains.** Conservation Law 5 is per-domain. Coordinated abuse from multiple domains is a harder problem — cross-domain rate limiting needs application-level policy.
 - **Raido snapshot migration.** Raido VM state travels inside the protocol as opaque object content. The protocol doesn't know it's a VM snapshot — it's just bytes. Determinism guarantees bitwise-identical replay on the other end.

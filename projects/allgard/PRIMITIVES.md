@@ -1,6 +1,10 @@
+<!-- id: allgard.primitives -->
+<!-- status: proposed -->
+<!-- summary: The six federation primitives -->
+
 # Primitives
 
-Six primitives. Everything in the system composes from these.
+Six primitives. Everything in the federation composes from these.
 
 ## Object
 
@@ -40,7 +44,7 @@ An Owner can:
 
 Owners are cryptographic identities. The specific scheme (ed25519 keys, DIDs, etc.) is a protocol decision, not a primitive concern.
 
-An Owner is *not* a person. A person may control multiple Owners (alts, roles). An automated system can be an Owner. The system doesn't care about the entity behind the key.
+An Owner is *not* a person. A person may control multiple Owners. An automated system can be an Owner. The federation doesn't care about the entity behind the key.
 
 ### Home Domain
 
@@ -48,12 +52,12 @@ Every Owner has a home domain — the domain that is authoritative for their ide
 
 ## Domain
 
-An authority boundary. A Domain hosts Objects and enforces local rules.
+An authority boundary. A gard that hosts Objects and enforces local rules.
 
 A Domain is:
 - **Trust boundary** — code running inside a Domain trusts other code in that Domain. Code across Domains does not trust each other by default.
 - **Authority root** — the Domain is the final arbiter for Objects it hosts
-- **Rule enforcer** — the Domain enforces its own rules (rate limits, content policies, game mechanics) on top of the universal Conservation Laws
+- **Rule enforcer** — the Domain enforces its own rules (rate limits, content policies, application logic) on top of the universal Conservation Laws
 
 Domains map to E's concept of a "machine" (trust boundary), not a "vat" (execution unit). A Domain may contain many execution units internally.
 
@@ -63,7 +67,7 @@ Each Domain is sovereign over its hosted Objects. It can:
 - Define custom object types and rules
 - Set rate limits and policies
 - Accept or reject incoming transfers
-- Run its own physics/game logic
+- Run its own application logic
 
 What it cannot do:
 - Violate Conservation Laws
@@ -72,7 +76,7 @@ What it cannot do:
 
 ### Federation
 
-Domains federate. Any Domain can communicate with any other Domain via the OCap protocol. There's no central authority, no global state, no master server. Domains discover each other and establish bilateral capability relationships.
+Domains federate. Any Domain can communicate with any other Domain via Leden's capability protocol. There's no central authority, no global state, no master server. Domains discover each other through gossip and establish bilateral capability relationships.
 
 ## Transform
 
@@ -95,9 +99,9 @@ A Transform hasn't happened yet. It's a request: "I want to do this to this obje
 
 Transforms support promise pipelining: you can send a Transform to the result of a Transform that hasn't resolved yet. This eliminates round-trip latency for chains of operations.
 
-Example: "Transfer sword to winner of combat" doesn't need to wait for combat resolution to queue the transfer. The transfer references the promise of combat's result.
+Example: "Transfer asset to winner of auction" doesn't need to wait for auction resolution to queue the transfer. The transfer references the promise of the auction's result.
 
-This is stolen directly from E/CapTP. It's essential for distributed performance.
+Stolen directly from E/CapTP. Essential for distributed performance.
 
 ### Causal Ordering
 
@@ -145,7 +149,7 @@ Grants can only narrow, never widen. If Owner A grants Owner B read+write on an 
 
 Revocation is built in, not optional. The mechanism is the membrane pattern: the Grant is a wrapper that can be switched off. When revoked, all further Transforms through that Grant are rejected.
 
-Revocation is **eventually consistent** in a distributed system. There's unavoidable latency between "revoke" and "all domains know it's revoked." The protocol must handle the window where a revoked Grant is still being exercised somewhere. This is an open design problem — the options are:
+Revocation is **eventually consistent** in a distributed system. There's unavoidable latency between "revoke" and "all domains know it's revoked." The protocol must handle the window where a revoked Grant is still being exercised somewhere. Options:
 
 1. **Optimistic**: allow operations during the window, reconcile after
 2. **Pessimistic**: require liveness check before honoring a Grant
@@ -153,7 +157,7 @@ Revocation is **eventually consistent** in a distributed system. There's unavoid
 
 ### Third-Party Handoff
 
-A Grant enables third-party introduction: Owner A sends Owner B a reference to an Object on Domain C. Owner B connects directly to Domain C using the Grant. This is how cross-domain object introduction works without a central broker.
+A Grant enables third-party introduction: Owner A sends Owner B a reference to an Object on Domain C. Owner B connects directly to Domain C using the Grant. Cross-domain object introduction without a central broker.
 
 This should be a named operation in the protocol, not an implicit consequence of Grant semantics.
 
@@ -161,11 +165,11 @@ This should be a named operation in the protocol, not an implicit consequence of
 
 A typical cross-domain interaction:
 
-1. **Owner A** on **Domain X** holds an **Object** (a sword)
-2. Owner A creates a **Grant** giving **Owner B** transfer authority over the sword
-3. Owner B submits a **Transform** (transfer sword to Owner B) to **Domain X**
+1. **Owner A** on **Domain X** holds an **Object**
+2. Owner A creates a **Grant** giving **Owner B** transfer authority over the Object
+3. Owner B submits a **Transform** (transfer Object to Owner B) to **Domain X**
 4. Domain X validates the Transform against the Grant and the Conservation Laws
 5. Domain X produces a **Proof** of the transfer
-6. Owner B's home **Domain Y** receives the Proof and registers the sword in Owner B's inventory
+6. Owner B's home **Domain Y** receives the Proof and registers the Object in Owner B's inventory
 
 Every step uses only the six primitives. No special cases.

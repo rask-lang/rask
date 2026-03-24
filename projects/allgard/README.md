@@ -1,71 +1,73 @@
 <!-- id: allgard.overview -->
 <!-- status: proposed -->
-<!-- summary: Allgard — topology, registry, and discovery for networks of gards -->
+<!-- summary: Allgard — federation model for networks of gards -->
 
 # Allgard
 
-The map of the multiverse. Allgard knows what gards exist, where they are, and how to find them. [Leden](../leden/) is the web between them.
+Federation model for networks of gards. Defines the rules that make cross-domain cooperation trustworthy without central authority.
 
-## What's a Gard
+A gard joins Allgard by speaking [Leden](../leden/) and respecting the [Conservation Laws](CONSERVATION.md). That's it. No registration, no approval, no central server. You're in if you play by the rules; you're out if you don't.
 
-A server process with isolated state. Runs independently, talks to other gards over Leden. Could be a game world region, a microservice, a build worker — whatever. Allgard doesn't care what's inside.
+The name is Old Norse: *all* + *garðr*. All the gards, together.
 
-Gards are coarse-grained. A gard might contain thousands of entities, its own task scheduler, its own pools. It's a domain, not an object.
+## What Allgard Is
 
-## What Allgard Does
+1. **A federation model** — six [primitives](PRIMITIVES.md) and six [conservation laws](CONSERVATION.md) that make cross-domain interaction trustworthy.
+2. **Domain-sovereign** — every gard is authoritative for its own state. No global consensus, no master server.
+3. **Bilateral trust** — domains verify each other's Proofs directly. Reputation is emergent, not administered.
+4. **Protocol-agnostic** — Allgard defines the *model*. [Leden](../leden/) is the wire protocol that carries it.
 
-Leden gives you point-to-point capability-based communication. But it doesn't answer: what endpoints exist? Where are they? How does a new gard join? How do I know one went down?
+## What Allgard Is Not
 
-Allgard fills that gap:
+- Not a protocol. Leden is the protocol. Allgard is the model that gives protocol messages meaning.
+- Not a registry. Discovery is Leden's gossip layer. Allgard doesn't know who's online.
+- Not a blockchain. No global ledger, no consensus mechanism. Trust is bilateral and capability-based.
 
-1. **Registry** — what gards exist and where they are. The directory.
-2. **Topology** — how gards relate. Which ones should know about each other at startup. What capabilities they bootstrap with.
-3. **Discovery** — a new gard joins the network and finds the others. An existing gard moves and the others find its new address.
-4. **Health** — is a gard up? Leden detects connection drops. Allgard decides what that means — report it, alert an operator, notify dependent gards.
-
-## What Allgard Does Not Do
-
-- **Communication** — that's Leden. Allgard helps you find the address; Leden handles the session, capabilities, and messages.
-- **Process supervision** — restarting crashed processes is your deployment platform's job (systemd, Docker, Kubernetes). Allgard reports health, it doesn't manage processes.
-- **Application logic** — Allgard doesn't know about game worlds, conservation laws, or Raido VMs. That's Midgard.
-
-## How It Fits Together
+## The Stack
 
 ```
-┌─────────────────────────────────────────────────┐
-│ Allgard (registry, topology, discovery, health) │
-│                                                 │
-│   "Gard A is at 10.0.1.5:9000"                │
-│   "Gard B is at 10.0.2.3:9000"                │
-│   "Gard C just joined at 10.0.3.1:9000"       │
-│   "Gard A hasn't responded in 30s"             │
-│                                                 │
-├─────────────────────────────────────────────────┤
-│ Leden (protocol, sessions, capabilities)        │
-│                                                 │
-│   Gard A ←──session──→ Gard B                  │
-│   Gard B ←──session──→ Gard C                  │
-│                                                 │
-├─────────────────────────────────────────────────┤
-│ Transport (TCP, QUIC, Unix socket)              │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────┐
+│  Applications                    │  Midgard, your app, etc.
+├──────────────────────────────────┤
+│  Allgard                         │  Federation model: primitives, conservation laws
+├──────────────────────────────────┤
+│  Leden                           │  Wire protocol: capabilities, sessions, gossip
+└──────────────────────────────────┘
 ```
 
-Allgard is DNS + service mesh. Leden is the protocol on the wire.
+Applications implement domain logic on top of Allgard's model. Allgard's model rides on Leden's protocol. Each layer is independent — you could use Leden without Allgard, or define a different federation model on top of Leden.
+
+## How a Gard Joins
+
+1. Connect to any existing gard via Leden (bootstrap through a seed endpoint)
+2. Learn about other gards through gossip (Leden discovery)
+3. Establish bilateral capability relationships
+4. Enforce Conservation Laws on hosted objects
+5. Accept or reject Proofs from other gards
+
+No step requires permission from a central authority. Federation is peer-to-peer.
 
 ## Key Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Scope | Registry, topology, discovery, health | Everything between "I have a protocol" and "I have a running system." |
-| Not process management | Delegate to OS/infra | Reinventing systemd is not the goal. |
-| Packaging | Separate crate (`allgard`) | Many Leden users won't need managed topology. |
-| Granularity | Coarse — gards are servers, not objects | Fine-grained actors don't need a registry. Server processes do. |
+| Trust model | Object capabilities (via Leden) | Fine-grained, delegatable, revocable. Proven. |
+| Ownership | Single-owner, atomic transfer | No concurrent mutation, no CRDTs for the base case |
+| Conservation | Six invariants, enforced unconditionally | Physics of the federation. Not policy — law. |
+| Delegation | Non-transitive by default | Keeps the authority graph manageable. Explicit re-delegation. |
+| Sovereignty | Domains are authoritative for hosted objects | No global state to coordinate. Each domain runs its own rules on top of the universal laws. |
+| Enforcement | Bilateral verification | No global enforcer. Bad actors get excluded by reputation. |
+
+## Specs
+
+| Spec | What it covers |
+|------|----------------|
+| [PRIMITIVES.md](PRIMITIVES.md) | The six primitives: Object, Owner, Domain, Transform, Proof, Grant |
+| [CONSERVATION.md](CONSERVATION.md) | The six conservation laws every domain must enforce |
 
 ## Open Questions
 
-- **Registry implementation.** Central registry gard? Gossip protocol? Static config file? Probably all three for different scales.
-- **Topology definition.** Declarative manifest? Programmatic API? How do you describe "these 5 gards form a cluster, this one is standalone"?
-- **Health semantics.** What's the contract? Heartbeat interval? What does "unhealthy" mean — just report it, or trigger topology changes?
-- **Dynamic membership.** Gards joining and leaving at runtime. How does the registry propagate changes? Eventually consistent is fine, but what's the consistency window?
-- **Migration.** Can a gard's address change (move to a different machine) without breaking existing Leden sessions? Sturdy references help — reconnect and re-present credentials. But the registry needs to know the new address.
+- **Domain sovereignty over supply**: can one domain mint independently of another, or is there a shared mint authority for cross-domain assets?
+- **Cross-domain transfer routing**: bilateral or through a clearinghouse?
+- **Wire format**: shared concern with Leden — MessagePack, Cap'n Proto, FlatBuffers?
+- **Bootstrapping**: how does first capability exchange happen between unknown domains?

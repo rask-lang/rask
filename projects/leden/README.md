@@ -4,9 +4,11 @@
 
 # Leden
 
-Capability-based networking and IPC protocol. Standalone crate. Handles structured communication between isolated endpoints — whether those are Allgard gards, OS processes, microservices, or machines on a network.
+Capability-based networking and IPC protocol. Standalone crate. Handles structured communication between isolated endpoints — whether those are gards, OS processes, microservices, or machines on a network.
 
 Leden has no knowledge of what's on either end. It's a protocol that anyone can use.
+
+Discovery and health monitoring are built in. Endpoints find each other through gossip and detect failures cooperatively — no central registry, no separate infrastructure layer.
 
 The name comes from the old Scandinavian shipping lanes — established routes between settlements.
 
@@ -22,13 +24,14 @@ I'm not inventing — I'm packaging what works into something standalone and usa
 
 1. **A capability protocol** — four layers from transport to structured object references.
 2. **Transport-agnostic** — pluggable: Unix sockets, TCP, QUIC, shared memory, in-process channels.
-3. **A standalone crate** — no dependency on Rask's runtime. Embed it anywhere.
+3. **Self-organizing** — endpoints discover each other through gossip. No registry needed.
+4. **A standalone crate** — no dependency on Rask's runtime. Embed it anywhere.
 
 ## What Leden Is Not
 
 - Not an actor system. Leden is the wire between endpoints, not the endpoints themselves.
-- Not tied to Allgard. Allgard uses Leden, but so can anything else.
 - Not HTTP. No request/response semantics baked in.
+- Not a service mesh. No topology management, no load balancing, no routing. Discovery tells you who exists; your application decides who to talk to.
 
 ## Protocol Layers
 
@@ -91,10 +94,10 @@ See [protocol.md](protocol.md) for full specification of each layer.
 | Spec | What it covers |
 |------|----------------|
 | [protocol.md](protocol.md) | Layers, operations, persistence, reconnection, capability lifecycle, version negotiation, error model |
+| [discovery.md](discovery.md) | Gossip-based peer discovery and failure detection |
 | [content.md](content.md) | Content-addressed blob storage, lazy fetching, chunking |
 | [observation.md](observation.md) | Push-based observation of object state changes |
 
 ## Open Questions
 
-- **Discovery.** How do endpoints find each other? Static config? DNS? Multicast? Or leave that to Allgard?
 - **Wire format.** MessagePack, Cap'n Proto, FlatBuffers, Protocol Buffers? Must have schema evolution, compact binary, cross-language support, existing tooling.

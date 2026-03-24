@@ -172,8 +172,7 @@ These live in [`projects/`](../projects/) — not part of Rask, but in this repo
 | Project | Description |
 |---------|-------------|
 | [Raido](../projects/raido/) | Deterministic scripting VM. Rask-flavored syntax, no Rask dependency. |
-| [Allgard](../projects/allgard/) | Orchestration of isolated domains (gards). |
-| [Leden](../projects/leden/) | Standalone networking/IPC protocol. |
+| [Leden](../projects/leden/) | Standalone networking/IPC protocol with built-in gossip discovery. |
 | [Midgard](../projects/midgard/) | Virtual world example — uses all three together. |
 
 ## Compiler — Compiler internals
