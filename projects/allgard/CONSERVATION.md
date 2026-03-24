@@ -117,9 +117,45 @@ Deliberate departure from some capability systems where capabilities are freely 
 
 ## Enforcement
 
-Conservation Laws are enforced at two levels:
+Conservation laws are *local invariants with bilateral verification*. They're not global invariants — no one has a complete view. This is deliberate, and it matters to understand what each level actually guarantees.
 
-1. **Within a domain**: the domain's runtime validates every Transform against all six laws before applying it
-2. **Across domains**: bilateral verification during cross-domain operations. Each domain checks the other's Proofs.
+### Level 1: Within a Domain (Strong)
 
-There's no global enforcer. Trust is bilateral and capability-based. If a domain consistently violates Conservation Laws, other domains stop accepting its Proofs. Reputation is emergent, not administered.
+The domain's runtime validates every Transform against all six laws before applying it. This is the strongest guarantee: if the runtime is correct, violations are structurally impossible within a single domain. Same as a database enforcing its own constraints.
+
+### Level 2: Across Domains (Bilateral)
+
+Each domain checks the other's Proofs during cross-domain operations. Domain B re-verifies every Proof that Domain A produces. If the Proof violates a law, B rejects it. This catches:
+
+- Invalid transfers (Law 1 — supply doesn't balance)
+- Ownership conflicts (Law 2 — object claimed by two owners)
+- Unbalanced exchanges (Law 3 — value conjured from nothing)
+- Broken causal chains (Law 4 — references non-existent prior state)
+- Rate violations (Law 5 — too many operations too fast)
+- Authority overreach (Law 6 — operating on objects without proper Grants)
+
+Bilateral verification is strong for operations that cross boundaries. It's the equivalent of a bank verifying a wire transfer.
+
+### Level 3: Network-Wide (Probabilistic)
+
+There is no global enforcer. A domain can lie about internal activity that never crosses a boundary. If Domain A secretly mints a million units but only circulates ten externally, no one can see the hidden supply.
+
+What makes large-scale fraud detectable:
+
+- **Overlapping partial views.** Every domain that trades with A accumulates a partial view of A's economy. These views overlap. If A's self-reported numbers don't reconcile with what its trading partners have independently witnessed, the discrepancy surfaces through [audit gossip](README.md#supply-audit).
+- **Proof chain inclusion.** Supply audits include Proof chains. A verifying domain can check that the events it witnessed appear in A's published chain. Missing events mean a fraudulent audit.
+- **Raido verification.** For domains that negotiate [verifiable transforms](README.md#verifiable-transforms), the computation itself is re-executable. This converts trust-based verification into mechanical verification.
+
+This is the village reputation model. Not omniscience — probabilistic detection that scales with the number of trading partners. A hermit domain can cheat invisibly. A major trading hub cannot.
+
+### What This Means in Practice
+
+| Guarantee | Strength | Mechanism |
+|-----------|----------|-----------|
+| Violations within a domain | Prevented | Runtime enforcement |
+| Violations in cross-domain ops | Detected and rejected | Bilateral Proof verification |
+| Hidden internal fraud (small scale) | Undetectable | Accepted limitation |
+| Hidden internal fraud (large scale) | Probabilistically detectable | Gossip, partial views, audit chains |
+| Computational fraud | Mechanically verifiable | Raido re-execution (optional) |
+
+I'm not claiming global consistency. I'm claiming that the enforcement model matches real-world economics: local bookkeeping is exact, bilateral transactions are verified, and large-scale fraud is caught because liars can't keep their stories straight across many independent observers.

@@ -200,6 +200,24 @@ Two domains agree to verifiable transforms during Leden capability negotiation. 
 
 This is the same pattern as observation in Leden — negotiated, optional, composable. No domain is forced to support it. But domains that do can offer stronger trust guarantees, which matters for reputation.
 
+## Prior Art and Differentiation
+
+Allgard draws from existing work. Here's what I took, what I didn't, and why.
+
+| System | What Allgard shares | Where Allgard diverges |
+|--------|--------------------|-----------------------|
+| **Blockchains** (Ethereum, Solana) | Conservation of supply, append-only history, auditable state transitions | No global ledger, no consensus mechanism. Trust is bilateral, not majority-vote. No gas fees — rate limits instead. Domains are sovereign; there's no "the chain." |
+| **CRDTs** (Automerge, Yjs) | Distributed state without central coordination | CRDTs solve concurrent mutation via merge semantics. Allgard prevents concurrent mutation entirely — single owner, atomic transfer (Law 2). No merge conflicts because there's nothing to merge. CRDTs are the right tool when you need shared mutable state. Allgard says: don't share mutable state. |
+| **Object capability systems** (E/CapTP, Spritely, Cap'n Proto) | Capability-based authority, fine-grained delegation, revocation | Allgard uses capabilities (via [Leden](../leden/)) but adds conservation laws on top. Pure ocap systems don't constrain *what* capabilities can do economically — you can mint infinite tokens if you hold the minting cap. Allgard's laws constrain the physics. Capabilities control *who can act*; conservation laws control *what actions are valid*. |
+| **Federation protocols** (ActivityPub, Matrix) | Decentralized, no central authority, domain sovereignty | ActivityPub federates *content* (posts, follows). Allgard federates *objects with ownership and value*. The conservation laws have no equivalent in social federation — there's no "supply" of posts to conserve. Matrix is closer (federated state), but uses eventual consistency and state resolution. Allgard uses single-owner semantics to avoid state conflicts entirely. |
+| **Game economies** (EVE Online, WoW) | Conservation of supply, value sinks, anti-inflation mechanics | These are single-domain systems with a central authority. Allgard is multi-domain with no authority. The conservation laws are what a single game server enforces internally, generalized to work across sovereign domains that don't trust each other. |
+
+### The Core Difference
+
+Most distributed systems choose between **consistency** (blockchains — everyone agrees on one truth) and **availability** (CRDTs — everyone can write, merge later). Allgard sidesteps the tradeoff by restricting the data model: single owner per object, atomic transfers, no shared mutable state. This makes consistency trivial (only one writer) and availability a domain-local concern (your domain is always available to you).
+
+The cost: no shared mutable state. You can't have two domains simultaneously editing the same object. If you need that, use Grants to give temporary scoped access, and accept that the Grant holder operates under the owning domain's authority. This is a real limitation, and it's intentional — shared mutable state across trust boundaries is where distributed systems complexity explodes.
+
 ## Open Questions
 
 - **Wire format**: shared concern with Leden — deferred. Implementation detail that doesn't affect the model. See [Leden](../leden/README.md).
