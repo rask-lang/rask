@@ -76,15 +76,26 @@ Lease renewal is automatic and invisible — like a DHCP lease, nobody thinks ab
 | **Sudden disconnect** | Home domain detects session loss, revokes lease. Visited domain transfers objects back. | Seconds |
 | **Visited domain goes dark** | Home domain can't reach visited domain to revoke. Lease timeout expires, home domain recovers from Proof chain. | Hours (timeout) |
 | **Both go dark** | Lease timeout is the only mechanism. Objects recover when home domain comes back online. | Hours to days |
-| **Home domain goes dark** | Objects on visited domains are safe (lease still active). Identity and home-stored objects at risk. | See below |
+| **Home goes dark, player active** | Player keeps playing on visited domain. Lease stays active — visited domain has no reason to evict an active, authenticated player. | No disruption |
+| **Home goes dark, player disconnects** | Nobody to revoke, nobody to renew. Lease timeout is the safety net. Objects stay on visited domain until home comes back or timeout expires. | Hours to days |
+| **Home gone permanently** | Backup home domain takes over. See below. | Depends on backup |
 
 ### Home Domain Failure
 
-Your home domain is your root of trust. If it's permanently gone, your identity and non-transferred objects go with it. This is the real risk — same as losing access to your email provider.
+Your home domain is your root of trust. If it's temporarily down, objects on visited domains are safe — the lease holds. If it's permanently gone, your identity and home-stored objects go with it unless you have a backup.
 
-Mitigation: **backup home domain.** A player designates a secondary home domain that mirrors their identity and inventory Proof chains. This is a bilateral agreement between the player and the backup domain — not a protocol feature, but a pattern the protocol supports through Grants. The backup domain holds a read-only mirror of your inventory state. If the primary goes down, the backup can take over as the new home domain.
+**Backup home domain.** Every player should have one. It's a second domain that mirrors your identity and inventory Proof chains in real-time. The backup domain holds a read-only replica. If the primary goes dark, the backup can:
 
-I'd recommend making backup home domains a first-class UX pattern — not required, but strongly encouraged. "Choose a backup home" during account setup. The protocol supports it; the implementation should make it easy.
+1. Take over as the new home domain
+2. Revoke outstanding leases (it has the Proof chains showing what transferred out)
+3. Accept returning objects
+4. Issue new leases for future visits
+
+This is a Grant from the player to the backup domain — scoped to mirror and recover, not to use or transfer. The backup can't touch your stuff until the primary is declared dead (configurable timeout, or player-initiated failover).
+
+**This should be a first-class protocol feature, not a pattern.** The Owner primitive should have an optional `backup_home` field. The runtime should handle replication automatically. "Choose a backup home" during account setup — same as setting up 2FA. Not required, but the UI should make it the path of least resistance.
+
+Without a backup, home domain failure is permanent loss. That's the honest tradeoff. But with a backup, it's a recoverable event — same as a disk failure with a RAID mirror.
 
 ### Why This Works
 
