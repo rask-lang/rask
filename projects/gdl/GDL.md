@@ -1,5 +1,5 @@
 Gard Description Language
-<!-- id: gds --> <!-- status: proposed --> <!-- summary: Content schema for describing gard state over Leden -->
+<!-- id: gdl --> <!-- status: proposed --> <!-- summary: Content schema for describing gard state over Leden -->
 
 GDL is the content schema that tells a client what a gard looks like and how to interact with it. Domains send structured descriptions. Clients decide how to render them. A text client shows room descriptions. A 2D client draws tiles. A 3D client builds a scene. Same data, different presentations.
 
@@ -42,7 +42,7 @@ glTF's tagline is "the JPEG of 3D." It succeeded by optimizing for the renderer,
 HTTP beat CORBA. JSON beat XML. HTML beat SGML. In every case, the simpler format won because more people could implement it correctly. A GDL client should be buildable in a weekend. The minimum viable client is a text renderer that prints names, descriptions, and affordance menus. Everything beyond that is progressive enhancement.
 Core Model
 
-Eight concepts: regions, entities, affordances, appearance, panels, themes, spatial layers, and input streams.
+Eleven concepts: regions, entities, affordances, appearance, panels, themes, spatial layers, input streams, media streams, events, and nested spaces.
 Regions
 
 A region is a spatial container. It's the "page" — the top-level context that a client loads and renders. A dungeon room, a forest clearing, a city block, a spaceship interior. Regions connect to other regions through portals.
@@ -84,12 +84,16 @@ entities	Yes	Things in the region
 
 Spatial models:
 Model	Positions	Use case
-continuous_3d { bounds }	[x, y, z] floats	Full 3D worlds
-continuous_2d { bounds }	[x, y] floats	Top-down or side-view
-grid_2d { width, height }	[col, row] integers	Tile-based games
-hex { width, height }	[q, r] axial integers	Strategy games, hex-based worlds
+continuous_3d { bounds? }	[x, y, z] floats	Full 3D worlds
+continuous_2d { bounds? }	[x, y] floats	Top-down or side-view
+grid_2d { width?, height? }	[col, row] integers	Tile-based games
+hex { width?, height? }	[q, r] axial integers	Strategy games, hex-based worlds
 graph	Named locations	Text adventures, node-based maps
 abstract	None	Inventories, conversations, menus
+
+Bounds are optional. Omitting them means the world is unbounded — it extends as far as the domain can generate. An infinite procedural terrain, an endless ocean, a fractal explorer — all use unbounded spatial models. The viewport mechanism (see Fidelity Negotiation) handles content delivery: the client reports where it's looking, the domain generates content around the viewport. No bounds means no edge.
+
+Bounded worlds declare their extent upfront: `continuous_3d { bounds: [256, 64, 256] }`. The client knows the world's size. Unbounded worlds declare nothing: `continuous_3d {}`. The client discovers the world's extent by moving through it.
 
 No spatial model means abstract — entities exist but have no spatial relationship. A text client can always render any spatial model as a list of entities with their descriptions.
 
@@ -311,27 +315,65 @@ fallback	Yes	Plain text summary — always renderable
 content_type	Yes	MIME type of the content (text/html for now)
 content	Yes	Content-addressed blob reference
 
-The content is sandboxed HTML/CSS — no JavaScript, no external resources. Think HTML email, not a web app. The domain authors a self-contained fragment. The client renders it in an iframe with sandbox restrictions or shadow DOM. Interaction flows through GDL affordances embedded in the HTML as data attributes, not through JS event handlers.
+Panels are sandboxed web applications. Full HTML, CSS, and JavaScript — loaded in a browser sandbox that prevents escape. The web solved untrusted content execution 15 years ago. I'm not going to invent something worse.
 
-A text client renders the fallback string. A web-based client renders the HTML natively. A native client can use a lightweight HTML renderer or fall back to the text. Same progressive enhancement as everything else in GDL.
+The security model is `<iframe sandbox="allow-scripts">`:
 
-Why HTML and not a structured schema: I considered a custom layout language. But any layout language rich enough for skill trees and crafting grids would end up being a bad version of HTML. CSS already solves layout. HTML already has form elements. Screen readers already understand both. The alternative is years of design work to build something worse than what exists.
+- JavaScript runs. Full DOM manipulation, event handlers, drag-and-drop, keyboard input, canvas drawing, WebGL — the panel is a real web app.
+- No `allow-same-origin` — the panel can't access the client's storage, cookies, or APIs.
+- No `allow-top-navigation` — the panel can't navigate the client away.
+- No `allow-popups` — no window.open, no popups.
+- No network access. CSP: `default-src 'self' blob: data:; connect-src 'none'`. The panel can't phone home, can't exfiltrate data, can't load external scripts. All resources are inline or content-addressed blobs loaded via the client.
 
-Panels are delivered through the observation stream like everything else. A panel_update delta carries a new content hash when the domain changes the panel's contents. The client fetches the new blob and re-renders.
+This is the same model Stripe uses for payment forms, YouTube uses for embeds, every ad network uses for ads. Browser-enforced, battle-tested, well-understood.
 
-Panels are not entities. They don't have positions, affordances, or appearance. They're a parallel content channel for structured information that lives outside the spatial world. A domain can send zero panels (pure world interaction) or many (complex RPG with character sheets, quest logs, faction standings).
+Communication between panel and client uses `postMessage` — a structured bidirectional channel:
 
-Panel interaction convention: clickable elements in panel HTML use data attributes that the client intercepts and translates to affordance calls:
+Panel → Client:
 
-    <button data-wdp-verb="unlock_skill"
-            data-wdp-param-skill="fireball"
-            data-wdp-method="<leden_method_ref>">
+    // Trigger an affordance (replaces data-gdl-verb convention)
+    parent.postMessage({
+      type: "affordance",
+      verb: "unlock_skill",
+      params: { skill: "fireball" },
+      method: "<leden_method_ref>"
+    }, "*")
+
+    // Request resize
+    parent.postMessage({ type: "resize", width: 400, height: 600 }, "*")
+
+Client → Panel:
+
+    // Push state updates (entity properties, game state)
+    panel.postMessage({ type: "state", data: { health: 50, mana: 30 } }, "*")
+
+    // Push theme tokens (palette changes, mood shifts)
+    panel.postMessage({ type: "theme", tokens: { "color.primary": "#2a1a0e" } }, "*")
+
+    // Push affordance result
+    panel.postMessage({ type: "result", verb: "unlock_skill", data: { success: true } }, "*")
+
+The panel handles its own rendering, layout, animations, drag-and-drop, keyboard input — everything a web app does. The client handles authority — every affordance message from the panel is validated through Leden the same way spatial affordances are. The panel can't do anything the domain hasn't authorized.
+
+For panels that don't need JavaScript — simple stat displays, quest logs, read-only information — the `data-gdl-verb` convention still works as a simpler alternative:
+
+    <button data-gdl-verb="unlock_skill"
+            data-gdl-param-skill="fireball"
+            data-gdl-method="<leden_method_ref>">
       Learn Fireball
     </button>
 
-The client listens for click events on elements with `data-wdp-verb`, extracts the parameters (any attribute starting with `data-wdp-param-`), and calls the referenced Leden method. The domain receives the call and validates. Results come back through panel_update in the observation stream.
+The client intercepts clicks on elements with `data-gdl-verb` and calls the referenced Leden method. This is the low-complexity path. But it's a convenience, not the primary mechanism.
 
-This means panel HTML is a layout and display concern. Interactivity is GDL's job — the client IS the JavaScript runtime. CSS handles hover states, transitions, and visual feedback. The domain authors HTML the same way you'd author an HTML email with a few clickable buttons.
+A text client renders the fallback string. A web-based client renders the full panel natively. A native client can embed a lightweight webview (every platform has one) or fall back to the text. Same progressive enhancement as everything else in GDL.
+
+Why full JS and not HTML-email-style panels: I originally specified "no JavaScript." That was wrong. A skill tree needs drag interaction. A card game needs drag-and-drop. A crafting grid needs hover previews. Banning JS means banning any UI that isn't "click a button and wait for the server." The web's iframe sandbox gives us the security we need without crippling the capability. The threat model is the same as Allgard's — untrusted domains can run code, but the sandbox constrains what that code can do.
+
+Why HTML and not a structured schema: I considered a custom layout language. But any layout language rich enough for skill trees and crafting grids would end up being a bad version of HTML. CSS already solves layout. HTML already has form elements and drag events. Screen readers already understand both. The alternative is years of design work to build something worse than what exists.
+
+Panels are delivered through the observation stream like everything else. A panel_update delta carries a new content hash when the domain changes the panel's contents. The client fetches the new blob and re-renders.
+
+Panels are not entities. They don't have positions, affordances, or appearance. They're a parallel content channel for structured information that lives outside the spatial world. A domain can send zero panels (pure world interaction) or many (complex RPG with character sheets, quest logs, faction standings, a full card game UI).
 Theme
 
 Regions carry a theme field for visual identity — the domain's way of saying "this place should feel like this." The full theme system is specified separately in [GDL-style.md](GDL-style.md), the same way CSS is a separate spec from HTML. They evolve independently: GDL's structure is stable, styling evolves fast. A GDL implementation is complete without GDL-style — it just uses client defaults.
@@ -342,7 +384,7 @@ Brief summary of what GDL-style provides:
 
 - Structured hints. Coarse mood signals (`mood: gritty`, `epoch: medieval`, `saturation: low`) for clients that don't want to parse individual tokens. A simple client picks a preset from mood + epoch.
 
-- CSS stylesheet. Content-addressed CSS blob for panel styling and web client UI theming. Domain stylesheets reference tokens via CSS custom properties (`var(--wdp-color-primary)`). Walking through a portal shifts the entire client's UI palette.
+- CSS stylesheet. Content-addressed CSS blob for panel styling and web client UI theming. Domain stylesheets reference tokens via CSS custom properties (`var(--gdl-color-primary)`). Walking through a portal shifts the entire client's UI palette.
 
 - Three-level cascade. Domain → region → entity. Domain is the brand. Region is the scene. Entity is the individual. Last writer wins.
 
@@ -361,6 +403,7 @@ client_fidelity:
   asset_formats: [png, gltf, ogg]
   interaction: [keyboard, mouse]
   audio: true
+  media_codecs: [opus, vp9]
   spatial_preference: grid_2d
 
 Field	Purpose
@@ -369,10 +412,13 @@ max_entities	How many entities the client can handle at once
 asset_formats	What asset formats the client can load
 interaction	Input methods available
 audio	Whether the client can play audio
+media_codecs	Audio/video codecs the client supports (for media streams)
 spatial_preference	Preferred spatial model (domain may override)
 panels	Whether the client can render HTML panels (bool)
+panels_js	Whether the client supports JavaScript in panels (bool, implies panels)
 immersive	VR/AR/XR capabilities (see Immersive Capabilities)
 physics	Whether the client can run local physics simulation (bool)
+nested_spaces	Whether the client can render nested spaces (bool)
 
 The domain uses fidelity to:
 
@@ -380,6 +426,7 @@ The domain uses fidelity to:
     Filter appearance layers. Don't send 3D asset hashes to a text client.
     Limit entity count. Send the most relevant entities within the client's budget. A text client gets the 20 most important things. A 3D client gets 200.
     Pick asset formats. If the client supports glTF, reference glTF assets. If only PNG, reference sprites.
+    Pick media codecs. Match the client's codec support for media streams.
 
 Fidelity is a declaration, not a negotiation. The domain reads it and adapts. No back-and-forth. If the domain can't serve the client's capabilities at all (a 3D-only domain with a text-only client), it says so at bootstrap and the client can disconnect gracefully.
 
@@ -422,6 +469,7 @@ ambient_update	Changed ambient fields	Environment changes
 panel_update	Panel id + new content hash	Domain UI changes
 theme_update	Changed tokens and/or hints	Visual identity changes (see GDL-style)
 layer_update	Layer id + changed chunk hashes	Terrain/block modifications
+event	Event type + data	Something happened (see Events)
 
 These map directly to Leden observation deltas. The region object is the publisher. Subscribed clients are the observers. Leden handles fan-out, backpressure, sequence numbering, and reconnection.
 
@@ -464,6 +512,71 @@ What the client predicts is the client's problem. GDL doesn't carry prediction l
 If the server result differs from the prediction, the client snaps to the authoritative state. Smooth reconciliation (interpolation, rollback) is a client rendering concern. The domain sends truth. The client makes it feel good.
 
 This is the same model every multiplayer game uses. The difference is that GDL makes it opt-in per affordance rather than a global client assumption. A domain with deterministic physics marks movement as predicted. A domain with complex server-side logic marks nothing as predicted. The client adapts.
+Events
+
+The observation stream carries state — "health IS 30", "position IS [5, 3]." But gards also need happenings — "took 10 damage from Fireball", "Kira says: watch out!", "a door slams shut." These are events: fire-and-forget messages about things that occurred. They're not state. They don't persist in the region snapshot. They happen and they're gone.
+
+Without events, chat is impossible. Combat logs are impossible. Sound triggers, visual effects, announcements — all impossible without hacking them through entity property changes. "The goblin's `last_chat_message` property changed to 'die, intruder'" is not how chat should work.
+
+Events ride alongside observation deltas on the region's observation stream. Same backpressure, same sequencing, same session. No new transport mechanism.
+
+Event:
+  type: "chat"
+  source: <entity_ref>
+  position: [12, 3]
+  data:
+    message: "Watch your back."
+
+Event:
+  type: "damage"
+  source: <attacker_ref>
+  target: <target_ref>
+  position: [8, 5]
+  data:
+    amount: 10
+    element: fire
+    skill: "Fireball"
+
+Event:
+  type: "sound"
+  position: [4, 7]
+  data:
+    sound: door_slam
+    volume: 0.8
+
+Event fields:
+Field	Required	Purpose
+type	Yes	Event type (from vocabulary or domain-defined)
+source	No	Entity that caused the event
+target	No	Entity the event happened to
+position	No	Where it happened (for spatial rendering)
+data	No	Type-specific payload
+
+Well-known event types:
+Type	Data	Rendering hint
+chat	message	Chat bubble, chat log, speech synthesis
+damage	amount, element, skill	Floating damage number, hit effect
+heal	amount, source	Floating heal number, heal effect
+loot	item_name, item_ref	Pickup notification, toast
+sound	sound, volume	Positional or ambient sound trigger
+effect	effect, duration, scale	Particle effect, visual overlay
+announce	message, priority	Region-wide banner, notification
+emote	animation	Character animation trigger
+
+Event types are extensible — same rule as entity kinds. Unknown types are ignored by clients that don't recognize them. A domain can define `quest_complete`, `level_up`, `weather_change` — whatever it needs. Well-known types get smart rendering from clients that recognize them.
+
+Chat is just an event. A client renders chat events however it wants — chat bubbles in 3D, a scrolling log in 2D, inline text in a text client. No special chat protocol, no separate channel, no panel hack. The domain sends a chat event, the client shows it.
+
+A text client renders all events as log lines:
+```
+[Goblin Scout] Watch your back.
+* You take 10 fire damage from Fireball *
+[LOOT] Picked up: Iron Key
+```
+
+A 3D client renders them as floating text, particles, spatial audio, and toast notifications. Progressive enhancement.
+
+Events are ephemeral. They are not part of the region snapshot. A client that connects mid-conversation doesn't see past messages. If the domain wants chat history, it uses a panel — a scrolling HTML chat log updated via `panel_update`. Events handle the real-time stream. Panels handle the persistent view. They compose.
 Input Streams
 
 Affordances model discrete actions: "attack", "open door", "move to [5, 3]". Some interactions are continuous high-frequency data that doesn't fit the request-response pattern: player movement (gamepad stick at 60Hz), mouse aim, VR head/hand pose at 90Hz. Issuing an affordance call per input frame is too heavyweight — that's 90 method calls per second per tracked point.
@@ -492,7 +605,7 @@ input_streams:
 Input stream fields:
 Field	Required	Purpose
 id	Yes	Stream identifier
-type	Yes	Data type: pose_3d, position_3d, position_2d, direction_2d, float, bool
+type	Yes	Data type: pose_3d, position_3d, position_2d, direction_2d, float, bool, audio, video, bytes
 rate	Yes	Maximum update rate the domain accepts (Hz)
 
 The client sends input at the requested rate (or lower if it can't keep up). The domain processes input server-side and publishes the authoritative result to other observers through entity_update deltas. The client that sent the input applies it locally (predicted) and reconciles on the authoritative update.
@@ -504,6 +617,70 @@ A VR client with head + two hand tracking sends three pose streams. The domain r
 A non-VR client with a gamepad sends one position stream (stick movement) and maybe one aim stream (right stick or mouse). A text client sends no input streams — it uses discrete movement affordances. The domain adapts to what the client provides.
 
 Input streams don't replace affordances. Moving around is an input stream. Attacking is an affordance. Aiming is an input stream. Pulling the trigger is an affordance. Streams handle continuous state. Affordances handle discrete events. They compose.
+
+The `audio` and `video` input types carry the client's microphone and camera data. The domain declares what media inputs it accepts:
+
+input_streams:
+  - id: voice
+    type: audio
+    rate: 50         # 50 packets/sec (20ms frames, typical for Opus)
+  - id: camera
+    type: video
+    rate: 30
+
+A VR meeting room declares voice input. A streaming theater declares video input. A text adventure declares neither. The client provides what it can. Codec negotiation happens through fidelity (the client declares supported codecs, the domain picks).
+
+The `bytes` input type is an escape hatch for domain-specific continuous data — drawing strokes, sensor readings, custom controller data. The domain defines the format. The client sends raw bytes at the declared rate. Use this sparingly — typed streams are better when they fit.
+Media Streams
+
+Input streams are client→server. Media streams are server→client (or entity→observer): audio, video, or data that an entity publishes for observers to consume.
+
+A bard singing in a tavern. A projector showing a video in a theater. A radio tower broadcasting to a region. An NPC with voice lines. These are entities that emit media — continuous data that clients subscribe to and render.
+
+Entity:
+  ref: <leden_object_ref>
+  kind: creature
+  name: "Bard Elara"
+  position: [6, 3]
+  streams:
+    - id: voice
+      type: audio
+      spatial: true
+
+Entity:
+  ref: <leden_object_ref>
+  kind: structure
+  name: "Projection Screen"
+  position: [10, 2]
+  streams:
+    - id: display
+      type: video
+      surface: true
+
+Stream fields:
+Field	Required	Purpose
+id	Yes	Stream identifier
+type	Yes	Data type: audio, video, data
+spatial	No	Whether the stream is positioned at the entity (3D spatial audio, etc.)
+surface	No	Whether the video is projected onto the entity's surface
+
+Media streams are Leden observations on the entity's stream endpoint. The client subscribes to streams it cares about — a text client subscribes to nothing, a 3D client subscribes to spatial audio within earshot, a VR client subscribes to everything nearby. Codec negotiation is part of fidelity.
+
+How voice chat works, end to end:
+
+1. Player A's client captures microphone audio (input stream, type: audio)
+2. Player A's client sends audio frames to the domain (via Leden, coalescing/backpressure apply)
+3. The domain receives the audio and publishes it on Player A's entity as a media stream
+4. Player B's client observes Player A's entity and subscribes to the voice stream
+5. Player B's client receives audio frames and plays them — with spatial positioning if the client supports it
+
+The domain is in the loop. It can: mute players, apply proximity rules (only hear entities within range), gate voice on capabilities (only guild members hear the guild channel), route audio through effects (echo in a cave). The domain is authoritative over who hears what.
+
+For large gatherings (concert, lecture), the domain can designate "broadcast" streams with higher bandwidth priority. A performer's voice stream goes to everyone in the region. Audience members' voice streams are proximity-limited or muted. This is domain policy expressed through which entity streams exist and their observation capabilities.
+
+Leden's content store handles immutable blobs. Media streams handle live data. They're different — a pre-recorded song is a content-addressed asset (sha256:..., fetched on demand). A live performance is a media stream (subscribed in real-time). GDL describes both. The client renders whichever it receives.
+
+A client that doesn't support media streams ignores the `streams` field entirely. No degradation — the entity still has its name, description, appearance, and affordances. The bard is still there, you just can't hear them sing. Text clients render: "Bard Elara strums a melody on her lute." — the description carries the experience for clients that can't play audio.
 Spatial Layers
 
 Entities work for sparse worlds — 20 things in a tavern, 200 in a battlefield. Dense worlds break this model. A Minecraft chunk is 65,536 blocks. A platformer level is collision geometry. A terrain system is a heightmap. These aren't entities — they're bulk spatial data.
@@ -583,6 +760,76 @@ properties:
 A VR client uses physics parameters + spatial layers to simulate hand interaction locally: the hand collides with objects, objects have mass and friction, the client predicts the physical result and sends it to the domain for validation. Without physics parameters, VR interaction would require a server round-trip for every hand movement against every object. That's 200ms input lag on touching a table. Unacceptable.
 
 A text client ignores physics parameters. A 2D client might use gravity + friction for simple character movement. A 3D client uses the full set. A VR client adds hand physics on top. Progressive enhancement.
+Nested Spaces
+
+A ship on an ocean. A building in a city. A chest in a dungeon room. These are entities that contain other entities in their own spatial coordinate system. Without nested spaces, entering a ship means a region transition through a portal — you can't see the ship's deck and the ocean simultaneously. That's wrong for any game where vehicles, buildings, or containers have interiors visible from outside.
+
+An entity can declare a `space` field — an interior spatial model that contains other entities:
+
+Entity:
+  ref: <leden_object_ref>
+  kind: vehicle
+  name: "The Wavecutter"
+  position: [150, 80]
+  space:
+    spatial: grid_2d { width: 8, height: 4 }
+    entities:
+      - ref: <crew_ref>
+        kind: creature
+        name: "First Mate Bjorn"
+        position: [2, 1]      # relative to the ship
+      - ref: <helm_ref>
+        kind: structure
+        name: "Ship's Wheel"
+        position: [7, 2]
+
+Entities inside a sub-space have positions relative to the containing entity. When the ship at [150, 80] moves to [151, 80], every entity inside moves with it — the domain doesn't update each one individually. The client resolves absolute positions by composing: First Mate Bjorn's absolute position is ship_position + [2, 1] = [152, 81].
+
+Sub-spaces can nest. A ship contains a cargo hold. The cargo hold contains crates. Positions compose up the chain: crate position is relative to hold, hold is relative to ship, ship is absolute in the region.
+
+A client that doesn't understand sub-spaces treats the ship as an opaque entity — it renders the ship but not its interior. A capable client renders both: the ship sailing across the ocean, and the crew walking around the deck. Same progressive enhancement as everything else.
+
+Sub-spaces are not regions. There's no region transition to enter a sub-space. The entities inside are part of the same observation stream as the containing region. When a player boards the ship, their entity moves from the region's coordinate system into the ship's sub-space — an `entity_update` that changes their position and adds a `space_parent` reference, not a portal transition.
+
+Entity entering a sub-space:
+  entity_update:
+    ref: <player_ref>
+    position: [3, 1]           # now relative to ship
+    space_parent: <ship_ref>   # inside the ship's space
+
+Entity leaving a sub-space:
+  entity_update:
+    ref: <player_ref>
+    position: [150, 81]        # back to region coordinates
+    space_parent: null
+
+Observation still works per-region. Sub-space entities are part of the region's entity set. The domain decides which sub-space entities to include based on relevance — a ship on the far side of the ocean might only send the ship entity, not its 20 crew members. A ship the player is standing on sends everything. This is viewport filtering applied to sub-spaces.
+
+When to use sub-spaces vs portals: Sub-spaces are for containers where inside and outside coexist visually — vehicles, open buildings, transparent containers. Portals are for transitions where inside and outside are different contexts — entering a dungeon, teleporting to another region, walking through a door into a separate interior. If you can see both sides at once, sub-space. If you transition between contexts, portal.
+Reference Frames
+
+A player standing on a moving platform. A bird perched on a ship's mast. An arrow embedded in a creature. These entities are attached to another entity — their position is relative to it — but they're not inside a sub-space. They're visible in the region, not contained in an interior.
+
+Reference frames handle attachment without containment:
+
+Entity:
+  ref: <player_ref>
+  kind: creature
+  name: "Player"
+  position: [2, 0]
+  frame: <platform_ref>
+
+The player's position [2, 0] is relative to the platform entity. When the platform moves from [10, 5] to [12, 5], the player's absolute position changes from [12, 5] to [14, 5] — without a position update on the player. The client resolves the absolute position: entity_position + frame_position.
+
+Reference frame fields on an entity:
+Field	Required	Purpose
+frame	No	Entity ref this entity is attached to. Null = positioned in the region directly.
+
+Reference frames compose with sub-spaces: an entity inside a sub-space is implicitly in the containing entity's frame. The `frame` field is for entities that are ON something without being INSIDE it — a player riding on top of a moving platform, not inside the platform's interior.
+
+The domain sets the `frame` field via `entity_update` when an entity steps onto a platform, mounts a vehicle, or gets picked up. The domain clears it when the entity dismounts. The client handles the position math — frame changes are rare, position updates within the frame are the same as any other movement.
+
+A text client ignores reference frames — it lists the entity wherever it is. A graphical client resolves the frame chain and renders at the computed absolute position. A physics client uses the frame for local simulation — the player's movement is relative to the platform, not the world.
 Immersive Capabilities
 
 VR, AR, and spatial computing clients declare their capabilities through the fidelity system. The domain adapts what it sends.
@@ -672,9 +919,9 @@ Uses: everything above + appearance.assets, appearance.material, appearance.scal
 
 VR Client
 
-Same tavern, but you're standing in it. Head tracking renders the scene at 90Hz from your eye position. Barkeep Marta has a 3D model (appearance.assets.model) or a procedural humanoid assembled from shape + scale + material hints. Reaching toward the Dusty Bottle triggers its proximity affordance — your hand enters the 0.3m grab range and the client highlights it. Squeeze to grab (affordance call with predicted: true), the bottle follows your hand locally while the server confirms. Spatial audio: Marta's voice comes from her position, tavern murmur is ambient. Candlelight is a volumetric light source from the effect entity.
+Same tavern, but you're standing in it. Head tracking renders the scene at 90Hz from your eye position. Barkeep Marta has a 3D model (appearance.assets.model) or a procedural humanoid assembled from shape + scale + material hints. Reaching toward the Dusty Bottle triggers its proximity affordance — your hand enters the 0.3m grab range and the client highlights it. Squeeze to grab (affordance call with predicted: true), the bottle follows your hand locally while the server confirms. Spatial audio: Marta's voice stream positioned at her location. Candlelight is a volumetric light source from the effect entity. Another player says "nice place" — a chat event renders as a speech bubble above their head. Your voice input stream carries your response back.
 
-Uses: everything above + orientation, input streams (head, hands), physics parameters, proximity affordances, haptic hints, comfort settings
+Uses: everything above + orientation, input streams (head, hands, voice), media streams (Marta's voice), events (chat, sound), physics parameters, proximity affordances, haptic hints, comfort settings
 
 Same GDL payload. Zero domain-specific client code.
 The Vocabulary
@@ -692,7 +939,7 @@ Physics simulation. GDL provides physics parameters (gravity, friction, collisio
 
 Animation. GDL doesn't describe skeletal rigs or animation state machines. The posture hint covers coarse state ("crouching", "attacking", "idle"). Smooth animation is the client's problem, driven by posture changes in the observation stream.
 
-Audio design. GDL carries ambient properties and sound asset references. Spatial audio mixing, music systems, and sound design are client-side. The domain says "there's a fire here." The client decides what fire sounds like.
+Audio design. GDL carries ambient properties, sound asset references, media streams, and sound events. Spatial audio mixing, music systems, and sound design are client-side. The domain says "there's a fire here" and optionally publishes a crackling audio stream. The client decides the mix.
 
 Scripting. No behavior in the description. Ever. Raido handles scripting. GDL handles description. The boundary is load-bearing.
 
@@ -700,7 +947,7 @@ Entity internals. GDL describes what an entity looks like from outside. Its inte
 
 Data validation. GDL doesn't specify validation rules. A domain might send `health: 50, health_max: 30` or a position outside the region's bounds. Domains are responsible for consistency. Clients should be tolerant — display what you can, clamp out-of-bounds values, don't crash on contradictions. Postel's law: be conservative in what you send, liberal in what you accept.
 
-Panel security. Panels are sandboxed: no JavaScript, no external resource loading. Clients render panels in sandboxed iframes (`sandbox="allow-same-origin"`) with a Content-Security-Policy that blocks external fetches. A malicious domain cannot use panels to exfiltrate data, track users, or escape the sandbox. For stylesheet security, see [GDL-style.md](GDL-style.md).
+Panel security. Panels run JavaScript but are sandboxed: `<iframe sandbox="allow-scripts">` without `allow-same-origin`. CSP blocks all external network access. The panel can't read client storage, navigate the parent frame, open popups, or phone home. Communication with the client happens exclusively through `postMessage`. A malicious domain cannot use panels to exfiltrate data, track users, or escape the sandbox. For stylesheet security, see [GDL-style.md](GDL-style.md).
 Resolved
 
 Regions are not entities. A region is a container. Entities are contents. Regions have metadata (name, description, ambient, spatial model). Entities have affordances and appearance. Mixing them creates ambiguity about what "observing an entity" means vs. "observing a region." Clean separation.
@@ -721,7 +968,17 @@ Portal transitions are domain-controlled. Portals carry a `transition` hint: `in
 
 Observation has three tiers. Region observation for structural changes (entity add/remove). Region-level property filter for bulk streaming (`Observe(region_ref, entity_filter: [position])` gives position updates for all entities as one subscription). Individual entity observation for detailed per-entity tracking. This avoids the 500-subscriptions problem without changing Leden's observation model — region-level filters are just a filtered view over the region's delta stream.
 
-Domain-specific UI uses HTML panels. Domains send sandboxed HTML/CSS fragments for non-spatial UI (skill trees, crafting grids, faction screens). No JavaScript, no external resources. Web clients render natively, text clients show a plain text fallback. I chose HTML over a custom schema because any layout language rich enough for real UI would end up being a bad version of HTML. See the Panels section above.
+Domain-specific UI uses sandboxed web panels. Domains send full HTML/CSS/JS applications for non-spatial UI (skill trees, crafting grids, card games, faction screens). JavaScript runs inside `<iframe sandbox="allow-scripts">` — the browser enforces the security boundary. I originally specified "no JavaScript" but that was wrong. Banning JS means banning any UI that isn't "click a button and wait for the server." The web's iframe sandbox gives us the security we need without crippling the capability. See the Panels section above.
+
+Unbounded spatial models. Bounds are optional on all spatial models. Omitting bounds means the world extends indefinitely — the domain generates content around the client's viewport. Infinite procedural terrain, endless oceans, fractal explorers — all first-class. The viewport mechanism handles content delivery: the client reports where it's looking, the domain generates around it. Bounded worlds declare extent upfront. Unbounded worlds are discovered by moving through them.
+
+Events alongside observation. The observation stream carries both state updates (entity_update, entity_enter, etc.) and events (chat, damage, sound triggers). State is durable — it persists in the snapshot. Events are ephemeral — they happen and they're gone. Chat is an event, not a property change. This was originally deferred ("panels can show a combat log"), but that was a hack. Events are a first-class concept in the observation stream.
+
+Media streams on entities. Entities can publish audio, video, or data streams that clients subscribe to. Voice chat, live performances, video projection, data feeds — all described as entity streams, transported through Leden. Input streams get audio/video/bytes types for microphone, camera, and custom data. The domain is authoritative over who hears what — it controls stream observation capabilities.
+
+Nested spaces over portals-only. Entities can contain sub-spaces — interior spatial models with their own entities and coordinates. A ship on an ocean, a building in a city, a chest with contents. Positions inside a sub-space are relative to the containing entity. No region transition required. Inside and outside coexist in the same observation stream. Portals remain for context transitions (entering a dungeon, teleporting). Sub-spaces handle spatial containment (vehicles, buildings, containers).
+
+Reference frames for attachment. Entities can declare a `frame` — a reference entity their position is relative to. A player on a moving platform, a bird on a mast, an arrow in a creature. The frame entity moves, the attached entity moves with it. No per-frame position updates for every passenger. The client resolves absolute positions by composing frame transforms.
 
 Visual identity is a separate spec (GDL-style). Design tokens for world styling, CSS stylesheets for panels and web UI, three-level cascade (domain → region → entity). Separated from GDL because styling evolves faster than structure and has a different implementer audience. A GDL implementation is complete without GDL-style. See [GDL-style.md](GDL-style.md).
 
@@ -738,5 +995,6 @@ Deferred
     Accessibility. Screen reader hints, colorblind palettes, motor-impairment interaction modes. Important, but a layer on top of the base protocol, not a change to it.
     Versioning. GDL will evolve. Version negotiation should follow Leden's model (version handshake at session start, backward-compatible additions don't require version bumps). Details after v1 is stable.
     Entity visibility. Fog of war needs a visibility field on entities: visible, last_known (stale data with timestamp), hidden. The domain controls which entities the client knows about. last_known entities carry stale data that the client renders differently (grayed out, question mark). Deferred because most use cases don't need fog of war, and the viewport filtering mechanism handles the common case of "don't show what's far away."
-    Event streams. GDL is state (current properties), not events (what happened). A combat log needs "player X hit boss for 500 damage with Fireball" — that's an event, not a state change. A parallel event channel alongside the observation stream would carry happenings. Deferred because panels can show a combat log (updated via panel_update), which covers the common case without a new concept.
     Time-sequenced content. Rhythm games and cutscenes need pre-loaded event sequences with precise timestamps. The observation model is push-based (server sends updates as they happen), not time-indexed. This is a fundamentally different content type — probably a separate spec rather than a GDL extension. Deferred.
+    Media stream transport details. GDL describes what media streams exist (type, spatial, surface). The actual transport — codec negotiation, packet framing, jitter buffers, bandwidth estimation — is Leden's concern. Leden's content store explicitly notes "live audio/video is not content-addressed" as a gap. That gap needs filling at the Leden layer, not in GDL.
+    Sub-space observation granularity. Currently, sub-space entities are part of the containing region's observation stream. For very large sub-spaces (a carrier with 500 rooms), this might need its own observation scope — observe the sub-space independently of the region. Deferred until someone actually needs a 500-room ship.
