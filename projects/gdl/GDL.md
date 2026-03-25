@@ -42,7 +42,26 @@ glTF's tagline is "the JPEG of 3D." It succeeded by optimizing for the renderer,
 HTTP beat CORBA. JSON beat XML. HTML beat SGML. In every case, the simpler format won because more people could implement it correctly. A GDL client should be buildable in a weekend. The minimum viable client is a text renderer that prints names, descriptions, and affordance menus. Everything beyond that is progressive enhancement.
 Core Model
 
-Eleven concepts: regions, entities, affordances, appearance, panels, themes, spatial layers, input streams, media streams, events, and nested spaces.
+Six core concepts that every GDL client must handle:
+
+1. **Regions** — spatial containers. The "page."
+2. **Entities** — things in regions, with extensible properties. The "elements."
+3. **Affordances** — what you can do. The "links and forms."
+4. **Appearance** — layered rendering hints. Progressive enhancement.
+5. **Events** — things that happened. Fire-and-forget happenings.
+6. **Panels** — domain UI as sandboxed web apps.
+
+Five extensions that clients negotiate through fidelity:
+
+- **Spatial layers** — dense data (voxels, heightmaps, tilemaps)
+- **Input streams** — continuous client→server data (movement, tracking, media input)
+- **Media streams** — audio/video from entities (voice, live performance, video)
+- **Nested spaces & reference frames** — sub-spaces in entities, relative positioning
+- **Theme** — visual identity system (separate spec: [GDL-style](GDL-style.md))
+
+A minimal GDL client handles the core: render regions, display entities with names and descriptions, show affordance menus, display events as log lines, show panel fallback text. That's a text adventure client. Buildable in a weekend.
+
+Each extension adds a capability. A 2D tile client adds spatial layers. A VR client adds input streams and media streams. A client with vehicles adds nested spaces. None require the others. A client that doesn't understand an extension ignores it — the core still works.
 Regions
 
 A region is a spatial container. It's the "page" — the top-level context that a client loads and renders. A dungeon room, a forest clearing, a city block, a spaceship interior. Regions connect to other regions through portals.
@@ -635,6 +654,12 @@ Event Reliability
 Events are ephemeral. They're not part of the region snapshot. If the client disconnects and reconnects, any events during the gap are lost. The snapshot resync restores state (entity positions, properties) but not events.
 
 For damage numbers and sound triggers, this is fine — stale events are useless. For chat, losing messages matters. The answer: events for real-time delivery, panels for persistent history. A domain that cares about chat history maintains a log and pushes it to a chat panel. The panel is a web app that receives new messages via postMessage and maintains its own scrollback. Events handle "show this now." Panels handle "show what happened." Same architecture as Discord — real-time WebSocket events plus a REST API for history.
+
+---
+
+Extensions
+
+Everything above is the core — what every GDL client handles. Everything below is optional. A client declares which extensions it supports through fidelity negotiation. A domain that uses extensions works fine with clients that don't support them — the core still renders.
 Input Streams
 
 Affordances model discrete actions: "attack", "open door", "move to [5, 3]". Some interactions are continuous high-frequency data that doesn't fit the request-response pattern: player movement (gamepad stick at 60Hz), mouse aim, VR head/hand pose at 90Hz. Issuing an affordance call per input frame is too heavyweight — that's 90 method calls per second per tracked point.
