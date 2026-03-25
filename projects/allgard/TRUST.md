@@ -66,20 +66,70 @@ This is the critical piece. When B introduces C to A, B is putting its own reput
 
 If C turns out to be fraudulent:
 - A cuts off C (obvious)
-- A downgrades B's introduction quality score
+- A downgrades B's introduction quality
 - A may share this with other domains B has introduced (gossip)
 
 B has every incentive to vet C before introducing C to anyone. A bad introduction costs B credibility with every domain that trusted B's judgment.
 
-This is mechanical, not social. Domains track:
+#### Don't Judge Intent — Judge Behavior
+
+You can't tell the difference between "B didn't know C was a fraud" and "B was in on it." And you shouldn't try. Intent is unverifiable and any system that relies on it is gameable ("I had no idea!").
+
+What you *can* judge is observable, verifiable behavior — before and after the fraud:
+
+**Before the introduction (due diligence):**
+
+| Signal | What it tells you | Verifiable? |
+|--------|-------------------|-------------|
+| B verified C's Proofs independently | B did mechanical checking, not just social trust | Yes — B either has verification records or doesn't |
+| B had sustained bilateral history with C | B had real data to base the introduction on | Yes — transaction history is auditable |
+| B introduced C after minimal interaction | B was careless or complicit | Yes — timestamps on B↔C history vs. introduction date |
+| B introduced C at an appropriate trust level | B was calibrated, not overselling | Yes — the introduction carries a trust level |
+
+**After the fraud was discovered:**
+
+| Signal | What it tells you | Verifiable? |
+|--------|-------------------|-------------|
+| B immediately flagged C to all its introductees | B is acting in good faith, protecting the network | Yes — gossip messages are timestamped |
+| B cut off C | B isn't continuing to benefit from the relationship | Yes — observable |
+| B stayed quiet until confronted | B was hoping nobody would notice | Yes — absence of gossip is observable |
+| B continued trading with C after fraud was public | B is likely complicit | Yes — transaction history continues |
+
+This gives A enough information to calibrate its response to B without ever needing to determine whether B "knew." A domain that did thorough due diligence and responded immediately looks very different from one that rubber-stamped the introduction and went silent. The behavior pattern tells the story.
+
+#### Penalty Scales with Reputation
+
+A high-reputation domain that makes a bad introduction should take a bigger hit than a low-reputation one. Three reasons:
+
+1. **Greater influence.** A's decision to trust C was partly based on B's reputation. The more weight B's introduction carried, the more responsible B is for the outcome.
+2. **Greater obligation.** A trusted domain has more tools, more bilateral history, more access to audit data. It should have caught problems that a smaller domain couldn't.
+3. **Greater signal.** When a highly-trusted domain makes a bad introduction, it's a stronger signal — either something is seriously wrong, or the domain is declining.
+
+But penalties that scale too steeply create a problem: **established domains stop introducing anyone.** The downside of a bad introduction is catastrophic, so the rational move is to never introduce. The network ossifies. New domains can't get in. The high-trust society becomes a closed club.
+
+The fix is to scale penalty with both reputation *and* due diligence:
+
+| Due diligence | High reputation introducer | Low reputation introducer |
+|---|---|---|
+| Thorough (verified Proofs, long history, appropriate level) | Small hit — honest mistake, could happen to anyone | Minimal hit — they did what they could |
+| Minimal (quick introduction, no verification) | Large hit — should have known better | Moderate hit — careless |
+| Negligent (introduced after warnings, continued after fraud) | Severe — likely complicit | Large hit — enabling |
+
+This means: a trusted domain that carefully vets its introductions and occasionally gets fooled takes a small, recoverable hit. A trusted domain that rubber-stamps introductions without checking gets hammered. The incentive is to *do your homework*, not to *never introduce*.
+
+#### What Domains Track
+
+Mechanical, not social:
 
 | Metric | What it measures |
 |--------|-----------------|
 | Introduction success rate | % of B's introductions that resulted in valid long-term relationships |
 | Introduction failure rate | % of B's introductions that resulted in fraud or cut-off |
 | Introduction volume | How many introductions B has made (high volume + low failure = strong signal) |
+| Due diligence depth | Average verification level B performed before introducing (from auditable records) |
+| Response time to fraud | How quickly B flagged problems after fraud was detected in its introductions |
 
-A domain with a 95% introduction success rate over 500 introductions is a reliable introducer. A domain with 3 introductions total tells you nothing. A domain whose last 5 introductions were all fraudulent is actively dangerous.
+A domain with a 95% success rate over 500 introductions is a reliable introducer. A domain with 3 introductions total tells you nothing. A domain whose last 5 introductions were all fraudulent is actively dangerous. A domain with a 90% success rate but fast response times and thorough due diligence records is honest but operating in a tough neighborhood.
 
 ### Why This Resists Sybils
 
@@ -258,4 +308,4 @@ This isn't privacy for its own sake. It's efficiency — you don't always need t
 
 ## Open Questions
 
-- **Cascading trust damage.** If A defrauds C, and B introduced A to C, B takes a hit. But what if B genuinely didn't know? The accountability model punishes honest mistakes the same as malicious introductions. This is deliberate — it incentivizes careful vetting — but it might be too harsh. Degrees of accountability (B verified A's Proofs vs. B casually passed along an introduction) might be worth specifying.
+None currently. All major trust mechanics have been specified.
