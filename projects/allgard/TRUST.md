@@ -237,8 +237,25 @@ This is a Leden concern, not an Allgard concern. But Allgard's trust model has a
 | Eclipse | Diverse trust relationships; multiple gossip paths | Moderate — network-level defense, not protocol-level |
 | Greeter DoS | Connection/rate/bandwidth limits | Operational — configurable per domain |
 
+## Transparency Is the Security Model
+
+Domains aren't people. They're services. A domain that won't tell you who it trades with is like a business that refuses to name its suppliers. That's not privacy — that's a red flag.
+
+Introduction graphs should be visible. Audit gossip should be public. Trading relationships should be inspectable. The honest domain has nothing to hide. The one that whispers is the one you should worry about. This is old wisdom and it applies directly: the transparency *is* what makes the trust model work. Making introduction graphs private gives Sybil clusters a place to hide.
+
+### Prove Properties, Not Data
+
+That said, there are cases where you want to prove something about your history without dumping every record. A domain should be able to say "I have 50 trusted introductions with a 97% success rate" and back that claim cryptographically without listing all 50 domains.
+
+Commitment schemes work here. A domain publishes a Merkle root over its introduction set. A verifier can check:
+- The set has N members (tree size)
+- A specific domain is or isn't in the set (inclusion/exclusion proof)
+- Aggregate statistics are consistent with the committed data
+
+This isn't privacy for its own sake. It's efficiency — you don't always need the full dataset to make a trust decision. Sometimes the summary, backed by a commitment you can drill into if something looks wrong, is enough.
+
+**The principle:** default to transparent. Use commitments for efficiency, not secrecy. Any domain can request full disclosure as a condition of higher trust levels. Refusing disclosure is itself a signal.
+
 ## Open Questions
 
-- **Introduction graph privacy.** Sharing "who introduced whom" helps detect Sybil clusters but leaks social graph information. How much introduction metadata should gossip carry? Tradeoff between Sybil resistance and privacy.
-- **Behavioral fingerprinting.** Detecting reputation laundering by operator behavior (IP ranges, timing patterns, trading partners) is powerful but feels like surveillance. Where's the line? I think this should be domain-local heuristics, not protocol-level — but it's worth flagging.
 - **Cascading trust damage.** If A defrauds C, and B introduced A to C, B takes a hit. But what if B genuinely didn't know? The accountability model punishes honest mistakes the same as malicious introductions. This is deliberate — it incentivizes careful vetting — but it might be too harsh. Degrees of accountability (B verified A's Proofs vs. B casually passed along an introduction) might be worth specifying.
