@@ -294,16 +294,17 @@ Assets are content-addressed blobs in Leden's content store. The client fetches 
 If the client can't fetch an asset (network issue, unsupported format), it falls back to hints. If no hints, it falls back to kind + description. The layers degrade gracefully. Always.
 Panels
 
-Some domain UI doesn't map to entities in a region — skill trees, faction reputation, crafting grids, build mode toolbars, quest logs. These aren't world description. But punting them to "each domain builds custom UI" defeats the whole point of GDL.
+Some domain UI doesn't map to entities in a region — skill trees, faction reputation, crafting grids, build mode toolbars, quest logs, card game tables. These aren't world description. But punting them to "each domain builds custom UI" defeats the whole point of GDL.
 
-I decided to use HTML. Not invent a new UI description language — the web already has one with 30 years of tooling, accessibility support, and rendering engines. A panel is a sandboxed HTML fragment that a domain sends for non-spatial UI.
+Panels are web apps. A domain authors a standard HTML/CSS/JS application. The client loads it in a sandboxed iframe. The app runs like any web app — it manages its own DOM, handles its own events, maintains its own local state. The only difference from a normal web app: instead of `fetch()` for data and WebSocket for real-time updates, the panel uses `postMessage` to talk to the client, which relays to the domain through Leden.
+
+That's the mental model. postMessage replaces the network. Everything else is normal web development.
 
 Panel:
   id: "skill_tree"
   label: "Skills"
   category: character
   fallback: "Strength: 5, Agility: 3, Magic: 7"
-  content_type: text/html
   content: sha256:abc123...
 
 Panel fields:
@@ -312,26 +313,33 @@ id	Yes	Stable identifier for the panel
 label	Yes	Human-readable name
 category	Yes	Grouping hint (character, inventory, social, craft, quest, system)
 fallback	Yes	Plain text summary — always renderable
-content_type	Yes	MIME type of the content (text/html for now)
-content	Yes	Content-addressed blob reference
+content	Yes	Content-addressed blob reference (the web app bundle)
+Lifecycle
 
-Panels are sandboxed web applications. Full HTML, CSS, and JavaScript — loaded in a browser sandbox that prevents escape. The web solved untrusted content execution 15 years ago. I'm not going to invent something worse.
+The content blob is the **application code**. It loads once. It stays running. It manages its own state.
+
+Data changes arrive through `postMessage` — the client pushes observation deltas to the panel as they arrive. The panel updates its own DOM. No re-render, no state loss, no flicker. Scroll position, form inputs, drag state, animations — all preserved across updates.
+
+`panel_update` in the observation stream means the **application code changed** — the domain deployed a new version of the panel. The client fetches the new blob and reloads the iframe. This is rare — a redeploy, not a data update.
+
+    domain sends observation delta → client receives it →
+    client posts to panel via postMessage → panel updates its DOM
+Sandbox
 
 The security model is `<iframe sandbox="allow-scripts">`:
 
-- JavaScript runs. Full DOM manipulation, event handlers, drag-and-drop, keyboard input, canvas drawing, WebGL — the panel is a real web app.
-- No `allow-same-origin` — the panel can't access the client's storage, cookies, or APIs.
-- No `allow-top-navigation` — the panel can't navigate the client away.
-- No `allow-popups` — no window.open, no popups.
-- No network access. CSP: `default-src 'self' blob: data:; connect-src 'none'`. The panel can't phone home, can't exfiltrate data, can't load external scripts. All resources are inline or content-addressed blobs loaded via the client.
+- JavaScript runs. Full DOM, events, drag-and-drop, keyboard, canvas, WebGL.
+- No `allow-same-origin` — can't access client storage or APIs.
+- No `allow-top-navigation` — can't navigate the client.
+- No `allow-popups` — can't open windows.
+- No network. CSP: `default-src 'self' blob: data:; connect-src 'none'`. No phone home, no exfiltrate, no external scripts.
 
-This is the same model Stripe uses for payment forms, YouTube uses for embeds, every ad network uses for ads. Browser-enforced, battle-tested, well-understood.
-
-Communication between panel and client uses `postMessage` — a structured bidirectional channel:
+Same model as Stripe payment forms, YouTube embeds. Browser-enforced, battle-tested.
+postMessage Protocol
 
 Panel → Client:
 
-    // Trigger an affordance (replaces data-gdl-verb convention)
+    // Trigger an affordance
     parent.postMessage({
       type: "affordance",
       verb: "unlock_skill",
@@ -339,23 +347,31 @@ Panel → Client:
       method: "<leden_method_ref>"
     }, "*")
 
-    // Request resize
-    parent.postMessage({ type: "resize", width: 400, height: 600 }, "*")
-
 Client → Panel:
 
-    // Push state updates (entity properties, game state)
-    panel.postMessage({ type: "state", data: { health: 50, mana: 30 } }, "*")
+    // State update (relayed from observation stream)
+    panel.postMessage({
+      type: "state",
+      data: { skills: [...], xp: 450, level: 7 }
+    }, "*")
 
-    // Push theme tokens (palette changes, mood shifts)
-    panel.postMessage({ type: "theme", tokens: { "color.primary": "#2a1a0e" } }, "*")
+    // Theme tokens (palette changes, mood shifts)
+    panel.postMessage({
+      type: "theme",
+      tokens: { "color.primary": "#2a1a0e" }
+    }, "*")
 
-    // Push affordance result
-    panel.postMessage({ type: "result", verb: "unlock_skill", data: { success: true } }, "*")
+    // Affordance result
+    panel.postMessage({
+      type: "result",
+      verb: "unlock_skill",
+      success: true,
+      data: { new_skill: "fireball" }
+    }, "*")
 
-The panel handles its own rendering, layout, animations, drag-and-drop, keyboard input — everything a web app does. The client handles authority — every affordance message from the panel is validated through Leden the same way spatial affordances are. The panel can't do anything the domain hasn't authorized.
+The domain decides what state each panel needs. When observation deltas arrive that are relevant to a panel, the client relays them. The panel doesn't subscribe to entities — the domain pushes what it knows the panel needs. Simple.
 
-For panels that don't need JavaScript — simple stat displays, quest logs, read-only information — the `data-gdl-verb` convention still works as a simpler alternative:
+For panels that don't need JavaScript — simple stat displays, read-only information — the `data-gdl-verb` click convention works as a low-complexity alternative:
 
     <button data-gdl-verb="unlock_skill"
             data-gdl-param-skill="fireball"
@@ -363,17 +379,9 @@ For panels that don't need JavaScript — simple stat displays, quest logs, read
       Learn Fireball
     </button>
 
-The client intercepts clicks on elements with `data-gdl-verb` and calls the referenced Leden method. This is the low-complexity path. But it's a convenience, not the primary mechanism.
+A text client renders the fallback string. A web client renders the full app. A native client embeds a webview or falls back to text. Progressive enhancement.
 
-A text client renders the fallback string. A web-based client renders the full panel natively. A native client can embed a lightweight webview (every platform has one) or fall back to the text. Same progressive enhancement as everything else in GDL.
-
-Why full JS and not HTML-email-style panels: I originally specified "no JavaScript." That was wrong. A skill tree needs drag interaction. A card game needs drag-and-drop. A crafting grid needs hover previews. Banning JS means banning any UI that isn't "click a button and wait for the server." The web's iframe sandbox gives us the security we need without crippling the capability. The threat model is the same as Allgard's — untrusted domains can run code, but the sandbox constrains what that code can do.
-
-Why HTML and not a structured schema: I considered a custom layout language. But any layout language rich enough for skill trees and crafting grids would end up being a bad version of HTML. CSS already solves layout. HTML already has form elements and drag events. Screen readers already understand both. The alternative is years of design work to build something worse than what exists.
-
-Panels are delivered through the observation stream like everything else. A panel_update delta carries a new content hash when the domain changes the panel's contents. The client fetches the new blob and re-renders.
-
-Panels are not entities. They don't have positions, affordances, or appearance. They're a parallel content channel for structured information that lives outside the spatial world. A domain can send zero panels (pure world interaction) or many (complex RPG with character sheets, quest logs, faction standings, a full card game UI).
+Panels are not entities. They don't have positions, affordances, or appearance. They're a parallel content channel for structured information outside the spatial world. A domain can send zero panels (pure world interaction) or many (complex RPG, card game, dashboard).
 Theme
 
 Regions carry a theme field for visual identity — the domain's way of saying "this place should feel like this." The full theme system is specified separately in [GDL-style.md](GDL-style.md), the same way CSS is a separate spec from HTML. They evolve independently: GDL's structure is stable, styling evolves fast. A GDL implementation is complete without GDL-style — it just uses client defaults.
@@ -469,7 +477,7 @@ ambient_update	Changed ambient fields	Environment changes
 panel_update	Panel id + new content hash	Domain UI changes
 theme_update	Changed tokens and/or hints	Visual identity changes (see GDL-style)
 layer_update	Layer id + changed chunk hashes	Terrain/block modifications
-event	Event type + data	Something happened (see Events)
+event	Event type + scope + data	Something happened (see Events)
 
 These map directly to Leden observation deltas. The region object is the publisher. Subscribed clients are the observers. Leden handles fan-out, backpressure, sequence numbering, and reconnection.
 
@@ -550,6 +558,7 @@ type	Yes	Event type (from vocabulary or domain-defined)
 source	No	Entity that caused the event
 target	No	Entity the event happened to
 position	No	Where it happened (for spatial rendering)
+scope	No	Who should see this (see Event Scope)
 data	No	Type-specific payload
 
 Well-known event types:
@@ -566,17 +575,58 @@ emote	animation	Character animation trigger
 Event types are extensible — same rule as entity kinds. Unknown types are ignored by clients that don't recognize them. A domain can define `quest_complete`, `level_up`, `weather_change` — whatever it needs. Well-known types get smart rendering from clients that recognize them.
 
 Chat is just an event. A client renders chat events however it wants — chat bubbles in 3D, a scrolling log in 2D, inline text in a text client. No special chat protocol, no separate channel, no panel hack. The domain sends a chat event, the client shows it.
+Event Scope
+
+Not every event should go to every observer. A whisper is for one player. Party chat is for the party. A nearby sound fades with distance. The `scope` field controls targeting:
+
+Scope	Meaning	Example
+region	Everyone in the region (default)	Region announcement, ambient sound
+proximity	Entities within range of the event position	Local chat, footstep sounds, explosion
+target	Specific entity only	Whisper, personal notification
+group	Observers of a Leden object	Party chat, guild chat, team channel
+
+Examples:
+
+Event:
+  type: "chat"
+  source: <player_ref>
+  scope: { type: "proximity", radius: 10 }
+  data:
+    message: "Anyone nearby?"
+
+Event:
+  type: "chat"
+  source: <player_ref>
+  scope: { type: "target", entity: <other_player_ref> }
+  data:
+    message: "Meet me at the bridge."
+
+Event:
+  type: "chat"
+  source: <player_ref>
+  scope: { type: "group", ref: <party_object_ref> }
+  data:
+    message: "Ready to pull?"
+
+Scope is enforced by the domain — the domain only sends the event to qualifying observers. The scope field is a rendering hint so the client knows how to present it: whispers in italic, proximity chat fades with distance, party chat in a separate color. The client doesn't filter — the domain already did.
+
+For **cross-region channels** (guild chat, global announcements), the channel is a Leden object. Members observe it. Events arrive on the channel observation, not the region observation. A guild chat panel subscribes to the guild's Leden object and receives chat events from guild members in any region. This composes from existing Leden observation — no new mechanism.
 
 A text client renders all events as log lines:
 ```
 [Goblin Scout] Watch your back.
 * You take 10 fire damage from Fireball *
 [LOOT] Picked up: Iron Key
+[whisper from Kira] Meet me at the bridge.
+[party] Ready to pull?
 ```
 
 A 3D client renders them as floating text, particles, spatial audio, and toast notifications. Progressive enhancement.
+Event Reliability
 
-Events are ephemeral. They are not part of the region snapshot. A client that connects mid-conversation doesn't see past messages. If the domain wants chat history, it uses a panel — a scrolling HTML chat log updated via `panel_update`. Events handle the real-time stream. Panels handle the persistent view. They compose.
+Events are ephemeral. They're not part of the region snapshot. If the client disconnects and reconnects, any events during the gap are lost. The snapshot resync restores state (entity positions, properties) but not events.
+
+For damage numbers and sound triggers, this is fine — stale events are useless. For chat, losing messages matters. The answer: events for real-time delivery, panels for persistent history. A domain that cares about chat history maintains a log and pushes it to a chat panel. The panel is a web app that receives new messages via postMessage and maintains its own scrollback. Events handle "show this now." Panels handle "show what happened." Same architecture as Discord — real-time WebSocket events plus a REST API for history.
 Input Streams
 
 Affordances model discrete actions: "attack", "open door", "move to [5, 3]". Some interactions are continuous high-frequency data that doesn't fit the request-response pattern: player movement (gamepad stick at 60Hz), mouse aim, VR head/hand pose at 90Hz. Issuing an affordance call per input frame is too heavyweight — that's 90 method calls per second per tracked point.
@@ -633,9 +683,9 @@ A VR meeting room declares voice input. A streaming theater declares video input
 The `bytes` input type is an escape hatch for domain-specific continuous data — drawing strokes, sensor readings, custom controller data. The domain defines the format. The client sends raw bytes at the declared rate. Use this sparingly — typed streams are better when they fit.
 Media Streams
 
-Input streams are client→server. Media streams are server→client (or entity→observer): audio, video, or data that an entity publishes for observers to consume.
+Input streams are client→server. Media streams are entity→observer: audio, video, or data that an entity publishes for observers to consume.
 
-A bard singing in a tavern. A projector showing a video in a theater. A radio tower broadcasting to a region. An NPC with voice lines. These are entities that emit media — continuous data that clients subscribe to and render.
+A bard singing in a tavern. A projector showing a video in a theater. A radio tower broadcasting. An NPC with voice lines. Players talking to each other. These are entities that emit media.
 
 Entity:
   ref: <leden_object_ref>
@@ -663,24 +713,36 @@ id	Yes	Stream identifier
 type	Yes	Data type: audio, video, data
 spatial	No	Whether the stream is positioned at the entity (3D spatial audio, etc.)
 surface	No	Whether the video is projected onto the entity's surface
+Direct Streams via Leden Introduction
 
-Media streams are Leden observations on the entity's stream endpoint. The client subscribes to streams it cares about — a text client subscribes to nothing, a 3D client subscribes to spatial audio within earshot, a VR client subscribes to everything nearby. Codec negotiation is part of fidelity.
+Voice chat between two players should not route through the domain server. Every audio frame taking a server round trip adds 50-200ms of latency. For VR, for music, for any real-time conversation — unacceptable.
 
-How voice chat works, end to end:
+The solution is already in Leden: Introduction. The domain is the signaling server, not the relay.
 
-1. Player A's client captures microphone audio (input stream, type: audio)
-2. Player A's client sends audio frames to the domain (via Leden, coalescing/backpressure apply)
-3. The domain receives the audio and publishes it on Player A's entity as a media stream
-4. Player B's client observes Player A's entity and subscribes to the voice stream
-5. Player B's client receives audio frames and plays them — with spatial positioning if the client supports it
+How voice chat works:
 
-The domain is in the loop. It can: mute players, apply proximity rules (only hear entities within range), gate voice on capabilities (only guild members hear the guild channel), route audio through effects (echo in a cave). The domain is authoritative over who hears what.
+1. Player A and Player B are in the same region
+2. The domain decides they should hear each other (proximity, party, whatever policy)
+3. The domain introduces A to B's voice stream endpoint via Leden Introduction
+4. A and B exchange audio frames directly, peer-to-peer
+5. The domain is out of the data path. Audio goes A↔B with no server hop.
 
-For large gatherings (concert, lecture), the domain can designate "broadcast" streams with higher bandwidth priority. A performer's voice stream goes to everyone in the region. Audience members' voice streams are proximity-limited or muted. This is domain policy expressed through which entity streams exist and their observation capabilities.
+The domain keeps control:
+- It decides who gets introduced (proximity, capabilities, muting)
+- It can revoke the introduction at any time (mute, leave range, leave region)
+- It never touches the audio data itself
 
-Leden's content store handles immutable blobs. Media streams handle live data. They're different — a pre-recorded song is a content-addressed asset (sha256:..., fetched on demand). A live performance is a media stream (subscribed in real-time). GDL describes both. The client renders whichever it receives.
+This is WebRTC's architecture: signaling server sets up the connection, media flows peer-to-peer. But using Leden Introduction instead of ICE/STUN/TURN. Simpler — the session already exists, the protocol already handles introduction, and Leden's NAT traversal (relay through a public endpoint) covers the hard cases.
 
-A client that doesn't support media streams ignores the `streams` field entirely. No degradation — the entity still has its name, description, appearance, and affordances. The bard is still there, you just can't hear them sing. Text clients render: "Bard Elara strums a melody on her lute." — the description carries the experience for clients that can't play audio.
+For **broadcast** (concert, lecture, announcement), peer-to-peer doesn't work — one performer can't maintain 500 direct connections. Broadcast streams go through the domain, which fans out to observers. The domain decides routing: direct introduction for small groups, fan-out for broadcasts.
+
+The domain expresses this through stream capabilities. A performer's stream is observable by the region (broadcast). A player's voice stream is observable only by entities the domain has introduced (direct).
+
+Clients don't need to know the routing. They subscribe to an entity's stream. Whether the audio arrives via direct connection or domain relay is transparent — Leden handles it. The only visible difference is latency.
+
+Pre-recorded audio (a jukebox playing a song) is a content-addressed asset, not a stream. The client fetches it from Leden's content store and plays it locally. Live audio is a stream. GDL describes both — `appearance.assets.sound` for pre-recorded, `streams` for live.
+
+A client that doesn't support media streams ignores the `streams` field entirely. The bard is still there, you just can't hear them sing. Text clients render: "Bard Elara strums a melody on her lute." The description carries the experience for clients that can't play audio.
 Spatial Layers
 
 Entities work for sparse worlds — 20 things in a tavern, 200 in a battlefield. Dense worlds break this model. A Minecraft chunk is 65,536 blocks. A platformer level is collision geometry. A terrain system is a heightmap. These aren't entities — they're bulk spatial data.
@@ -783,7 +845,9 @@ Entity:
         name: "Ship's Wheel"
         position: [7, 2]
 
-Entities inside a sub-space have positions relative to the containing entity. When the ship at [150, 80] moves to [151, 80], every entity inside moves with it — the domain doesn't update each one individually. The client resolves absolute positions by composing: First Mate Bjorn's absolute position is ship_position + [2, 1] = [152, 81].
+Entities inside a sub-space have positions relative to the containing entity. When the ship at [150, 80] moves to [151, 80], every entity inside moves with it — the domain doesn't update each one individually.
+
+The sub-space's spatial model defines a coordinate system with an origin at the containing entity's position. A `grid_2d { width: 8, height: 4 }` sub-space inside a ship at [150.5, 80.3] maps grid cell [2, 1] to absolute position [150.5 + 2, 80.3 + 1] = [152.5, 81.3]. Grid cells are 1 unit in the parent's coordinate system. If the sub-space needs a different scale, it declares `scale: 0.5` — grid cell [2, 1] maps to [150.5 + 1.0, 80.3 + 0.5].
 
 Sub-spaces can nest. A ship contains a cargo hold. The cargo hold contains crates. Positions compose up the chain: crate position is relative to hold, hold is relative to ship, ship is absolute in the region.
 
@@ -947,7 +1011,7 @@ Entity internals. GDL describes what an entity looks like from outside. Its inte
 
 Data validation. GDL doesn't specify validation rules. A domain might send `health: 50, health_max: 30` or a position outside the region's bounds. Domains are responsible for consistency. Clients should be tolerant — display what you can, clamp out-of-bounds values, don't crash on contradictions. Postel's law: be conservative in what you send, liberal in what you accept.
 
-Panel security. Panels run JavaScript but are sandboxed: `<iframe sandbox="allow-scripts">` without `allow-same-origin`. CSP blocks all external network access. The panel can't read client storage, navigate the parent frame, open popups, or phone home. Communication with the client happens exclusively through `postMessage`. A malicious domain cannot use panels to exfiltrate data, track users, or escape the sandbox. For stylesheet security, see [GDL-style.md](GDL-style.md).
+Panel security. Panels are sandboxed web apps: `<iframe sandbox="allow-scripts">` without `allow-same-origin`. CSP blocks all network access. No phone home, no exfiltration, no external scripts. The panel talks only to the client via `postMessage`, and the client validates every affordance call through Leden. A malicious domain can run whatever JS it wants inside the sandbox — it can't escape. For stylesheet security, see [GDL-style.md](GDL-style.md).
 Resolved
 
 Regions are not entities. A region is a container. Entities are contents. Regions have metadata (name, description, ambient, spatial model). Entities have affordances and appearance. Mixing them creates ambiguity about what "observing an entity" means vs. "observing a region." Clean separation.
@@ -968,7 +1032,11 @@ Portal transitions are domain-controlled. Portals carry a `transition` hint: `in
 
 Observation has three tiers. Region observation for structural changes (entity add/remove). Region-level property filter for bulk streaming (`Observe(region_ref, entity_filter: [position])` gives position updates for all entities as one subscription). Individual entity observation for detailed per-entity tracking. This avoids the 500-subscriptions problem without changing Leden's observation model — region-level filters are just a filtered view over the region's delta stream.
 
-Domain-specific UI uses sandboxed web panels. Domains send full HTML/CSS/JS applications for non-spatial UI (skill trees, crafting grids, card games, faction screens). JavaScript runs inside `<iframe sandbox="allow-scripts">` — the browser enforces the security boundary. I originally specified "no JavaScript" but that was wrong. Banning JS means banning any UI that isn't "click a button and wait for the server." The web's iframe sandbox gives us the security we need without crippling the capability. See the Panels section above.
+Domain-specific UI uses sandboxed web panels. Panels are long-lived web apps, not re-rendered blobs. The content hash is the application code — loaded once. Data changes arrive through postMessage from the client. `panel_update` means the app was redeployed, not that data changed. JavaScript runs inside `<iframe sandbox="allow-scripts">` — the browser enforces the security boundary. postMessage replaces fetch/WebSocket. Everything else is normal web development. See the Panels section above.
+
+Media streams are peer-to-peer via Leden Introduction. The domain is the signaling server, not the relay. For voice between two players: the domain introduces them, audio flows directly, the domain can revoke to mute. Broadcast (concerts, lectures) goes through the domain for fan-out. This is WebRTC's architecture — signaling server + peer-to-peer — using Leden Introduction instead of ICE/STUN/TURN. The domain keeps control (it decides who gets introduced) without sitting in the data path.
+
+Event targeting via scope. Events carry a `scope` field: region (default, everyone), proximity (within radius), target (one entity, whisper), group (Leden object observers, party/guild chat). Cross-region channels are Leden objects that members observe — guild chat events arrive on the guild observation, not the region observation. The domain enforces scope server-side. The scope field is a rendering hint for the client.
 
 Unbounded spatial models. Bounds are optional on all spatial models. Omitting bounds means the world extends indefinitely — the domain generates content around the client's viewport. Infinite procedural terrain, endless oceans, fractal explorers — all first-class. The viewport mechanism handles content delivery: the client reports where it's looking, the domain generates around it. Bounded worlds declare extent upfront. Unbounded worlds are discovered by moving through them.
 
