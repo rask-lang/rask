@@ -72,6 +72,7 @@ No step requires permission from a central authority. See [Bootstrapping](#boots
 |------|----------------|
 | [PRIMITIVES.md](PRIMITIVES.md) | The six primitives: Object, Owner, Domain, Transform, Proof, Grant |
 | [CONSERVATION.md](CONSERVATION.md) | The six conservation laws every domain must enforce |
+| [TRUST.md](TRUST.md) | Adversarial trust model: introductions, reputation, Sybil resistance |
 
 ## Bootstrapping
 
@@ -113,9 +114,9 @@ If the seed domains go down, existing domains still talk to each other. Only bra
 
 ### Reputation Is Emergent
 
-I'm not specifying a reputation system. Domains decide for themselves who to trust based on their own transaction history. A domain that runs a busy marketplace will have different trust heuristics than a domain running a private guild server.
+Domains decide for themselves who to trust. But the federation provides structural incentives that make honesty the dominant strategy. See [TRUST.md](TRUST.md) for the full adversarial trust model — introduction-based trust, introducer accountability, Sybil resistance, and why high-trust networks are self-reinforcing.
 
-The Conservation Laws give domains something concrete to verify: did this Proof check out? Did this transfer balance? That's the raw signal. What domains do with that signal is their business.
+The Conservation Laws give domains something concrete to verify: did this Proof check out? Did this transfer balance? That's the raw signal. [Audit gossip with Proofs](TRUST.md#audit-gossip-with-proofs) gives domains a way to pool that signal without trusting each other's summaries.
 
 ## Domain Sovereignty over Supply
 
