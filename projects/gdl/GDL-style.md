@@ -1,22 +1,22 @@
-World Description Style
-<!-- id: midgard.wds --> <!-- status: proposed --> <!-- summary: Visual identity and theming system for WDP — design tokens, structured hints, and CSS stylesheets -->
+Gard Description Style
+<!-- id: gdl.style --> <!-- status: proposed --> <!-- summary: Visual identity and theming system for GDL — design tokens, structured hints, and CSS stylesheets -->
 
-WDS is WDP's CSS. WDP describes what exists — structure, entities, affordances. WDS describes how it should feel — colors, atmosphere, lighting, sound palette, typography, entity treatment. Separate specs because they evolve independently and have different implementer audiences.
+GDL-style is GDL's CSS. GDL describes what exists — structure, entities, affordances. GDL-style describes how it should feel — colors, atmosphere, lighting, sound palette, typography, entity treatment. Separate specs because they evolve independently and have different implementer audiences.
 
-Without WDS, WDP is the pre-CSS internet. Content exists. Visual identity doesn't. A horror dungeon and a fairy forest render with the same client defaults. Walking through a cross-domain portal feels like nothing because both sides look identical. Domain authors have no way to express creative intent beyond text descriptions and per-entity appearance hints.
+Without GDL-style, GDL is the pre-CSS internet. Content exists. Visual identity doesn't. A horror dungeon and a fairy forest render with the same client defaults. Walking through a cross-domain portal feels like nothing because both sides look identical. Domain authors have no way to express creative intent beyond text descriptions and per-entity appearance hints.
 
-CSS solved this for documents. WDS solves it for worlds. But WDS is not CSS — CSS styles text, boxes, and layout. WDS styles lighting, atmosphere, color language, entity treatment, and sound. Different medium, different tool.
+CSS solved this for documents. GDL-style solves it for worlds. But GDL-style is not CSS — CSS styles text, boxes, and layout. GDL-style styles lighting, atmosphere, color language, entity treatment, and sound. Different medium, different tool.
 Why Not Just CSS
 
-I considered making the entire style system CSS with custom properties and WDP-specific selectors. Three problems:
+I considered making the entire style system CSS with custom properties and GDL-specific selectors. Three problems:
 
 1. CSS has no concept of fog density, ambient light color, or shadow intensity. You'd need custom properties for all of them, which makes CSS a transport format for non-CSS data. At that point it's not CSS anymore — it's key-value pairs wearing CSS syntax.
 
-2. CSS selectors are overkill. WDS doesn't need `.creature[data-hostile="true"]:nth-child(2n+1)`. It needs "hostile creatures get a red tint." Flat token namespaces (`entity.hostile_tint: #ff2200`) are simpler to author, simpler to parse, and impossible to create specificity bugs with.
+2. CSS selectors are overkill. GDL-style doesn't need `.creature[data-hostile="true"]:nth-child(2n+1)`. It needs "hostile creatures get a red tint." Flat token namespaces (`entity.hostile_tint: #ff2200`) are simpler to author, simpler to parse, and impossible to create specificity bugs with.
 
 3. CSS is still needed — for panels and web client UI. If the whole style system were CSS, you'd mix world-styling custom properties with actual layout CSS in one file. Keeping them separate means domain authors know exactly what goes where: tokens for world feel, CSS for panel/UI appearance.
 
-The architecture: tokens + hints (WDS, client-agnostic) and stylesheets (CSS, for web clients). Tokens are the real design system. CSS is a bonus layer.
+The architecture: tokens + hints (GDL-style, client-agnostic) and stylesheets (CSS, for web clients). Tokens are the real design system. CSS is a bonus layer.
 Design Tokens
 
 Tokens are named values that express visual identity. They're the bridge between "what the domain wants" and "what the client renders." Every client type can consume tokens — a text client maps color tokens to ANSI terminal colors, a 2D client maps them to sprite tinting, a 3D client maps them to shader uniforms.
@@ -96,7 +96,7 @@ Color:
 - Text client → ANSI terminal colors (color.danger → red, color.success → green)
 - 2D client → sprite tinting, UI palette, overlay colors
 - 3D client → material uniforms, UI palette, post-processing color grading
-- Web client → CSS custom properties (--wdp-color-primary, etc.)
+- Web client → CSS custom properties (--gdl-color-primary, etc.)
 
 Atmosphere:
 - Text client → ignored (mood comes from description text)
@@ -199,45 +199,45 @@ Clients that support CSS automatically expose tokens as custom properties:
 
     :root {
       /* Auto-generated from theme tokens */
-      --wdp-color-primary: #2a1a0e;
-      --wdp-color-secondary: #5c3a1e;
-      --wdp-color-accent: #8b6914;
-      --wdp-color-surface: #1a1a1a;
-      --wdp-color-background: #0d0d0d;
-      --wdp-color-text: #c4a882;
-      --wdp-color-danger: #8b2500;
-      --wdp-color-success: #2e5a1e;
-      --wdp-type-heading: serif;
-      --wdp-type-body: serif;
-      --wdp-type-ui: sans-serif;
-      /* ... all tokens mapped to --wdp-{namespace}-{name} */
+      --gdl-color-primary: #2a1a0e;
+      --gdl-color-secondary: #5c3a1e;
+      --gdl-color-accent: #8b6914;
+      --gdl-color-surface: #1a1a1a;
+      --gdl-color-background: #0d0d0d;
+      --gdl-color-text: #c4a882;
+      --gdl-color-danger: #8b2500;
+      --gdl-color-success: #2e5a1e;
+      --gdl-type-heading: serif;
+      --gdl-type-body: serif;
+      --gdl-type-ui: sans-serif;
+      /* ... all tokens mapped to --gdl-{namespace}-{name} */
     }
 
-The mapping is mechanical: `color.primary` → `--wdp-color-primary`. `atmosphere.fog_density` → `--wdp-atmosphere-fog-density`. Dots become hyphens. The `--wdp-` prefix prevents collisions with the client's own custom properties.
+The mapping is mechanical: `color.primary` → `--gdl-color-primary`. `atmosphere.fog_density` → `--gdl-atmosphere-fog-density`. Dots become hyphens. The `--gdl-` prefix prevents collisions with the client's own custom properties.
 
 The domain's stylesheet builds on these. It doesn't re-declare the palette — it references the tokens:
 
-    .wdp-panel {
-      background: var(--wdp-color-surface);
-      color: var(--wdp-color-text);
-      font-family: var(--wdp-type-body, serif);
-      border: 1px solid var(--wdp-color-accent);
+    .gdl-panel {
+      background: var(--gdl-color-surface);
+      color: var(--gdl-color-text);
+      font-family: var(--gdl-type-body, serif);
+      border: 1px solid var(--gdl-color-accent);
     }
 
-    .wdp-health-bar {
-      background: var(--wdp-color-danger);
+    .gdl-health-bar {
+      background: var(--gdl-color-danger);
       border-radius: 2px;
     }
 
-    .wdp-affordance-button {
-      background: var(--wdp-color-surface);
-      color: var(--wdp-color-accent);
-      border: 1px solid var(--wdp-color-accent);
+    .gdl-affordance-button {
+      background: var(--gdl-color-surface);
+      color: var(--gdl-color-accent);
+      border: 1px solid var(--gdl-color-accent);
     }
 
-    .wdp-affordance-button:hover {
-      background: var(--wdp-color-accent);
-      color: var(--wdp-color-surface);
+    .gdl-affordance-button:hover {
+      background: var(--gdl-color-accent);
+      color: var(--gdl-color-surface);
     }
 
 If the domain changes its tokens (e.g., a day/night cycle shifts color.primary), the CSS custom properties update automatically and the stylesheet's var() references resolve to the new values. No stylesheet swap needed for token-driven changes.
@@ -246,21 +246,21 @@ Well-Known CSS Classes
 Clients that render HTML-based UI should expose these classes on their elements. Domain stylesheets target them to style the client's built-in chrome.
 
 Class	Element	Purpose
-.wdp-panel	Panel container	Wraps each domain panel
-.wdp-health-bar	Health indicator	Bar showing health/health_max ratio
-.wdp-health-bar-fill	Health fill	Inner element sized to health/health_max
-.wdp-entity-label	Name label	Entity name overlay in graphical clients
-.wdp-entity-label--hostile	Hostile variant	Label on hostile entities (additional class)
-.wdp-affordance-button	Action button	Clickable affordance trigger
-.wdp-affordance-menu	Menu container	Groups affordances by category
-.wdp-affordance-group	Category group	One affordance category within the menu
-.wdp-region-name	Region title	Current region's name display
-.wdp-ambient-overlay	Screen overlay	Full-screen mood/atmosphere tinting layer
-.wdp-toast	Notification	Transient messages (damage numbers, pickups)
+.gdl-panel	Panel container	Wraps each domain panel
+.gdl-health-bar	Health indicator	Bar showing health/health_max ratio
+.gdl-health-bar-fill	Health fill	Inner element sized to health/health_max
+.gdl-entity-label	Name label	Entity name overlay in graphical clients
+.gdl-entity-label--hostile	Hostile variant	Label on hostile entities (additional class)
+.gdl-affordance-button	Action button	Clickable affordance trigger
+.gdl-affordance-menu	Menu container	Groups affordances by category
+.gdl-affordance-group	Category group	One affordance category within the menu
+.gdl-region-name	Region title	Current region's name display
+.gdl-ambient-overlay	Screen overlay	Full-screen mood/atmosphere tinting layer
+.gdl-toast	Notification	Transient messages (damage numbers, pickups)
 
 The client is not required to apply domain styles to its own UI. But clients that do get the portal-transition effect: walk into a new domain and the entire UI shifts color and feel. This is the key experience that makes cross-domain travel feel coherent rather than jarring.
 
-Modifier classes follow BEM-lite convention: `.wdp-entity-label--hostile`, `.wdp-affordance-button--disabled`, `.wdp-panel--collapsed`. Domains can target these for state-specific styling.
+Modifier classes follow BEM-lite convention: `.gdl-entity-label--hostile`, `.gdl-affordance-button--disabled`, `.gdl-panel--collapsed`. Domains can target these for state-specific styling.
 Stylesheet Constraints
 
 - No JavaScript. No `<script>`, no event handlers, no `expression()`, no `-moz-binding`.
@@ -315,7 +315,7 @@ Text client:
 Web client:
 - Injects all tokens as CSS custom properties on :root
 - Applies stylesheet directly to page
-- Uses .wdp-* classes on its UI elements
+- Uses .gdl-* classes on its UI elements
 - Gets portal-transition effect: region change → new tokens → CSS custom properties update → instant UI recolor via var() references
 - Panels inherit styling automatically via the CSS cascade
 - Result: the domain's visual identity permeates every pixel of the client
@@ -323,7 +323,7 @@ Resolved
 
 Tokens over selectors. I considered CSS-like selectors for targeting entities (`creature[hostile=true] { tint: red }`). Flat namespaced tokens are simpler. No specificity bugs. No parsing complexity. Domain authors write `entity.hostile_tint: #ff2200` instead of learning a selector language. The tradeoff is less precision — you can't target "hostile creatures of level > 10 in this specific room." But that level of granularity belongs in per-entity appearance, not in the theme.
 
-Separate spec from WDP. CSS is a separate spec from HTML. They evolved independently with different versioning, complexity budgets, and implementer communities. WDS changes more frequently than WDP — new token categories, new mood terms, stylesheet feature additions. Keeping them separate means WDP implementations are complete without WDS (use client defaults), and WDS can evolve without forcing WDP revisions.
+Separate spec from GDL. CSS is a separate spec from HTML. They evolved independently with different versioning, complexity budgets, and implementer communities. GDL-style changes more frequently than GDL — new token categories, new mood terms, stylesheet feature additions. Keeping them separate means GDL implementations are complete without GDL-style (use client defaults), and GDL-style can evolve without forcing GDL revisions.
 
 Three-level cascade is enough. I considered adding a fourth level (union themes — a domain union defines shared visual standards). Not worth the complexity. If a union wants visual consistency, its member domains use the same domain-level tokens. The cascade doesn't need to know about unions.
 
@@ -334,7 +334,7 @@ Open Questions
 
 Token animation. Should tokens support transition hints? `atmosphere.ambient_intensity: 0.5 [transition: 2s]` would tell the client to smoothly interpolate over 2 seconds instead of snapping. The domain can fake this by sending multiple updates, but that's chattier. A built-in transition hint is cleaner — but adds complexity to the token format. For now, domains send incremental updates and clients interpolate at their own rate.
 
-Audio token depth. The sound.* namespace is shallow — ambient layer, music mood, footstep style. Real audio design needs more: reverb presets, distance attenuation curves, environmental occlusion hints, music crossfade behavior. Should this stay shallow (simple, most domains don't need it) or get its own sub-spec (complex, but enables rich audio experiences)? Leaning toward keeping it shallow in WDS and deferring deep audio to a future extension.
+Audio token depth. The sound.* namespace is shallow — ambient layer, music mood, footstep style. Real audio design needs more: reverb presets, distance attenuation curves, environmental occlusion hints, music crossfade behavior. Should this stay shallow (simple, most domains don't need it) or get its own sub-spec (complex, but enables rich audio experiences)? Leaning toward keeping it shallow in GDL-style and deferring deep audio to a future extension.
 
 Accessibility overrides. The client's accessibility settings should always win over domain themes. A domain that sets `contrast: low` shouldn't override a user's high-contrast mode. The cascade should probably be: domain → region → entity → USER (always wins). But this means the client needs to know which tokens map to accessibility-relevant settings. Not specified yet.
 

@@ -1,16 +1,16 @@
-World Description Protocol
-<!-- id: midgard.wdp --> <!-- status: proposed --> <!-- summary: Content schema for describing virtual world state over Leden -->
+Gard Description Language
+<!-- id: gds --> <!-- status: proposed --> <!-- summary: Content schema for describing gard state over Leden -->
 
-WDP is Midgard's "HTML" — the content schema that tells a client what the world looks like and how to interact with it. Domains send structured descriptions. Clients decide how to render them. A text client shows room descriptions. A 2D client draws tiles. A 3D client builds a scene. Same data, different presentations.
+GDL is the content schema that tells a client what a gard looks like and how to interact with it. Domains send structured descriptions. Clients decide how to render them. A text client shows room descriptions. A 2D client draws tiles. A 3D client builds a scene. Same data, different presentations.
 
-WDP is not a protocol. It's a content schema that rides on Leden, the same way HTML rides on HTTP. Leden handles sessions, capabilities, observation, and content delivery. WDP defines what's inside the payloads.
+GDL is not a protocol. It's a content schema that rides on Leden, the same way HTML rides on HTTP. Leden handles sessions, capabilities, observation, and content delivery. GDL defines what's inside the payloads.
 Why This Exists
 
-The Midgard stack has logic (Raido), trust (Allgard), and transport (Leden). It doesn't have a way to describe what the world looks like.
+The stack has logic (Raido), trust (Allgard), and transport (Leden). It doesn't have a way to describe what a gard looks like.
 
-Without WDP, every domain invents its own scene format. Clients need per-domain rendering code. Cross-domain travel becomes "load a completely different game." The federation model works at the object level (swords transfer) but fails at the experience level (the player sees nothing coherent).
+Without GDL, every domain invents its own scene format. Clients need per-domain rendering code. Cross-domain travel becomes "load a completely different game." The federation model works at the object level (swords transfer) but fails at the experience level (the player sees nothing coherent).
 
-WDP is the common language between domain and client. A domain describes its world in WDP. A client that speaks WDP can render any domain, the same way a browser that speaks HTML can render any website.
+GDL is the common language between domain and client. A domain describes its world in GDL. A client that speaks GDL can render any domain, the same way a browser that speaks HTML can render any website.
 Design Principles
 
 These come from studying what worked and what didn't across 30 years of world description formats.
@@ -18,17 +18,17 @@ These come from studying what worked and what didn't across 30 years of world de
 
 The single most important rule. If a client receives a property it doesn't recognize, it skips it. If a domain sends an entity kind the client hasn't seen before, the client falls back to the kind's category. Unknown fields are preserved, never rejected.
 
-This is how HTML survived 30 years of evolution. Browsers that don't know <video> render the fallback content inside the tags. WDP clients that don't know a "flamebrand" render it as a generic item. Forward compatibility is non-negotiable.
+This is how HTML survived 30 years of evolution. Browsers that don't know <video> render the fallback content inside the tags. GDL clients that don't know a "flamebrand" render it as a generic item. Forward compatibility is non-negotiable.
 2. Description Is Not Behavior
 
-WDP describes what exists — structure, properties, appearance. Raido scripts define what happens — combat, crafting, physics. VRML tried to combine scene description with behavioral wiring and paid for it with implementation complexity that killed adoption. X3D inherited the same mistake.
+GDL describes what exists — structure, properties, appearance. Raido scripts define what happens — combat, crafting, physics. VRML tried to combine scene description with behavioral wiring and paid for it with implementation complexity that killed adoption. X3D inherited the same mistake.
 
-The boundary is sharp: WDP says "there's a goblin here with 30 health." Raido says "when attacked, subtract damage from health." The client renders the description. The domain runs the behavior. They don't mix.
+The boundary is sharp: GDL says "there's a goblin here with 30 health." Raido says "when attacked, subtract damage from health." The client renders the description. The domain runs the behavior. They don't mix.
 3. Description Is Not Rendering
 
-WDP carries semantic descriptions, not rendering instructions. "A weathered oak door with iron bands" — not vertex buffers, not sprite coordinates, not CSS. The client decides how to present it. A text client prints the description. A 3D client assembles a door from its built-in asset library. A client with GenAI generates one on the fly.
+GDL carries semantic descriptions, not rendering instructions. "A weathered oak door with iron bands" — not vertex buffers, not sprite coordinates, not CSS. The client decides how to present it. A text client prints the description. A 3D client assembles a door from its built-in asset library. A client with GenAI generates one on the fly.
 
-Second Life got this right with parametric prims — 50 bytes of shape parameters instead of megabytes of mesh data. glTF got it right for transmission (GPU-ready buffers). WDP sits one level higher: semantic description that any renderer can interpret.
+Second Life got this right with parametric prims — 50 bytes of shape parameters instead of megabytes of mesh data. glTF got it right for transmission (GPU-ready buffers). GDL sits one level higher: semantic description that any renderer can interpret.
 4. Progressive Enhancement, Not Multiple Representations
 
 The domain sends one description. Richer clients extract more from it. A text client uses name and description. A 2D client adds position and appearance.shape. A 3D client adds appearance.assets for custom models. Same payload, different extraction depths.
@@ -36,10 +36,10 @@ The domain sends one description. Richer clients extract more from it. A text cl
 This is HTML's model. One document, many renderers. Not "here's the text version, here's the 2D version, here's the 3D version." That doesn't scale — domains would need to author three descriptions for every entity.
 5. Optimize for the Consumer
 
-glTF's tagline is "the JPEG of 3D." It succeeded by optimizing for the renderer, not the authoring tool. WDP optimizes for the client, not the domain. Descriptions are structured for fast parsing, progressive extraction, and incremental updates. The domain does extra work once; thousands of clients benefit.
+glTF's tagline is "the JPEG of 3D." It succeeded by optimizing for the renderer, not the authoring tool. GDL optimizes for the client, not the domain. Descriptions are structured for fast parsing, progressive extraction, and incremental updates. The domain does extra work once; thousands of clients benefit.
 6. The Simpler System Wins
 
-HTTP beat CORBA. JSON beat XML. HTML beat SGML. In every case, the simpler format won because more people could implement it correctly. A WDP client should be buildable in a weekend. The minimum viable client is a text renderer that prints names, descriptions, and affordance menus. Everything beyond that is progressive enhancement.
+HTTP beat CORBA. JSON beat XML. HTML beat SGML. In every case, the simpler format won because more people could implement it correctly. A GDL client should be buildable in a weekend. The minimum viable client is a text renderer that prints names, descriptions, and affordance menus. Everything beyond that is progressive enhancement.
 Core Model
 
 Eight concepts: regions, entities, affordances, appearance, panels, themes, spatial layers, and input streams.
@@ -47,7 +47,7 @@ Regions
 
 A region is a spatial container. It's the "page" — the top-level context that a client loads and renders. A dungeon room, a forest clearing, a city block, a spaceship interior. Regions connect to other regions through portals.
 
-A region is a Leden object. Observing it gives you WDP content — a snapshot of the region's current state, followed by a delta stream of changes.
+A region is a Leden object. Observing it gives you GDL content — a snapshot of the region's current state, followed by a delta stream of changes.
 
 Region:
   name: "The Rusty Anchor"
@@ -75,7 +75,7 @@ name	Yes	Display name
 description	Yes	Text description — the universal fallback
 spatial	No	How positions work (see below)
 ambient	No	Environmental properties
-theme	No	Visual identity and mood (see WDS)
+theme	No	Visual identity and mood (see GDL-style)
 layers	No	Dense spatial data — terrain, tilemaps, voxels, collision geometry
 physics	No	Physics parameters for client-side simulation
 comfort	No	Immersive comfort hints (locomotion modes, vignette settings)
@@ -171,11 +171,11 @@ Well-known properties let clients build smart UIs without domain-specific code. 
 Property semantics convention: numeric properties that represent a bounded value use `X` + `X_max` naming. Values are always absolute, never percentages. `health: 30` means 30 hit points, not 30%. `health` without `health_max` means the maximum is unknown — the client shows the number but can't render a bar. This matters for cross-domain consistency: two domains using `health` to mean different things (absolute vs. percentage vs. armor-adjusted) would break the smart UI promise.
 Affordances
 
-Affordances are what make WDP interactive. They answer: "what can I do here?"
+Affordances are what make GDL interactive. They answer: "what can I do here?"
 
-This is HATEOAS applied to virtual worlds. In REST, the server response tells you what actions are available via links and forms. In WDP, the entity description tells you what actions are available via affordances. The client doesn't need compiled-in knowledge of what's possible — the domain tells it, per entity, right now.
+This is HATEOAS applied to virtual worlds. In REST, the server response tells you what actions are available via links and forms. In GDL, the entity description tells you what actions are available via affordances. The client doesn't need compiled-in knowledge of what's possible — the domain tells it, per entity, right now.
 
-LambdaMOO discovered this in 1990: verbs live on objects and are discovered at runtime. "Take ball" works because the ball has a take verb. WDP formalizes the same pattern.
+LambdaMOO discovered this in 1990: verbs live on objects and are discovered at runtime. "Take ball" works because the ball has a take verb. GDL formalizes the same pattern.
 
 Affordance:
   verb: "attack"
@@ -290,7 +290,7 @@ Assets are content-addressed blobs in Leden's content store. The client fetches 
 If the client can't fetch an asset (network issue, unsupported format), it falls back to hints. If no hints, it falls back to kind + description. The layers degrade gracefully. Always.
 Panels
 
-Some domain UI doesn't map to entities in a region — skill trees, faction reputation, crafting grids, build mode toolbars, quest logs. These aren't world description. But punting them to "each domain builds custom UI" defeats the whole point of WDP.
+Some domain UI doesn't map to entities in a region — skill trees, faction reputation, crafting grids, build mode toolbars, quest logs. These aren't world description. But punting them to "each domain builds custom UI" defeats the whole point of GDL.
 
 I decided to use HTML. Not invent a new UI description language — the web already has one with 30 years of tooling, accessibility support, and rendering engines. A panel is a sandboxed HTML fragment that a domain sends for non-spatial UI.
 
@@ -311,9 +311,9 @@ fallback	Yes	Plain text summary — always renderable
 content_type	Yes	MIME type of the content (text/html for now)
 content	Yes	Content-addressed blob reference
 
-The content is sandboxed HTML/CSS — no JavaScript, no external resources. Think HTML email, not a web app. The domain authors a self-contained fragment. The client renders it in an iframe with sandbox restrictions or shadow DOM. Interaction flows through WDP affordances embedded in the HTML as data attributes, not through JS event handlers.
+The content is sandboxed HTML/CSS — no JavaScript, no external resources. Think HTML email, not a web app. The domain authors a self-contained fragment. The client renders it in an iframe with sandbox restrictions or shadow DOM. Interaction flows through GDL affordances embedded in the HTML as data attributes, not through JS event handlers.
 
-A text client renders the fallback string. A web-based client renders the HTML natively. A native client can use a lightweight HTML renderer or fall back to the text. Same progressive enhancement as everything else in WDP.
+A text client renders the fallback string. A web-based client renders the HTML natively. A native client can use a lightweight HTML renderer or fall back to the text. Same progressive enhancement as everything else in GDL.
 
 Why HTML and not a structured schema: I considered a custom layout language. But any layout language rich enough for skill trees and crafting grids would end up being a bad version of HTML. CSS already solves layout. HTML already has form elements. Screen readers already understand both. The alternative is years of design work to build something worse than what exists.
 
@@ -331,12 +331,12 @@ Panel interaction convention: clickable elements in panel HTML use data attribut
 
 The client listens for click events on elements with `data-wdp-verb`, extracts the parameters (any attribute starting with `data-wdp-param-`), and calls the referenced Leden method. The domain receives the call and validates. Results come back through panel_update in the observation stream.
 
-This means panel HTML is a layout and display concern. Interactivity is WDP's job — the client IS the JavaScript runtime. CSS handles hover states, transitions, and visual feedback. The domain authors HTML the same way you'd author an HTML email with a few clickable buttons.
+This means panel HTML is a layout and display concern. Interactivity is GDL's job — the client IS the JavaScript runtime. CSS handles hover states, transitions, and visual feedback. The domain authors HTML the same way you'd author an HTML email with a few clickable buttons.
 Theme
 
-Regions carry a theme field for visual identity — the domain's way of saying "this place should feel like this." The full theme system is specified separately in [WDS.md](WDS.md) (World Description Style), the same way CSS is a separate spec from HTML. They evolve independently: WDP's structure is stable, styling evolves fast. A WDP implementation is complete without WDS — it just uses client defaults.
+Regions carry a theme field for visual identity — the domain's way of saying "this place should feel like this." The full theme system is specified separately in [GDL-style.md](GDL-style.md), the same way CSS is a separate spec from HTML. They evolve independently: GDL's structure is stable, styling evolves fast. A GDL implementation is complete without GDL-style — it just uses client defaults.
 
-Brief summary of what WDS provides:
+Brief summary of what GDL-style provides:
 
 - Design tokens. Flat key-value pairs (`color.primary: #2a1a0e`, `atmosphere.fog_density: 0.4`, `entity.hostile_tint: #ff2200`) that every client type can map to its rendering system. Text clients map colors to ANSI. 3D clients map atmosphere tokens to shaders. No selector syntax, no specificity bugs.
 
@@ -346,7 +346,7 @@ Brief summary of what WDS provides:
 
 - Three-level cascade. Domain → region → entity. Domain is the brand. Region is the scene. Entity is the individual. Last writer wins.
 
-See [WDS.md](WDS.md) for the full design: token categories, cascade rules, stylesheet constraints, security model, and per-client-type consumption examples.
+See [GDL-style.md](GDL-style.md) for the full design: token categories, cascade rules, stylesheet constraints, security model, and per-client-type consumption examples.
 Fidelity Negotiation
 
 The client declares what it can handle. The domain uses this to tailor its descriptions.
@@ -389,10 +389,10 @@ client_viewport:
   center: [120, 85]
   radius: 25
 
-The viewport is a circle (center + radius) regardless of spatial model. The domain sends entities within the radius, plus a buffer for smooth scrolling. Entity enter/exit deltas fire as entities cross the viewport boundary, not the region boundary. This is how WDP scales to large regions without sending 10,000 entities on initial snapshot.
+The viewport is a circle (center + radius) regardless of spatial model. The domain sends entities within the radius, plus a buffer for smooth scrolling. Entity enter/exit deltas fire as entities cross the viewport boundary, not the region boundary. This is how GDL scales to large regions without sending 10,000 entities on initial snapshot.
 Integration with Leden
 
-WDP is a content schema. Leden is the protocol. Here's how they compose.
+GDL is a content schema. Leden is the protocol. Here's how they compose.
 Session Setup
 
     Client connects to domain's bootstrap address (Leden Layer 0-1)
@@ -405,7 +405,7 @@ Region Entry
 
     Client receives a region object reference (from greeter, from a portal, from another region)
     Client calls Observe(region_ref) (Leden observation)
-    Domain responds with a region snapshot — the full WDP region description
+    Domain responds with a region snapshot — the full GDL region description
     Client renders the region
     Observation stream begins — client receives deltas
 
@@ -420,7 +420,7 @@ entity_update	Ref + changed fields	Entity properties change
 affordance_update	Ref + new affordance list	Available actions change
 ambient_update	Changed ambient fields	Environment changes
 panel_update	Panel id + new content hash	Domain UI changes
-theme_update	Changed tokens and/or hints	Visual identity changes (see WDS)
+theme_update	Changed tokens and/or hints	Visual identity changes (see GDL-style)
 layer_update	Layer id + changed chunk hashes	Terrain/block modifications
 
 These map directly to Leden observation deltas. The region object is the publisher. Subscribed clients are the observers. Leden handles fan-out, backpressure, sequence numbering, and reconnection.
@@ -459,11 +459,11 @@ For real-time interaction (movement, combat), the round-trip through "affordance
 
 Affordances with `predicted: true` tell the client it can apply the expected result locally before the server confirms. The client acts on the optimistic result immediately and reconciles when the authoritative update arrives through the observation stream.
 
-What the client predicts is the client's problem. WDP doesn't carry prediction logic — that would violate "description is not behavior." The `predicted` flag is permission: "this action's effect is predictable enough that you should try." A movement affordance is predictable. A "open mysterious chest" affordance is not.
+What the client predicts is the client's problem. GDL doesn't carry prediction logic — that would violate "description is not behavior." The `predicted` flag is permission: "this action's effect is predictable enough that you should try." A movement affordance is predictable. A "open mysterious chest" affordance is not.
 
 If the server result differs from the prediction, the client snaps to the authoritative state. Smooth reconciliation (interpolation, rollback) is a client rendering concern. The domain sends truth. The client makes it feel good.
 
-This is the same model every multiplayer game uses. The difference is that WDP makes it opt-in per affordance rather than a global client assumption. A domain with deterministic physics marks movement as predicted. A domain with complex server-side logic marks nothing as predicted. The client adapts.
+This is the same model every multiplayer game uses. The difference is that GDL makes it opt-in per affordance rather than a global client assumption. A domain with deterministic physics marks movement as predicted. A domain with complex server-side logic marks nothing as predicted. The client adapts.
 Input Streams
 
 Affordances model discrete actions: "attack", "open door", "move to [5, 3]". Some interactions are continuous high-frequency data that doesn't fit the request-response pattern: player movement (gamepad stick at 60Hz), mouse aim, VR head/hand pose at 90Hz. Issuing an affordance call per input frame is too heavyweight — that's 90 method calls per second per tracked point.
@@ -548,7 +548,7 @@ Layers also carry physics-relevant data. A platformer's mesh_2d layer defines co
 Spatial layers don't replace entities. The terrain is a layer. The goblin standing on the terrain is an entity. A tree might be either — a decorative tree in a forest is part of a layer, a specific tree the player can chop down is an entity. The domain decides the boundary.
 Physics Parameters
 
-Some domains need clients to run local physics — platformers, racing, VR hand interaction, any game where frame-precise movement matters. "Description is not behavior" means WDP doesn't carry physics logic. But physics parameters (gravity, friction, collision rules) are description — they describe the physical properties of the space, not what happens in it.
+Some domains need clients to run local physics — platformers, racing, VR hand interaction, any game where frame-precise movement matters. "Description is not behavior" means GDL doesn't carry physics logic. But physics parameters (gravity, friction, collision rules) are description — they describe the physical properties of the space, not what happens in it.
 
 Regions can declare physics parameters:
 
@@ -635,7 +635,7 @@ Affordance:
 
 Haptic fields are hints. VR clients with haptic controllers apply them. All other clients ignore them. A text client rendering a proximity affordance shows it as a regular menu item.
 
-Immersive clients are just clients. They render WDP regions, observe entities, call affordance methods. The immersive extensions (input streams, proximity mode, physics, comfort, haptics) are all progressive enhancements. A domain that sends them works fine with a non-immersive client — the extensions are ignored. A VR client connecting to a non-immersive domain works fine too — it uses standard 3D rendering and falls back to menu-based affordances.
+Immersive clients are just clients. They render GDL regions, observe entities, call affordance methods. The immersive extensions (input streams, proximity mode, physics, comfort, haptics) are all progressive enhancements. A domain that sends them works fine with a non-immersive client — the extensions are ignored. A VR client connecting to a non-immersive domain works fine too — it uses standard 3D rendering and falls back to menu-based affordances.
 Progressive Rendering Example
 
 The same region data, four clients:
@@ -676,31 +676,31 @@ Same tavern, but you're standing in it. Head tracking renders the scene at 90Hz 
 
 Uses: everything above + orientation, input streams (head, hands), physics parameters, proximity affordances, haptic hints, comfort settings
 
-Same WDP payload. Zero domain-specific client code.
+Same GDL payload. Zero domain-specific client code.
 The Vocabulary
 
-WDP defines mechanisms (kinds, shapes, materials, categories). The initial terms are listed above in their respective sections. The vocabulary is extensible without protocol changes — new terms are just new strings. Clients that don't recognize a term fall back to the category or ignore it.
+GDL defines mechanisms (kinds, shapes, materials, categories). The initial terms are listed above in their respective sections. The vocabulary is extensible without protocol changes — new terms are just new strings. Clients that don't recognize a term fall back to the category or ignore it.
 
 Over time, commonly-used terms will become de facto standards. When 200 domains all use shape: humanoid, that's a standard. No committee needed. The same way HTML elements standardized through browser adoption, not W3C edicts (the edicts came after).
 
-Domain unions (from the existing Midgard design) accelerate vocabulary convergence. A union of 50 domains that all agree on the same entity types, appearance hints, and affordance verbs creates a pocket of perfect interop. WDP doesn't need to know unions exist — it just sees consistent vocabulary use.
+Domain unions (from the Allgard federation model) accelerate vocabulary convergence. A union of 50 domains that all agree on the same entity types, appearance hints, and affordance verbs creates a pocket of perfect interop. GDL doesn't need to know unions exist — it just sees consistent vocabulary use.
 What This Doesn't Cover
 
-Client UI chrome. WDP describes the world and domain panels, not the client's own interface. Health bars, minimaps, hotkey bindings, settings screens — these are client concerns. The client builds its chrome from entity data (health from properties, minimap from region layout) and its own preferences. Domain-specific UI (skill trees, crafting grids) goes through panels.
+Client UI chrome. GDL describes the world and domain panels, not the client's own interface. Health bars, minimaps, hotkey bindings, settings screens — these are client concerns. The client builds its chrome from entity data (health from properties, minimap from region layout) and its own preferences. Domain-specific UI (skill trees, crafting grids) goes through panels.
 
-Physics simulation. WDP provides physics parameters (gravity, friction, collision rules) and spatial layers (collision geometry). The client runs local physics against these. But the physics engine itself is the client's choice — WDP doesn't specify simulation algorithms, integrator types, or solver iterations. Two clients simulating the same parameters may produce slightly different results. The domain is authoritative; clients predict and reconcile.
+Physics simulation. GDL provides physics parameters (gravity, friction, collision rules) and spatial layers (collision geometry). The client runs local physics against these. But the physics engine itself is the client's choice — GDL doesn't specify simulation algorithms, integrator types, or solver iterations. Two clients simulating the same parameters may produce slightly different results. The domain is authoritative; clients predict and reconcile.
 
-Animation. WDP doesn't describe skeletal rigs or animation state machines. The posture hint covers coarse state ("crouching", "attacking", "idle"). Smooth animation is the client's problem, driven by posture changes in the observation stream.
+Animation. GDL doesn't describe skeletal rigs or animation state machines. The posture hint covers coarse state ("crouching", "attacking", "idle"). Smooth animation is the client's problem, driven by posture changes in the observation stream.
 
-Audio design. WDP carries ambient properties and sound asset references. Spatial audio mixing, music systems, and sound design are client-side. The domain says "there's a fire here." The client decides what fire sounds like.
+Audio design. GDL carries ambient properties and sound asset references. Spatial audio mixing, music systems, and sound design are client-side. The domain says "there's a fire here." The client decides what fire sounds like.
 
-Scripting. No behavior in the description. Ever. Raido handles scripting. WDP handles description. The boundary is load-bearing.
+Scripting. No behavior in the description. Ever. Raido handles scripting. GDL handles description. The boundary is load-bearing.
 
-Entity internals. WDP describes what an entity looks like from outside. Its internal state machine, its Raido scripts, its capabilities graph — all opaque. The domain exposes what it wants through properties and affordances.
+Entity internals. GDL describes what an entity looks like from outside. Its internal state machine, its Raido scripts, its capabilities graph — all opaque. The domain exposes what it wants through properties and affordances.
 
-Data validation. WDP doesn't specify validation rules. A domain might send `health: 50, health_max: 30` or a position outside the region's bounds. Domains are responsible for consistency. Clients should be tolerant — display what you can, clamp out-of-bounds values, don't crash on contradictions. Postel's law: be conservative in what you send, liberal in what you accept.
+Data validation. GDL doesn't specify validation rules. A domain might send `health: 50, health_max: 30` or a position outside the region's bounds. Domains are responsible for consistency. Clients should be tolerant — display what you can, clamp out-of-bounds values, don't crash on contradictions. Postel's law: be conservative in what you send, liberal in what you accept.
 
-Panel security. Panels are sandboxed: no JavaScript, no external resource loading. Clients render panels in sandboxed iframes (`sandbox="allow-same-origin"`) with a Content-Security-Policy that blocks external fetches. A malicious domain cannot use panels to exfiltrate data, track users, or escape the sandbox. For stylesheet security, see [WDS.md](WDS.md).
+Panel security. Panels are sandboxed: no JavaScript, no external resource loading. Clients render panels in sandboxed iframes (`sandbox="allow-same-origin"`) with a Content-Security-Policy that blocks external fetches. A malicious domain cannot use panels to exfiltrate data, track users, or escape the sandbox. For stylesheet security, see [GDL-style.md](GDL-style.md).
 Resolved
 
 Regions are not entities. A region is a container. Entities are contents. Regions have metadata (name, description, ambient, spatial model). Entities have affordances and appearance. Mixing them creates ambiguity about what "observing an entity" means vs. "observing a region." Clean separation.
@@ -711,7 +711,7 @@ One spatial model per region. A region doesn't present itself differently to dif
 
 Affordances over methods. The client doesn't call entity methods directly. It discovers affordances, which contain method references. This indirection is the key to client-domain decoupling. A domain can change its internal method structure without breaking clients — it just updates the affordance's method field. Clients never hardcode method names.
 
-No inheritance in the entity model. USD and Roblox use class hierarchies. ECS uses composition. WDP uses composition — an entity is a bag of kind + properties + affordances + appearance. No "class GenericSword with subclass Flamebrand." Inheritance creates coupling between entity definitions that breaks across domain boundaries. Composition lets two domains agree on individual properties without agreeing on a type hierarchy.
+No inheritance in the entity model. USD and Roblox use class hierarchies. ECS uses composition. GDL uses composition — an entity is a bag of kind + properties + affordances + appearance. No "class GenericSword with subclass Flamebrand." Inheritance creates coupling between entity definitions that breaks across domain boundaries. Composition lets two domains agree on individual properties without agreeing on a type hierarchy.
 
 Content-addressed assets, not URLs. Assets are identified by content hash, not location. This means: deduplication across domains is free, integrity verification is free, and caching is trivial. Two domains that independently use the same goblin sprite share the content hash. The client fetches it once. This falls directly out of Leden's content store.
 
@@ -723,20 +723,20 @@ Observation has three tiers. Region observation for structural changes (entity a
 
 Domain-specific UI uses HTML panels. Domains send sandboxed HTML/CSS fragments for non-spatial UI (skill trees, crafting grids, faction screens). No JavaScript, no external resources. Web clients render natively, text clients show a plain text fallback. I chose HTML over a custom schema because any layout language rich enough for real UI would end up being a bad version of HTML. See the Panels section above.
 
-Visual identity is a separate spec (WDS). Design tokens for world styling, CSS stylesheets for panels and web UI, three-level cascade (domain → region → entity). Separated from WDP because styling evolves faster than structure and has a different implementer audience. A WDP implementation is complete without WDS. See [WDS.md](WDS.md).
+Visual identity is a separate spec (GDL-style). Design tokens for world styling, CSS stylesheets for panels and web UI, three-level cascade (domain → region → entity). Separated from GDL because styling evolves faster than structure and has a different implementer audience. A GDL implementation is complete without GDL-style. See [GDL-style.md](GDL-style.md).
 
 VR/AR/XR is supported through general-purpose extensions, not a VR-specific protocol. Entity orientation, input streams (continuous client→server data), proximity affordances, spatial layers (dense geometry), physics parameters, and immersive fidelity fields. All are progressive enhancements — a VR client connecting to a non-VR domain works fine (menu affordances, no hand physics), and a non-VR client connecting to a VR domain works fine (ignores input stream endpoints, uses instant/targeted affordances). The immersive capabilities are the same mechanisms needed for platformers, racing games, and any real-time physics game.
 
 Dense worlds use spatial layers. Tilemaps, voxel chunks, heightmaps, and collision meshes sit alongside entities in a region. Entities are sparse (things you interact with). Layers are dense (the world itself). A Minecraft chunk is a voxel layer. A platformer level is a mesh_2d layer. A terrain system is a heightmap layer. Layers are content-addressed and chunked for viewport-based streaming.
 
-Large regions use viewport filtering. The client reports its viewport (center + radius), and the domain only sends entities within that area. Entity enter/exit deltas fire at the viewport boundary. This scales WDP to open-world regions without dumping 10,000 entities on initial snapshot.
+Large regions use viewport filtering. The client reports its viewport (center + radius), and the domain only sends entities within that area. Entity enter/exit deltas fire at the viewport boundary. This scales GDL to open-world regions without dumping 10,000 entities on initial snapshot.
 Deferred
 
-    Wire format. Binary vs text. Depends on Leden's wire format decision. WDP is a schema — the encoding is separate.
+    Wire format. Binary vs text. Depends on Leden's wire format decision. GDL is a schema — the encoding is separate.
     Vocabulary registry. A formal list of kinds, shapes, materials, and categories with semantic definitions. Needed before implementation, not before design.
     LOD (Level of Detail). Distant entities could be sent with less detail. The mechanism exists (fidelity negotiation + filtered observation), but the specific LOD policy is implementation-level.
     Accessibility. Screen reader hints, colorblind palettes, motor-impairment interaction modes. Important, but a layer on top of the base protocol, not a change to it.
-    Versioning. WDP will evolve. Version negotiation should follow Leden's model (version handshake at session start, backward-compatible additions don't require version bumps). Details after v1 is stable.
-    Entity visibility. Fog of war needs a visibility field on entities: visible, last_known (stale data with timestamp), hidden. The domain controls which entities the client knows about. last_known entities carry stale data that the client renders differently (grayed out, question mark). Deferred because most Midgard use cases don't need fog of war, and the viewport filtering mechanism handles the common case of "don't show what's far away."
-    Event streams. WDP is state (current properties), not events (what happened). A combat log needs "player X hit boss for 500 damage with Fireball" — that's an event, not a state change. A parallel event channel alongside the observation stream would carry happenings. Deferred because panels can show a combat log (updated via panel_update), which covers the common case without a new concept.
-    Time-sequenced content. Rhythm games and cutscenes need pre-loaded event sequences with precise timestamps. The observation model is push-based (server sends updates as they happen), not time-indexed. This is a fundamentally different content type — probably a separate spec rather than a WDP extension. Deferred.
+    Versioning. GDL will evolve. Version negotiation should follow Leden's model (version handshake at session start, backward-compatible additions don't require version bumps). Details after v1 is stable.
+    Entity visibility. Fog of war needs a visibility field on entities: visible, last_known (stale data with timestamp), hidden. The domain controls which entities the client knows about. last_known entities carry stale data that the client renders differently (grayed out, question mark). Deferred because most use cases don't need fog of war, and the viewport filtering mechanism handles the common case of "don't show what's far away."
+    Event streams. GDL is state (current properties), not events (what happened). A combat log needs "player X hit boss for 500 damage with Fireball" — that's an event, not a state change. A parallel event channel alongside the observation stream would carry happenings. Deferred because panels can show a combat log (updated via panel_update), which covers the common case without a new concept.
+    Time-sequenced content. Rhythm games and cutscenes need pre-loaded event sequences with precise timestamps. The observation model is push-based (server sends updates as they happen), not time-indexed. This is a fundamentally different content type — probably a separate spec rather than a GDL extension. Deferred.
