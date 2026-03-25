@@ -50,6 +50,14 @@ An Owner is *not* a person. A person may control multiple Owners. An automated s
 
 Every Owner has a home domain — the domain that is authoritative for their identity and primary inventory. An Owner can operate in other domains, but their home domain is the root of trust for their identity.
 
+The home domain is where your stuff lives by default. When you visit another domain, objects can transfer there — but the home domain is always the fallback:
+
+- **Domain goes dark.** Objects on a visited domain that goes offline are recoverable through the escrow mechanism (see [transfer routing](../allgard/README.md#cross-domain-transfer-routing)). Objects automatically return to the home domain after the escrow timeout.
+- **Player logs off.** The visited domain hosts your transferred objects while you're gone. If the visited domain goes down before you return, the home domain's last-known state is the recovery point. Objects that transferred out have Proof chains — the home domain can reconstruct what left and negotiate return.
+- **Home domain goes down.** This is the hard case. Your home domain is your root of trust. If it's permanently gone, your identity and non-transferred objects go with it. Mitigation: home domain backup and migration. A player can designate a secondary home domain that mirrors their identity and inventory Proof chains. This is a bilateral agreement between the player and the backup domain — not a protocol feature, but a pattern the protocol supports through Grants.
+
+The home domain is the player's anchor. Federation works because you always have somewhere to come back to.
+
 ## Domain
 
 An authority boundary. A gard that hosts Objects and enforces local rules.

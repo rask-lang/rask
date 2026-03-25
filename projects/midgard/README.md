@@ -50,9 +50,9 @@ Between domains with established bilateral agreements and standard asset types, 
 
 1. Player requests transfer to Domain B (walks to a portal, uses a menu, whatever the UI is)
 2. "Travel to Ironhold?" → yes
-3. Player arrives. Character, inventory, currency transferred. Currency auto-converted at the agreed bilateral rate. Standard items at full fidelity.
+3. Player arrives. Character, inventory, currency transferred. Currency auto-converted at the agreed bilateral rate. Standard items at full fidelity. Exotic items travel sealed — safe in inventory, usable when you return home.
 
-The pre-staging, proof verification, and conservation law checks happen underneath. The player doesn't see them because nothing changed. This is the common case within the [founding cluster](../allgard/README.md#founding-cluster) and between any domains with established agreements.
+The pre-staging, proof verification, and conservation law checks happen underneath. The player doesn't see them because nothing is lost. This is the common case within the [founding cluster](../allgard/README.md#founding-cluster) and between any domains with established agreements.
 
 **During transfer:** The player is briefly in limbo — not on A, not yet on B. This takes 1-3 round trips over Leden (with promise pipelining, often just one). On a typical connection that's sub-second. The UI shows a transition screen.
 
@@ -63,7 +63,7 @@ The compatibility report appears when something would change:
 | Trigger | What the player sees |
 |---------|---------------------|
 | First visit to an unknown domain | Full compatibility report — what transfers, what downgrades, what's rejected |
-| Exotic items in inventory | Notification for non-standard items: "Flamebrand will downgrade to magic sword (imported)" |
+| Exotic items in inventory | Notification for sealed items: "Flamebrand will travel sealed — can't use on Ironhold" |
 | Domain trust below threshold | Warning: "This domain has low reputation. Proceed?" |
 | Compatibility changed since last visit | Delta report: "Ironhold no longer accepts cursed items" |
 
@@ -71,13 +71,13 @@ Example full report (shown for first visits or when items are affected):
 
 | Object | Result |
 |--------|--------|
-| Character (Lv 30 Ranger) | Accepted — full fidelity |
-| Iron Sword | Accepted — full fidelity |
-| Flamebrand of the Seventh Circle | Downgraded → "magic sword (imported)" |
-| Cursed Amulet | Rejected — incompatible type |
-| 200 gold (Domain A) | Accepted → 180 gold (Domain B), 10% exchange fee |
+| Character (Lv 30 Ranger) | Full fidelity |
+| Iron Sword | Full fidelity |
+| Flamebrand of the Seventh Circle | Sealed — can't use on Ironhold, safe in inventory |
+| Cursed Amulet | Sealed — can't use on Ironhold, safe in inventory |
+| 200 gold (Domain A) | Converted → 180 gold (Domain B), 10% exchange fee |
 
-The player sees this *before committing*. "You'll arrive with these items. The Flamebrand will downgrade. The amulet won't transfer. Proceed?"
+Nothing is lost. The player sees this *before committing*. "The Flamebrand and Cursed Amulet won't work on Ironhold — they'll travel sealed. Proceed?"
 
 ### Pre-Staging (Protocol)
 
@@ -98,12 +98,18 @@ The difference is what the player sees. Between established domains with standar
 A sword on Domain A is not automatically a sword on Domain B. Domain B decides how to interpret incoming objects:
 
 - **Full fidelity**: Domain B recognizes the asset type and maps it 1:1. An iron sword is an iron sword.
-- **Downgrade**: Domain B doesn't support the specific type but has a generic equivalent. A "Flamebrand of the Seventh Circle" becomes "magic sword (imported)."
-- **Rejection**: Domain B doesn't accept the asset type at all. The object stays on A.
+- **Sealed transfer**: Domain B doesn't recognize the type, but carries it faithfully as an opaque sealed object. The player can't use it on Domain B, but it persists exactly as-is. When the player returns home or visits a domain that recognizes the type, the item is intact. Like carrying a locked box through customs.
+- **Stays home**: The item doesn't travel. It remains in the player's inventory on their home domain, accessible when they return.
+
+No downgrades. A "Flamebrand of the Seventh Circle" never becomes "magic sword (imported)." That destroys player trust and makes people never leave their home domain — which kills federation. You either support the item fully, carry it sealed, or leave it behind.
+
+**Why sealed transfer matters.** It means a player can travel anywhere without worrying about their inventory. Standard items work. Exotic items come along as sealed objects — useless on the visited domain, but safe. The player's stuff is never damaged by traveling. This is the UX that makes people willing to cross domain boundaries.
+
+Sealed objects are content-addressed blobs with type tags — they already have all the properties needed. The visited domain doesn't need to understand the type to host the bytes. It just needs to enforce the conservation laws on the sealed object (ownership, transfer, no duplication).
 
 This is the honest version of the "metaverse interoperability" problem. Universal asset fidelity requires universal agreement on asset types — which requires either a central authority or a standard that everyone implements identically. Neither is realistic.
 
-What works: **bilateral asset agreements**. Domain A and B agree on a mapping for specific types they both care about. Crafting materials, currency, basic equipment — these get explicit bilateral mappings. Exotic items get downgraded or rejected. It's messy, imperfect, and exactly how real-world trade works.
+What works: **bilateral asset agreements** for types both domains care about, plus **sealed transfer** for everything else. Crafting materials, currency, basic equipment — these get explicit bilateral mappings through [standard asset types](../allgard/README.md#founding-cluster). Exotic items travel sealed. Nothing is lost, nothing is downgraded.
 
 ### Why This Isn't "The Metaverse"
 
@@ -164,8 +170,8 @@ A guild operates across Ironhold, Meadowvale, and a new server **Stormreach**. T
 1. Guild leader creates a Grant giving the guild bank (an automated Owner) transfer authority over guild assets on each domain.
 2. A member on Stormreach requests materials from the guild bank on Meadowvale.
 3. The guild bank submits a pre-stage query to Stormreach: "5 steel bars, 2 healing potions."
-4. Stormreach responds: steel bars accepted (full fidelity), healing potions downgraded to "minor healing potion" (Stormreach has different potion tiers).
-5. Member reviews, confirms. Transfer executes. Meadowvale produces Proofs, Stormreach verifies.
+4. Stormreach responds: steel bars accepted (full fidelity), healing potions travel sealed (Stormreach has different potion tiers and doesn't recognize Meadowvale's). The member can use the steel bars immediately; the potions stay in inventory as sealed objects until the member returns to a domain that recognizes them.
+5. Member confirms. Transfer executes. Meadowvale produces Proofs, Stormreach verifies.
 6. The guild leader revokes the guild bank's Grant over retired members' items. Revocation propagates — eventually consistent, but high-value items use pessimistic liveness checks.
 
 **What Allgard provides:**

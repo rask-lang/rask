@@ -163,8 +163,8 @@ I'm not repeating that mistake. The federation infrastructure — gossip, audit 
 
 Friction only appears when something changes:
 
-- **First visit to an unknown domain.** No established bilateral agreement. The player sees a compatibility report: what transfers, what downgrades, what's rejected.
-- **Exotic items.** Non-standard assets that aren't in the bilateral agreement. The player is told what happens to them.
+- **First visit to an unknown domain.** No established bilateral agreement. The player sees a compatibility report: what transfers at full fidelity, what travels sealed.
+- **Exotic items.** Non-standard assets that will travel sealed. The player is told which items can't be used on the destination — but nothing is lost or downgraded.
 - **Trust threshold.** A domain with low reputation triggers a warning. The player decides whether to proceed.
 - **Compatibility changes.** A domain updated its asset types since the last visit. The player sees what changed.
 
