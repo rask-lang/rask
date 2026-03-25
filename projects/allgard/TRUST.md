@@ -77,59 +77,60 @@ You can't tell the difference between "B didn't know C was a fraud" and "B was i
 
 What you *can* judge is observable, verifiable behavior — before and after the fraud:
 
-**Before the introduction (due diligence):**
+**Before the introduction:**
 
-| Signal | What it tells you | Verifiable? |
-|--------|-------------------|-------------|
-| B verified C's Proofs independently | B did mechanical checking, not just social trust | Yes — B either has verification records or doesn't |
-| B had sustained bilateral history with C | B had real data to base the introduction on | Yes — transaction history is auditable |
-| B introduced C after minimal interaction | B was careless or complicit | Yes — timestamps on B↔C history vs. introduction date |
-| B introduced C at an appropriate trust level | B was calibrated, not overselling | Yes — the introduction carries a trust level |
+| Signal | What it tells you |
+|--------|-------------------|
+| B had sustained bilateral history with C | B had real data to base the introduction on — transaction timestamps are auditable |
+| B introduced C after minimal interaction | B was careless or complicit — timestamps on B↔C history vs. introduction date don't lie |
+| B introduced C at an appropriate trust level | B was calibrated, not overselling — the introduction carries a trust level |
 
 **After the fraud was discovered:**
 
-| Signal | What it tells you | Verifiable? |
-|--------|-------------------|-------------|
-| B immediately flagged C to all its introductees | B is acting in good faith, protecting the network | Yes — gossip messages are timestamped |
-| B cut off C | B isn't continuing to benefit from the relationship | Yes — observable |
-| B stayed quiet until confronted | B was hoping nobody would notice | Yes — absence of gossip is observable |
-| B continued trading with C after fraud was public | B is likely complicit | Yes — transaction history continues |
+| Signal | What it tells you |
+|--------|-------------------|
+| B immediately flagged C to all its introductees | B is acting in good faith — gossip messages are timestamped |
+| B cut off C | B isn't continuing to benefit — observable from transaction history |
+| B stayed quiet until confronted | B was hoping nobody would notice — absence of gossip is observable |
+| B continued trading with C after fraud was public | B is likely complicit — transaction history continues |
 
-This gives A enough information to calibrate its response to B without ever needing to determine whether B "knew." A domain that did thorough due diligence and responded immediately looks very different from one that rubber-stamped the introduction and went silent. The behavior pattern tells the story.
+Every signal in these tables is externally verifiable. Self-reported claims ("I checked their Proofs thoroughly") are worth nothing — B can fabricate internal records after the fact. Only signals that other domains can independently confirm count.
+
+This gives A enough information to calibrate its response to B without ever needing to determine whether B "knew." A domain that had years of history with C and responded immediately looks very different from one that introduced C after two weeks and went silent.
 
 #### Penalty Scales with Reputation
 
 A high-reputation domain that makes a bad introduction should take a bigger hit than a low-reputation one. Three reasons:
 
 1. **Greater influence.** A's decision to trust C was partly based on B's reputation. The more weight B's introduction carried, the more responsible B is for the outcome.
-2. **Greater obligation.** A trusted domain has more tools, more bilateral history, more access to audit data. It should have caught problems that a smaller domain couldn't.
+2. **Greater obligation.** A trusted domain has more history, more access to audit data. It had more opportunity to detect problems.
 3. **Greater signal.** When a highly-trusted domain makes a bad introduction, it's a stronger signal — either something is seriously wrong, or the domain is declining.
 
 But penalties that scale too steeply create a problem: **established domains stop introducing anyone.** The downside of a bad introduction is catastrophic, so the rational move is to never introduce. The network ossifies. New domains can't get in. The high-trust society becomes a closed club.
 
-The fix is to scale penalty with both reputation *and* due diligence:
+The fix is to scale penalty with both reputation *and* observable behavior:
 
-| Due diligence | High reputation introducer | Low reputation introducer |
+| Behavior (externally verifiable) | High reputation introducer | Low reputation introducer |
 |---|---|---|
-| Thorough (verified Proofs, long history, appropriate level) | Small hit — honest mistake, could happen to anyone | Minimal hit — they did what they could |
-| Minimal (quick introduction, no verification) | Large hit — should have known better | Moderate hit — careless |
-| Negligent (introduced after warnings, continued after fraud) | Severe — likely complicit | Large hit — enabling |
+| Long B↔C history, fast fraud response, appropriate trust level | Small hit — honest mistake, could happen to anyone | Minimal hit — they did what they could |
+| Short B↔C history, oversold trust level | Large hit — should have known better | Moderate hit — careless |
+| Continued trading with C after fraud, silent on gossip | Severe — likely complicit | Large hit — enabling |
 
-This means: a trusted domain that carefully vets its introductions and occasionally gets fooled takes a small, recoverable hit. A trusted domain that rubber-stamps introductions without checking gets hammered. The incentive is to *do your homework*, not to *never introduce*.
+This means: a trusted domain that had years of history with an introduction and responded immediately to fraud takes a small, recoverable hit. A trusted domain that rubber-stamped a two-week relationship and went silent gets hammered. The incentive is to *take your time*, not to *never introduce*.
 
 #### What Domains Track
-
-Mechanical, not social:
 
 | Metric | What it measures |
 |--------|-----------------|
 | Introduction success rate | % of B's introductions that resulted in valid long-term relationships |
 | Introduction failure rate | % of B's introductions that resulted in fraud or cut-off |
 | Introduction volume | How many introductions B has made (high volume + low failure = strong signal) |
-| Due diligence depth | Average verification level B performed before introducing (from auditable records) |
+| Average B↔introduced history length | How long B typically knows a domain before introducing it |
 | Response time to fraud | How quickly B flagged problems after fraud was detected in its introductions |
 
-A domain with a 95% success rate over 500 introductions is a reliable introducer. A domain with 3 introductions total tells you nothing. A domain whose last 5 introductions were all fraudulent is actively dangerous. A domain with a 90% success rate but fast response times and thorough due diligence records is honest but operating in a tough neighborhood.
+All externally verifiable from transaction records and gossip timestamps. Nothing self-reported.
+
+A domain with a 95% success rate over 500 introductions is a reliable introducer. A domain with 3 introductions total tells you nothing. A domain whose last 5 introductions were all fraudulent is actively dangerous. A domain with a 90% success rate but fast response times and long pre-introduction histories is honest but operating in a tough neighborhood.
 
 ### Why Introduce Anyone?
 
@@ -340,131 +341,141 @@ This isn't privacy for its own sake. It's efficiency — you don't always need t
 
 ## Stress Test
 
-I tried to break this model. Here's what I found — real holes, weak spots, and things that held up.
+I tried to break this model. Here's what I found.
 
-### Greeter Extraction Loop (hole — needs fix)
+### Greeter Extraction Loop (not a real attack)
 
-Strangers can do "small transfers" via the greeter. But "small" isn't defined relative to the cost of creating a new domain.
+**Attack:** Create domain, extract value at stranger level, burn identity, repeat.
 
-**Attack:** Create domain. Extract maximum value at stranger level. Burn identity. Repeat. No reputation needed. If stranger-level extraction exceeds the cost of a new identity (nearly zero — a VM and a key pair), the attack is profitable.
+**Why it doesn't work:** What value? A stranger connects to a greeter. The greeter gives observation capabilities and a transfer inbox. The stranger can *offer* things to the domain. The domain decides whether to accept. A domain has no reason to hand value to a stranger for free.
 
-**Fix:** Greeter-level transfers must be net-negative or net-zero for the stranger. Concrete options:
+The transfer inbox lets a stranger submit transfers — but [Conservation Law 3](CONSERVATION.md) requires value in = value out. A stranger can't receive more than they give. If they have nothing to give (brand-new domain, nothing minted), they can only observe.
 
-1. **Stranger transactions require a counterparty deposit.** The stranger puts up value before receiving value. The deposit is small, but it must exceed the cost of a new identity. This isn't "stake-at-risk with real money" — it's value the stranger already holds from legitimate minting in their own domain. A brand-new domain with nothing minted has nothing to deposit, so it can only *observe* and *sell*, not *buy*.
-2. **Asymmetric greeter limits.** Strangers can export (sell to the domain) but cannot import (buy from the domain) above a minimal threshold. This means: the only way to extract value at stranger level is to provide something the domain values. Value extraction requires value creation.
-3. **Greeter interactions are loss-limited by design.** The domain configures a maximum cumulative loss it's willing to absorb from all stranger interactions combined per time period. Once hit, the greeter stops accepting stranger transfers. This is a budget, not a per-transaction limit.
+This is a non-attack. The greeter is already safe by construction — the domain controls what it gives, and the conservation laws prevent something-for-nothing.
 
-I think option 2 is the cleanest. It mirrors real life: a stranger can offer you services, but you don't hand them your wallet.
+### Patient Sybil Coordination (accepted cost — every network has this)
 
-### Due Diligence Verifiability (hole — needs honesty)
+**Attack:** 100 domains, each builds reputation over 6 months with legitimate behavior. Coordinated attack on day 181.
 
-The penalty matrix claims to measure "due diligence depth." But most due diligence signals are self-reported. B can claim "I verified C's Proofs" without actually doing it, and fabricate records after the fact.
+**How every network handles this:** They don't prevent it. They budget for it.
 
-**Externally verifiable signals:**
+Banks lose billions annually to fraud. Credit card companies build fraud losses into interchange fees. Insurance companies have actuarial tables. Every trust network in human history has accepted that some fraction of participants will defect. The goal isn't zero fraud — it's keeping expected losses below the value the network creates.
 
-| Signal | Why it's verifiable |
-|--------|-------------------|
-| Duration of B↔C relationship | Transaction timestamps in bilateral history |
-| Trust level assigned to introduction | Carried in the introduction message itself |
-| Response time after fraud | Gossip messages are timestamped |
-| B cut off C after fraud | Absence of further transactions is observable |
+What this trust model does:
+- **Makes the attack expensive.** 6 months × 100 domains of real infrastructure and real trading is a real cost.
+- **Bounds the damage per domain.** Trust levels limit how much any single domain can extract. A domain with 6 months of history doesn't get unlimited credit — it gets limits proportional to its demonstrated history.
+- **Makes coordinated defection detectable.** Transparency means 100 domains going dark is visible. The network can respond — clawbacks (see [Dying Domain Endgame](#dying-domain-endgame)), introduction chain analysis, reputation downgrades for introducers.
+- **Makes recovery automatic.** Cut off the defectors, downgrade their introducers, continue. The network doesn't need to "fix" anything — the defectors burned their own positions.
 
-**Not externally verifiable:**
+The remaining question is whether the expected payout exceeds the cost. The trust model's job is to push that ratio as far toward "not worth it" as possible. It can't push it to zero. No system can.
 
-| Signal | Why not |
-|--------|---------|
-| B verified C's Proofs | Internal to B's process. B can claim anything. |
-| B checked C's audit logs | Same — internal to B. |
-| B performed graph analysis on C | Internal. |
+### Introduction Laundering via Cutouts (detectable — graph is transparent)
 
-**Fix:** The spec should weight the penalty matrix toward externally verifiable signals. The duration of B↔C history before introduction and B's response speed after fraud are strong, unforgeable indicators. "B claims to have verified Proofs" is not.
+**Attack:** B introduces legitimate C. B's sock puppet D befriends C independently. C introduces D. D defrauds everyone. C takes the hit, B is untouched.
 
-### Patient Sybil Coordination (weak spot — mitigated, not solved)
+I initially called this "hard to fix." It's not — because the introduction graph is transparent.
 
-**Attack:** 100 domains, each builds reputation over 6 months with legitimate behavior. Coordinated attack on day 181. Each extracts maximum value and goes dark.
+**Every introduction is a public record.** The full chain is visible: B introduced C, C introduced D, D defrauded everyone. Any domain can compute: "what fraction of downstream fraud traces back through B's introduction chains?" One incident is noise. A pattern is signal.
 
-This doesn't require a nation-state. One person with patience and a credit card.
+**Downstream fraud score.** Domains can track not just direct introduction failures, but introduction failures N hops downstream. B's direct introductions might all look clean — but if B's introductions consistently lead to fraud two hops later, that's a measurable anomaly. The transparent graph makes this computable.
 
-**What catches it:** Coordinated defection is a strong signal. 100 domains going dark simultaneously, all introduced through overlapping chains, all defecting in the same time window — this is detectable through pattern analysis on public data (which is available because transparency is the security model).
+The score naturally attenuates with distance — one hop is strong signal, two hops is weaker, three hops is noise. But the cutout pattern specifically creates a two-hop signature that's detectable over repeated attacks.
 
-**What doesn't catch it:** If the attacker staggers the defections over weeks, varies the patterns, uses independent introduction chains, and keeps individual extraction amounts small. Slow, patient, distributed fraud is the hardest attack against any trust system. Including human ones — Ponzi schemes work exactly this way.
+**Single cutout attacks are still undetectable.** One instance of B→C→D where D defrauds doesn't implicate B. That's fine — one instance of anything is indistinguishable from bad luck. The trust model handles fraud as a statistical property, not a per-incident investigation.
 
-**Honest assessment:** The trust model makes this attack expensive (6 months × 100 domains of infrastructure and legitimate trading). It makes detection likely for unsophisticated attempts (coordinated timing is obvious). It doesn't prevent a sophisticated, patient attacker from executing it. No system does. The question is whether the expected payout exceeds the expected cost, and the trust model's job is to push that ratio as far toward "not worth it" as possible.
+### Hub Centralization (structural limit — Law 7)
 
-### Introduction Laundering via Cutouts (hole — hard to fix)
+The incentive model pushes toward hub formation. Without a structural constraint, power laws apply and a few hubs dominate.
 
-**Attack:** B wants to sneak Sybil D into the network without taking introduction risk.
+I don't want to just document this risk and hope for the best. Federation's track record with "the market will sort it out" is poor. Gmail dominates email. Centralized platforms ate XMPP.
 
-1. B introduces C (legitimate) to the network.
-2. B's sock puppet D approaches C independently through the greeter.
-3. C builds a relationship with D. D behaves perfectly.
-4. C introduces D to other domains.
-5. D defrauds everyone. C takes the hit. B is untouched.
+**Structural fix: bounded introduction rate.**
 
-This is the intelligence agency "cutout" pattern. The orchestrator is two hops from the damage.
+A domain can introduce at most N new domains per time period. This is the same principle as Law 5 (bounded rates) applied to introductions. Call it a natural limit on how fast any single domain can vouch for newcomers.
 
-**Why it's hard to fix:** At one hop, introduction accountability works — the chain is clear. At two hops, the signal is buried in noise. Lots of legitimate domains introduce domains that later introduce bad actors. Penalizing two hops away would punish most of the network for being connected.
+Why this works:
+- **Caps hub dominance.** A domain that can only introduce 10 new domains per month can't become the sole gateway to the network. Others must share the load.
+- **Forces distributed introduction.** Newcomers can't all funnel through one hub. They must find multiple introduction paths, which naturally diversifies the graph.
+- **Quality over quantity.** A limited introduction budget means each introduction is more valuable and worth more due diligence. You don't waste your 10 monthly introductions on domains you haven't vetted.
+- **Scales with trust level.** The introduction rate limit can scale with the introducer's own trust level — allied domains get a higher budget than known domains. This is earned, not assumed.
 
-**Partial mitigations:**
-- **Graph correlation over time.** If B's introduction chains *consistently* lead to downstream fraud (not once, but repeatedly), that's a statistical signal. Any single cutout is undetectable. A pattern of cutouts is detectable.
-- **The cutout is expensive.** B needs a real, legitimate intermediary (C). C must independently decide to trust D and introduce D. B can't force this — C's due diligence is C's own process. This means B needs D to be convincingly legitimate for months, which brings us back to the patient Sybil cost.
-- **Bounded damage per cutout.** Each cutout attack burns one intermediary (C takes a hit) and one Sybil (D is exposed). B needs a fresh intermediary and a fresh Sybil for each attack. The cost scales linearly with the number of attacks.
+**What this doesn't solve:** A hub can still become *influential* — being the most trusted introducer carries weight even if capped. But it can't become a *monopoly*. There's a structural ceiling on introduction concentration.
 
-**Honest assessment:** Single cutout attacks are undetectable and unfixable at the protocol level. Repeated cutout attacks are detectable through statistical analysis. This is the same limitation real-world trust networks have — you can fool people once through an intermediary. Doing it repeatedly gets you caught.
+**Enforcement:** Same as Law 5. The introduction carries a timestamp. Domains that receive more than N introductions from the same source in a time window can reject the excess. No central enforcer needed — it's bilateral verification of a rate limit.
 
-### Hub Centralization (structural risk)
+### Gossip Is a Duty (structural requirement)
 
-The incentive model pushes toward hub formation. Good introducers attract more traffic, which reinforces their position. Power laws apply — a few hubs will dominate introduction flow.
+I initially framed audit gossip participation as an incentive ("self-serving"). That's too weak. Conservation Laws are duties, not suggestions. Gossip should be too.
 
-**This is the Gmail problem.** Email is federated. Gmail dominates. XMPP is federated. Centralized platforms ate it. The protocol can be decentralized while the emergent topology centralizes around a few dominant nodes.
+**Requirement: every domain that participates in cross-domain transfers must contribute to audit gossip.**
 
-**Risks of hub dominance:**
-- Compromised hub = massive Sybil injection surface
-- Hub can selectively refuse introductions (gatekeeping)
-- Hub can extract monopoly rents
-- Hub failure takes out a large portion of the network's introduction capacity
+What "contribute" means:
+- Share bilateral observations (with Proof hashes) when requested by trading partners
+- Propagate fraud reports (with evidence) received from other domains
+- Respond to supply audit queries for asset types the domain mints
 
-**Mitigations:**
-- **Transparent introduction metrics** mean hub quality is publicly measurable. A hub that starts gatekeeping or declining in quality loses traffic to competitors. Unlike Gmail, where switching costs are high, switching introduction hubs is cheap — you just start using a different one.
-- **Multiple introduction paths.** Nothing prevents a domain from seeking introductions from multiple hubs. Depending on a single introducer is a choice, not a constraint.
-- **Introduction isn't a scarce resource.** Unlike email (where you need a server to receive mail), introductions are just Leden messages. Any trusted domain can introduce anyone. There's no infrastructure lock-in — just reputation lock-in, which is softer.
+**Non-participation is observable and consequential.** A domain that consumes gossip without contributing is detectable — its trading partners ask for observations and get silence. Consequences:
 
-**Honest assessment:** Hub formation is likely and probably healthy up to a point. The mitigation is that introduction hubs are easier to replace than email providers or social platforms — no data lock-in, no address portability issues, just reputation. But this is an argument, not a proof. Federation's track record here is genuinely poor. I don't have a structural fix. Monitoring hub concentration and documenting the risk is the honest move.
+- Trading partners can downgrade the non-contributing domain's trust level
+- Introduction quality scores can factor in gossip participation
+- At the extreme: domains can refuse to trade with non-contributors
 
-### Reputation As a Weapon (hole — needs fix)
+This isn't a new conservation law — it's an enforcement mechanism for the existing ones. The conservation laws are only as strong as the bilateral verification that checks them. Gossip is how that verification scales beyond direct trading partners. Without it, fraud detection is limited to direct bilateral views, which is weaker.
 
-Audit gossip carries proofs. But introduction-quality gossip doesn't.
+**Minimum viable gossip:** A domain doesn't need to gossip with everyone. It must gossip with its direct trading partners. Those partners gossip with their partners. Information propagates through the network's existing trust graph. The duty is local — gossip with the domains you trade with. The effect is global.
 
-**Attack:** Domain A claims "C was fraudulent" to damage C's reputation (and B's, since B introduced C). A produces no evidence. Maybe A just cuts off C and calls it a "failed introduction."
+### Reputation As a Weapon (all gossip requires proof)
 
-**Fix:** Introduction failure claims must also carry evidence.
+**Attack:** Domain A claims "C was fraudulent" to damage C's reputation.
 
-When A claims C defrauded it, A must produce:
+**Rule: all gossip carries evidence.** This was already decided for audit gossip — extend it to everything.
+
+When A claims C defrauded it, A produces:
 - The specific Transforms that constitute fraud
 - The Proofs that show the violation
 - Which Conservation Law was broken
 
-"I decided C was untrustworthy" without evidence is a subjective opinion, not a fraud report. Other domains can weight it accordingly — A cut off C for unknown reasons, that tells you something about the A↔C relationship but nothing about C's integrity.
+"C was fraudulent" without evidence is an opinion. Opinions don't propagate through gossip — they stay between A and whoever A talks to directly. Only evidence-backed fraud reports propagate.
 
-**Distinction:** Fraud (provable Conservation Law violation) carries weight in gossip. "I don't like working with C" does not. The gossip protocol should distinguish these two types of reports.
+**Distinction the protocol enforces:**
 
-### Dying Domain Endgame (acknowledged — bounded by existing mechanics)
+| Report type | Propagates? | Requires |
+|------------|-------------|----------|
+| Fraud report | Yes — gossip carries it | Proof of Conservation Law violation |
+| Relationship ended | Visible (no transactions) but not propagated as gossip | Nothing — it's just observable absence |
+| Subjective distrust | No | Nothing — it's A's private policy |
+
+A domain that frequently ends relationships without fraud evidence looks erratic, not authoritative. Weaponized reputation attacks are bounded: you can cut off whoever you want, but you can't damage their network reputation without proof.
+
+### Dying Domain Endgame (clawback mechanism)
 
 A domain going bankrupt drains everything it can. Legitimate domain turned rogue.
 
-**Why existing mechanics help more than you'd think:**
+**Existing mechanics bound the damage:**
 
-1. **Single ownership (Law 2) limits what the operator can steal.** The domain hosts objects but doesn't own them. Objects are owned by Owners (players, other domains). The domain operator can refuse to process transfers (denial of service) but can't unilaterally transfer objects they don't own (Law 6 — authority scoping).
+1. **Single ownership (Law 2) + authority scoping (Law 6):** The domain hosts objects but doesn't own them. The operator can't transfer objects without the Owner's key signing the Transform. A rogue operator can't forge player signatures.
 
-2. **Cross-domain transfers require Owner authorization.** A player's items can only be transferred with the player's key signing the Transform. A rogue domain operator can't forge player signatures.
+2. **What the operator CAN do:** refuse to process outbound transfers (denial of service), or manipulate domain-owned assets (treasury, minted currency). The first is bounded by players moving to other domains. The second is bounded by what the domain legitimately owns.
 
-3. **What the operator CAN do:** refuse to process any outbound transfers (holding objects hostage), or manipulate domain-owned assets (the domain's own treasury, minted currency). The first is denial of service, bounded by players moving to other domains. The second is bounded by what the domain legitimately owns.
+3. **Detection is fast.** A domain that stops processing transfers or starts irregular minting triggers audit gossip from every trading partner simultaneously.
 
-4. **Detection is fast.** A domain that suddenly stops processing transfers or starts irregular minting triggers audit gossip from every trading partner simultaneously. The window of extraction is small.
+**New mechanism: clawback window.**
 
-**Remaining exposure:** Domain-owned assets and any objects where the operator also holds the Owner keys (which they shouldn't, but might in poorly designed systems). The spec should explicitly recommend that player-owned objects use player-controlled keys, never domain-controlled keys. The domain is a host, not an owner.
+Cross-domain transfers from a domain that goes dark within N days of a transfer can be flagged for review by the receiving domain. This is the same principle as corporate bankruptcy clawback — transfers made shortly before insolvency are presumed suspicious.
+
+How it works:
+- Every cross-domain transfer carries a timestamp and causal link (Law 4 — already exists)
+- If Domain A goes dark (stops responding, stops participating in gossip, stops processing transfers), its trading partners mark the timestamp
+- Transfers received from A within the clawback window (configurable per bilateral agreement — e.g. 30 days) are flagged
+- The receiving domain can choose to: hold the assets in escrow pending investigation, reverse the transfer (return assets to their original owners if contactable), or accept the transfer (if the domain judges it legitimate)
+
+**What this catches:** A dying domain that dumps its treasury to accomplice domains in the days before going dark. The accomplice domains receive the assets but they're flagged. Other trading partners can see (through gossip) that A went dark and recently transferred large values. The accomplice's willingness to accept flagged assets is itself a signal.
+
+**What this doesn't catch:** Slow extraction over months that looks like normal trading. But that's the patient Sybil problem — bounded by trust levels and cumulative bilateral views.
+
+**Key principle:** The domain is a host, not an owner. Player-owned objects must use player-controlled keys, never domain-controlled keys. A domain that controls its players' keys has the power to steal from them. The protocol should make this an explicit recommendation — domain operators who hold player keys are undermining the ownership model.
 
 ## Open Questions
 
-- **Hub concentration thresholds.** At what point does introduction hub concentration become a systemic risk? No concrete metric proposed. This probably needs empirical data from a running network.
-- **Cutout detection specifics.** The spec says "graph correlation over time" detects repeated cutout attacks. The statistical methods aren't specified. This is an implementation concern, but the spec should at least name the approach (introduction chain correlation analysis) so implementations converge.
+- **Clawback window duration.** What's the right default? Too short and dying domains can extract before it. Too long and legitimate domain shutdowns (planned migrations) get flagged unnecessarily. Probably needs to be configurable per bilateral agreement, with a protocol-suggested default.
+- **Downstream fraud score attenuation.** How quickly does introduction accountability decay over hops? One hop is clear. Two hops (cutout detection) is useful. Three hops is probably noise. The exact attenuation curve needs thought — too steep and cutouts work, too shallow and the whole network is punished for being connected.
