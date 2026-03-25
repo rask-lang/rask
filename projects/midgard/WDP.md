@@ -42,7 +42,7 @@ glTF's tagline is "the JPEG of 3D." It succeeded by optimizing for the renderer,
 HTTP beat CORBA. JSON beat XML. HTML beat SGML. In every case, the simpler format won because more people could implement it correctly. A WDP client should be buildable in a weekend. The minimum viable client is a text renderer that prints names, descriptions, and affordance menus. Everything beyond that is progressive enhancement.
 Core Model
 
-Six concepts: regions, entities, affordances, appearance, panels, and themes.
+Eight concepts: regions, entities, affordances, appearance, panels, themes, spatial layers, and input streams.
 Regions
 
 A region is a spatial container. It's the "page" — the top-level context that a client loads and renders. A dungeon room, a forest clearing, a city block, a spaceship interior. Regions connect to other regions through portals.
@@ -75,7 +75,11 @@ name	Yes	Display name
 description	Yes	Text description — the universal fallback
 spatial	No	How positions work (see below)
 ambient	No	Environmental properties
-theme	No	Visual identity and mood (see Theme below)
+theme	No	Visual identity and mood (see WDS)
+layers	No	Dense spatial data — terrain, tilemaps, voxels, collision geometry
+physics	No	Physics parameters for client-side simulation
+comfort	No	Immersive comfort hints (locomotion modes, vignette settings)
+tick_rate	No	Server update frequency in Hz (0 = event-driven)
 entities	Yes	Things in the region
 
 Spatial models:
@@ -115,6 +119,7 @@ kind	Yes	Category from the vocabulary
 name	Yes	Display name
 description	Yes	Text description — always the fallback
 position	No	Location within the region's spatial model
+orientation	No	Facing direction — [qx, qy, qz, qw] quaternion, or degrees for 2D
 properties	No	Key-value extensible data
 affordances	No	What you can do with/to this entity
 appearance	No	Rendering hints and asset references
@@ -216,6 +221,8 @@ instant	One action, immediate result	Take item, attack, go north
 targeted	Select a target first	Attack which enemy, give to whom
 dialog	Multi-step structured interaction	Trade negotiation, crafting recipe selection
 continuous	Ongoing action with a duration	Channel spell, hold position, follow
+proximity	Triggered by spatial closeness	Pick up nearby item, open door you're standing at, grab object in reach
+batch	One action applied to multiple entities	Command selected units, loot all nearby items
 
 For dialog mode, the affordance includes a schema — a structured form definition that the client renders as UI:
 
@@ -364,6 +371,8 @@ interaction	Input methods available
 audio	Whether the client can play audio
 spatial_preference	Preferred spatial model (domain may override)
 panels	Whether the client can render HTML panels (bool)
+immersive	VR/AR/XR capabilities (see Immersive Capabilities)
+physics	Whether the client can run local physics simulation (bool)
 
 The domain uses fidelity to:
 
@@ -412,6 +421,7 @@ affordance_update	Ref + new affordance list	Available actions change
 ambient_update	Changed ambient fields	Environment changes
 panel_update	Panel id + new content hash	Domain UI changes
 theme_update	Changed tokens and/or hints	Visual identity changes (see WDS)
+layer_update	Layer id + changed chunk hashes	Terrain/block modifications
 
 These map directly to Leden observation deltas. The region object is the publisher. Subscribed clients are the observers. Leden handles fan-out, backpressure, sequence numbering, and reconnection.
 
@@ -454,9 +464,181 @@ What the client predicts is the client's problem. WDP doesn't carry prediction l
 If the server result differs from the prediction, the client snaps to the authoritative state. Smooth reconciliation (interpolation, rollback) is a client rendering concern. The domain sends truth. The client makes it feel good.
 
 This is the same model every multiplayer game uses. The difference is that WDP makes it opt-in per affordance rather than a global client assumption. A domain with deterministic physics marks movement as predicted. A domain with complex server-side logic marks nothing as predicted. The client adapts.
+Input Streams
+
+Affordances model discrete actions: "attack", "open door", "move to [5, 3]". Some interactions are continuous high-frequency data that doesn't fit the request-response pattern: player movement (gamepad stick at 60Hz), mouse aim, VR head/hand pose at 90Hz. Issuing an affordance call per input frame is too heavyweight — that's 90 method calls per second per tracked point.
+
+Input streams are a lightweight client→server channel for continuous positional data. The client publishes. The domain subscribes. Other clients observe the result through the normal entity observation stream.
+
+The player entity has input stream endpoints declared by the domain:
+
+input_streams:
+  - id: position
+    type: pose_3d       # [x, y, z, qx, qy, qz, qw]
+    rate: 20            # domain wants 20Hz updates from client
+  - id: head
+    type: pose_3d
+    rate: 90
+  - id: left_hand
+    type: pose_3d
+    rate: 90
+  - id: right_hand
+    type: pose_3d
+    rate: 90
+  - id: aim
+    type: direction_2d  # [yaw, pitch]
+    rate: 60
+
+Input stream fields:
+Field	Required	Purpose
+id	Yes	Stream identifier
+type	Yes	Data type: pose_3d, position_3d, position_2d, direction_2d, float, bool
+rate	Yes	Maximum update rate the domain accepts (Hz)
+
+The client sends input at the requested rate (or lower if it can't keep up). The domain processes input server-side and publishes the authoritative result to other observers through entity_update deltas. The client that sent the input applies it locally (predicted) and reconciles on the authoritative update.
+
+Input streams are Leden observation in reverse: the client is the publisher, the domain is the observer. They use the same coalescing and backpressure model — if the domain can't keep up, it gets the latest value, not a queue of stale frames.
+
+A VR client with head + two hand tracking sends three pose streams. The domain receives them, validates (prevent teleportation hacks, enforce physics), and fans out the result to other players through the normal observation stream. Other clients see the VR player's avatar moving its head and hands.
+
+A non-VR client with a gamepad sends one position stream (stick movement) and maybe one aim stream (right stick or mouse). A text client sends no input streams — it uses discrete movement affordances. The domain adapts to what the client provides.
+
+Input streams don't replace affordances. Moving around is an input stream. Attacking is an affordance. Aiming is an input stream. Pulling the trigger is an affordance. Streams handle continuous state. Affordances handle discrete events. They compose.
+Spatial Layers
+
+Entities work for sparse worlds — 20 things in a tavern, 200 in a battlefield. Dense worlds break this model. A Minecraft chunk is 65,536 blocks. A platformer level is collision geometry. A terrain system is a heightmap. These aren't entities — they're bulk spatial data.
+
+Spatial layers sit alongside entities in a region. A layer is a typed array of spatial data that the client renders as background/environment. Entities exist ON TOP of layers.
+
+Region:
+  name: "Crystal Caverns"
+  spatial: continuous_3d { bounds: [256, 64, 256] }
+  layers:
+    - id: terrain
+      type: heightmap
+      resolution: [256, 256]
+      data: sha256:abc123...
+    - id: blocks
+      type: voxel_3d
+      chunk_size: 16
+      palette: sha256:def456...   # block type definitions
+      chunks: [sha256:111..., sha256:222..., ...]
+    - id: collision
+      type: mesh_2d
+      data: sha256:789abc...
+  entities: [...]
+
+Layer types:
+Type	Data	Use case
+heightmap	2D grid of elevation values	Terrain in 3D worlds
+tilemap_2d	2D grid of tile IDs + tile palette	Platformers, top-down games, pixel art worlds
+voxel_3d	3D grid of block IDs + block palette	Minecraft-style voxel worlds
+mesh_2d	2D collision polygons (line segments, shapes)	Platformer level geometry, walls, slopes
+mesh_3d	3D collision mesh (triangles)	Complex 3D environments
+navmesh	Walkable area graph	Pathfinding for NPCs and AI
+
+Layer data is content-addressed, like assets. Large layers (voxel worlds) are chunked — the client fetches chunks within its viewport. Layer updates arrive through the observation stream:
+
+layer_update	Layer id + changed chunk hashes	Terrain/block modifications
+
+A text client ignores layers entirely — it uses entity descriptions. A 2D client renders tilemap_2d layers as background tiles. A 3D client renders heightmaps, voxel chunks, and collision meshes. Progressive enhancement, as always.
+
+Layers also carry physics-relevant data. A platformer's mesh_2d layer defines collision geometry — slopes, one-way platforms, moving platform paths. The client can run local physics against the layer data for predicted movement. The domain validates authoritatively.
+
+Spatial layers don't replace entities. The terrain is a layer. The goblin standing on the terrain is an entity. A tree might be either — a decorative tree in a forest is part of a layer, a specific tree the player can chop down is an entity. The domain decides the boundary.
+Physics Parameters
+
+Some domains need clients to run local physics — platformers, racing, VR hand interaction, any game where frame-precise movement matters. "Description is not behavior" means WDP doesn't carry physics logic. But physics parameters (gravity, friction, collision rules) are description — they describe the physical properties of the space, not what happens in it.
+
+Regions can declare physics parameters:
+
+physics:
+  gravity: [0, -9.8, 0]
+  drag: 0.01
+  move_speed: 5.0
+  jump_velocity: 8.0
+  friction: 0.3
+  collision: layers    # collide against spatial layers
+
+Physics fields:
+Field	Purpose
+gravity	Gravitational acceleration vector
+drag	Air/fluid resistance factor
+move_speed	Base movement speed (domain-defined units)
+jump_velocity	Initial jump velocity (0 = no jumping)
+friction	Surface friction coefficient
+collision	What the player collides with: layers, entities, both, none
+
+These are parameters, not a physics engine. The client plugs them into whatever physics system it uses — Unity's Rigidbody, a custom Verlet integrator, a simple Euler step. The domain provides the constants. The client provides the simulation. The domain validates the result.
+
+Entities that participate in physics carry physics-relevant properties:
+
+properties:
+  solid: true
+  mass: 5.0
+  friction: 0.8       # surface override
+  bouncy: 0.3
+  kinematic: true      # moves but isn't pushed by others
+
+A VR client uses physics parameters + spatial layers to simulate hand interaction locally: the hand collides with objects, objects have mass and friction, the client predicts the physical result and sends it to the domain for validation. Without physics parameters, VR interaction would require a server round-trip for every hand movement against every object. That's 200ms input lag on touching a table. Unacceptable.
+
+A text client ignores physics parameters. A 2D client might use gravity + friction for simple character movement. A 3D client uses the full set. A VR client adds hand physics on top. Progressive enhancement.
+Immersive Capabilities
+
+VR, AR, and spatial computing clients declare their capabilities through the fidelity system. The domain adapts what it sends.
+
+client_fidelity:
+  rendering: [scene_3d]
+  immersive:
+    type: vr
+    tracking: [head, hands]
+    room_scale: true
+    controllers: [hand_tracking, touch]
+    refresh_rate: 90
+  max_entities: 200
+  asset_formats: [gltf, ogg]
+
+Immersive fidelity fields:
+Field	Purpose
+type	vr, ar, xr, or spatial — what kind of immersive display
+tracking	What the client tracks: head, hands, body, eyes, face
+room_scale	Whether the client has room-scale tracking (vs. seated/standing)
+controllers	Input types: hand_tracking, touch, gamepad, wand, gaze
+refresh_rate	Display refresh rate — affects tick rate and input stream expectations
+
+The domain uses immersive fidelity to:
+
+- Set up input streams. A VR client with hand tracking gets head + left_hand + right_hand input stream endpoints. A seated VR client gets head only.
+- Mark proximity affordances. Objects in a VR domain get `mode: proximity` affordances with appropriate ranges (0.3m for grabbing, 1.0m for interacting).
+- Send comfort metadata. The region includes comfort hints:
+
+comfort:
+  locomotion: [teleport, smooth, snap_turn]
+  vignette_on_move: true
+  seated_mode: supported
+
+- Choose appropriate spatial model. VR domains use continuous_3d. The domain can reject clients without 3D support at bootstrap.
+
+Comfort is a domain declaration, not a client request. The domain says "I support teleport and smooth locomotion." The client picks which one to use based on user preference. The domain doesn't need to know — both result in the same position input stream, just with different positional patterns (discrete jumps vs. smooth movement).
+
+Haptic feedback: affordances can carry a `haptic` field:
+
+Affordance:
+  verb: "grab"
+  mode: proximity
+  range: 0.3
+  predicted: true
+  haptic:
+    pattern: pulse
+    intensity: 0.5
+    duration: 50
+
+Haptic fields are hints. VR clients with haptic controllers apply them. All other clients ignore them. A text client rendering a proximity affordance shows it as a regular menu item.
+
+Immersive clients are just clients. They render WDP regions, observe entities, call affordance methods. The immersive extensions (input streams, proximity mode, physics, comfort, haptics) are all progressive enhancements. A domain that sends them works fine with a non-immersive client — the extensions are ignored. A VR client connecting to a non-immersive domain works fine too — it uses standard 3D rendering and falls back to menu-based affordances.
 Progressive Rendering Example
 
-The same region data, three clients:
+The same region data, four clients:
 Text Client
 
 === The Rusty Anchor ===
@@ -488,6 +670,12 @@ Builds a tavern interior from built-in assets (shape hints for walls, bar, stool
 
 Uses: everything above + appearance.assets, appearance.material, appearance.scale, spatial audio
 
+VR Client
+
+Same tavern, but you're standing in it. Head tracking renders the scene at 90Hz from your eye position. Barkeep Marta has a 3D model (appearance.assets.model) or a procedural humanoid assembled from shape + scale + material hints. Reaching toward the Dusty Bottle triggers its proximity affordance — your hand enters the 0.3m grab range and the client highlights it. Squeeze to grab (affordance call with predicted: true), the bottle follows your hand locally while the server confirms. Spatial audio: Marta's voice comes from her position, tavern murmur is ambient. Candlelight is a volumetric light source from the effect entity.
+
+Uses: everything above + orientation, input streams (head, hands), physics parameters, proximity affordances, haptic hints, comfort settings
+
 Same WDP payload. Zero domain-specific client code.
 The Vocabulary
 
@@ -500,7 +688,7 @@ What This Doesn't Cover
 
 Client UI chrome. WDP describes the world and domain panels, not the client's own interface. Health bars, minimaps, hotkey bindings, settings screens — these are client concerns. The client builds its chrome from entity data (health from properties, minimap from region layout) and its own preferences. Domain-specific UI (skill trees, crafting grids) goes through panels.
 
-Physics. WDP doesn't describe collision volumes, rigid body properties, or physics constraints. If a domain needs physics-aware clients, it uses well-known properties (solid: true, mass: 5.0) and the client interprets them. Full physics simulation is domain-side (Raido).
+Physics simulation. WDP provides physics parameters (gravity, friction, collision rules) and spatial layers (collision geometry). The client runs local physics against these. But the physics engine itself is the client's choice — WDP doesn't specify simulation algorithms, integrator types, or solver iterations. Two clients simulating the same parameters may produce slightly different results. The domain is authoritative; clients predict and reconcile.
 
 Animation. WDP doesn't describe skeletal rigs or animation state machines. The posture hint covers coarse state ("crouching", "attacking", "idle"). Smooth animation is the client's problem, driven by posture changes in the observation stream.
 
@@ -537,6 +725,10 @@ Domain-specific UI uses HTML panels. Domains send sandboxed HTML/CSS fragments f
 
 Visual identity is a separate spec (WDS). Design tokens for world styling, CSS stylesheets for panels and web UI, three-level cascade (domain → region → entity). Separated from WDP because styling evolves faster than structure and has a different implementer audience. A WDP implementation is complete without WDS. See [WDS.md](WDS.md).
 
+VR/AR/XR is supported through general-purpose extensions, not a VR-specific protocol. Entity orientation, input streams (continuous client→server data), proximity affordances, spatial layers (dense geometry), physics parameters, and immersive fidelity fields. All are progressive enhancements — a VR client connecting to a non-VR domain works fine (menu affordances, no hand physics), and a non-VR client connecting to a VR domain works fine (ignores input stream endpoints, uses instant/targeted affordances). The immersive capabilities are the same mechanisms needed for platformers, racing games, and any real-time physics game.
+
+Dense worlds use spatial layers. Tilemaps, voxel chunks, heightmaps, and collision meshes sit alongside entities in a region. Entities are sparse (things you interact with). Layers are dense (the world itself). A Minecraft chunk is a voxel layer. A platformer level is a mesh_2d layer. A terrain system is a heightmap layer. Layers are content-addressed and chunked for viewport-based streaming.
+
 Large regions use viewport filtering. The client reports its viewport (center + radius), and the domain only sends entities within that area. Entity enter/exit deltas fire at the viewport boundary. This scales WDP to open-world regions without dumping 10,000 entities on initial snapshot.
 Deferred
 
@@ -545,3 +737,6 @@ Deferred
     LOD (Level of Detail). Distant entities could be sent with less detail. The mechanism exists (fidelity negotiation + filtered observation), but the specific LOD policy is implementation-level.
     Accessibility. Screen reader hints, colorblind palettes, motor-impairment interaction modes. Important, but a layer on top of the base protocol, not a change to it.
     Versioning. WDP will evolve. Version negotiation should follow Leden's model (version handshake at session start, backward-compatible additions don't require version bumps). Details after v1 is stable.
+    Entity visibility. Fog of war needs a visibility field on entities: visible, last_known (stale data with timestamp), hidden. The domain controls which entities the client knows about. last_known entities carry stale data that the client renders differently (grayed out, question mark). Deferred because most Midgard use cases don't need fog of war, and the viewport filtering mechanism handles the common case of "don't show what's far away."
+    Event streams. WDP is state (current properties), not events (what happened). A combat log needs "player X hit boss for 500 damage with Fireball" — that's an event, not a state change. A parallel event channel alongside the observation stream would carry happenings. Deferred because panels can show a combat log (updated via panel_update), which covers the common case without a new concept.
+    Time-sequenced content. Rhythm games and cutscenes need pre-loaded event sequences with precise timestamps. The observation model is push-based (server sends updates as they happen), not time-indexed. This is a fundamentally different content type — probably a separate spec rather than a WDP extension. Deferred.
