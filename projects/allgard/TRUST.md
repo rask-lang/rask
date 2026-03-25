@@ -338,6 +338,133 @@ This isn't privacy for its own sake. It's efficiency — you don't always need t
 
 **The principle:** default to transparent. Use commitments for efficiency, not secrecy. Any domain can request full disclosure as a condition of higher trust levels. Refusing disclosure is itself a signal.
 
+## Stress Test
+
+I tried to break this model. Here's what I found — real holes, weak spots, and things that held up.
+
+### Greeter Extraction Loop (hole — needs fix)
+
+Strangers can do "small transfers" via the greeter. But "small" isn't defined relative to the cost of creating a new domain.
+
+**Attack:** Create domain. Extract maximum value at stranger level. Burn identity. Repeat. No reputation needed. If stranger-level extraction exceeds the cost of a new identity (nearly zero — a VM and a key pair), the attack is profitable.
+
+**Fix:** Greeter-level transfers must be net-negative or net-zero for the stranger. Concrete options:
+
+1. **Stranger transactions require a counterparty deposit.** The stranger puts up value before receiving value. The deposit is small, but it must exceed the cost of a new identity. This isn't "stake-at-risk with real money" — it's value the stranger already holds from legitimate minting in their own domain. A brand-new domain with nothing minted has nothing to deposit, so it can only *observe* and *sell*, not *buy*.
+2. **Asymmetric greeter limits.** Strangers can export (sell to the domain) but cannot import (buy from the domain) above a minimal threshold. This means: the only way to extract value at stranger level is to provide something the domain values. Value extraction requires value creation.
+3. **Greeter interactions are loss-limited by design.** The domain configures a maximum cumulative loss it's willing to absorb from all stranger interactions combined per time period. Once hit, the greeter stops accepting stranger transfers. This is a budget, not a per-transaction limit.
+
+I think option 2 is the cleanest. It mirrors real life: a stranger can offer you services, but you don't hand them your wallet.
+
+### Due Diligence Verifiability (hole — needs honesty)
+
+The penalty matrix claims to measure "due diligence depth." But most due diligence signals are self-reported. B can claim "I verified C's Proofs" without actually doing it, and fabricate records after the fact.
+
+**Externally verifiable signals:**
+
+| Signal | Why it's verifiable |
+|--------|-------------------|
+| Duration of B↔C relationship | Transaction timestamps in bilateral history |
+| Trust level assigned to introduction | Carried in the introduction message itself |
+| Response time after fraud | Gossip messages are timestamped |
+| B cut off C after fraud | Absence of further transactions is observable |
+
+**Not externally verifiable:**
+
+| Signal | Why not |
+|--------|---------|
+| B verified C's Proofs | Internal to B's process. B can claim anything. |
+| B checked C's audit logs | Same — internal to B. |
+| B performed graph analysis on C | Internal. |
+
+**Fix:** The spec should weight the penalty matrix toward externally verifiable signals. The duration of B↔C history before introduction and B's response speed after fraud are strong, unforgeable indicators. "B claims to have verified Proofs" is not.
+
+### Patient Sybil Coordination (weak spot — mitigated, not solved)
+
+**Attack:** 100 domains, each builds reputation over 6 months with legitimate behavior. Coordinated attack on day 181. Each extracts maximum value and goes dark.
+
+This doesn't require a nation-state. One person with patience and a credit card.
+
+**What catches it:** Coordinated defection is a strong signal. 100 domains going dark simultaneously, all introduced through overlapping chains, all defecting in the same time window — this is detectable through pattern analysis on public data (which is available because transparency is the security model).
+
+**What doesn't catch it:** If the attacker staggers the defections over weeks, varies the patterns, uses independent introduction chains, and keeps individual extraction amounts small. Slow, patient, distributed fraud is the hardest attack against any trust system. Including human ones — Ponzi schemes work exactly this way.
+
+**Honest assessment:** The trust model makes this attack expensive (6 months × 100 domains of infrastructure and legitimate trading). It makes detection likely for unsophisticated attempts (coordinated timing is obvious). It doesn't prevent a sophisticated, patient attacker from executing it. No system does. The question is whether the expected payout exceeds the expected cost, and the trust model's job is to push that ratio as far toward "not worth it" as possible.
+
+### Introduction Laundering via Cutouts (hole — hard to fix)
+
+**Attack:** B wants to sneak Sybil D into the network without taking introduction risk.
+
+1. B introduces C (legitimate) to the network.
+2. B's sock puppet D approaches C independently through the greeter.
+3. C builds a relationship with D. D behaves perfectly.
+4. C introduces D to other domains.
+5. D defrauds everyone. C takes the hit. B is untouched.
+
+This is the intelligence agency "cutout" pattern. The orchestrator is two hops from the damage.
+
+**Why it's hard to fix:** At one hop, introduction accountability works — the chain is clear. At two hops, the signal is buried in noise. Lots of legitimate domains introduce domains that later introduce bad actors. Penalizing two hops away would punish most of the network for being connected.
+
+**Partial mitigations:**
+- **Graph correlation over time.** If B's introduction chains *consistently* lead to downstream fraud (not once, but repeatedly), that's a statistical signal. Any single cutout is undetectable. A pattern of cutouts is detectable.
+- **The cutout is expensive.** B needs a real, legitimate intermediary (C). C must independently decide to trust D and introduce D. B can't force this — C's due diligence is C's own process. This means B needs D to be convincingly legitimate for months, which brings us back to the patient Sybil cost.
+- **Bounded damage per cutout.** Each cutout attack burns one intermediary (C takes a hit) and one Sybil (D is exposed). B needs a fresh intermediary and a fresh Sybil for each attack. The cost scales linearly with the number of attacks.
+
+**Honest assessment:** Single cutout attacks are undetectable and unfixable at the protocol level. Repeated cutout attacks are detectable through statistical analysis. This is the same limitation real-world trust networks have — you can fool people once through an intermediary. Doing it repeatedly gets you caught.
+
+### Hub Centralization (structural risk)
+
+The incentive model pushes toward hub formation. Good introducers attract more traffic, which reinforces their position. Power laws apply — a few hubs will dominate introduction flow.
+
+**This is the Gmail problem.** Email is federated. Gmail dominates. XMPP is federated. Centralized platforms ate it. The protocol can be decentralized while the emergent topology centralizes around a few dominant nodes.
+
+**Risks of hub dominance:**
+- Compromised hub = massive Sybil injection surface
+- Hub can selectively refuse introductions (gatekeeping)
+- Hub can extract monopoly rents
+- Hub failure takes out a large portion of the network's introduction capacity
+
+**Mitigations:**
+- **Transparent introduction metrics** mean hub quality is publicly measurable. A hub that starts gatekeeping or declining in quality loses traffic to competitors. Unlike Gmail, where switching costs are high, switching introduction hubs is cheap — you just start using a different one.
+- **Multiple introduction paths.** Nothing prevents a domain from seeking introductions from multiple hubs. Depending on a single introducer is a choice, not a constraint.
+- **Introduction isn't a scarce resource.** Unlike email (where you need a server to receive mail), introductions are just Leden messages. Any trusted domain can introduce anyone. There's no infrastructure lock-in — just reputation lock-in, which is softer.
+
+**Honest assessment:** Hub formation is likely and probably healthy up to a point. The mitigation is that introduction hubs are easier to replace than email providers or social platforms — no data lock-in, no address portability issues, just reputation. But this is an argument, not a proof. Federation's track record here is genuinely poor. I don't have a structural fix. Monitoring hub concentration and documenting the risk is the honest move.
+
+### Reputation As a Weapon (hole — needs fix)
+
+Audit gossip carries proofs. But introduction-quality gossip doesn't.
+
+**Attack:** Domain A claims "C was fraudulent" to damage C's reputation (and B's, since B introduced C). A produces no evidence. Maybe A just cuts off C and calls it a "failed introduction."
+
+**Fix:** Introduction failure claims must also carry evidence.
+
+When A claims C defrauded it, A must produce:
+- The specific Transforms that constitute fraud
+- The Proofs that show the violation
+- Which Conservation Law was broken
+
+"I decided C was untrustworthy" without evidence is a subjective opinion, not a fraud report. Other domains can weight it accordingly — A cut off C for unknown reasons, that tells you something about the A↔C relationship but nothing about C's integrity.
+
+**Distinction:** Fraud (provable Conservation Law violation) carries weight in gossip. "I don't like working with C" does not. The gossip protocol should distinguish these two types of reports.
+
+### Dying Domain Endgame (acknowledged — bounded by existing mechanics)
+
+A domain going bankrupt drains everything it can. Legitimate domain turned rogue.
+
+**Why existing mechanics help more than you'd think:**
+
+1. **Single ownership (Law 2) limits what the operator can steal.** The domain hosts objects but doesn't own them. Objects are owned by Owners (players, other domains). The domain operator can refuse to process transfers (denial of service) but can't unilaterally transfer objects they don't own (Law 6 — authority scoping).
+
+2. **Cross-domain transfers require Owner authorization.** A player's items can only be transferred with the player's key signing the Transform. A rogue domain operator can't forge player signatures.
+
+3. **What the operator CAN do:** refuse to process any outbound transfers (holding objects hostage), or manipulate domain-owned assets (the domain's own treasury, minted currency). The first is denial of service, bounded by players moving to other domains. The second is bounded by what the domain legitimately owns.
+
+4. **Detection is fast.** A domain that suddenly stops processing transfers or starts irregular minting triggers audit gossip from every trading partner simultaneously. The window of extraction is small.
+
+**Remaining exposure:** Domain-owned assets and any objects where the operator also holds the Owner keys (which they shouldn't, but might in poorly designed systems). The spec should explicitly recommend that player-owned objects use player-controlled keys, never domain-controlled keys. The domain is a host, not an owner.
+
 ## Open Questions
 
-None currently. All major trust mechanics have been specified.
+- **Hub concentration thresholds.** At what point does introduction hub concentration become a systemic risk? No concrete metric proposed. This probably needs empirical data from a running network.
+- **Cutout detection specifics.** The spec says "graph correlation over time" detects repeated cutout attacks. The statistical methods aren't specified. This is an implementation concern, but the spec should at least name the approach (introduction chain correlation analysis) so implementations converge.
