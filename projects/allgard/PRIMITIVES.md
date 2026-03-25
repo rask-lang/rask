@@ -97,6 +97,73 @@ This is a Grant from the player to the backup domain — scoped to mirror and re
 
 Without a backup, home domain failure is permanent loss. That's the honest tradeoff. But with a backup, it's a recoverable event — same as a disk failure with a RAID mirror.
 
+### Owner Wallet
+
+The ultimate fallback: you hold your own proof of ownership locally.
+
+A wallet is a serialized file containing:
+- **Owner private key** — your cryptographic identity
+- **Object contents** — the bytes of every object you own
+- **Proof chains** — every Transform from minting to current state, per object. Signatures, causal links, timestamps.
+- **Minting scripts** — the content-addressed Raido scripts that created each object
+
+This is everything a domain needs to mechanically verify your ownership. Re-execute the minting scripts, check the signatures, walk the causal chain. No server has to be online. No domain has to vouch for you. The math speaks for itself.
+
+**The wallet is a file.** Put it on a thumb drive, back it up to cold storage, print the key on paper. Your ownership exists independently of any domain. This is the same principle as a crypto wallet, but without a blockchain — the Proof chain IS the ledger, and it's self-contained per owner.
+
+#### When You Need It
+
+The wallet is the nuclear option for recovery:
+
+| Scenario | Primary recovery | Wallet recovery |
+|----------|-----------------|-----------------|
+| Home domain temporarily down | Wait for it to come back | Not needed |
+| Home domain permanently gone, backup exists | Backup takes over | Not needed |
+| Home domain permanently gone, no backup | **Wallet is the only recovery path** | Present wallet to any domain |
+| All domains you've ever used go dark | Nothing else works | Wallet proves ownership to any new domain |
+
+#### How Recovery Works
+
+1. Player presents wallet to a new domain
+2. Domain verifies the Proof chains mechanically — re-executes minting scripts, checks signatures, validates causal ordering
+3. If everything checks out, the domain accepts the objects and registers the player as their Owner
+4. The player's new home domain starts fresh Proof chains from this point forward
+
+#### The Double-Spend Problem
+
+The obvious attack: present the same wallet to two domains simultaneously. Without a global ledger, neither knows the other accepted the same objects.
+
+This is a real limitation. Mitigations:
+
+1. **Gossip propagation.** When a domain accepts wallet-recovered objects, it announces this via gossip: "I've accepted these object IDs from wallet recovery." Other domains check incoming recovery claims against known announcements. The race window is bounded by gossip propagation time.
+
+2. **Recovery cooldown.** A domain that accepts wallet recovery can hold the objects in a provisional state for a configurable window (hours/days) before fully committing. During this window, conflicting claims surface through gossip.
+
+3. **Proof chain freshness.** The wallet's Proof chains have timestamps. A domain can reject recovery claims where the last Proof is very old — the longer since the last verified state, the higher the risk of stale data.
+
+4. **Bilateral verification.** Any domain that previously traded with the player has a partial view of their inventory. The recovering domain can cross-check the wallet's claims against these partial views via gossip.
+
+This doesn't prevent double-spend with 100% certainty — nothing short of global consensus can, and I've already rejected that for good reasons. What it does: make double-spend detectable within a bounded window, and make the consequences severe (reputation destruction for the player's Owner identity). Same tradeoff the rest of the trust model makes.
+
+#### Wallet Sync
+
+The wallet should stay current. The runtime should sync the wallet file automatically:
+- After every Transform that affects the player's objects
+- After every cross-domain transfer
+- After lease creation/revocation
+
+This is a local operation — writing to a file on the player's machine. No network round trip. The wallet file grows over time (Proof chains accumulate), but compaction is possible: once a Proof chain is accepted by a trusted domain, the domain's acceptance Proof replaces the full chain.
+
+#### What This Means
+
+The player's sovereignty is complete. Not "sovereignty as long as your home domain is up" — actual sovereignty. Your identity is your key. Your ownership is your Proof chains. Everything else is convenience layered on top.
+
+- Home domain: convenient, fast, handles leases and gossip for you
+- Backup domain: safety net for home domain failure
+- Wallet: ultimate fallback, works with zero infrastructure
+
+Each layer is less convenient and more sovereign. The player chooses how much infrastructure to trust.
+
 ### Why This Works
 
 The lease model means objects are always recoverable. The worst case (visited domain goes dark) loses recent mutations — not the objects themselves. The home domain has the Proof chain showing what left and can reconstruct from there.
