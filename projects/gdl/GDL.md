@@ -55,10 +55,8 @@ Region:
     length of the far wall, bottles glinting in candlelight. A staircase
     in the corner leads up."
   spatial: grid_2d { width: 12, height: 8 }
-  ambient:
-    lighting: dim
-    sound: tavern_murmur
-    temperature: warm
+  properties:
+    tick_rate: 0
   theme:
     mood: gritty
     palette: [#2a1a0e, #5c3a1e, #8b6914, #1a1a1a]
@@ -66,6 +64,10 @@ Region:
     contrast: high
     epoch: medieval
     density: cluttered
+    tokens:
+      atmosphere.lighting: dim
+      atmosphere.ambient_sound: tavern_murmur
+      atmosphere.temperature: warm
     stylesheet: sha256:ef9a01...
   entities: [...]
 
@@ -74,13 +76,21 @@ Field	Required	Purpose
 name	Yes	Display name
 description	Yes	Text description — the universal fallback
 spatial	No	How positions work (see below)
-ambient	No	Environmental properties
+properties	No	Key-value extensible data (tick_rate, physics params, comfort, domain-defined)
 theme	No	Visual identity and mood (see GDL-style)
 layers	No	Dense spatial data — terrain, tilemaps, voxels, collision geometry
-physics	No	Physics parameters for client-side simulation
-comfort	No	Immersive comfort hints (locomotion modes, vignette settings)
-tick_rate	No	Server update frequency in Hz (0 = event-driven)
 entities	Yes	Things in the region
+
+Regions use the same extensible properties as entities. Environmental properties (lighting, temperature, ambient sound) live in theme tokens — GDL-style already has the `atmosphere.*` namespace for exactly this. Operational parameters (tick_rate, physics, comfort) live in properties.
+
+Properties on regions follow the same rules as entity properties: typed values, unknown keys ignored, extensible. The convention namespaces are:
+
+Namespace	Purpose	Examples
+physics.*	Client-side simulation parameters	physics.gravity: [0, -9.8, 0], physics.friction: 0.3
+comfort.*	Immersive client hints	comfort.locomotion: [teleport, smooth], comfort.seated_mode: true
+tick_rate	Server update frequency in Hz (0 = event-driven)	tick_rate: 20
+
+These aren't special — they're just property keys that clients recognize. A domain can add `weather.wind_speed: 5.0` or `music.bpm: 120` and the protocol doesn't change. Physics was previously a top-level field. It doesn't deserve that status — it's one of many possible region property namespaces.
 
 Spatial models:
 Model	Positions	Use case
@@ -128,21 +138,23 @@ properties	No	Key-value extensible data
 affordances	No	What you can do with/to this entity
 appearance	No	Rendering hints and asset references
 
-Entity kinds (the initial vocabulary — extensible):
+Entity kinds tell the client what category of thing this is — how to render it by default, how to present it in lists, what UI patterns apply. Kinds are like HTML elements: a small core set that every client knows, extensible with new terms that degrade gracefully.
+
+Core kinds:
 Kind	Meaning	Fallback rendering
-creature	Living entity — player, NPC, monster, animal	Name + description
-item	Portable object — sword, potion, tool, material	Name + "you could pick this up"
-structure	Fixed construction — wall, door, chest, table, building	Name + part of environment
-terrain	Ground/environment — grass, water, stone, lava	Background/floor
-portal	Navigation point — door, gate, path, teleporter	Directional prompt (+ transition hint)
-effect	Transient phenomenon — fire, mist, spell, sound	Flavor text
-marker	Abstract point — spawn, waypoint, boundary	Not rendered. Editor/debug mode may visualize
-container	Holds other entities — chest, bag, shelf	Name + "contains things"
-vehicle	Rideable/enterable transport	Name + description
+agent	Autonomous entity — person, NPC, robot, AI, sensor	Name + description
+object	Portable thing — tool, document, item, package	Name + "you could pick this up"
+structure	Fixed construction — wall, furniture, building, sign	Part of environment
+terrain	Ground/environment — floor, water, surface	Background
+portal	Navigation point — door, link, path, teleporter	Directional prompt
+effect	Transient phenomenon — notification, animation, particle	Flavor text / toast
+marker	Abstract point — waypoint, anchor, boundary	Not rendered
+container	Holds other entities — folder, bag, shelf, room	Name + "contains things"
+vehicle	Transport with interior — car, ship, elevator	Name + description
 
-Kinds work like HTML elements — a small fixed set that clients know how to render by default. Unknown kinds fall back to their closest match (a client that doesn't know vehicle treats it as structure). This is HTTP's status code class trick: the first part tells you the category even if you don't know the specific value.
+Unknown kinds fall back to their closest match. A client that doesn't know `vehicle` treats it as `structure`. A domain can define `sensor`, `widget`, `avatar` — the client falls back to the best-matching core kind.
 
-Domains don't need new kinds for domain-specific entities. A "Flamebrand of the Seventh Circle" is kind=item. The name and description carry the specifics. Kind tells the client the category of thing; everything else is in the description and properties.
+Kinds are semantic, not cosmetic. A person in a meeting room is `agent`. A sensor on an IoT dashboard is `agent`. A goblin in a dungeon is `agent`. A shared document in a workspace is `object`. A sword in an RPG is `object`. Kind tells the client the category. Name and description carry the specifics. Properties carry the data.
 Properties
 
 Key-value pairs on entities. Properties are the extensible data channel — anything a domain wants to communicate about an entity that doesn't fit the fixed fields.
@@ -158,21 +170,22 @@ list	tags: ["undead", "boss"]
 
 Unknown property keys are ignored by clients that don't recognize them. This is the forward-compatibility mechanism. A domain can add enchantment_level: 7 and old clients just skip it.
 
-Well-known properties (not required, but clients may render them specially):
-Property	On	Meaning
-health	creature	Current hit points
-health_max	creature	Maximum hit points
-level	creature	Power/experience level
-hostile	creature	Whether this entity is hostile to the observer
-locked	structure, container	Whether this requires a key/action to open
-weight	item	How heavy the item is
-quantity	item	Stack count
-price	item	Trade value
-owner_name	any	Display name of the owner
+Property Patterns
 
-Well-known properties let clients build smart UIs without domain-specific code. A client sees health and health_max on a creature and renders a health bar. No domain-specific plugin needed.
+Properties are free-form, but clients can render them smartly if they recognize certain patterns. The patterns matter more than the specific names — a client that understands the bounded numeric pattern can render a bar for `health/health_max`, `energy/energy_max`, `progress/progress_max`, or any other X/X_max pair without knowing what they mean.
 
-Property semantics convention: numeric properties that represent a bounded value use `X` + `X_max` naming. Values are always absolute, never percentages. `health: 30` means 30 hit points, not 30%. `health` without `health_max` means the maximum is unknown — the client shows the number but can't render a bar. This matters for cross-domain consistency: two domains using `health` to mean different things (absolute vs. percentage vs. armor-adjusted) would break the smart UI promise.
+Pattern	Convention	Client behavior
+Bounded numeric	`X` + `X_max` (int or float)	Render as a bar (X out of X_max)
+State enum	string value	Show as status badge or label
+Boolean flag	bool value	Toggle UI element visibility or behavior
+Entity reference	ref value	Render as a link or association indicator
+Tagged	`tags: [...]` (string list)	Filter, search, category display
+
+`health: 30, health_max: 100` → a bar at 30%. `energy: 7.5, energy_max: 10.0` → a bar at 75%. `progress: 3, progress_max: 5` → a bar at 60%. The client doesn't need to know the word "health" — it sees the X/X_max pattern and renders a bar.
+
+Values are always absolute, never percentages. `health: 30` means 30 units, not 30%. `health` without `health_max` means the maximum is unknown — the client shows the number but can't render a bar. This matters for cross-domain consistency.
+
+Specific property names (`health`, `level`, `hostile`, `locked`, `price`) are **conventions**, not protocol. A game domain uses `health`. An IoT domain uses `temperature`. A project tracker uses `progress`. The protocol defines patterns. Communities define conventions.
 Affordances
 
 Affordances are what make GDL interactive. They answer: "what can I do here?"
@@ -206,18 +219,17 @@ method	Yes	Leden method reference to call
 conditions	No	Client-side hints about requirements
 predicted	No	Whether the client can apply the result optimistically
 
-Categories (how the client groups/renders affordances):
+Categories are free-form strings — rendering hints that tell the client how to group and present affordances. The client decides what to do with them. A text client ignores categories and renders a numbered menu. A graphical client might render `navigate` as directional arrows and `edit` as a toolbar.
+
+Initial conventions (not exhaustive — domains define their own):
 Category	Rendering hint	Examples
 navigate	Directional controls, map markers	Go north, enter building, climb ladder
 interact	Context menu, action button	Open, close, pull lever, read sign
-combat	Action bar, targeting UI	Attack, defend, cast spell
-trade	Trade dialog	Buy, sell, barter, give
 communicate	Dialog/chat interface	Talk to, ask about, persuade
-craft	Crafting UI	Forge, brew, enchant, repair
 inspect	Info panel	Examine, identify, appraise
 use	Quick action	Eat, drink, equip, activate
 
-A text client renders all categories the same way — a numbered menu. A graphical client renders them differently — combat affordances in an action bar, navigate affordances as directional arrows, trade affordances in a dialog window. The category is a suggestion, not a command.
+A game domain might add `combat`, `trade`, `craft`. A music app adds `playback`. A collaboration tool adds `edit`. A dashboard adds `configure`. Unknown categories get default rendering — the client doesn't need to know every possible category to function.
 
 Interaction modes:
 Mode	Pattern	Example
@@ -422,11 +434,10 @@ interaction	Input methods available
 audio	Whether the client can play audio
 media_codecs	Audio/video codecs the client supports (for media streams)
 spatial_preference	Preferred spatial model (domain may override)
-panels	Whether the client can render HTML panels (bool)
-panels_js	Whether the client supports JavaScript in panels (bool, implies panels)
+panels	Whether the client can render sandboxed web panels (bool)
 immersive	VR/AR/XR capabilities (see Immersive Capabilities)
-physics	Whether the client can run local physics simulation (bool)
-nested_spaces	Whether the client can render nested spaces (bool)
+
+Fidelity fields are extensible — like everything else in GDL. A client that supports physics declares `physics: true`. A client that handles nested spaces declares `nested_spaces: true`. The domain reads what it recognizes and ignores the rest. No fidelity field requires a spec change to add.
 
 The domain uses fidelity to:
 
@@ -561,18 +572,15 @@ position	No	Where it happened (for spatial rendering)
 scope	No	Who should see this (see Event Scope)
 data	No	Type-specific payload
 
-Well-known event types:
+Event types are free-form strings, extensible like entity kinds. Unknown types are ignored by clients that don't recognize them. A few core types that clients should handle:
+
 Type	Data	Rendering hint
 chat	message	Chat bubble, chat log, speech synthesis
-damage	amount, element, skill	Floating damage number, hit effect
-heal	amount, source	Floating heal number, heal effect
-loot	item_name, item_ref	Pickup notification, toast
 sound	sound, volume	Positional or ambient sound trigger
-effect	effect, duration, scale	Particle effect, visual overlay
-announce	message, priority	Region-wide banner, notification
-emote	animation	Character animation trigger
+effect	effect, duration, scale	Particle/visual overlay, transient animation
+announce	message, priority	Banner, notification, toast
 
-Event types are extensible — same rule as entity kinds. Unknown types are ignored by clients that don't recognize them. A domain can define `quest_complete`, `level_up`, `weather_change` — whatever it needs. Well-known types get smart rendering from clients that recognize them.
+These four are generic — every gard type might use them. Beyond these, domains define their own: a game adds `damage`, `heal`, `loot`. A collaboration tool adds `edit`, `join`, `leave`. An IoT system adds `alert`, `reading`. The protocol doesn't privilege any event type over another.
 
 Chat is just an event. A client renders chat events however it wants — chat bubbles in 3D, a scrolling log in 2D, inline text in a text client. No special chat protocol, no separate channel, no panel hack. The domain sends a chat event, the client shows it.
 Event Scope
@@ -787,28 +795,28 @@ Layers also carry physics-relevant data. A platformer's mesh_2d layer defines co
 Spatial layers don't replace entities. The terrain is a layer. The goblin standing on the terrain is an entity. A tree might be either — a decorative tree in a forest is part of a layer, a specific tree the player can chop down is an entity. The domain decides the boundary.
 Physics Parameters
 
-Some domains need clients to run local physics — platformers, racing, VR hand interaction, any game where frame-precise movement matters. "Description is not behavior" means GDL doesn't carry physics logic. But physics parameters (gravity, friction, collision rules) are description — they describe the physical properties of the space, not what happens in it.
+Some domains need clients to run local physics — platformers, racing, VR hand interaction. "Description is not behavior" means GDL doesn't carry physics logic. But physics parameters are description — they describe the physical properties of the space.
 
-Regions can declare physics parameters:
+Physics parameters are region properties in the `physics.*` namespace:
 
-physics:
-  gravity: [0, -9.8, 0]
-  drag: 0.01
-  move_speed: 5.0
-  jump_velocity: 8.0
-  friction: 0.3
-  collision: layers    # collide against spatial layers
+properties:
+  physics.gravity: [0, -9.8, 0]
+  physics.drag: 0.01
+  physics.move_speed: 5.0
+  physics.jump_velocity: 8.0
+  physics.friction: 0.3
+  physics.collision: layers    # collide against spatial layers
 
-Physics fields:
-Field	Purpose
-gravity	Gravitational acceleration vector
-drag	Air/fluid resistance factor
-move_speed	Base movement speed (domain-defined units)
-jump_velocity	Initial jump velocity (0 = no jumping)
-friction	Surface friction coefficient
-collision	What the player collides with: layers, entities, both, none
+Common physics properties:
+Property	Purpose
+physics.gravity	Gravitational acceleration vector
+physics.drag	Air/fluid resistance factor
+physics.move_speed	Base movement speed (domain-defined units)
+physics.jump_velocity	Initial jump velocity (0 = no jumping)
+physics.friction	Surface friction coefficient
+physics.collision	What the player collides with: layers, entities, both, none
 
-These are parameters, not a physics engine. The client plugs them into whatever physics system it uses — Unity's Rigidbody, a custom Verlet integrator, a simple Euler step. The domain provides the constants. The client provides the simulation. The domain validates the result.
+These are parameters, not a physics engine. The client plugs them into whatever physics system it uses. The domain provides the constants. The client provides the simulation. The domain validates the result. A domain that doesn't need physics simply doesn't set any `physics.*` properties.
 
 Entities that participate in physics carry physics-relevant properties:
 
@@ -921,12 +929,12 @@ The domain uses immersive fidelity to:
 
 - Set up input streams. A VR client with hand tracking gets head + left_hand + right_hand input stream endpoints. A seated VR client gets head only.
 - Mark proximity affordances. Objects in a VR domain get `mode: proximity` affordances with appropriate ranges (0.3m for grabbing, 1.0m for interacting).
-- Send comfort metadata. The region includes comfort hints:
+- Send comfort metadata. The region includes comfort hints as properties:
 
-comfort:
-  locomotion: [teleport, smooth, snap_turn]
-  vignette_on_move: true
-  seated_mode: supported
+properties:
+  comfort.locomotion: [teleport, smooth, snap_turn]
+  comfort.vignette_on_move: true
+  comfort.seated_mode: supported
 
 - Choose appropriate spatial model. VR domains use continuous_3d. The domain can reject clients without 3D support at bootstrap.
 
@@ -1003,7 +1011,7 @@ Physics simulation. GDL provides physics parameters (gravity, friction, collisio
 
 Animation. GDL doesn't describe skeletal rigs or animation state machines. The posture hint covers coarse state ("crouching", "attacking", "idle"). Smooth animation is the client's problem, driven by posture changes in the observation stream.
 
-Audio design. GDL carries ambient properties, sound asset references, media streams, and sound events. Spatial audio mixing, music systems, and sound design are client-side. The domain says "there's a fire here" and optionally publishes a crackling audio stream. The client decides the mix.
+Audio design. GDL carries theme tokens for atmosphere, sound asset references, media streams, and sound events. Spatial audio mixing, music systems, and sound design are client-side. The domain says "there's a fire here" and optionally publishes a crackling audio stream. The client decides the mix.
 
 Scripting. No behavior in the description. Ever. Raido handles scripting. GDL handles description. The boundary is load-bearing.
 
@@ -1014,7 +1022,11 @@ Data validation. GDL doesn't specify validation rules. A domain might send `heal
 Panel security. Panels are sandboxed web apps: `<iframe sandbox="allow-scripts">` without `allow-same-origin`. CSP blocks all network access. No phone home, no exfiltration, no external scripts. The panel talks only to the client via `postMessage`, and the client validates every affordance call through Leden. A malicious domain can run whatever JS it wants inside the sandbox — it can't escape. For stylesheet security, see [GDL-style.md](GDL-style.md).
 Resolved
 
-Regions are not entities. A region is a container. Entities are contents. Regions have metadata (name, description, ambient, spatial model). Entities have affordances and appearance. Mixing them creates ambiguity about what "observing an entity" means vs. "observing a region." Clean separation.
+Regions are not entities. A region is a container. Entities are contents. Regions have metadata (name, description, spatial model, properties, theme). Entities have affordances and appearance. Mixing them creates ambiguity about what "observing an entity" means vs. "observing a region." Clean separation.
+
+Vocabulary is convention, not protocol. Entity kinds, affordance categories, property names, event types, appearance hints — these are initial conventions that communities extend. The protocol defines mechanisms (entities have a `kind` string, affordances have a `category` string). The specific terms (`agent`, `navigate`, `health`) are conventions that emerge from use. Like HTTP content types — `text/html` is not in the HTTP spec. GDL's `creature` kind should not be in the GDL spec either. I kept a small core set for bootstrapping, but they're conventions, not protocol.
+
+Region schema is minimal. Regions have: name, description, spatial model, extensible properties, theme, layers, entities. Physics parameters, comfort hints, tick rate, and environmental description all live in properties or theme tokens — not as first-class fields. This keeps the region schema stable as new use cases emerge. A VR fitness app adds `comfort.*` properties. A music visualizer adds `audio.*` properties. Neither requires a spec change.
 
 Portals are entities (kind=portal) that reference target regions. Navigation is: entity (portal) → region → entities. This gives you cross-region links (like HTML hyperlinks) without nesting regions inside regions.
 
