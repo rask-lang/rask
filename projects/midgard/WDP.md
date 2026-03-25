@@ -327,54 +327,19 @@ The client listens for click events on elements with `data-wdp-verb`, extracts t
 This means panel HTML is a layout and display concern. Interactivity is WDP's job — the client IS the JavaScript runtime. CSS handles hover states, transitions, and visual feedback. The domain authors HTML the same way you'd author an HTML email with a few clickable buttons.
 Theme
 
-This is WDP's CSS moment. Without it, every domain renders with the client's default style — the same way every website looked the same in 1993. The domain author creates a horror dungeon, but the client's built-in bright sprite set turns it into a cartoon. Content exists. Visual identity doesn't.
+Regions carry a theme field for visual identity — the domain's way of saying "this place should feel like this." The full theme system is specified separately in [WDS.md](WDS.md) (World Description Style), the same way CSS is a separate spec from HTML. They evolve independently: WDP's structure is stable, styling evolves fast. A WDP implementation is complete without WDS — it just uses client defaults.
 
-Theme lives on regions, not domains, because different regions in the same domain can have different moods (bright overworld, dark dungeon, underwater temple). It's the domain's way of saying "this place should feel like this."
+Brief summary of what WDS provides:
 
-theme:
-  mood: gritty
-  palette: [#2a1a0e, #5c3a1e, #8b6914, #1a1a1a]
-  saturation: low
-  contrast: high
-  epoch: medieval
-  density: cluttered
-  stylesheet: sha256:ef9a01...
+- Design tokens. Flat key-value pairs (`color.primary: #2a1a0e`, `atmosphere.fog_density: 0.4`, `entity.hostile_tint: #ff2200`) that every client type can map to its rendering system. Text clients map colors to ANSI. 3D clients map atmosphere tokens to shaders. No selector syntax, no specificity bugs.
 
-Theme fields:
-Field	Required	Purpose
-mood	No	Emotional register — hint vocabulary below
-palette	No	Region color palette — client uses for tinting, UI accent, sprite selection
-saturation	No	low, medium, high — client adjusts post-processing or sprite selection
-contrast	No	low, medium, high — lighting contrast guidance
-epoch	No	Time period hint — medieval, futuristic, modern, ancient, alien, ...
-density	No	How full the space feels — sparse, normal, cluttered, dense
-stylesheet	No	Content-addressed CSS blob for the region's panel styling and UI hints
+- Structured hints. Coarse mood signals (`mood: gritty`, `epoch: medieval`, `saturation: low`) for clients that don't want to parse individual tokens. A simple client picks a preset from mood + epoch.
 
-Mood vocabulary:
-Mood	Guidance
-gritty	Dark, rough, dangerous. Muted colors, harsh lighting.
-whimsical	Light, playful, colorful. Rounded shapes, bright palette.
-serene	Calm, peaceful. Soft colors, gentle lighting, low contrast.
-ominous	Threatening, foreboding. Deep shadows, unsettling palette.
-epic	Grand, dramatic. High contrast, saturated colors, sweeping scale.
-mundane	Ordinary, everyday. Natural colors, neutral lighting.
-alien	Strange, unfamiliar. Unusual palette, unexpected shapes.
+- CSS stylesheet. Content-addressed CSS blob for panel styling and web client UI theming. Domain stylesheets reference tokens via CSS custom properties (`var(--wdp-color-primary)`). Walking through a portal shifts the entire client's UI palette.
 
-A text client ignores the theme entirely — mood comes from the description text. A 2D client uses palette for tinting and mood to pick between sprite set variants (if it has them). A 3D client applies palette to post-processing, mood to lighting presets, saturation/contrast to shaders.
+- Three-level cascade. Domain → region → entity. Domain is the brand. Region is the scene. Entity is the individual. Last writer wins.
 
-The stylesheet field is where CSS comes in. It's a content-addressed CSS blob that the domain can provide for clients that support it. The stylesheet can:
-
-- Style the domain's panels (colors, fonts, layout refinements)
-- Provide CSS custom properties that the client can apply to its own UI chrome: `--wdp-primary`, `--wdp-secondary`, `--wdp-accent`, `--wdp-bg`, `--wdp-text`, `--wdp-danger`, `--wdp-success`
-- Suggest UI treatment via well-known classes: `.wdp-health-bar`, `.wdp-entity-label`, `.wdp-affordance-button`
-
-The client is not required to apply the stylesheet. It's a hint, like everything else. A text client ignores it. A web-based client can adopt the custom properties to tint its UI to match the domain's visual identity. A native client can extract the custom properties and map them to its own theming system.
-
-This is CSS's original promise: content and presentation separated, but presentation exists. Without it, WDP is HTML circa 1993 — every page looks like the browser's default.
-
-One stylesheet per region means: walking through a portal can shift the entire client's color scheme. The horror dungeon portal fades to dark reds and deep shadows. The fairy forest portal shifts to greens and dappled light. The client's UI chrome follows the domain's visual identity without domain-specific code.
-
-Security: Same restrictions as panel HTML. No `url()` to external resources. No `@import`. Only `data:` URIs and content-addressed `sha256:` references. The client validates the CSS before applying it.
+See [WDS.md](WDS.md) for the full design: token categories, cascade rules, stylesheet constraints, security model, and per-client-type consumption examples.
 Fidelity Negotiation
 
 The client declares what it can handle. The domain uses this to tailor its descriptions.
@@ -446,6 +411,7 @@ entity_update	Ref + changed fields	Entity properties change
 affordance_update	Ref + new affordance list	Available actions change
 ambient_update	Changed ambient fields	Environment changes
 panel_update	Panel id + new content hash	Domain UI changes
+theme_update	Changed tokens and/or hints	Visual identity changes (see WDS)
 
 These map directly to Leden observation deltas. The region object is the publisher. Subscribed clients are the observers. Leden handles fan-out, backpressure, sequence numbering, and reconnection.
 
@@ -546,7 +512,7 @@ Entity internals. WDP describes what an entity looks like from outside. Its inte
 
 Data validation. WDP doesn't specify validation rules. A domain might send `health: 50, health_max: 30` or a position outside the region's bounds. Domains are responsible for consistency. Clients should be tolerant — display what you can, clamp out-of-bounds values, don't crash on contradictions. Postel's law: be conservative in what you send, liberal in what you accept.
 
-Panel and stylesheet security. Panels and theme stylesheets are sandboxed: no JavaScript, no external resource loading, no `@import`, no CSS `url()` except `data:` URIs and content-addressed `sha256:` references. Clients must enforce this — render panels in sandboxed iframes (`sandbox="allow-same-origin"`) with a Content-Security-Policy that blocks external fetches. Theme stylesheets are validated before application. A malicious domain cannot use panels or stylesheets to exfiltrate data, track users, or escape the sandbox.
+Panel security. Panels are sandboxed: no JavaScript, no external resource loading. Clients render panels in sandboxed iframes (`sandbox="allow-same-origin"`) with a Content-Security-Policy that blocks external fetches. A malicious domain cannot use panels to exfiltrate data, track users, or escape the sandbox. For stylesheet security, see [WDS.md](WDS.md).
 Resolved
 
 Regions are not entities. A region is a container. Entities are contents. Regions have metadata (name, description, ambient, spatial model). Entities have affordances and appearance. Mixing them creates ambiguity about what "observing an entity" means vs. "observing a region." Clean separation.
@@ -569,7 +535,7 @@ Observation has three tiers. Region observation for structural changes (entity a
 
 Domain-specific UI uses HTML panels. Domains send sandboxed HTML/CSS fragments for non-spatial UI (skill trees, crafting grids, faction screens). No JavaScript, no external resources. Web clients render natively, text clients show a plain text fallback. I chose HTML over a custom schema because any layout language rich enough for real UI would end up being a bad version of HTML. See the Panels section above.
 
-Visual identity uses region themes. Mood, palette, saturation, contrast, epoch, density — plus an optional CSS stylesheet for panel styling and UI custom properties. This is WDP's CSS moment: without it, every domain renders in the client's default style regardless of the domain author's creative intent. Theme is a hint layer, like appearance hints on entities. Clients apply what they can. Text clients ignore it. Web clients adopt CSS custom properties. 3D clients map mood/palette to post-processing. See the Theme section above.
+Visual identity is a separate spec (WDS). Design tokens for world styling, CSS stylesheets for panels and web UI, three-level cascade (domain → region → entity). Separated from WDP because styling evolves faster than structure and has a different implementer audience. A WDP implementation is complete without WDS. See [WDS.md](WDS.md).
 
 Large regions use viewport filtering. The client reports its viewport (center + radius), and the domain only sends entities within that area. Entity enter/exit deltas fire at the viewport boundary. This scales WDP to open-world regions without dumping 10,000 entities on initial snapshot.
 Deferred
