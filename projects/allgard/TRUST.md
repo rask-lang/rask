@@ -1,0 +1,244 @@
+<!-- id: allgard.trust -->
+<!-- status: proposed -->
+<!-- summary: Adversarial trust model — how domains build, verify, and lose trust -->
+
+# Trust
+
+How domains build, verify, and lose trust. Modeled on how humans actually trust each other — not on cryptoeconomics.
+
+The [Conservation Laws](CONSERVATION.md) define what's valid. This spec defines how domains decide *who to believe*.
+
+## The Human Trust Model
+
+I looked at proof-of-work, proof-of-stake, token deposits, slashing conditions. They all solve the wrong problem. They try to make dishonesty expensive through money. But real trust doesn't work that way.
+
+Real trust works like this:
+
+1. Someone I trust introduces you
+2. We start with small interactions
+3. You build a track record over time
+4. If you betray me, I cut you off — and I tell the person who introduced you
+5. That person's judgment is now in question too
+
+No deposits. No tokens. The stake is your reputation — the thing that took months or years to build. Losing it is expensive because rebuilding it is slow.
+
+### Why High-Trust Societies Work
+
+High-trust societies (Nordics are the canonical example) don't work because people are inherently good. They work because of three structural properties:
+
+1. **Trust by default.** You trust strangers because most people are trustworthy. This lowers transaction costs enormously — no lawyers for every handshake.
+2. **Participation is valuable.** The system works well enough that being inside it is better than being outside it. Nobody is desperate enough that fraud is their best option.
+3. **Asymmetric consequences.** Getting caught costs more than the fraud could gain. You're not just losing the stolen goods — you're losing access to a system that was already treating you well.
+
+That third point is the key. The cost of fraud isn't punishment — it's exclusion from a network that was worth being in.
+
+This transfers directly to federation:
+
+| Nordic society | Allgard federation |
+|---|---|
+| Social safety net → nobody's desperate | Honest participation is profitable → fraud isn't the best strategy |
+| Trust by default → low transaction costs | Greeter gives strangers access → low barrier to start |
+| Getting caught → social and legal exclusion | Getting caught → reputation collapse, lost introductions, network exclusion |
+| Reputation takes years to build | Trust levels take months to earn |
+| Cost of fraud > benefit of fraud | Value of long-term network membership > value of one-shot extraction |
+
+The goal isn't to make fraud impossible. It's to make the federation valuable enough that playing honestly is the dominant strategy for anyone with a time horizon longer than one transaction. Fraud becomes irrational, not just illegal.
+
+**When this breaks down:** the same way it breaks in real societies — when someone has nothing to lose. A domain with no established reputation, no valuable relationships, no long-term interest in the network. That's why the bootstrap is slow and graduated. You can't extract much value before you've invested enough time that burning it would hurt.
+
+That's the model. Everything below is the mechanical version.
+
+## Introduction-Based Trust
+
+Domains don't build trust by transacting with strangers. They build trust through introductions from domains they already trust.
+
+### How It Works
+
+1. **Domain A** trusts **Domain B** (established relationship, verified Proofs over time).
+2. **Domain C** is new. C connects to B through the greeter, starts small transactions.
+3. After C has a track record with B, **B introduces C to A** (Leden's `Introduce` operation).
+4. A now knows: "B vouches for C." A starts interacting with C — cautiously, at lower limits than B gets.
+5. Over time, A builds its own bilateral history with C. A's trust in C becomes independent of B.
+
+### Introducer Accountability
+
+This is the critical piece. When B introduces C to A, B is putting its own reputation on the line.
+
+If C turns out to be fraudulent:
+- A cuts off C (obvious)
+- A downgrades B's introduction quality score
+- A may share this with other domains B has introduced (gossip)
+
+B has every incentive to vet C before introducing C to anyone. A bad introduction costs B credibility with every domain that trusted B's judgment.
+
+This is mechanical, not social. Domains track:
+
+| Metric | What it measures |
+|--------|-----------------|
+| Introduction success rate | % of B's introductions that resulted in valid long-term relationships |
+| Introduction failure rate | % of B's introductions that resulted in fraud or cut-off |
+| Introduction volume | How many introductions B has made (high volume + low failure = strong signal) |
+
+A domain with a 95% introduction success rate over 500 introductions is a reliable introducer. A domain with 3 introductions total tells you nothing. A domain whose last 5 introductions were all fraudulent is actively dangerous.
+
+### Why This Resists Sybils
+
+A Sybil attack under this model:
+
+1. Attacker creates 10,000 domains
+2. They all transact with each other — valid Proofs, conservation laws satisfied
+3. They try to get introduced to legitimate domains
+
+The bottleneck is step 3. Who introduces the Sybil cluster to the real network? The introducer needs an existing trusted relationship with legitimate domains. If the introducer is also a Sybil, it has no trusted relationships. If the introducer is a compromised legitimate domain, it burns its own reputation when the Sybils are detected.
+
+The Sybil cluster can trade among itself forever. It can't extract value from the real network without a trusted introduction. And the introduction is traceable and accountable.
+
+**Comparison to the real world:** A con artist can set up 50 shell companies that all do business with each other. Impressive on paper. But when they approach a real bank for a loan, the bank asks: "Who referred you?" If nobody credible referred them, they start at the bottom. If someone credible did refer them and they default, the referrer's credibility takes a hit too.
+
+### Bootstrap Problem
+
+How does the very first trust relationship form if everything requires introduction?
+
+Same way it works in real life: **you start at the bottom and work up slowly.**
+
+1. New domain connects to seeds, gets greeter capabilities
+2. Greeter allows small transactions — below a threshold that limits damage
+3. Over weeks/months of small, verified transactions, bilateral trust grows
+4. Eventually the seed domain (or another established domain) is willing to introduce the new domain to others
+
+This is deliberately slow. Building trust should be slow. That's the Sybil defense — there's no shortcut to a reputation that took six months to build.
+
+### Trust Levels
+
+Domains set their own thresholds, but the model supports graduated trust:
+
+| Level | Typical meaning | Typical requirements |
+|-------|----------------|---------------------|
+| Stranger | Greeter-only. Observe and small transfers. | None — any domain starts here |
+| Known | Regular transactions, standard rate limits | Sustained bilateral history, no violations |
+| Trusted | Higher limits, introduction-worthy | Long bilateral history, vouched by other trusted domains |
+| Allied | Full bilateral agreement, pre-negotiated asset mapping | Formal agreement, mutual audit access |
+
+These aren't protocol-level categories. They're a pattern that domains implement based on their own policies. A cautious domain might require a year of history for "trusted." A permissive domain might require a week. Sovereignty means each domain sets its own bar.
+
+## Audit Gossip with Proofs
+
+Current problem: if audit gossip is just claims ("I've verified 500 units from A"), it can be poisoned by Sybils injecting false reports.
+
+**Rule: audit gossip carries evidence, not assertions.**
+
+When Domain B tells Domain C about its observations of Domain A, the gossip message includes:
+
+1. The specific Transforms B witnessed (hashes, not full content)
+2. The Proofs B verified (or their hashes)
+3. B's computed totals from those Proofs
+
+C doesn't trust B's summary. C checks that B's totals are consistent with the Proofs B cites. C can also spot-check by fetching individual Proofs from B.
+
+This means:
+- **Fabricated gossip is detectable.** You can't claim "I verified 500 units" without producing 500 Proof hashes. And those hashes can be spot-checked.
+- **Sybil gossip is bounded.** A Sybil can only gossip about transactions it actually participated in. Since Sybils can only transact with each other (no trusted introductions to real domains), their gossip about legitimate domains is empty.
+- **Gossip is composable.** C can combine B's evidence with D's evidence and E's evidence to build a richer view of A's economy than any single domain has.
+
+### Gossip Cost
+
+Carrying Proofs makes gossip heavier than carrying summaries. Two mitigations:
+
+1. **Hash-first, fetch-on-demand.** Gossip carries Proof hashes and totals. Full Proofs are fetched only when a domain wants to verify a specific claim. Most of the time, the hashes are enough — you're checking consistency, not re-verifying every Proof.
+
+2. **Periodic, not continuous.** Supply audits don't happen on every transaction. Domains publish periodic audit snapshots (hourly, daily — domain policy). Trading partners verify at their own pace. The audit window means small transient discrepancies are tolerated; sustained fraud over audit periods is caught.
+
+This addresses the "might get expensive" concern. You're not verifying every mint in real-time. You're periodically cross-checking snapshots, with the ability to drill into specific Proofs when something looks wrong.
+
+## Slow-Burn Inflation Defense
+
+The attack: a domain inflates supply by 1% per period, small enough that no single trading partner notices.
+
+The defense is layered:
+
+1. **Verifiable minting scripts (existing).** Every mint is a Raido script. The script's expected output is deterministic. If a domain claims to have minted 100 units and the script only produces 99, the discrepancy is mechanical.
+
+2. **Cumulative bilateral views.** Domain B tracks every object it has ever received from A. Over time, B's accumulated view grows. A domain doing 1% inflation will eventually have exported more than its minting scripts can account for. The longer the fraud continues, the more trading partners accumulate evidence, and the harder it is to hide.
+
+3. **Audit gossip aggregation.** When B, C, and D pool their evidence (with Proofs, not claims), the combined view exposes discrepancies that no single domain could detect. B saw 500, C saw 600, D saw 300 — total witnessed: 1400. If A's minting scripts only produce 1350, the 50-unit gap is visible.
+
+4. **Mint log access (bilateral capability).** A domain seeking trusted/allied status offers its trading partners a `mint-log` capability: read access to the complete mint and burn history with Proof chains. Not every domain needs this — strangers and known domains operate on bilateral observations alone. But domains seeking higher trust offer deeper auditability.
+
+This is graduated, not all-or-nothing. Small domains trading small amounts don't need full audit access. Large domains moving significant value negotiate deeper verification as part of their bilateral agreement.
+
+## Collusion
+
+Two trusted domains collude to fabricate assets. Both produce valid-looking Proofs for each other.
+
+**I'm not trying to prevent this.** Two parties that collude can defraud each other. That's true in every system — two banks can collude to create fraudulent transfers between themselves, and no banking protocol prevents it.
+
+What matters: **can they defraud a third party?**
+
+No, if the third party does its own verification:
+
+1. C receives an object from A. C verifies the minting Proof — re-executes the Raido script, checks the output. The script is content-addressed; A can't serve C a different script than A's legitimate one without changing the hash.
+
+2. The colluded object was minted by a *legitimate* script with *fabricated inputs*. C re-executes with those inputs and gets the same output (determinism). But C can also check: do the inputs make sense? Does A's total supply, as computed from all minting scripts C can access, reconcile with A's self-reported numbers?
+
+3. If A and B are colluding and only trading fabricated assets between themselves, the fraud is contained to their relationship. The moment they try to export fabricated value to C, C's bilateral view catches it — A is exporting more than its auditable minting can account for.
+
+**Bounded damage.** Collusion between N domains damages those N domains and whoever trusts them blindly. Domains that verify independently are unaffected. The introduction model means: if A and B collude and then A introduces a Sybil to C, C traces the fraud back through A's introduction, and both A and B's introduction scores take a hit.
+
+This is a known property, not a bug. The spec doesn't promise protection against N-party collusion. It promises that honest domains doing their own verification aren't harmed.
+
+## Greeter Resource Limits
+
+The greeter is the public entry point. Without limits, it's a DoS target.
+
+| Limit | Purpose |
+|-------|---------|
+| Max concurrent stranger sessions | Prevent connection exhaustion |
+| Connection rate per source | Prevent rapid reconnection after disconnect |
+| Observation bandwidth cap per stranger | Prevent catalog/gossip flooding |
+| Transfer size cap for strangers | Bound exposure to unknown domains |
+| Transfer rate cap for strangers | Bound transaction volume from unknowns |
+
+These are domain-configurable but must be present. A domain with no greeter limits is vulnerable by choice. The defaults should be conservative — tighten later if needed, but start restrictive.
+
+Leden's session-level backpressure handles the transport side. These are Allgard-level limits on what a stranger can *do*, not how fast bytes flow.
+
+## Reputation Laundering
+
+The attack: Domain A builds reputation, commits fraud, shuts down. Spins up A' with new keys. Clean slate.
+
+The defense is the cost of rebuilding. Under this trust model:
+
+- A' starts as a stranger. Greeter-only, small transactions.
+- A' has no introductions. Nobody vouches for it.
+- Building back to "trusted" takes the same months/years it took the first time.
+- The fraud A committed lives in every domain that witnessed it. If A' is run by the same operator (same IP ranges, same behavior patterns, same trading partners), domains can flag it. This isn't protocol-level — it's domain-level heuristics. But the information is available.
+
+**The honest cost:** a determined attacker with patience can launder reputation. The question is whether the payoff exceeds the cost of months of legitimate-looking operation. For most attacks, it doesn't. For nation-state level attackers — nothing in any protocol stops them.
+
+The goal isn't perfect prevention. It's making the cost high enough to deter most fraud and containing the damage when it happens.
+
+## Eclipse Attacks
+
+Isolating a domain from gossip so it can't learn about a fraudulent domain's exposure.
+
+This is a Leden concern, not an Allgard concern. But Allgard's trust model has a natural mitigation: a domain with diverse introduction sources (trust relationships through multiple independent introducers) gets gossip from multiple independent paths. Eclipsing requires controlling all of them.
+
+**Recommendation:** domains should maintain trust relationships with multiple independent clusters. If all your trusted contacts were introduced by the same domain, you have a single point of failure. Diverse introduction sources = diverse gossip sources = eclipse resistance.
+
+## Attack Summary
+
+| Attack | Defense | Strength |
+|--------|---------|----------|
+| Sybil reputation mining | Introduction-based trust; introducer accountability | Strong — bottleneck is getting trusted introductions |
+| Audit gossip poisoning | Gossip carries Proof hashes, not claims; spot-checkable | Strong — fabricated evidence is detectable |
+| Slow-burn inflation | Cumulative bilateral views + periodic audit snapshots + mint-log capability | Strong over time — harder to hide as evidence accumulates |
+| Collusion (N-party) | Contained to colluding parties; independent verifiers unaffected | Bounded — honest domains aren't harmed |
+| Reputation laundering | Slow trust building; no shortcut to reputation | Moderate — patient attackers can do it |
+| Eclipse | Diverse trust relationships; multiple gossip paths | Moderate — network-level defense, not protocol-level |
+| Greeter DoS | Connection/rate/bandwidth limits | Operational — configurable per domain |
+
+## Open Questions
+
+- **Introduction graph privacy.** Sharing "who introduced whom" helps detect Sybil clusters but leaks social graph information. How much introduction metadata should gossip carry? Tradeoff between Sybil resistance and privacy.
+- **Behavioral fingerprinting.** Detecting reputation laundering by operator behavior (IP ranges, timing patterns, trading partners) is powerful but feels like surveillance. Where's the line? I think this should be domain-local heuristics, not protocol-level — but it's worth flagging.
+- **Cascading trust damage.** If A defrauds C, and B introduced A to C, B takes a hit. But what if B genuinely didn't know? The accountability model punishes honest mistakes the same as malicious introductions. This is deliberate — it incentivizes careful vetting — but it might be too harsh. Degrees of accountability (B verified A's Proofs vs. B casually passed along an introduction) might be worth specifying.
