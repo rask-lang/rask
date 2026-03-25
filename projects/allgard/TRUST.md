@@ -131,6 +131,38 @@ Mechanical, not social:
 
 A domain with a 95% success rate over 500 introductions is a reliable introducer. A domain with 3 introductions total tells you nothing. A domain whose last 5 introductions were all fraudulent is actively dangerous. A domain with a 90% success rate but fast response times and thorough due diligence records is honest but operating in a tough neighborhood.
 
+### Why Introduce Anyone?
+
+The accountability model explains what happens when introductions go wrong. But without a reason to introduce in the first place, the rational move is to never do it — all risk, no reward. The network dies in its crib.
+
+Real trust networks don't have this problem because introducing people is *valuable*. The same dynamics apply here:
+
+**Being a good introducer is a competitive advantage.**
+
+A domain known for quality introductions becomes a hub. Other domains seek it out — not just for introductions, but because hubs attract activity. More connections = more trading partners = more liquidity = more opportunity. This is self-reinforcing: the better your introduction track record, the more domains want to connect through you, the more valuable your position becomes.
+
+| Incentive | Mechanism |
+|-----------|-----------|
+| **Network growth** | A bigger network with more trusted participants benefits everyone. More trading partners, more asset types, more liquidity. Introducing good domains makes *your* network richer. |
+| **Reciprocity** | I introduce your newcomers, you introduce mine. Bilateral introduction agreements reduce the cost of vetting for both sides. |
+| **Introduction fees** | A domain can charge for introductions. Not protocol-mandated, but a natural business model. "I'll vouch for you to my contacts. Here's what that costs." Legitimate because the introducer's reputation is on the line — the fee reflects real risk. |
+| **Hub status** | The domain with the best introduction track record becomes the first stop for newcomers. That's traffic, visibility, and influence. The equivalent of being the well-connected person everyone calls first. |
+| **Early relationship advantage** | The domain that introduces C to the network gets the first bilateral relationship with C. If C turns out to be valuable, the introducer benefits from having been there first. |
+
+**The economics work because introduction quality is visible.** A domain's introduction success rate, volume, and due diligence depth are all trackable (see [What Domains Track](#what-domains-track)). This means the market can price introduction quality. Domains with a 98% success rate over 1000 introductions can charge more — and domains seeking introduction will pay more — because the quality is demonstrated, not claimed.
+
+**Compare to the real world:** headhunters, business brokers, venture capital intro networks. These exist because being the trusted connector is genuinely valuable. Nobody forces VCs to introduce startups to each other — they do it because their network *is* their product. The same dynamic emerges naturally in a federation where introduction quality is transparent and accountable.
+
+### Network Health Incentives
+
+Beyond introductions, domains have structural incentives to keep the network healthy:
+
+**Participation in audit gossip is self-serving.** A domain that contributes audit evidence gets audit evidence back. If you help detect fraud against others, others help detect fraud against you. Free-riding (consuming gossip without contributing) is observable — and domains can deprioritize gossip to non-contributors.
+
+**Flagging bad actors protects your own relationships.** When B discovers that C is fraudulent, B's fastest path to limiting damage is to warn every domain it introduced C to. Silence hurts B more than disclosure — B's contacts will discover the fraud eventually, and B's failure to warn becomes evidence of negligence (see [Don't Judge Intent — Judge Behavior](#dont-judge-intent--judge-behavior)).
+
+**Reputation compounds.** The longer a domain maintains a clean track record, the more valuable its position. A domain with 5 years of clean history, 500 successful introductions, and fast fraud response times has something no money can buy and no shortcut can replicate. That accumulated reputation is the most valuable asset a domain holds — more valuable than any individual trade.
+
 ### Why This Resists Sybils
 
 A Sybil attack under this model:
