@@ -50,13 +50,40 @@ An Owner is *not* a person. A person may control multiple Owners. An automated s
 
 Every Owner has a home domain — the domain that is authoritative for their identity and primary inventory. An Owner can operate in other domains, but their home domain is the root of trust for their identity.
 
-The home domain is where your stuff lives by default. When you visit another domain, objects can transfer there — but the home domain is always the fallback:
+The home domain is where your stuff lives by default.
 
-- **Domain goes dark.** Objects on a visited domain that goes offline are recoverable through the escrow mechanism (see [transfer routing](../allgard/README.md#cross-domain-transfer-routing)). Objects automatically return to the home domain after the escrow timeout.
-- **Player logs off.** The visited domain hosts your transferred objects while you're gone. If the visited domain goes down before you return, the home domain's last-known state is the recovery point. Objects that transferred out have Proof chains — the home domain can reconstruct what left and negotiate return.
-- **Home domain goes down.** This is the hard case. Your home domain is your root of trust. If it's permanently gone, your identity and non-transferred objects go with it. Mitigation: home domain backup and migration. A player can designate a secondary home domain that mirrors their identity and inventory Proof chains. This is a bilateral agreement between the player and the backup domain — not a protocol feature, but a pattern the protocol supports through Grants.
+### Leased Transfer
 
-The home domain is the player's anchor. Federation works because you always have somewhere to come back to.
+When a player visits another domain, objects don't transfer permanently — they transfer on a **lease**. The lease is a time-limited escrow built from existing primitives (Transform + Grant + expiry):
+
+> "These objects are hosted by Domain B. If the lease isn't renewed within N hours, they return to the home domain."
+
+The player's client renews the lease automatically while the session is active. This is invisible — like a DHCP lease, nobody thinks about it.
+
+**Why transfer at all?** Because game logic needs low latency. If objects stayed on the home domain and the visited domain operated on them remotely, every sword swing would be a cross-domain round trip. Leased transfer gives the visited domain local access for game logic while the home domain retains recovery authority.
+
+### Exit Scenarios
+
+| Scenario | What happens | Player experience |
+|----------|-------------|-------------------|
+| **Normal exit** | Player leaves Domain B. Domain B transfers objects back to home domain immediately. | Seamless — objects are home when you get there |
+| **Sudden disconnect** | Player's client dies. Domain B detects session loss, transfers objects back to home domain. | Objects are home next time you log in |
+| **Visited domain goes dark** | Lease expires without renewal. Home domain recovers objects from last-known state using the Proof chain. | Brief delay, then objects reappear at home. Mutations made on Domain B after the last Proof sync may be lost — this is the accepted cost. |
+| **Home domain goes dark** | Hard case. Objects on visited domains are safe (the visited domain hosts them). But your identity and anything stored at home is at risk. | See below. |
+
+### Home Domain Failure
+
+Your home domain is your root of trust. If it's permanently gone, your identity and non-transferred objects go with it. This is the real risk — same as losing access to your email provider.
+
+Mitigation: **backup home domain.** A player designates a secondary home domain that mirrors their identity and inventory Proof chains. This is a bilateral agreement between the player and the backup domain — not a protocol feature, but a pattern the protocol supports through Grants. The backup domain holds a read-only mirror of your inventory state. If the primary goes down, the backup can take over as the new home domain.
+
+I'd recommend making backup home domains a first-class UX pattern — not required, but strongly encouraged. "Choose a backup home" during account setup. The protocol supports it; the implementation should make it easy.
+
+### Why This Works
+
+The lease model means objects are always recoverable. The worst case (visited domain goes dark) loses recent mutations — not the objects themselves. The home domain has the Proof chain showing what left and can reconstruct from there.
+
+This composes entirely from existing primitives. The escrow transform from [transfer routing](../allgard/README.md#cross-domain-transfer-routing) already describes conditional transfers with timeouts. Leased visiting is the same mechanism, applied to player travel instead of intermediary routing.
 
 ## Domain
 

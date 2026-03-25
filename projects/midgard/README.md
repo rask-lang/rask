@@ -87,10 +87,24 @@ No new protocol primitive needed. Domain B already has catalog observation capab
 
 The difference is what the player sees. Between established domains with standard items, pre-staging resolves silently — everything maps, nothing to report. The compatibility UI only surfaces when the result would surprise the player.
 
+### Leaving and Disconnecting
+
+Objects transfer to visited domains on a [lease](../allgard/PRIMITIVES.md#leased-transfer), not permanently. This means every exit is safe:
+
+| Exit | What happens |
+|------|-------------|
+| Player walks back to home domain | Objects transfer home immediately |
+| Player logs off on Domain B | Domain B detects session end, transfers objects home |
+| Player crashes / loses connection | Domain B detects session loss, transfers objects home |
+| Domain B goes dark | Lease expires, home domain recovers from Proof chain |
+
+The player never needs to think about this. Their stuff is always home when they get there.
+
 ### What Can Go Wrong
 
 - Domain B's compatibility changes between pre-stage and transfer (rare — types don't change often). Transfer falls back to the new mapping; player is notified.
-- Network failure mid-transfer. The escrow transform (see [transfer routing](../allgard/README.md#cross-domain-transfer-routing)) ensures objects return to A after timeout. Nothing is lost.
+- Network failure mid-transfer. The escrow transform (see [transfer routing](../allgard/README.md#cross-domain-transfer-routing)) ensures objects return to home domain after timeout. Nothing is lost.
+- Domain B goes dark while player is visiting. Lease expires. Objects return home. Recent mutations on B after the last Proof sync may be lost — you might lose the last few minutes of gameplay, not your items.
 - Domain B rejects the transfer entirely (player banned, rate limited). Player stays on A.
 
 ### Asset Fidelity
