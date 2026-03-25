@@ -42,7 +42,7 @@ glTF's tagline is "the JPEG of 3D." It succeeded by optimizing for the renderer,
 HTTP beat CORBA. JSON beat XML. HTML beat SGML. In every case, the simpler format won because more people could implement it correctly. A WDP client should be buildable in a weekend. The minimum viable client is a text renderer that prints names, descriptions, and affordance menus. Everything beyond that is progressive enhancement.
 Core Model
 
-Four concepts: regions, entities, affordances, and appearance.
+Five concepts: regions, entities, affordances, appearance, and panels.
 Regions
 
 A region is a spatial container. It's the "page" — the top-level context that a client loads and renders. A dungeon room, a forest clearing, a city block, a spaceship interior. Regions connect to other regions through portals.
@@ -74,6 +74,7 @@ Model	Positions	Use case
 continuous_3d { bounds }	[x, y, z] floats	Full 3D worlds
 continuous_2d { bounds }	[x, y] floats	Top-down or side-view
 grid_2d { width, height }	[col, row] integers	Tile-based games
+hex { width, height }	[q, r] axial integers	Strategy games, hex-based worlds
 graph	Named locations	Text adventures, node-based maps
 abstract	None	Inventories, conversations, menus
 
@@ -115,9 +116,9 @@ creature	Living entity — player, NPC, monster, animal	Name + description
 item	Portable object — sword, potion, tool, material	Name + "you could pick this up"
 structure	Fixed construction — wall, door, chest, table, building	Name + part of environment
 terrain	Ground/environment — grass, water, stone, lava	Background/floor
-portal	Navigation point — door, gate, path, teleporter	Directional prompt
+portal	Navigation point — door, gate, path, teleporter	Directional prompt (+ transition hint)
 effect	Transient phenomenon — fire, mist, spell, sound	Flavor text
-marker	Abstract point — spawn, waypoint, boundary	Hidden or minimal
+marker	Abstract point — spawn, waypoint, boundary	Not rendered. Editor/debug mode may visualize
 container	Holds other entities — chest, bag, shelf	Name + "contains things"
 vehicle	Rideable/enterable transport	Name + description
 
@@ -152,6 +153,8 @@ price	item	Trade value
 owner_name	any	Display name of the owner
 
 Well-known properties let clients build smart UIs without domain-specific code. A client sees health and health_max on a creature and renders a health bar. No domain-specific plugin needed.
+
+Property semantics convention: numeric properties that represent a bounded value use `X` + `X_max` naming. Values are always absolute, never percentages. `health: 30` means 30 hit points, not 30%. `health` without `health_max` means the maximum is unknown — the client shows the number but can't render a bar. This matters for cross-domain consistency: two domains using `health` to mean different things (absolute vs. percentage vs. armor-adjusted) would break the smart UI promise.
 Affordances
 
 Affordances are what make WDP interactive. They answer: "what can I do here?"
@@ -183,6 +186,7 @@ params	No	Inputs the action needs
 range	No	Maximum distance for this action
 method	Yes	Leden method reference to call
 conditions	No	Client-side hints about requirements
+predicted	No	Whether the client can apply the result optimistically
 
 Categories (how the client groups/renders affordances):
 Category	Rendering hint	Examples
@@ -268,13 +272,45 @@ appearance:
 Assets are content-addressed blobs in Leden's content store. The client fetches what it needs based on its rendering capability. A text client fetches nothing. A 2D client fetches the sprite. A 3D client fetches the model. Asset format is encoded in the blob's metadata (stored with the content hash).
 
 If the client can't fetch an asset (network issue, unsupported format), it falls back to hints. If no hints, it falls back to kind + description. The layers degrade gracefully. Always.
+Panels
+
+Some domain UI doesn't map to entities in a region — skill trees, faction reputation, crafting grids, build mode toolbars, quest logs. These aren't world description. But punting them to "each domain builds custom UI" defeats the whole point of WDP.
+
+I decided to use HTML. Not invent a new UI description language — the web already has one with 30 years of tooling, accessibility support, and rendering engines. A panel is a sandboxed HTML fragment that a domain sends for non-spatial UI.
+
+Panel:
+  id: "skill_tree"
+  label: "Skills"
+  category: character
+  fallback: "Strength: 5, Agility: 3, Magic: 7"
+  content_type: text/html
+  content: sha256:abc123...
+
+Panel fields:
+Field	Required	Purpose
+id	Yes	Stable identifier for the panel
+label	Yes	Human-readable name
+category	Yes	Grouping hint (character, inventory, social, craft, quest, system)
+fallback	Yes	Plain text summary — always renderable
+content_type	Yes	MIME type of the content (text/html for now)
+content	Yes	Content-addressed blob reference
+
+The content is sandboxed HTML/CSS — no JavaScript, no external resources. Think HTML email, not a web app. The domain authors a self-contained fragment. The client renders it in an iframe with sandbox restrictions or shadow DOM. Interaction flows through WDP affordances embedded in the HTML as data attributes, not through JS event handlers.
+
+A text client renders the fallback string. A web-based client renders the HTML natively. A native client can use a lightweight HTML renderer or fall back to the text. Same progressive enhancement as everything else in WDP.
+
+Why HTML and not a structured schema: I considered a custom layout language. But any layout language rich enough for skill trees and crafting grids would end up being a bad version of HTML. CSS already solves layout. HTML already has form elements. Screen readers already understand both. The alternative is years of design work to build something worse than what exists.
+
+Panels are delivered through the observation stream like everything else. A panel_update delta carries a new content hash when the domain changes the panel's contents. The client fetches the new blob and re-renders.
+
+Panels are not entities. They don't have positions, affordances, or appearance. They're a parallel content channel for structured information that lives outside the spatial world. A domain can send zero panels (pure world interaction) or many (complex RPG with character sheets, quest logs, faction standings).
 Fidelity Negotiation
 
 The client declares what it can handle. The domain uses this to tailor its descriptions.
 
 This is HTTP's Accept header applied to world description. The client says what it supports. The domain picks the best match.
 
-Fidelity is declared once at session start, during Leden bootstrap:
+Fidelity is declared at session start during Leden bootstrap, and can be renegotiated mid-session via a `fidelity_update` message. A client that switches from windowed to fullscreen, or a mobile client that rotates orientation, sends an updated fidelity declaration. The domain adjusts what it sends going forward — no snapshot reset needed, just different filtering on the delta stream.
 
 client_fidelity:
   rendering: [text, tiles_2d, scene_3d]
@@ -291,6 +327,7 @@ asset_formats	What asset formats the client can load
 interaction	Input methods available
 audio	Whether the client can play audio
 spatial_preference	Preferred spatial model (domain may override)
+panels	Whether the client can render HTML panels (bool)
 
 The domain uses fidelity to:
 
@@ -329,6 +366,7 @@ entity_exit	Entity ref	Entity leaves region
 entity_update	Ref + changed fields	Entity properties change
 affordance_update	Ref + new affordance list	Available actions change
 ambient_update	Changed ambient fields	Environment changes
+panel_update	Panel id + new content hash	Domain UI changes
 
 These map directly to Leden observation deltas. The region object is the publisher. Subscribed clients are the observers. Leden handles fan-out, backpressure, sequence numbering, and reconnection.
 
@@ -337,6 +375,12 @@ For high-frequency updates (entity movement), the client can observe individual 
 Observe(entity_ref, filter: [position])
 
 This gives position-only updates at high frequency without the overhead of full entity deltas. The region observation handles add/remove (low frequency). Individual observations handle property changes (high frequency).
+
+For regions with many entities, the client can also filter at the region level:
+
+Observe(region_ref, entity_filter: [position])
+
+This gives position updates for all entities in the region as a single subscription, instead of requiring one observation per entity. The region observation handles structural changes (add/remove), the region-level filter handles bulk property streaming (all positions), and individual entity observations handle detailed per-entity tracking. Three tiers, matching different update frequencies.
 
 Coalescing strategy: Game entities should use coalesce-on-backpressure. The client wants the latest position, not every position along the path. This is configured on the domain side — Leden's observation backpressure model handles it.
 Interaction Execution
@@ -352,6 +396,17 @@ When the player selects an affordance:
 The client never calls domain-specific APIs. It calls the method that the affordance told it to call. New domain features are new affordances on entities — the client discovers and renders them without code changes. This is the HATEOAS guarantee.
 
 Error handling: If the method call fails (insufficient permissions, out of range, invalid state), the domain returns a structured error through the Leden promise. The client displays it. The affordance's conditions field helps the client avoid common errors proactively (graying out "attack" when out of range), but the domain always validates server-side.
+Client-Side Prediction
+
+For real-time interaction (movement, combat), the round-trip through "affordance → Leden method → observation update" adds perceptible latency. Without prediction, everything feels like 200ms input lag.
+
+Affordances with `predicted: true` tell the client it can apply the expected result locally before the server confirms. The client acts on the optimistic result immediately and reconciles when the authoritative update arrives through the observation stream.
+
+What the client predicts is the client's problem. WDP doesn't carry prediction logic — that would violate "description is not behavior." The `predicted` flag is permission: "this action's effect is predictable enough that you should try." A movement affordance is predictable. A "open mysterious chest" affordance is not.
+
+If the server result differs from the prediction, the client snaps to the authoritative state. Smooth reconciliation (interpolation, rollback) is a client rendering concern. The domain sends truth. The client makes it feel good.
+
+This is the same model every multiplayer game uses. The difference is that WDP makes it opt-in per affordance rather than a global client assumption. A domain with deterministic physics marks movement as predicted. A domain with complex server-side logic marks nothing as predicted. The client adapts.
 Progressive Rendering Example
 
 The same region data, three clients:
@@ -396,7 +451,7 @@ Over time, commonly-used terms will become de facto standards. When 200 domains 
 Domain unions (from the existing Midgard design) accelerate vocabulary convergence. A union of 50 domains that all agree on the same entity types, appearance hints, and affordance verbs creates a pocket of perfect interop. WDP doesn't need to know unions exist — it just sees consistent vocabulary use.
 What This Doesn't Cover
 
-UI layout. WDP describes the world, not the client's interface. Health bars, minimaps, quest trackers, inventory screens — these are client concerns. The client builds UI from entity data (health from properties, minimap from region layout, inventory from a container entity's contents).
+Client UI chrome. WDP describes the world and domain panels, not the client's own interface. Health bars, minimaps, hotkey bindings, settings screens — these are client concerns. The client builds its chrome from entity data (health from properties, minimap from region layout) and its own preferences. Domain-specific UI (skill trees, crafting grids) goes through panels.
 
 Physics. WDP doesn't describe collision volumes, rigid body properties, or physics constraints. If a domain needs physics-aware clients, it uses well-known properties (solid: true, mass: 5.0) and the client interprets them. Full physics simulation is domain-side (Raido).
 
@@ -420,15 +475,14 @@ Affordances over methods. The client doesn't call entity methods directly. It di
 No inheritance in the entity model. USD and Roblox use class hierarchies. ECS uses composition. WDP uses composition — an entity is a bag of kind + properties + affordances + appearance. No "class GenericSword with subclass Flamebrand." Inheritance creates coupling between entity definitions that breaks across domain boundaries. Composition lets two domains agree on individual properties without agreeing on a type hierarchy.
 
 Content-addressed assets, not URLs. Assets are identified by content hash, not location. This means: deduplication across domains is free, integrity verification is free, and caching is trivial. Two domains that independently use the same goblin sprite share the content hash. The client fetches it once. This falls directly out of Leden's content store.
-Open Questions
 
-Entity relationships. An NPC might be "in a group with" other NPCs. A sword might be "equipped by" a character. A chair might be "part of" a table set. Should WDP express relationships between entities, or is that just properties (equipped_by: <ref>)? Flecs-style entity relationships are powerful but add complexity. Properties might be enough for v1.
+Entity relationships are properties for v1. `equipped_by: <ref>`, `contained_in: <ref>`, `group: <ref>`. Flecs-style first-class relationships are powerful but add complexity that isn't justified yet. Properties handle the common cases (equipment, containment, grouping). If the pattern proves too limiting, relationships can be promoted to a first-class concept later. Going the other direction — removing a relationship system — is painful.
 
-Region transitions. When a player enters a portal, what does the client experience? Instant swap (region A disappears, region B appears)? Gradual transition (both regions visible briefly)? The domain might want to control this. Should portals have transition hints (transition: fade, transition: walk, transition: instant)?
+Portal transitions are domain-controlled. Portals carry a `transition` hint: `instant` (default), `fade`, `walk`, or `loading`. The client renders what it can — a text client ignores transitions entirely, a graphical client uses the hint to drive its transition animation. The domain decides the experience; the client decides the presentation. Without this, every client guesses differently and cross-domain travel feels jarring.
 
-Observation granularity. The current model is: observe the region for add/remove, observe individual entities for property changes. Is this the right split? For a region with 500 entities, the client might want "observe all entities with position changes" as a single subscription instead of 500 individual ones. Leden's ObserveBatch handles the wire-level cost, but the conceptual model might need a "region-level property filter."
+Observation has three tiers. Region observation for structural changes (entity add/remove). Region-level property filter for bulk streaming (`Observe(region_ref, entity_filter: [position])` gives position updates for all entities as one subscription). Individual entity observation for detailed per-entity tracking. This avoids the 500-subscriptions problem without changing Leden's observation model — region-level filters are just a filtered view over the region's delta stream.
 
-Domain-specific UI. Some domains need UI that doesn't map to entities — a skill tree, a faction reputation screen, a build mode toolbar. These aren't world description. Should WDP punt on these entirely (domain provides a custom UI layer, client renders it as a webview or ignores it)? Or should there be a lightweight "panel" concept in WDP for structured non-spatial information?
+Domain-specific UI uses HTML panels. Domains send sandboxed HTML/CSS fragments for non-spatial UI (skill trees, crafting grids, faction screens). No JavaScript, no external resources. Web clients render natively, text clients show a plain text fallback. I chose HTML over a custom schema because any layout language rich enough for real UI would end up being a bad version of HTML. See the Panels section above.
 Deferred
 
     Wire format. Binary vs text. Depends on Leden's wire format decision. WDP is a schema — the encoding is separate.
