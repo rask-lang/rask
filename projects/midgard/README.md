@@ -18,7 +18,7 @@ You spin up a **domain** — that's your world. You're sovereign over it. You wr
 
 Players in your world use Raido too. They script NPCs, design items, write quest logic. Creation isn't admin-only — it's gameplay. Fuel limits and capability scoping keep it safe.
 
-A player walks to the edge of your world and steps into someone else's. Their character and inventory transfer via [Allgard](../allgard/)'s federation model over [Leden](../leden/)'s protocol. [Conservation laws](../allgard/CONSERVATION.md) ensure nothing gets duped, inflated, or lost in transit.
+A player walks to the edge of your world and steps into someone else's. Their character and inventory transfer via [Allgard](../allgard/)'s federation model over [Leden](../leden/)'s protocol. [Conservation laws](../allgard/CONSERVATION.md) ensure nothing gets duped, inflated, or lost in transit. The federation infrastructure — gossip, audit, reputation, proof verification — is invisible to both players and domain operators. It runs automatically as part of the runtime.
 
 That's it. The rest is details.
 
@@ -42,13 +42,32 @@ What happens when a player moves between servers (domains)?
 
 A player is an Owner. Their character, inventory, and equipment are Objects. Each Object lives on exactly one Domain (Law 2). "Moving to another server" means transferring your Objects from Domain A to Domain B.
 
-This is not seamless. It's a deliberate boundary.
+The boundary is real — different domains, different rules, different trust. But the experience should hide that boundary when nothing interesting is happening. [Federation is a property, not an experience.](../allgard/README.md#invisible-federation)
 
-### Pre-Staging
+### Default Experience
 
-Before anything transfers, the player sees what will happen. Domain A sends a pre-stage query to Domain B: "Here's what's coming — character, inventory, currency. What's your mapping?"
+Between domains with established bilateral agreements and standard asset types, crossing is invisible:
 
-Domain B responds with a compatibility report:
+1. Player requests transfer to Domain B (walks to a portal, uses a menu, whatever the UI is)
+2. "Travel to Ironhold?" → yes
+3. Player arrives. Character, inventory, currency transferred. Currency auto-converted at the agreed bilateral rate. Standard items at full fidelity.
+
+The pre-staging, proof verification, and conservation law checks happen underneath. The player doesn't see them because nothing changed. This is the common case within the [founding cluster](../allgard/README.md#founding-cluster) and between any domains with established agreements.
+
+**During transfer:** The player is briefly in limbo — not on A, not yet on B. This takes 1-3 round trips over Leden (with promise pipelining, often just one). On a typical connection that's sub-second. The UI shows a transition screen.
+
+### When Friction Surfaces
+
+The compatibility report appears when something would change:
+
+| Trigger | What the player sees |
+|---------|---------------------|
+| First visit to an unknown domain | Full compatibility report — what transfers, what downgrades, what's rejected |
+| Exotic items in inventory | Notification for non-standard items: "Flamebrand will downgrade to magic sword (imported)" |
+| Domain trust below threshold | Warning: "This domain has low reputation. Proceed?" |
+| Compatibility changed since last visit | Delta report: "Ironhold no longer accepts cursed items" |
+
+Example full report (shown for first visits or when items are affected):
 
 | Object | Result |
 |--------|--------|
@@ -60,21 +79,16 @@ Domain B responds with a compatibility report:
 
 The player sees this *before committing*. "You'll arrive with these items. The Flamebrand will downgrade. The amulet won't transfer. Proceed?"
 
-No new protocol primitive needed. Domain B already has catalog observation capabilities from Leden. Pre-staging is a query (what do you accept?) followed by a mapping response. The transfer only happens if the player confirms.
+### Pre-Staging (Protocol)
 
-### What the Player Experiences
+Under the hood, every crossing runs pre-staging. Domain A sends a pre-stage query to Domain B: "Here's what's coming — character, inventory, currency. What's your mapping?"
 
-**Initiating a crossing:**
-1. Player requests transfer to Domain B (walks to a portal, uses a menu, whatever the UI is)
-2. Domain A sends a pre-stage query to Domain B
-3. Player reviews the compatibility report — sees what transfers, what downgrades, what's rejected
-4. Player confirms (or cancels)
-5. Domain A packages the player's accepted Objects into a transfer batch with Proofs (Conservation Law 4)
-6. Domain B verifies, accepts, and the player spawns into Domain B's world. Rejected items stay on A.
+No new protocol primitive needed. Domain B already has catalog observation capabilities from Leden. Pre-staging is a query (what do you accept?) followed by a mapping response. The transfer only happens after confirmation.
 
-**During transfer:** The player is in limbo — not on A, not yet on B. This takes 1-3 round trips over Leden (with promise pipelining, often just one). On a typical connection that's sub-second. The UI should show a transition screen, not pretend it's instant.
+The difference is what the player sees. Between established domains with standard items, pre-staging resolves silently — everything maps, nothing to report. The compatibility UI only surfaces when the result would surprise the player.
 
-**What can go wrong:**
+### What Can Go Wrong
+
 - Domain B's compatibility changes between pre-stage and transfer (rare — types don't change often). Transfer falls back to the new mapping; player is notified.
 - Network failure mid-transfer. The escrow transform (see [transfer routing](../allgard/README.md#cross-domain-transfer-routing)) ensures objects return to A after timeout. Nothing is lost.
 - Domain B rejects the transfer entirely (player banned, rate limited). Player stays on A.
@@ -97,9 +111,9 @@ Metaverse projects promise seamless cross-world experiences. They fail because:
 
 1. **Game design requires control.** A PvP server can't accept a god-mode item from a creative server. Domain sovereignty solves this — each server controls what it accepts.
 2. **Universal standards don't scale.** You can't standardize every possible game object. Bilateral agreements between domains that actually interact are tractable. A universal ontology isn't.
-3. **Seamless transitions hide real problems.** Latency, trust verification, asset compatibility — these are real costs. Hiding them behind a seamless façade means they surface as bugs instead of explicit boundaries.
+3. **Seamless transitions that hide real problems** surface those problems as bugs. The fix isn't to show everything — it's progressive disclosure. Default to seamless, surface friction only when something would surprise the player.
 
-Midgard makes the boundary visible and the player informed. You know when you're crossing domains. You know what transferred and what didn't. The experience is a border crossing, not a teleporter — and that's the design.
+Between established domains with standard assets, the experience is seamless — one click, you're there. Between unknown domains or with exotic items, the boundary is visible and the player is informed. Both are the design.
 
 ## The Network in Action
 

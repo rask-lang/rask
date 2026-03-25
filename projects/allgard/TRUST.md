@@ -182,14 +182,18 @@ The Sybil cluster can trade among itself forever. It can't extract value from th
 
 How does the very first trust relationship form if everything requires introduction?
 
-Same way it works in real life: **you start at the bottom and work up slowly.**
+Two paths, depending on context.
+
+**Path 1: Founding cluster (launch).** The first domains are run by people who already trust each other. They start at Allied trust level with pre-negotiated bilateral agreements, standard asset types, and a shared seed currency. No cold-start problem — trust is pre-established by convention, then formalized through the protocol. See [Founding Cluster](../allgard/README.md#founding-cluster).
+
+**Path 2: New domain joining an established network.** You start at the bottom and work up slowly.
 
 1. New domain connects to seeds, gets greeter capabilities
 2. Greeter allows small transactions — below a threshold that limits damage
 3. Over weeks/months of small, verified transactions, bilateral trust grows
 4. Eventually the seed domain (or another established domain) is willing to introduce the new domain to others
 
-This is deliberately slow. Building trust should be slow. That's the Sybil defense — there's no shortcut to a reputation that took six months to build.
+Path 2 is deliberately slow. Building trust should be slow. That's the Sybil defense — there's no shortcut to a reputation that took six months to build. The founding cluster doesn't bypass this for outsiders — it only pre-establishes trust among its own members.
 
 ### Trust Levels
 
@@ -423,6 +427,24 @@ What "contribute" means:
 This isn't a new conservation law — it's an enforcement mechanism for the existing ones. The conservation laws are only as strong as the bilateral verification that checks them. Gossip is how that verification scales beyond direct trading partners. Without it, fraud detection is limited to direct bilateral views, which is weaker.
 
 **Minimum viable gossip:** A domain doesn't need to gossip with everyone. It must gossip with its direct trading partners. Those partners gossip with their partners. Information propagates through the network's existing trust graph. The duty is local — gossip with the domains you trade with. The effect is global.
+
+#### Gossip as Runtime
+
+The duty framing is correct at the model level. But at the implementation level, gossip is not an operational task — it's a runtime concern.
+
+A domain operator installs the software, configures game logic, runs their world. The federation infrastructure — gossip participation, audit verification, reputation tracking, fraud report propagation — runs automatically as part of the Leden/Allgard runtime. Zero-config for the base case.
+
+The analogy is TCP congestion control. It's a protocol duty with real consequences (violators get poor throughput). But nobody "operates" congestion control. It's built into the stack. Same principle here.
+
+What this means concretely:
+- **Gossip participation** is a default-on runtime behavior, not a config option an operator enables
+- **Audit verification** runs automatically when trading partners request it
+- **Reputation tracking** accumulates in the background from observed transactions and gossip
+- **Fraud report propagation** happens automatically when evidence arrives
+
+Operators can tune parameters — audit frequency, gossip fanout, reputation thresholds. They can't turn off participation without turning off federation. The runtime participates because participating is what makes the conservation laws enforceable beyond direct bilateral views.
+
+This is part of a broader principle: [federation should be invisible](../allgard/README.md#invisible-federation). The operator's job is domain logic. The federation infrastructure handles itself.
 
 ### Reputation As a Weapon (all gossip requires proof)
 

@@ -33,7 +33,7 @@ A domain still writes its own minting logic. Sovereignty is over *policy* (what 
 
 Each domain mints independently. Cross-domain value is market-determined through bilateral exchange. No shared mint authority — that would reintroduce centralization.
 
-Commodity money emerges naturally: assets with intrinsic utility become de facto currencies. The protocol provides auditability (this law), asset type registration (catalog observation), and bilateral exchange. Convention handles the rest.
+Commodity money emerges naturally: assets with intrinsic utility become de facto currencies. The [founding cluster](README.md#founding-cluster) seeds the first commodity money by convention, giving it initial liquidity. The protocol provides auditability (this law), asset type registration (catalog observation), and bilateral exchange. Convention handles the rest.
 
 See [Domain Sovereignty over Supply](README.md#domain-sovereignty-over-supply) for full rationale.
 
