@@ -42,7 +42,7 @@ glTF's tagline is "the JPEG of 3D." It succeeded by optimizing for the renderer,
 HTTP beat CORBA. JSON beat XML. HTML beat SGML. In every case, the simpler format won because more people could implement it correctly. A WDP client should be buildable in a weekend. The minimum viable client is a text renderer that prints names, descriptions, and affordance menus. Everything beyond that is progressive enhancement.
 Core Model
 
-Five concepts: regions, entities, affordances, appearance, and panels.
+Six concepts: regions, entities, affordances, appearance, panels, and themes.
 Regions
 
 A region is a spatial container. It's the "page" — the top-level context that a client loads and renders. A dungeon room, a forest clearing, a city block, a spaceship interior. Regions connect to other regions through portals.
@@ -59,6 +59,14 @@ Region:
     lighting: dim
     sound: tavern_murmur
     temperature: warm
+  theme:
+    mood: gritty
+    palette: [#2a1a0e, #5c3a1e, #8b6914, #1a1a1a]
+    saturation: low
+    contrast: high
+    epoch: medieval
+    density: cluttered
+    stylesheet: sha256:ef9a01...
   entities: [...]
 
 Region fields:
@@ -67,6 +75,7 @@ name	Yes	Display name
 description	Yes	Text description — the universal fallback
 spatial	No	How positions work (see below)
 ambient	No	Environmental properties
+theme	No	Visual identity and mood (see Theme below)
 entities	Yes	Things in the region
 
 Spatial models:
@@ -304,6 +313,68 @@ Why HTML and not a structured schema: I considered a custom layout language. But
 Panels are delivered through the observation stream like everything else. A panel_update delta carries a new content hash when the domain changes the panel's contents. The client fetches the new blob and re-renders.
 
 Panels are not entities. They don't have positions, affordances, or appearance. They're a parallel content channel for structured information that lives outside the spatial world. A domain can send zero panels (pure world interaction) or many (complex RPG with character sheets, quest logs, faction standings).
+
+Panel interaction convention: clickable elements in panel HTML use data attributes that the client intercepts and translates to affordance calls:
+
+    <button data-wdp-verb="unlock_skill"
+            data-wdp-param-skill="fireball"
+            data-wdp-method="<leden_method_ref>">
+      Learn Fireball
+    </button>
+
+The client listens for click events on elements with `data-wdp-verb`, extracts the parameters (any attribute starting with `data-wdp-param-`), and calls the referenced Leden method. The domain receives the call and validates. Results come back through panel_update in the observation stream.
+
+This means panel HTML is a layout and display concern. Interactivity is WDP's job — the client IS the JavaScript runtime. CSS handles hover states, transitions, and visual feedback. The domain authors HTML the same way you'd author an HTML email with a few clickable buttons.
+Theme
+
+This is WDP's CSS moment. Without it, every domain renders with the client's default style — the same way every website looked the same in 1993. The domain author creates a horror dungeon, but the client's built-in bright sprite set turns it into a cartoon. Content exists. Visual identity doesn't.
+
+Theme lives on regions, not domains, because different regions in the same domain can have different moods (bright overworld, dark dungeon, underwater temple). It's the domain's way of saying "this place should feel like this."
+
+theme:
+  mood: gritty
+  palette: [#2a1a0e, #5c3a1e, #8b6914, #1a1a1a]
+  saturation: low
+  contrast: high
+  epoch: medieval
+  density: cluttered
+  stylesheet: sha256:ef9a01...
+
+Theme fields:
+Field	Required	Purpose
+mood	No	Emotional register — hint vocabulary below
+palette	No	Region color palette — client uses for tinting, UI accent, sprite selection
+saturation	No	low, medium, high — client adjusts post-processing or sprite selection
+contrast	No	low, medium, high — lighting contrast guidance
+epoch	No	Time period hint — medieval, futuristic, modern, ancient, alien, ...
+density	No	How full the space feels — sparse, normal, cluttered, dense
+stylesheet	No	Content-addressed CSS blob for the region's panel styling and UI hints
+
+Mood vocabulary:
+Mood	Guidance
+gritty	Dark, rough, dangerous. Muted colors, harsh lighting.
+whimsical	Light, playful, colorful. Rounded shapes, bright palette.
+serene	Calm, peaceful. Soft colors, gentle lighting, low contrast.
+ominous	Threatening, foreboding. Deep shadows, unsettling palette.
+epic	Grand, dramatic. High contrast, saturated colors, sweeping scale.
+mundane	Ordinary, everyday. Natural colors, neutral lighting.
+alien	Strange, unfamiliar. Unusual palette, unexpected shapes.
+
+A text client ignores the theme entirely — mood comes from the description text. A 2D client uses palette for tinting and mood to pick between sprite set variants (if it has them). A 3D client applies palette to post-processing, mood to lighting presets, saturation/contrast to shaders.
+
+The stylesheet field is where CSS comes in. It's a content-addressed CSS blob that the domain can provide for clients that support it. The stylesheet can:
+
+- Style the domain's panels (colors, fonts, layout refinements)
+- Provide CSS custom properties that the client can apply to its own UI chrome: `--wdp-primary`, `--wdp-secondary`, `--wdp-accent`, `--wdp-bg`, `--wdp-text`, `--wdp-danger`, `--wdp-success`
+- Suggest UI treatment via well-known classes: `.wdp-health-bar`, `.wdp-entity-label`, `.wdp-affordance-button`
+
+The client is not required to apply the stylesheet. It's a hint, like everything else. A text client ignores it. A web-based client can adopt the custom properties to tint its UI to match the domain's visual identity. A native client can extract the custom properties and map them to its own theming system.
+
+This is CSS's original promise: content and presentation separated, but presentation exists. Without it, WDP is HTML circa 1993 — every page looks like the browser's default.
+
+One stylesheet per region means: walking through a portal can shift the entire client's color scheme. The horror dungeon portal fades to dark reds and deep shadows. The fairy forest portal shifts to greens and dappled light. The client's UI chrome follows the domain's visual identity without domain-specific code.
+
+Security: Same restrictions as panel HTML. No `url()` to external resources. No `@import`. Only `data:` URIs and content-addressed `sha256:` references. The client validates the CSS before applying it.
 Fidelity Negotiation
 
 The client declares what it can handle. The domain uses this to tailor its descriptions.
@@ -337,6 +408,14 @@ The domain uses fidelity to:
     Pick asset formats. If the client supports glTF, reference glTF assets. If only PNG, reference sprites.
 
 Fidelity is a declaration, not a negotiation. The domain reads it and adapts. No back-and-forth. If the domain can't serve the client's capabilities at all (a 3D-only domain with a text-only client), it says so at bootstrap and the client can disconnect gracefully.
+
+For large regions (cities, open worlds), the client also reports its viewport — the spatial area it's currently displaying. The domain uses the viewport to decide which entities to include in the observation stream. A client showing a 20x15 tile area of a 500x500 city only receives entities within (and slightly beyond) that viewport. The client sends viewport updates as it scrolls or moves the camera.
+
+client_viewport:
+  center: [120, 85]
+  radius: 25
+
+The viewport is a circle (center + radius) regardless of spatial model. The domain sends entities within the radius, plus a buffer for smooth scrolling. Entity enter/exit deltas fire as entities cross the viewport boundary, not the region boundary. This is how WDP scales to large regions without sending 10,000 entities on initial snapshot.
 Integration with Leden
 
 WDP is a content schema. Leden is the protocol. Here's how they compose.
@@ -383,6 +462,8 @@ Observe(region_ref, entity_filter: [position])
 This gives position updates for all entities in the region as a single subscription, instead of requiring one observation per entity. The region observation handles structural changes (add/remove), the region-level filter handles bulk property streaming (all positions), and individual entity observations handle detailed per-entity tracking. Three tiers, matching different update frequencies.
 
 Coalescing strategy: Game entities should use coalesce-on-backpressure. The client wants the latest position, not every position along the path. This is configured on the domain side — Leden's observation backpressure model handles it.
+
+Tick rate: The region snapshot includes a `tick_rate` field (updates per second) so the client can calibrate interpolation. A turn-based domain sends `tick_rate: 0` (event-driven, no interpolation needed). A real-time action domain sends `tick_rate: 20` (the client interpolates between position updates at 20Hz). The client renders at its own frame rate — tick rate is about the domain's update frequency, not the client's display refresh.
 Interaction Execution
 
 When the player selects an affordance:
@@ -462,6 +543,10 @@ Audio design. WDP carries ambient properties and sound asset references. Spatial
 Scripting. No behavior in the description. Ever. Raido handles scripting. WDP handles description. The boundary is load-bearing.
 
 Entity internals. WDP describes what an entity looks like from outside. Its internal state machine, its Raido scripts, its capabilities graph — all opaque. The domain exposes what it wants through properties and affordances.
+
+Data validation. WDP doesn't specify validation rules. A domain might send `health: 50, health_max: 30` or a position outside the region's bounds. Domains are responsible for consistency. Clients should be tolerant — display what you can, clamp out-of-bounds values, don't crash on contradictions. Postel's law: be conservative in what you send, liberal in what you accept.
+
+Panel and stylesheet security. Panels and theme stylesheets are sandboxed: no JavaScript, no external resource loading, no `@import`, no CSS `url()` except `data:` URIs and content-addressed `sha256:` references. Clients must enforce this — render panels in sandboxed iframes (`sandbox="allow-same-origin"`) with a Content-Security-Policy that blocks external fetches. Theme stylesheets are validated before application. A malicious domain cannot use panels or stylesheets to exfiltrate data, track users, or escape the sandbox.
 Resolved
 
 Regions are not entities. A region is a container. Entities are contents. Regions have metadata (name, description, ambient, spatial model). Entities have affordances and appearance. Mixing them creates ambiguity about what "observing an entity" means vs. "observing a region." Clean separation.
@@ -483,6 +568,10 @@ Portal transitions are domain-controlled. Portals carry a `transition` hint: `in
 Observation has three tiers. Region observation for structural changes (entity add/remove). Region-level property filter for bulk streaming (`Observe(region_ref, entity_filter: [position])` gives position updates for all entities as one subscription). Individual entity observation for detailed per-entity tracking. This avoids the 500-subscriptions problem without changing Leden's observation model — region-level filters are just a filtered view over the region's delta stream.
 
 Domain-specific UI uses HTML panels. Domains send sandboxed HTML/CSS fragments for non-spatial UI (skill trees, crafting grids, faction screens). No JavaScript, no external resources. Web clients render natively, text clients show a plain text fallback. I chose HTML over a custom schema because any layout language rich enough for real UI would end up being a bad version of HTML. See the Panels section above.
+
+Visual identity uses region themes. Mood, palette, saturation, contrast, epoch, density — plus an optional CSS stylesheet for panel styling and UI custom properties. This is WDP's CSS moment: without it, every domain renders in the client's default style regardless of the domain author's creative intent. Theme is a hint layer, like appearance hints on entities. Clients apply what they can. Text clients ignore it. Web clients adopt CSS custom properties. 3D clients map mood/palette to post-processing. See the Theme section above.
+
+Large regions use viewport filtering. The client reports its viewport (center + radius), and the domain only sends entities within that area. Entity enter/exit deltas fire at the viewport boundary. This scales WDP to open-world regions without dumping 10,000 entities on initial snapshot.
 Deferred
 
     Wire format. Binary vs text. Depends on Leden's wire format decision. WDP is a schema — the encoding is separate.
