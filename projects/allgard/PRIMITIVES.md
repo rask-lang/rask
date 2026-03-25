@@ -129,21 +129,45 @@ The wallet is the nuclear option for recovery:
 3. If everything checks out, the domain accepts the objects and registers the player as their Owner
 4. The player's new home domain starts fresh Proof chains from this point forward
 
-#### The Double-Spend Problem
+#### Witnessed Recovery
 
-The obvious attack: present the same wallet to two domains simultaneously. Without a global ledger, neither knows the other accepted the same objects.
+A wallet alone is a local copy, and local copies can be presented twice. Without a structural fix, double-spend is a real hole. Gossip-based detection isn't enough — it's after-the-fact, and the damage is done.
 
-This is a real limitation. Mitigations:
+The fix: **wallet recovery requires witnesses.**
 
-1. **Gossip propagation.** When a domain accepts wallet-recovered objects, it announces this via gossip: "I've accepted these object IDs from wallet recovery." Other domains check incoming recovery claims against known announcements. The race window is bounded by gossip propagation time.
+Objects don't exist in a vacuum. Every object has a history — it was minted somewhere, transferred through domains, traded with counterparties. Those counterparties have partial views. The Proof chain in the wallet references them. They're the witnesses.
 
-2. **Recovery cooldown.** A domain that accepts wallet recovery can hold the objects in a provisional state for a configurable window (hours/days) before fully committing. During this window, conflicting claims surface through gossip.
+**Recovery protocol:**
 
-3. **Proof chain freshness.** The wallet's Proof chains have timestamps. A domain can reject recovery claims where the last Proof is very old — the longer since the last verified state, the higher the risk of stale data.
+1. Player presents wallet to a new domain (the "recovering domain")
+2. Recovering domain verifies the Proof chains mechanically (signatures, causal links, minting scripts)
+3. Recovering domain contacts **witnesses** — domains referenced in the Proof chains as counterparties to recent Transforms involving these objects
+4. Each witness checks: "Do I have records of these objects? Has anyone else already claimed recovery for them? Is the Proof chain consistent with what I saw?"
+5. Recovery requires **N-of-M witnesses** to co-sign: "I last saw these objects belonging to this Owner, and I haven't seen them claimed elsewhere"
+6. Only after quorum does the recovering domain accept the objects
 
-4. **Bilateral verification.** Any domain that previously traded with the player has a partial view of their inventory. The recovering domain can cross-check the wallet's claims against these partial views via gossip.
+**Why this prevents double-spend:**
 
-This doesn't prevent double-spend with 100% certainty — nothing short of global consensus can, and I've already rejected that for good reasons. What it does: make double-spend detectable within a bounded window, and make the consequences severe (reputation destruction for the player's Owner identity). Same tradeoff the rest of the trust model makes.
+The attacker presents the same wallet to Domain X and Domain Y simultaneously. Both contact the same witnesses (the witnesses are determined by the Proof chain, not chosen by the player). The first domain to get quorum wins. When the second domain contacts the same witnesses, they respond: "Already co-signed recovery for these objects to Domain X." The second claim is rejected.
+
+The race window is bounded by how fast witnesses respond — not gossip propagation, but direct request-response. Witnesses have every incentive to respond honestly: their records are verifiable (they have their own Proof chains for the transactions they witnessed), and lying about recovery is detectable fraud.
+
+**What if witnesses are down too?**
+
+If enough witnesses are offline that quorum can't be reached, recovery is delayed until they come back. This is the honest tradeoff: you can't recover objects faster than your witnesses can confirm them. In the catastrophic case where most witnesses are permanently gone, the recovering domain accepts a lower quorum with a longer provisional hold and wider gossip announcement.
+
+| Witnesses available | Recovery behavior |
+|--------------------|--------------------|
+| Full quorum (N of M) | Immediate recovery |
+| Partial quorum | Provisional recovery + extended hold + gossip announcement |
+| No witnesses reachable | Recovery blocked until witnesses return |
+
+**What the wallet provides vs. what witnesses provide:**
+
+- **Wallet** proves: "These objects existed and I owned them at this point in time" (cryptographic, self-contained)
+- **Witnesses** prove: "Nobody else has claimed these objects since then" (requires liveness, prevents double-spend)
+
+Both are needed. The wallet alone is proof of historical ownership. Witnesses confirm that history hasn't been superseded. Together, they're a complete recovery mechanism without a global ledger.
 
 #### Wallet Sync
 
