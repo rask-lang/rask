@@ -91,12 +91,12 @@ The difference is what the player sees. Between established domains with standar
 
 Objects transfer to visited domains on a [lease](../allgard/PRIMITIVES.md#leased-transfer), not permanently. This means every exit is safe:
 
-| Exit | What happens |
-|------|-------------|
-| Player walks back to home domain | Objects transfer home immediately |
-| Player logs off on Domain B | Domain B detects session end, transfers objects home |
-| Player crashes / loses connection | Domain B detects session loss, transfers objects home |
-| Domain B goes dark | Lease expires, home domain recovers from Proof chain |
+| Exit | What happens | Speed |
+|------|-------------|-------|
+| Player walks back to home domain | Objects transfer home immediately | Instant |
+| Player logs off on Domain B | Home domain revokes lease, objects return | Seconds |
+| Player crashes / loses connection | Home domain detects session loss, revokes lease, objects return | Seconds |
+| Domain B goes dark | Home domain can't reach B. Lease timeout expires, objects recovered from Proof chain | Minutes to hours |
 
 The player never needs to think about this. Their stuff is always home when they get there.
 
@@ -104,7 +104,7 @@ The player never needs to think about this. Their stuff is always home when they
 
 - Domain B's compatibility changes between pre-stage and transfer (rare — types don't change often). Transfer falls back to the new mapping; player is notified.
 - Network failure mid-transfer. The escrow transform (see [transfer routing](../allgard/README.md#cross-domain-transfer-routing)) ensures objects return to home domain after timeout. Nothing is lost.
-- Domain B goes dark while player is visiting. Lease expires. Objects return home. Recent mutations on B after the last Proof sync may be lost — you might lose the last few minutes of gameplay, not your items.
+- Domain B goes dark while player is visiting. Home domain revokes the lease; if B is unreachable, the lease timeout kicks in. Objects return home either way. Recent mutations on B after the last Proof sync may be lost — you might lose the last few minutes of gameplay, not your items.
 - Domain B rejects the transfer entirely (player banned, rate limited). Player stays on A.
 
 ### Asset Fidelity

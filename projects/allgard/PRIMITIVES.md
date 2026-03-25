@@ -58,18 +58,25 @@ When a player visits another domain, objects don't transfer permanently — they
 
 > "These objects are hosted by Domain B. If the lease isn't renewed within N hours, they return to the home domain."
 
-The player's client renews the lease automatically while the session is active. This is invisible — like a DHCP lease, nobody thinks about it.
+The player's client maintains sessions with both the home domain and the visited domain. The home domain issued the lease, so the home domain can revoke it.
+
+**Normal disconnect:** Player goes offline → home domain detects session loss → home domain revokes the lease → visited domain transfers objects back. This takes seconds, not hours. The revocation uses the existing membrane pattern — the Grant gets switched off.
+
+**Catastrophic disconnect:** Both the player and the home domain are unreachable. Only then does the lease timeout kick in (hours/days — configurable). This is the safety net, not the normal path.
+
+Lease renewal is automatic and invisible — like a DHCP lease, nobody thinks about it.
 
 **Why transfer at all?** Because game logic needs low latency. If objects stayed on the home domain and the visited domain operated on them remotely, every sword swing would be a cross-domain round trip. Leased transfer gives the visited domain local access for game logic while the home domain retains recovery authority.
 
 ### Exit Scenarios
 
-| Scenario | What happens | Player experience |
-|----------|-------------|-------------------|
-| **Normal exit** | Player leaves Domain B. Domain B transfers objects back to home domain immediately. | Seamless — objects are home when you get there |
-| **Sudden disconnect** | Player's client dies. Domain B detects session loss, transfers objects back to home domain. | Objects are home next time you log in |
-| **Visited domain goes dark** | Lease expires without renewal. Home domain recovers objects from last-known state using the Proof chain. | Brief delay, then objects reappear at home. Mutations made on Domain B after the last Proof sync may be lost — this is the accepted cost. |
-| **Home domain goes dark** | Hard case. Objects on visited domains are safe (the visited domain hosts them). But your identity and anything stored at home is at risk. | See below. |
+| Scenario | What happens | Speed |
+|----------|-------------|-------|
+| **Normal exit** | Player leaves Domain B. Objects transfer home immediately. | Instant |
+| **Sudden disconnect** | Home domain detects session loss, revokes lease. Visited domain transfers objects back. | Seconds |
+| **Visited domain goes dark** | Home domain can't reach visited domain to revoke. Lease timeout expires, home domain recovers from Proof chain. | Hours (timeout) |
+| **Both go dark** | Lease timeout is the only mechanism. Objects recover when home domain comes back online. | Hours to days |
+| **Home domain goes dark** | Objects on visited domains are safe (lease still active). Identity and home-stored objects at risk. | See below |
 
 ### Home Domain Failure
 
