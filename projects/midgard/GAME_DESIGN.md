@@ -98,15 +98,15 @@ This isn't theoretical — it falls out directly from Raido scripts being the ga
 
 Cross-domain items work because the *item* is data and the *rules* are per-domain. A sword from Domain A follows Domain B's combat rules when used on Domain B. The item transfers; the mechanics are local.
 
-## Domain Unions
+## Gard Networks
 
-Crossing friction is proportional to how different two domains are. Two medieval fantasy domains with the same item types? Rubber stamp — everything maps 1:1. A medieval domain and a sci-fi domain? Most items travel [sealed](README.md#asset-fidelity) — safe in inventory, but unusable until you return to a compatible domain.
+Travel friction is proportional to how different two gards are. Two gards running the same asset types? Seamless — the player just arrives. A medieval gard and a sci-fi gard? Most items travel [sealed](README.md#asset-fidelity) — safe in inventory, but unusable until you return to a compatible gard.
 
-Nothing stops domains from reducing this friction through agreements:
+The founding cluster is the first network — 5-20 gards with shared asset types and a shared currency. Travel within the cluster is seamless by design. Beyond the cluster, gards form networks through agreements:
 
-- **De facto standards.** If 200 domains use the same "iron sword" type definition, that's a standard. Popular domain templates spread common types the way web frameworks spread conventions. Instant compatibility between all of them.
-- **Unions.** A group of domains pre-negotiates: "we all recognize these 50 item types, these 3 currencies, zero exchange fees between members." Crossing within the union is frictionless. Crossing out hits normal pre-staging.
-- **Tiered trust.** A domain advertises: "Union members: instant. Allied domains: low fee. Unknown: full pre-staging, 10% exchange."
+- **De facto standards.** If 200 gards use the same "iron sword" type definition, that's a standard. Popular gard templates spread common types the way web frameworks spread conventions. Instant compatibility between all of them.
+- **Unions.** A group of gards pre-negotiates: "we all recognize these 50 item types, these 3 currencies, zero exchange fees between members." Travel within the union is seamless. Travel out hits normal pre-staging.
+- **Tiered trust.** A gard advertises: "Union members: instant. Allied gards: low fee. Unknown: full pre-staging, 10% exchange."
 
 No new primitives needed. A union is just a bundle of bilateral Grants. Membership is having the full set. Leaving is revoking them. The protocol doesn't know unions exist — it just sees pre-staging queries that return "full fidelity" for everything.
 
