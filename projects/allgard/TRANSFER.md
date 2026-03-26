@@ -95,13 +95,20 @@ The Departure Proof contains:
 
 | Field | Description |
 |-------|-------------|
+| `transfer_id` | Unique identifier for this transfer (hash of Transfer Intent) |
 | `transfer_intent` | The original signed Transfer Intent |
 | `source_signature` | Source domain's signature confirming departure |
 | `timestamp` | When the departure was committed |
 | `causal_ref` | Reference to the object's final state on S |
 | `object_content_hash` | Hash of the transferred object content |
+| `fee_transform` | If a fee was declared, the Transform that collected it |
+| `revoked_grants` | List of Grant IDs revoked by this departure |
+
+The `transfer_id` is the hash of the Transfer Intent. Deterministic — both sides compute the same ID from the same Intent. All wire messages reference this ID.
 
 Once persisted, the object is no longer in S's inventory. The transfer is committed from S's perspective — irrevocably.
+
+**Wallet sync.** The source domain sends the Departure Proof to the owner's client as part of the commit phase. The client persists it to the wallet immediately. This is a local write — the owner's client is already connected to the source domain (it submitted the Transfer Intent). If the client is disconnected at commit time, it fetches the Departure Proof on reconnect via TransferStatus.
 
 **Why write-ahead?** If source crashes after persisting but before sending TransferCommit, it retries on restart. If it crashes before persisting, the object is still Escrowed and rolls back on timeout. The persist-then-send ordering makes the commit atomic relative to crashes.
 
@@ -285,9 +292,13 @@ There is no state where both owners simultaneously have valid ownership claims. 
 
 Every row terminates with one owner, one domain. The "eventually" qualifier is real — partition recovery takes time. But the protocol guarantees convergence to a consistent state. No failure mode produces a permanent inconsistency.
 
-### What this proof doesn't cover
+### What this proof assumes
 
-**Compromised source domain.** If the source domain's signing key is compromised, an attacker could forge Departure Proofs. This is an authentication failure, not a protocol failure. Defense: source domain key management, bilateral Proof verification by the destination, and gossip-based fraud detection (see [TRUST.md](TRUST.md)).
+The three claims hold when the source domain is honest — it only produces one Departure Proof per `causal_ref`, which is guaranteed by the escrow lock.
+
+**Compromised source domain.** If the source domain's signing key is compromised, an attacker can produce two Departure Proofs for the same object, temporarily violating Claim 1 (dual hosting). This is an authentication failure, not a protocol failure. The violation is bounded: gossip detects the conflicting Proofs, first-writer-wins resolves the conflict, and the source is flagged with unforgeable evidence of fraud. See [Double-spend detection](#double-spend-detection).
+
+For high-value transfers, destinations can add a hold period before treating arrived objects as spendable — accepting the latency cost to bound double-spend exposure. This is a domain policy choice, not a protocol requirement.
 
 **Byzantine destination.** A destination could claim it never received TransferCommit (lying to keep the object without sending Complete). Source has the Departure Proof proving it committed. The destination's refusal to acknowledge is a bilateral dispute, resolved by the same gossip and reputation mechanisms that handle all inter-domain fraud. The source publishes the Departure Proof, trading partners can verify it, and the destination's reputation takes the hit.
 
@@ -321,11 +332,15 @@ If all checks pass, D registers the object. The protocol is self-healing.
 
 A compromised source domain forges two Departure Proofs for the same object, sending each to a different destination.
 
-Defense: Law 4. Both Departure Proofs reference the same `causal_ref` (the object's state at departure). Only one state transition from a given `causal_ref` is valid. When the second destination receives its Departure Proof, it checks the proof chain — if another domain has already registered a transition from that `causal_ref`, the second proof is invalid.
+**This attack initially succeeds.** Both destinations receive valid-looking Departure Proofs, both register the object. At registration time, neither destination can detect the conflict locally — each sees a single valid Departure Proof with a valid `causal_ref`. There is no global registry to check against.
 
-Detection mechanism: gossip. When two domains discover conflicting Departure Proofs for the same object, the source domain is flagged for fraud. First-writer-wins — the domain that registered first keeps the object. The second domain reverses and reports.
+**Detection is after-the-fact, via gossip.** Both Departure Proofs reference the same `causal_ref`. Law 4 says only one state transition from a given `causal_ref` is valid. When the two destinations discover each other's conflicting registrations — through trading partner queries, audit gossip, or the object showing up in two inventories during bilateral verification — the fork is detected.
 
-This is the same principle as [witnessed recovery](PRIMITIVES.md#witnessed-recovery) — conflicting claims are resolved by the witnesses who saw the original state.
+**Resolution: first-writer-wins.** The domain that registered first (earlier timestamp in the Departure Proof, corroborated by witnesses who observed the registration) keeps the object. The other domain reverses the registration. This is the same principle as [witnessed recovery](PRIMITIVES.md#witnessed-recovery) — conflicting claims are resolved by witnesses who saw the original state.
+
+**Consequences for the source.** Producing two Departure Proofs for the same `causal_ref` is cryptographic proof of fraud — the source domain signed both, and both reference the same prior state. This is unforgeable evidence. The source domain's reputation is destroyed, and every trading partner that holds the conflicting Proofs can publish them.
+
+**Honest cost.** Between the double-spend and its detection, one object temporarily exists in two inventories. This violates Law 2 briefly. The violation is bounded by gossip propagation time and is not preventable without global consensus (which the architecture explicitly rejects). The tradeoff: bilateral verification catches all double-spends eventually, but not instantaneously. For high-value objects, destinations can mitigate by requiring a hold period before treating a newly arrived object as spendable — same principle as banks holding deposited checks.
 
 ## Escrow Transforms (Intermediary Chains)
 
@@ -400,7 +415,7 @@ When an object transfers to a new domain, all outstanding [Grants](PRIMITIVES.md
 | Departed | All Grants are revoked. Source sends RevocationNotice to all Grant holders. |
 | Arrived | New owner can issue new Grants on the destination domain. |
 
-During escrow, Grants aren't revoked because the transfer might roll back. Revoking early would break shared access for a transfer that never completes. Revocation happens at commit — when the Departure Proof is persisted and the object leaves the source inventory.
+During escrow, Grants aren't revoked because the transfer might roll back. Revoking early would break shared access for a transfer that never completes. Revocation happens at commit — when the Departure Proof is persisted and the object leaves the source inventory. The Departure Proof's `revoked_grants` field lists every Grant that was revoked, making the revocation auditable.
 
 **Leased transfers.** For [player visiting](PRIMITIVES.md#leased-transfer), the home domain can pre-coordinate Grants with the visited domain. The player's home domain issues a Grant to the visited domain as part of the lease setup. The visited domain then issues local Grants for game logic. When the lease ends and objects return, the visited domain's Grants are revoked (same mechanism — transfer triggers revocation). The home domain re-establishes its original Grants.
 
