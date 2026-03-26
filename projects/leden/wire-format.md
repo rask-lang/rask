@@ -219,6 +219,21 @@ Each entry in `results`:
 | 0 | capability | optional bytes | Live capability, if successful |
 | 1 | error | optional uint | Error code, if failed |
 
+### Sturdy Reference Encoding
+
+Each sturdy reference in the `sturdy_refs` array is a MessagePack map:
+
+| Field | Name | Type | Notes |
+|-------|------|------|-------|
+| 0 | issuer | bytes | Endpoint identity of the original issuer |
+| 1 | object_id | bytes | Object this capability grants access to |
+| 2 | permissions | uint | Permission bitfield (after attenuation) |
+| 3 | nonce | bin(32) | 256-bit nonce proving issuance |
+| 4 | delegation_chain | array\<bin(32)\> | HMAC-SHA256 link hashes, one per delegation step |
+| 5 | expiry | optional uint | Unix timestamp (seconds), absent if no expiry |
+
+The `delegation_chain` array has at least one entry (the root link). Maximum length is implementation-defined (recommended: 32).
+
 ### Call (0x10)
 
 | Field | Name | Type | Notes |
@@ -492,6 +507,9 @@ Error codes from protocol.md, encoded as uint:
 | 8 | Timeout |
 | 9 | VersionMismatch |
 | 10 | MalformedMessage |
+| 11 | InvalidNonce |
+| 12 | InvalidChain |
+| 13 | IssuerMismatch |
 | 0x1000+ | Application(n - 0x1000) |
 
 Application error codes start at 0x1000 to leave room for future protocol-defined codes.
