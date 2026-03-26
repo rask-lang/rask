@@ -142,11 +142,15 @@ The old v1 script's content hash remains valid for historical audits. Supply aud
 
 ### Script Migration
 
-Old scripts are not migrated. A v1 chunk stays a v1 chunk forever. Its content hash is its identity, and changing the bytecode changes the hash, which breaks the audit trail.
+A chunk's content hash is its identity. Changing bytecode changes the hash, which breaks audit references. So migration must be provable — any domain can independently reproduce the translation and verify the output hash.
 
-If a domain wants to move from v1 minting logic to v2, it deploys a new script. The new script gets a new content hash. The domain's supply audit records which script hash authorized each mint/burn event. Historical entries remain verifiable against the original script.
+**When migration works:** version bumps that change encoding or instruction layout but not semantics. A mechanical `v1 → v2` translation is a deterministic function of the input bytecode. Any party can run it and confirm the output matches the claimed new hash.
 
-This means a verifying domain may need to support older chunk format versions to audit historical mints. In practice, this is bounded — a domain only needs to verify scripts from its active trading partners, and the set of versions in use across the network is small.
+**When it doesn't:** version bumps that change instruction semantics. If v2 redefines what an instruction means, there's no mechanical translation. The old script stays at v1; domains that need to verify it must support v1.
+
+**Equivalence registration.** A domain that migrates a script publishes both hashes (old and new) as equivalent minting authorities for the same asset type. Verifying domains confirm equivalence by running the migration themselves. No trust required.
+
+Concrete migration tooling is deferred until the first version bump — the mechanism depends on what actually changes between versions.
 
 ### Serialization Compatibility
 
