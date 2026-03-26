@@ -262,6 +262,8 @@ A sturdy reference is what you store to prove you held a capability. It contains
 
 The `token` is unique per delegation event — not per capability. When the issuer creates a capability, the first holder gets a token. When that holder delegates, the new holder gets a different token. Each token maps to exactly one node in the issuer's delegation tree.
 
+**The token is not the in-session capability ID.** Live capabilities have session-scoped IDs used in Call messages. If the token were reused as the capability ID, anyone who observes a Call on an unencrypted transport could construct a sturdy ref. The token must only appear in sturdy references and in the issuer's persistent store — never in Call, Return, or other session messages.
+
 ### Delegation Verification
 
 The delegation tree is the security boundary. Each node in the tree records: recipient identity, permissions, weight, revocation status, and parent node. The token is a lookup key into this tree.
@@ -272,13 +274,15 @@ When an endpoint receives a sturdy reference (during re-attachment, introduction
 
 **Step 1: Token lookup.** Look up the token in the issuer's persistent store. If not found → reject with `InvalidToken`. This proves the delegation event actually happened.
 
-**Step 2: Check presenter.** The tree node's `recipient` must match the endpoint presenting the sturdy reference. If mismatch → reject with `HolderMismatch`.
+**Step 2: Check object.** The sturdy ref's `object_id` must match the tree node's object. If mismatch → reject with `ObjectNotFound`. (The token is the real lookup key, but a mismatched object_id means the ref was tampered with or corrupted.)
 
-**Step 3: Check revocation.** Walk from the tree node up to the root, checking each ancestor's revocation status. If any ancestor is revoked → reject with `CapabilityRevoked`. (Revocation cascades — revoking a parent revokes all descendants.)
+**Step 3: Check presenter.** The tree node's `recipient` must match the endpoint presenting the sturdy reference. If mismatch → reject with `HolderMismatch`.
 
-**Step 4: Permission and expiry checks.** Verify the permissions in the sturdy ref are no broader than the tree node's permissions (can only narrow). Check expiry.
+**Step 4: Check revocation.** Walk from the tree node up to the root, checking each ancestor's revocation status. If any ancestor is revoked → reject with `CapabilityRevoked`. (Revocation cascades — revoking a parent revokes all descendants.)
 
-**Step 5: Accept.** Re-issue a live capability with the verified permissions and a fresh lease.
+**Step 5: Permission and expiry checks.** Verify the permissions in the sturdy ref are no broader than the tree node's permissions (can only narrow). Check expiry.
+
+**Step 6: Accept.** Re-issue a live capability with the verified permissions and a fresh lease.
 
 #### Example
 
@@ -299,11 +303,12 @@ B delegates to C (no attenuation, weight=128):
 ```
 
 When C presents their sturdy ref:
-1. Look up token_C → find tree node (recipient=C, permissions=0x03, parent=node_B)
-2. Presenter is C, recipient is C → match
-3. Walk up: node_B not revoked, node_A not revoked, root not revoked → ok
-4. Permissions 0x03 ≤ 0x03 → ok
-5. Accept, issue live capability
+1. Look up token_C → find tree node (recipient=C, permissions=0x03, object=O, parent=node_B)
+2. Claimed object_id=O matches tree node's object=O → ok
+3. Presenter is C, recipient is C → match
+4. Walk up: node_B not revoked, node_A not revoked, root not revoked → ok
+5. Permissions 0x03 ≤ 0x03 → ok
+6. Accept, issue live capability
 
 #### Security Properties
 
