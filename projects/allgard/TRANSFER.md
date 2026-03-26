@@ -27,6 +27,7 @@ Every cross-domain transfer starts with a signed Transfer Intent from the object
 | `dest_domain` | Domain that will host the object |
 | `timeout` | Maximum duration for the transfer |
 | `conditions` | Optional forwarding conditions for escrow chains |
+| `fee` | Optional declared fee — asset type, amount, recipient |
 | `signature` | Owner's cryptographic signature over the above fields |
 | `causal_ref` | Reference to the object's current state (Law 4) |
 
@@ -126,6 +127,14 @@ On the destination domain:
 | Arrived | Registered | Yes |
 
 The Escrowed state is the reversible zone. Everything before Departed can be rolled back by timeout. Departed is permanent on the source side.
+
+### Owner-Initiated Cancel
+
+While the object is Escrowed, the owner can actively cancel the transfer without waiting for the timeout. The owner submits a signed CancelTransfer to the source domain. Source unlocks the object, returns to Active.
+
+If the destination already has a Pending record (it received the TransferOffer), source sends TransferAbort to inform it. Destination discards its Pending state. If the abort doesn't arrive, destination's own timeout handles cleanup — the abort is an optimization, not a correctness requirement.
+
+CancelTransfer is only valid while the source is in Escrowed state. Once the source transitions to Departed, cancellation is impossible — the Departure Proof is committed. The owner must wait for the transfer to complete or use wallet recovery if the destination is unreachable.
 
 ## Timeout Semantics
 
@@ -373,6 +382,73 @@ I'd cap this at 3 hops by convention. More than 3 intermediaries is a sign that 
 
 Under the hood, lease renewal extends the forwarding deadline. No re-transfer — the object stays on the visited domain. The home domain sends a LeaseRenew message that resets the clock.
 
+## Grant Invalidation
+
+When an object transfers to a new domain, all outstanding [Grants](PRIMITIVES.md#grant) targeting that object are revoked.
+
+**Why Grants don't follow the object:**
+
+1. **Authority context changed.** A Grant was issued by the grantor (the old owner or a delegate) on the source domain. The destination domain never approved that delegation. Carrying Grants across domain boundaries would force the destination to honor authority it never vetted.
+2. **Sessions changed.** Grants are exercised through Leden sessions. The source domain's sessions are not the destination domain's sessions. The Grant holder would need a session with the destination to exercise the Grant — and that's a new relationship, not a continuation.
+3. **Owner may have changed.** If `from_owner ≠ to_owner`, the new owner hasn't authorized the old owner's Grants. Even if the owner is the same (e.g., moving objects between domains), the domain change means the operational context is different.
+
+**When revocation happens:**
+
+| Transfer phase | Grant status |
+|----------------|-------------|
+| Escrowed | Grants remain valid. Read Grants work. Write Grants are blocked (object is locked). |
+| Departed | All Grants are revoked. Source sends RevocationNotice to all Grant holders. |
+| Arrived | New owner can issue new Grants on the destination domain. |
+
+During escrow, Grants aren't revoked because the transfer might roll back. Revoking early would break shared access for a transfer that never completes. Revocation happens at commit — when the Departure Proof is persisted and the object leaves the source inventory.
+
+**Leased transfers.** For [player visiting](PRIMITIVES.md#leased-transfer), the home domain can pre-coordinate Grants with the visited domain. The player's home domain issues a Grant to the visited domain as part of the lease setup. The visited domain then issues local Grants for game logic. When the lease ends and objects return, the visited domain's Grants are revoked (same mechanism — transfer triggers revocation). The home domain re-establishes its original Grants.
+
+This is a real cost. A player with Grants shared to 5 friends loses those Grants when visiting another domain. The friends need new Grants after the player returns (or the home domain re-issues automatically based on a stored Grant policy). I think that's the right tradeoff — the alternative is Grants that silently span trust boundaries, which is worse.
+
+## Transfer Fees
+
+Cross-domain transfers can carry fees ([Law 3](CONSERVATION.md) — conservation of exchange, designed entropy). Transaction fees are a value sink that bounds spam and drains supply.
+
+**How fees work in the protocol:**
+
+Fees are declared in the Transfer Intent as an additional field:
+
+| Field | Description |
+|-------|-------------|
+| `fee` | Optional. Asset type, amount, and recipient (source domain, destination domain, or burned). |
+
+The source domain collects the fee atomically with the escrow in Phase 1. When the object is locked (Escrowed), the fee amount is deducted from the owner's inventory as a separate Transform (burn or transfer to the domain's treasury). Both operations — escrow the object, collect the fee — happen in the same local transaction.
+
+**Rollback refunds the fee.** If the transfer times out or is cancelled, the escrow rolls back and the fee is refunded. The fee collection and escrow are a single local transaction — they commit or roll back together. The fee is only permanently collected when the Departure Proof is persisted (Phase 4). At that point the transfer is committed, and the fee is earned.
+
+**Who sets fees:** Domain policy. The source domain can require a fee for outbound transfers. The destination domain can require a fee for inbound transfers (communicated during the bilateral capability negotiation). Both fees are declared in the Transfer Intent and validated by both sides. If the fees don't match what each domain expects, the transfer is rejected.
+
+**Law 3 compliance:** The Transfer Intent declares the fee explicitly. The Departure Proof includes the fee Transform. Any auditing domain can verify that the declared fee was collected — no hidden sinks. The fee is a designed entropy term in the conservation equation: `value_out = value_in - declared_fees`.
+
+## Third-Party Observability
+
+When a third-party domain (C) queries about an object that's mid-transfer between A and B, what does it see?
+
+**Source domain (A) responds based on object state:**
+
+| Object state | Response to third-party query |
+|--------------|-------------------------------|
+| Active | Normal object metadata. |
+| Escrowed | Object exists, locked for transfer. Transfer destination disclosed. |
+| Departed | Object has departed. Departure Proof available (proves where it went). |
+
+**Destination domain (B) responds based on its state:**
+
+| Transfer state | Response |
+|----------------|----------|
+| Pending | Transfer in progress, not yet committed. |
+| Arrived | Normal object metadata (B is the new host). |
+
+The TransferStatus message handles this. Any domain with a valid capability can query either side for the current state of a known transfer. For general object queries (not transfer-specific), the source domain's response includes transfer state if the object is escrowed or departed.
+
+**Gossip implications.** A Departed object creates a visible record. Trading partners that query about the object learn it moved and where it went. This feeds into the bilateral observation mechanism — if A claims an object is still in its inventory but B holds a Departure Proof showing A committed the transfer, the discrepancy is detectable.
+
 ## Leden Wire Messages
 
 The transfer protocol maps to Leden Layer 3 (Object) messages:
@@ -384,6 +460,8 @@ The transfer protocol maps to Leden Layer 3 (Object) messages:
 | `TransferReject` | `transfer_id`, `reason` | D → S |
 | `TransferCommit` | `transfer_id`, `departure_proof` | S → D |
 | `TransferComplete` | `transfer_id`, `arrival_proof` | D → S |
+| `CancelTransfer` | `transfer_id`, `owner_signature` | Owner → S |
+| `TransferAbort` | `transfer_id`, `reason` | S → D |
 | `TransferStatus` | `transfer_id` | S ↔ D (query/response) |
 
 `TransferStatus` is the recovery primitive. Either side can query the other for the current state of a transfer. Idempotent, safe to retry, essential for partition recovery.

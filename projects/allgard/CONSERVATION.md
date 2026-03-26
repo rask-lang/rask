@@ -41,13 +41,13 @@ See [Domain Sovereignty over Supply](README.md#domain-sovereignty-over-supply) f
 
 > Every Object has exactly one Owner at every point in time. Ownership transfers are atomic.
 
-No duplication. No orphans. An Object is in exactly one inventory, hosted by exactly one Domain.
+No duplication. No orphans. An Object is in at most one Domain's inventory at any point in time — never two.
 
-Transfer is atomic: remove from A, add to B, in one transaction.
+Within a domain, transfer is atomic: remove from A, add to B, in one transaction. Across domains, the bilateral escrow protocol maintains the same invariant under network failure — see [Cross-Domain Transfer](#cross-domain-transfer).
 
 ### Cross-Domain Transfer
 
-Within a domain, atomic transfer is a local transaction. Across domains, it's a bilateral protocol with escrow, timeouts, and partition recovery. The source domain escrows the object (locks it), the destination validates and accepts, then the source commits irrevocably by persisting a Departure Proof. The protocol guarantees that at no point do two domains simultaneously hold the same object in their inventories.
+Across domains, atomicity requires a bilateral escrow protocol. The source domain escrows the object (locks it), the destination validates and accepts, then the source commits irrevocably by persisting a Departure Proof. The protocol guarantees that at no point do two domains simultaneously hold the same object in their inventories.
 
 There is a brief window during transfer where the object is "in transit" — the source has committed but the destination hasn't registered. During this window the object is in zero inventories, not two. Ownership is unambiguous (determined by the Transfer Intent), and recovery is guaranteed by the source's persistent Departure Proof and the owner's wallet.
 
