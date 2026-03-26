@@ -1,16 +1,16 @@
 Gard Description Language
 <!-- id: gdl --> <!-- status: proposed --> <!-- summary: Content schema for describing gard state over Leden -->
 
-GDL is the content schema that tells a client what a gard looks like and how to interact with it. Domains send structured descriptions. Clients decide how to render them. A text client shows room descriptions. A 2D client draws tiles. A 3D client builds a scene. Same data, different presentations.
+GDL is the content schema that tells a client what a gard looks like and how to interact with it. Gards send structured descriptions. Clients decide how to render them. A text client shows room descriptions. A 2D client draws tiles. A 3D client builds a scene. Same data, different presentations.
 
 GDL is not a protocol. It's a content schema that rides on Leden, the same way HTML rides on HTTP. Leden handles sessions, capabilities, observation, and content delivery. GDL defines what's inside the payloads.
 Why This Exists
 
 The stack has logic (Raido), trust (Allgard), and transport (Leden). It doesn't have a way to describe what a gard looks like.
 
-Without GDL, every domain invents its own scene format. Clients need per-domain rendering code. Cross-domain travel becomes "load a completely different game." The federation model works at the object level (swords transfer) but fails at the experience level (the player sees nothing coherent).
+Without GDL, every gard invents its own scene format. Clients need per-gard rendering code. Cross-gard travel becomes "load a completely different game." The federation model works at the object level (swords transfer) but fails at the experience level (the player sees nothing coherent).
 
-GDL is the common language between domain and client. A domain describes its world in GDL. A client that speaks GDL can render any domain, the same way a browser that speaks HTML can render any website.
+GDL is the common language between gard and client. A gard describes its world in GDL. A client that speaks GDL can render any gard, the same way a browser that speaks HTML can render any website.
 Design Principles
 
 These come from studying what worked and what didn't across 30 years of world description formats.
@@ -26,9 +26,9 @@ GDL describes what exists — structure, properties, appearance. Raido scripts d
 The boundary is sharp: GDL says "there's a goblin here with 30 health." Raido says "when attacked, subtract damage from health." The client renders the description. The domain runs the behavior. They don't mix.
 3. Description Is Not Rendering
 
-GDL carries semantic descriptions, not rendering instructions. "A weathered oak door with iron bands" — not vertex buffers, not sprite coordinates, not CSS. The client decides how to present it. A text client prints the description. A 3D client assembles a door from its built-in asset library. A client with GenAI generates one on the fly.
+GDL carries semantic descriptions, not rendering instructions. "A weathered oak door with iron bands" — not vertex buffers, not sprite coordinates, not CSS. The client decides how to present it. A text client prints the description. A 3D client loads the domain's custom door model, or assembles one from its base library, or generates one on the fly.
 
-Second Life got this right with parametric prims — 50 bytes of shape parameters instead of megabytes of mesh data. glTF got it right for transmission (GPU-ready buffers). GDL sits one level higher: semantic description that any renderer can interpret.
+Second Life got this right with parametric prims — 50 bytes of shape parameters instead of megabytes of mesh data. glTF got it right for transmission (GPU-ready buffers). GDL sits one level higher: content-addressed assets as the primary path, with semantic hints as fallback for any renderer.
 4. Progressive Enhancement, Not Multiple Representations
 
 The domain sends one description. Richer clients extract more from it. A text client uses name and description. A 2D client adds position and appearance.shape. A 3D client adds appearance.assets for custom models. Same payload, different extraction depths.
@@ -158,7 +158,8 @@ position	No	Location within the region's spatial model
 orientation	No	Facing direction — [qx, qy, qz, qw] quaternion, or degrees for 2D
 properties	No	Key-value extensible data
 affordances	No	What you can do with/to this entity
-appearance	No	Rendering hints and asset references
+appearance	No	What it looks like — assets, hints, or both (see Appearance)
+appearance_ref	No	Content-addressed reference to a shared appearance definition
 
 Entity kinds tell the client what category of thing this is — how to render it by default, how to present it in lists, what UI patterns apply. Kinds are like HTML elements: a small core set that every client knows, extensible with new terms that degrade gracefully.
 
@@ -1305,7 +1306,7 @@ Uses: name, description, kind, affordances.label, affordances.category
 
 Renders a 12x8 grid. Barkeep Marta is a humanoid shape sprite in her palette colors at position [6, 2]. The dusty bottle is an item icon at [8, 5]. The staircase is a portal tile at [11, 7]. Ambient dim lighting applies a dark overlay. Clicking an entity shows its affordances as a context menu.
 
-Uses: everything above + position, appearance.shape, appearance.palette, ambient
+Uses: everything above + position, shape, palette, ambient
 3D Client
 
 Builds a tavern interior from built-in assets (shape hints for walls, bar, stools). Barkeep Marta is `skeleton: humanoid` + `animation: idle` + `parts: [apron, cloth_shirt]` + `surface.base: cloth` — the client assembles a humanoid from base mesh + parts, plays the idle animation from its library, applies cloth material with the palette colors. Candlelight entity has `effects: [{type: fire, scale: 0.3}]` — the client runs a small fire particle system. Custom model for Marta via appearance.assets.model overrides the procedural assembly if the domain provides one. Spatial audio for tavern_murmur ambient. Player right-clicks Marta to see affordances in a radial menu.
@@ -1323,9 +1324,9 @@ The Vocabulary
 
 GDL defines mechanisms (kinds, shapes, materials, categories). The initial terms are listed above in their respective sections. The vocabulary is extensible without protocol changes — new terms are just new strings. Clients that don't recognize a term fall back to the category or ignore it.
 
-Over time, commonly-used terms will become de facto standards. When 200 domains all use shape: humanoid, that's a standard. No committee needed. The same way HTML elements standardized through browser adoption, not W3C edicts (the edicts came after).
+Over time, commonly-used terms will become de facto standards. When 200 gards all use shape: humanoid, that's a standard. No committee needed. The same way HTML elements standardized through browser adoption, not W3C edicts (the edicts came after).
 
-Domain unions (from the Allgard federation model) accelerate vocabulary convergence. A union of 50 domains that all agree on the same entity types, appearance hints, and affordance verbs creates a pocket of perfect interop. GDL doesn't need to know unions exist — it just sees consistent vocabulary use.
+Gard unions (from the Allgard federation model) accelerate vocabulary convergence. A union of 50 gards that all agree on the same entity types, appearance hints, and affordance verbs creates a pocket of perfect interop. GDL doesn't need to know unions exist — it just sees consistent vocabulary use.
 What This Doesn't Cover
 
 Client UI chrome. GDL describes the world and domain panels, not the client's own interface. Health bars, minimaps, hotkey bindings, settings screens — these are client concerns. The client builds its chrome from entity data (health from properties, minimap from region layout) and its own preferences. Domain-specific UI (skill trees, crafting grids) goes through panels.
@@ -1369,7 +1370,7 @@ Assets are the primary path, hints are fallback. The old spec framed custom asse
 
 Output streams for continuous server→client data. The observation stream handles discrete state changes. Output streams handle continuous high-frequency data — bone poses, blend shapes, vertex deformation, physics state. They're the mirror of input streams (client→server). Same backpressure, same coalescing (latest frame wins). Output streams compose with animation: the `animation` hint drives clip playback, an output stream overrides it with live data. When the stream stops, the client falls back to clips. This keeps the observation model clean — property deltas for state, output streams for continuous data, events for happenings. Three channels, three update patterns, no mixing.
 
-Region schema is minimal. Regions have: name, description, spatial model, extensible properties, theme, layers, entities. Physics parameters, comfort hints, tick rate, and environmental description all live in properties or theme tokens — not as first-class fields. This keeps the region schema stable as new use cases emerge. A VR fitness app adds `comfort.*` properties. A music visualizer adds `audio.*` properties. Neither requires a spec change.
+Region schema is minimal. Regions have: name, description, spatial model, extensible properties, theme, layers, entities, bonds. Physics parameters, comfort hints, tick rate, and environmental description all live in properties or theme tokens — not as first-class fields. This keeps the region schema stable as new use cases emerge. A VR fitness app adds `comfort.*` properties. A music visualizer adds `audio.*` properties. Neither requires a spec change.
 
 Portals are entities (kind=portal) that reference target regions. Navigation is: entity (portal) → region → entities. This gives you cross-region links (like HTML hyperlinks) without nesting regions inside regions.
 
@@ -1381,7 +1382,7 @@ No inheritance in the entity model. USD and Roblox use class hierarchies. ECS us
 
 Content-addressed assets, not URLs. Assets are identified by content hash, not location. This means: deduplication across domains is free, integrity verification is free, and caching is trivial. Two domains that independently use the same goblin sprite share the content hash. The client fetches it once. This falls directly out of Leden's content store.
 
-Entity relationships are properties for v1. `equipped_by: <ref>`, `contained_in: <ref>`, `group: <ref>`. Flecs-style first-class relationships are powerful but add complexity that isn't justified yet. Properties handle the common cases (equipment, containment, grouping). If the pattern proves too limiting, relationships can be promoted to a first-class concept later. Going the other direction — removing a relationship system — is painful.
+Entity data relationships are properties. `equipped_by: <ref>`, `contained_in: <ref>`, `group: <ref>`. Properties handle the common cases (equipment, containment, grouping). Visual relationships between entities (ropes, chains, beams) are bonds — a first-class concept with their own rendering and observation updates. Data relationships remain properties because they don't have visual representation or lifecycle concerns. If data relationships prove too limiting for complex entity graphs, they can be promoted to a first-class concept later.
 
 Portal transitions are domain-controlled. Portals carry a `transition` hint: `instant` (default), `fade`, `walk`, or `loading`. The client renders what it can — a text client ignores transitions entirely, a graphical client uses the hint to drive its transition animation. The domain decides the experience; the client decides the presentation. Without this, every client guesses differently and cross-domain travel feels jarring.
 
