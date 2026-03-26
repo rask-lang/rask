@@ -238,10 +238,11 @@ Each sturdy reference in the `sturdy_refs` array is a MessagePack map:
 | 1 | object_id | bytes | Object this capability grants access to |
 | 2 | permissions | uint | Permission bitfield (after attenuation) |
 | 3 | nonce | bin(32) | 256-bit nonce proving issuance |
-| 4 | delegation_chain | array\<bin(32)\> | HMAC-SHA256 link hashes, one per delegation step |
-| 5 | expiry | optional uint | Unix timestamp (seconds), absent if no expiry |
+| 4 | delegation_path | array\<bytes\> | Endpoint identities, one per delegation step (including original holder) |
+| 5 | delegation_chain | array\<bin(32)\> | HMAC-SHA256 link hashes, one per delegation step |
+| 6 | expiry | optional uint | Unix timestamp (seconds), absent if no expiry |
 
-The `delegation_chain` array has at least one entry (the root link). Maximum length is implementation-defined (recommended: 32).
+`delegation_path` and `delegation_chain` must have the same length, at least 1. Maximum length is implementation-defined (recommended: 32).
 
 ### Call (0x10)
 
