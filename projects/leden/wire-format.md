@@ -196,6 +196,15 @@ Each message is a MessagePack map. Field IDs are permanent — once assigned, ne
 | 3 | recipient | bytes | Endpoint identity of the intended recipient |
 | 4 | attenuation | optional uint | Permission bitfield for the narrowed capability |
 
+### IntroduceResult (0x09)
+
+| Field | Name | Type | Notes |
+|-------|------|------|-------|
+| 0 | type | uint | `0x09` |
+| 1 | id | uint | Request ID (matches Introduce) |
+| 2 | token | bytes | Encoded sturdy reference for the recipient to present |
+| 3 | error | optional uint | Error code if introduction failed |
+
 ### Reattach (0x07)
 
 | Field | Name | Type | Notes |
@@ -218,6 +227,18 @@ Each entry in `results`:
 |-------|------|------|-------|
 | 0 | capability | optional bytes | Live capability, if successful |
 | 1 | error | optional uint | Error code, if failed |
+
+### Sturdy Reference Encoding
+
+Each sturdy reference in the `sturdy_refs` array is a MessagePack map:
+
+| Field | Name | Type | Notes |
+|-------|------|------|-------|
+| 0 | issuer | bytes | Endpoint identity of the original issuer |
+| 1 | object_id | bytes | Object this capability grants access to |
+| 2 | permissions | uint | Permission bitfield (after attenuation) |
+| 3 | token | bin(32) | 256-bit, unique per delegation event |
+| 4 | expiry | optional uint | Unix timestamp (seconds), absent if no expiry |
 
 ### Call (0x10)
 
@@ -492,6 +513,9 @@ Error codes from protocol.md, encoded as uint:
 | 8 | Timeout |
 | 9 | VersionMismatch |
 | 10 | MalformedMessage |
+| 11 | InvalidToken |
+| 12 | HolderMismatch |
+| 13 | IssuerMismatch |
 | 0x1000+ | Application(n - 0x1000) |
 
 Application error codes start at 0x1000 to leave room for future protocol-defined codes.
