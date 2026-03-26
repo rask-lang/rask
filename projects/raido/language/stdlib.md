@@ -21,9 +21,9 @@ These are part of the language, not an opt-in module. A Raido VM without these i
 
 `tostring(v)` — converts any value to string.
 
-`tonumber(v)` — string/int → number. Returns nil on failure.
+`int(v)` — string/number → int (truncates). Returns nil on failure.
 
-`toint(v)` — string/number → int (truncates). Returns nil on failure.
+`number(v)` — string/int → number. Returns nil on failure.
 
 `len(v)` — string byte length, array length, or map entry count. TypeError on other types.
 

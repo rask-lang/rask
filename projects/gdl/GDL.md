@@ -208,7 +208,57 @@ Tagged	`tags: [...]` (string list)	Filter, search, category display
 
 Values are always absolute, never percentages. `health: 30` means 30 units, not 30%. `health` without `health_max` means the maximum is unknown — the client shows the number but can't render a bar. This matters for cross-domain consistency.
 
-Specific property names (`health`, `level`, `hostile`, `locked`, `price`) are **conventions**, not protocol. A game domain uses `health`. An IoT domain uses `temperature`. A project tracker uses `progress`. The protocol defines patterns. Communities define conventions.
+Specific property names are **conventions**, not protocol. A game domain uses `health`. An IoT domain uses `temperature`. A project tracker uses `progress`. The protocol defines patterns. Communities define conventions.
+
+### Initial Convention Registry
+
+These are the starting conventions — properties that clients can recognize and render smartly out of the box. Not exhaustive. Not required. Domains define their own. But if you use `health`, use it like this.
+
+**Bounded numeric (X + X_max → bar)**
+
+| Property | Type | Meaning |
+|----------|------|---------|
+| `health` + `health_max` | int | Hit points. Client renders a bar, typically colored via `color.danger` token. |
+| `energy` + `energy_max` | float | Stamina, mana, fuel — any expendable resource. |
+| `progress` + `progress_max` | int | Task completion, crafting timer, loading state. |
+| `durability` + `durability_max` | int | Equipment wear. |
+| `capacity` + `capacity_max` | int | Container fullness, ammo remaining. |
+
+**State (string → badge/label)**
+
+| Property | Type | Meaning |
+|----------|------|---------|
+| `faction` | string | Affiliation. Client may color-code by faction. |
+| `mood` | string | Emotional state ("hostile", "friendly", "neutral"). |
+| `status` | string | General state ("alive", "dead", "stunned", "sleeping"). |
+
+**Flags (bool → toggle/indicator)**
+
+| Property | Type | Meaning |
+|----------|------|---------|
+| `hostile` | bool | Whether the entity is hostile to the observer. Clients may apply `entity.hostile_tint`. |
+| `locked` | bool | Whether the entity is locked (doors, chests). |
+| `hidden` | bool | Whether the entity is hidden. Clients may reduce opacity or hide the label. |
+| `interactive` | bool | Whether the entity can be interacted with right now. Clients may apply `entity.interactive_highlight`. |
+
+**Numeric (number → display)**
+
+| Property | Type | Meaning |
+|----------|------|---------|
+| `level` | int | Power level, tier, floor number. |
+| `price` | int | Cost in the domain's currency. |
+| `weight` | float | Mass or encumbrance. |
+| `speed` | float | Movement speed multiplier (1.0 = normal). |
+
+**Reference (ref → link/association)**
+
+| Property | Type | Meaning |
+|----------|------|---------|
+| `owner` | ref | Entity that owns this one. |
+| `equipped_by` | ref | Entity that has this equipped. |
+| `contained_in` | ref | Container this entity is inside. |
+
+The pattern matters more than the name. A client that understands bounded numeric renders a bar for `shield` + `shield_max` without ever seeing "shield" in this list. The registry bootstraps recognition; the patterns provide forward compatibility.
 Affordances
 
 Affordances are what make GDL interactive. They answer: "what can I do here?"
@@ -614,6 +664,23 @@ The security model is `<iframe sandbox="allow-scripts">`:
 - No network. CSP: `default-src 'self' blob: data:; connect-src 'none'`. No phone home, no exfiltrate, no external scripts.
 
 Same model as Stripe payment forms, YouTube embeds. Browser-enforced, battle-tested.
+
+### Resource Limits
+
+Sandboxing prevents escape. Resource limits prevent abuse. A panel that mines crypto or allocates 2 GB of ArrayBuffers is sandboxed but still ruins the player's experience.
+
+Clients enforce per-panel resource budgets:
+
+| Resource | Default limit | Notes |
+|----------|--------------|-------|
+| CPU | 50ms per second (5% of one core) | Measured via `performance.now()` deltas or the Performance API. Panels that exceed the budget get throttled — the client suspends the iframe's execution until the next budget window. |
+| Memory | 64 MB heap | Enforced via `Cross-Origin-Embedder-Policy` where available, or monitored via `performance.measureUserAgentSpecificMemory()`. Exceeding = panel killed, fallback text shown. |
+| DOM nodes | 10,000 | Prevents DOM-bombing. Client can poll `document.querySelectorAll('*').length` via a monitoring script injected before the panel loads. Exceeding = panel killed. |
+| Storage | None | No localStorage, no IndexedDB (`sandbox` without `allow-same-origin` already prevents this). |
+
+These are client-enforced defaults, not protocol fields. A client can raise or lower them. A mobile client might set 32 MB memory and 25ms/s CPU. A desktop client might allow 128 MB for a complex crafting panel. The domain doesn't negotiate resource limits — it authors a panel that works within reasonable bounds, the same way a web page doesn't negotiate CPU time with the browser.
+
+When a panel exceeds its budget, the client kills the iframe and shows the panel's `fallback` text. The player sees "Skills: Strength 5, Agility 3, Magic 7" instead of a blank frame. This is the same recovery path as an asset that fails to load — degrade to the simpler representation.
 postMessage Protocol
 
 Panel → Client:

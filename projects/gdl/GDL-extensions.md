@@ -220,6 +220,66 @@ mesh_2d	2D collision polygons (line segments, shapes)	Platformer level geometry,
 mesh_3d	3D collision mesh (triangles)	Complex 3D environments
 navmesh	Walkable area graph	Pathfinding for NPCs and AI
 
+### Binary Formats
+
+Layer data blobs are content-addressed, like assets. Each type has a defined binary encoding so clients can parse them without format negotiation.
+
+**Heightmap:**
+```
+Header:
+  width  (u16)  — columns
+  height (u16)  — rows
+  scale  (f32)  — meters per cell (horizontal)
+  y_scale (f32) — meters per unit of elevation
+Data:
+  elevations[width * height] (each f32, row-major)
+```
+Total size: 12 + (width × height × 4) bytes. A 256×256 heightmap is ~256 KB.
+
+**Tilemap 2D:**
+```
+Header:
+  width      (u16) — columns
+  height     (u16) — rows
+  tile_bits  (u8)  — bits per tile ID (8 or 16)
+  layer_count (u8) — number of tile layers (ground, decoration, etc.)
+  _pad       (2 bytes)
+Palette ref:
+  palette    (32 bytes) — SHA-256 hash of tile palette definition
+Data (per layer):
+  tiles[width * height] (each u8 or u16 per tile_bits, row-major)
+```
+Tile ID 0 is always empty/transparent. The palette blob maps tile IDs to names, collision flags, and animation frames — a separate content-addressed asset that multiple tilemaps can share.
+
+**Voxel 3D (chunked):**
+```
+Chunk header:
+  cx, cy, cz (each i16) — chunk coordinates in chunk-space
+  size       (u8)       — cells per edge (typically 16)
+  _pad       (1 byte)
+  palette    (32 bytes) — SHA-256 hash of block palette definition
+Data:
+  blocks[size^3] (each u16, XZY order — x varies fastest, then z, then y)
+```
+Block ID 0 is always air. XZY order optimizes for column-based rendering (vertical slices are contiguous). Each chunk is a separate content-addressed blob. A 16³ chunk with u16 blocks is 8 KB + 40 bytes header.
+
+**Mesh 2D:**
+```
+Header:
+  vertex_count   (u16)
+  segment_count  (u16)
+Vertices:
+  positions[vertex_count] (each 2 × f32 — x, y)
+Segments:
+  indices[segment_count] (each 2 × u16 — start vertex, end vertex)
+  flags[segment_count]   (each u8 — 0x01: one-way-up, 0x02: one-way-down)
+```
+Defines 2D collision geometry as line segments. One-way flags enable platforms you can jump through from below.
+
+**Mesh 3D and Navmesh** use standard glTF binary format (`.glb`) — no custom encoding. glTF is already GPU-ready and well-supported. The content-addressed blob is the `.glb` file.
+
+All integer fields are little-endian. All float fields are IEEE 754 little-endian. Layer blobs carry no version field — the layer `type` in the region description implies the format. If the format ever changes, it becomes a new type name.
+
 Layer data is content-addressed, like assets. Large layers (voxel worlds) are chunked — the client fetches chunks within its viewport. Layer updates arrive through the observation stream:
 
 layer_update	Layer id + changed chunk hashes	Terrain/block modifications
