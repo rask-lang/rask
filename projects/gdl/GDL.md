@@ -281,46 +281,149 @@ The client renders this as whatever UI fits — a split-pane trade window, a ser
 When the player completes the interaction, the client packages the inputs and calls the Leden method. The domain validates and executes. The result comes back through the observation stream as entity updates.
 Appearance
 
-Appearance is layered. Every layer is optional except the first (which is the entity's description, a required field).
+Appearance is layered. Every layer is optional except the first (which is the entity's description, a required field). A text client uses Layer 1. A basic 3D client adds Layer 2. A rich client adds Layer 3. Each layer adds detail without replacing the one below — if a higher layer fails (asset not found, unsupported format), the client falls back down. Always.
 
 Layer 1: Semantic (always available)
 Kind + name + description. Every client can render this. A creature named "Goblin Scout" with a description — that's enough for a text game.
 
 Layer 2: Hints (optional, structured)
-Rendering suggestions that help graphical clients without requiring custom assets:
+Rendering suggestions that help graphical clients without requiring custom assets. Hints describe *what something is*, not how to render it. The client maps hints to its own rendering system.
 
 appearance:
   shape: humanoid
   scale: [0.8, 0.8, 1.2]
   palette: [green, brown, gray]
-  material: leather
-  posture: crouching
-  emitting: null
+  surface:
+    roughness: 0.8
+    metallic: 0.0
+    base: leather
+  skeleton: humanoid
+  animation: idle
+  parts: [horned_helmet, plate_torso, cloth_legs]
+  effects:
+    - type: fire
+      anchor: right_hand
+      scale: 0.5
+      palette: [#ff4400, #ffaa00]
 
 Hint vocabulary:
+
+**Geometry**
+
 Hint	Values (examples)	Purpose
 shape	humanoid, quadruped, serpentine, avian, tree, rock, box, sphere, blade, ...	Base geometry suggestion
 scale	[w, h, d] or single float	Relative size
-palette	List of color names or hex values	Primary colors
-material	stone, wood, metal, cloth, leather, crystal, bone, water, fire, ice, ...	Surface appearance
-posture	standing, crouching, prone, sitting, flying, swimming, ...	Current pose
-emitting	fire, smoke, light, sparks, mist, ...	Particle/effect hint
+parts	List of part names	Modular attachments/equipment on the base shape
 
-A 2D client uses shape + palette to pick a sprite from its library. A 3D client uses shape + scale + material to assemble a procedural model. A text client ignores hints entirely. Hints are optimization — the description is always truth.
+A 2D client uses shape + palette to pick a sprite. A 3D client uses shape + scale to select a base mesh and snaps parts onto it. Parts are additive — `[horned_helmet, plate_torso]` on a `humanoid` shape means the client attaches those part meshes to the humanoid skeleton's attachment points. Part names are vocabulary conventions. Unknown parts are ignored — the base shape still renders.
+
+**Surface**
+
+Hint	Values (examples)	Purpose
+palette	List of color names or hex values	Primary colors (applied to base shape zones)
+surface.base	leather, stone, wood, metal, cloth, crystal, bone, water, fire, ice, ...	Material category
+surface.roughness	0.0–1.0	PBR roughness (0 = mirror, 1 = matte)
+surface.metallic	0.0–1.0	PBR metallic factor (0 = dielectric, 1 = metal)
+surface.emissive	hex color or null	Self-illumination color and presence
+surface.opacity	0.0–1.0	Transparency (1.0 = opaque, default)
+
+`palette` maps colors to the base shape's zones — a humanoid might map [skin, clothing, accent]. How the client maps colors to zones is client-defined; the convention is index-order from most prominent to least. `surface` provides PBR-compatible material hints for 3D clients. A 2D client uses `palette` and ignores `surface`. A text client ignores both.
+
+Previous flat `material` key is now `surface.base` — same purpose, but surface is a namespace that supports PBR properties alongside the category name. Clients that only understand `surface.base` as a material keyword get the same behavior as before.
+
+**Skeleton and Animation**
+
+Hint	Values (examples)	Purpose
+skeleton	humanoid, quadruped, avian, serpentine, arachnid, ...	Which bone rig this entity uses
+animation	idle, walk, run, attack, die, sit, crouch, swim, fly, cast, emote_wave, ...	Current animation state
+
+A skeleton is a named rig type that the client's base library provides. `skeleton: humanoid` tells the client this entity is driven by a humanoid bone hierarchy — two arms, two legs, a head, a spine. The client maps animation state names to animation clips in its library for that skeleton.
+
+Animation states are strings from an open vocabulary. Core conventions:
+
+State	Meaning
+idle	Default stance
+walk	Moving at normal speed
+run	Moving fast
+attack	Melee/ranged attack (one-shot, returns to previous)
+cast	Channeling/spellcasting
+die	Death animation (one-shot)
+sit	Seated
+crouch	Low stance
+swim	In water
+fly	Airborne movement
+carry	Holding/transporting something
+emote_*	Social animations (emote_wave, emote_dance, emote_bow, ...)
+
+Animation state changes arrive through the observation stream as property updates on the entity. The client transitions between animation clips — blending, crossfading, or snapping depending on its capability. A simple client snaps. A capable client blends. A text client prints "The goblin attacks."
+
+Skeletons also define **attachment points** — named bones where parts mount. A `humanoid` skeleton has `head`, `torso`, `left_hand`, `right_hand`, `back`, `waist`, `feet`. Parts in the `parts` list snap to their conventional attachment point. A `horned_helmet` attaches to `head`. A `plate_torso` attaches to `torso`. Part vocabulary defines which attachment point each part uses.
+
+Clients that don't support skeletal animation fall back to `posture` — a legacy hint that maps to a static pose:
+
+Hint	Values (examples)	Purpose
+posture	standing, crouching, prone, sitting, flying, swimming, ...	Static pose fallback
+
+`posture` is derivable from `animation` (idle → standing, crouch → crouching, swim → swimming). Domains can send both for backward compatibility, but `animation` is preferred. If both are present, `animation` wins for clients that support it.
+
+**Effects**
+
+Effects replace the flat `emitting` hint with structured particle/visual effect descriptions:
+
+appearance:
+  effects:
+    - type: fire
+      anchor: right_hand
+      scale: 0.5
+      palette: [#ff4400, #ffaa00]
+    - type: glow
+      anchor: self
+      palette: [#4488ff]
+      intensity: 0.8
+    - type: trail
+      anchor: feet
+      palette: [#aaddff]
+
+Effect fields:
+
+Field	Required	Purpose
+type	Yes	Effect type from vocabulary (fire, smoke, sparks, glow, trail, mist, rain, snow, lightning, bubbles, ...)
+anchor	No	Where the effect originates — an attachment point name, or `self` for entity center (default: self)
+scale	No	Relative size of the effect (default: 1.0)
+palette	No	Colors for the effect (overrides client defaults for this effect type)
+intensity	No	Brightness/density (0.0–1.0, default: 1.0)
+rate	No	Emission rate multiplier (0.0 = paused, 1.0 = normal, 2.0 = double)
+
+Effects are additive — an entity can have multiple simultaneous effects. A flaming sword has `[{type: fire, anchor: blade}, {type: glow, anchor: blade}]`. Effects are hints — the client renders them however it can. A text client prints "the sword is wreathed in flame." A 2D client draws a fire sprite overlay. A 3D client runs a particle system. A client that doesn't recognize an effect type ignores it.
+
+The flat `emitting: fire` shorthand still works as sugar for `effects: [{type: fire}]`. Clients should accept both.
 
 Layer 3: Assets (optional, content-addressed)
-Custom visuals for domains that want specific look:
+Custom visuals for domains that want a specific look:
 
 appearance:
   ...hints...
   assets:
-    sprite: sha256:a1b2c3...    # 2D sprite sheet
-    model: sha256:d4e5f6...     # 3D model (glTF)
-    icon: sha256:789abc...      # UI icon
-    portrait: sha256:def012...  # Dialog portrait
-    sound: sha256:345678...     # Associated sound
+    model: sha256:d4e5f6...      # 3D model (glTF, may include rig)
+    sprite: sha256:a1b2c3...     # 2D sprite sheet
+    icon: sha256:789abc...       # UI icon
+    portrait: sha256:def012...   # Dialog portrait
+    animations:                  # Animation clips keyed by state name
+      idle: sha256:aaa111...
+      walk: sha256:bbb222...
+      attack: sha256:ccc333...
+    parts:                       # Custom part meshes keyed by part name
+      horned_helmet: sha256:ddd444...
+      plate_torso: sha256:eee555...
+    effects:                     # Custom particle/effect assets keyed by type
+      fire: sha256:fff666...
+    materials:                   # Custom material definitions
+      enchanted_steel: sha256:ggg777...
+    sound: sha256:345678...      # Associated sound
 
-Assets are content-addressed blobs in Leden's content store. The client fetches what it needs based on its rendering capability. A text client fetches nothing. A 2D client fetches the sprite. A 3D client fetches the model. Asset format is encoded in the blob's metadata (stored with the content hash).
+Assets are content-addressed blobs in Leden's content store. The client fetches what it needs based on its rendering capability. A text client fetches nothing. A 2D client fetches the sprite. A 3D client fetches models, animations, parts. Asset format is encoded in the blob's metadata (stored with the content hash).
+
+When custom assets exist, they override the client's base library for that entity. A domain that ships a custom `model` replaces the shape-based procedural model. Custom `animations` replace the base library animations for the specified states. Custom `parts` replace the base library parts for the specified names. Unspecified states and parts still fall back to the base library — a domain that only provides a custom `attack` animation gets base library `idle`, `walk`, etc.
 
 If the client can't fetch an asset (network issue, unsupported format), it falls back to hints. If no hints, it falls back to kind + description. The layers degrade gracefully. Always.
 Panels
@@ -1010,13 +1113,13 @@ Renders a 12x8 grid. Barkeep Marta is a humanoid shape sprite in her palette col
 Uses: everything above + position, appearance.shape, appearance.palette, ambient
 3D Client
 
-Builds a tavern interior from built-in assets (shape hints for walls, bar, stools). Loads custom model for Barkeep Marta if the domain provides one via appearance.assets.model. Spatial audio for tavern_murmur ambient. Particle system for candlelight. Player right-clicks Marta to see affordances in a radial menu.
+Builds a tavern interior from built-in assets (shape hints for walls, bar, stools). Barkeep Marta is `skeleton: humanoid` + `animation: idle` + `parts: [apron, cloth_shirt]` + `surface.base: cloth` — the client assembles a humanoid from base mesh + parts, plays the idle animation from its library, applies cloth material with the palette colors. Candlelight entity has `effects: [{type: fire, scale: 0.3}]` — the client runs a small fire particle system. Custom model for Marta via appearance.assets.model overrides the procedural assembly if the domain provides one. Spatial audio for tavern_murmur ambient. Player right-clicks Marta to see affordances in a radial menu.
 
-Uses: everything above + appearance.assets, appearance.material, appearance.scale, spatial audio
+Uses: everything above + skeleton, animation, parts, surface, effects, appearance.assets, spatial audio
 
 VR Client
 
-Same tavern, but you're standing in it. Head tracking renders the scene at 90Hz from your eye position. Barkeep Marta has a 3D model (appearance.assets.model) or a procedural humanoid assembled from shape + scale + material hints. Reaching toward the Dusty Bottle triggers its proximity affordance — your hand enters the 0.3m grab range and the client highlights it. Squeeze to grab (affordance call with predicted: true), the bottle follows your hand locally while the server confirms. Spatial audio: Marta's voice stream positioned at her location. Candlelight is a volumetric light source from the effect entity. Another player says "nice place" — a chat event renders as a speech bubble above their head. Your voice input stream carries your response back.
+Same tavern, but you're standing in it. Head tracking renders the scene at 90Hz from your eye position. Barkeep Marta's humanoid skeleton drives a full animation blend — her idle animation shifts weight, blinks, polishes a glass. The `surface.roughness: 0.7` on her apron catches the candlelight with soft diffuse reflection. Reaching toward the Dusty Bottle triggers its proximity affordance — your hand enters the 0.3m grab range and the client highlights it. Squeeze to grab (affordance call with predicted: true), the bottle follows your hand locally while the server confirms. Spatial audio: Marta's voice stream positioned at her location. Candlelight effects render as volumetric particles with the fire palette. Another player says "nice place" — a chat event renders as a speech bubble above their head. Your voice input stream carries your response back.
 
 Uses: everything above + orientation, input streams (head, hands, voice), media streams (Marta's voice), events (chat, sound), physics parameters, proximity affordances, haptic hints, comfort settings
 
@@ -1034,7 +1137,7 @@ Client UI chrome. GDL describes the world and domain panels, not the client's ow
 
 Physics simulation. GDL provides physics parameters (gravity, friction, collision rules) and spatial layers (collision geometry). The client runs local physics against these. But the physics engine itself is the client's choice — GDL doesn't specify simulation algorithms, integrator types, or solver iterations. Two clients simulating the same parameters may produce slightly different results. The domain is authoritative; clients predict and reconcile.
 
-Animation. GDL doesn't describe skeletal rigs or animation state machines. The posture hint covers coarse state ("crouching", "attacking", "idle"). Smooth animation is the client's problem, driven by posture changes in the observation stream.
+Animation blending. GDL describes skeleton types, animation states, and custom animation assets. How the client transitions between states — blend trees, crossfade duration, IK solvers, ragdoll — is the client's choice. Two clients playing the same `walk` → `attack` transition may blend differently. GDL describes which state to be in, not how to get there.
 
 Audio design. GDL carries theme tokens for atmosphere, sound asset references, media streams, and sound events. Spatial audio mixing, music systems, and sound design are client-side. The domain says "there's a fire here" and optionally publishes a crackling audio stream. The client decides the mix.
 
@@ -1050,6 +1153,14 @@ Resolved
 Regions are not entities. A region is a container. Entities are contents. Regions have metadata (name, description, spatial model, properties, theme). Entities have affordances and appearance. Mixing them creates ambiguity about what "observing an entity" means vs. "observing a region." Clean separation.
 
 Vocabulary is convention, not protocol. Entity kinds, affordance categories, property names, event types, appearance hints — these are initial conventions that communities extend. The protocol defines mechanisms (entities have a `kind` string, affordances have a `category` string). The specific terms (`agent`, `navigate`, `health`) are conventions that emerge from use. Like HTTP content types — `text/html` is not in the HTTP spec. GDL's `creature` kind should not be in the GDL spec either. I kept a small core set for bootstrapping, but they're conventions, not protocol.
+
+Skeletons and animation are description, not behavior. A skeleton is a named rig type — it describes the bone structure an entity has, not how to animate it. Animation states describe what the entity is doing (`walk`, `attack`), not how the client transitions between states (blend trees, crossfade curves, IK). The domain sends state names. The client maps them to its animation library. This keeps the "description is not rendering" boundary clean while giving 3D clients enough information to produce smooth, skeleton-driven animation. The alternative — sending only `posture` strings — meant capable clients had nothing to work with and every goblin was a static posed mesh.
+
+Modular parts over monolithic models. An entity's visual is assembled from a base shape + attached parts, not selected from a catalog of complete models. `shape: humanoid` + `parts: [plate_torso, horned_helmet]` produces a unique-looking entity from reusable components. This is how character creators, Roblox avatars, and modular asset pipelines work. It gives domains combinatorial variety from a bounded part vocabulary without requiring unique models per entity. Custom models (Layer 3) still work for domains that want total control — parts are the middle ground between "tinted base mesh" and "full custom asset."
+
+PBR surface hints over material keywords. `material: metal` told the client what *category* of surface but nothing about its properties. Metal can be polished chrome or rusty iron — wildly different rendering. The `surface` namespace adds PBR-compatible hints (roughness, metallic, emissive, opacity) that 3D clients can map directly to shader uniforms. The `surface.base` keyword preserves the old behavior for simple clients. This isn't specifying rendering — it's describing the physical properties of a surface, which is description.
+
+Structured effects over flat emitting strings. `emitting: fire` was insufficient — where on the entity? How big? What color? Effects are now a list of typed, anchored, parameterized descriptions. An effect anchored to `right_hand` with a fire palette is precise enough for a 3D client to place a particle system, and simple enough for a text client to print "flames lick from the goblin's hand." The vocabulary of effect types is extensible like everything else — unknown types are ignored.
 
 Region schema is minimal. Regions have: name, description, spatial model, extensible properties, theme, layers, entities. Physics parameters, comfort hints, tick rate, and environmental description all live in properties or theme tokens — not as first-class fields. This keeps the region schema stable as new use cases emerge. A VR fitness app adds `comfort.*` properties. A music visualizer adds `audio.*` properties. Neither requires a spec change.
 
