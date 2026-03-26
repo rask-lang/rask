@@ -4,13 +4,9 @@
 
 # Wire Format
 
+<!-- Decision: MessagePack with integer-keyed maps. Self-describing, compact, ~50 language implementations. No IDL conflict with Leden's own type model. -->
+
 MessagePack encoding for all Leden protocol messages. Integer-keyed fields for compactness with schema evolution support.
-
-## Why MessagePack
-
-Self-describing, compact, battle-tested libraries in ~50 languages. Leden already defines its own capability and object model — a format with its own IDL (Protobuf, Cap'n Proto) would create two sources of truth. MessagePack lets the spec be the schema and each implementation encode directly.
-
-The tradeoff: schema evolution rules are convention, not enforced by the format. This spec defines those conventions.
 
 ## Framing
 
@@ -499,38 +495,3 @@ Error codes from protocol.md, encoded as uint:
 | 0x1000+ | Application(n - 0x1000) |
 
 Application error codes start at 0x1000 to leave room for future protocol-defined codes.
-
----
-
-## Capability and Sturdy Reference Encoding
-
-Capabilities and sturdy references appear as `bytes` fields throughout the protocol. Their internal structure is MessagePack-encoded with the same integer-key convention.
-
-### Live capability (in-session)
-
-| Field | Name | Type | Notes |
-|-------|------|------|-------|
-| 0 | object_id | bytes | Opaque object identifier |
-| 1 | permissions | uint | Permission bitfield |
-| 2 | weight | uint | Assigned weight for GC |
-| 3 | lease_duration | optional uint | Lease duration in seconds |
-
-### Sturdy reference (persistent)
-
-| Field | Name | Type | Notes |
-|-------|------|------|-------|
-| 0 | issuer | bytes | Endpoint identity |
-| 1 | object_id | bytes | Opaque object identifier |
-| 2 | permissions | uint | Permission bitfield |
-| 3 | nonce | bytes | 256-bit unguessable token |
-| 4 | delegation_chain | bytes | Hash chain proof |
-| 5 | expiry | optional uint | Unix timestamp (seconds) |
-
----
-
-## Implementation Notes
-
-- MessagePack's `fixmap` encoding stores maps of up to 15 entries in one byte of overhead. Most Leden messages have fewer than 15 fields, so the map overhead is minimal.
-- Integer keys 0–127 encode as a single byte in MessagePack (positive fixint). All field IDs in this spec fit in that range.
-- The `bytes` type is used for opaque binary data (capabilities, hashes, nonces). Use MessagePack `bin` format, not `str`.
-- Timestamps are Unix seconds as uint. No sub-second precision at the protocol level — applications that need it can use method arguments.
