@@ -42,26 +42,28 @@ glTF's tagline is "the JPEG of 3D." It succeeded by optimizing for the renderer,
 HTTP beat CORBA. JSON beat XML. HTML beat SGML. In every case, the simpler format won because more people could implement it correctly. A GDL client should be buildable in a weekend. The minimum viable client is a text renderer that prints names, descriptions, and affordance menus. Everything beyond that is progressive enhancement.
 Core Model
 
-Six core concepts that every GDL client must handle:
+Seven core concepts that every GDL client must handle:
 
 1. **Regions** — spatial containers. The "page."
 2. **Entities** — things in regions, with extensible properties. The "elements."
 3. **Affordances** — what you can do. The "links and forms."
-4. **Appearance** — layered rendering hints. Progressive enhancement.
-5. **Events** — things that happened. Fire-and-forget happenings.
-6. **Panels** — domain UI as sandboxed web apps.
+4. **Appearance** — what things look like. Content-first, with hints as fallback.
+5. **Bonds** — visual relationships between entities. Ropes, beams, chains, links.
+6. **Events** — things that happened. Fire-and-forget happenings.
+7. **Panels** — domain UI as sandboxed web apps.
 
-Five extensions that clients negotiate through fidelity:
+Six extensions that clients negotiate through fidelity:
 
 - **Spatial layers** — dense data (voxels, heightmaps, tilemaps)
 - **Input streams** — continuous client→server data (movement, tracking, media input)
+- **Output streams** — continuous server→client data (bone poses, blend shapes, physics, deformation)
 - **Media streams** — audio/video from entities (voice, live performance, video)
 - **Nested spaces & reference frames** — sub-spaces in entities, relative positioning
 - **Theme** — visual identity system (separate spec: [GDL-style](GDL-style.md))
 
 A minimal GDL client handles the core: render regions, display entities with names and descriptions, show affordance menus, display events as log lines, show panel fallback text. That's a text adventure client. Buildable in a weekend.
 
-Each extension adds a capability. A 2D tile client adds spatial layers. A VR client adds input streams and media streams. A client with vehicles adds nested spaces. None require the others. A client that doesn't understand an extension ignores it — the core still works.
+Each extension adds a capability. A 2D tile client adds spatial layers. A VR client adds input streams, output streams, and media streams. A client with vehicles adds nested spaces. None require the others. A client that doesn't understand an extension ignores it — the core still works.
 Regions
 
 A region is a spatial container. It's the "page" — the top-level context that a client loads and renders. A dungeon room, a forest clearing, a city block, a spaceship interior. Regions connect to other regions through portals.
@@ -99,6 +101,7 @@ properties	No	Key-value extensible data (tick_rate, physics params, comfort, dom
 theme	No	Visual identity and mood (see GDL-style)
 layers	No	Dense spatial data — terrain, tilemaps, voxels, collision geometry
 entities	Yes	Things in the region
+bonds	No	Visual relationships between entities (see Bonds)
 
 Regions use the same extensible properties as entities. Environmental properties (lighting, temperature, ambient sound) live in theme tokens — GDL-style already has the `atmosphere.*` namespace for exactly this. Operational parameters (tick_rate, physics, comfort) live in properties.
 
@@ -281,7 +284,9 @@ The client renders this as whatever UI fits — a split-pane trade window, a ser
 When the player completes the interaction, the client packages the inputs and calls the Leden method. The domain validates and executes. The result comes back through the observation stream as entity updates.
 Appearance
 
-Appearance is layered. Every layer is optional except the first (which is the entity's description, a required field). A text client uses Layer 1. A basic 3D client adds Layer 2. A rich client adds Layer 3. Each layer adds detail without replacing the one below — if a higher layer fails (asset not found, unsupported format), the client falls back down. Always.
+Appearance describes what an entity looks like. The system is designed for domains that create real content — custom models, animations, effects. Hints exist as fallback for lightweight prototyping and graceful degradation, not as the primary authoring path.
+
+Three layers, each optional except the first. A domain that invests in content uses Layer 3 (assets). A domain prototyping uses Layer 2 (hints). A text client uses Layer 1 (semantic). When a higher layer fails (asset not found, unsupported format), the client falls back down. Always.
 
 Layer 1: Semantic (always available)
 Kind + name + description. Every client can render this. A creature named "Goblin Scout" with a description — that's enough for a text game.
@@ -437,11 +442,10 @@ Effects are additive — an entity can have multiple simultaneous effects. A fla
 
 The flat `emitting: fire` shorthand still works as sugar for `effects: [{type: fire}]`. Clients should accept both.
 
-Layer 3: Assets (optional, content-addressed)
-Custom visuals for domains that want a specific look:
+Layer 3: Assets (content-addressed)
+The primary authoring path for domains that invest in their world. Content-addressed blobs in Leden's content store — models, skeletons, animations, sprites, effects, materials, sounds.
 
 appearance:
-  ...hints...
   assets:
     model: sha256:d4e5f6...      # 3D model (glTF, may include rig)
     skeleton: sha256:aab123...   # Custom rig (glTF skeleton, defines bones + attachment points)
@@ -460,14 +464,112 @@ appearance:
     materials:                   # Custom material definitions
       enchanted_steel: sha256:ggg777...
     sound: sha256:345678...      # Associated sound
+  # Layer 2 hints alongside assets — used as fallback if assets fail
+  shape: humanoid
+  skeleton: humanoid
+  animation: idle
+  palette: [green, brown]
 
-Assets are content-addressed blobs in Leden's content store. The client fetches what it needs based on its rendering capability. A text client fetches nothing. A 2D client fetches the sprite. A 3D client fetches models, animations, parts. Asset format is encoded in the blob's metadata (stored with the content hash).
+Assets are the domain's content. Hints are the safety net. A domain that ships a custom model, skeleton, animations, and parts has full control over how its entities look. The hints describe the *same entity* in terms the client's base library can approximate — so if the model fails to load, the client falls back to a hint-driven humanoid instead of an invisible entity.
 
-When custom assets exist, they override the client's base library for that entity. A domain that ships a custom `model` replaces the shape-based procedural model entirely. Custom `animations` replace the base library animations for the specified states. Custom `parts` replace the base library parts for the specified names. A custom `skeleton` provides a bone hierarchy and attachment point definitions that the client uses instead of its built-in rig for the named skeleton type. Unspecified states and parts still fall back to the base library — a domain that only provides a custom `attack` animation gets base library `idle`, `walk`, etc.
+The client fetches what it needs based on its rendering capability. A text client fetches nothing. A 2D client fetches the sprite. A 3D client fetches models, animations, parts. Asset format is encoded in the blob's metadata (stored with the content hash).
 
-A custom skeleton asset is a glTF file containing the bone hierarchy, attachment point names (as named nodes), and optionally a rest pose. This is how a domain ships a centaur, a six-armed deity, or any creature that doesn't fit the base skeleton types. The skeleton asset defines the bones. The animation assets animate them. The part assets attach to them. All three compose — a domain can ship a custom skeleton with base library animations for standard states and custom animations only for unique ones.
+Assets compose — a domain can ship a custom skeleton with base library animations for standard states, custom animations only for unique ones, and a mix of custom and base library parts. Unspecified states and parts fall back to the base library. A custom `model` replaces the entire shape-based assembly for that entity.
+
+A custom skeleton asset is a glTF file containing the bone hierarchy, attachment point names (as named nodes), and optionally a rest pose. This is how a domain ships a centaur, a six-armed deity, or any creature that doesn't fit the base skeleton types. The skeleton asset defines the bones. The animation assets animate them. The part assets attach to them.
 
 If the client can't fetch an asset (network issue, unsupported format), it falls back to hints. If no hints, it falls back to kind + description. The layers degrade gracefully. Always.
+
+**Appearance references.** Many entities share the same appearance — a forest of 500 trees, a regiment of guards. Sending the same appearance block 500 times wastes bandwidth and makes the domain responsible for keeping them in sync.
+
+An entity can reference a shared appearance definition instead of inlining one:
+
+Entity:
+  ref: <leden_object_ref>
+  kind: terrain
+  name: "Oak Tree"
+  position: [45, 12]
+  appearance_ref: sha256:tree_oak_01...
+
+The `appearance_ref` is a content-addressed blob containing the full appearance definition (assets + hints). The domain publishes appearance definitions to Leden's content store. Entities reference them by hash. The client fetches the definition once and applies it to every entity that references it.
+
+Appearance references and inline appearance can coexist — an entity with `appearance_ref` can override specific fields inline:
+
+Entity:
+  ref: <leden_object_ref>
+  kind: terrain
+  name: "Dead Oak Tree"
+  position: [47, 13]
+  appearance_ref: sha256:tree_oak_01...
+  appearance:
+    palette: [gray, brown]           # override: dead tree is gray
+    animation: sway_slow             # override: different animation
+    effects:
+      - type: mist
+        anchor: self
+        intensity: 0.3
+
+Inline appearance fields override the referenced definition. Unspecified fields inherit from the reference. This is the same merge-not-replace pattern as theme token inheritance — the reference is the base, inline is the override.
+
+For instanced rendering: when the client sees 500 entities with the same `appearance_ref` and no inline overrides, it can instance them — one draw call, 500 transforms. The content hash makes this optimization trivial to detect. This is how forests, crowds, and particle-heavy scenes stay performant.
+Bonds
+
+A bond is a visual relationship between two entities. A rope connecting a boat to a dock. A chain between a prisoner and a wall. A beam of light between a crystal and a receiver. A tether between a player and a grappling hook. These aren't entities — they don't have independent existence, affordances, or ownership. They exist because two entities are connected, and the connection has visual representation.
+
+Without bonds, you'd fake it: create an invisible entity between the two endpoints and update its position/scale every frame. That's a hack that breaks when either endpoint moves, is computationally expensive, and doesn't express the actual relationship.
+
+Bond:
+  id: "mooring_rope"
+  type: rope
+  from: <boat_ref>
+  from_anchor: bow
+  to: <dock_ref>
+  to_anchor: cleat
+  appearance:
+    surface: { base: fiber, roughness: 0.9 }
+    palette: [#8b7355]
+  properties:
+    tension: 0.7
+    sag: 0.3
+    thickness: 0.05
+
+Bond fields:
+
+Field	Required	Purpose
+id	Yes	Stable identifier within the region
+type	Yes	Visual type from vocabulary (rope, chain, beam, tether, lightning, bridge, pipe, wire, ...)
+from	Yes	Source entity ref
+from_anchor	No	Attachment point on source (default: self)
+to	Yes	Target entity ref
+to_anchor	No	Attachment point on target (default: self)
+appearance	No	Visual properties — surface, palette, assets (same structure as entity appearance)
+properties	No	Extensible key-value data (tension, sag, thickness, energy, ...)
+
+Bonds live in the region alongside entities. They arrive in the region snapshot and update through the observation stream:
+
+Update	Payload	When
+bond_add	Full bond description	New bond created
+bond_remove	Bond id	Bond destroyed
+bond_update	Bond id + changed fields	Bond properties change
+
+When either endpoint entity moves, the client re-renders the bond between the new positions. The client decides the visual — a text client prints "a rope connects the boat to the dock." A 2D client draws a line. A 3D client renders catenary physics for rope, rigid links for chain, a particle beam for lightning. The `type` drives the rendering style; `properties` like `sag` and `tension` parameterize it.
+
+Bond types are vocabulary conventions, like entity kinds. Unknown types get a default rendering (a simple line between endpoints). Core conventions:
+
+Type	Rendering hint
+rope	Catenary curve with sag, affected by gravity
+chain	Rigid linked segments
+beam	Straight line of light/energy, may pulse
+tether	Elastic connection, stretches with distance
+lightning	Jagged, animated electrical arc
+bridge	Solid walkable surface between points
+pipe	Cylindrical tube, may carry flowing content
+wire	Thin, taut line
+
+Bonds can reference appearance assets — a custom chain model, a particle effect for the beam. Same content-addressed asset model as entity appearance. Same fallback chain.
+
+Bonds also support `appearance_ref` for shared definitions — 50 chains in a dungeon reference one chain appearance.
+
 Panels
 
 Some domain UI doesn't map to entities in a region — skill trees, faction reputation, crafting grids, build mode toolbars, quest logs, card game tables. These aren't world description. But punting them to "each domain builds custom UI" defeats the whole point of GDL.
@@ -648,6 +750,9 @@ entity_enter	Full entity description	Entity appears in region
 entity_exit	Entity ref	Entity leaves region
 entity_update	Ref + changed fields	Entity properties change
 affordance_update	Ref + new affordance list	Available actions change
+bond_add	Full bond description	New bond created
+bond_remove	Bond id	Bond destroyed
+bond_update	Bond id + changed fields	Bond properties change
 ambient_update	Changed ambient fields	Environment changes
 panel_update	Panel id + new content hash	Domain UI changes
 theme_update	Changed tokens and/or hints	Visual identity changes (see GDL-style)
@@ -859,6 +964,54 @@ input_streams:
 A VR meeting room declares voice input. A streaming theater declares video input. A text adventure declares neither. The client provides what it can. Codec negotiation happens through fidelity (the client declares supported codecs, the domain picks).
 
 The `bytes` input type is an escape hatch for domain-specific continuous data — drawing strokes, sensor readings, custom controller data. The domain defines the format. The client sends raw bytes at the declared rate. Use this sparingly — typed streams are better when they fit.
+Output Streams
+
+Input streams are client→server continuous data. Output streams are the mirror: server→client continuous data on entities. Bone poses, blend shapes, physics-driven transforms, terrain deformation, procedural animation, facial expressions — anything that changes too fast for property deltas.
+
+The observation stream handles discrete state: "animation changed to `attack`", "health is now 25." But a ragdolling body, a cloth simulation, or a motion-captured performance produces continuous transform data that doesn't fit the property delta model. A humanoid skeleton has ~20 bones × 7 floats (position + quaternion) = 140 floats per update. At 30Hz, that's 4200 values per second. Property deltas aren't designed for this.
+
+Output streams are declared on entities:
+
+Entity:
+  ref: <leden_object_ref>
+  kind: agent
+  name: "Dancer Yuki"
+  output_streams:
+    - id: pose
+      type: skeleton_pose    # bone transforms for the entity's skeleton
+      rate: 30               # 30Hz updates
+    - id: face
+      type: blend_shapes     # facial expression blend weights
+      rate: 15
+    - id: cloth
+      type: vertex_deltas    # per-vertex displacement for cloth/hair
+      rate: 20
+
+Output stream fields:
+
+Field	Required	Purpose
+id	Yes	Stream identifier
+type	Yes	Data type (see below)
+rate	Yes	Update rate in Hz
+
+Output stream types:
+
+Type	Data	Use case
+skeleton_pose	Array of bone transforms [bone_id, x, y, z, qx, qy, qz, qw]	Motion capture, procedural animation, ragdoll, IK
+blend_shapes	Array of [shape_name, weight] pairs	Facial expressions, morph targets, deformation
+vertex_deltas	Array of [vertex_id, dx, dy, dz]	Cloth simulation, soft body, hair, fluid surface
+transform	[x, y, z, qx, qy, qz, qw]	High-frequency single-object movement (smoothly interpolated)
+floats	Array of named float values	Generic continuous parameters (gauge needles, dials, procedural shaders)
+bytes	Raw bytes	Domain-specific continuous data
+
+The client subscribes to output streams through Leden observation. The domain publishes frames at the declared rate. Same backpressure and coalescing as input streams — if the client can't keep up, it gets the latest frame, not a queue of stale ones. The client renders what it receives; interpolation between frames is a client concern.
+
+Output streams compose with skeletal animation. The `animation` hint tells the client which clip to play from its library. An output stream with `type: skeleton_pose` overrides the clip with live bone data — the domain drives the skeleton directly. This is how motion capture, physics ragdoll, and procedural animation work. When the output stream stops (entity goes back to scripted behavior), the client falls back to clip-based animation from the `animation` state.
+
+A client that doesn't support output streams ignores the `output_streams` field. It plays animation clips from the `animation` hint. The dancer does a canned dance animation instead of the motion-captured performance. Graceful degradation.
+
+For **client-side prediction with continuous physics**: the domain sends physics parameters (gravity, friction) and the client runs local simulation. When the domain's authoritative output stream arrives, the client reconciles. This is the same predict-and-reconcile loop every multiplayer game uses, but expressed through GDL's existing mechanisms: physics parameters describe the rules, output streams carry the authoritative state, and the client interpolates between predictions and corrections.
+
 Media Streams
 
 Input streams are client→server. Media streams are entity→observer: audio, video, or data that an entity publishes for observers to consume.
@@ -1179,7 +1332,7 @@ Client UI chrome. GDL describes the world and domain panels, not the client's ow
 
 Physics simulation. GDL provides physics parameters (gravity, friction, collision rules) and spatial layers (collision geometry). The client runs local physics against these. But the physics engine itself is the client's choice — GDL doesn't specify simulation algorithms, integrator types, or solver iterations. Two clients simulating the same parameters may produce slightly different results. The domain is authoritative; clients predict and reconcile.
 
-Animation blending. GDL describes skeleton types, animation states, and custom animation assets. How the client transitions between states — blend trees, crossfade duration, IK solvers, ragdoll — is the client's choice. Two clients playing the same `walk` → `attack` transition may blend differently. GDL describes which state to be in, not how to get there.
+Animation blending. GDL describes skeleton types, animation states (including layered body-region animation), custom animation assets, and output streams for continuous bone data. How the client transitions between states — blend trees, crossfade duration, IK solvers — is the client's choice. Two clients playing the same `walk` → `attack` transition may blend differently. GDL describes which state to be in, not how to get there. Output streams carry authoritative bone transforms when the domain drives the skeleton directly (ragdoll, motion capture, procedural).
 
 Audio design. GDL carries theme tokens for atmosphere, sound asset references, media streams, and sound events. Spatial audio mixing, music systems, and sound design are client-side. The domain says "there's a fire here" and optionally publishes a crackling audio stream. The client decides the mix.
 
@@ -1207,6 +1360,14 @@ Custom skeletons for novel creatures. Base skeleton types (`humanoid`, `quadrupe
 PBR surface hints over material keywords. `material: metal` told the client what *category* of surface but nothing about its properties. Metal can be polished chrome or rusty iron — wildly different rendering. The `surface` namespace adds PBR-compatible hints (roughness, metallic, emissive, opacity) that 3D clients can map directly to shader uniforms. The `surface.base` keyword preserves the old behavior for simple clients. This isn't specifying rendering — it's describing the physical properties of a surface, which is description.
 
 Structured effects over flat emitting strings. `emitting: fire` was insufficient — where on the entity? How big? What color? Effects are now a list of typed, anchored, parameterized descriptions. An effect anchored to `right_hand` with a fire palette is precise enough for a 3D client to place a particle system, and simple enough for a text client to print "flames lick from the goblin's hand." The vocabulary of effect types is extensible like everything else — unknown types are ignored.
+
+Bonds are not entities. A rope between two entities is a visual relationship, not an independent thing. It has no affordances, no owner, no identity beyond its endpoints. Making it an entity would mean it needs a kind, properties, an existence lifecycle separate from its endpoints — all wrong. Bonds are a distinct concept: typed, visual connections between entities that the client renders based on endpoint positions. They live in the region alongside entities and update through the same observation stream. When either endpoint moves or is removed, the bond updates or disappears.
+
+Appearance references for shared definitions. A forest of 500 trees shouldn't send the same appearance block 500 times. `appearance_ref` points to a content-addressed appearance definition. Entities reference it by hash. The client fetches it once, caches it, and applies it to every entity with the same ref. Inline appearance fields override the reference (merge, not replace). When the client sees many entities with the same `appearance_ref` and no overrides, it can instance them — one draw call, many transforms. The content hash makes instancing trivial to detect.
+
+Assets are the primary path, hints are fallback. The old spec framed custom assets as "Layer 3" on top of hints — implying hints were the normal path and assets were the premium feature. That's backwards. Domains that invest in their world create content — custom models, animations, effects. Hints exist for prototyping, graceful degradation when assets fail to load, and lightweight domains. The appearance system supports both, but the spec should be clear: the path to a good-looking world is content creation, not hope that hint-driven procedural assembly looks good enough.
+
+Output streams for continuous server→client data. The observation stream handles discrete state changes. Output streams handle continuous high-frequency data — bone poses, blend shapes, vertex deformation, physics state. They're the mirror of input streams (client→server). Same backpressure, same coalescing (latest frame wins). Output streams compose with animation: the `animation` hint drives clip playback, an output stream overrides it with live data. When the stream stops, the client falls back to clips. This keeps the observation model clean — property deltas for state, output streams for continuous data, events for happenings. Three channels, three update patterns, no mixing.
 
 Region schema is minimal. Regions have: name, description, spatial model, extensible properties, theme, layers, entities. Physics parameters, comfort hints, tick rate, and environmental description all live in properties or theme tokens — not as first-class fields. This keeps the region schema stable as new use cases emerge. A VR fitness app adds `comfort.*` properties. A music visualizer adds `audio.*` properties. Neither requires a spec change.
 
