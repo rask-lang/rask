@@ -196,6 +196,15 @@ Each message is a MessagePack map. Field IDs are permanent — once assigned, ne
 | 3 | recipient | bytes | Endpoint identity of the intended recipient |
 | 4 | attenuation | optional uint | Permission bitfield for the narrowed capability |
 
+### IntroduceResult (0x09)
+
+| Field | Name | Type | Notes |
+|-------|------|------|-------|
+| 0 | type | uint | `0x09` |
+| 1 | id | uint | Request ID (matches Introduce) |
+| 2 | token | bytes | Encoded sturdy reference for the recipient to present |
+| 3 | error | optional uint | Error code if introduction failed |
+
 ### Reattach (0x07)
 
 | Field | Name | Type | Notes |
@@ -509,7 +518,8 @@ Error codes from protocol.md, encoded as uint:
 | 10 | MalformedMessage |
 | 11 | InvalidNonce |
 | 12 | InvalidChain |
-| 13 | IssuerMismatch |
+| 13 | HolderMismatch |
+| 14 | IssuerMismatch |
 | 0x1000+ | Application(n - 0x1000) |
 
 Application error codes start at 0x1000 to leave room for future protocol-defined codes.
