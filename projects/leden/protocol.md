@@ -200,7 +200,9 @@ Without defaults, every bilateral relationship must negotiate revocation strateg
 
 Defaults apply when domains haven't negotiated a per-capability policy. Domains can override any default bilaterally — the table is a floor, not a ceiling. A domain that wants synchronous revocation for reads can have it.
 
-**"Low-value" vs "high-value" is domain-defined.** The protocol doesn't decide what's valuable. Each domain declares value thresholds in its greeter metadata. If two domains disagree on whether an operation is high-value, the stricter classification wins — see [Strategy Disagreement](#strategy-disagreement).
+**Value classification is per-capability, with greeter defaults.** The issuer can stamp a specific revocation strategy on each capability via the `revocation_strategy` field in `IntroduceResult`. If absent, the issuer's greeter metadata declares domain-wide thresholds (e.g., "mutations above 100 units are high-value → pessimistic"). If neither is set, the defaults from the table above apply. Precedence: per-capability > greeter > table defaults.
+
+If two domains disagree on classification, the stricter strategy wins — see [Strategy Disagreement](#strategy-disagreement).
 
 #### Propagation SLAs
 

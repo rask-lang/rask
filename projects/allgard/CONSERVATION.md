@@ -152,6 +152,25 @@ Sybil resistance depends on this being a law, not a suggestion.
 
 Rates are **per-introducer, not per-owner.** A domain with 100 owners doesn't get 100× the introduction budget. The domain itself is the entity being rate-limited — it's the domain's reputation on the line for every introduction it makes.
 
+### What Counts as an Introduction
+
+An introduction is consumed when the receiving domain accepts a **first-contact** `Introduce` — meaning the introduced party is a domain the receiver has never seen before. Re-introductions (delegating additional capabilities to an already-known domain) don't count against the budget.
+
+The receiver already tracks trust state per domain. If the introduced party has an existing trust record (stranger or above), the introduction is free. If it's genuinely new — no prior record — it costs a slot.
+
+This means the budget conserves **trust graph growth**, not capability delegation volume. Routine delegation between established trading partners is unmetered. The scarce resource is the ability to bring new nodes into the receiver's trust graph.
+
+### Structural Enforcement
+
+The law is: **a finite introduction acceptance rate per source must exist.** The runtime rejects configurations without one. The specific number is domain-chosen — the defaults above are starting points, not protocol-mandated floors.
+
+This is the same structure as Law 5. Law 5 doesn't mandate a specific operation rate. It mandates that *a rate limit exists*. A domain that configures `base_rate = 10000` is permissive, not in violation. The risk is theirs. Other domains enforce their own limits independently.
+
+What the runtime structurally prevents:
+- Configuring `base_rate = ∞` or omitting the limit entirely
+- Accepting introductions without checking the budget
+- Routing around the limit via multiple owners (all owners share the domain budget)
+
 ### Trust Level Scaling
 
 Introduction capacity scales with the introducer's trust level (see [Trust](TRUST.md)):
