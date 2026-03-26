@@ -100,7 +100,7 @@ Cross-domain items work because the *item* is data and the *rules* are per-domai
 
 ## Domain Unions
 
-Crossing friction is proportional to how different two domains are. Two medieval fantasy domains with the same item types? Rubber stamp — everything maps 1:1. A medieval domain and a sci-fi domain? Most items downgrade or get rejected.
+Crossing friction is proportional to how different two domains are. Two medieval fantasy domains with the same item types? Rubber stamp — everything maps 1:1. A medieval domain and a sci-fi domain? Most items travel [sealed](README.md#asset-fidelity) — safe in inventory, but unusable until you return to a compatible domain.
 
 Nothing stops domains from reducing this friction through agreements:
 

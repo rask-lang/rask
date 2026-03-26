@@ -62,7 +62,7 @@ The compatibility report appears when something would change:
 
 | Trigger | What the player sees |
 |---------|---------------------|
-| First visit to an unknown domain | Full compatibility report — what transfers, what downgrades, what's rejected |
+| First visit to an unknown domain | Full compatibility report — what transfers at full fidelity, what travels sealed |
 | Exotic items in inventory | Notification for sealed items: "Flamebrand will travel sealed — can't use on Ironhold" |
 | Domain trust below threshold | Warning: "This domain has low reputation. Proceed?" |
 | Compatibility changed since last visit | Delta report: "Ironhold no longer accepts cursed items" |
