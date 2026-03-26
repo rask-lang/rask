@@ -78,6 +78,7 @@ No step requires permission from a central authority. See [Bootstrapping](#boots
 |------|----------------|
 | [PRIMITIVES.md](PRIMITIVES.md) | The six primitives: Object, Owner, Domain, Transform, Proof, Grant |
 | [CONSERVATION.md](CONSERVATION.md) | The six conservation laws every domain must enforce |
+| [TRANSFER.md](TRANSFER.md) | Cross-domain transfer protocol: escrow, timeouts, partition recovery, Law 2 proof |
 | [TRUST.md](TRUST.md) | Adversarial trust model: introductions, reputation, Sybil resistance |
 
 ## Bootstrapping
@@ -229,6 +230,8 @@ If Domain A wants to send an object to Domain C and they've never met, two paths
 2. **Intermediary chain.** A transfers the object to B, B transfers to C. B holds the object briefly during transit. This requires an **escrow transform** — A transfers to B with a condition: "forward to C within N seconds, or it returns to me." This composes from existing primitives: Transform + Grant + expiry.
 
 No routing protocol. No clearinghouse. If you need to reach a distant domain, you go through domains you both know. The gossip layer (Leden discovery) tells you who knows whom.
+
+Both direct transfers and intermediary chains use the bilateral escrow protocol defined in [TRANSFER.md](TRANSFER.md). The escrow transform for intermediary chains is a conditional transfer with a forwarding deadline — forward within N seconds, or it returns to the sender.
 
 ## Verifiable Transforms
 
