@@ -204,6 +204,7 @@ Each message is a MessagePack map. Field IDs are permanent — once assigned, ne
 | 1 | id | uint | Request ID (matches Introduce) |
 | 2 | token | bytes | Encoded sturdy reference for the recipient to present |
 | 3 | error | optional uint | Error code if introduction failed |
+| 4 | revocation_strategy | optional uint | Issuer's revocation strategy for this capability: 0=optimistic, 1=pessimistic, 2=synchronous. Absent means use [defaults](../allgard/PRIMITIVES.md#revocation). Holder may act stricter but not weaker. |
 
 ### Reattach (0x07)
 
