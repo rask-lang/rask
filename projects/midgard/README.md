@@ -1,6 +1,6 @@
 # Midgard
 
-Virtual world architecture built on [Raido](../raido/), [Allgard](../allgard/), and [Leden](../leden/).
+Virtual world architecture built on [Raido](../raido/), [Allgard](../allgard/), [Leden](../leden/), and [GDL](../gdl/).
 
 ## Why
 
