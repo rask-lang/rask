@@ -97,7 +97,4 @@ See [protocol.md](protocol.md) for full specification of each layer.
 | [discovery.md](discovery.md) | Gossip-based peer discovery and failure detection |
 | [content.md](content.md) | Content-addressed blob storage, lazy fetching, chunking |
 | [observation.md](observation.md) | Push-based observation of object state changes |
-
-## Deferred
-
-- **Wire format.** MessagePack, Cap'n Proto, FlatBuffers, Protocol Buffers? Must have schema evolution, compact binary, cross-language support, existing tooling. Doesn't affect protocol design — pick during implementation.
+| [wire-format.md](wire-format.md) | MessagePack encoding, message schemas, schema evolution |

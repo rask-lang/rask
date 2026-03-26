@@ -418,10 +418,12 @@ Happens at Layer 1 (Session establishment), immediately after transport connects
 ```
 Client                                Server
    |                                     |
-   |  Hello(min=1, max=3, ext=[...])     |
+   |  Hello(format=1, min=1, max=3,     |
+   |        ext=[...])                   |
    |────────────────────────────────────>|
    |                                     |
-   |  Welcome(version=3, ext=[...])      |
+   |  Welcome(format=1, version=3,      |
+   |          ext=[...])                 |
    |<────────────────────────────────────|
    |                                     |
    |  (session established, proceed      |
@@ -433,17 +435,20 @@ Or if incompatible:
 ```
 Client                                Server
    |                                     |
-   |  Hello(min=4, max=5, ext=[...])     |
+   |  Hello(format=2, min=4, max=5,     |
+   |        ext=[...])                   |
    |────────────────────────────────────>|
    |                                     |
    |  Incompatible(server_min=1,         |
-   |               server_max=3)         |
+   |    server_max=3, formats=[1])       |
    |<────────────────────────────────────|
    |                                     |
    |  (connection closed)                |
 ```
 
-The server picks the highest version both sides support. If there's no overlap, the connection fails with a clear error that tells the client what versions the server does support. No guessing.
+The `format` field carries the wire format version, separate from the protocol version (see [wire-format.md](wire-format.md)). The Hello message is always encoded using format version 1 rules to bootstrap negotiation.
+
+The server picks the highest protocol version both sides support. If there's no overlap, the connection fails with a clear error that tells the client what versions the server does support. No guessing.
 
 ### Version Semantics
 
@@ -564,14 +569,7 @@ The caller doesn't need to track which promises were in-flight. The session hand
 
 ## Serialization
 
-The wire format is undecided. Requirements:
-
-- Schema evolution (add fields without breaking existing code)
-- Compact binary representation (real-time performance matters)
-- Existing ecosystem tooling (not a custom format — learned from Spritely's Syrup mistake)
-- Cross-language support (the protocol shouldn't require a specific implementation language)
-
-Candidates: MessagePack, Cap'n Proto, FlatBuffers, Protocol Buffers. Decision deferred.
+MessagePack with integer-keyed maps. See [wire-format.md](wire-format.md) for framing, message schemas, schema evolution rules, and format version negotiation.
 
 ---
 
