@@ -115,7 +115,7 @@ The founding cluster is 5-20 domains with:
 - **Standard asset types.** A common items package: basic materials, currency, equipment, character types. Domains in the cluster recognize these automatically. No per-domain negotiation needed for the standard set.
 - **A seed currency.** One domain mints the first commodity money. Not protocol-privileged — it has no special status in the Conservation Laws. It's just the first currency that every founding domain agrees to recognize, giving it immediate liquidity. New domains price things relative to it until they have enough bilateral history to price directly. Over time, other currencies emerge and may replace it. Markets decide.
 
-The founding cluster IS the product for early users. A player joins, plays across 5-20 domains with seamless asset transfer and shared currency. That's the experience. Federation to unknown domains outside the cluster is the advanced feature you graduate to.
+The founding cluster IS the product. A player joins, travels across 5-20 gards with seamless transitions and a shared currency. No compatibility dialogs, no conversion menus, no friction. You travel, you arrive, your stuff works. That's the experience from day one. Federation to gards outside the cluster is the advanced feature you grow into.
 
 **Why this isn't centralization.** The founding domains have no protocol-level authority. They're ordinary domains with pre-negotiated conventions. Any domain can replicate the same setup — start a cluster, agree on asset types, mint a currency. The protocol doesn't privilege the first cluster. Network effects do, temporarily, until the network grows past them.
 
@@ -162,24 +162,24 @@ I'm not repeating that mistake. The federation infrastructure — gossip, audit 
 
 ### What Surfaces
 
-Friction only appears when something changes:
+Within the founding cluster and between gards with established agreements: nothing. Travel is seamless. The player travels, arrives, and plays. No reports, no dialogs, no friction.
 
-- **First visit to an unknown domain.** No established bilateral agreement. The player sees a compatibility report: what transfers at full fidelity, what travels sealed.
-- **Exotic items.** Non-standard assets that will travel sealed. The player is told which items can't be used on the destination — but nothing is lost or downgraded.
-- **Trust threshold.** A domain with low reputation triggers a warning. The player decides whether to proceed.
-- **Compatibility changes.** A domain updated its asset types since the last visit. The player sees what changed.
+Friction only appears at the edges — when a player ventures to an unaffiliated gard or carries exotic items the destination doesn't recognize:
 
-Between domains in the [founding cluster](#founding-cluster) with standard asset types, the experience is: "Travel to Ironhold?" → yes → you're there. The pre-staging, verification, and proof exchange happen underneath. The compatibility report exists, but it's a detail panel — not the primary flow.
+- **Exotic items** travel [sealed](../midgard/README.md#asset-fidelity) — safe, intact, unusable on the destination. A brief notification, not a dialog.
+- **Unaffiliated gards** show what transfers at full fidelity and what travels sealed. This is rare within any established network.
+- **Low-reputation gards** trigger a trust warning.
+- **Changed compatibility** shows a delta since the last visit.
 
-### Why This Isn't Hiding Problems
+Nothing is ever lost or downgraded. The worst case is sealed transfer.
 
-Seamless transitions that hide real problems surface those problems as bugs. That's what metaverse projects get wrong. I'm not hiding anything — the information is always available. The difference is progressive disclosure:
+### Progressive Disclosure
+
+The information is always available — compatibility reports, proof chains, bilateral agreement details. But it's not the primary flow. Players who want to inspect the federation machinery can. Players who don't never see it. Three levels:
 
 1. **Default:** everything works, show nothing
-2. **Something changed:** show what changed, let the player decide
-3. **Deep inspection:** full compatibility report, proof chains, bilateral agreement details — available on request
-
-The honest version and the usable version aren't mutually exclusive. You just have to build both.
+2. **Edge case:** brief notification about sealed items or trust warnings
+3. **Deep inspection:** full details on request
 
 ## Domain Sovereignty over Supply
 

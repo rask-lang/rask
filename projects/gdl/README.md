@@ -8,8 +8,9 @@ GDL is to Leden what HTML is to HTTP. Leden handles transport, capabilities, and
 
 | Spec | What |
 |------|------|
-| [GDL.md](GDL.md) | Content schema — regions, entities, affordances, appearance, panels, spatial layers, input streams, physics |
-| [GDL-style.md](GDL-style.md) | Style system — design tokens, structured hints, CSS stylesheets. GDL's CSS. |
+| [GDL.md](GDL.md) | Core schema — regions, entities, affordances, appearance, bonds, panels, events |
+| [GDL-extensions.md](GDL-extensions.md) | Optional extensions — streams, spatial layers, physics, nested spaces, immersive |
+| [GDL-style.md](GDL-style.md) | Style system — design tokens, structured hints, CSS stylesheets |
 
 ## Stack
 
