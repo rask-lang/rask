@@ -237,12 +237,8 @@ Each sturdy reference in the `sturdy_refs` array is a MessagePack map:
 | 0 | issuer | bytes | Endpoint identity of the original issuer |
 | 1 | object_id | bytes | Object this capability grants access to |
 | 2 | permissions | uint | Permission bitfield (after attenuation) |
-| 3 | nonce | bin(32) | 256-bit nonce proving issuance |
-| 4 | delegation_path | array\<bytes\> | Endpoint identities, one per delegation step (including original holder) |
-| 5 | delegation_chain | array\<bin(32)\> | HMAC-SHA256 link hashes, one per delegation step |
-| 6 | expiry | optional uint | Unix timestamp (seconds), absent if no expiry |
-
-`delegation_path` and `delegation_chain` must have the same length, at least 1. Maximum length is implementation-defined (recommended: 32).
+| 3 | token | bin(32) | 256-bit, unique per delegation event |
+| 4 | expiry | optional uint | Unix timestamp (seconds), absent if no expiry |
 
 ### Call (0x10)
 
@@ -517,10 +513,9 @@ Error codes from protocol.md, encoded as uint:
 | 8 | Timeout |
 | 9 | VersionMismatch |
 | 10 | MalformedMessage |
-| 11 | InvalidNonce |
-| 12 | InvalidChain |
-| 13 | HolderMismatch |
-| 14 | IssuerMismatch |
+| 11 | InvalidToken |
+| 12 | HolderMismatch |
+| 13 | IssuerMismatch |
 | 0x1000+ | Application(n - 0x1000) |
 
 Application error codes start at 0x1000 to leave room for future protocol-defined codes.

@@ -257,161 +257,79 @@ A sturdy reference is what you store to prove you held a capability. It contains
 | `issuer` | endpoint identity | Who created the original capability |
 | `object_id` | opaque | Which object this grants access to |
 | `permissions` | bitfield | What operations are allowed (after attenuation) |
-| `nonce` | 256-bit | Unique, unguessable — proves this was issued, not fabricated |
-| `delegation_path` | endpoint identity[] | Plaintext delegation path — who delegated to whom |
-| `delegation_chain` | hash chain | HMAC-SHA256 verification of the delegation path |
+| `token` | 256-bit | Unique, unguessable — identifies this specific delegation event |
 | `expiry` | optional timestamp | When this sturdy ref becomes invalid (if time-limited) |
 
-The `nonce` is critical. Without it, anyone who knows the object_id could fabricate a sturdy reference. The issuer generates the nonce and stores it — when a client presents a sturdy ref, the issuer checks the nonce against its records.
+The `token` is unique per delegation event — not per capability. When the issuer creates a capability, the first holder gets a token. When that holder delegates, the new holder gets a different token. Each token maps to exactly one node in the issuer's delegation tree.
 
-The `delegation_path` and `delegation_chain` together identify and verify the delegation path. The path provides plaintext identities for tree lookup; the chain provides cryptographic tamper detection. The algorithm and verification procedure are specified below.
+### Delegation Verification
 
-### Delegation Chain Cryptography
-
-A sturdy ref carries a plaintext delegation path (for tree lookup) and an HMAC chain (to prevent path substitution). The issuer's delegation tree is the authoritative record; the chain cryptographically binds the sturdy ref to a specific path through that tree.
-
-#### Design Rationale
-
-The issuer maintains a delegation tree — the authoritative record of every delegation event. That tree is the real security boundary. The delegation chain in the sturdy ref serves two purposes:
-
-1. **Path identification.** The chain tells the issuer which delegation path the presenter claims. Without it, the issuer would need to search for a path from root to the presenter's identity. With indexed storage (keyed by nonce + holder) this is fast, but the chain makes the claim explicit — no ambiguity when a holder appears at multiple points in the tree.
-
-2. **Path binding (prevents path substitution).** The plaintext path alone is vulnerable to substitution: if the same capability has been delegated through multiple paths, a low-privilege holder could swap their path for a higher-privilege path that also exists in the tree. The HMAC chain binds each step's parameters (permissions, weight, identities) to the specific delegation event. The issuer recomputes the HMAC using values from the tree, so a substituted path produces a different hash — caught at step 3. This is a real attack, not defense-in-depth.
-
-#### Algorithm: HMAC-SHA256 Chain
-
-Each link in the chain is an HMAC-SHA256 computed over the delegation context, keyed with a secret derived from the capability's nonce. The chain is an ordered array of 32-byte link hashes, one per delegation step.
-
-**Root link** (issuer creates the original capability):
-
-```
-link_key  = HMAC-SHA256(key: nonce, data: "leden-delegation-v1")
-link_0    = HMAC-SHA256(key: link_key, data: issuer_id || object_id || permissions || weight || holder_id)
-```
-
-The root link binds the capability to a specific holder and weight. `holder_id` is the endpoint identity of the first recipient. `weight` is the initial weight assigned at creation.
-
-**Delegation link** (holder delegates to a new recipient):
-
-```
-link_n    = HMAC-SHA256(key: link_{n-1}, data: delegator_id || recipient_id || permissions_n || weight_n)
-```
-
-Each subsequent link is keyed with the *previous link's hash*. This chains the links cryptographically — you can't produce link_n without knowing link_{n-1}.
-
-The inputs to each delegation link:
-- `delegator_id` — endpoint identity of the entity delegating
-- `recipient_id` — endpoint identity of the entity receiving
-- `permissions_n` — the permission bitfield *after* any attenuation at this step
-- `weight_n` — the weight assigned to the recipient at this step
-
-**Concatenation encoding.** The `||` operator means length-prefixed concatenation: each field is encoded as a 2-byte big-endian length followed by the field bytes. Fixed-size fields (permissions as u64, weight as u64) are encoded as 8 bytes big-endian with no length prefix. This prevents ambiguity attacks where field boundaries are shifted.
-
-**The sturdy ref carries two parallel arrays:**
-- `delegation_path: [holder_id_0, holder_id_1, ..., holder_id_n]` — plaintext endpoint identities, one per delegation step (including the original holder)
-- `delegation_chain: [link_0, link_1, ..., link_n]` — HMAC hashes, one per step
-
-The path tells the issuer which tree nodes to look up. The chain lets the issuer verify the path wasn't tampered with. Both are needed — the chain is opaque (32-byte hashes), so without the plaintext path the issuer can't locate the corresponding delegation records.
-
-#### Nonce Visibility
-
-Every holder has the nonce (it's in the sturdy ref). A holder can compute `link_key` and produce chain links with arbitrary inputs. **The HMAC chain alone does not prevent forgery** — a holder who fabricates links referencing nonexistent delegations is caught by the tree lookup (step 3.2), not by the HMAC comparison.
-
-What the HMAC *does* prevent: path substitution. A holder who modifies `delegation_path` to point to a different (valid) delegation is caught because the HMAC was computed over the original path's parameters.
-
-The nonce proves "the issuer created this capability" (step 1). The path identifies the delegation route (step 3.1). The chain binds those claims together cryptographically (step 3.5). The tree confirms everything actually happened (step 3.2). All four are needed.
-
-#### Introduction and Delegation Recording
-
-When A introduces B to C's object, the delegation chain gains a new link — but the issuer (C) hasn't recorded this delegation yet. This is resolved by a two-phase introduction:
-
-1. A sends `Introduce(capability, recipient=B, attenuation)` to C (the issuer).
-2. C validates A's capability, records the delegation (A → B) in its tree, computes the new chain link, and builds a sturdy ref for B.
-3. C responds to A with an `IntroduceResult` containing the token (B's sturdy ref).
-4. A forwards the token to B.
-5. B presents the token to C to establish a direct session.
-
-The issuer computes the chain link — not A. A doesn't need to know the chain construction algorithm. C is the authority on its own tree and the only entity that can produce valid chain links (because it controls which delegations are recorded).
-
-The issuer always learns about the delegation *before* the new holder can use it.
-
-#### Example
-
-```
-Issuer I creates capability for object O, nonce N, grants to A (permissions=0x07, weight=512):
-  I computes: link_key = HMAC-SHA256(N, "leden-delegation-v1")
-  I computes: link_0   = HMAC-SHA256(link_key, I || O || 0x07 || 512 || A)
-  A's sturdy ref: delegation_path = [A], delegation_chain = [link_0]
-
-A delegates to B (attenuates to permissions=0x03, weight=256):
-  A sends Introduce to I. I computes:
-  link_1   = HMAC-SHA256(link_0, A || B || 0x03 || 256)
-  B's sturdy ref: delegation_path = [A, B], delegation_chain = [link_0, link_1]
-
-B delegates to C (no attenuation, weight=128):
-  B sends Introduce to I. I computes:
-  link_2   = HMAC-SHA256(link_1, B || C || 0x03 || 128)
-  C's sturdy ref: delegation_path = [A, B, C], delegation_chain = [link_0, link_1, link_2]
-```
+The delegation tree is the security boundary. Each node in the tree records: recipient identity, permissions, weight, revocation status, and parent node. The token is a lookup key into this tree.
 
 #### Verification Procedure
 
 When an endpoint receives a sturdy reference (during re-attachment, introduction, or any capability claim), it performs these steps in order. Any failure rejects the reference.
 
-**Step 1: Nonce lookup.** Look up the nonce in the issuer's persistent capability store. If not found → reject with `InvalidNonce`. This proves the capability was actually issued, not fabricated.
+**Step 1: Token lookup.** Look up the token in the issuer's persistent store. If not found → reject with `InvalidToken`. This proves the delegation event actually happened.
 
-**Step 2: Reconstruct the root link.** Compute `link_key` and `link_0` from the stored nonce, the issuer's own identity, the object_id, the original permissions, and the original holder_id (all stored by the issuer when the capability was created). Compare against `delegation_chain[0]`. If mismatch → reject with `InvalidChain`.
+**Step 2: Check presenter.** The tree node's `recipient` must match the endpoint presenting the sturdy reference. If mismatch → reject with `HolderMismatch`.
 
-**Step 3: Walk the delegation tree.** The issuer maintains a delegation tree recording every delegation event (who delegated to whom, with what permissions and weight). For each delegation step `i` from 1 to N:
+**Step 3: Check revocation.** Walk from the tree node up to the root, checking each ancestor's revocation status. If any ancestor is revoked → reject with `CapabilityRevoked`. (Revocation cascades — revoking a parent revokes all descendants.)
 
-1. Use `delegation_path[i-1]` (delegator) and `delegation_path[i]` (recipient) to look up the delegation record in the tree
-2. If the record doesn't exist → reject with `InvalidChain` (claimed delegation never happened)
-3. If the record is revoked → reject with `CapabilityRevoked`
-4. Recompute `link_i = HMAC-SHA256(link_{i-1}, delegator_id || recipient_id || permissions_i || weight_i)` using values from the tree record
-5. Compare against `delegation_chain[i]`. If mismatch → reject with `InvalidChain`
+**Step 4: Permission and expiry checks.** Verify the permissions in the sturdy ref are no broader than the tree node's permissions (can only narrow). Check expiry.
 
-**Step 4: Check terminal holder.** `delegation_path[N]` (the last entry) must match the endpoint presenting the sturdy reference. If mismatch → reject with `HolderMismatch` (the ref belongs to someone else).
+**Step 5: Accept.** Re-issue a live capability with the verified permissions and a fresh lease.
 
-**Step 5: Permission and expiry checks.** Verify the permissions in the sturdy ref match the most-attenuated permissions in the chain (can only narrow). Check expiry. Check revocation status.
+#### Example
 
-**Step 6: Accept.** Re-issue a live capability with the verified permissions and a fresh lease.
+```
+Issuer I creates capability for object O, grants to A (permissions=0x07, weight=512):
+  I generates token_A, stores tree node: {recipient=A, permissions=0x07, weight=512, parent=root}
+  A's sturdy ref: {issuer=I, object_id=O, token=token_A, expiry=none}
+
+A delegates to B (attenuates to permissions=0x03, weight=256):
+  A sends Introduce to I. I generates token_B, stores tree node:
+    {recipient=B, permissions=0x03, weight=256, parent=node_A}
+  B's sturdy ref: {issuer=I, object_id=O, token=token_B, expiry=none}
+
+B delegates to C (no attenuation, weight=128):
+  B sends Introduce to I. I generates token_C, stores tree node:
+    {recipient=C, permissions=0x03, weight=128, parent=node_B}
+  C's sturdy ref: {issuer=I, object_id=O, token=token_C, expiry=none}
+```
+
+When C presents their sturdy ref:
+1. Look up token_C → find tree node (recipient=C, permissions=0x03, parent=node_B)
+2. Presenter is C, recipient is C → match
+3. Walk up: node_B not revoked, node_A not revoked, root not revoked → ok
+4. Permissions 0x03 ≤ 0x03 → ok
+5. Accept, issue live capability
 
 #### Security Properties
 
-Security comes from *three mechanisms working together*: the nonce (proves issuance), the chain (commits to a delegation path), and the tree (authoritative record of what actually happened). No single mechanism is sufficient alone.
+**Forgery resistance.** Tokens are 256-bit, randomly generated by the issuer. An attacker can't guess a valid token. A holder's token maps to one specific tree node — knowing it reveals nothing about other tokens.
 
-**Forgery resistance.** An external attacker (no sturdy ref) cannot guess the 256-bit nonce, so they can't pass step 1. A holder who has the nonce can compute arbitrary chain links, but cannot forge delegation events in the issuer's tree. Any fabricated chain references a path that doesn't exist in the tree — rejected at step 3.
+**Path substitution resistance.** Each delegation event has its own token. A holder with a low-privilege delegation can't claim a high-privilege path because they don't have the token for it. Unlike a shared nonce + chain design, there's no shared secret that could be used to forge claims about other paths.
 
-**Link-dropping resistance.** Each link is keyed with the previous link's hash. Removing link_i from the chain means link_{i+1} was keyed with a value the attacker can't reproduce without link_i. Even if the attacker could somehow produce a valid-looking shortened chain, the issuer recomputes the full chain from its tree — the chain length must match the tree depth for this delegation path.
+**Impersonation resistance.** Step 2 checks that the presenter matches the tree node's recipient. Stealing someone's sturdy ref requires obtaining their token, which is only transmitted once (from issuer to delegator to recipient).
 
-**Impersonation resistance.** Each link encodes the delegator_id and recipient_id. If an attacker substitutes their own identity for either, the HMAC changes. The issuer cross-references against its delegation tree — the identities must match recorded delegation events. Additionally, step 4 checks that the presenter matches the terminal recipient.
+**Permission escalation resistance.** Step 4 checks the claimed permissions against the tree. Widening fails. The tree records the exact permissions for each delegation event.
 
-**Path substitution resistance.** When the same capability has multiple delegation paths (e.g., A→B with permissions=0x07, A→C with permissions=0x03), a holder could modify their `delegation_path` to point to a higher-privilege path that exists in the tree. The HMAC prevents this: the issuer recomputes each link using the tree's recorded values for the claimed path. A substituted path produces different HMAC inputs → mismatch at step 3.
+**Replay after revocation.** Step 3 walks the tree upward, checking every ancestor. Revoking any node in the chain invalidates all descendants. No window — the tree is the authoritative state.
 
-**Permission escalation resistance.** Each link includes the permission bitfield. Widening permissions changes the HMAC input, producing a different hash that won't match the issuer's recomputation. The issuer also independently enforces that permissions can only narrow along the chain (step 5).
+**Link-dropping resistance.** Not applicable. There's no chain to drop. The tree itself encodes the full delegation path. The holder doesn't carry path information — the issuer reconstructs it from the tree node's parent pointers.
 
-**Replay resistance.** A revoked delegation's entry in the issuer's tree is marked as revoked. Presenting a sturdy ref whose chain passes through a revoked delegation fails at step 3 — the issuer checks revocation status for each delegation record during the tree walk. The chain itself doesn't prevent replay; the tree does.
+#### Why Not HMAC Chains
 
-#### Why HMAC, Not Signatures
+An earlier design used a shared nonce per capability with HMAC-SHA256 chains linking delegation steps. That approach had compounding problems:
 
-Digital signatures (Ed25519, etc.) would let anyone verify the chain without contacting the issuer. That's not what we want. The issuer is *always* the verifier — it's the endpoint hosting the object. Third parties don't need to verify chains independently; they present them to the issuer for verification.
+1. Every holder had the nonce, so any holder could compute valid-looking chain links. The chain alone didn't prevent forgery — the tree had to do that too.
+2. The chain was opaque hashes, so verification needed a parallel plaintext path array for tree lookup — two fields doing one job.
+3. Path substitution attacks required the HMAC to bind each link to its specific delegation parameters. The HMAC was compensating for the shared nonce's weakness.
 
-HMAC is simpler, faster, and doesn't require a PKI. Each endpoint already has a persistent identity, but that identity doesn't need to be a signing key for delegation purposes. The nonce-derived key is sufficient.
+Per-delegation tokens eliminate all three problems. The token is secret (only the issuer and the specific recipient know it), maps directly to a tree node (no search needed), and can't be used to claim a different delegation (no shared secrets between delegation events).
 
-If a future extension needs third-party-verifiable delegation (e.g., for offline verification in partitioned networks), that's a separate mechanism. Don't over-engineer the common path.
-
-#### Wire Format
-
-The sturdy ref carries two parallel arrays:
-
-```
-delegation_path:  [bytes, bytes, ..., bytes]     -- endpoint identities
-delegation_chain: [bin(32), bin(32), ..., bin(32)] -- HMAC-SHA256 hashes
-```
-
-Both arrays must have the same length, at least 1. The original recipient's sturdy ref has one entry in each. A zero-length array is invalid.
-
-Chain length is bounded by the delegation tree depth. Implementations should reject chains longer than a configurable maximum (default: 32 links). Deeper delegation trees indicate either a design problem or an attack.
+The cost: one 256-bit token stored per delegation event, instead of one per capability. Since the issuer already stores a tree node per delegation event, this adds 32 bytes per node — negligible.
 
 ### Re-attachment Flow
 
@@ -453,9 +371,8 @@ Each sturdy ref is validated independently. Some may succeed while others fail. 
 | `CapabilityRevoked` | Revoked while you were disconnected |
 | `CapabilityExpired` | Time limit passed |
 | `ObjectNotFound` | Object was destroyed |
-| `InvalidNonce` | Nonce doesn't match records — forged or corrupted ref |
-| `InvalidChain` | Delegation chain doesn't match issuer's delegation tree |
-| `HolderMismatch` | Presenter doesn't match the terminal recipient in the chain |
+| `InvalidToken` | Token doesn't match records — forged or corrupted ref |
+| `HolderMismatch` | Presenter doesn't match the token's recorded recipient |
 | `IssuerMismatch` | This server didn't issue this ref |
 
 ### Batching
@@ -466,7 +383,7 @@ Each sturdy ref is validated independently. Some may succeed while others fail. 
 
 **Revoked during disconnection.** The client gets `CapabilityRevoked` in the reattach result. Clean — you find out immediately on reconnect, not when you try to use it.
 
-**Server restarted too.** The server reconstructs its capability table from its persistent store. Sturdy refs are designed for this — the nonce and delegation chain are verifiable without in-memory state.
+**Server restarted too.** The server reconstructs its capability table from its persistent store. Sturdy refs are designed for this — the token maps to a persisted tree node, no in-memory state needed.
 
 **Partial re-attachment.** Some refs succeed, some fail. The client gets a complete picture in one response and decides how to handle failures (request new capabilities from another source, degrade gracefully, etc.).
 
@@ -484,10 +401,10 @@ How capabilities are born, shared, and cleaned up. The full picture.
 
 Capabilities are created by the endpoint that hosts the object. When the greeter (bootstrap) grants a capability, or when an object method returns a reference to another object, a new capability is minted:
 
-1. Issuer generates a unique `nonce` and stores it
+1. Issuer generates a unique 256-bit `token` for this delegation event
 2. Issuer assigns a `weight` (for reference counting — see GC below)
-3. Issuer records the holder in the delegation tree
-4. Holder receives a live capability (in-session) + a sturdy reference (for persistence)
+3. Issuer records the holder, permissions, weight, and token in the delegation tree
+4. Holder receives a live capability (in-session) + a sturdy reference containing the token (for persistence)
 
 ### Delegation
 
@@ -522,7 +439,7 @@ B is done: Release(weight=512) → Issuer, total returned = 1024 = original
 All weight returned → capability can be garbage collected.
 ```
 
-When all weight has been returned, no one holds a reference. The issuer cleans up the capability — removes it from the delegation tree, frees the nonce, reclaims any associated resources.
+When all weight has been returned, no one holds a reference. The issuer cleans up the capability — removes it from the delegation tree, frees the tokens, reclaims any associated resources.
 
 ### Lease-Based Expiry
 
