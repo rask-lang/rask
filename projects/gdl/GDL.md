@@ -315,7 +315,28 @@ shape	humanoid, quadruped, serpentine, avian, tree, rock, box, sphere, blade, ..
 scale	[w, h, d] or single float	Relative size
 parts	List of part names	Modular attachments/equipment on the base shape
 
-A 2D client uses shape + palette to pick a sprite. A 3D client uses shape + scale to select a base mesh and snaps parts onto it. Parts are additive — `[horned_helmet, plate_torso]` on a `humanoid` shape means the client attaches those part meshes to the humanoid skeleton's attachment points. Part names are vocabulary conventions. Unknown parts are ignored — the base shape still renders.
+A 2D client uses shape + palette to pick a sprite. A 3D client uses shape + scale to select a base mesh and snaps parts onto it.
+
+Parts can be simple names or structured:
+
+    # Simple — client resolves attachment point from vocabulary
+    parts: [horned_helmet, plate_torso, cloth_legs]
+
+    # Structured — explicit attachment and per-part surface
+    parts:
+      - name: horned_helmet
+        attach: head
+        surface: { base: bone, roughness: 0.6 }
+      - name: plate_torso
+        attach: torso
+        surface: { base: metal, metallic: 1.0, roughness: 0.3 }
+      - name: cloth_legs
+        attach: legs
+        surface: { base: cloth, roughness: 0.9 }
+
+Simple part names are shorthand — the client resolves the attachment point from part vocabulary conventions. Structured parts give domains explicit control over where parts attach and how they look, including per-part surface properties that override the entity-level surface.
+
+Unknown parts are rendered as the base shape without that part — the entity still appears, just without the attachment. This isn't silent failure; it's the same degradation as a web page with a missing image. The entity is recognizable. The detail is missing. A domain that needs guaranteed visuals ships custom part assets in Layer 3.
 
 **Surface**
 
@@ -335,11 +356,29 @@ Previous flat `material` key is now `surface.base` — same purpose, but surface
 
 Hint	Values (examples)	Purpose
 skeleton	humanoid, quadruped, avian, serpentine, arachnid, ...	Which bone rig this entity uses
-animation	idle, walk, run, attack, die, sit, crouch, swim, fly, cast, emote_wave, ...	Current animation state
+animation	See below	Current animation state(s)
 
 A skeleton is a named rig type that the client's base library provides. `skeleton: humanoid` tells the client this entity is driven by a humanoid bone hierarchy — two arms, two legs, a head, a spine. The client maps animation state names to animation clips in its library for that skeleton.
 
-Animation states are strings from an open vocabulary. Core conventions:
+Skeleton names are vocabulary conventions. Unknown skeleton names fall back to `shape` for rendering — a client that doesn't know `centaur` ignores the skeleton and renders based on the shape hint. Domains that need custom rigs ship them as Layer 3 assets (see below).
+
+**Animation states** can be a single string or a layered list:
+
+    # Simple — one animation drives the whole skeleton
+    animation: walk
+
+    # Layered — different body regions animate independently
+    animation:
+      - state: run
+        layer: full        # default: drives the whole skeleton
+      - state: attack
+        layer: upper       # upper body only
+      - state: look_left
+        layer: head         # head only
+
+Animation layer names are skeleton-dependent conventions. A `humanoid` skeleton might define `full`, `upper`, `lower`, `head`, `left_arm`, `right_arm`. A `quadruped` might define `full`, `front`, `rear`, `head`. Unknown layers are ignored — the `full` layer always works as a fallback. Single-string animation (`animation: walk`) is shorthand for `[{state: walk, layer: full}]`.
+
+Core animation state conventions:
 
 State	Meaning
 idle	Default stance
@@ -405,6 +444,7 @@ appearance:
   ...hints...
   assets:
     model: sha256:d4e5f6...      # 3D model (glTF, may include rig)
+    skeleton: sha256:aab123...   # Custom rig (glTF skeleton, defines bones + attachment points)
     sprite: sha256:a1b2c3...     # 2D sprite sheet
     icon: sha256:789abc...       # UI icon
     portrait: sha256:def012...   # Dialog portrait
@@ -423,7 +463,9 @@ appearance:
 
 Assets are content-addressed blobs in Leden's content store. The client fetches what it needs based on its rendering capability. A text client fetches nothing. A 2D client fetches the sprite. A 3D client fetches models, animations, parts. Asset format is encoded in the blob's metadata (stored with the content hash).
 
-When custom assets exist, they override the client's base library for that entity. A domain that ships a custom `model` replaces the shape-based procedural model. Custom `animations` replace the base library animations for the specified states. Custom `parts` replace the base library parts for the specified names. Unspecified states and parts still fall back to the base library — a domain that only provides a custom `attack` animation gets base library `idle`, `walk`, etc.
+When custom assets exist, they override the client's base library for that entity. A domain that ships a custom `model` replaces the shape-based procedural model entirely. Custom `animations` replace the base library animations for the specified states. Custom `parts` replace the base library parts for the specified names. A custom `skeleton` provides a bone hierarchy and attachment point definitions that the client uses instead of its built-in rig for the named skeleton type. Unspecified states and parts still fall back to the base library — a domain that only provides a custom `attack` animation gets base library `idle`, `walk`, etc.
+
+A custom skeleton asset is a glTF file containing the bone hierarchy, attachment point names (as named nodes), and optionally a rest pose. This is how a domain ships a centaur, a six-armed deity, or any creature that doesn't fit the base skeleton types. The skeleton asset defines the bones. The animation assets animate them. The part assets attach to them. All three compose — a domain can ship a custom skeleton with base library animations for standard states and custom animations only for unique ones.
 
 If the client can't fetch an asset (network issue, unsupported format), it falls back to hints. If no hints, it falls back to kind + description. The layers degrade gracefully. Always.
 Panels
@@ -1156,7 +1198,11 @@ Vocabulary is convention, not protocol. Entity kinds, affordance categories, pro
 
 Skeletons and animation are description, not behavior. A skeleton is a named rig type — it describes the bone structure an entity has, not how to animate it. Animation states describe what the entity is doing (`walk`, `attack`), not how the client transitions between states (blend trees, crossfade curves, IK). The domain sends state names. The client maps them to its animation library. This keeps the "description is not rendering" boundary clean while giving 3D clients enough information to produce smooth, skeleton-driven animation. The alternative — sending only `posture` strings — meant capable clients had nothing to work with and every goblin was a static posed mesh.
 
-Modular parts over monolithic models. An entity's visual is assembled from a base shape + attached parts, not selected from a catalog of complete models. `shape: humanoid` + `parts: [plate_torso, horned_helmet]` produces a unique-looking entity from reusable components. This is how character creators, Roblox avatars, and modular asset pipelines work. It gives domains combinatorial variety from a bounded part vocabulary without requiring unique models per entity. Custom models (Layer 3) still work for domains that want total control — parts are the middle ground between "tinted base mesh" and "full custom asset."
+Modular parts over monolithic models. An entity's visual is assembled from a base shape + attached parts, not selected from a catalog of complete models. `shape: humanoid` + `parts: [plate_torso, horned_helmet]` produces a unique-looking entity from reusable components. This is how character creators, Roblox avatars, and modular asset pipelines work. It gives domains combinatorial variety from a bounded part vocabulary without requiring unique models per entity. Parts can be simple names (client resolves attachment) or structured with explicit attachment points and per-part surface properties — a knight's metal armor and cloth undergarments need different material properties. Custom models (Layer 3) still work for domains that want total control — parts are the middle ground between "tinted base mesh" and "full custom asset."
+
+Animation layers over single state. A single `animation: attack` can't express "attacking while running" — real animation is layered, with different body regions doing different things simultaneously. Animation states can be a single string (simple case, drives the whole skeleton) or a list of `{state, layer}` pairs. Layer names are skeleton-dependent conventions (`upper`, `lower`, `head` for humanoids). This is how game engines work internally — GDL exposes the same model. Simple clients ignore layers and play the first state. Capable clients blend across body regions. The single-string shorthand keeps the simple case simple.
+
+Custom skeletons for novel creatures. Base skeleton types (`humanoid`, `quadruped`) cover common cases. But a centaur, a six-armed deity, or any novel creature needs a custom rig. Layer 3 assets include an optional `skeleton` asset — a glTF file defining the bone hierarchy and attachment points. Animation and part assets compose with custom skeletons the same way they compose with base skeletons. A domain that invents a new creature type ships the full asset package (rig + animations + parts); a domain using standard creatures uses the base library. Unknown skeleton names in Layer 2 fall back to shape-based rendering — graceful degradation, not failure.
 
 PBR surface hints over material keywords. `material: metal` told the client what *category* of surface but nothing about its properties. Metal can be polished chrome or rusty iron — wildly different rendering. The `surface` namespace adds PBR-compatible hints (roughness, metallic, emissive, opacity) that 3D clients can map directly to shader uniforms. The `surface.base` keyword preserves the old behavior for simple clients. This isn't specifying rendering — it's describing the physical properties of a surface, which is description.
 
