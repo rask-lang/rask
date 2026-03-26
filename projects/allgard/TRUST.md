@@ -393,19 +393,17 @@ The incentive model pushes toward hub formation. Without a structural constraint
 
 I don't want to just document this risk and hope for the best. Federation's track record with "the market will sort it out" is poor. Gmail dominates email. Centralized platforms ate XMPP.
 
-**Structural fix: bounded introduction rate.**
+**Structural fix: [Conservation Law 7 — Bounded Introduction Rate](CONSERVATION.md#law-7-bounded-introduction-rate).**
 
-A domain can introduce at most N new domains per time period. This is the same principle as Law 5 (bounded rates) applied to introductions. Call it a natural limit on how fast any single domain can vouch for newcomers.
+A domain can introduce at most N new domains per time window. Introduction capacity scales with trust level. This is a conservation law, not a guideline — receiving domains enforce it bilaterally by rejecting excess introductions.
 
 Why this works:
-- **Caps hub dominance.** A domain that can only introduce 10 new domains per month can't become the sole gateway to the network. Others must share the load.
-- **Forces distributed introduction.** Newcomers can't all funnel through one hub. They must find multiple introduction paths, which naturally diversifies the graph.
-- **Quality over quantity.** A limited introduction budget means each introduction is more valuable and worth more due diligence. You don't waste your 10 monthly introductions on domains you haven't vetted.
-- **Scales with trust level.** The introduction rate limit can scale with the introducer's own trust level — allied domains get a higher budget than known domains. This is earned, not assumed.
+- **Caps hub dominance.** A domain limited to 5 introductions per month (the default `base_rate` for `known` domains) can't become the sole gateway.
+- **Forces distributed introduction.** Newcomers must find multiple introduction paths, diversifying the graph.
+- **Quality over quantity.** A limited introduction budget means each introduction is more valuable and worth more due diligence.
+- **Scales with trust level.** Allied domains get a higher budget (default 20/month) than known domains (default 5/month). Earned, not assumed.
 
 **What this doesn't solve:** A hub can still become *influential* — being the most trusted introducer carries weight even if capped. But it can't become a *monopoly*. There's a structural ceiling on introduction concentration.
-
-**Enforcement:** Same as Law 5. The introduction carries a timestamp. Domains that receive more than N introductions from the same source in a time window can reject the excess. No central enforcer needed — it's bilateral verification of a rate limit.
 
 ### Gossip Is a Duty (structural requirement)
 

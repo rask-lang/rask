@@ -301,11 +301,19 @@ Grants can only narrow, never widen. If Owner A grants Owner B read+write on an 
 
 Revocation is built in, not optional. The mechanism is the membrane pattern: the Grant is a wrapper that can be switched off. When revoked, all further Transforms through that Grant are rejected.
 
-Revocation is **eventually consistent** in a distributed system. There's unavoidable latency between "revoke" and "all domains know it's revoked." The protocol must handle the window where a revoked Grant is still being exercised somewhere. Options:
+Revocation is **eventually consistent** in a distributed system. There's unavoidable latency between "revoke" and "all domains know it's revoked." The protocol must handle the window where a revoked Grant is still being exercised somewhere.
 
-1. **Optimistic**: allow operations during the window, reconcile after
-2. **Pessimistic**: require liveness check before honoring a Grant
-3. **Hybrid**: optimistic for low-value, pessimistic for high-value
+Three strategies, with defaults that apply when domains haven't negotiated:
+
+| Strategy | Default for | Behavior |
+|----------|-------------|----------|
+| **Optimistic** | Read-only grants, observation | Allow during window, reconcile after |
+| **Pessimistic** | Mutation grants, delegation grants | Liveness check before honoring |
+| **Synchronous** | Security-critical (key revocation, admin) | Block until all holders acknowledge |
+
+Defaults exist so the system is safe without negotiation. Two domains that haven't discussed revocation policy still get reasonable behavior. When domains disagree on strategy for a Grant class, the stricter strategy wins — a domain can always be more cautious than required, never less.
+
+See [Leden protocol spec](../leden/protocol.md#revocation) for propagation SLAs, lease renewal failure behavior, and the full negotiation mechanism.
 
 ### Third-Party Handoff
 

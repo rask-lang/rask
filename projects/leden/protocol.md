@@ -186,6 +186,80 @@ This is the slowest strategy. If one holder is unreachable, the revoker blocks. 
 
 Best for: security-critical revocation (revoking a compromised key), administrative operations.
 
+#### Default Strategy by Operation Category
+
+Without defaults, every bilateral relationship must negotiate revocation strategy from scratch. That's an exploitable gap — domains that haven't negotiated yet have no revocation semantics at all.
+
+| Operation Category | Default Strategy | Rationale |
+|-------------------|-----------------|-----------|
+| Read / observe | Optimistic | Seeing stale data briefly is harmless |
+| Low-value mutation | Optimistic | Cost of reconciliation < cost of extra RTT |
+| High-value mutation | Pessimistic | Financial operations can't be "oops, undo" |
+| Authority changes (grant, delegate) | Pessimistic | Escalation during revocation window is dangerous |
+| Security operations (key revoke, admin) | Synchronous | No operations should succeed on a compromised capability |
+
+Defaults apply when domains haven't negotiated a per-capability policy. Domains can override any default bilaterally — the table is a floor, not a ceiling. A domain that wants synchronous revocation for reads can have it.
+
+**Value classification is per-capability, with greeter defaults.** The issuer can stamp a specific revocation strategy on each capability via the `revocation_strategy` field in `IntroduceResult`. If absent, the issuer's greeter metadata declares domain-wide thresholds (e.g., "mutations above 100 units are high-value → pessimistic"). If neither is set, the defaults from the table above apply. Precedence: per-capability > greeter > table defaults.
+
+If two domains disagree on classification, the stricter strategy wins — see [Strategy Disagreement](#strategy-disagreement).
+
+#### Propagation SLAs
+
+Revocation is eventually consistent, but "eventually" needs bounds. Without them, the revocation window is unbounded and the strategies above are meaningless.
+
+| Scope | SLA | Mechanism |
+|-------|-----|-----------|
+| Same session | Within 1 RTT | Direct message delivery |
+| Same endpoint, different session | Within 2× RTT | Internal propagation + session delivery |
+| Cross-endpoint (delegated) | Within 2× RTT per hop in delegation chain | Cascading `RevocationNotice` through tree |
+
+**Wall-clock cap: 30 seconds.** Regardless of chain depth or RTT, the issuer treats a revocation as fully propagated after 30 seconds. Deep delegation chains (10 hops at 200ms = 4 seconds) stay well within this. Pathological cases (satellite links, partitioned holders) hit the cap and trigger the post-SLA behavior below.
+
+These are targets, not hard guarantees — network partitions can delay delivery. The SLA defines when a holder is *expected* to know. After the SLA window, the issuer treats unreached holders as if they've been notified:
+
+- **Optimistic:** Operations from unreached holders are logged and flagged for reconciliation
+- **Pessimistic:** `CheckRevocation` responses return `revoked` regardless of whether the notice was delivered
+- **Synchronous:** The timeout fires and revocation is forced (as already specified above)
+
+**Monitoring.** Issuers track propagation latency per revocation event. A revocation that consistently exceeds the SLA indicates a network problem or a misbehaving holder. This feeds into the trust model — a domain that systematically delays `RevocationAck` is observable.
+
+#### Strategy Disagreement
+
+When two domains have different revocation policies for the same capability class:
+
+**Rule: the stricter strategy wins.**
+
+If Domain A (issuer) wants optimistic and Domain B (holder) wants pessimistic for mutations, the capability operates under pessimistic revocation. B performs `CheckRevocation` before use regardless of A's preference.
+
+This is bilateral, not global. Domain C holding the same capability class from A might operate under optimistic if both A and C agree.
+
+**Negotiation.** Strategy preferences are exchanged during capability creation (in the `Introduce` response metadata). If the holder's preference is stricter than the issuer's default, the holder simply acts stricter on its own — no issuer cooperation needed. If the holder wants a *weaker* strategy than the issuer's default, the issuer can refuse. The issuer always has veto power over weakening.
+
+**`CheckRevocation` is rate-limited.** A holder self-upgrading to pessimistic generates `CheckRevocation` traffic to the issuer. This traffic is subject to Law 5 (bounded rates) like any other operation. The issuer sets a per-holder `CheckRevocation` rate limit. A holder that exceeds it gets throttled — responses delayed, not denied. This prevents a paranoid (or malicious) holder from turning self-upgraded pessimistic into an issuer DoS. Caching with TTL (already specified above) is the intended way to reduce `CheckRevocation` frequency.
+
+**No negotiation = defaults apply.** If strategy preferences aren't exchanged (old implementations, lazy configuration), the defaults from the table above apply. This is the critical property — the system is safe without negotiation.
+
+#### Lease Renewal Failure
+
+When a holder fails to renew a lease:
+
+1. **Grace period.** The issuer waits for one additional lease interval after expiry before reclaiming. Network hiccups shouldn't kill capabilities.
+2. **LeaseExpired notification.** The issuer sends `LeaseExpired` (best-effort) to the holder's last known session.
+3. **Weight reclaimed.** The issuer reclaims the holder's weight and logs the expiry.
+4. **Delegation cascade.** All capabilities delegated from the expired one are also expired immediately — no additional grace period per hop. The parent's grace period is the only grace. Delegates that want resilience must renew their own leases independently of the parent.
+
+**Retry behavior for the holder:**
+
+| Situation | Behavior |
+|-----------|----------|
+| Renewal fails (network error) | Retry with exponential backoff starting at `lease_interval / 8`, doubling each attempt, capped at `lease_interval / 2`. For a 60s lease: 7.5s, 15s, 30s. For a 2s lease: 0.25s, 0.5s, 1s. |
+| Renewal rejected (capability revoked) | Stop retrying, treat as revocation |
+| Renewal rejected (unknown capability) | Lease already expired and was reclaimed. Re-attach using sturdy reference to get a fresh lease |
+| Session lost during renewal | Reconnect session first, then re-attach capabilities via sturdy refs |
+
+**Sturdy refs are the recovery mechanism.** A holder that loses its lease hasn't lost its authority — the sturdy reference is still valid (unless the capability was explicitly revoked). Re-attaching with the sturdy ref re-issues the capability with a fresh lease. The holder loses in-flight operations, not the capability itself.
+
 #### Delegated Revocation
 
 When A delegates a capability to B, and B delegates to C, revocation must cascade:
