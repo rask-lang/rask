@@ -80,6 +80,92 @@ const chunk = try vm.compile("script.raido", source)
 const chunk = try vm.load(bytecode_bytes)
 ```
 
+## Version Compatibility
+
+The format version in the chunk header is an integer, starting at 1. It determines bytecode encoding, constant pool layout, and instruction semantics. Two VMs can re-execute each other's chunks only if they agree on the format version.
+
+### Compatibility Matrix
+
+| Relationship | Compatible? | Notes |
+|-------------|-------------|-------|
+| Same version | Yes | Bitwise-identical execution guaranteed |
+| Newer VM, older chunk | Yes, with constraints | VM must include the older version's instruction semantics. Execution uses the chunk's declared version, not the VM's latest. |
+| Older VM, newer chunk | No | `vm.load()` returns `VersionMismatch`. The VM cannot execute instructions it doesn't understand. |
+
+A VM that supports versions 1–3 can load and execute a v1 chunk using v1 semantics. It cannot "upgrade" the chunk — it runs it as-is. This is what makes cross-domain verification work: both sides execute the same bytecode with the same version's rules.
+
+### Version Metadata in Chunks
+
+The chunk header carries:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `magic` | `[u8; 4]` | Format identifier (`RADO`) |
+| `version` | `u16` | Chunk format version |
+| `content_hash` | `[u8; 32]` | SHA-256 of bytecode + constants + prototypes |
+
+The version field is checked first during `vm.load()`. If the VM doesn't support that version, it rejects immediately — before reading any other section. This prevents misinterpreting bytecode encoded under unknown rules.
+
+### Cross-Domain Version Agreement
+
+When two domains negotiate verifiable transforms over [Leden](../../leden/), they include Raido version support in the capability negotiation:
+
+```
+Hello(min=1, max=1, ext=[content_store, verifiable_transform])
+Welcome(version=1, ext=[content_store, verifiable_transform])
+```
+
+The `verifiable_transform` extension carries additional parameters during negotiation:
+
+| Parameter | Type | Purpose |
+|-----------|------|---------|
+| `raido_versions` | `array<uint>` | Chunk format versions this domain can execute |
+| `raido_serialization_version` | `uint` | VM serialization format version (for snapshot exchange) |
+
+Both domains compute the intersection of supported versions. Cross-domain Proofs for scripted transforms must use a chunk format version both sides support. If the intersection is empty, verifiable transforms are unavailable for this session — the domains fall back to trust-based verification (Proof structure only, no re-execution).
+
+### What Happens: Version Mismatch Scenarios
+
+**Domain A has a v2 script, Domain B only runs v1.**
+
+B cannot verify A's v2 transform. Three options, in order of preference:
+
+1. **A provides a v1-compatible script.** If the minting logic can be expressed in v1, A maintains both versions. The v1 script has a different content hash — both hashes are registered in A's supply audit as equivalent minting authorities for the same asset type.
+2. **B upgrades.** B deploys a VM that supports v2. This is a software update, not a protocol change.
+3. **Fall back to trust-based.** B accepts A's Proof structurally but cannot mechanically verify the computation. B's trust model accounts for this — unverified transforms carry lower weight in reputation scoring. This is the default when `verifiable_transform` negotiation fails.
+
+No silent degradation. B always knows whether it verified mechanically or accepted on trust. The distinction is recorded in B's local audit log.
+
+**A domain upgrades its minting script from v1 to v2.**
+
+The old v1 script's content hash remains valid for historical audits. Supply audit entries reference the script hash that produced them — a v1 mint stays linked to the v1 script, a v2 mint to the v2 script. Verifying domains fetch the script version that matches each audit entry's hash.
+
+### Script Migration
+
+Old scripts are not migrated. A v1 chunk stays a v1 chunk forever. Its content hash is its identity, and changing the bytecode changes the hash, which breaks the audit trail.
+
+If a domain wants to move from v1 minting logic to v2, it deploys a new script. The new script gets a new content hash. The domain's supply audit records which script hash authorized each mint/burn event. Historical entries remain verifiable against the original script.
+
+This means a verifying domain may need to support older chunk format versions to audit historical mints. In practice, this is bounded — a domain only needs to verify scripts from its active trading partners, and the set of versions in use across the network is small.
+
+### Serialization Compatibility
+
+VM serialization (snapshots) has its own version header, separate from the chunk format version. A snapshot includes:
+
+| Field | Purpose |
+|-------|---------|
+| `serialization_version` | Snapshot format version |
+| `chunk_version` | The chunk format version of the bytecode being executed |
+| `chunk_hash` | Content hash of the bytecode (for re-loading) |
+
+Deserialize rejects unknown serialization versions with `VersionMismatch`. The chunk format version in the snapshot tells the restoring VM which instruction semantics to use — the VM must support that chunk version to resume execution.
+
+**Forward compatibility:** New serialization versions may add fields. Old VMs reject them (unknown version). No attempt to skip unknown fields — the snapshot format is not self-describing.
+
+**Backward compatibility:** A newer VM can deserialize older snapshots if it retains the older serialization logic. Each serialization version is a distinct code path, not a layered extension. This keeps deserialization simple and auditable — no accumulated migration transforms.
+
+**Policy:** Serialization versions are supported for as long as any actively-traded scripts might have snapshots in that format. In practice, the VM ships with support for the current version and the previous one. Domains that need longer support pin their VM version.
+
 ## Debug Sections
 
 Optional. Stripped by default in release, included with a compile flag.

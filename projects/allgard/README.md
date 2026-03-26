@@ -265,9 +265,35 @@ With it: Domain B re-executes the computation. Bilateral trust becomes bilateral
 
 ### Capability Negotiation
 
-Two domains agree to verifiable transforms during Leden capability negotiation. They agree on a Raido chunk format version. From then on, cross-domain Proofs for scripted transforms include the script hash, inputs, and outputs. The receiving domain re-executes to verify.
+Two domains agree to verifiable transforms during Leden capability negotiation. The `verifiable_transform` extension carries Raido version metadata:
+
+```
+Hello(ext=[verifiable_transform(raido_versions=[1,2], serialization_version=1)])
+Welcome(ext=[verifiable_transform(raido_versions=[1,2], serialization_version=1)])
+```
+
+Both sides advertise which [Raido chunk format versions](../raido/vm/chunk-format.md#version-compatibility) they can execute. The session uses the intersection. From then on, cross-domain Proofs for scripted transforms include the script hash, chunk format version, inputs, and outputs. The receiving domain re-executes to verify.
+
+**Version mismatch.** If the intersection is empty, the domains cannot mechanically verify each other's scripted transforms. They fall back to trust-based verification — Proof structure is checked (signature, causal link) but computation is not re-executed. This carries lower reputation weight. See [chunk format version compatibility](../raido/vm/chunk-format.md#what-happens-version-mismatch-scenarios) for the full breakdown.
+
+**Minting verification is not exempt.** Verifiable minting is mandatory (Conservation Law 1), but it requires version agreement to be mechanical. A domain whose minting scripts use chunk format v2 cannot be mechanically audited by a v1-only partner. The v1 partner can still verify Proof structure, bilateral transfer history, and audit gossip totals — but not re-execute the minting script. This is a real gap. Domains that want full mechanical auditability maintain minting scripts in the oldest version any active trading partner supports, or their partners upgrade.
 
 This is the same pattern as observation in Leden — negotiated, optional, composable. No domain is forced to support general verification. But every domain must support verifiable minting — that's not negotiable.
+
+### Supply Audit Version Metadata
+
+Supply audit entries carry the Raido chunk format version alongside each script hash:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `script_hash` | `[u8; 32]` | Content hash of the minting/burning script |
+| `chunk_version` | `uint` | Chunk format version the script was compiled under |
+| `inputs` | `bytes` | Serialized inputs to the script |
+| `outputs` | `bytes` | Claimed outputs |
+
+A verifying domain fetches the script (via Leden content store), checks that its content hash matches, confirms it can execute that chunk version, and re-runs it. If the verifier doesn't support the chunk version, it cannot mechanically verify that entry — but can still cross-check totals against bilateral transfer history and audit gossip.
+
+Historical audit entries remain valid indefinitely. The script hash pins the exact bytecode; the chunk version pins the execution semantics. A verifier needs a VM that supports that version to re-execute. In practice, the set of chunk versions used across the network grows slowly — VMs carry support for all released versions.
 
 ## Prior Art and Differentiation
 
