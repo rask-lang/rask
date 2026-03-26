@@ -69,8 +69,10 @@ Arena is a flat `[u8]` with a bump pointer (`top: u32`). Every object starts wit
 Object header (4 bytes):
   type (u8)   — same as value tag (4=string, 5=array, 6=map, 7=closure)
   _pad (u8)   — reserved, zero
-  size (u16)  — object body size in bytes (max 64 KB per object)
+  size (u16)  — object body size in bytes (max 65535 bytes per object)
 ```
+
+**The `size` field is the hard limit.** A u16 caps every object at 64 KB. The `len` and `cap` fields inside object bodies are u32 for alignment and simplicity, but they can never describe an object that exceeds the header's u16 `size`. An array with `cap` slots totaling more than 65535 bytes of body can't exist — the allocator rejects it with `ArenaExhausted` before writing the header. This is intentional: scripts that need more than 64 KB in a single object are doing something the VM isn't designed for.
 
 All objects are 4-byte aligned. The bump pointer advances by `4 (header) + size`, rounded up to 4-byte alignment.
 
@@ -128,7 +130,20 @@ How it works:
 
 **What's frame-local:** everything above `frame_base` — temporary strings from interpolation, arrays built during the frame, intermediate results.
 
-If a script stores a frame-local value into a global, that value becomes a dangling offset after `frame_end()`. This is a **host bug**, not a VM bug. The rule: don't store frame-local arena objects into persistent state. The VM doesn't enforce this — enforcement would require a write barrier, which contradicts "lightweight." Document it clearly in the host API docs.
+If a script stores a frame-local value into a global, that value becomes a dangling offset after `frame_end()`. This is a **host bug**, not a VM bug. The rule: don't store frame-local arena objects into persistent state.
+
+The VM doesn't enforce this by default — a write barrier on every store contradicts "lightweight." But finding these bugs in production is painful, so the VM supports an optional debug mode:
+
+```rask
+const vm = raido.Vm.new(raido.Config {
+    arena_size: 256.kilobytes(),
+    debug_frame_writes: true,  // off by default
+})
+```
+
+When `debug_frame_writes` is enabled, `SET_GLOBAL` and `SET_UPVALUE` validate that any arena offset in the stored value is below `frame_base`. If the value points above `frame_base` (i.e., into frame-local memory), the VM raises a `FrameStoreViolation` error instead of silently creating a dangling reference.
+
+The cost: one comparison per `SET_GLOBAL` / `SET_UPVALUE` that touches an arena-backed value (tags 4–7). Negligible in debug builds, but not zero — this is why it's off by default. Ship with it off. Debug with it on.
 
 ## Resource Limits
 
@@ -294,7 +309,7 @@ Jumps are relative to the *next* instruction (PC after decode, before jump).
 | Op | Fmt | Semantics |
 |----|-----|-----------|
 | `CALL A B C` | ABC | Call `R[A]` with args `R[A+1..A+B]`. `B` = arg count. Result stored in `R[A]`. Increment call depth. |
-| `TAIL_CALL A B` | ABC | Same as `CALL` but reuses current frame. No call depth increment. |
+| `TAIL_CALL A B` | ABC | Same as `CALL` but reuses current frame. No call depth increment. Compiler constraint: only emitted in tail position (the last expression before `RETURN`). |
 | `RETURN A` | ABx | Return `R[A]` to caller. If `A = 255`, return `nil`. Decrement call depth. Pop frame, restore PC. |
 | `CLOSURE A Bx` | ABx | `R[A] = new closure` from prototype `Bx`. Captures upvalues per prototype's upvalue descriptor list. |
 
@@ -343,6 +358,7 @@ Every runtime error is a `raido.ScriptError` with a `kind` enum and a message st
 | `CoroutineDead` | Resumed a finished coroutine |
 | `ReadOnlyField` | Wrote to a read-only host ref field |
 | `ScriptError` | Raised by `error(msg)` in script code |
+| `FrameStoreViolation` | Stored a frame-local value into persistent state (debug mode only) |
 | `HostError` | Raised by a host function |
 
 All errors carry: kind, message (string), and a stack trace (array of `{file, line, function}` if debug info is present, `{proto_idx, pc_offset}` if not).
@@ -360,3 +376,5 @@ Single-pass compiler. Source → bytecode in one walk. No AST. Same architecture
 5. **Output.** Chunk (see [chunk-format.md](chunk-format.md)).
 
 No AST means no intermediate representation, no memory proportional to source size. The compiler holds the current token, the previous token, and the scope stack. Memory use is O(scope depth), not O(program size).
+
+**Tail call constraint.** The compiler only emits `TAIL_CALL` when a call expression is in tail position — the last expression in a function body, directly before an implicit or explicit `return`. Calls inside `try` blocks, inside operand positions, or before further statements get a regular `CALL`. This is a compile-time structural check, not an optimization heuristic. A `TAIL_CALL` in non-tail position would corrupt the caller's frame, so the compiler must never emit one there.
