@@ -47,8 +47,14 @@ Each layer above Raido is independent — you could use Leden without Allgard, o
 2. Hit the greeter — receive observation capabilities (catalog, peers, transfer inbox)
 3. Learn about other gards through gossip (Leden discovery)
 4. Start transacting — small transfers, verified Proofs, bilateral reputation builds
+
+Steps 5 and 6 are runtime concerns — the software handles them:
+
 5. Enforce Conservation Laws on hosted objects
 6. Accept or reject Proofs from other gards based on own trust heuristics
+7. Participate in audit gossip with trading partners
+
+A domain operator writes game logic. The federation infrastructure — conservation law enforcement, proof verification, gossip participation, reputation tracking — runs automatically. Like TCP congestion control: it's a protocol duty, but nobody "operates" it.
 
 No step requires permission from a central authority. See [Bootstrapping](#bootstrapping) for details.
 
@@ -64,7 +70,7 @@ No step requires permission from a central authority. See [Bootstrapping](#boots
 | Enforcement | Bilateral verification | No global enforcer. Bad actors get excluded by reputation. |
 | Supply | Per-domain sovereignty | No shared mint authority. Cross-domain value is market-determined. |
 | Transfer routing | Bilateral, with introduction or intermediary chains | No clearinghouse. Reach distant domains through mutual contacts. |
-| Bootstrapping | Seed nodes, zero trust | No approval, no registry, no trust anchor. Reputation is emergent. |
+| Bootstrapping | Founding cluster + seed currency | Curated seed network with pre-negotiated assets. Zero protocol-level trust anchor. Reputation is emergent. |
 
 ## Specs
 
@@ -99,9 +105,24 @@ How does the first capability exchange happen between domains that have never me
 
 That's it. No write access to hosted objects, no minting authority, no delegation. A stranger can look and transact. Everything else is earned through bilateral reputation.
 
+### Founding Cluster
+
+The network doesn't launch as "anyone can join an empty protocol." It launches as a curated cluster of domains run by people who know and trust each other.
+
+The founding cluster is 5-20 domains with:
+- **Pre-negotiated bilateral agreements.** Asset types, exchange rates, trust levels — all decided before launch. These domains start at Allied trust level with each other.
+- **Standard asset types.** A common items package: basic materials, currency, equipment, character types. Domains in the cluster recognize these automatically. No per-domain negotiation needed for the standard set.
+- **A seed currency.** One domain mints the first commodity money. Not protocol-privileged — it has no special status in the Conservation Laws. It's just the first currency that every founding domain agrees to recognize, giving it immediate liquidity. New domains price things relative to it until they have enough bilateral history to price directly. Over time, other currencies emerge and may replace it. Markets decide.
+
+The founding cluster IS the product for early users. A player joins, plays across 5-20 domains with seamless asset transfer and shared currency. That's the experience. Federation to unknown domains outside the cluster is the advanced feature you graduate to.
+
+**Why this isn't centralization.** The founding domains have no protocol-level authority. They're ordinary domains with pre-negotiated conventions. Any domain can replicate the same setup — start a cluster, agree on asset types, mint a currency. The protocol doesn't privilege the first cluster. Network effects do, temporarily, until the network grows past them.
+
+**Early adopter benefit.** Founding domains get established reputation, introduction capacity, and hub status before the network grows. They are the trusted introducers for the next wave. That's the incentive to build the cluster well — the founders' long-term position depends on the network they seed being worth joining.
+
 ### Seed List
 
-The default seed list ships with the software. It points to domains run by the project maintainers. These are ordinary domains — same protocol, same Conservation Laws, no special authority. They're just the first nodes in the gossip graph.
+The default seed list ships with the software. It points to domains in the founding cluster. These are ordinary domains — same protocol, same Conservation Laws, no special authority. But they have pre-negotiated bilateral agreements that make the first experience seamless.
 
 If the seed domains go down, existing domains still talk to each other. Only brand-new domains with no other contacts are affected. Alternative seed lists are a config change, not a protocol change.
 
@@ -118,6 +139,47 @@ Domains decide for themselves who to trust. But the federation provides structur
 
 The Conservation Laws give domains something concrete to verify: did this Proof check out? Did this transfer balance? That's the raw signal. [Audit gossip with Proofs](TRUST.md#audit-gossip-with-proofs) gives domains a way to pool that signal without trusting each other's summaries.
 
+## Invisible Federation
+
+Rask's design principle: safety is a property, not an experience. The same applies here: **federation is a property, not an experience.**
+
+Every federation protocol that lost to a centralized competitor lost on UX. Email to Gmail, XMPP to Google Talk, ActivityPub to Twitter. The federated version optimized for operator freedom. The centralized version optimized for user experience. Users outnumber operators 1000:1.
+
+I'm not repeating that mistake. The federation infrastructure — gossip, audit verification, reputation tracking, proof verification, conservation law enforcement — is runtime machinery. Domain operators don't think about it. End users never see it. It's like HTTPS encryption: it's there, it matters, and it's not in your face.
+
+### What's Invisible
+
+| Concern | Who handles it | User/operator sees |
+|---------|---------------|-------------------|
+| Gossip participation | Runtime (automatic) | Nothing |
+| Audit verification | Runtime (automatic) | Nothing |
+| Reputation tracking | Runtime (automatic) | Nothing (operators can inspect via admin tools) |
+| Proof verification | Runtime (automatic) | Nothing |
+| Conservation law enforcement | Runtime (automatic) | Nothing |
+| Standard asset transfer | Runtime (bilateral agreements) | One-click crossing between domains with established agreements |
+| Currency conversion | Runtime (bilateral rates) | Balance shown in local currency |
+
+### What Surfaces
+
+Friction only appears when something changes:
+
+- **First visit to an unknown domain.** No established bilateral agreement. The player sees a compatibility report: what transfers at full fidelity, what travels sealed.
+- **Exotic items.** Non-standard assets that will travel sealed. The player is told which items can't be used on the destination — but nothing is lost or downgraded.
+- **Trust threshold.** A domain with low reputation triggers a warning. The player decides whether to proceed.
+- **Compatibility changes.** A domain updated its asset types since the last visit. The player sees what changed.
+
+Between domains in the [founding cluster](#founding-cluster) with standard asset types, the experience is: "Travel to Ironhold?" → yes → you're there. The pre-staging, verification, and proof exchange happen underneath. The compatibility report exists, but it's a detail panel — not the primary flow.
+
+### Why This Isn't Hiding Problems
+
+Seamless transitions that hide real problems surface those problems as bugs. That's what metaverse projects get wrong. I'm not hiding anything — the information is always available. The difference is progressive disclosure:
+
+1. **Default:** everything works, show nothing
+2. **Something changed:** show what changed, let the player decide
+3. **Deep inspection:** full compatibility report, proof chains, bilateral agreement details — available on request
+
+The honest version and the usable version aren't mutually exclusive. You just have to build both.
+
 ## Domain Sovereignty over Supply
 
 Each domain mints its own assets independently. No shared mint authority, no protocol-level currency, no central bank.
@@ -126,7 +188,7 @@ Cross-domain value is market-determined. If Domain A's "iron ingot" is worth 3 o
 
 **Why not a shared currency?** Because "shared minting authority" is centralization. Who runs it? Who sets issuance rates? Every answer reintroduces a central party that the architecture explicitly rejects.
 
-**What about fragmentation?** It happens. That's the honest cost of sovereignty. In practice, commodity money emerges — assets with intrinsic utility (crafting materials, fuel, compute credits) become de facto currencies because they're useful, scarce, and fungible. Nobody decrees it. Markets discover it.
+**What about fragmentation?** It happens. That's the honest cost of sovereignty. In practice, commodity money emerges — assets with intrinsic utility (crafting materials, fuel, compute credits) become de facto currencies because they're useful, scarce, and fungible. The [founding cluster](#founding-cluster) seeds the first commodity money by convention, giving it initial liquidity. After that, markets discover the rest.
 
 What the protocol provides:
 - **Asset type registration** — domains publish what they mint and its properties (via catalog observation from bootstrapping)

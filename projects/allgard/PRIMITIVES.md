@@ -50,6 +50,150 @@ An Owner is *not* a person. A person may control multiple Owners. An automated s
 
 Every Owner has a home domain — the domain that is authoritative for their identity and primary inventory. An Owner can operate in other domains, but their home domain is the root of trust for their identity.
 
+The home domain is where your stuff lives by default.
+
+### Leased Transfer
+
+When a player visits another domain, objects don't transfer permanently — they transfer on a **lease**. The lease is a time-limited escrow built from existing primitives (Transform + Grant + expiry):
+
+> "These objects are hosted by Domain B. If the lease isn't renewed within N hours, they return to the home domain."
+
+The player's client maintains sessions with both the home domain and the visited domain. The home domain issued the lease, so the home domain can revoke it.
+
+**Normal disconnect:** Player goes offline → home domain detects session loss → home domain revokes the lease → visited domain transfers objects back. This takes seconds, not hours. The revocation uses the existing membrane pattern — the Grant gets switched off.
+
+**Catastrophic disconnect:** Both the player and the home domain are unreachable. Only then does the lease timeout kick in (hours/days — configurable). This is the safety net, not the normal path.
+
+Lease renewal is automatic and invisible — like a DHCP lease, nobody thinks about it.
+
+**Why transfer at all?** Because game logic needs low latency. If objects stayed on the home domain and the visited domain operated on them remotely, every sword swing would be a cross-domain round trip. Leased transfer gives the visited domain local access for game logic while the home domain retains recovery authority.
+
+### Exit Scenarios
+
+| Scenario | What happens | Speed |
+|----------|-------------|-------|
+| **Normal exit** | Player leaves Domain B. Objects transfer home immediately. | Instant |
+| **Sudden disconnect** | Home domain detects session loss, revokes lease. Visited domain transfers objects back. | Seconds |
+| **Visited domain goes dark** | Home domain can't reach visited domain to revoke. Lease timeout expires, home domain recovers from Proof chain. | Hours (timeout) |
+| **Both go dark** | Lease timeout is the only mechanism. Objects recover when home domain comes back online. | Hours to days |
+| **Home goes dark, player active** | Player keeps playing on visited domain. Lease stays active — visited domain has no reason to evict an active, authenticated player. | No disruption |
+| **Home goes dark, player disconnects** | Nobody to revoke, nobody to renew. Lease timeout is the safety net. Objects stay on visited domain until home comes back or timeout expires. | Hours to days |
+| **Home gone permanently** | Backup home domain takes over. See below. | Depends on backup |
+
+### Home Domain Failure
+
+Your home domain is your root of trust. If it's temporarily down, objects on visited domains are safe — the lease holds. If it's permanently gone, your identity and home-stored objects go with it unless you have a backup.
+
+**Backup home domain.** Every player should have one. It's a second domain that mirrors your identity and inventory Proof chains in real-time. The backup domain holds a read-only replica. If the primary goes dark, the backup can:
+
+1. Take over as the new home domain
+2. Revoke outstanding leases (it has the Proof chains showing what transferred out)
+3. Accept returning objects
+4. Issue new leases for future visits
+
+This is a Grant from the player to the backup domain — scoped to mirror and recover, not to use or transfer. The backup can't touch your stuff until the primary is declared dead (configurable timeout, or player-initiated failover).
+
+**This should be a first-class protocol feature, not a pattern.** The Owner primitive should have an optional `backup_home` field. The runtime should handle replication automatically. "Choose a backup home" during account setup — same as setting up 2FA. Not required, but the UI should make it the path of least resistance.
+
+Without a backup, home domain failure is permanent loss. That's the honest tradeoff. But with a backup, it's a recoverable event — same as a disk failure with a RAID mirror.
+
+### Owner Wallet
+
+The ultimate fallback: you hold your own proof of ownership locally.
+
+A wallet is a serialized file containing:
+- **Owner private key** — your cryptographic identity
+- **Object contents** — the bytes of every object you own
+- **Proof chains** — every Transform from minting to current state, per object. Signatures, causal links, timestamps.
+- **Minting scripts** — the content-addressed Raido scripts that created each object
+
+This is everything a domain needs to mechanically verify your ownership. Re-execute the minting scripts, check the signatures, walk the causal chain. No server has to be online. No domain has to vouch for you. The math speaks for itself.
+
+**The wallet is a file.** Put it on a thumb drive, back it up to cold storage, print the key on paper. Your ownership exists independently of any domain. This is the same principle as a crypto wallet, but without a blockchain — the Proof chain IS the ledger, and it's self-contained per owner.
+
+#### When You Need It
+
+The wallet is the nuclear option for recovery:
+
+| Scenario | Primary recovery | Wallet recovery |
+|----------|-----------------|-----------------|
+| Home domain temporarily down | Wait for it to come back | Not needed |
+| Home domain permanently gone, backup exists | Backup takes over | Not needed |
+| Home domain permanently gone, no backup | **Wallet is the only recovery path** | Present wallet to any domain |
+| All domains you've ever used go dark | Nothing else works | Wallet proves ownership to any new domain |
+
+#### How Recovery Works
+
+1. Player presents wallet to a new domain
+2. Domain verifies the Proof chains mechanically — re-executes minting scripts, checks signatures, validates causal ordering
+3. If everything checks out, the domain accepts the objects and registers the player as their Owner
+4. The player's new home domain starts fresh Proof chains from this point forward
+
+#### Witnessed Recovery
+
+A wallet alone is a local copy, and local copies can be presented twice. Without a structural fix, double-spend is a real hole. Gossip-based detection isn't enough — it's after-the-fact, and the damage is done.
+
+The fix: **wallet recovery requires witnesses.**
+
+Objects don't exist in a vacuum. Every object has a history — it was minted somewhere, transferred through domains, traded with counterparties. Those counterparties have partial views. The Proof chain in the wallet references them. They're the witnesses.
+
+**Recovery protocol:**
+
+1. Player presents wallet to a new domain (the "recovering domain")
+2. Recovering domain verifies the Proof chains mechanically (signatures, causal links, minting scripts)
+3. Recovering domain contacts **witnesses** — domains referenced in the Proof chains as counterparties to recent Transforms involving these objects
+4. Each witness checks: "Do I have records of these objects? Has anyone else already claimed recovery for them? Is the Proof chain consistent with what I saw?"
+5. Recovery requires **N-of-M witnesses** to co-sign: "I last saw these objects belonging to this Owner, and I haven't seen them claimed elsewhere"
+6. Only after quorum does the recovering domain accept the objects
+
+**Why this prevents double-spend:**
+
+The attacker presents the same wallet to Domain X and Domain Y simultaneously. Both contact the same witnesses (the witnesses are determined by the Proof chain, not chosen by the player). The first domain to get quorum wins. When the second domain contacts the same witnesses, they respond: "Already co-signed recovery for these objects to Domain X." The second claim is rejected.
+
+The race window is bounded by how fast witnesses respond — not gossip propagation, but direct request-response. Witnesses have every incentive to respond honestly: their records are verifiable (they have their own Proof chains for the transactions they witnessed), and lying about recovery is detectable fraud.
+
+**What if witnesses are down too?**
+
+If enough witnesses are offline that quorum can't be reached, recovery is delayed until they come back. This is the honest tradeoff: you can't recover objects faster than your witnesses can confirm them. In the catastrophic case where most witnesses are permanently gone, the recovering domain accepts a lower quorum with a longer provisional hold and wider gossip announcement.
+
+| Witnesses available | Recovery behavior |
+|--------------------|--------------------|
+| Full quorum (N of M) | Immediate recovery |
+| Partial quorum | Provisional recovery + extended hold + gossip announcement |
+| No witnesses reachable | Recovery blocked until witnesses return |
+
+**What the wallet provides vs. what witnesses provide:**
+
+- **Wallet** proves: "These objects existed and I owned them at this point in time" (cryptographic, self-contained)
+- **Witnesses** prove: "Nobody else has claimed these objects since then" (requires liveness, prevents double-spend)
+
+Both are needed. The wallet alone is proof of historical ownership. Witnesses confirm that history hasn't been superseded. Together, they're a complete recovery mechanism without a global ledger.
+
+#### Wallet Sync
+
+The wallet should stay current. The runtime should sync the wallet file automatically:
+- After every Transform that affects the player's objects
+- After every cross-domain transfer
+- After lease creation/revocation
+
+This is a local operation — writing to a file on the player's machine. No network round trip. The wallet file grows over time (Proof chains accumulate), but compaction is possible: once a Proof chain is accepted by a trusted domain, the domain's acceptance Proof replaces the full chain.
+
+#### What This Means
+
+The player's sovereignty is complete. Not "sovereignty as long as your home domain is up" — actual sovereignty. Your identity is your key. Your ownership is your Proof chains. Everything else is convenience layered on top.
+
+- Home domain: convenient, fast, handles leases and gossip for you
+- Backup domain: safety net for home domain failure
+- Wallet: ultimate fallback, works with zero infrastructure
+
+Each layer is less convenient and more sovereign. The player chooses how much infrastructure to trust.
+
+### Why This Works
+
+The lease model means objects are always recoverable. The worst case (visited domain goes dark) loses recent mutations — not the objects themselves. The home domain has the Proof chain showing what left and can reconstruct from there.
+
+This composes entirely from existing primitives. The escrow transform from [transfer routing](../allgard/README.md#cross-domain-transfer-routing) already describes conditional transfers with timeouts. Leased visiting is the same mechanism, applied to player travel instead of intermediary routing.
+
 ## Domain
 
 An authority boundary. A gard that hosts Objects and enforces local rules.
