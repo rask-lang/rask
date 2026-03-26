@@ -1,6 +1,6 @@
 # Midgard
 
-Virtual world architecture built on [Raido](../raido/), [Allgard](../allgard/), and [Leden](../leden/).
+Virtual world architecture built on [Allgard](../allgard/).
 
 ## Why
 
@@ -18,7 +18,7 @@ You spin up a **domain** — that's your world. You're sovereign over it. You wr
 
 Players in your world use Raido too. They script NPCs, design items, write quest logic. Creation isn't admin-only — it's gameplay. Fuel limits and capability scoping keep it safe.
 
-A player walks to the edge of your world and steps into someone else's. Their character and inventory transfer via [Allgard](../allgard/)'s federation model over [Leden](../leden/)'s protocol. [Conservation laws](../allgard/CONSERVATION.md) ensure nothing gets duped, inflated, or lost in transit. The federation infrastructure — gossip, audit, reputation, proof verification — is invisible to both players and domain operators. It runs automatically as part of the runtime.
+A player walks to the edge of your world and steps into someone else's. Their character and inventory transfer via [Allgard](../allgard/). [Conservation laws](../allgard/CONSERVATION.md) ensure nothing gets duped, inflated, or lost in transit. The federation infrastructure — gossip, audit, reputation, proof verification — is invisible to both players and domain operators. It runs automatically as part of the runtime.
 
 That's it. The rest is details.
 

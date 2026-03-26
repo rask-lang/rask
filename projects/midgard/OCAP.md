@@ -1,8 +1,8 @@
 # Midgard's Use of Capabilities
 
-How Midgard applies Allgard's federation model and Leden's capability protocol to virtual world communication.
+How Midgard applies [Allgard](../allgard/) to virtual world communication.
 
-The federation primitives (Object, Owner, Domain, Transform, Proof, Grant) live in [Allgard](../allgard/PRIMITIVES.md). The protocol mechanics (layers, operations, persistence) live in [Leden](../leden/). This document covers Midgard-specific decisions on top.
+The federation primitives (Object, Owner, Domain, Transform, Proof, Grant) live in [Allgard's PRIMITIVES.md](../allgard/PRIMITIVES.md). The protocol mechanics (layers, operations, persistence) live in [Leden](../leden/) (Allgard's wire protocol layer). This document covers Midgard-specific decisions on top.
 
 ## Trust Model
 

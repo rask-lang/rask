@@ -1,14 +1,14 @@
 <!-- id: raido.overview -->
 <!-- status: proposed -->
-<!-- summary: Raido — independent deterministic scripting VM, Rask-syntax-flavored -->
+<!-- summary: Raido — Allgard's verification layer, deterministic scripting VM -->
 
 # Raido
 
-Independent project. Deterministic scripting VM with Rask-flavored syntax. Lives in this repo for now but is not part of Rask — no dependency on the Rask compiler, runtime, or stdlib.
+[Allgard](../allgard/)'s verification layer. Deterministic scripting VM with Rask-flavored syntax. No dependency on the Rask compiler, runtime, or stdlib — also usable standalone.
 
 Serializable state. Fixed-point arithmetic. Sandboxed — the host controls all capabilities.
 
-Raido is also the verification engine for [Allgard's verifiable transforms](../allgard/README.md#verifiable-transforms). Two domains that both support Raido can mechanically verify each other's scripted transforms instead of relying on trust alone. See [Protocol Role](#protocol-role).
+Within Allgard, Raido is the engine for [verifiable transforms](../allgard/README.md#verifiable-transforms). Every mint and burn is a Raido script that any domain can re-execute to verify independently. General transforms can optionally be verified the same way. See [Protocol Role](#protocol-role).
 
 **Rask-flavored syntax.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures, `try`/`else` error handling. No type annotations, no ownership, no `ensure`.
 

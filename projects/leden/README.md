@@ -1,12 +1,12 @@
 <!-- id: leden.overview -->
 <!-- status: proposed -->
-<!-- summary: Leden — capability-based networking and IPC protocol -->
+<!-- summary: Leden — Allgard's wire protocol layer -->
 
 # Leden
 
-Capability-based networking and IPC protocol. Standalone crate. Handles structured communication between isolated endpoints — whether those are gards, OS processes, microservices, or machines on a network.
+[Allgard](../allgard/)'s wire protocol layer. Capability-based networking and IPC. Handles structured communication between isolated endpoints — whether those are gards, OS processes, microservices, or machines on a network.
 
-Leden has no knowledge of what's on either end. It's a protocol that anyone can use.
+Leden has no knowledge of what's on either end. It's a protocol that anyone can use — also available as a standalone crate outside of Allgard.
 
 Discovery and health monitoring are built in. Endpoints find each other through gossip and detect failures cooperatively — no central registry, no separate infrastructure layer.
 

@@ -1,45 +1,54 @@
 <!-- id: allgard.overview -->
 <!-- status: proposed -->
-<!-- summary: Allgard — federation model for networks of gards -->
+<!-- summary: Allgard — federated platform for networks of sovereign domains -->
 
 # Allgard
 
-Federation model for networks of gards. Defines the rules that make cross-domain cooperation trustworthy without central authority.
+Federated platform for networks of sovereign domains. Allgard is the whole thing: the federation model, the protocol, the verification engine, the runtime. "I'm building on Allgard" is the complete answer.
 
-A gard joins Allgard by speaking [Leden](../leden/) and respecting the [Conservation Laws](CONSERVATION.md). That's it. No registration, no approval, no central server. You're in if you play by the rules; you're out if you don't.
+A gard joins Allgard by speaking [Leden](#leden) and respecting the [Conservation Laws](CONSERVATION.md). That's it. No registration, no approval, no central server. You're in if you play by the rules; you're out if you don't.
 
 The name is Old Norse: *all* + *garðr*. All the gards, together.
 
 ## What Allgard Is
 
-1. **A federation model** — six [primitives](PRIMITIVES.md) and six [conservation laws](CONSERVATION.md) that make cross-domain interaction trustworthy.
+1. **A federated platform** — six [primitives](PRIMITIVES.md), six [conservation laws](CONSERVATION.md), a [trust model](TRUST.md), and the runtime that enforces them.
 2. **Domain-sovereign** — every gard is authoritative for its own state. No global consensus, no master server.
 3. **Bilateral trust** — domains verify each other's Proofs directly. Reputation is emergent, not administered.
-4. **Protocol-agnostic** — Allgard defines the *model*. [Leden](../leden/) is the wire protocol that carries it.
+4. **Invisible** — [federation is a property, not an experience](#invisible-federation). The infrastructure handles itself.
 
 ## What Allgard Is Not
 
-- Not a protocol. Leden is the protocol. Allgard is the model that gives protocol messages meaning.
-- Not a registry. Discovery is Leden's gossip layer. Allgard doesn't know who's online.
 - Not a blockchain. No global ledger, no consensus mechanism. Trust is bilateral and capability-based.
+- Not a registry. Discovery is gossip-based. Allgard doesn't know who's online.
+- Not a game engine. [Midgard](../midgard/) is a game built on Allgard. Allgard is the platform beneath it.
 
-## The Stack
+## Layers
+
+Allgard has three internal layers. They're components of Allgard, not separate projects.
 
 ```
 ┌──────────────────────────────────┐
 │  Applications                    │  Midgard, your app, etc.
 ├──────────────────────────────────┤
-│  Allgard                         │  Federation model: primitives, conservation laws
-├──────────────────────────────────┤
-│  Leden                           │  Wire protocol: capabilities, sessions, gossip
-├──────────────────────────────────┤
-│  Raido                           │  Required for mint/burn, optional for general transforms
+│  Allgard                         │
+│  ┌────────────────────────────┐  │
+│  │  Federation model          │  │  Primitives, conservation laws, trust
+│  ├────────────────────────────┤  │
+│  │  Leden                     │  │  Wire protocol: capabilities, sessions, gossip
+│  ├────────────────────────────┤  │
+│  │  Raido                     │  │  Verification: deterministic VM for proofs
+│  └────────────────────────────┘  │
 └──────────────────────────────────┘
 ```
 
-Applications implement domain logic on top of Allgard's model. Allgard's model rides on Leden's protocol. Raido provides the verification layer — required for minting and burning ([Conservation Law 1](CONSERVATION.md#verifiable-minting)), optional for general transforms.
+**Leden** handles networking — capabilities, sessions, gossip discovery, content-addressed storage. See [Leden](../leden/).
 
-Each layer above Raido is independent — you could use Leden without Allgard, or define a different federation model on top of Leden. But every Allgard domain must run Raido for minting verification. See [Verifiable Transforms](#verifiable-transforms).
+**Raido** handles verification — deterministic script execution for verifiable minting, auditable transforms. See [Raido](../raido/).
+
+**The federation model** (this document and its specs) defines the primitives, conservation laws, and trust model that give protocol messages meaning.
+
+The layers are separable — you could use Leden without the federation model, or Raido standalone. But Allgard is what you get when you run them together. Every Allgard domain runs all three.
 
 ## How a Gard Joins
 
