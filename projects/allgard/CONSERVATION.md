@@ -1,10 +1,10 @@
 <!-- id: allgard.conservation -->
 <!-- status: proposed -->
-<!-- summary: The six conservation laws of the federation -->
+<!-- summary: The seven conservation laws of the federation -->
 
 # Conservation Laws
 
-Six invariants the federation enforces unconditionally. No application, no domain admin, no script can violate them. If a state transition violates a law, it's rejected.
+Seven invariants the federation enforces unconditionally. No application, no domain admin, no script can violate them. If a state transition violates a law, it's rejected.
 
 These are the physics of the federation.
 
@@ -131,13 +131,73 @@ Deliberate departure from some capability systems where capabilities are freely 
 - Revocation is practical because the delegation graph is controlled
 - Cross-domain operations require explicit Grants, not ambient authority
 
+## Law 7: Bounded Introduction Rate
+
+> A domain can introduce at most N new domains per time window. Introduction capacity scales with trust level.
+
+Law 5 bounds operation rates. Law 7 is the same principle applied to introductions — the operation that grows the trust graph. Without it, a single hub domain can vouch for unlimited newcomers per day and become the sole gateway to the network. That's how Gmail ate email and centralized platforms ate XMPP.
+
+This is a conservation law, not a suggestion. Sybil resistance depends on it.
+
+### Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `window` | Time period for rate measurement | 30 days |
+| `base_rate` | Introductions per window for `known` domains | 5 |
+| `allied_rate` | Introductions per window for `allied` domains | 20 |
+| `stranger_rate` | Introductions per window for `stranger` domains | 0 |
+
+Rates are **per-introducer, not per-owner.** A domain with 100 owners doesn't get 100× the introduction budget. The domain itself is the entity being rate-limited — it's the domain's reputation on the line for every introduction it makes.
+
+### Trust Level Scaling
+
+Introduction capacity scales with the introducer's trust level (see [Trust](TRUST.md)):
+
+| Trust Level | Budget | Rationale |
+|-------------|--------|-----------|
+| Stranger | 0 | Can't introduce others until you're introduced yourself |
+| Known | `base_rate` | Earned basic trust, limited introduction capacity |
+| Trusted | 2× `base_rate` | Sustained clean track record, more vouching capacity |
+| Allied | `allied_rate` | Deep bilateral relationship, highest capacity |
+
+A domain's effective introduction rate is what the *receiving* domain assigns based on trust level. Domain A might consider B "allied" (20/month budget) while Domain C considers B merely "known" (5/month budget). Same introducer, different budgets — because trust is bilateral.
+
+### Interaction with Law 5
+
+Law 5 (Bounded Rates) covers operation frequency. Law 7 covers introduction frequency. They're complementary:
+
+- Law 5 prevents a domain from spamming transforms. Law 7 prevents it from spamming the trust graph.
+- A domain hitting its Law 5 rate limit on introductions is also hitting Law 7 — but Law 7 is stricter because the window is longer (30 days vs per-second operation limits).
+- Law 7 doesn't replace Law 5's per-operation rate limits on `Introduce` messages. Both apply. Law 5 prevents bursts (can't send 5 introductions in 1 second). Law 7 prevents sustained flooding (can't send 50 introductions in a month).
+
+### Enforcement
+
+Same as Law 5 — bilateral verification, no central enforcer.
+
+Every `Introduce` operation carries a timestamp. A receiving domain tracks how many introductions it has accepted from each source within the current window. Excess introductions are rejected with `RateLimitExceeded`.
+
+**Specifics:**
+
+1. **Receiving domain enforces.** The introducer can *attempt* more introductions than its budget allows. The receiving domain rejects the excess. No honor system.
+2. **Window is rolling, not fixed.** A 30-day rolling window, not calendar months. Prevents gaming by timing introductions at month boundaries.
+3. **Rejected introductions are logged.** A domain that consistently exceeds its introduction budget is either misconfigured or probing. Persistent over-attempts feed into the trust model as a negative signal.
+4. **Budget recovery is immediate.** When an introduction exits the rolling window (older than 30 days), that slot is freed. No penalty for using your full budget.
+
+### Why This Works
+
+- **Caps hub dominance.** A domain limited to 5 introductions per month can't become the sole gateway.
+- **Forces distributed introduction.** Newcomers must find multiple introduction paths, diversifying the graph.
+- **Quality over quantity.** Limited budget means each introduction is more valuable and worth more due diligence.
+- **Sybil bottleneck.** Creating 10,000 Sybil domains is easy. Getting them introduced at 5 per month per introducer is slow. The attacker needs many compromised introducers or years of patience.
+
 ## Enforcement
 
 Conservation laws are *local invariants with bilateral verification*. They're not global invariants — no one has a complete view. This is deliberate, and it matters to understand what each level actually guarantees.
 
 ### Level 1: Within a Domain (Strong)
 
-The domain's runtime validates every Transform against all six laws before applying it. This is the strongest guarantee: if the runtime is correct, violations are structurally impossible within a single domain. Same as a database enforcing its own constraints.
+The domain's runtime validates every Transform against all seven laws before applying it. This is the strongest guarantee: if the runtime is correct, violations are structurally impossible within a single domain. Same as a database enforcing its own constraints.
 
 ### Level 2: Across Domains (Bilateral)
 
@@ -149,6 +209,7 @@ Each domain checks the other's Proofs during cross-domain operations. Domain B r
 - Broken causal chains (Law 4 — references non-existent prior state)
 - Rate violations (Law 5 — too many operations too fast)
 - Authority overreach (Law 6 — operating on objects without proper Grants)
+- Introduction flooding (Law 7 — too many introductions from one source)
 
 Bilateral verification is strong for operations that cross boundaries. It's the equivalent of a bank verifying a wire transfer.
 

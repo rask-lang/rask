@@ -64,7 +64,7 @@ No step requires permission from a central authority. See [Bootstrapping](#boots
 |----------|--------|-----------|
 | Trust model | Object capabilities (via Leden) | Fine-grained, delegatable, revocable. Proven. |
 | Ownership | Single-owner, atomic transfer | No concurrent mutation, no CRDTs for the base case |
-| Conservation | Six invariants, enforced unconditionally | Physics of the federation. Not policy — law. |
+| Conservation | Seven invariants, enforced unconditionally | Physics of the federation. Not policy — law. |
 | Delegation | Non-transitive by default | Keeps the authority graph manageable. Explicit re-delegation. |
 | Sovereignty | Domains are authoritative for hosted objects | No global state to coordinate. Each domain runs its own rules on top of the universal laws. |
 | Enforcement | Bilateral verification | No global enforcer. Bad actors get excluded by reputation. |
@@ -77,7 +77,7 @@ No step requires permission from a central authority. See [Bootstrapping](#boots
 | Spec | What it covers |
 |------|----------------|
 | [PRIMITIVES.md](PRIMITIVES.md) | The six primitives: Object, Owner, Domain, Transform, Proof, Grant |
-| [CONSERVATION.md](CONSERVATION.md) | The six conservation laws every domain must enforce |
+| [CONSERVATION.md](CONSERVATION.md) | The seven conservation laws every domain must enforce |
 | [TRANSFER.md](TRANSFER.md) | Cross-domain transfer protocol: escrow, timeouts, partition recovery, Law 2 proof |
 | [TRUST.md](TRUST.md) | Adversarial trust model: introductions, reputation, Sybil resistance |
 
