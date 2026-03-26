@@ -45,11 +45,19 @@ No duplication. No orphans. An Object is in exactly one inventory, hosted by exa
 
 Transfer is atomic: remove from A, add to B, in one transaction.
 
+### Cross-Domain Transfer
+
+Within a domain, atomic transfer is a local transaction. Across domains, it's a bilateral protocol with escrow, timeouts, and partition recovery. The source domain escrows the object (locks it), the destination validates and accepts, then the source commits irrevocably by persisting a Departure Proof. The protocol guarantees that at no point do two domains simultaneously hold the same object in their inventories.
+
+There is a brief window during transfer where the object is "in transit" — the source has committed but the destination hasn't registered. During this window the object is in zero inventories, not two. Ownership is unambiguous (determined by the Transfer Intent), and recovery is guaranteed by the source's persistent Departure Proof and the owner's wallet.
+
+See [TRANSFER.md](TRANSFER.md) for the full protocol specification, failure modes, timeout semantics, and the formal proof that Law 2 holds under network partition.
+
 ### Implications
 
 - No concurrent mutation (only the owner can authorize Transforms)
 - No CRDTs needed for the base case
-- Cross-domain transfer requires a bilateral protocol (the Object must leave one Domain before entering another)
+- Cross-domain transfer is a bilateral escrow protocol — the object must leave one domain before entering another, with the source domain as escrow authority
 - Shared access is through Grants, not shared ownership
 
 ## Law 3: Conservation of Exchange

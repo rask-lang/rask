@@ -234,7 +234,7 @@ A Transform hasn't happened yet. It's a request: "I want to do this to this obje
 |-----------|------------|
 | `create` | Bring a new Object into existence. Must be backed by a Raido script ([verifiable minting](CONSERVATION.md#verifiable-minting)). |
 | `mutate` | Change an Object's content |
-| `transfer` | Move an Object to a new Owner |
+| `transfer` | Move an Object to a new Owner. Cross-domain transfers use the [escrow protocol](TRANSFER.md). |
 | `split` | Divide an Object into parts (fungible assets) |
 | `merge` | Combine Objects into one (fungible assets) |
 | `destroy` | Remove an Object from existence (burning). Must be backed by a Raido script ([verifiable minting](CONSERVATION.md#verifiable-minting)). |
