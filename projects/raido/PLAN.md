@@ -7,16 +7,22 @@ enums, generics, and collections.
 
 ## Prerequisites
 
-**One compiler change needed before starting:**
+**Two compiler changes needed before starting:**
 
-Add `fs.read_bytes(path) -> Vec<u8>` and `fs.write_bytes(path, bytes: Vec<u8>)`
-to `rask-interp`'s stdlib. Without this, serialization and chunk loading are
-impossible. Everything else has workarounds.
+1. **`fs.read_bytes` / `fs.write_bytes`** — Add binary file I/O to the stdlib.
+   Without this, serialization and chunk loading are impossible.
+
+2. **Vec<u8> codegen: propagate element type through all access paths** — The
+   MIR already tracks `elem_type` in `LocalMeta` and computes 1-byte stride
+   for u8. But the `ArrayIndex` codegen falls back to `i64` loads when
+   `expected_ty` is `None`, which reads 8 bytes from a 1-byte slot. Fix: use
+   the tracked `elem_type` as the load width in all Vec access paths, not just
+   when the destination has an explicit type. The machinery exists
+   (`elem_size_for_type`, `LocalMeta::elem_type`, `shared_elem_types`) — it
+   just needs consistent use in the codegen `ArrayIndex` handler.
 
 **Known constraints (work around, don't block on):**
 
-- `Vec<u8>` stores each byte as `Value::Int(i64)` — 8x overhead. Correct but
-  wasteful. Fix in the compiler later with a native `Value::U8` variant.
 - No FFI. Host functions are Rask closures. This is fine — Raido-in-Rask is
   Rask-hosted by definition.
 
@@ -455,15 +461,9 @@ very start of Phase 5 — it changes the design of Phases 5 and 6.
 intermediate results. If Rask doesn't support i128, split into 32-bit halves.
 Test early.
 
-**Vec<u8> interpreter overhead (Phase 3):** Each byte is stored as
-`Value::Int(i64)` in the interpreter — 8x memory overhead. The arena's byte
-budget is still enforced correctly (capacity counts logical bytes, not Rask
-heap), but the host process uses more memory than expected. Not a correctness
-issue. Fix later with a native `Value::U8` variant in the interpreter.
-
-**Performance:** Interpreter-on-interpreter. A Raido loop doing 100k iterations
-might be slow. This is expected and acceptable — this implementation is for
-correctness, not speed.
+**Performance:** Compiled Raido-in-Rask will be slower than a native Rust
+implementation — dispatch overhead from an enum-based Value type, bounds-checked
+byte buffer access, no JIT. Acceptable for a reference implementation.
 
 ## What This Proves
 
