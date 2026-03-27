@@ -97,6 +97,40 @@ This is a Grant from the player to the backup domain — scoped to mirror and re
 
 Without a backup, home domain failure is permanent loss. That's the honest tradeoff. But with a backup, it's a recoverable event — same as a disk failure with a RAID mirror.
 
+### Key Compromise Propagation
+
+When an Owner's key is compromised, the home domain must propagate revocation to every domain where the Owner has active sessions, outstanding Grants, or leased objects. This is the hardest revocation case — it's time-critical and cross-domain.
+
+**Revocation flow:**
+
+1. **Owner or home domain detects compromise.** The Owner reports a compromised key (out-of-band — new key signed by backup key, admin action, etc.), or the home domain detects anomalous behavior (impossible concurrent sessions, operations from conflicting locations).
+
+2. **Home domain issues `KeyRevocation(owner_id, compromised_key, evidence, new_key)`** to all domains it has bilateral relationships with. This is a broadcast, not targeted — the home domain may not know every domain the Owner visited (Grants can chain through intermediaries). The message includes:
+   - The Owner identity being revoked
+   - The compromised public key
+   - Evidence: signed statement from the backup key, or from the home domain's admin key
+   - The replacement public key (if available) or `null` (Owner disabled pending re-keying)
+
+3. **Receiving domains apply synchronous revocation strategy** (see [Revocation](#revocation)). Key revocation is always synchronous — the strictest strategy, regardless of what was negotiated for other Grant types.
+
+4. **Receiving domains propagate to their trading partners.** If Domain B received a Grant from the compromised Owner and delegated a sub-Grant to Domain C, Domain B revokes the sub-Grant and forwards the `KeyRevocation` to Domain C. Propagation follows the Grant delegation graph.
+
+**Propagation rules:**
+
+| Situation | Action |
+|-----------|--------|
+| Active session from compromised key | Terminate immediately. All in-flight operations rejected. |
+| Outstanding Grants from compromised Owner | Revoke all. Sub-Grants revoked transitively. |
+| Leased objects from compromised Owner | Freeze in place. No mutations allowed until new key confirms or lease expires. Objects return to home domain on lease expiry if no new key is presented. |
+| Objects transferred *to* compromised Owner (completed transfers) | No clawback. Completed transfers are final (Law 4 — sequential history). The compromised key may have already moved them. The home domain's recourse is through the replacement key. |
+| Pending transfers involving compromised Owner | Abort. Escrow releases back to source. |
+
+**Timing.** Key revocation is the one case where I accept the cost of synchronous cross-domain coordination. A compromised key can cause unbounded damage if revocation is eventual. The target: all direct trading partners notified within 5 seconds. Transitive propagation (via Grant delegation chains) adds latency per hop — the depth of the Grant graph determines total propagation time, but each hop is bounded by the synchronous revocation timeout (default: 10s).
+
+**Without a backup key.** If the Owner has no backup key and the home domain's admin issues the revocation, the Owner identity is effectively dead. All Grants revoked, all sessions terminated, leased objects frozen until lease expiry. The Owner must create a new identity and re-establish relationships from scratch. This is intentionally harsh — it incentivizes backup keys.
+
+**Replay protection.** `KeyRevocation` messages include a monotonic sequence number per Owner (stored at the home domain). Receiving domains reject revocations with a sequence number ≤ the last seen revocation for that Owner. This prevents an attacker from replaying an old revocation to disrupt a legitimate key rotation.
+
 ### Owner Wallet
 
 The ultimate fallback: you hold your own proof of ownership locally.

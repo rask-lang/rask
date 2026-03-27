@@ -251,6 +251,7 @@ Each sturdy reference in the `sturdy_refs` array is a MessagePack map:
 | 3 | method | string | Method name |
 | 4 | args | bytes | MessagePack-encoded arguments |
 | 5 | pipeline | optional array | Pipelined call chain (see below) |
+| 6 | epoch | optional uint | Session epoch (see [protocol.md](protocol.md#promise-epochs)). Omit for epoch 1. |
 
 Each pipeline entry:
 
@@ -267,6 +268,7 @@ Each pipeline entry:
 | 1 | id | uint | Request ID (matches Call) |
 | 2 | value | bytes | MessagePack-encoded return value |
 | 3 | caps | optional array\<bytes\> | Capability references included in the return value |
+| 4 | epoch | optional uint | Session epoch the response was produced in |
 
 ### Error (0x12)
 
@@ -398,7 +400,7 @@ Each peer entry:
 | 1 | id | uint | Request ID |
 | 2 | object_ref | bytes | Object or promise reference |
 | 3 | credits | uint | Initial backpressure credits |
-| 4 | filter | optional array\<string\> | Field names to include |
+| 4 | filter | optional array\<string\> | Path expressions to include (see [observation.md](observation.md#filter-path-expressions)) |
 
 ### Update (0x51)
 
@@ -433,7 +435,7 @@ Each observation entry uses the same fields as Observe (minus `type`):
 |-------|------|------|-------|
 | 0 | object_ref | bytes | |
 | 1 | credits | uint | |
-| 2 | filter | optional array\<string\> | |
+| 2 | filter | optional array\<string\> | Path expressions (see [observation.md](observation.md#filter-path-expressions)) |
 
 ### UnobserveBatch (0x54)
 

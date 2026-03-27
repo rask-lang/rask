@@ -108,6 +108,26 @@ Even if a Transform is technically valid, you can't execute 10,000 transfers per
 
 Physics has the speed of light. We have rate limits.
 
+### Time Window Semantics
+
+**Sliding window, not bucketed.** Rate limits use a sliding window — the count of operations in the last N seconds, not "operations since the start of this minute." Bucketed windows create burst-at-boundary problems: an entity spends its budget at 11:59:59, then again at 12:00:00. Sliding windows prevent this by construction.
+
+**Implementation: sliding window log.** The domain maintains a timestamped log of operations per entity per operation type. To check the rate: count entries in `[now - window, now]`. To keep memory bounded: evict entries older than the window on every check. This is O(n) in the number of operations within the window, which is bounded by the rate limit itself.
+
+**Default windows and rates:**
+
+| Operation type | Window | Default max rate | Rationale |
+|---------------|--------|-----------------|-----------|
+| Transform (mutation) | 1 second | 100/s per entity | Covers game-loop-speed mutations. Most entities won't hit this. |
+| Transform (transfer) | 1 second | 10/s per entity | Transfers are heavier — cross-domain coordination, proof generation. |
+| Grant creation | 1 second | 50/s per entity | Grants are lightweight but shouldn't be spammable. |
+| Grant revocation | 1 second | 50/s per entity | Revocations should never be rate-limited in practice, but a ceiling prevents abuse. |
+| Introduction | 30 days | See Law 7 | Law 7 governs introduction rates with its own parameters. |
+
+**Per-second vs per-window.** Most operation types use a 1-second sliding window because the threat is burst abuse — a runaway script hammering mutations. The window is short enough that normal gameplay never notices it. Introduction uses a 30-day window because the threat is sustained graph manipulation, not bursts.
+
+**Configurable, but must exist.** A domain can raise or lower any rate limit. The runtime rejects configurations without a rate limit for any operation type. Setting a rate to 0 disables that operation type entirely — valid for domains that don't support transfers, for example. Setting a rate to `u32::MAX` is permissive but still technically bounded.
+
 ### Why Not Gas
 
 I considered a gas model (like Ethereum) but rejected it. Gas is UX poison — it makes every action cost something, which kills casual interaction. Rate limits cover the abuse case (no infinite loops, no spam) without burdening normal use.

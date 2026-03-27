@@ -157,6 +157,14 @@ Discovery must not gossip unreachable addresses. A NAT'd endpoint advertises its
 
 STUN/TURN/ICE are heavy. A Leden relay is lighter because it already speaks the protocol — no translation layer.
 
+**Relay security.** A relay sees all traffic between the NAT'd endpoint and its peers. Without protection, a compromised or malicious relay can read, modify, or drop messages. Two requirements:
+
+1. **TLS required on relay sessions.** The session between the NAT'd endpoint and the relay must use TLS (or equivalent transport encryption). This isn't the general "TLS is optional" rule from the transport layer — relay sessions are a special case because the relay is a privileged intermediary. In-process and localhost sessions don't need TLS because there's no intermediary. Relay sessions always have one.
+
+2. **Capability attenuation on relay grants.** The relay receives an attenuated capability for message forwarding — specifically `relay` permission only, not `invoke` or `observe`. The relay can route messages to/from the NAT'd endpoint but cannot call methods on the endpoint's objects, observe its state, or delegate capabilities on its behalf. The relay is a dumb pipe with a narrow permission scope.
+
+**What this doesn't cover:** End-to-end encryption between the NAT'd endpoint and its peers (through the relay). TLS protects NAT'd↔relay and relay↔peer separately, but the relay can still observe cleartext at the application layer. True end-to-end encryption through relays would require encrypting the message payload before it enters the Leden message layer — that's a transport-layer extension, not a protocol requirement. For most deployments, TLS on both hops is sufficient. For high-security deployments, an E2E encryption extension can be negotiated during the handshake.
+
 ## Deferred
 
 - **Gossip protocol tuning.** Fanout, probe interval, suspect timeout, down threshold. All configurable per deployment. Sensible defaults will come from implementation experience, not spec work. Target: 10–1000 endpoints for defaults.
