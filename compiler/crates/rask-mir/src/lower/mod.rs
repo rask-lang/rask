@@ -824,6 +824,7 @@ impl<'a> MirLowerer<'a> {
             if let ExprKind::Ident(name) = &object.kind {
                 match (name.as_str(), method.as_str()) {
                     ("cli", "args") | ("fs", "read_lines") => return Some(MirType::String),
+                    ("fs", "read_bytes") => return Some(MirType::U8),
                     _ => {}
                 }
             }

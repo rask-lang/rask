@@ -512,6 +512,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry::simple("fs_write_file", "rask_fs_write_file", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("fs_read_bytes", "rask_fs_read_bytes", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("fs_write_bytes", "rask_fs_write_bytes", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("fs_exists", "rask_fs_exists", &[types::I64], Some(types::I8), false),
         StdlibEntry::simple("fs_open", "rask_fs_open", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create", "rask_fs_create", &[types::I64], Some(types::I64), false),

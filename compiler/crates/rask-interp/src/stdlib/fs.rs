@@ -34,6 +34,29 @@ impl Interpreter {
                     }),
                 }
             }
+            "read_bytes" => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        let values: Vec<Value> = bytes
+                            .into_iter()
+                            .map(|b| Value::Int(b as i64))
+                            .collect();
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![Value::Vec(Arc::new(Mutex::new(values)))],
+                            variant_index: 0,
+                        })
+                    }
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
+                        variant_index: 0,
+                    }),
+                }
+            }
             "read_lines" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::read_to_string(&path) {
@@ -61,6 +84,40 @@ impl Interpreter {
                 let path = self.expect_string(&args, 0)?;
                 let content = self.expect_string(&args, 1)?;
                 match std::fs::write(&path, &content) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                        variant_index: 0,
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
+                        variant_index: 0,
+                    }),
+                }
+            }
+            "write_bytes" => {
+                let path = self.expect_string(&args, 0)?;
+                let bytes: Vec<u8> = match args.get(1) {
+                    Some(Value::Vec(v)) => v
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|val| match val {
+                            Value::Int(n) => *n as u8,
+                            _ => 0,
+                        })
+                        .collect(),
+                    _ => {
+                        return Err(RuntimeError::TypeError(format!(
+                            "fs.write_bytes: expected Vec<u8>, got {}",
+                            args.get(1).map(|v| v.type_name()).unwrap_or("missing")
+                        )));
+                    }
+                };
+                match std::fs::write(&path, &bytes) {
                     Ok(()) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),

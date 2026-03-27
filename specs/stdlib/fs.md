@@ -49,8 +49,10 @@ extend File {
 | Function | Signature |
 |----------|-----------|
 | `fs.read_file` | `(path: string) -> string or IoError` |
+| `fs.read_bytes` | `(path: string) -> Vec<u8> or IoError` |
 | `fs.read_lines` | `(path: string) -> Vec<string> or IoError` |
 | `fs.write_file` | `(path: string, content: string) -> () or IoError` |
+| `fs.write_bytes` | `(path: string, data: Vec<u8>) -> () or IoError` |
 | `fs.append_file` | `(path: string, content: string) -> () or IoError` |
 | `fs.exists` | `(path: string) -> bool` |
 

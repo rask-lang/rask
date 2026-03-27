@@ -403,6 +403,9 @@ impl<'a> MirLowerer<'a> {
                     ("cli", "args") | ("fs", "read_lines") => {
                         self.meta_mut(name).elem_type = Some(MirType::String);
                     }
+                    ("fs", "read_bytes") => {
+                        self.meta_mut(name).elem_type = Some(MirType::U8);
+                    }
                     _ => {}
                 }
             }

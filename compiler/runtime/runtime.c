@@ -230,6 +230,39 @@ void rask_fs_write_file(const RaskStr *path, const RaskStr *content) {
     fclose(f);
 }
 
+RaskVec *rask_fs_read_bytes(const RaskStr *path) {
+    RaskVec *v = rask_vec_new(1);
+    const char *p = rask_string_ptr(path);
+    FILE *f = fopen(p, "rb");
+    if (!f) return v;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size > 0) {
+        char *buf = (char *)rask_alloc((int64_t)size);
+        size_t n = fread(buf, 1, (size_t)size, f);
+        for (size_t i = 0; i < n; i++) {
+            uint8_t byte = (uint8_t)buf[i];
+            rask_vec_push(v, &byte);
+        }
+        rask_free(buf);
+    }
+    fclose(f);
+    return v;
+}
+
+void rask_fs_write_bytes(const RaskStr *path, RaskVec *data) {
+    const char *p = rask_string_ptr(path);
+    FILE *f = fopen(p, "wb");
+    if (!f) return;
+    int64_t len = rask_vec_len(data);
+    for (int64_t i = 0; i < len; i++) {
+        uint8_t *byte = (uint8_t *)rask_vec_get(data, i);
+        if (byte) fwrite(byte, 1, 1, f);
+    }
+    fclose(f);
+}
+
 int8_t rask_fs_exists(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "r");
