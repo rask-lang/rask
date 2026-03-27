@@ -17,8 +17,6 @@ impossible. Everything else has workarounds.
 
 - `Vec<u8>` stores each byte as `Value::Int(i64)` — 8x overhead. Correct but
   wasteful. Fix in the compiler later with a native `Value::U8` variant.
-- No raw pointers. Arena is `Vec<Value>` indexed by integers, not a flat byte
-  buffer. Matches Pool/Handle pattern already in Rask.
 - No FFI. Host functions are Rask closures. This is fine — Raido-in-Rask is
   Rask-hosted by definition.
 
@@ -100,30 +98,71 @@ enums, otherwise `const OP_LOAD_NIL: i64 = 0` etc).
 
 ### Phase 3: Arena
 
-Typed arena — `Vec<Value>` with bump allocation and frame reset.
+Flat byte buffer — `Vec<u8>` with bump allocation, integer offsets, and
+byte-level encode/decode. This matches the spec's design directly.
 
 ```rask
 struct Arena {
-    storage: Vec<Value>,
+    buf: Vec<u8>,
+    top: i64,
+    capacity: i64,
     frame_base: i64,
 }
 ```
 
-Operations: `alloc(val) -> i64`, `get(idx) -> Value`, `set(idx, val)`,
-`frame_begin()`, `frame_end()`, `reset()`.
+Arena offsets are integers — same relationship to the byte buffer as Handles to
+a Pool. Bounds-checked on access. Type tags in object headers catch mismatches
+at runtime.
 
-Collections stored as arena entries:
-- `Value.Array(idx)` where `arena[idx]` is... another Value containing a Vec?
+**Byte encoding helpers** (small set, used everywhere):
 
-**Design choice:** Two options:
-1. Arena stores `Value` variants that wrap Rask collections (`Vec<Value>`,
-   `Map<string, Value>`)
-2. Arena is purely flat — arrays are contiguous arena slots
+```rask
+func write_u8(buf: Vec<u8>, offset: i64, val: u8)
+func read_u8(buf: Vec<u8>, offset: i64) -> u8
+func write_u32le(buf: Vec<u8>, offset: i64, val: i64)
+func read_u32le(buf: Vec<u8>, offset: i64) -> i64
+func write_i64le(buf: Vec<u8>, offset: i64, val: i64)
+func read_i64le(buf: Vec<u8>, offset: i64) -> i64
+```
 
-Option 1 is simpler and leverages Rask's existing collections. Option 2 matches
-the spec but requires reimplementing Vec/Map. **Go with option 1.**
+**Object layout** (matches spec):
 
-**Test:** Allocate, read back, frame begin/end clears correctly.
+Each object starts with a 4-byte header: `type_tag(u8) | padding(u8) | size(u16)`.
+
+- **String**: `header(4) | len(4) | utf8_bytes[len]`
+- **Array**: `header(4) | len(4) | cap(4) | values[cap]` (16 bytes per value)
+- **Map**: `header(4) | len(4) | cap(4) | entries[cap]` (open addressing)
+- **Closure**: `header(4) | proto_idx(2) | upvalue_count(2) | upvalue_offsets[](4)`
+- **Upvalue**: `header(4) | value(16)`
+
+**Arena methods** — one alloc/read pair per object type:
+
+```rask
+func alloc_string(self, s: string) -> i64    // returns offset
+func read_string(self, offset: i64) -> string
+func alloc_array(self, cap: i64) -> i64
+func array_get(self, offset: i64, idx: i64) -> Value
+func array_set(self, offset: i64, idx: i64, val: Value)
+func array_len(self, offset: i64) -> i64
+// ~6 object types, ~6 method pairs
+```
+
+The rest of the VM calls `arena.alloc_string()` / `arena.read_value()` and
+doesn't touch bytes directly.
+
+**Memory accounting is exact**: `top` tracks bytes used. `capacity` is the hard
+limit. `alloc_*` checks `top + size <= capacity` and returns ArenaExhausted on
+overflow. No hidden heap allocations — arena strings are byte sequences in the
+buffer, not Rask `string` values.
+
+**Frame management**: `frame_begin()` saves `top` as `frame_base`.
+`frame_end()` resets `top = frame_base`, reclaiming all frame-local allocations.
+
+**Test:** Allocate strings/arrays/maps, read back, verify byte-level layout.
+Frame begin/end clears correctly. ArenaExhausted triggers at capacity.
+
+**Serialization consequence**: `buf[0..top]` is close to the serialized form
+already. Offsets are integers, not pointers — no relocation needed.
 
 ### Phase 4: Lexer
 
@@ -215,32 +254,38 @@ Registers: `Vec<Value>` sized to 256 per frame. Call stack: `Vec<CallFrame>`.
 
 ### Phase 8: Collections
 
-- NEW_ARRAY / NEW_MAP → allocate in arena
-- GET_INDEX / SET_INDEX → array by int, map by string
-- LEN → strings, arrays, maps
+- NEW_ARRAY / NEW_MAP → `arena.alloc_array(cap)` / `arena.alloc_map(cap)`
+- GET_INDEX / SET_INDEX → `arena.array_get()` / `arena.map_get()` etc.
+- LEN → `arena.array_len()` / `arena.map_len()` / string byte length
 
-Arrays are `Value.Array(arena_idx)` pointing to a `Vec<Value>`. Maps are
-`Value.Map(arena_idx)` pointing to a `Map<string, Value>`.
+Arrays and maps live in the byte arena as contiguous byte sequences. Array
+elements are 16-byte value slots. Maps use open addressing with linear probing,
+entries are `key_offset(4) | key_len(4) | value(16)` — string keys stored
+elsewhere in the arena.
 
-**Test:** Array/map creation, mutation, nested structures, iteration.
+Array growth: when `push` exceeds capacity, allocate a new larger array at
+`top`, copy elements, update the Value's offset. The old space is wasted (bump
+allocator doesn't free). This is fine — `frame_end()` or `reset()` reclaims it.
+
+**Test:** Array/map creation, mutation, nested structures, growth, iteration.
+Verify byte-level layout matches spec.
 
 ### Phase 9: Closures and upvalues
 
-```rask
-enum Upvalue {
-    Open(i64, i64),   // frame_idx, register_idx — still on stack
-    Closed(Value),     // moved to arena when function returns
-}
-```
+Closures are arena objects: `header(4) | proto_idx(2) | upvalue_count(2) |
+upvalue_offsets[](4)`. Each upvalue offset points to an arena upvalue slot
+(bare 16-byte value).
 
-Closures hold `Vec<Upvalue>`. Reading an upvalue checks if open (read from
-register) or closed (read stored value).
+**Before close**: upvalue slot doesn't exist yet. The upvalue offset in the
+closure is a sentinel meaning "read from register X in frame Y." The VM checks
+this during GET_UPVALUE.
 
-CLOSE_UPVALUE transitions open → closed when the enclosing scope exits.
+**CLOSE_UPVALUE**: Allocates an upvalue slot in the arena, copies the register
+value into it, patches all closures that reference this variable to point at
+the new arena slot. Multiple closures sharing a variable all get the same
+arena offset — writes through one are visible to all.
 
-Multiple closures sharing a variable must point to the same upvalue slot.
-Maintain a list of open upvalues per frame; when closing, all closures that
-reference the same variable get updated.
+**After close**: GET_UPVALUE/SET_UPVALUE read/write the arena slot directly.
 
 **Test:** Shared mutation between closures, closures surviving enclosing scope,
 counter factory pattern.
@@ -330,20 +375,25 @@ reads results back.
 
 **Requires `fs.read_bytes` / `fs.write_bytes` prerequisite.**
 
-Capture full VM state as bytes:
-- Version header
-- Registers and globals
-- Arena contents
-- Call stack, PC
-- Coroutine states
-- PRNG state (xoshiro128++ — 4 × u32)
-- Fuel remaining
+The arena is already a byte buffer — `buf[0..top]` is most of the serialized
+state. What remains is the VM execution state layered on top:
 
-Format: custom binary. Encode values as tag byte + payload. Strings as
-length-prefixed UTF-8 bytes.
+- Version header (4 bytes)
+- Arena: `buf[0..top]` verbatim
+- Registers: 16 bytes × register count (same encoding as arena values)
+- Globals: name table + value slots
+- Call stack: return PC, base register, prototype index per frame
+- Coroutine states: each coroutine's registers + call stack + PC + status
+- PRNG state: 4 × u32 (xoshiro128++)
+- Fuel remaining: i64
+
+No pointer fixup needed — all references are integer offsets into the arena,
+which is serialized in place. Host function bindings and bytecode are NOT
+serialized (re-registered/re-loaded on restore, matched by name).
 
 **Test:** Serialize mid-execution, deserialize, resume, verify same result as
-uninterrupted execution.
+uninterrupted execution. Round-trip through file with `fs.write_bytes` /
+`fs.read_bytes`.
 
 ### Phase 15: Content identity
 
@@ -404,6 +454,12 @@ very start of Phase 5 — it changes the design of Phases 5 and 6.
 **i128 for fixed-point mul/div (Phase 1):** 32.32 multiplication needs 64-bit
 intermediate results. If Rask doesn't support i128, split into 32-bit halves.
 Test early.
+
+**Vec<u8> interpreter overhead (Phase 3):** Each byte is stored as
+`Value::Int(i64)` in the interpreter — 8x memory overhead. The arena's byte
+budget is still enforced correctly (capacity counts logical bytes, not Rask
+heap), but the host process uses more memory than expected. Not a correctness
+issue. Fix later with a native `Value::U8` variant in the interpreter.
 
 **Performance:** Interpreter-on-interpreter. A Raido loop doing 100k iterations
 might be slow. This is expected and acceptable — this implementation is for
