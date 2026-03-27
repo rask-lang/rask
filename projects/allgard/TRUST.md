@@ -130,6 +130,34 @@ This means: a trusted domain that had years of history with an introduction and 
 
 All externally verifiable from transaction records and gossip timestamps. Nothing self-reported.
 
+#### Reference Aggregation Function
+
+Domains can override this with their own scoring, but the runtime ships a default so the system works without configuration.
+
+**Composite reputation score** (0.0–1.0):
+
+```
+score = w_success * success_rate
+      + w_volume  * volume_factor
+      + w_history * history_factor
+      + w_response * response_factor
+```
+
+| Component | Weight | Computation |
+|-----------|--------|-------------|
+| `success_rate` | 0.4 | `1.0 - (failure_count / total_introductions)`. Undefined (0.0) if `total_introductions < 5`. |
+| `volume_factor` | 0.2 | `min(1.0, ln(1 + total_introductions) / ln(1 + 500))`. Logarithmic — 500 introductions saturates the score. Prevents gaming by volume alone. |
+| `history_factor` | 0.2 | `min(1.0, avg_pre_introduction_history_days / 180)`. Saturates at 6 months average. Rewards domains that take time before introducing. |
+| `response_factor` | 0.2 | `1.0 - min(1.0, avg_fraud_response_hours / 48)`. Saturates at 48 hours. Faster fraud response = higher score. Undefined (0.5) if no fraud events. |
+
+**Minimum sample size.** A domain with fewer than 5 total introductions gets a score of `null` — insufficient data, not a score of 0. Domains should treat `null` scores as "unknown" and apply their stranger-level trust defaults, not penalize.
+
+**Decay.** Scores are computed over a rolling 365-day window. Introductions older than a year don't count. A domain that was excellent 3 years ago but inactive since is an unknown, not a trusted entity.
+
+**Why these weights:** Success rate dominates (0.4) because it's the most direct signal. Volume, history depth, and response time split the remaining 0.6 equally — they're supporting evidence that contextualizes the success rate. A 95% success rate over 500 introductions with deep pre-introduction history and fast fraud response is qualitatively different from 95% over 10 introductions with shallow history.
+
+**Override semantics.** A domain can replace this function entirely. The only constraint: the replacement must produce a value in [0.0, 1.0] and must be computed from externally verifiable inputs (the metrics above). A domain that scores reputation using self-reported data is making a local decision — other domains aren't obligated to trust it.
+
 A domain with a 95% success rate over 500 introductions is a reliable introducer. A domain with 3 introductions total tells you nothing. A domain whose last 5 introductions were all fraudulent is actively dangerous. A domain with a 90% success rate but fast response times and long pre-introduction histories is honest but operating in a tough neighborhood.
 
 ### Why Introduce Anyone?
@@ -383,7 +411,31 @@ I initially called this "hard to fix." It's not — because the introduction gra
 
 **Downstream fraud score.** Domains can track not just direct introduction failures, but introduction failures N hops downstream. B's direct introductions might all look clean — but if B's introductions consistently lead to fraud two hops later, that's a measurable anomaly. The transparent graph makes this computable.
 
-The score naturally attenuates with distance — one hop is strong signal, two hops is weaker, three hops is noise. But the cutout pattern specifically creates a two-hop signature that's detectable over repeated attacks.
+#### Attenuation Curve
+
+Accountability decays exponentially with introduction distance. The **downstream fraud attribution weight** for a fraud event at hop distance `d` from the introducer:
+
+```
+weight(d) = { 1.0   if d = 1  (direct introduction)
+            { 0.25  if d = 2  (one intermediary)
+            { 0.0   if d ≥ 3  (too distant to attribute)
+```
+
+**Why these specific values:**
+
+- **1-hop (weight 1.0):** Direct introduction. Full accountability. You vouched for this domain, you own the outcome.
+- **2-hop (weight 0.25):** One intermediary. Detectable as a pattern over multiple incidents, but any single instance is weak signal. The 0.25 weight means a domain needs ~4× the fraud volume at 2 hops to register the same reputation impact as 1-hop fraud. This is the cutout detection zone — a domain consistently 2 hops from fraud is statistically distinguishable from one that's just unlucky.
+- **3+ hops (weight 0.0):** Noise. The introduction graph is too diluted for meaningful attribution. Attempting to score at this distance creates false positives that punish well-connected, honest hubs.
+
+**Computation.** A domain's downstream fraud score is:
+
+```
+downstream_fraud_rate = Σ (weight(d_i) * fraud_severity_i) / total_downstream_introductions
+```
+
+Where `d_i` is the hop distance to each fraud event traced through the domain's introduction chain, and `fraud_severity_i` is normalized to [0.0, 1.0] by the magnitude of the fraud (proportion of conservation law violations relative to the domain's total transaction volume).
+
+**Threshold for action.** A `downstream_fraud_rate` above 0.1 (10% weighted fraud in downstream introductions) is a negative signal in the reputation aggregation. Above 0.3 triggers the same behavioral scrutiny as a low gossip score — trust level cap, introduction pause.
 
 **Single cutout attacks are still undetectable.** One instance of B→C→D where D defrauds doesn't implicate B. That's fine — one instance of anything is indistinguishable from bad luck. The trust model handles fraud as a statistical property, not a per-incident investigation.
 
@@ -416,11 +468,34 @@ What "contribute" means:
 - Propagate fraud reports (with evidence) received from other domains
 - Respond to supply audit queries for asset types the domain mints
 
-**Non-participation is observable and consequential.** A domain that consumes gossip without contributing is detectable — its trading partners ask for observations and get silence. Consequences:
+**Non-participation is observable and consequential.** Detection and enforcement are concrete, not aspirational.
 
-- Trading partners can downgrade the non-contributing domain's trust level
-- Introduction quality scores can factor in gossip participation
-- At the extreme: domains can refuse to trade with non-contributors
+#### Detection Mechanism
+
+Every gossip exchange is a bilateral request-response. The runtime tracks a **gossip participation score** per trading partner:
+
+| Metric | Measurement |
+|--------|-------------|
+| `response_rate` | Fraction of gossip requests that received a valid response within the timeout (default: 30s) |
+| `evidence_rate` | Fraction of responses that included verifiable evidence (Proof hashes, timestamps) vs empty/stub responses |
+| `propagation_rate` | Fraction of fraud reports received from this partner that included forwarded evidence from *their* partners (measures whether they're propagating, not just responding) |
+
+A domain's **gossip score** is: `0.5 * response_rate + 0.3 * evidence_rate + 0.2 * propagation_rate`. Computed per-partner over a 30-day rolling window (same as Law 7).
+
+#### Minimum Consequences
+
+These are runtime defaults, not suggestions. Domains can be stricter.
+
+| Gossip score | Consequence | Automatic? |
+|-------------|-------------|------------|
+| ≥ 0.8 | None — healthy participation | — |
+| 0.5–0.8 | Warning logged. Gossip score included in reputation aggregation (see [Reference Aggregation Function](#reference-aggregation-function)) as a penalty multiplier: `reputation * gossip_score`. | Yes |
+| 0.2–0.5 | Trust level capped at `known` regardless of other signals. Introduction acceptance from this domain paused. Trading continues but under increased scrutiny (pessimistic revocation strategy for all Grants). | Yes |
+| < 0.2 | Trust level downgraded to `stranger`. All pending introductions rejected. Existing Grants remain valid but no new Grants accepted. Trading partner notified with reason code `GossipDutyViolation`. | Yes |
+
+**Recovery.** Scores improve immediately when participation resumes. A domain that starts responding to gossip requests again will see its score climb within one window period. No permanent penalty — the system measures current behavior, not historical grudges.
+
+**Grace period.** New trading relationships start with a gossip score of `null` (no data). The first 7 days of a bilateral relationship are grace — no gossip score penalties apply. After 7 days, the score begins accumulating.
 
 This isn't a new conservation law — it's an enforcement mechanism for the existing ones. The conservation laws are only as strong as the bilateral verification that checks them. Gossip is how that verification scales beyond direct trading partners. Without it, fraud detection is limited to direct bilateral views, which is weaker.
 

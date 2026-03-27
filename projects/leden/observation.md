@@ -109,12 +109,53 @@ Not every observer wants every field. A minimap UI cares about position, not hea
 Filters are specified at subscribe time:
 
 ```
-Observe(object_ref, filter: [position, velocity])
+Observe(object_ref, filter: ["position", "velocity"])
 ```
 
 The server only sends updates matching the filter. This reduces bandwidth and processing on both sides. Filters are optional — omit for "everything."
 
 Filters can be updated on a live observation without unsubscribing and resubscribing. The server applies the new filter immediately.
+
+### Filter Path Expressions
+
+Flat field names work for flat objects. Game entities aren't flat — they have nested structs, arrays, and maps. The filter language supports path expressions for nested access.
+
+**Syntax:**
+
+| Expression | Meaning | Example |
+|------------|---------|---------|
+| `field` | Top-level field | `"health"` |
+| `field.nested` | Nested field access | `"position.x"` |
+| `field[*]` | All elements of an array | `"inventory[*]"` |
+| `field[*].nested` | Nested field in each array element | `"inventory[*].name"` |
+| `field{*}` | All values of a map | `"attributes{*}"` |
+| `field{key}` | Specific map key | `"attributes{strength}"` |
+
+**No wildcards on field names.** `"pos*"` is not valid. Filters select known paths, not patterns. This keeps server-side filtering simple — it's a tree walk, not a regex engine.
+
+**Depth limit:** Paths are limited to 8 segments (dots). Deeper nesting than that is an application design problem, not a filter problem.
+
+**Examples:**
+
+```
+// Game entity — minimap only needs position
+filter: ["position.x", "position.y"]
+
+// Inventory screen — names and quantities, not full item data
+filter: ["inventory[*].name", "inventory[*].quantity"]
+
+// Damage log — health changes only
+filter: ["stats.health"]
+
+// Equipment tooltip — specific slot
+filter: ["equipment{weapon}.name", "equipment{weapon}.damage"]
+```
+
+**Semantics:** A filter path matches if the full path exists in the update. If an update changes `position.x` and `health`, and the filter is `["position.x"]`, the observer receives only the `position.x` change. The `health` change is suppressed.
+
+For array filters, `inventory[*].name` means: if any element's `name` changed, include that element's `name` in the update. Unchanged elements are omitted.
+
+**Invalid paths** are silently ignored at subscribe time (the object's schema may evolve). The server logs a warning for unrecognized paths but doesn't reject the subscription — this prevents breakage when a field is renamed or removed in a later version.
 
 ### Fan-Out
 

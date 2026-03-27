@@ -543,15 +543,38 @@ This is rare in practice — most capability graphs are trees, not cyclic. But "
 
 **Strategy: trial deletion.**
 
-Adapted from distributed garbage collection literature. Periodically, the issuer suspects a capability might be in a cycle (heuristic: lease renewed many times but never released, low-weight reference that hasn't been delegated further). The issuer initiates a probe:
+Adapted from distributed garbage collection literature (Lins' weighted trial deletion). The issuer runs a probe when concrete conditions are met — not on every GC pass, and not on a vague heuristic.
 
-1. Issuer sends `GCProbe(capability_id, probe_id)` to the holder
-2. Holder checks if it holds any capabilities back to the issuer (or the issuer's objects)
-3. If yes, it forwards the probe along those capabilities
-4. If the probe returns to the issuer, a cycle is confirmed
-5. The issuer can then break the cycle by forcibly reclaiming one of the capabilities
+**Probe triggers.** A capability becomes a cycle suspect when *any* of these conditions hold:
 
-This is expensive and only triggered by heuristics, not on every GC pass. For most applications, leases alone handle the problem — a leaked cycle that renews leases is a memory leak, but a bounded one that the application can monitor.
+| Trigger | Condition | Rationale |
+|---------|-----------|-----------|
+| **Stale renewal** | Lease renewed ≥ `cycle_suspect_renewals` times (default: 8) without any weight being returned or the capability being released | A healthy reference either gets delegated (splitting weight) or released. Repeated renewal with no other activity suggests it's held only because something holds it back. |
+| **Low residual weight** | Remaining weight ≤ `cycle_suspect_weight_floor` (default: 1, i.e., the minimum non-zero weight) and the capability has been alive for ≥ 2 lease periods | Weight has been split down to the minimum — all delegations have happened, nobody released. If the minimum-weight holder is still renewing, it's either actively used or part of a cycle. |
+| **Mutual reference** | The issuer discovers it also holds a capability issued by the *same endpoint* that holds this one | Direct evidence of a potential two-node cycle. Doesn't confirm a cycle (the capabilities might reference different objects), but it's the strongest trigger. |
+
+When a capability becomes suspect, it enters a **cooldown period** of one lease interval before probing. If the capability is released or weight is returned during cooldown, the suspicion clears. This avoids probing capabilities that are about to be collected normally.
+
+**Probe protocol:**
+
+1. Issuer sends `GCProbe(capability_id, probe_id, ttl)` to the holder. The `ttl` starts at `cycle_probe_max_hops` (default: 8) and decrements at each hop — prevents probes from wandering indefinitely in large graphs.
+2. Holder checks if it holds any capabilities back to the issuer (matching the issuer's endpoint identity).
+3. If yes, it forwards the probe along those capabilities (decrementing `ttl`).
+4. If the probe returns to the issuer, a cycle is confirmed.
+5. If `ttl` reaches 0 without returning, the probe is dropped. The capability remains suspect and can be re-probed after another cooldown.
+
+**Cycle breaking.** When a cycle is confirmed, the issuer forcibly reclaims the probed capability by sending `Reclaim(capability_id, reason: CycleDetected)`. The holder treats this as a revocation — any operations through that capability fail with `CapabilityReclaimed`. The holder can re-acquire via a sturdy reference if the object still exists.
+
+**Configurable parameters:**
+
+| Parameter | Default | Constraints |
+|-----------|---------|-------------|
+| `cycle_suspect_renewals` | 8 | ≥ 2 |
+| `cycle_suspect_weight_floor` | 1 | ≥ 1 |
+| `cycle_probe_max_hops` | 8 | ≥ 2, ≤ 32 |
+| `cycle_probe_cooldown` | 1 lease interval | ≥ 1 lease interval |
+
+Defaults are conservative — they delay probing long enough that normal usage patterns won't trigger it, but catch genuine cycles within a few lease periods.
 
 **Pragmatic reality:** Most deployments won't hit cycles. Leases are the primary GC mechanism. Weight-based counting is the fast path. Cycle detection is a safety net for long-running servers with complex capability graphs.
 
@@ -703,15 +726,77 @@ The open question from before, now answered. When an endpoint goes down while ho
 
 The default is `fail`. You opt into `retry` or `expire` when you know the semantics justify it. No silent hangs.
 
+### Per-Promise Error Policies
+
+Resolution policies control what happens when the *endpoint* fails. Error policies control what happens when the *call itself* fails — the endpoint is fine, but the operation returned an error.
+
+Error policies are set per-promise at call time, alongside the resolution policy:
+
+| Policy | Behavior | Use when |
+|--------|----------|----------|
+| `propagate` | Reject the promise with the received error. Downstream pipelined promises break. | Default. Caller handles errors explicitly. |
+| `retry(max, backoff)` | Re-send the call up to `max` times with exponential backoff (base interval × 2^attempt, capped at backoff cap). | Transient failures on idempotent operations. |
+| `fallback(value)` | Resolve the promise with a fallback value instead of rejecting. Downstream pipeline continues. | Non-critical lookups where a default is acceptable. |
+
+**`retry` details:**
+
+| Parameter | Default | Constraints |
+|-----------|---------|-------------|
+| `max` | 3 | 1–16 |
+| `backoff_base` | 100ms | ≥ 10ms |
+| `backoff_cap` | 5s | ≥ `backoff_base` |
+
+Only retries errors where `retryable = true` in the error response (see Error Codes). Non-retryable errors (`PermissionDenied`, `InvalidArgument`, `CapabilityRevoked`) reject immediately regardless of retry policy. The server sets `retryable` — the protocol doesn't guess.
+
+**`fallback` details:**
+
+The fallback value must be type-compatible with the expected response. This is not protocol-enforced (the protocol doesn't know application types) — it's a caller responsibility. A type mismatch in the fallback is an application bug, not a protocol error.
+
+Fallback does *not* suppress the error silently. The promise resolves with the fallback value, but the original error is logged as a warning on the caller side and included in the resolution metadata (accessible via `promise.error()` even after successful resolution).
+
+**Interaction with resolution policies:**
+
+Error policies apply to errors received while the endpoint is live. If the endpoint goes down, the resolution policy takes over. They compose cleanly:
+
+- `retry` error policy + `retry` resolution policy: retry the call on error, and also retry on reconnect.
+- `fallback` error policy + `fail` resolution policy: use fallback on application errors, but reject immediately if the endpoint itself dies.
+- `propagate` error policy + `expire` resolution policy: no retries, but reject on deadline if the endpoint is slow.
+
+### Promise Epochs
+
+A session reconnection creates ambiguity: was a response received just before disconnection for the *original* call, or for a *retried* call after reconnection? Without versioning, a stale response from the old session can be mistaken for a fresh one.
+
+Every session has a monotonically increasing **epoch** counter, starting at 1. The epoch increments on every successful reconnection (after the Hello/Welcome handshake completes). Each outbound call is tagged with the session epoch at send time. Responses carry the epoch they were produced in.
+
+```
+Session connects:     epoch = 1
+Call A sent:          epoch = 1
+   ... disconnect ...
+Session reconnects:   epoch = 2
+Call A retried:       epoch = 2
+Response arrives:     epoch = 1  ← stale, discard
+Response arrives:     epoch = 2  ← fresh, accept
+```
+
+**Rules:**
+
+1. Responses with an epoch older than the promise's current epoch are discarded silently.
+2. For `retry` resolution policy: the retried call is tagged with the new epoch. Only responses matching the new epoch are accepted.
+3. For `fail` resolution policy: no retry happens, so epoch mismatch is impossible — the promise was already rejected before the new epoch started.
+4. For `expire` resolution policy: same as `fail` — if the promise survived to the new epoch, it's checked against its deadline first. If still valid, it behaves like `retry`.
+
+The epoch is a `uint32` carried in the message header (see [wire-format.md](wire-format.md)). It doesn't need to be large — a session that reconnects 4 billion times has bigger problems.
+
 ### Error Handling at Session Boundaries
 
 When a session drops and reconnects:
 
-1. Capabilities survive (sturdy references, already specified).
-2. Pending promises with `fail` policy are rejected immediately.
-3. Pending promises with `retry` policy are re-sent automatically on reconnect.
-4. Pending promises with `expire` policy are rejected if past their deadline.
-5. Active observations (see observation.md) are re-established from the last known state.
+1. Session epoch increments.
+2. Capabilities survive (sturdy references, already specified).
+3. Pending promises with `fail` policy are rejected immediately.
+4. Pending promises with `retry` policy are re-sent with the new epoch.
+5. Pending promises with `expire` policy are rejected if past their deadline, otherwise re-sent with new epoch.
+6. Active observations (see observation.md) are re-established from the last known state.
 
 The caller doesn't need to track which promises were in-flight. The session handles it.
 
