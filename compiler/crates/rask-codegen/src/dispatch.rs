@@ -238,6 +238,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        StdlibEntry {
+            mir_name: "string_from_raw", c_name: "rask_string_from_bytes",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
 
         // Read-only accessors
         StdlibEntry::simple("string_len", "rask_string_len", &[types::I64], Some(types::I64), false),
@@ -506,26 +511,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── FS module ───────────────────────────────────────────
-        StdlibEntry {
-            mir_name: "fs_read_file", c_name: "rask_fs_read_file",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry::simple("fs_write_file", "rask_fs_write_file", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("fs_exists", "rask_fs_exists", &[types::I64], Some(types::I8), false),
+        // Self-hosted from stdlib/fs.rk. Remaining C runtime stubs:
+        StdlibEntry::simple("fs_write_bytes", "rask_fs_write_bytes", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
         StdlibEntry::simple("fs_open", "rask_fs_open", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create", "rask_fs_create", &[types::I64], Some(types::I64), false),
-        StdlibEntry {
-            mir_name: "fs_canonicalize", c_name: "rask_fs_canonicalize",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry::simple("fs_copy", "rask_fs_copy", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("fs_rename", "rask_fs_rename", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("fs_remove", "rask_fs_remove", &[types::I64], None, false),
-        StdlibEntry::simple("fs_create_dir", "rask_fs_create_dir", &[types::I64], None, false),
-        StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
-        StdlibEntry::simple("fs_append_file", "rask_fs_append_file", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("fs_metadata", "rask_fs_metadata", &[types::I64], Some(types::I64), false),
 
         // ── Metadata methods ────────────────────────────────────────
@@ -827,11 +817,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Path_components", "rask_path_components", &[types::I64], Some(types::I64), false),
 
         // ── Raw pointer operations ────────────────────────────
-        StdlibEntry::simple("RawPtr_add", "rask_ptr_add", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_sub", "rask_ptr_sub", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_offset", "rask_ptr_offset", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_read", "rask_ptr_read", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_write", "rask_ptr_write", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("RawPtr_add", "rask_ptr_add", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("RawPtr_sub", "rask_ptr_sub", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("RawPtr_offset", "rask_ptr_offset", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("RawPtr_read", "rask_ptr_read", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("RawPtr_write", "rask_ptr_write", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("RawPtr_is_null", "rask_ptr_is_null", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("RawPtr_is_aligned", "rask_ptr_is_aligned", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("RawPtr_is_aligned_to", "rask_ptr_is_aligned_to", &[types::I64, types::I64], Some(types::I64), false),

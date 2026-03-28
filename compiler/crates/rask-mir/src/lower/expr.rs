@@ -925,10 +925,27 @@ impl<'a> MirLowerer<'a> {
                         return Ok((obj_op, MirType::Ptr));
                     }
                     if let Some(func_name) = ptr_method {
+                        // Determine element size from the pointer's type (*u8 → 1, *i64 → 8)
+                        let elem_size: i64 = self.ctx.lookup_raw_type(object.id)
+                            .and_then(|ty| match ty {
+                                rask_types::Type::RawPtr(inner) => Some(match inner.as_ref() {
+                                    rask_types::Type::U8 | rask_types::Type::I8 | rask_types::Type::Bool => 1,
+                                    rask_types::Type::U16 | rask_types::Type::I16 => 2,
+                                    rask_types::Type::U32 | rask_types::Type::I32 | rask_types::Type::F32 => 4,
+                                    _ => 8,
+                                }),
+                                _ => None,
+                            })
+                            .unwrap_or(8);
+
                         let mut all_args = vec![obj_op];
                         for arg in args {
                             let (op, _) = self.lower_expr(&arg.expr)?;
                             all_args.push(op);
+                        }
+                        // Inject element size for read/write/add/sub/offset
+                        if matches!(method.as_str(), "read" | "write" | "add" | "sub" | "offset") {
+                            all_args.push(MirOperand::Constant(crate::operand::MirConst::Int(elem_size)));
                         }
                         let ret_ty = match method.as_str() {
                             "read" => MirType::I64,

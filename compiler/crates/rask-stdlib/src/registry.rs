@@ -203,8 +203,8 @@ const ATOMIC_INT_METHODS: &[&str] = &[
 // ---------------------------------------------------------------------------
 
 const FS_METHODS: &[&str] = &[
-    "read_file", "read_lines", "write_file", "append_file",
-    "exists", "open", "create", "canonicalize", "metadata",
+    "read_file", "read_bytes", "read_lines", "write_file", "write_bytes",
+    "append_file", "exists", "open", "create", "canonicalize", "metadata",
     "remove", "remove_dir", "create_dir", "create_dir_all",
     "rename", "copy",
 ];

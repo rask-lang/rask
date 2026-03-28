@@ -230,6 +230,39 @@ void rask_fs_write_file(const RaskStr *path, const RaskStr *content) {
     fclose(f);
 }
 
+RaskVec *rask_fs_read_bytes(const RaskStr *path) {
+    RaskVec *v = rask_vec_new(1);
+    const char *p = rask_string_ptr(path);
+    FILE *f = fopen(p, "rb");
+    if (!f) return v;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size > 0) {
+        char *buf = (char *)rask_alloc((int64_t)size);
+        size_t n = fread(buf, 1, (size_t)size, f);
+        for (size_t i = 0; i < n; i++) {
+            uint8_t byte = (uint8_t)buf[i];
+            rask_vec_push(v, &byte);
+        }
+        rask_free(buf);
+    }
+    fclose(f);
+    return v;
+}
+
+void rask_fs_write_bytes(const RaskStr *path, RaskVec *data) {
+    const char *p = rask_string_ptr(path);
+    FILE *f = fopen(p, "wb");
+    if (!f) return;
+    int64_t len = rask_vec_len(data);
+    for (int64_t i = 0; i < len; i++) {
+        uint8_t *byte = (uint8_t *)rask_vec_get(data, i);
+        if (byte) fwrite(byte, 1, 1, f);
+    }
+    fclose(f);
+}
+
 int8_t rask_fs_exists(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "r");
@@ -290,6 +323,33 @@ void rask_fs_remove(const RaskStr *path) {
 }
 
 #include <sys/stat.h>
+
+// Thin wrappers for libc functions whose names clash with Rask methods
+// or that access C structs. Self-hosted stdlib calls these via extern "C".
+int32_t rask_libc_rename(const char *from, const char *to) { return rename(from, to); }
+int32_t rask_libc_remove(const char *path) { return remove(path); }
+int32_t rask_libc_mkdir(const char *path, uint32_t mode) { return mkdir(path, mode); }
+
+#include <dirent.h>
+// Extract name from dirent (Rask can't access C struct fields)
+const char *rask_dirent_name(void *entry) { return ((struct dirent *)entry)->d_name; }
+
+// Stat helpers — return individual fields so Rask doesn't need struct access
+int64_t rask_stat_size(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int64_t)st.st_size;
+}
+int64_t rask_stat_mtime(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int64_t)st.st_mtime;
+}
+int64_t rask_stat_atime(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int64_t)st.st_atime;
+}
 
 void rask_fs_create_dir(const RaskStr *path) {
     const char *p = rask_string_ptr(path);

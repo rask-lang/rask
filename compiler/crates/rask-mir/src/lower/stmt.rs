@@ -403,6 +403,9 @@ impl<'a> MirLowerer<'a> {
                     ("cli", "args") | ("fs", "read_lines") => {
                         self.meta_mut(name).elem_type = Some(MirType::String);
                     }
+                    ("fs", "read_bytes") => {
+                        self.meta_mut(name).elem_type = Some(MirType::U8);
+                    }
                     _ => {}
                 }
             }
@@ -431,10 +434,12 @@ impl<'a> MirLowerer<'a> {
                     // Covers stdlib (Vec, Map, string) and user types (Person, Document).
                     // Strip generic args: Map<string, JsonValue> → Map
                     let base_name = obj_name.split('<').next().unwrap_or(obj_name);
-                    if super::MirContext::stdlib_type_prefix(
+                    let is_module = rask_stdlib::mir_metadata::stdlib_module_names()
+                        .contains(base_name);
+                    if !is_module && (super::MirContext::stdlib_type_prefix(
                         &rask_types::Type::UnresolvedNamed(base_name.to_string())
                     ).is_some()
-                        || base_name.chars().next().map_or(false, |c| c.is_uppercase())
+                        || base_name.chars().next().map_or(false, |c| c.is_uppercase()))
                     {
                         self.meta_mut(name).type_prefix = Some(base_name.to_string());
                     } else {
@@ -546,6 +551,19 @@ impl<'a> MirLowerer<'a> {
             } else if let Some(ty_str) = ty {
                 if let Some(prefix) = super::type_prefix_from_str(ty_str) {
                     self.meta_mut(name).type_prefix = Some(prefix);
+                }
+            }
+        }
+
+        // Track collection element types from type annotations (Vec<u8>, Pool<T>)
+        if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
+            if let Some(ty_str) = ty {
+                if let Some(elem_str) = ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
+                    let elem_mir = self.ctx.resolve_type_str(elem_str);
+                    self.meta_mut(name).elem_type = Some(elem_mir);
+                } else if let Some(elem_str) = ty_str.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
+                    let elem_mir = self.ctx.resolve_type_str(elem_str);
+                    self.meta_mut(name).elem_type = Some(elem_mir);
                 }
             }
         }

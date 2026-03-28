@@ -375,12 +375,19 @@ impl<'a> MirLowerer<'a> {
         if let Some(params_str) = inner {
             let params: Vec<&str> = params_str.split(',').map(|s| s.trim()).collect();
             if let Some(type_name) = params.get(index) {
-                if *type_name == "string" {
-                    return 16;
-                }
-                if let Some((_, layout)) = self.ctx.find_struct(type_name) {
-                    return layout.size as i64;
-                }
+                return match *type_name {
+                    "string" => 16,
+                    "bool" | "u8" | "i8" => 1,
+                    "u16" | "i16" => 2,
+                    "u32" | "i32" | "f32" => 4,
+                    "u64" | "i64" | "f64" | "usize" | "isize" | "char" => 8,
+                    _ => {
+                        if let Some((_, layout)) = self.ctx.find_struct(type_name) {
+                            return layout.size as i64;
+                        }
+                        8
+                    }
+                };
             }
         }
         8 // scalar default

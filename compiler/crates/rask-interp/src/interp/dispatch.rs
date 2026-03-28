@@ -507,8 +507,8 @@ impl Interpreter {
         use crate::value::ModuleKind::*;
         match module {
             Fs => matches!(method,
-                "read_file" | "read_lines" | "write_file" | "append_file"
-                | "exists" | "open" | "create" | "canonicalize" | "metadata"
+                "read_file" | "read_bytes" | "read_lines" | "write_file" | "write_bytes"
+                | "append_file" | "exists" | "open" | "create" | "canonicalize" | "metadata"
                 | "delete" | "remove" | "remove_dir" | "create_dir" | "create_dir_all"
                 | "rename" | "copy" | "list_dir"
             ),
