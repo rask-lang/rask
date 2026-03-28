@@ -1132,6 +1132,13 @@ impl Interpreter {
                     _ => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
                 }
             }
+            (TypeConstructorKind::String, "from_raw") => {
+                // In the interpreter, from_raw is a no-op (no real raw pointers).
+                match args.first() {
+                    Some(Value::String(s)) => Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone())))),
+                    _ => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
+                }
+            }
             (TypeConstructorKind::Pool, "new") => {
                 Ok(Value::Pool(Arc::new(Mutex::new(PoolData::with_type_param(type_param.clone())))))
             }

@@ -21,7 +21,26 @@ extend fs {
     public func create(path: string) -> File or IoError { }
 
     /// Read the entire contents of a file as a string.
-    public func read_file(path: string) -> string or IoError { }
+    public func read_file(path: string) -> string or IoError {
+        const p = unsafe path.as_c_str()
+        const f = unsafe fopen(p, "rb\0".as_ptr())
+        if unsafe f.is_null() {
+            return Err("could not open file")
+        }
+        unsafe fseek(f, 0, 2)
+        const size = unsafe ftell(f)
+        unsafe fseek(f, 0, 0)
+        if size <= 0 {
+            unsafe fclose(f)
+            return Ok("")
+        }
+        const buf = unsafe rask_alloc(size + 1)
+        const n = unsafe fread(buf, 1, size as u64, f)
+        unsafe fclose(f)
+        const result = unsafe string.from_raw(buf, n as usize)
+        unsafe rask_free(buf)
+        return Ok(result)
+    }
 
     /// Read the entire contents of a file as bytes.
     public func read_bytes(path: string) -> Vec<u8> or IoError { }

@@ -238,6 +238,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        StdlibEntry {
+            mir_name: "string_from_raw", c_name: "rask_string_from_bytes",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
 
         // Read-only accessors
         StdlibEntry::simple("string_len", "rask_string_len", &[types::I64], Some(types::I64), false),

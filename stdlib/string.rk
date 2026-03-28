@@ -96,4 +96,8 @@ extend string {
 
     /// Copy from a null-terminated C string. Caller must ensure ptr is valid.
     public unsafe func from_c(ptr: *u8) -> string { }
+
+    /// Build a string from a raw pointer and byte length. No UTF-8 validation.
+    /// Caller must ensure ptr is valid for len bytes.
+    public unsafe func from_raw(ptr: *u8, len: usize) -> string { }
 }
