@@ -56,7 +56,31 @@ extend fs {
     }
 
     /// Read the entire contents of a file as bytes.
-    public func read_bytes(path: string) -> Vec<u8> or IoError { }
+    public func read_bytes(path: string) -> Vec<u8> or IoError {
+        const p = unsafe path.as_c_str()
+        const f = unsafe fopen(p, "rb\0".as_ptr())
+        if unsafe f.is_null() {
+            return Err("could not open file")
+        }
+        unsafe fseek(f, 0, 2)
+        const size = unsafe ftell(f)
+        unsafe fseek(f, 0, 0)
+        let bytes: Vec<u8> = Vec.new()
+        if size > 0 {
+            const buf = unsafe rask_alloc(size)
+            const n = unsafe fread(buf, 1, size as u64, f)
+            let i: u64 = 0
+            loop {
+                if i >= n { break }
+                const b = unsafe buf.add(i as usize).read()
+                bytes.push(b as u8)
+                i = i + 1
+            }
+            unsafe rask_free(buf)
+        }
+        unsafe fclose(f)
+        return Ok(bytes)
+    }
 
     /// Write a string to a file, replacing its contents.
     public func write_file(path: string, content: string) -> () or IoError {
