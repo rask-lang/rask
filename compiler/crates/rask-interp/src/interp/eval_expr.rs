@@ -10,6 +10,97 @@ use crate::value::{ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, Typ
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
+/// Map comparison method names back to operator symbols.
+fn comparison_op_symbol(method: &str) -> Option<&'static str> {
+    match method {
+        "eq" => Some("=="),
+        "lt" => Some("<"),
+        "gt" => Some(">"),
+        "le" => Some("<="),
+        "ge" => Some(">="),
+        _ => None,
+    }
+}
+
+/// Build a descriptive failure message for assert/check.
+///
+/// After desugaring, `a == b` becomes `a.eq(b)` and `a != b` becomes
+/// `!a.eq(b)`. This function recognizes both forms and re-evaluates the
+/// operands to show actual values in the error message.
+fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: &str) -> String {
+    match &condition.kind {
+        // Desugared comparison: a.eq(b), a.lt(b), etc.
+        ExprKind::MethodCall { object, method, args, .. }
+            if args.len() == 1 && comparison_op_symbol(method).is_some() =>
+        {
+            let op_str = comparison_op_symbol(method).unwrap();
+            let left_val = interp.eval_expr(object).ok();
+            let right_val = interp.eval_expr(&args[0].expr).ok();
+            match (left_val, right_val) {
+                (Some(l), Some(r)) => format!("{}: {} {} {} (left: {}, right: {})", prefix, l, op_str, r, l, r),
+                _ => prefix.to_string(),
+            }
+        }
+        // Desugared != : !(a.eq(b))
+        ExprKind::Unary { op: UnaryOp::Not, operand } => {
+            match &operand.kind {
+                ExprKind::MethodCall { object, method, args, .. }
+                    if method == "eq" && args.len() == 1 =>
+                {
+                    let left_val = interp.eval_expr(object).ok();
+                    let right_val = interp.eval_expr(&args[0].expr).ok();
+                    match (left_val, right_val) {
+                        (Some(l), Some(r)) => format!("{}: {} != {} (left: {}, right: {})", prefix, l, r, l, r),
+                        _ => prefix.to_string(),
+                    }
+                }
+                _ => {
+                    let val = interp.eval_expr(operand).ok();
+                    match val {
+                        Some(v) => format!("{}: !({}) — value was {}", prefix, v, v),
+                        None => prefix.to_string(),
+                    }
+                }
+            }
+        }
+        // Pre-desugar Binary (in case desugar was skipped, e.g. spec test runner)
+        ExprKind::Binary { op, left, right } if matches!(op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+        ) => {
+            let op_str = match op {
+                BinOp::Eq => "==",
+                BinOp::Ne => "!=",
+                BinOp::Lt => "<",
+                BinOp::Gt => ">",
+                BinOp::Le => "<=",
+                BinOp::Ge => ">=",
+                _ => unreachable!(),
+            };
+            let left_val = interp.eval_expr(left).ok();
+            let right_val = interp.eval_expr(right).ok();
+            match (left_val, right_val) {
+                (Some(l), Some(r)) => format!("{}: {} {} {} (left: {}, right: {})", prefix, l, op_str, r, l, r),
+                _ => prefix.to_string(),
+            }
+        }
+        // is pattern: assert x is Some
+        ExprKind::IsPattern { expr, pattern, .. } => {
+            let pat_name = match pattern {
+                rask_ast::expr::Pattern::Constructor { name, .. } => name.as_str(),
+                rask_ast::expr::Pattern::Ident(n) => n.as_str(),
+                rask_ast::expr::Pattern::Wildcard => "_",
+                _ => "pattern",
+            };
+            let val = interp.eval_expr(expr).ok();
+            match val {
+                Some(v) => format!("{}: {} is not {}", prefix, v, pat_name),
+                None => prefix.to_string(),
+            }
+        }
+        _ => prefix.to_string(),
+    }
+}
+
 impl Interpreter {
     pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         match &expr.kind {
@@ -1243,7 +1334,7 @@ impl Interpreter {
                         let v = self.eval_expr(msg_expr)?;
                         format!("{}", v)
                     } else {
-                        "assertion failed".to_string()
+                        build_comparison_message(self, condition, "assertion failed")
                     };
                     Err(RuntimeDiagnostic::new(RuntimeError::AssertionFailed(msg), expr.span))
                 }
@@ -1258,7 +1349,7 @@ impl Interpreter {
                         let v = self.eval_expr(msg_expr)?;
                         format!("{}", v)
                     } else {
-                        "check failed".to_string()
+                        build_comparison_message(self, condition, "check failed")
                     };
                     Err(RuntimeDiagnostic::new(RuntimeError::CheckFailed(msg), expr.span))
                 }
