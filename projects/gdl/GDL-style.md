@@ -3,7 +3,7 @@ Gard Description Style
 
 GDL-style is GDL's CSS. GDL describes what exists — structure, entities, affordances. GDL-style describes how it should feel — colors, atmosphere, lighting, sound palette, typography, entity treatment. Separate specs because they evolve independently and have different implementer audiences.
 
-Without GDL-style, GDL is the pre-CSS internet. Content exists. Visual identity doesn't. A horror dungeon and a fairy forest render with the same client defaults. Walking through a cross-domain portal feels like nothing because both sides look identical. Domain authors have no way to express creative intent beyond text descriptions and per-entity appearance hints.
+Without GDL-style, GDL is the pre-CSS internet. Content exists. Visual identity doesn't. A horror dungeon and a fairy forest render with the same client defaults. Walking through a cross-domain portal feels like nothing because both sides look identical. Domain authors have no way to express creative intent beyond text descriptions and per-entity appearance layers.
 
 CSS solved this for documents. GDL-style solves it for worlds. But GDL-style is not CSS — CSS styles text, boxes, and layout. GDL-style styles lighting, atmosphere, color language, entity treatment, and sound. Different medium, different tool.
 Why Not Just CSS
@@ -111,7 +111,7 @@ Entity treatment:
 - Web client → CSS classes toggled on entity DOM elements
 
 Kind defaults:
-- All clients → fallback appearance when entity has no explicit appearance hints
+- All clients → fallback appearance when entity has no explicit iconic/scene layers
 - Overridable per-entity by the entity's own appearance field
 - kind.structure.label_visible: false means structure names hidden by default (reduce clutter)
 
@@ -136,7 +136,7 @@ Cascade
 
 Tokens cascade from domain → region → entity. Three levels, strict precedence, no specificity.
 
-A domain declares its global identity at session start (returned by the greeter alongside the initial region). Every region inherits domain tokens. A region's theme overrides specific tokens. An entity's appearance hints override everything for that entity.
+A domain declares its global identity at session start (returned by the greeter alongside the initial region). Every region inherits domain tokens. A region's theme overrides specific tokens. An entity's appearance overrides everything for that entity.
 
 domain_theme:
   tokens:

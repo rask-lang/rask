@@ -119,9 +119,9 @@ bytes	Raw bytes	Domain-specific continuous data
 
 The client subscribes to output streams through Leden observation. The domain publishes frames at the declared rate. Same backpressure and coalescing as input streams — if the client can't keep up, it gets the latest frame, not a queue of stale ones. The client renders what it receives; interpolation between frames is a client concern.
 
-Output streams compose with skeletal animation. The `animation` hint tells the client which clip to play from its library. An output stream with `type: skeleton_pose` overrides the clip with live bone data — the domain drives the skeleton directly. This is how motion capture, physics ragdoll, and procedural animation work. When the output stream stops (entity goes back to scripted behavior), the client falls back to clip-based animation from the `animation` state.
+Output streams compose with skeletal animation. The animation state tells the client which glTF clip to play. An output stream with `type: skeleton_pose` overrides the clip with live bone data — the domain drives the skeleton directly. This is how motion capture, physics ragdoll, and procedural animation work. When the output stream stops (entity goes back to scripted behavior), the client falls back to clip-based animation from the glTF model's animation library.
 
-A client that doesn't support output streams ignores the `output_streams` field. It plays animation clips from the `animation` hint. The dancer does a canned dance animation instead of the motion-captured performance. Graceful degradation.
+A client that doesn't support output streams ignores the `output_streams` field. It plays animation clips from the glTF model based on the animation state. The dancer does a canned dance animation instead of the motion-captured performance. Graceful degradation.
 
 For **client-side prediction with continuous physics**: the domain sends physics parameters (gravity, friction) and the client runs local simulation. When the domain's authoritative output stream arrives, the client reconciles. This is the same predict-and-reconcile loop every multiplayer game uses, but expressed through GDL's existing mechanisms: physics parameters describe the rules, output streams carry the authoritative state, and the client interpolates between predictions and corrections.
 
@@ -184,7 +184,7 @@ The domain expresses this through stream capabilities. A performer's stream is o
 
 Clients don't need to know the routing. They subscribe to an entity's stream. Whether the audio arrives via direct connection or domain relay is transparent — Leden handles it. The only visible difference is latency.
 
-Pre-recorded audio (a jukebox playing a song) is a content-addressed asset, not a stream. The client fetches it from Leden's content store and plays it locally. Live audio is a stream. GDL describes both — `appearance.assets.sound` for pre-recorded, `streams` for live.
+Pre-recorded audio (a jukebox playing a song) is a content-addressed asset, not a stream. The client fetches it from Leden's content store and plays it locally. Live audio is a stream. GDL describes both — `appearance.sound` for pre-recorded, `streams` for live.
 
 A client that doesn't support media streams ignores the `streams` field entirely. The bard is still there, you just can't hear them sing. Text clients render: "Bard Elara strums a melody on her lute." The description carries the experience for clients that can't play audio.
 Spatial Layers
