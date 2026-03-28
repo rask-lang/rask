@@ -1005,8 +1005,31 @@ impl<'a> FunctionBuilder<'a> {
                 }
             } else if func.name == "assert_fail" {
                 // MIR already handled branching; this is the fail path.
-                // Use location-aware variant when source info is available.
-                if let Some(file_str) = ctx.source_file {
+                // If a message arg is provided, pass it through.
+                if !args.is_empty() {
+                    let msg_val = Self::lower_operand_typed(
+                        builder, &args[0], Some(types::I64), ctx,
+                    )?;
+                    if let Some(file_str) = ctx.source_file {
+                        if let (Some(func_ref), Some(gv)) = (
+                            ctx.func_refs.get("assert_fail_msg_at"),
+                            ctx.string_globals.get(file_str),
+                        ) {
+                            let file_ptr = builder.ins().global_value(types::I64, *gv);
+                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                            builder.ins().call(*func_ref, &[msg_val, file_ptr, line_val, col_val]);
+                        } else {
+                            let assert_fn = ctx.func_refs.get("assert_fail")
+                                .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
+                            builder.ins().call(*assert_fn, &[]);
+                        }
+                    } else {
+                        let assert_fn = ctx.func_refs.get("assert_fail")
+                            .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
+                        builder.ins().call(*assert_fn, &[]);
+                    }
+                } else if let Some(file_str) = ctx.source_file {
                     if let (Some(func_ref), Some(gv)) = (
                         ctx.func_refs.get("assert_fail_at"),
                         ctx.string_globals.get(file_str),
@@ -1024,6 +1047,42 @@ impl<'a> FunctionBuilder<'a> {
                     let assert_fn = ctx.func_refs.get("assert_fail")
                         .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
                     builder.ins().call(*assert_fn, &[]);
+                }
+            } else if func.name == "assert_fail_cmp_i64" {
+                // Comparison assert failure with i64 values: args = [left, right, op_str]
+                if args.len() >= 3 {
+                    let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
+                    let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
+                    let op_val = Self::lower_operand_typed(builder, &args[2], Some(types::I64), ctx)?;
+                    if let Some(file_str) = ctx.source_file {
+                        if let (Some(func_ref), Some(gv)) = (
+                            ctx.func_refs.get("assert_fail_cmp_i64"),
+                            ctx.string_globals.get(file_str),
+                        ) {
+                            let file_ptr = builder.ins().global_value(types::I64, *gv);
+                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                            builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
+                        }
+                    }
+                }
+            } else if func.name == "assert_fail_cmp_str" {
+                // Comparison assert failure with string values: args = [left, right, op_str]
+                if args.len() >= 3 {
+                    let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
+                    let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
+                    let op_val = Self::lower_operand_typed(builder, &args[2], Some(types::I64), ctx)?;
+                    if let Some(file_str) = ctx.source_file {
+                        if let (Some(func_ref), Some(gv)) = (
+                            ctx.func_refs.get("assert_fail_cmp_str"),
+                            ctx.string_globals.get(file_str),
+                        ) {
+                            let file_ptr = builder.ins().global_value(types::I64, *gv);
+                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                            builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
+                        }
+                    }
                 }
             } else if func.name == "panic_unwrap" {
                 // MIR already handled branching; this is the panic path.

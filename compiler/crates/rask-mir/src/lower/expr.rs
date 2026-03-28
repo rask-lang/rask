@@ -18,6 +18,45 @@ use rask_ast::{
     token::{FloatSuffix, IntSuffix},
 };
 
+/// Detect comparison patterns in assert conditions for smart failure messages.
+///
+/// Returns `Some((left_expr, right_expr, op_str, is_string))` if the condition
+/// is a desugared comparison. After desugar: `a == b` → `a.eq(b)`,
+/// `a != b` → `!(a.eq(b))`, `a < b` → `a.lt(b)`, etc.
+fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static str, bool)> {
+    match &condition.kind {
+        // Desugared comparison: a.eq(b), a.lt(b), etc.
+        ExprKind::MethodCall { object, method, args, .. } if args.len() == 1 => {
+            let op_str = match method.as_str() {
+                "eq" => "==",
+                "lt" => "<",
+                "gt" => ">",
+                "le" => "<=",
+                "ge" => ">=",
+                _ => return None,
+            };
+            let is_string = matches!(&object.kind, ExprKind::String(_))
+                || matches!(&object.kind, ExprKind::Ident(_));
+            // Conservative: assume i64 unless obviously a string literal
+            let is_string = matches!(&object.kind, ExprKind::String(_))
+                || matches!(&args[0].expr.kind, ExprKind::String(_));
+            Some((object.as_ref(), &args[0].expr, op_str, is_string))
+        }
+        // Desugared !=: !(a.eq(b))
+        ExprKind::Unary { op: UnaryOp::Not, operand } => {
+            if let ExprKind::MethodCall { object, method, args, .. } = &operand.kind {
+                if method == "eq" && args.len() == 1 {
+                    let is_string = matches!(&object.kind, ExprKind::String(_))
+                        || matches!(&args[0].expr.kind, ExprKind::String(_));
+                    return Some((object.as_ref(), &args[0].expr, "!=", is_string));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Resolve primitive type associated constants (e.g. i64.MAX, i32.MIN).
 fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand> {
     let (val, ty) = match (type_name, field) {
@@ -2560,32 +2599,70 @@ impl<'a> MirLowerer<'a> {
 
             // Assert
             ExprKind::Assert { condition, message } => {
-                let (cond_op, _) = self.lower_expr(condition)?;
-                let ok_block = self.builder.create_block();
-                let fail_block = self.builder.create_block();
+                // Detect comparison patterns for smart failure messages.
+                // After desugaring, `a == b` → `a.eq(b)`, `a != b` → `!a.eq(b)`.
+                let cmp_info = if message.is_none() {
+                    extract_assert_comparison(condition)
+                } else {
+                    None
+                };
 
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                    cond: cond_op,
-                    then_block: ok_block,
-                    else_block: fail_block,
-                }));
+                if let Some((left_expr, right_expr, op_str, is_string)) = cmp_info {
+                    // Lower both sides first to capture their values
+                    let (left_op, _) = self.lower_expr(left_expr)?;
+                    let (right_op, _) = self.lower_expr(right_expr)?;
 
-                self.builder.switch_to_block(fail_block);
+                    // Now lower the full condition
+                    let (cond_op, _) = self.lower_expr(condition)?;
+                    let ok_block = self.builder.create_block();
+                    let fail_block = self.builder.create_block();
 
-                let mut args = Vec::new();
-                if let Some(msg) = message {
-                    let (msg_op, _) = self.lower_expr(msg)?;
-                    args.push(msg_op);
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: cond_op,
+                        then_block: ok_block,
+                        else_block: fail_block,
+                    }));
+
+                    self.builder.switch_to_block(fail_block);
+                    let op_const = MirOperand::Constant(MirConst::String(op_str.to_string()));
+                    let fail_fn = if is_string { "assert_fail_cmp_str" } else { "assert_fail_cmp_i64" };
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(fail_fn.to_string()),
+                        args: vec![left_op, right_op, op_const],
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+
+                    self.builder.switch_to_block(ok_block);
+                    Ok((MirOperand::Constant(MirConst::Bool(true)), MirType::Bool))
+                } else {
+                    // Generic path: lower condition, pass optional message
+                    let (cond_op, _) = self.lower_expr(condition)?;
+                    let ok_block = self.builder.create_block();
+                    let fail_block = self.builder.create_block();
+
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: cond_op,
+                        then_block: ok_block,
+                        else_block: fail_block,
+                    }));
+
+                    self.builder.switch_to_block(fail_block);
+                    let mut args = Vec::new();
+                    if let Some(msg) = message {
+                        let (msg_op, _) = self.lower_expr(msg)?;
+                        args.push(msg_op);
+                    }
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("assert_fail".to_string()),
+                        args,
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+
+                    self.builder.switch_to_block(ok_block);
+                    Ok((MirOperand::Constant(MirConst::Bool(true)), MirType::Bool))
                 }
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("assert_fail".to_string()),
-                    args,
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-
-                self.builder.switch_to_block(ok_block);
-                Ok((MirOperand::Constant(MirConst::Bool(true)), MirType::Bool))
             }
 
             // Check (like assert but continues)
