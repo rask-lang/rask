@@ -324,6 +324,12 @@ void rask_fs_remove(const RaskStr *path) {
 
 #include <sys/stat.h>
 
+// Thin wrappers for libc functions whose names clash with Rask methods.
+// Self-hosted stdlib calls these via extern "C".
+int32_t rask_libc_rename(const char *from, const char *to) { return rename(from, to); }
+int32_t rask_libc_remove(const char *path) { return remove(path); }
+int32_t rask_libc_mkdir(const char *path, uint32_t mode) { return mkdir(path, mode); }
+
 void rask_fs_create_dir(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
     mkdir(p, 0755);

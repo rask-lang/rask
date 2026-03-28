@@ -511,28 +511,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── FS module ───────────────────────────────────────────
-        StdlibEntry {
-            mir_name: "fs_read_file", c_name: "rask_fs_read_file",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry::simple("fs_write_file", "rask_fs_write_file", &[types::I64, types::I64], None, false),
+        // Self-hosted functions (compiled from stdlib/fs.rk):
+        //   fs_read_file, fs_write_file, fs_exists, fs_canonicalize,
+        //   fs_copy, fs_rename, fs_remove, fs_create_dir, fs_append_file
+        // Remaining C runtime stubs:
         StdlibEntry::simple("fs_read_bytes", "rask_fs_read_bytes", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_write_bytes", "rask_fs_write_bytes", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("fs_exists", "rask_fs_exists", &[types::I64], Some(types::I8), false),
         StdlibEntry::simple("fs_open", "rask_fs_open", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create", "rask_fs_create", &[types::I64], Some(types::I64), false),
-        StdlibEntry {
-            mir_name: "fs_canonicalize", c_name: "rask_fs_canonicalize",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry::simple("fs_copy", "rask_fs_copy", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("fs_rename", "rask_fs_rename", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("fs_remove", "rask_fs_remove", &[types::I64], None, false),
-        StdlibEntry::simple("fs_create_dir", "rask_fs_create_dir", &[types::I64], None, false),
         StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
-        StdlibEntry::simple("fs_append_file", "rask_fs_append_file", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("fs_metadata", "rask_fs_metadata", &[types::I64], Some(types::I64), false),
 
         // ── Metadata methods ────────────────────────────────────────

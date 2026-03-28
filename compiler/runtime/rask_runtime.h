@@ -304,6 +304,11 @@ int64_t  rask_random_range(int64_t lo, int64_t hi);
 // Higher-level file operations. Return FILE* as i64.
 
 int8_t      rask_fs_exists(const RaskStr *path);
+
+// Thin wrappers for libc functions whose names clash with Rask methods
+int32_t     rask_libc_rename(const char *from, const char *to);
+int32_t     rask_libc_remove(const char *path);
+int32_t     rask_libc_mkdir(const char *path, uint32_t mode);
 void        rask_fs_read_file(RaskStr *out, const RaskStr *path);
 RaskVec    *rask_fs_read_bytes(const RaskStr *path);
 void        rask_fs_write_file(const RaskStr *path, const RaskStr *content);

@@ -10,6 +10,11 @@ extern "C" func rask_alloc(size: i64) -> *u8
 extern "C" func rask_free(ptr: *u8)
 extern "C" func rask_string_from_bytes(out: *u8, data: *u8, len: i64)
 extern "C" func access(path: *u8, mode: i32) -> i32
+extern "C" func rask_libc_rename(from: *u8, to: *u8) -> i32
+extern "C" func rask_libc_remove(path: *u8) -> i32
+extern "C" func rask_libc_mkdir(path: *u8, mode: u32) -> i32
+extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
+extern "C" func strlen(s: *u8) -> u64
 
 /// File system operations.
 struct fs { }
@@ -73,25 +78,87 @@ extend fs {
     public func read_lines(path: string) -> Vec<string> or IoError { }
 
     /// Return the canonical, absolute form of a path.
-    public func canonicalize(path: string) -> string or IoError { }
+    public func canonicalize(path: string) -> string or IoError {
+        const buf = unsafe rask_alloc(4096)
+        const result = unsafe realpath(path.as_c_str(), buf)
+        if unsafe result.is_null() {
+            unsafe rask_free(buf)
+            return Err("could not resolve path")
+        }
+        const len = unsafe strlen(buf)
+        const s = unsafe string.from_raw(buf, len as usize)
+        unsafe rask_free(buf)
+        return Ok(s)
+    }
 
     /// Copy a file from one path to another. Returns bytes copied.
-    public func copy(from: string, to: string) -> u64 or IoError { }
+    public func copy(from: string, to: string) -> u64 or IoError {
+        const src = unsafe fopen(from.as_c_str(), "rb\0".as_ptr())
+        if unsafe src.is_null() {
+            return Err("could not open source file")
+        }
+        const dst = unsafe fopen(to.as_c_str(), "wb\0".as_ptr())
+        if unsafe dst.is_null() {
+            unsafe fclose(src)
+            return Err("could not open destination file")
+        }
+        const buf = unsafe rask_alloc(8192)
+        let total: u64 = 0
+        loop {
+            const n = unsafe fread(buf, 1, 8192, src)
+            if n == 0 { break }
+            unsafe fwrite(buf, 1, n, dst)
+            total = total + n
+        }
+        unsafe rask_free(buf)
+        unsafe fclose(src)
+        unsafe fclose(dst)
+        return Ok(total)
+    }
 
     /// Rename a file or directory.
-    public func rename(from: string, to: string) -> () or IoError { }
+    public func rename(from: string, to: string) -> () or IoError {
+        const r = unsafe rask_libc_rename(from.as_c_str(), to.as_c_str())
+        if r != 0 {
+            return Err("could not rename")
+        }
+        return Ok(())
+    }
 
     /// Remove a file.
-    public func remove(path: string) -> () or IoError { }
+    public func remove(path: string) -> () or IoError {
+        const r = unsafe rask_libc_remove(path.as_c_str())
+        if r != 0 {
+            return Err("could not remove")
+        }
+        return Ok(())
+    }
 
     /// Create a directory.
-    public func create_dir(path: string) -> () or IoError { }
+    public func create_dir(path: string) -> () or IoError {
+        const r = unsafe rask_libc_mkdir(path.as_c_str(), 493)
+        if r != 0 {
+            return Err("could not create directory")
+        }
+        return Ok(())
+    }
 
     /// Create a directory and all parent directories.
     public func create_dir_all(path: string) -> () or IoError { }
 
     /// Append a string to a file.
-    public func append_file(path: string, content: string) -> () or IoError { }
+    public func append_file(path: string, content: string) -> () or IoError {
+        const p = unsafe path.as_c_str()
+        const f = unsafe fopen(p, "ab\0".as_ptr())
+        if unsafe f.is_null() {
+            return Err("could not open file for append")
+        }
+        const ptr = unsafe content.as_ptr()
+        const len = content.len() as u64
+        unsafe fwrite(ptr, 1, len, f)
+        unsafe fclose(f)
+        return Ok(())
+    }
 
     /// List entries in a directory.
     public func list_dir(path: string) -> Vec<string> or IoError { }
