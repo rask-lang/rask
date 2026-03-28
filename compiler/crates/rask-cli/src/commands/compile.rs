@@ -500,6 +500,11 @@ pub fn compile_tests_to_object(
         None, rask_codegen::BuildMode::Debug,
     )?;
 
+    // Set line map so assert messages include correct line:col
+    if let (Some(src_file), Some(lm)) = (source_file, line_map.as_ref()) {
+        codegen.set_debug_context(src_file, lm.clone());
+    }
+
     gen_functions(&mut codegen, &mir_functions)?;
 
     // Generate the test runner entry point

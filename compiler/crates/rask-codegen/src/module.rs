@@ -839,6 +839,9 @@ impl CodeGenerator {
             &self.internal_fns,
             self.build_mode,
         )?;
+        if let Some(lm) = &self.line_map {
+            builder.set_line_map(lm);
+        }
         builder.build()?;
 
         // Temporary: dump CLIF IR for debugging

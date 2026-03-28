@@ -57,6 +57,23 @@ fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static
     }
 }
 
+/// Extract pattern name from an `is` pattern in an assert condition.
+/// Returns the pattern name as a string for the failure message.
+fn extract_assert_is_pattern(condition: &Expr) -> Option<String> {
+    use rask_ast::expr::Pattern;
+    match &condition.kind {
+        ExprKind::IsPattern { pattern, .. } => {
+            let name = match pattern {
+                Pattern::Constructor { name, .. } => name.clone(),
+                Pattern::Ident(n) => n.clone(),
+                _ => return None,
+            };
+            Some(name)
+        }
+        _ => None,
+    }
+}
+
 /// Resolve primitive type associated constants (e.g. i64.MAX, i32.MIN).
 fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand> {
     let (val, ty) = match (type_name, field) {
@@ -2636,6 +2653,14 @@ impl<'a> MirLowerer<'a> {
                     self.builder.switch_to_block(ok_block);
                     Ok((MirOperand::Constant(MirConst::Bool(true)), MirType::Bool))
                 } else {
+                    // Check for `is` pattern: assert x is Some
+                    let is_msg = if message.is_none() {
+                        extract_assert_is_pattern(condition)
+                            .map(|pat| format!("assertion failed: expected {}", pat))
+                    } else {
+                        None
+                    };
+
                     // Generic path: lower condition, pass optional message
                     let (cond_op, _) = self.lower_expr(condition)?;
                     let ok_block = self.builder.create_block();
@@ -2652,6 +2677,8 @@ impl<'a> MirLowerer<'a> {
                     if let Some(msg) = message {
                         let (msg_op, _) = self.lower_expr(msg)?;
                         args.push(msg_op);
+                    } else if let Some(is_msg) = is_msg {
+                        args.push(MirOperand::Constant(MirConst::String(is_msg)));
                     }
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,

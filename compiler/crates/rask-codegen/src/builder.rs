@@ -31,8 +31,11 @@ struct CodegenCtx<'a> {
     block_map: &'a HashMap<BlockId, Block>,
     build_mode: BuildMode,
     source_file: Option<&'a str>,
+    line_map: Option<&'a rask_ast::LineMap>,
     current_line: u32,
     current_col: u32,
+    /// Byte offset of the current MIR statement being lowered
+    current_span_start: u32,
     ret_ty: &'a MirType,
     is_main: bool,
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
@@ -93,6 +96,9 @@ pub struct FunctionBuilder<'a> {
     current_line: u32,
     current_col: u32,
 
+    /// Line map for converting byte offsets → line:col
+    line_map: Option<&'a rask_ast::LineMap>,
+
     /// Table-driven call adaptation (populated from dispatch::stdlib_entries)
     adapt_table: HashMap<String, (ArgAdapt, RetAdapt)>,
 }
@@ -129,8 +135,14 @@ impl<'a> FunctionBuilder<'a> {
             stack_slot_map: HashMap::new(),
             current_line: 0,
             current_col: 0,
+            line_map: None,
             adapt_table: crate::dispatch::build_adapt_table(),
         })
+    }
+
+    /// Set the line map for converting byte offsets to line:col in assert messages.
+    pub fn set_line_map(&mut self, line_map: &'a rask_ast::LineMap) {
+        self.line_map = Some(line_map);
     }
 
     /// Build the Cranelift IR from MIR.
@@ -239,8 +251,10 @@ impl<'a> FunctionBuilder<'a> {
             block_map: &self.block_map,
             build_mode: self.build_mode,
             source_file: self.mir_fn.source_file.as_deref(),
+            line_map: self.line_map,
             current_line: self.current_line,
             current_col: self.current_col,
+            current_span_start: 0,
             ret_ty: &self.mir_fn.ret_ty,
             is_main: self.mir_fn.name == "main",
             adapt_table: &self.adapt_table,
@@ -261,6 +275,13 @@ impl<'a> FunctionBuilder<'a> {
             // Lower statements
             for stmt in &mir_block.statements {
                 Self::apply_srcloc(&mut builder, stmt.span);
+                ctx.current_span_start = stmt.span.start as u32;
+                // Update line:col from span if we have a line map
+                if let Some(lm) = ctx.line_map {
+                    let (line, col) = lm.offset_to_line_col(stmt.span.start);
+                    ctx.current_line = line as u32;
+                    ctx.current_col = col as u32;
+                }
                 Self::lower_stmt(&mut builder, stmt, &ctx)?;
             }
 
@@ -286,8 +307,10 @@ impl<'a> FunctionBuilder<'a> {
 
             let cleanup_ctx = CodegenCtx {
                 source_file: None,
+                line_map: None,
                 current_line: 0,
                 current_col: 0,
+                current_span_start: 0,
                 ..ctx
             };
             // Emit cleanup statements from each block in the chain
@@ -1005,11 +1028,9 @@ impl<'a> FunctionBuilder<'a> {
                 }
             } else if func.name == "assert_fail" {
                 // MIR already handled branching; this is the fail path.
-                // If a message arg is provided, pass it through.
+                // If a message arg is provided, pass it as raw C string pointer.
                 if !args.is_empty() {
-                    let msg_val = Self::lower_operand_typed(
-                        builder, &args[0], Some(types::I64), ctx,
-                    )?;
+                    let msg_val = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
                     if let Some(file_str) = ctx.source_file {
                         if let (Some(func_ref), Some(gv)) = (
                             ctx.func_refs.get("assert_fail_msg_at"),
@@ -1053,7 +1074,7 @@ impl<'a> FunctionBuilder<'a> {
                 if args.len() >= 3 {
                     let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
                     let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
-                    let op_val = Self::lower_operand_typed(builder, &args[2], Some(types::I64), ctx)?;
+                    let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
                     if let Some(file_str) = ctx.source_file {
                         if let (Some(func_ref), Some(gv)) = (
                             ctx.func_refs.get("assert_fail_cmp_i64"),
@@ -1069,9 +1090,9 @@ impl<'a> FunctionBuilder<'a> {
             } else if func.name == "assert_fail_cmp_str" {
                 // Comparison assert failure with string values: args = [left, right, op_str]
                 if args.len() >= 3 {
-                    let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
-                    let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
-                    let op_val = Self::lower_operand_typed(builder, &args[2], Some(types::I64), ctx)?;
+                    let left_val = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
+                    let right_val = Self::lower_operand_as_cstr(builder, &args[1], ctx)?;
+                    let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
                     if let Some(file_str) = ctx.source_file {
                         if let (Some(func_ref), Some(gv)) = (
                             ctx.func_refs.get("assert_fail_cmp_str"),
@@ -2586,6 +2607,23 @@ impl<'a> FunctionBuilder<'a> {
         Ok(builder.ins().iconst(types::I64, 0))
     }
 
+    /// Lower a MIR operand to a raw C string pointer (for runtime functions
+    /// that take `const char*`). For MirConst::String, returns the data section
+    /// pointer directly instead of constructing a Rask string object.
+    fn lower_operand_as_cstr(
+        builder: &mut ClifFunctionBuilder,
+        op: &MirOperand,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Value> {
+        if let MirOperand::Constant(MirConst::String(s)) = op {
+            if let Some(gv) = ctx.string_globals.get(s.as_str()) {
+                return Ok(builder.ins().global_value(types::I64, *gv));
+            }
+        }
+        // Fallback: treat as i64 (pointer)
+        Self::lower_operand_typed(builder, op, Some(types::I64), ctx)
+    }
+
     fn lower_operand_typed(
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,
@@ -2626,7 +2664,12 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                     MirConst::Bool(b) => {
-                        Ok(builder.ins().iconst(types::I8, if *b { 1 } else { 0 }))
+                        let ty = if matches!(expected_ty, Some(t) if t.is_int() && t != types::I8) {
+                            expected_ty.unwrap()
+                        } else {
+                            types::I8
+                        };
+                        Ok(builder.ins().iconst(ty, if *b { 1 } else { 0 }))
                     }
                     MirConst::Char(c) => {
                         Ok(builder.ins().iconst(types::I32, *c as i64))
