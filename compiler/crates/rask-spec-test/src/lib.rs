@@ -15,7 +15,8 @@
 //! - `<!-- test: parse -->` - Must parse (skip type checking)
 //! - `<!-- test: parse-fail -->` - Must fail to parse
 //! - `<!-- test: skip -->` - Don't test this block
-//! - `<!-- test: run\n...\n-->` - Run and verify output matches
+//! - `<!-- test: run | expected -->` - Run via interpreter + native, verify output
+//! - `<!-- test: run-interp | expected -->` - Run via interpreter only (codegen escape hatch)
 //! - (no annotation) - Skipped by default
 
 pub mod deps;
@@ -24,4 +25,4 @@ pub mod runner;
 
 pub use deps::{check_staleness, extract_deps, SpecDeps, StalenessWarning};
 pub use extract::{extract_tests, Expectation, SpecTest};
-pub use runner::{run_test, TestResult, TestSummary};
+pub use runner::{run_test, run_test_with_config, NativeResult, RunConfig, TestResult, TestSummary};

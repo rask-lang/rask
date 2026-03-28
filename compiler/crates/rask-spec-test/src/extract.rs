@@ -24,8 +24,10 @@ pub enum Expectation {
     ParseFail,
     /// Don't test this block
     Skip,
-    /// Run and verify output matches expected
+    /// Run and verify output matches expected (interpreter + native)
     Run(String),
+    /// Run through interpreter only — escape hatch for unimplemented codegen
+    RunInterpOnly(String),
 }
 
 /// A single test case extracted from a spec file.
@@ -106,8 +108,14 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
         // Must start with "test:"
         let test_spec = content.strip_prefix("test:")?.trim();
 
-        // Check for run with inline expected output: "run | expected"
-        if test_spec.starts_with("run") {
+        // Check for run variants with inline expected output: "run | expected"
+        if test_spec.starts_with("run-interp") {
+            let rest = test_spec.strip_prefix("run-interp").unwrap().trim();
+            if let Some(expected) = rest.strip_prefix("|") {
+                let expected = process_escapes(expected.trim());
+                return Some((Expectation::RunInterpOnly(expected), 1));
+            }
+        } else if test_spec.starts_with("run") {
             let rest = test_spec.strip_prefix("run").unwrap().trim();
             if let Some(expected) = rest.strip_prefix("|") {
                 let expected = process_escapes(expected.trim());
@@ -134,9 +142,11 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
     }
 
     let test_spec = first_line_content.strip_prefix("test:")?.trim();
-    if test_spec != "run" {
-        return None;
-    }
+    let interp_only = match test_spec {
+        "run" => false,
+        "run-interp" => true,
+        _ => return None,
+    };
 
     // Collect expected output until -->
     let mut expected_lines = Vec::new();
@@ -145,7 +155,8 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
         let line = lines[i];
         if line.trim() == "-->" {
             let expected = expected_lines.join("\n");
-            return Some((Expectation::Run(expected), i - start + 1));
+            let exp = if interp_only { Expectation::RunInterpOnly(expected) } else { Expectation::Run(expected) };
+            return Some((exp, i - start + 1));
         }
         if line.trim().ends_with("-->") {
             // Last line with content before -->
@@ -154,7 +165,8 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
                 expected_lines.push(content);
             }
             let expected = expected_lines.join("\n");
-            return Some((Expectation::Run(expected), i - start + 1));
+            let exp = if interp_only { Expectation::RunInterpOnly(expected) } else { Expectation::Run(expected) };
+            return Some((exp, i - start + 1));
         }
         expected_lines.push(line);
         i += 1;

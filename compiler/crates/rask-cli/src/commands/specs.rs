@@ -9,7 +9,7 @@ use std::process;
 use crate::output;
 
 pub fn cmd_test_specs(path: Option<&str>) {
-    use rask_spec_test::{extract_tests, run_test, extract_deps, check_staleness, TestSummary};
+    use rask_spec_test::{extract_tests, run_test_with_config, extract_deps, check_staleness, RunConfig, TestSummary};
 
     let specs_dir = path.unwrap_or("specs");
     let specs_path = Path::new(specs_dir);
@@ -17,6 +17,17 @@ pub fn cmd_test_specs(path: Option<&str>) {
     if !specs_path.exists() {
         eprintln!("{}: specs directory not found: {}", output::error_label(), output::file_path(specs_dir));
         process::exit(1);
+    }
+
+    // Find the rask binary for native compilation tests.
+    // Use current executable since we ARE the rask binary.
+    let rask_binary = std::env::current_exe().ok();
+    let config = RunConfig {
+        rask_binary: rask_binary.clone(),
+    };
+
+    if rask_binary.is_none() {
+        eprintln!("{}: could not determine rask binary path, native tests will be skipped", "warn".yellow().bold());
     }
 
     let mut summary = TestSummary::default();
@@ -49,7 +60,7 @@ pub fn cmd_test_specs(path: Option<&str>) {
         println!("{}", output::file_path(&md_path.display().to_string()));
 
         for test in tests {
-            let result = run_test(test);
+            let result = run_test_with_config(test, &config);
             summary.add(&result);
 
             let status = if result.passed {
@@ -57,22 +68,39 @@ pub fn cmd_test_specs(path: Option<&str>) {
             } else {
                 output::status_fail()
             };
+
+            // Show interpreter result
+            let native_suffix = match &result.native_result {
+                Some(nr) if nr.passed => format!("  native:{}", "ok".green()),
+                Some(nr) => format!("  native:{}", "FAIL".red().bold()),
+                None => String::new(),
+            };
+
             println!(
-                "  {} line {}: {:?} - {}",
+                "  {} line {}: {:?} - {}{}",
                 status,
                 result.test.line.to_string().dimmed(),
                 result.test.expectation,
-                result.message
+                result.message,
+                native_suffix,
             );
 
-            if !result.passed {
+            // Show native failure details inline
+            if let Some(nr) = &result.native_result {
+                if !nr.passed {
+                    println!("       {} {}", "native:".red(), nr.message);
+                }
+            }
+
+            if !result.passed || result.native_result.as_ref().map_or(false, |n| !n.passed) {
                 all_results.push(result);
             }
         }
         println!();
     }
 
-    println!("{}", output::separator(50));
+    // Summary
+    println!("{}", output::separator(60));
     println!(
         "{} files, {} tests, {}, {}",
         summary.files,
@@ -80,17 +108,47 @@ pub fn cmd_test_specs(path: Option<&str>) {
         output::passed_count(summary.passed),
         output::failed_count(summary.failed)
     );
+    if summary.native_total > 0 {
+        let native_label = if summary.native_failed > 0 {
+            format!("{}/{} native passed", summary.native_passed, summary.native_total).yellow()
+        } else {
+            format!("{}/{} native passed", summary.native_passed, summary.native_total).green()
+        };
+        println!("{}", native_label);
+    }
 
-    if summary.failed > 0 {
-        println!("\n{}", "Failed tests:".red().bold());
-        for result in &all_results {
-            println!(
-                "  {} {}:{} - {}",
-                output::status_fail(),
-                output::file_path(&result.test.path.display().to_string()),
-                result.test.line,
-                result.message
-            );
+    if !all_results.is_empty() {
+        // Separate interp failures from native-only failures
+        let interp_fails: Vec<_> = all_results.iter().filter(|r| !r.passed).collect();
+        let native_only_fails: Vec<_> = all_results.iter()
+            .filter(|r| r.passed && r.native_result.as_ref().map_or(false, |n| !n.passed))
+            .collect();
+
+        if !interp_fails.is_empty() {
+            println!("\n{}", "Failed tests:".red().bold());
+            for result in &interp_fails {
+                println!(
+                    "  {} {}:{} - {}",
+                    output::status_fail(),
+                    output::file_path(&result.test.path.display().to_string()),
+                    result.test.line,
+                    result.message
+                );
+            }
+        }
+
+        if !native_only_fails.is_empty() {
+            println!("\n{}", "Native codegen failures (interp passed):".yellow().bold());
+            for result in &native_only_fails {
+                let nr = result.native_result.as_ref().unwrap();
+                println!(
+                    "  {} {}:{} - {}",
+                    "!".yellow().bold(),
+                    output::file_path(&result.test.path.display().to_string()),
+                    result.test.line,
+                    nr.message,
+                );
+            }
         }
     }
 
