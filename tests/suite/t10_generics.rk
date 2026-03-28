@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Generic structs and functions.
+
+struct Box<T> {
+    value: T
+}
+
+extend Box {
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+struct Pair<A, B> {
+    first: A
+    second: B
+}
+
+extend Pair {
+    func swap(self) -> Pair<B, A> {
+        return Pair { first: self.second, second: self.first }
+    }
+}
+
+func identity<T>(x: T) -> T {
+    return x
+}
+
+func max(a: i32, b: i32) -> i32 {
+    if a > b { return a }
+    return b
+}
+
+test "generic struct with int" {
+    const b = Box { value: 42 }
+    assert b.get() == 42
+}
+
+test "generic struct with string" {
+    const b = Box { value: "hello" }
+    assert b.get() == "hello"
+}
+
+test "two type params" {
+    const p = Pair { first: 1, second: "two" }
+    assert p.first == 1
+    assert p.second == "two"
+}
+
+test "generic swap" {
+    const p = Pair { first: 1, second: "two" }
+    const s = p.swap()
+    assert s.first == "two"
+    assert s.second == 1
+}
+
+test "generic function" {
+    assert identity(42) == 42
+    assert identity("hello") == "hello"
+}
+
+test "non-generic function" {
+    assert max(3, 5) == 5
+    assert max(10, 2) == 10
+    assert max(7, 7) == 7
+}
+
+func main() {}

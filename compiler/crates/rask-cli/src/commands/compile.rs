@@ -329,38 +329,51 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
     let mut test_fns = Vec::new();
 
     for decl in decls.iter() {
-        if let DeclKind::Test(t) = &decl.kind {
-            if let Some(pat) = filter {
-                if !t.name.contains(pat) {
-                    continue;
+        match &decl.kind {
+            DeclKind::Test(t) => {
+                if let Some(pat) = filter {
+                    if !t.name.contains(pat) {
+                        continue;
+                    }
                 }
-            }
-            let fn_name = format!("__test_{}", tests.len());
-            tests.push((t.name.clone(), fn_name.clone()));
-            test_fns.push(Decl {
-                id: decl.id,
-                kind: DeclKind::Fn(FnDecl {
-                    name: fn_name,
-                    type_params: vec![],
-                    params: vec![],
-                    ret_ty: None,
-                    context_clauses: vec![],
-                    body: t.body.clone(),
-                    is_pub: false,
-                    is_private: false,
-                    is_comptime: false,
-                    is_unsafe: false,
-                    abi: None,
-                    attrs: vec![],
-                    doc: None,
+                let fn_name = format!("__test_{}", tests.len());
+                tests.push((t.name.clone(), fn_name.clone()));
+                test_fns.push(Decl {
+                    id: decl.id,
+                    kind: DeclKind::Fn(FnDecl {
+                        name: fn_name,
+                        type_params: vec![],
+                        params: vec![],
+                        ret_ty: None,
+                        context_clauses: vec![],
+                        body: t.body.clone(),
+                        is_pub: false,
+                        is_private: false,
+                        is_comptime: false,
+                        is_unsafe: false,
+                        abi: None,
+                        attrs: vec![],
+                        doc: None,
+                        span: decl.span,
+                    }),
                     span: decl.span,
-                }),
-                span: decl.span,
-            });
+                });
+            }
+            // @test functions — include as tests, keep the original function too
+            DeclKind::Fn(f) if f.attrs.iter().any(|a| a == "test") && f.params.is_empty() => {
+                if let Some(pat) = filter {
+                    if !f.name.contains(pat) {
+                        continue;
+                    }
+                }
+                tests.push((f.name.clone(), f.name.clone()));
+            }
+            _ => {}
         }
     }
 
-    // Remove test decls and user's main() — the runner replaces main
+    // Remove test decls and user's main() — the runner replaces main.
+    // Keep @test functions since they're callable from other code.
     decls.retain(|d| {
         !matches!(&d.kind, DeclKind::Test(_))
             && !matches!(&d.kind, DeclKind::Fn(f) if f.name == "main")
@@ -486,6 +499,11 @@ pub fn compile_tests_to_object(
         decls, mono, &mir_functions, comptime_globals,
         None, rask_codegen::BuildMode::Debug,
     )?;
+
+    // Set line map so assert messages include correct line:col
+    if let (Some(src_file), Some(lm)) = (source_file, line_map.as_ref()) {
+        codegen.set_debug_context(src_file, lm.clone());
+    }
 
     gen_functions(&mut codegen, &mir_functions)?;
 

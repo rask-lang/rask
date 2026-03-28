@@ -1,21 +1,53 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Run extracted spec tests through the compiler.
+//! Run extracted spec tests through the compiler and (optionally) native codegen.
+//!
+//! When a `rask_binary` path is provided, `Run` tests execute through both the
+//! tree-walk interpreter and native compilation, comparing outputs. This
+//! differential testing surfaces codegen/MIR bugs: if the interpreter produces
+//! correct output but the native binary doesn't, the bug is in the backend.
 
 use crate::extract::{Expectation, SpecTest};
+use std::path::PathBuf;
 
 /// Result of running a single spec test.
 #[derive(Debug)]
 pub struct TestResult {
     /// The test that was run
     pub test: SpecTest,
-    /// Whether the test passed
+    /// Whether the interpreter test passed
+    pub passed: bool,
+    /// Description of what happened (interpreter)
+    pub message: String,
+    /// Native compilation result (only for Run tests when binary is available)
+    pub native_result: Option<NativeResult>,
+}
+
+/// Result of native (compiled) execution.
+#[derive(Debug)]
+pub struct NativeResult {
+    /// Whether native output matched expected
     pub passed: bool,
     /// Description of what happened
     pub message: String,
+    /// The actual stdout from native execution (for diffing)
+    pub actual_output: Option<String>,
+}
+
+/// Configuration for the test runner.
+#[derive(Debug, Clone, Default)]
+pub struct RunConfig {
+    /// Path to the `rask` binary for native compilation tests.
+    /// When None, native tests are skipped.
+    pub rask_binary: Option<PathBuf>,
 }
 
 /// Run a single spec test and return the result.
 pub fn run_test(test: SpecTest) -> TestResult {
+    run_test_with_config(test, &RunConfig::default())
+}
+
+/// Run a single spec test with configuration.
+pub fn run_test_with_config(test: SpecTest, config: &RunConfig) -> TestResult {
     match test.expectation.clone() {
         Expectation::Compile => run_compile_test(test),
         Expectation::CompileFail => run_compile_fail_test(test),
@@ -25,8 +57,10 @@ pub fn run_test(test: SpecTest) -> TestResult {
             test,
             passed: true,
             message: "skipped".to_string(),
+            native_result: None,
         },
-        Expectation::Run(expected) => run_run_test(test, &expected),
+        Expectation::Run(expected) => run_run_test(test, &expected, config),
+        Expectation::RunInterpOnly(expected) => run_run_test_interp_only(test, &expected),
     }
 }
 
@@ -39,6 +73,7 @@ fn run_compile_test(test: SpecTest) -> TestResult {
             test,
             passed: false,
             message: format!("lex failed: {:?}", lex_result.errors),
+            native_result: None,
         };
     }
 
@@ -49,6 +84,7 @@ fn run_compile_test(test: SpecTest) -> TestResult {
             test,
             passed: false,
             message: format!("parse failed: {:?}", parse_result.errors),
+            native_result: None,
         };
     }
 
@@ -63,6 +99,7 @@ fn run_compile_test(test: SpecTest) -> TestResult {
                 test,
                 passed: false,
                 message: format!("resolve failed: {:?}", errors),
+                native_result: None,
             };
         }
     };
@@ -75,6 +112,7 @@ fn run_compile_test(test: SpecTest) -> TestResult {
                 test,
                 passed: false,
                 message: format!("type check failed: {:?}", errors),
+                native_result: None,
             };
         }
     };
@@ -86,6 +124,7 @@ fn run_compile_test(test: SpecTest) -> TestResult {
             test,
             passed: false,
             message: format!("ownership check failed: {:?}", ownership_result.errors),
+            native_result: None,
         };
     }
 
@@ -93,6 +132,7 @@ fn run_compile_test(test: SpecTest) -> TestResult {
         test,
         passed: true,
         message: "compiled".to_string(),
+        native_result: None,
     }
 }
 
@@ -105,6 +145,7 @@ fn run_compile_fail_test(test: SpecTest) -> TestResult {
             test,
             passed: true,
             message: "failed at lex (expected)".to_string(),
+            native_result: None,
         };
     }
 
@@ -115,6 +156,7 @@ fn run_compile_fail_test(test: SpecTest) -> TestResult {
             test,
             passed: true,
             message: "failed at parse (expected)".to_string(),
+            native_result: None,
         };
     }
 
@@ -129,6 +171,7 @@ fn run_compile_fail_test(test: SpecTest) -> TestResult {
                 test,
                 passed: true,
                 message: "failed at resolve (expected)".to_string(),
+                native_result: None,
             };
         }
     };
@@ -141,6 +184,7 @@ fn run_compile_fail_test(test: SpecTest) -> TestResult {
                 test,
                 passed: true,
                 message: "failed at typecheck (expected)".to_string(),
+                native_result: None,
             };
         }
     };
@@ -152,6 +196,7 @@ fn run_compile_fail_test(test: SpecTest) -> TestResult {
             test,
             passed: true,
             message: "failed at ownership check (expected)".to_string(),
+            native_result: None,
         };
     }
 
@@ -160,6 +205,7 @@ fn run_compile_fail_test(test: SpecTest) -> TestResult {
         test,
         passed: false,
         message: "expected compile failure, but compiled successfully".to_string(),
+        native_result: None,
     }
 }
 
@@ -172,6 +218,7 @@ fn run_parse_test(test: SpecTest) -> TestResult {
             test,
             passed: false,
             message: format!("lex failed: {:?}", lex_result.errors),
+            native_result: None,
         };
     }
 
@@ -182,6 +229,7 @@ fn run_parse_test(test: SpecTest) -> TestResult {
             test,
             passed: false,
             message: format!("parse failed: {:?}", parse_result.errors),
+            native_result: None,
         };
     }
 
@@ -189,6 +237,7 @@ fn run_parse_test(test: SpecTest) -> TestResult {
         test,
         passed: true,
         message: "parsed".to_string(),
+        native_result: None,
     }
 }
 
@@ -201,6 +250,7 @@ fn run_parse_fail_test(test: SpecTest) -> TestResult {
             test,
             passed: true,
             message: "failed at lex (expected)".to_string(),
+            native_result: None,
         };
     }
 
@@ -211,6 +261,7 @@ fn run_parse_fail_test(test: SpecTest) -> TestResult {
             test,
             passed: true,
             message: "failed at parse (expected)".to_string(),
+            native_result: None,
         };
     }
 
@@ -218,6 +269,7 @@ fn run_parse_fail_test(test: SpecTest) -> TestResult {
         test,
         passed: false,
         message: "expected parse failure, but parsed successfully".to_string(),
+        native_result: None,
     }
 }
 
@@ -300,29 +352,47 @@ fn wrap_in_main(code: &str) -> String {
     }
 }
 
-/// Test that code runs and produces expected output.
-fn run_run_test(test: SpecTest, expected: &str) -> TestResult {
-    // Wrap in main if needed
-    let code = wrap_in_main(&test.code);
+/// Run a test through interpreter only (escape hatch for unimplemented codegen).
+fn run_run_test_interp_only(test: SpecTest, expected: &str) -> TestResult {
+    let (passed, message) = run_interpreter(&test.code, expected);
+    TestResult {
+        test,
+        passed,
+        message,
+        native_result: None,
+    }
+}
+
+/// Run a test through both interpreter and native compilation.
+fn run_run_test(test: SpecTest, expected: &str, config: &RunConfig) -> TestResult {
+    let (interp_passed, interp_message) = run_interpreter(&test.code, expected);
+
+    let native_result = config.rask_binary.as_ref().map(|binary| {
+        run_native(&test.code, expected, binary)
+    });
+
+    TestResult {
+        test,
+        passed: interp_passed,
+        message: interp_message,
+        native_result,
+    }
+}
+
+/// Run code through the tree-walk interpreter and compare output.
+fn run_interpreter(code: &str, expected: &str) -> (bool, String) {
+    let code = wrap_in_main(code);
 
     // Lex
     let lex_result = rask_lexer::Lexer::new(&code).tokenize();
     if !lex_result.is_ok() {
-        return TestResult {
-            test,
-            passed: false,
-            message: format!("lex failed: {:?}", lex_result.errors),
-        };
+        return (false, format!("lex failed: {:?}", lex_result.errors));
     }
 
     // Parse
     let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
     if !parse_result.is_ok() {
-        return TestResult {
-            test,
-            passed: false,
-            message: format!("parse failed: {:?}", parse_result.errors),
-        };
+        return (false, format!("parse failed: {:?}", parse_result.errors));
     }
 
     // Desugar
@@ -338,27 +408,227 @@ fn run_run_test(test: SpecTest, expected: &str) -> TestResult {
             let expected_trimmed = expected.trim_end();
 
             if actual_trimmed == expected_trimmed {
-                TestResult {
-                    test,
-                    passed: true,
-                    message: "output matched".to_string(),
-                }
+                (true, "output matched".to_string())
             } else {
-                TestResult {
-                    test,
+                (false, format!(
+                    "output mismatch:\n  expected: {:?}\n  actual:   {:?}",
+                    expected_trimmed, actual_trimmed
+                ))
+            }
+        }
+        Err(e) => (false, format!("runtime error: {}", e)),
+    }
+}
+
+/// Run code through native compilation and compare output.
+///
+/// Writes code to a temp file, invokes `rask run <file>` (which defaults to
+/// native compilation), captures stdout.
+fn run_native(code: &str, expected: &str, rask_binary: &std::path::Path) -> NativeResult {
+    let code = wrap_in_main(code);
+
+    // Write to temp file
+    let tmp_dir = std::env::temp_dir();
+    let id = std::process::id();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_file = tmp_dir.join(format!("rask_spec_{}_{}.rk", id, ts));
+
+    if let Err(e) = std::fs::write(&tmp_file, &code) {
+        return NativeResult {
+            passed: false,
+            message: format!("failed to write temp file: {}", e),
+            actual_output: None,
+        };
+    }
+
+    // Run native compilation (rask run defaults to native)
+    let result = std::process::Command::new(rask_binary)
+        .arg("run")
+        .arg(&tmp_file)
+        .output();
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&tmp_file);
+
+    match result {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let actual_trimmed = stdout.trim_end();
+            let expected_trimmed = expected.trim_end();
+
+            if !output.status.success() {
+                NativeResult {
                     passed: false,
                     message: format!(
-                        "output mismatch:\n  expected: {:?}\n  actual:   {:?}",
-                        expected_trimmed, actual_trimmed
+                        "native exited with {}: {}",
+                        output.status.code().unwrap_or(-1),
+                        stderr.lines().take(3).collect::<Vec<_>>().join("; "),
                     ),
+                    actual_output: Some(stdout),
+                }
+            } else if actual_trimmed == expected_trimmed {
+                NativeResult {
+                    passed: true,
+                    message: "native matched".to_string(),
+                    actual_output: Some(stdout),
+                }
+            } else {
+                NativeResult {
+                    passed: false,
+                    message: format!(
+                        "native output mismatch:\n  expected: {:?}\n  actual:   {:?}",
+                        expected_trimmed, actual_trimmed,
+                    ),
+                    actual_output: Some(stdout),
                 }
             }
         }
-        Err(e) => TestResult {
-            test,
+        Err(e) => NativeResult {
             passed: false,
-            message: format!("runtime error: {}", e),
+            message: format!("failed to run rask binary: {}", e),
+            actual_output: None,
         },
+    }
+}
+
+/// Run a `.rk` file's test blocks through the interpreter.
+///
+/// Returns (passed, total, failures) where failures is a list of test names.
+fn run_rk_tests_interp(source: &str) -> (usize, usize, Vec<String>) {
+    // Lex
+    let lex_result = rask_lexer::Lexer::new(source).tokenize();
+    if !lex_result.is_ok() {
+        return (0, 1, vec![format!("lex failed: {:?}", lex_result.errors)]);
+    }
+
+    // Parse
+    let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+    if !parse_result.is_ok() {
+        return (0, 1, vec![format!("parse failed: {:?}", parse_result.errors)]);
+    }
+
+    // Desugar
+    rask_desugar::desugar(&mut parse_result.decls);
+
+    let mut interp = rask_interp::Interpreter::new();
+    let results = interp.run_tests(&parse_result.decls, None);
+
+    let total = results.len();
+    let mut passed = 0;
+    let mut failures = Vec::new();
+    for r in &results {
+        if r.passed {
+            passed += 1;
+        } else {
+            let err_msg = r.errors.first().map(|e| e.as_str()).unwrap_or("failed");
+            failures.push(format!("{}: {}", r.name, err_msg));
+        }
+    }
+    (passed, total, failures)
+}
+
+/// Run a `.rk` file's test blocks natively via `rask test <file>`.
+///
+/// Returns (passed, total, failures).
+fn run_rk_tests_native(path: &std::path::Path, rask_binary: &std::path::Path) -> (usize, usize, Vec<String>) {
+    let result = std::process::Command::new(rask_binary)
+        .arg("test")
+        .arg(path)
+        .output();
+
+    match result {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // Parse test results from output
+            // Native test output format: "  ✓ test name" or "  ✗ test name"
+            let mut passed = 0;
+            let mut total = 0;
+            let mut failures = Vec::new();
+
+            for line in stderr.lines().chain(stdout.lines()) {
+                let trimmed = line.trim();
+                if trimmed.contains("✓") && trimmed.contains("test ") {
+                    total += 1;
+                    passed += 1;
+                } else if trimmed.contains("✗") && trimmed.contains("test ") {
+                    total += 1;
+                    failures.push(trimmed.to_string());
+                }
+            }
+
+            // If we couldn't parse output, check exit code
+            if total == 0 {
+                if output.status.success() {
+                    // Probably compiled and tests passed but we couldn't parse
+                    (1, 1, vec![])
+                } else {
+                    let err_preview: String = stderr.lines()
+                        .filter(|l| !l.contains("warning:"))
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    (0, 1, vec![format!("native test failed (exit {}): {}", output.status.code().unwrap_or(-1), err_preview)])
+                }
+            } else {
+                (passed, total, failures)
+            }
+        }
+        Err(e) => (0, 1, vec![format!("failed to run rask binary: {}", e)]),
+    }
+}
+
+/// Result of running a `.rk` test file through both backends.
+#[derive(Debug)]
+pub struct RkTestResult {
+    /// Path to the .rk file
+    pub path: std::path::PathBuf,
+    /// Interpreter: (passed, total)
+    pub interp_passed: usize,
+    pub interp_total: usize,
+    pub interp_failures: Vec<String>,
+    /// Native: (passed, total) — None if binary unavailable
+    pub native_passed: Option<usize>,
+    pub native_total: Option<usize>,
+    pub native_failures: Vec<String>,
+}
+
+impl RkTestResult {
+    pub fn interp_ok(&self) -> bool {
+        self.interp_passed == self.interp_total && self.interp_total > 0
+    }
+    pub fn native_ok(&self) -> bool {
+        match (self.native_passed, self.native_total) {
+            (Some(p), Some(t)) => p == t && t > 0,
+            _ => true, // Not run
+        }
+    }
+}
+
+/// Run a `.rk` file through both interpreter and native test runners.
+pub fn run_rk_test_file(path: &std::path::Path, source: &str, config: &RunConfig) -> RkTestResult {
+    let (ip, it, ifails) = run_rk_tests_interp(source);
+
+    let (np, nt, nfails) = if let Some(binary) = &config.rask_binary {
+        let (p, t, f) = run_rk_tests_native(path, binary);
+        (Some(p), Some(t), f)
+    } else {
+        (None, None, vec![])
+    };
+
+    RkTestResult {
+        path: path.to_path_buf(),
+        interp_passed: ip,
+        interp_total: it,
+        interp_failures: ifails,
+        native_passed: np,
+        native_total: nt,
+        native_failures: nfails,
     }
 }
 
@@ -369,6 +639,12 @@ pub struct TestSummary {
     pub passed: usize,
     pub failed: usize,
     pub files: usize,
+    /// Native tests attempted
+    pub native_total: usize,
+    /// Native tests passed
+    pub native_passed: usize,
+    /// Native tests failed
+    pub native_failed: usize,
 }
 
 impl TestSummary {
@@ -378,6 +654,14 @@ impl TestSummary {
             self.passed += 1;
         } else {
             self.failed += 1;
+        }
+        if let Some(native) = &result.native_result {
+            self.native_total += 1;
+            if native.passed {
+                self.native_passed += 1;
+            } else {
+                self.native_failed += 1;
+            }
         }
     }
 }

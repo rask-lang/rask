@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Traits, trait objects, and dispatch.
+
+trait Describable {
+    func describe(self) -> string
+}
+
+struct Dog {
+    name: string
+}
+
+struct Cat {
+    name: string
+}
+
+extend Dog with Describable {
+    func describe(self) -> string {
+        return "Dog: {self.name}"
+    }
+}
+
+extend Cat with Describable {
+    func describe(self) -> string {
+        return "Cat: {self.name}"
+    }
+}
+
+func print_description(item: any Describable) -> string {
+    return item.describe()
+}
+
+test "trait method on concrete type" {
+    const d = Dog { name: "Rex" }
+    assert d.describe() == "Dog: Rex"
+}
+
+test "trait method on different type" {
+    const c = Cat { name: "Whiskers" }
+    assert c.describe() == "Cat: Whiskers"
+}
+
+test "trait object dispatch" {
+    const d = Dog { name: "Buddy" }
+    assert print_description(d) == "Dog: Buddy"
+}
+
+test "trait object dispatch different type" {
+    const c = Cat { name: "Luna" }
+    assert print_description(c) == "Cat: Luna"
+}
+
+func main() {}

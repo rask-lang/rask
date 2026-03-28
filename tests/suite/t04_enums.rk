@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Enum variants, pattern matching, and payloads.
+
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+enum Shape {
+    Circle(i32)
+    Rectangle(i32, i32)
+    Empty
+}
+
+enum Value {
+    Text(string)
+    Number(i32)
+    Nothing
+}
+
+func area(s: Shape) -> i32 {
+    match s {
+        Shape.Circle(r) => return r * r
+        Shape.Rectangle(w, h) => return w * h
+        Shape.Empty => return 0
+    }
+}
+
+test "simple enum match" {
+    const c = Color.Red
+    let name = ""
+    match c {
+        Color.Red => name = "red"
+        Color.Green => name = "green"
+        Color.Blue => name = "blue"
+    }
+    assert name == "red"
+}
+
+test "enum with payload" {
+    assert area(Shape.Circle(5)) == 25
+    assert area(Shape.Rectangle(3, 4)) == 12
+    assert area(Shape.Empty) == 0
+}
+
+test "enum payload extraction" {
+    const v = Shape.Circle(10)
+    match v {
+        Shape.Circle(r) => assert r == 10
+        _ => assert false, "expected Circle"
+    }
+}
+
+test "enum with string payload" {
+    const v = Value.Text("hello")
+    match v {
+        Value.Text(s) => assert s == "hello"
+        _ => assert false, "expected Text"
+    }
+}
+
+test "enum with number payload" {
+    const v = Value.Number(42)
+    match v {
+        Value.Number(n) => assert n == 42
+        _ => assert false, "expected Number"
+    }
+}
+
+test "enum wildcard match" {
+    const c = Color.Blue
+    let matched_wildcard = false
+    match c {
+        Color.Red => assert false, "wrong"
+        _ => matched_wildcard = true
+    }
+    assert matched_wildcard
+}
+
+func main() {}

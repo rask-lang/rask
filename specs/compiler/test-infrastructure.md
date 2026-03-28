@@ -97,29 +97,54 @@ fn parse_function_declaration() {
 
 Target: 90%+ coverage of each compiler phase.
 
-## L3: Spec Tests (Literate)
+## L3: Spec Tests (Literate + Differential)
 
-Tests embedded in spec markdown files using annotations. Already implemented in `rask-spec-test`.
+Tests embedded in spec markdown files using annotations. Implemented in `rask-spec-test`.
+
+**Differential testing:** `run` tests execute through both the tree-walk interpreter and native compilation (mono → MIR → Cranelift → binary). Output from both paths is compared against the expected value. Any divergence between interpreter and codegen is a backend bug. The interpreter acts as the oracle — it's simpler and closer to correct for basic operations.
 
 Annotations:
 - `<!-- test: parse -->` — Must parse successfully
 - `<!-- test: parse-fail -->` — Must fail to parse
 - `<!-- test: compile -->` — Must type-check
 - `<!-- test: compile-fail -->` — Must fail type-check
-- `<!-- test: run -->` — Must execute (interpreter only for now)
+- `<!-- test: run | expected -->` — Run via interpreter + native, verify output matches
+- `<!-- test: run-interp | expected -->` — Interpreter only (escape hatch for unimplemented codegen)
 - `<!-- test: skip -->` — Don't test
 
 Example from spec:
 
-````markdown
-<!-- test: parse -->
-```rask
-func factorial(n: u32) -> u32 {
-    if n <= 1 { return 1 }
-    return n * factorial(n - 1)
-}
 ```
-````
+  < !-- test: run | 120 -- >
+  ```rask
+  func factorial(n: u32) -> u32 {
+      if n <= 1 { return 1 }
+      return n * factorial(n - 1)
+  }
+  println("{}", factorial(5))
+  ```
+```
+
+Output shows differential results:
+
+```
+specs/types/enums.md
+  ✓ line 558: Run("0\n1\n2") - output matched  native:ok
+```
+
+When native diverges from interpreter:
+
+```
+  ✓ line 42: Run("42") - output matched  native:FAIL
+       native: native output mismatch: expected "42", actual ""
+```
+
+Summary includes native stats:
+
+```
+97 files, 137 tests, 135 passed, 2 failed
+6/6 native passed
+```
 
 | Rule | Description |
 |------|-------------|
@@ -127,8 +152,10 @@ func factorial(n: u32) -> u32 {
 | **S2: Single responsibility** | Each block tests one concept |
 | **S3: Run on spec edit** | Auto-run via hook when specs change |
 | **S4: Staleness warnings** | Warn if spec dependencies changed |
+| **S5: Differential by default** | `run` tests exercise both interpreter and codegen |
+| **S6: Escape hatch** | `run-interp` for features codegen doesn't support yet |
 
-Command: `rask verify-specs specs/` (already implemented)
+Command: `rask test-specs specs/`
 
 ## L4: Integration Tests
 

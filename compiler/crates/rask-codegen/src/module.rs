@@ -274,6 +274,49 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail_at".to_string(), id);
         }
 
+        // assert_fail_msg_at(msg: ptr, file: ptr, line: i32, col: i32) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // msg ptr
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_assert_fail_msg_at", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("assert_fail_msg_at".to_string(), id);
+        }
+
+        // assert_fail_cmp_i64(left: i64, right: i64, op: ptr, file: ptr, line: i32, col: i32)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // left
+            sig.params.push(AbiParam::new(types::I64)); // right
+            sig.params.push(AbiParam::new(types::I64)); // op str ptr
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_assert_fail_cmp_i64", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("assert_fail_cmp_i64".to_string(), id);
+        }
+
+        // assert_fail_cmp_str(left: ptr, right: ptr, op: ptr, file: ptr, line: i32, col: i32)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // left str ptr
+            sig.params.push(AbiParam::new(types::I64)); // right str ptr
+            sig.params.push(AbiParam::new(types::I64)); // op str ptr
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_assert_fail_cmp_str", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("assert_fail_cmp_str".to_string(), id);
+        }
+
         // pool_get_checked(pool: i64, handle: i64, file: ptr, line: i32, col: i32) -> ptr
         {
             let mut sig = self.module.make_signature();
@@ -796,6 +839,9 @@ impl CodeGenerator {
             &self.internal_fns,
             self.build_mode,
         )?;
+        if let Some(lm) = &self.line_map {
+            builder.set_line_map(lm);
+        }
         builder.build()?;
 
         // Temporary: dump CLIF IR for debugging

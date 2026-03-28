@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Boolean operators, short-circuit evaluation.
+
+test "and" {
+    assert (true && true) == true
+    assert (true && false) == false
+    assert (false && true) == false
+    assert (false && false) == false
+}
+
+test "or" {
+    assert (true || true) == true
+    assert (true || false) == true
+    assert (false || true) == true
+    assert (false || false) == false
+}
+
+test "not" {
+    assert !false == true
+    assert !true == false
+    assert !!true == true
+}
+
+test "combined" {
+    assert (true && true) || false
+    assert !(false && true)
+    assert (5 > 3) && (10 < 20)
+    assert (5 > 3) || (10 > 20)
+}
+
+test "comparison chains" {
+    const x = 5
+    assert x > 0 && x < 10
+    assert !(x > 0 && x < 3)
+    assert x == 5 || x == 6
+    assert !(x == 3 || x == 4)
+}
+
+func main() {}

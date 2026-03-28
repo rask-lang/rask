@@ -85,6 +85,37 @@ void rask_assert_fail_at(const char *file, int32_t line, int32_t col) {
     rask_panic_at(file, line, col, "assertion failed");
 }
 
+void rask_assert_fail_msg(const char *msg) {
+    rask_panic(msg ? msg : "assertion failed");
+}
+
+void rask_assert_fail_msg_at(const char *msg, const char *file,
+                             int32_t line, int32_t col) {
+    rask_panic_at(file, line, col, msg ? msg : "assertion failed");
+}
+
+void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assertion failed: %lld %s %lld (left: %lld, right: %lld)",
+             (long long)left, op ? op : "?",
+             (long long)right, (long long)left, (long long)right);
+    rask_panic_at(file, line, col, buf);
+}
+
+void rask_assert_fail_cmp_str(const char *left, const char *right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assertion failed: \"%s\" %s \"%s\"",
+             left ? left : "(null)", op ? op : "?",
+             right ? right : "(null)");
+    rask_panic_at(file, line, col, buf);
+}
+
 // ─── I/O primitives ──────────────────────────────────────────────
 // Thin wrappers around POSIX syscalls. Return values match POSIX
 // conventions: bytes transferred on success, -1 on error.

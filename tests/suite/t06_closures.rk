@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Closures, captures, and higher-order functions.
+
+func apply(f: |i32| -> i32, x: i32) -> i32 {
+    return f(x)
+}
+
+func apply_twice(f: |i32| -> i32, x: i32) -> i32 {
+    return f(f(x))
+}
+
+test "basic closure" {
+    const double = |x: i32| -> i32 { return x * 2 }
+    assert double(5) == 10
+    assert double(0) == 0
+    assert double(-3) == -6
+}
+
+test "closure capture" {
+    const offset = 10
+    const add_offset = |x: i32| -> i32 { return x + offset }
+    assert add_offset(5) == 15
+    assert add_offset(0) == 10
+}
+
+test "closure passed to function" {
+    const inc = |x: i32| -> i32 { return x + 1 }
+    assert apply(inc, 5) == 6
+    assert apply_twice(inc, 5) == 7
+}
+
+test "closure with multiple captures" {
+    const a = 3
+    const b = 7
+    const sum = |_: i32| -> i32 { return a + b }
+    assert sum(0) == 10
+}
+
+func main() {}

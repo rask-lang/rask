@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Vec operations: push, pop, index, length, iteration.
+
+test "vec push and len" {
+    const v = Vec.new()
+    assert v.len() == 0
+    v.push(1)
+    assert v.len() == 1
+    v.push(2)
+    v.push(3)
+    assert v.len() == 3
+}
+
+test "vec index access" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    assert v[0] == 10
+    assert v[1] == 20
+    assert v[2] == 30
+}
+
+test "vec index assign" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v[0] = 99
+    assert v[0] == 99
+    assert v[1] == 2
+}
+
+test "vec pop" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.pop()
+    assert v.len() == 1
+    assert v[0] == 10
+}
+
+test "vec sum via loop" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+    v.push(5)
+    let sum = 0
+    for i in 0..v.len() {
+        sum += v[i]
+    }
+    assert sum == 15
+}
+
+test "vec of strings" {
+    const v = Vec.new()
+    v.push("hello")
+    v.push("world")
+    assert v.len() == 2
+    assert v[0] == "hello"
+    assert v[1] == "world"
+}
+
+test "vec string read twice" {
+    const v = Vec.new()
+    v.push("test")
+    const a = v[0]
+    const b = v[0]
+    assert a == "test"
+    assert b == "test"
+}
+
+test "vec get returns option" {
+    const v = Vec.new()
+    v.push(42)
+    assert v.get(0) is Some
+    assert v.get(0).unwrap() == 42
+    assert v.get(99) is None
+}
+
+func main() {}

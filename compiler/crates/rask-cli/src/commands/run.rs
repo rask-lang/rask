@@ -388,8 +388,19 @@ fn display_test_results(stdout: &str, path: &str, format: Format) {
 fn parse_json_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     let pat = format!("\"{}\":\"", key);
     let start = s.find(&pat)? + pat.len();
-    let end = s[start..].find('"')? + start;
-    Some(&s[start..end])
+    // Walk past escaped characters to find the real closing quote
+    let bytes = s[start..].as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2; // skip escaped char
+        } else if bytes[i] == b'"' {
+            return Some(&s[start..start + i]);
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 fn parse_json_i64(s: &str, key: &str) -> Option<i64> {
