@@ -15,6 +15,13 @@ extern "C" func rask_libc_remove(path: *u8) -> i32
 extern "C" func rask_libc_mkdir(path: *u8, mode: u32) -> i32
 extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
 extern "C" func strlen(s: *u8) -> u64
+extern "C" func opendir(path: *u8) -> *u8
+extern "C" func readdir(dir: *u8) -> *u8
+extern "C" func closedir(dir: *u8) -> i32
+extern "C" func rask_dirent_name(entry: *u8) -> *u8
+extern "C" func rask_stat_size(path: *u8) -> i64
+extern "C" func rask_stat_mtime(path: *u8) -> i64
+extern "C" func rask_stat_atime(path: *u8) -> i64
 
 /// File system operations.
 struct fs { }
@@ -161,7 +168,28 @@ extend fs {
     }
 
     /// List entries in a directory.
-    public func list_dir(path: string) -> Vec<string> or IoError { }
+    public func list_dir(path: string) -> Vec<string> or IoError {
+        const dir = unsafe opendir(path.as_c_str())
+        if unsafe dir.is_null() {
+            return Err("could not open directory")
+        }
+        let entries: Vec<string> = Vec.new()
+        loop {
+            const entry = unsafe readdir(dir)
+            if unsafe entry.is_null() { break }
+            const name_ptr = unsafe rask_dirent_name(entry)
+            const name_len = unsafe strlen(name_ptr)
+            const name = unsafe string.from_raw(name_ptr, name_len as usize)
+            // Skip . and ..
+            if name != "." {
+                if name != ".." {
+                    entries.push(name)
+                }
+            }
+        }
+        unsafe closedir(dir)
+        return Ok(entries)
+    }
 
     /// Get metadata for a file or directory.
     public func metadata(path: string) -> Metadata or IoError { }

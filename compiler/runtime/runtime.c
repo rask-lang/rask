@@ -324,11 +324,32 @@ void rask_fs_remove(const RaskStr *path) {
 
 #include <sys/stat.h>
 
-// Thin wrappers for libc functions whose names clash with Rask methods.
-// Self-hosted stdlib calls these via extern "C".
+// Thin wrappers for libc functions whose names clash with Rask methods
+// or that access C structs. Self-hosted stdlib calls these via extern "C".
 int32_t rask_libc_rename(const char *from, const char *to) { return rename(from, to); }
 int32_t rask_libc_remove(const char *path) { return remove(path); }
 int32_t rask_libc_mkdir(const char *path, uint32_t mode) { return mkdir(path, mode); }
+
+#include <dirent.h>
+// Extract name from dirent (Rask can't access C struct fields)
+const char *rask_dirent_name(void *entry) { return ((struct dirent *)entry)->d_name; }
+
+// Stat helpers — return individual fields so Rask doesn't need struct access
+int64_t rask_stat_size(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int64_t)st.st_size;
+}
+int64_t rask_stat_mtime(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int64_t)st.st_mtime;
+}
+int64_t rask_stat_atime(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int64_t)st.st_atime;
+}
 
 void rask_fs_create_dir(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
