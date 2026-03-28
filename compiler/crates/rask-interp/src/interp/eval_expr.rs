@@ -317,12 +317,16 @@ impl Interpreter {
 
                     if let Some(type_methods) = self.methods.get(name).cloned() {
                         if let Some(method_fn) = type_methods.get(method) {
+                            // Skip empty-body stubs (e.g. fs.write_bytes) —
+                            // they exist for native codegen and should fall
+                            // through to the built-in module dispatch.
+                            let has_body = !method_fn.body.is_empty();
                             let is_static = method_fn
                                 .params
                                 .first()
                                 .map(|p| p.name != "self")
                                 .unwrap_or(true);
-                            if is_static {
+                            if is_static && has_body {
                                 let arg_vals: Vec<Value> = args
                                     .iter()
                                     .map(|a| self.eval_expr(&a.expr))
