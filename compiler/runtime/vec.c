@@ -6,6 +6,7 @@
 #include "rask_runtime.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 struct RaskVec {
     char   *data;
@@ -411,4 +412,11 @@ RaskVec *rask_iter_skip(const RaskVec *src, int64_t n) {
     memcpy(dst->data, src->data + n * src->elem_size, (size_t)(new_len * src->elem_size));
     dst->len = new_len;
     return dst;
+}
+
+// Write Vec data to a FILE*. Used by self-hosted fs.write_bytes.
+void rask_fwrite_vec(int64_t fptr, const RaskVec *v) {
+    FILE *f = (FILE *)(uintptr_t)fptr;
+    if (!f || !v || !v->data) return;
+    fwrite(v->data, 1, (size_t)v->len, f);
 }

@@ -9,6 +9,7 @@ extern "C" func ftell(stream: *u8) -> i64
 extern "C" func rask_alloc(size: i64) -> *u8
 extern "C" func rask_free(ptr: *u8)
 extern "C" func rask_string_from_bytes(out: *u8, data: *u8, len: i64)
+extern "C" func rask_fwrite_vec(f: *u8, data: *u8)
 extern "C" func access(path: *u8, mode: i32) -> i32
 extern "C" func rask_libc_rename(from: *u8, to: *u8) -> i32
 extern "C" func rask_libc_remove(path: *u8) -> i32

@@ -305,6 +305,8 @@ int64_t  rask_random_range(int64_t lo, int64_t hi);
 
 int8_t      rask_fs_exists(const RaskStr *path);
 
+void        rask_fwrite_vec(int64_t fptr, const RaskVec *v);
+
 // Thin wrappers for libc functions whose names clash with Rask methods
 // or that access C struct fields
 int32_t     rask_libc_rename(const char *from, const char *to);
