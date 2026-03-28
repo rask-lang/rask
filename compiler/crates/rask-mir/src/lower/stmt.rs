@@ -555,6 +555,19 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Track collection element types from type annotations (Vec<u8>, Pool<T>)
+        if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
+            if let Some(ty_str) = ty {
+                if let Some(elem_str) = ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
+                    let elem_mir = self.ctx.resolve_type_str(elem_str);
+                    self.meta_mut(name).elem_type = Some(elem_mir);
+                } else if let Some(elem_str) = ty_str.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
+                    let elem_mir = self.ctx.resolve_type_str(elem_str);
+                    self.meta_mut(name).elem_type = Some(elem_mir);
+                }
+            }
+        }
+
         // Track closure bindings and alias the func_sig so callers can
         // look up the return type by variable name.
         if is_closure {
