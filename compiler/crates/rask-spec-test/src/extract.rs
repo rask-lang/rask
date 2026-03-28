@@ -186,6 +186,17 @@ fn is_rask_code_fence(line: &str) -> bool {
     trimmed.starts_with("```rask") || trimmed.starts_with("``` rask")
 }
 
+/// Check if a `.rk` file contains `test` blocks (Rask's built-in test system).
+///
+/// Returns true if the file has `test "..."` blocks, making it eligible for
+/// differential testing via `rask test <file>`.
+pub fn has_rk_tests(source: &str) -> bool {
+    source.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("test \"") || trimmed.starts_with("test '")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// String operations, concatenation, and copy semantics.
+
+test "string equality" {
+    assert "hello" == "hello"
+    assert "hello" != "world"
+    assert "" == ""
+}
+
+test "string concatenation" {
+    const a = "hello"
+    const b = " world"
+    const result = "{a}{b}"
+    assert result == "hello world"
+}
+
+test "string length" {
+    assert "hello".len() == 5
+    assert "".len() == 0
+    assert "abc".len() == 3
+}
+
+test "string copy semantics" {
+    const original = "hello"
+    const copy1 = original
+    const copy2 = original
+    assert original == "hello"
+    assert copy1 == "hello"
+    assert copy2 == "hello"
+}
+
+test "string interpolation" {
+    const name = "world"
+    assert "hello, {name}" == "hello, world"
+
+    const x = 42
+    assert "{x}" == "42"
+
+    const a = 10
+    const b = 20
+    assert "{a} + {b}" == "10 + 20"
+}
+
+test "string trim" {
+    assert "  hello  ".trim() == "hello"
+}
+
+test "string contains" {
+    assert "hello world".contains("world")
+    assert "hello world".contains("hello")
+    assert !("hello".contains("xyz"))
+}
+
+func take_string(s: string) -> string {
+    return s
+}
+
+test "string passed to function stays valid" {
+    const s = "hello"
+    const result = take_string(s)
+    assert s == "hello"
+    assert result == "hello"
+}
+
+func main() {}

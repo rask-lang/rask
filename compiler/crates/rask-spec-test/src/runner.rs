@@ -495,6 +495,143 @@ fn run_native(code: &str, expected: &str, rask_binary: &std::path::Path) -> Nati
     }
 }
 
+/// Run a `.rk` file's test blocks through the interpreter.
+///
+/// Returns (passed, total, failures) where failures is a list of test names.
+fn run_rk_tests_interp(source: &str) -> (usize, usize, Vec<String>) {
+    // Lex
+    let lex_result = rask_lexer::Lexer::new(source).tokenize();
+    if !lex_result.is_ok() {
+        return (0, 1, vec![format!("lex failed: {:?}", lex_result.errors)]);
+    }
+
+    // Parse
+    let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+    if !parse_result.is_ok() {
+        return (0, 1, vec![format!("parse failed: {:?}", parse_result.errors)]);
+    }
+
+    // Desugar
+    rask_desugar::desugar(&mut parse_result.decls);
+
+    let mut interp = rask_interp::Interpreter::new();
+    let results = interp.run_tests(&parse_result.decls, None);
+
+    let total = results.len();
+    let mut passed = 0;
+    let mut failures = Vec::new();
+    for r in &results {
+        if r.passed {
+            passed += 1;
+        } else {
+            let err_msg = r.errors.first().map(|e| e.as_str()).unwrap_or("failed");
+            failures.push(format!("{}: {}", r.name, err_msg));
+        }
+    }
+    (passed, total, failures)
+}
+
+/// Run a `.rk` file's test blocks natively via `rask test <file>`.
+///
+/// Returns (passed, total, failures).
+fn run_rk_tests_native(path: &std::path::Path, rask_binary: &std::path::Path) -> (usize, usize, Vec<String>) {
+    let result = std::process::Command::new(rask_binary)
+        .arg("test")
+        .arg(path)
+        .output();
+
+    match result {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // Parse test results from output
+            // Native test output format: "  ✓ test name" or "  ✗ test name"
+            let mut passed = 0;
+            let mut total = 0;
+            let mut failures = Vec::new();
+
+            for line in stderr.lines().chain(stdout.lines()) {
+                let trimmed = line.trim();
+                if trimmed.contains("✓") && trimmed.contains("test ") {
+                    total += 1;
+                    passed += 1;
+                } else if trimmed.contains("✗") && trimmed.contains("test ") {
+                    total += 1;
+                    failures.push(trimmed.to_string());
+                }
+            }
+
+            // If we couldn't parse output, check exit code
+            if total == 0 {
+                if output.status.success() {
+                    // Probably compiled and tests passed but we couldn't parse
+                    (1, 1, vec![])
+                } else {
+                    let err_preview: String = stderr.lines()
+                        .filter(|l| !l.contains("warning:"))
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    (0, 1, vec![format!("native test failed (exit {}): {}", output.status.code().unwrap_or(-1), err_preview)])
+                }
+            } else {
+                (passed, total, failures)
+            }
+        }
+        Err(e) => (0, 1, vec![format!("failed to run rask binary: {}", e)]),
+    }
+}
+
+/// Result of running a `.rk` test file through both backends.
+#[derive(Debug)]
+pub struct RkTestResult {
+    /// Path to the .rk file
+    pub path: std::path::PathBuf,
+    /// Interpreter: (passed, total)
+    pub interp_passed: usize,
+    pub interp_total: usize,
+    pub interp_failures: Vec<String>,
+    /// Native: (passed, total) — None if binary unavailable
+    pub native_passed: Option<usize>,
+    pub native_total: Option<usize>,
+    pub native_failures: Vec<String>,
+}
+
+impl RkTestResult {
+    pub fn interp_ok(&self) -> bool {
+        self.interp_passed == self.interp_total && self.interp_total > 0
+    }
+    pub fn native_ok(&self) -> bool {
+        match (self.native_passed, self.native_total) {
+            (Some(p), Some(t)) => p == t && t > 0,
+            _ => true, // Not run
+        }
+    }
+}
+
+/// Run a `.rk` file through both interpreter and native test runners.
+pub fn run_rk_test_file(path: &std::path::Path, source: &str, config: &RunConfig) -> RkTestResult {
+    let (ip, it, ifails) = run_rk_tests_interp(source);
+
+    let (np, nt, nfails) = if let Some(binary) = &config.rask_binary {
+        let (p, t, f) = run_rk_tests_native(path, binary);
+        (Some(p), Some(t), f)
+    } else {
+        (None, None, vec![])
+    };
+
+    RkTestResult {
+        path: path.to_path_buf(),
+        interp_passed: ip,
+        interp_total: it,
+        interp_failures: ifails,
+        native_passed: np,
+        native_total: nt,
+        native_failures: nfails,
+    }
+}
+
 /// Summary statistics for a test run.
 #[derive(Debug, Default)]
 pub struct TestSummary {

@@ -24,5 +24,5 @@ pub mod extract;
 pub mod runner;
 
 pub use deps::{check_staleness, extract_deps, SpecDeps, StalenessWarning};
-pub use extract::{extract_tests, Expectation, SpecTest};
-pub use runner::{run_test, run_test_with_config, NativeResult, RunConfig, TestResult, TestSummary};
+pub use extract::{extract_tests, has_rk_tests, Expectation, SpecTest};
+pub use runner::{run_test, run_test_with_config, run_rk_test_file, NativeResult, RkTestResult, RunConfig, TestResult, TestSummary};

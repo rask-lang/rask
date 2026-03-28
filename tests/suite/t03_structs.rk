@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Struct construction, field access, methods, and string fields.
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+extend Point {
+    func new(x: i32, y: i32) -> Point {
+        return Point { x: x, y: y }
+    }
+
+    func manhattan(self) -> i32 {
+        return self.x + self.y
+    }
+
+    func add(self, other: Point) -> Point {
+        return Point { x: self.x + other.x, y: self.y + other.y }
+    }
+}
+
+struct Named {
+    name: string
+    value: i32
+}
+
+extend Named {
+    func describe(self) -> string {
+        return "{self.name}={self.value}"
+    }
+}
+
+struct Nested {
+    inner: Point
+    label: string
+}
+
+test "struct construction and field access" {
+    const p = Point { x: 10, y: 20 }
+    assert p.x == 10
+    assert p.y == 20
+}
+
+test "struct method" {
+    const p = Point.new(3, 4)
+    assert p.manhattan() == 7
+}
+
+test "struct method returning struct" {
+    const a = Point.new(1, 2)
+    const b = Point.new(3, 4)
+    const c = a.add(b)
+    assert c.x == 4
+    assert c.y == 6
+}
+
+test "struct with string field" {
+    const n = Named { name: "foo", value: 42 }
+    assert n.name == "foo"
+    assert n.value == 42
+}
+
+test "struct method using string field" {
+    const n = Named { name: "x", value: 10 }
+    assert n.describe() == "x=10"
+}
+
+test "multiple structs with string fields" {
+    const a = Named { name: "alice", value: 1 }
+    const b = Named { name: "bob", value: 2 }
+    assert a.name == "alice"
+    assert b.name == "bob"
+    assert a.name != b.name
+}
+
+test "nested struct" {
+    const n = Nested {
+        inner: Point { x: 5, y: 10 },
+        label: "test",
+    }
+    assert n.inner.x == 5
+    assert n.inner.y == 10
+    assert n.label == "test"
+}
+
+test "struct update syntax" {
+    const p = Point { x: 1, y: 2 }
+    const q = Point { x: 10, ..p }
+    assert q.x == 10
+    assert q.y == 2
+}
+
+func main() {}

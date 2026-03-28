@@ -114,16 +114,16 @@ Annotations:
 
 Example from spec:
 
-````markdown
-<!-- test: run | 120 -->
-```rask
-func factorial(n: u32) -> u32 {
-    if n <= 1 { return 1 }
-    return n * factorial(n - 1)
-}
-println("{}", factorial(5))
 ```
-````
+  < !-- test: run | 120 -- >
+  ```rask
+  func factorial(n: u32) -> u32 {
+      if n <= 1 { return 1 }
+      return n * factorial(n - 1)
+  }
+  println("{}", factorial(5))
+  ```
+```
 
 Output shows differential results:
 

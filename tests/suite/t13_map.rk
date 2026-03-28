@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Map operations: insert, get, index, contains.
+
+test "map insert and get" {
+    const m = Map.new()
+    m.insert("key", 42)
+    assert m["key"] == 42
+}
+
+test "map multiple keys" {
+    const m = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    m.insert("c", 3)
+    assert m["a"] == 1
+    assert m["b"] == 2
+    assert m["c"] == 3
+}
+
+test "map overwrite" {
+    const m = Map.new()
+    m.insert("key", 10)
+    m.insert("key", 20)
+    assert m["key"] == 20
+}
+
+test "map len" {
+    const m = Map.new()
+    assert m.len() == 0
+    m.insert("a", 1)
+    assert m.len() == 1
+    m.insert("b", 2)
+    assert m.len() == 2
+}
+
+test "map contains" {
+    const m = Map.new()
+    m.insert("exists", 1)
+    assert m.contains("exists")
+    assert !m.contains("missing")
+}
+
+test "map string values" {
+    const m = Map.new()
+    m.insert("greeting", "hello")
+    m.insert("name", "world")
+    assert m["greeting"] == "hello"
+    assert m["name"] == "world"
+}
+
+func main() {}
