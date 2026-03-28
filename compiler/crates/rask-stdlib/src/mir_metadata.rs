@@ -431,4 +431,10 @@ mod tests {
         assert!(matches!(meta.ret_category, RetCategory::Result { .. }));
         assert_eq!(meta.ret_type_prefix, Some("File".into()));
     }
+
+    #[test]
+    fn string_from_raw_returns_string() {
+        let meta = lookup("string_from_raw").expect("missing string_from_raw");
+        assert_eq!(meta.ret_category, RetCategory::String);
+    }
 }

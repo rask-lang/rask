@@ -1845,8 +1845,8 @@ impl<'a> FunctionBuilder<'a> {
                     // Option/Result: payload starts after tag.
                     // MIR uses EnumTag for the tag; Field indices are payload-relative.
                     Some(MirType::Option(inner)) => {
-                        // Aggregate payload (struct/enum/tuple): return address, not load
-                        if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)) {
+                        // Aggregate payload (struct/enum/tuple/string): return address, not load
+                        if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String) {
                             let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::PAYLOAD_OFFSET as i64);
                             return Ok(payload_addr);
                         }
@@ -1854,7 +1854,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     Some(MirType::Result { ok, .. }) => {
                         // Aggregate Ok payload: return address, not load
-                        if *field_index == 0 && matches!(ok.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)) {
+                        if *field_index == 0 && matches!(ok.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String) {
                             let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::PAYLOAD_OFFSET as i64);
                             return Ok(payload_addr);
                         }

@@ -9,6 +9,7 @@ extern "C" func ftell(stream: *u8) -> i64
 extern "C" func rask_alloc(size: i64) -> *u8
 extern "C" func rask_free(ptr: *u8)
 extern "C" func rask_string_from_bytes(out: *u8, data: *u8, len: i64)
+extern "C" func access(path: *u8, mode: i32) -> i32
 
 /// File system operations.
 struct fs { }
@@ -63,7 +64,10 @@ extend fs {
     public func write_bytes(path: string, data: Vec<u8>) -> () or IoError { }
 
     /// Check if a file or directory exists at the path.
-    public func exists(path: string) -> bool { }
+    public func exists(path: string) -> bool {
+        const p = unsafe path.as_c_str()
+        return access(p, 0) == 0
+    }
 
     /// Read a file and split into lines.
     public func read_lines(path: string) -> Vec<string> or IoError { }
