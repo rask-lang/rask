@@ -434,10 +434,12 @@ impl<'a> MirLowerer<'a> {
                     // Covers stdlib (Vec, Map, string) and user types (Person, Document).
                     // Strip generic args: Map<string, JsonValue> → Map
                     let base_name = obj_name.split('<').next().unwrap_or(obj_name);
-                    if super::MirContext::stdlib_type_prefix(
+                    let is_module = rask_stdlib::mir_metadata::stdlib_module_names()
+                        .contains(base_name);
+                    if !is_module && (super::MirContext::stdlib_type_prefix(
                         &rask_types::Type::UnresolvedNamed(base_name.to_string())
                     ).is_some()
-                        || base_name.chars().next().map_or(false, |c| c.is_uppercase())
+                        || base_name.chars().next().map_or(false, |c| c.is_uppercase()))
                     {
                         self.meta_mut(name).type_prefix = Some(base_name.to_string());
                     } else {

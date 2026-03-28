@@ -82,7 +82,14 @@ extend fs {
     }
 
     /// Read a file and split into lines.
-    public func read_lines(path: string) -> Vec<string> or IoError { }
+    public func read_lines(path: string) -> Vec<string> or IoError {
+        const content = try fs.read_file(path)
+        let lines: Vec<string> = Vec.new()
+        for line in content.lines() {
+            lines.push(line)
+        }
+        return Ok(lines)
+    }
 
     /// Return the canonical, absolute form of a path.
     public func canonicalize(path: string) -> string or IoError {

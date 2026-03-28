@@ -1127,11 +1127,15 @@ impl<'a> FunctionBuilder<'a> {
                     builder.ins().call(*unwrap_fn, &[]);
                 }
             } else if func.name == "Ptr_add" || func.name == "Ptr_sub" || func.name == "Ptr_offset" {
-                // Pointer arithmetic: ptr.add(n) → ptr + n*8, ptr.sub(n) → ptr - n*8
-                // Hardcoded elem_size=8 (all values are i64 for now)
+                // Pointer arithmetic: ptr.add(n) → ptr + n*elem_size
+                // Element size is passed as the third arg by MIR lowering.
                 let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
                 let n_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
-                let elem_size = builder.ins().iconst(types::I64, 8);
+                let elem_size = if args.len() > 2 {
+                    Self::lower_operand_typed(builder, &args[2], Some(types::I64), ctx)?
+                } else {
+                    builder.ins().iconst(types::I64, 8)
+                };
                 let byte_offset = builder.ins().imul(n_val, elem_size);
                 let result = if func.name == "Ptr_sub" {
                     builder.ins().isub(ptr_val, byte_offset)

@@ -517,7 +517,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("fs_open", "rask_fs_open", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create", "rask_fs_create", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
-        StdlibEntry::simple("fs_read_lines", "rask_fs_read_lines", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_metadata", "rask_fs_metadata", &[types::I64], Some(types::I64), false),
 
         // ── Metadata methods ────────────────────────────────────────
@@ -819,11 +818,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Path_components", "rask_path_components", &[types::I64], Some(types::I64), false),
 
         // ── Raw pointer operations ────────────────────────────
-        StdlibEntry::simple("RawPtr_add", "rask_ptr_add", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_sub", "rask_ptr_sub", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_offset", "rask_ptr_offset", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_read", "rask_ptr_read", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_write", "rask_ptr_write", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("RawPtr_add", "rask_ptr_add", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("RawPtr_sub", "rask_ptr_sub", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("RawPtr_offset", "rask_ptr_offset", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("RawPtr_read", "rask_ptr_read", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("RawPtr_write", "rask_ptr_write", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("RawPtr_is_null", "rask_ptr_is_null", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("RawPtr_is_aligned", "rask_ptr_is_aligned", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("RawPtr_is_aligned_to", "rask_ptr_is_aligned_to", &[types::I64, types::I64], Some(types::I64), false),
