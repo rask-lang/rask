@@ -35,9 +35,7 @@ fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static
                 "ge" => ">=",
                 _ => return None,
             };
-            let is_string = matches!(&object.kind, ExprKind::String(_))
-                || matches!(&object.kind, ExprKind::Ident(_));
-            // Conservative: assume i64 unless obviously a string literal
+            // Conservative: assume i64 unless one side is obviously a string literal
             let is_string = matches!(&object.kind, ExprKind::String(_))
                 || matches!(&args[0].expr.kind, ExprKind::String(_));
             Some((object.as_ref(), &args[0].expr, op_str, is_string))
