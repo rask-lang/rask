@@ -86,14 +86,14 @@ const x = {
 // x would outlive p
 ```
 
-**Strings are growable (B2), not block-scoped:**
+**String slices are temporary (S2):**
 <!-- test: compile-fail -->
 ```rask
 const s = "hello world"
 const slice = s[0..5]    // ERROR: string slices can't be stored
 ```
 
-Strings own heap buffers — same category as Vec. Use `.to_string()` or `string_view` indices:
+String slices are temporary views into the string's buffer — storing one would create a dangling reference if the source string is freed. Use `.to_string()` or `string_view` indices:
 <!-- test: skip -->
 ```rask
 const s = "hello world"

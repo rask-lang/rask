@@ -210,13 +210,14 @@ impl TypeChecker {
     // Source Classification (ESAD Phase 2)
     // ------------------------------------------------------------------------
 
-    /// Classify a type as growable (Vec/Pool/Map/string) or fixed (array/struct).
+    /// Classify a type as growable (Vec/Pool/Map) or fixed (string/array/struct).
     /// Growable sources have instant views (released at semicolon).
     /// Fixed sources have persistent views (released at block end).
+    /// Note: string is Fixed here; string slice storage is rejected separately (S2).
     pub(super) fn classify_source(&self, ty: &Type) -> SourceStability {
         let resolved = self.ctx.apply(ty);
         match &resolved {
-            Type::String => SourceStability::Growable, // heap buffer, same category as Vec (B2)
+            Type::String => SourceStability::Fixed,
             Type::Array { .. } | Type::Slice(_) => SourceStability::Fixed,
             Type::Named(id) => {
                 let name = self.types.type_name(*id);
@@ -322,10 +323,22 @@ impl TypeChecker {
 
     /// At a const/let binding, check if the init creates a view from a source.
     /// Growable sources → error (volatile view stored).
+    /// String sources → error (S2: string slices are temporary views).
     /// Fixed sources → register persistent borrow.
     pub(super) fn check_view_at_binding(&mut self, binding_name: &str, init: &Expr, stmt_span: Span) {
         if let Some((source_name, mode)) = Self::detect_view_creation(init) {
             if let Some(source_ty) = self.lookup_local(&source_name) {
+                let resolved = self.ctx.apply(&source_ty);
+                // S2: string slices are temporary — can't be stored
+                if matches!(resolved, Type::String) {
+                    self.errors.push(TypeError::StringSliceStored {
+                        source_var: source_name,
+                        view_var: binding_name.to_string(),
+                        slice_span: init.span,
+                        store_span: stmt_span,
+                    });
+                    return;
+                }
                 match self.classify_source(&source_ty) {
                     SourceStability::Fixed => {
                         self.persistent_borrows.push(PersistentBorrow {
