@@ -983,7 +983,7 @@ Physics simulation. GDL provides physics parameters (gravity, friction, collisio
 
 Animation blending. GDL describes animation states (including layered body-region animation). The glTF model carries the skeleton and animation clips. How the client transitions between states — blend trees, crossfade duration, IK solvers — is the client's choice. Two clients playing the same `walk` → `attack` transition may blend differently. GDL describes which state to be in, not how to get there. Output streams carry authoritative bone transforms when the domain drives the skeleton directly (ragdoll, motion capture, procedural).
 
-Audio design. GDL carries theme tokens for atmosphere, sound asset references, media streams, and sound events. Spatial audio mixing, music systems, and sound design are client-side. The domain says "there's a fire here" and optionally publishes a crackling audio stream. The client decides the mix.
+Audio design. GDL carries theme tokens for sound mood, sound asset references, media streams, sound events, and physical acoustic properties (volume, absorption, occlusion — see [GDL-extensions: Acoustic Environment](GDL-extensions.md#acoustic-environment)). Spatial audio mixing, music systems, reverb algorithms, and HRTF processing are client-side. The domain describes the physical acoustic environment. The client renders it.
 
 Scripting. No behavior in the description. Ever. Raido handles scripting. GDL handles description. The boundary is load-bearing.
 

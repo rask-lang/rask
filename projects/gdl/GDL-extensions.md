@@ -14,6 +14,7 @@ Each extension is independent. A 2D tile client adds spatial layers. A VR client
 | [Media Streams](#media-streams) | Audio/video from entities (voice, live performance, video) |
 | [Spatial Layers](#spatial-layers) | Dense data (voxels, heightmaps, tilemaps) |
 | [Physics Parameters](#physics-parameters) | Client-side simulation constants |
+| [Acoustic Environment](#acoustic-environment) | Physical acoustic properties for spatial audio |
 | [Nested Spaces](#nested-spaces) | Sub-spaces in entities, relative positioning |
 | [Reference Frames](#reference-frames) | Attachment without containment |
 | [Immersive Capabilities](#immersive-capabilities) | VR/AR/XR support |
@@ -326,6 +327,89 @@ properties:
 A VR client uses physics parameters + spatial layers to simulate hand interaction locally: the hand collides with objects, objects have mass and friction, the client predicts the physical result and sends it to the domain for validation. Without physics parameters, VR interaction would require a server round-trip for every hand movement against every object. That's 200ms input lag on touching a table. Unacceptable.
 
 A text client ignores physics parameters. A 2D client might use gravity + friction for simple character movement. A 3D client uses the full set. A VR client adds hand physics on top. Progressive enhancement.
+Acoustic Environment
+
+Sound is half the immersion and the biggest gap in most world description formats. The temptation is to specify reverb presets, attenuation curves, HRTF profiles, and DSP parameters. That's the path to a 2026-era spec that ages like VRML's AudioClip node.
+
+The principle: **describe the physical acoustic properties of spaces and surfaces. Let clients derive the audio processing.** Absorption coefficients, room volume, and surface materials are physics — they don't go out of date. Reverb algorithms, spatial audio engines, and codec implementations change every few years. GDL describes the former. Clients provide the latter.
+
+This is the same pattern as physics parameters (describe gravity and friction, not the integrator) and the same pattern as glTF materials (describe roughness and metallic factor, not the shader).
+
+**Region acoustic properties**
+
+Regions carry acoustic properties in the `acoustic.*` namespace:
+
+properties:
+  acoustic.volume: 450.0        # room volume in cubic meters
+  acoustic.openness: 0.0        # 0.0 = fully enclosed, 1.0 = open air
+  acoustic.absorption: 0.4      # average surface absorption (0.0 = perfect reflection, 1.0 = anechoic)
+
+Three properties. That's it for the region.
+
+Property	Type	Purpose
+acoustic.volume	float	Volume of the space in cubic meters. A small room is 30. A cathedral is 20,000. Open air is absent or very large. The client derives reverb time from volume + absorption (Sabine equation or better).
+acoustic.openness	float (0–1)	How enclosed the space is. 0.0 = sealed room (full reverb). 1.0 = open field (no reflections). Values between = partial enclosure (covered patio, forest canopy, cave mouth). Clients use this to blend between indoor and outdoor audio models.
+acoustic.absorption	float (0–1)	Average acoustic absorption of the space's surfaces. 0.0 = hard reflective surfaces (tile, stone, metal). 1.0 = fully absorptive (recording studio foam, deep snow). Clients use this with volume to derive reverb decay time. A large stone cathedral (volume: 20000, absorption: 0.1) produces long reverb. A carpeted office (volume: 80, absorption: 0.7) produces short, muffled reverb.
+
+Why these three and not more? Because `volume + openness + absorption` is the minimum information a spatial audio engine needs to produce convincing environmental audio. Any modern reverb algorithm (convolution, ray-traced, algorithmic) can take these as inputs. Adding more (surface material breakdown, room dimensions, reflection patterns) would couple GDL to specific propagation models. If a future audio engine needs more detail, it can derive it from the spatial layers (the room geometry is already there in mesh_3d or heightmap data).
+
+A domain that doesn't set acoustic properties gets client defaults. A domain that sets them gets acoustics that match the space. A domain that wants precise acoustic control ships a convolution reverb impulse response as a content-addressed asset in the theme:
+
+theme:
+  tokens:
+    sound.impulse_response: sha256:abc123...
+
+This is the escape hatch. An impulse response IS the acoustic environment, captured or synthesized. A client that supports convolution reverb uses it directly. A client that doesn't falls back to deriving reverb from the acoustic properties. Progressive enhancement.
+
+**Entity acoustic properties**
+
+Entities that emit or block sound carry acoustic properties:
+
+properties:
+  acoustic.occlusion: 0.8     # how much this entity blocks sound (0 = transparent, 1 = solid wall)
+  acoustic.emission_radius: 5.0  # how far this entity's sound carries (meters, before falloff)
+
+Property	Type	Purpose
+acoustic.occlusion	float (0–1)	How much this entity blocks sound passing through it. A stone wall is 0.95. A curtain is 0.2. A glass window is 0.5. An open doorway is 0.0. Clients use this for occlusion calculations — sound from behind a wall is muffled proportional to occlusion.
+acoustic.emission_radius	float	The distance (in region units) at which this entity's sound is at full volume. Beyond this, falloff applies. A whisper is 1.0. A person talking is 5.0. A church bell is 50.0. Clients apply distance falloff beyond this radius using whatever attenuation model they prefer.
+
+That's it. Two properties per entity.
+
+No attenuation curve specification. Distance falloff (inverse square, linear, logarithmic) is a client rendering decision — the same way blend tree transitions are a client animation decision. `emission_radius` tells the client where full volume ends. How fast it falls off from there is the client's audio engine's business. Specifying a falloff curve would couple GDL to a particular spatial audio model. Inverse square is physically correct, but some engines use modified curves for gameplay feel. Let them.
+
+No HRTF specification. Head-related transfer functions are client-side, hardware-dependent, and evolving rapidly (personalized HRTF from ear scans, ML-derived HRTF). GDL provides position and the physical environment. The client's spatial audio engine does the rest.
+
+**Acoustic zones**
+
+Large regions may have different acoustic areas — a cathedral with a side chapel, an outdoor area with a covered walkway. Acoustic zones are entities with `kind: marker` that override the region's acoustic properties within a radius:
+
+Entity:
+  ref: <leden_object_ref>
+  kind: marker
+  name: "Side Chapel"
+  position: [15, 8, 3]
+  properties:
+    acoustic.volume: 80.0
+    acoustic.openness: 0.0
+    acoustic.absorption: 0.3
+    acoustic.radius: 6.0       # zone radius in region units
+    acoustic.blend: 2.0        # transition distance (meters) for crossfade
+
+When the listener enters the zone radius, the client blends from the region's acoustic properties to the zone's. `acoustic.blend` controls the crossfade distance — 2.0 means the transition happens over 2 meters. A hard boundary (doorway) uses `blend: 0.5`. A gradual transition (walking from outside into a cave) uses `blend: 5.0`.
+
+Zones are just marker entities with acoustic properties. They arrive and update through the normal observation stream. No new mechanism.
+
+**What this deliberately doesn't cover**
+
+Audio mixing. How loud music is relative to dialogue, how many simultaneous sources to render, whether to duck ambient when combat starts — all client concerns. The domain provides sources and their physical properties. The client mixes.
+
+Music systems. Music cues, crossfades, layered adaptive music, beat-synced transitions — these are domain behavior expressed through events and theme tokens (`sound.music_mood` in GDL-style). Not acoustic environment.
+
+Codec negotiation. What audio format to use for streams — Leden's concern, declared in fidelity. GDL doesn't name codecs.
+
+Propagation simulation. Ray-traced audio, phonon simulation, wave-based diffraction — client-side rendering choices. GDL provides the physical properties. Clients that do ray-traced audio can use spatial layer geometry for reflections. Clients that don't can use the absorption coefficient for a simpler reverb model. Both work from the same data.
+
+A text client ignores all acoustic properties. A 2D client might use `acoustic.openness` to pick between "indoor" and "outdoor" ambient sound mixing. A 3D client derives full spatial reverb from volume + absorption + openness. A VR client adds HRTF spatialization, occlusion ray-casting against spatial layers, and distance-based falloff from emission_radius. Progressive enhancement, as always.
 Nested Spaces
 
 A ship on an ocean. A building in a city. A chest in a dungeon room. These are entities that contain other entities in their own spatial coordinate system. Without nested spaces, entering a ship means a region transition through a portal — you can't see the ship's deck and the ocean simultaneously. That's wrong for any game where vehicles, buildings, or containers have interiors visible from outside.
