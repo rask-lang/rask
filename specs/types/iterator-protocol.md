@@ -46,7 +46,7 @@ trait Iterator<Item> {
 | `.chunks(n)` | Yields non-overlapping groups of n | `(usize) -> Chunks<Item>` yielding `Vec<Item>` |
 | `.windows(n)` | Yields overlapping windows of n | `(usize) -> Windows<Item>` yielding `Vec<Item>` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 for i in vec.indices().filter(|i| vec[i].active).take(10) {
     process(vec[i])
@@ -79,7 +79,7 @@ Terminal operations consume the iterator and produce a final value. No further c
 | `.collect()` | Materializes into collection | `Vec<Item>` (default) or inferred from context |
 | `.collect<C>()` | Materializes into specific collection type | `C` where `C: FromIterator<Item>` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const names = users.map(|u| u.name).collect()
 // names: Vec<string>, inferred
@@ -109,7 +109,7 @@ const lookup: Map<string, User> = users.map(|u| (u.name, u)).collect()
 | `.min_by_key(f)` | Smallest by extracted key | `Option<Item>` (requires key: Comparable) |
 | `.max_by_key(f)` | Largest by extracted key | `Option<Item>` (requires key: Comparable) |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const total = orders.map(|o| o.amount).sum()
 const biggest = scores.max()
@@ -130,7 +130,7 @@ const csv = names.fold(string.new(), |acc, name| {
 | `.any(pred)` | True if any item matches | `bool` |
 | `.all(pred)` | True if all items match | `bool` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const admin = users.find(|u| u.role == Role.Admin)
 if items.any(|i| i.is_expired()) { alert() }
@@ -175,7 +175,7 @@ items.for_each(|item, mutate total| { total += item.value })
 | **D5: Method resolution** | Check Range type first, then explicit method call, then `.iterate()` |
 | **D6: Mutable mode** | `for mutate x in collection` — compiler desugars to index-based mutable access. Does not call `.iterate()` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Vec value iteration (default)
 for item in vec {
@@ -194,7 +194,7 @@ for item in vec {
 }
 ```
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Index iteration (explicit)
 for i in 0..vec.len() {
@@ -230,7 +230,7 @@ for i in 0..vec.len() {
 | **CU2: No stored references** | Iterator structs must store Copy data (indices, handles), not references |
 | **CU3: iterate contract** | `.iterate()` for Vec/Pool/Map returns value iterator (borrowed elements) — does NOT consume |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct GridIterator {
     width: usize,
@@ -313,7 +313,7 @@ FIX: Store Copy-able indices or handles instead.
 
 **Consume iteration:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 for item in vec.take_all() {
     process(item)
@@ -323,7 +323,7 @@ for item in vec.take_all() {
 
 **Value iteration (default):**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 for entity in pool {
     print(entity.name)
@@ -332,7 +332,7 @@ for entity in pool {
 
 **Handle iteration (explicit):**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 for h in pool.handles() {
     pool[h].update()
@@ -344,7 +344,7 @@ for h in pool.handles() {
 
 **Chained adapter + terminal:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Filter-map-collect (most common pattern)
 const active_names = users

@@ -44,7 +44,7 @@ const buf = repeat<16>(0xff)  // OK: 16 is comptime-known
 | **CT48: Comptime for** | Loop | `comptime for x in comptime_iterable { body }` | Loop fully unrolled at compile time. Each iteration generates separate monomorphized code |
 | **CT49: Field access** | Expression | `value.(comptime_expr)` | Access struct field by comptime-known string. Resolves at compile time to direct field access |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 import std.reflect
 
@@ -127,7 +127,7 @@ The compiler provides a `cfg` constant for conditional compilation.
 | **CT15: cfg.debug** | `cfg.debug` | `bool` | Shorthand for `cfg.profile == "debug"` |
 | **CT16: cfg.features** | `cfg.features` | `Set<string>` | Features enabled for this build |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func get_backend() -> Backend {
     comptime if cfg.features.contains("ssl") {
@@ -156,7 +156,7 @@ Comptime supports collections (`Vec`, `Map`, `string`) with a compiler-managed a
 | **CT18: Freeze to escape** | Collections call `.freeze()` to become const: `Vec<T>` → `[T; N]`, `Map<K,V>` → static map, `string` → `str` |
 | **CT19: Cannot escape unfrozen** | Compile error if comptime returns unfrozen collection |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Array generation - unknown size
 const PRIMES: [u32; _] = comptime {
@@ -277,7 +277,7 @@ const CONFIG: Config = comptime parse_config(@embed_file("config.toml"))
 | **CT46: Panics as compile errors** | Comptime panics become compile errors with call stack |
 | **CT47: Error propagation** | Errors propagate to compile error with context |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 comptime func safe_divide(a: i32, b: i32) -> i32 or string {
     if b == 0 {
@@ -451,7 +451,7 @@ const large = try read_packet<4096>(socket2)
 ```
 
 ### Conditional Compilation
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const DEBUG_MODE: bool = comptime cfg.debug
 const LOGGING_ENABLED: bool = comptime cfg.features.contains("logging")

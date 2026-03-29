@@ -177,7 +177,7 @@ Reinterprets the bits of one type as another. Requires unsafe.
 | Valid bits | Result must be valid for target type |
 | Alignment | Both types properly aligned |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 unsafe {
     let x: u32 = 0x41424344
@@ -263,7 +263,7 @@ asm {
 | **UN2: Read unsafe** | Reading any field requires unsafe |
 | **UN3: Write safe** | Writing to a field is safe (sets active field) |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 union IntOrFloat {
     i: i32,
@@ -306,7 +306,7 @@ Instead of "all pointer errors are UB" regardless of build mode, Rask provides d
 | `@checked_unsafe` | Checked | Checked |
 | `@unchecked_unsafe` | Unchecked | Unchecked |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Skips even debug checks — for when you've already validated
 unsafe {
@@ -427,7 +427,7 @@ FIX: Add to clobber list or declare as output:
 
 The core pattern for unsafe code: encapsulate raw operations behind a safe API that maintains invariants.
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 public struct SafeBuffer {
     ptr: *u8,
@@ -486,7 +486,7 @@ extend<T> FastBuffer<T> {
 
 **FFI ownership:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // C allocates, Rask frees
 const ptr = unsafe { c.malloc(size) }
@@ -544,7 +544,7 @@ const ARCH_ADD = comptime {
 
 **Unsafe contract documentation:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 /// Reads value from pointer.
 ///

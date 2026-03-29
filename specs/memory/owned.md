@@ -17,7 +17,7 @@
 | `*ptr` | Dereference (borrow the inner value) |
 | `drop(ptr)` | Consume and deallocate |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const ptr: Owned<i32> = own 42    // Allocate on heap
 const value = *ptr                // Dereference (borrow)
@@ -44,7 +44,7 @@ drop(ptr)                         // Consume (deallocate)
 | **OW3: Borrow allowed** | Can dereference for reading/writing without consuming |
 | **OW4: Move consumes** | Passing to a function or assigning to another variable moves (consumes) |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func process(take ptr: Owned<Data>) {
     // ptr consumed when function takes ownership
@@ -59,7 +59,7 @@ process(own ptr)                  // Consumed by move
 
 Dereferencing borrows the inner value without consuming the `Owned<T>`. Borrow rules follow standard borrowing (`mem.borrowing/S5`).
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const ptr = own Point { x: 1, y: 2 }
 
@@ -120,7 +120,7 @@ func main() {
 
 The primary use case. A type can't contain itself without indirection.
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum Tree<T> {
     Leaf(T)
@@ -167,7 +167,7 @@ func eval(take expr: Owned<Expr>) -> i32 {
 
 If `T: Cloneable`, then `Owned<T>: Cloneable`. Cloning allocates a new heap value. Clone is explicit — no implicit copying.
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const ptr1 = own Point { x: 1, y: 2 }
 const ptr2 = ptr1.clone()            // New allocation, deep copy
@@ -183,7 +183,7 @@ When `Owned<T>` is consumed via `drop()` or scope exit (after `ensure`):
 1. If `T` has a destructor, run it
 2. Deallocate memory via the allocator that allocated it
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 @resource
 struct File { handle: RawHandle }

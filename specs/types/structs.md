@@ -142,7 +142,7 @@ const c = Config.new()                          // Called on type
 ## Construction Patterns
 
 **Literal construction (when all fields visible):**
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 public struct Point {
     public x: i32
@@ -169,7 +169,7 @@ extend Connection {
 ```
 
 **Update syntax (functional update):**
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
 ```
