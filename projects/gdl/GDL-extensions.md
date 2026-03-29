@@ -9,6 +9,7 @@ Each extension is independent. A 2D tile client adds spatial layers. A VR client
 
 | Extension | What |
 |-----------|------|
+| [Client Scripts](#client-scripts) | Deterministic Raido bytecode for client-side logic (animation, effects, sound, prediction) |
 | [Input Streams](#input-streams) | Continuous client→server data (movement, tracking, media input) |
 | [Output Streams](#output-streams) | Continuous server→client data (bone poses, blend shapes, physics, deformation) |
 | [Media Streams](#media-streams) | Audio/video from entities (voice, live performance, video) |
@@ -24,6 +25,161 @@ Each extension is independent. A 2D tile client adds spatial layers. A VR client
 Extensions
 
 Everything above is the core — what every GDL client handles. Everything below is optional. A client declares which extensions it supports through fidelity negotiation. A domain that uses extensions works fine with clients that don't support them — the core still renders.
+Client Scripts
+
+Most GDL extensions move data between server and client — observation deltas, input streams, output streams. Client scripts flip the model: instead of streaming derived state (animation changes, effect updates, sound triggers), the domain ships deterministic code and the client derives the state locally. The server stops sending "now play walk" 200 times per second and instead sends the velocity property. The client's script decides the animation.
+
+This works because [Raido](../raido/) is deterministic by design. Fixed-point arithmetic, no floating-point drift, content-addressed bytecode. The domain can verify any client output by re-running the same script with the same inputs. Identical inputs + identical code = identical output, bitwise, on every platform.
+
+**Entity scripts**
+
+An entity can carry scripts keyed by output category:
+
+Entity:
+  ref: <leden_object_ref>
+  kind: creature
+  name: "Goblin Scout"
+  properties:
+    velocity: 2.5
+    health: 30
+    attacking: false
+    surface: stone
+  scripts:
+    animation: sha256:abc123...
+    effects: sha256:def456...
+    sound: sha256:789abc...
+
+Script categories:
+
+Category	Output type	What the script produces
+animation	Animation state (string or layered list)	Which animation clip to play, derived from properties
+effects	Effect list	Active effects and their parameters (fire intensity, trail length)
+sound	Sound trigger list	Sounds to play this frame (footstep on stone, sword impact)
+predict	Position/property predictions	Client-side movement and physics prediction
+
+Each category is a separate Raido script — a separate content-addressed bytecode blob. They run independently. A domain can ship an animation script without a sound script. Categories are independent because their outputs are independent — animation doesn't feed into sound. A client that supports animation scripts but not sound scripts runs what it can.
+
+**Region scripts**
+
+Regions can carry scripts for environment-level logic:
+
+Region:
+  name: "Sunset Valley"
+  properties:
+    time_of_day: 0.75
+    weather: clear
+    wind_speed: 3.0
+  scripts:
+    atmosphere: sha256:aaa111...
+    ambient: sha256:bbb222...
+    physics: sha256:ccc333...
+
+Region script categories:
+
+Category	Output type	What the script produces
+atmosphere	Theme token overrides	Day/night cycle, weather-driven lighting/fog changes
+ambient	Sound trigger list	Environmental sounds derived from time, weather, location
+physics	Physics state	Client-side physics simulation from parameters + spatial layers
+procedural	Spatial data / entity hints	Terrain generation, vegetation placement from seeds
+
+Region scripts run once per frame (or at a domain-specified tick rate), not per-entity. An atmosphere script that takes `time_of_day` and produces `atmosphere.ambient_intensity: 0.3, atmosphere.fog_density: 0.6` replaces hundreds of `theme_update` deltas per day/night cycle with a single property update.
+
+**Script interface**
+
+A Raido script in GDL has a constrained interface. It's a pure function from inputs to outputs.
+
+Inputs (read-only):
+
+Input	Available to	Description
+entity.properties	Entity scripts	All properties on this entity
+region.properties	All scripts	Region-level properties (time_of_day, weather, physics.*)
+time.delta	All scripts	Seconds since last frame (fixed-point)
+time.elapsed	All scripts	Seconds since script started (fixed-point)
+time.wall	All scripts	Wall-clock time from domain (fixed-point seconds since epoch)
+
+Scripts cannot read other entities, call affordances, access the network, or mutate authoritative state. They read properties the server sends and produce derived visual/audio/physics state.
+
+Outputs (per category):
+
+The script's return value is interpreted according to its category. An animation script returns a string or layered list. An effects script returns an array of effect descriptors. A sound script returns an array of sound triggers. The output types match what GDL already defines for these concepts.
+
+**Host functions**
+
+Raido's host function mechanism lets the client expose performance-critical operations to scripts. The domain's script calls them by name. The client implements them in native code or WASM.
+
+Standard host functions that GDL clients SHOULD provide to scripts:
+
+Function	Signature	Purpose
+noise_2d(x, y, seed)	(number, number, int) → number	2D simplex/perlin noise (deterministic, fixed-point)
+noise_3d(x, y, z, seed)	(number, number, number, int) → number	3D noise
+distance(x1, y1, x2, y2)	(number, number, number, number) → number	2D distance
+distance_3d(x1, y1, z1, x2, y2, z2)	(number × 6) → number	3D distance
+lerp(a, b, t)	(number, number, number) → number	Linear interpolation
+clamp(v, min, max)	(number, number, number) → number	Clamp value to range
+random(seed)	(int) → number	Deterministic PRNG (0.0–1.0)
+
+These are the math primitives that scripts need but shouldn't implement in interpreted bytecode. The client runs them at native speed. They're all deterministic — same inputs, same output — so they don't break the verification guarantee.
+
+The host function list is extensible through fidelity. A client can declare additional host functions it provides:
+
+client_fidelity:
+  scripts: true
+  script_host_functions: [noise_2d, noise_3d, distance, lerp, clamp, random, physics_step, raycast]
+
+A domain that uses `raycast` in its scripts only works with clients that declare it. A domain that sticks to the standard set works everywhere.
+
+**Resource limits**
+
+Client scripts run per-entity per-frame. Resource limits prevent a malicious or buggy domain from degrading the client.
+
+Limit	Default	Behavior when exceeded
+Fuel (instructions per frame)	10,000 per entity script	Script halted, falls back to server-driven state
+Arena (memory)	64 KB per entity script	Script halted, falls back
+Call depth	64	Script halted, falls back
+
+These are Raido's existing resource limits — not a new mechanism. The client sets the budget per script invocation. A script that exceeds it is killed and the client falls back to the server-driven model for that entity. The entity still renders — it just gets animation states from observation deltas instead of local computation.
+
+Region scripts get higher budgets (they run once per frame, not per-entity):
+
+Limit	Default
+Fuel	100,000 per frame
+Arena	256 KB
+Call depth	128
+
+Clients can adjust these based on hardware. A mobile client might halve the fuel budget. A desktop VR client might double it.
+
+**Verification**
+
+The domain doesn't trust the client blindly. It verifies.
+
+The verification model has three levels, applied at the domain's discretion:
+
+1. **No verification.** The domain trusts the client for purely cosmetic scripts (animation, effects, sound). If the client cheats on animation state, it only hurts its own rendering. Most scripts fall here — the domain doesn't care if a goblin's walk cycle is wrong on one client.
+
+2. **Spot-check verification.** For prediction scripts (movement, physics), the domain periodically re-runs the script with the same inputs and compares the client's reported state. If they diverge, the domain sends an authoritative correction. The check interval is the domain's choice — every 500ms, every 5 seconds, on suspicious behavior. This is the same model every multiplayer game uses for anti-cheat, but with a mathematical guarantee: Raido's determinism means honest clients ALWAYS match.
+
+3. **Full verification.** For high-stakes state (competitive games, economic transactions), the domain runs every frame server-side and compares. This is equivalent to the current server-driven model in computation cost, but the client still gets zero-latency local execution. The verification catches cheating without adding latency to the honest path.
+
+The domain picks the verification level per script category. Animation scripts get level 1. Movement prediction gets level 2. Competitive game physics gets level 3.
+
+**Fallback**
+
+A client that doesn't support client scripts (`scripts: false` or absent in fidelity) falls back to the current model: the domain sends animation states, effect changes, and sound events through the observation stream. The domain detects this from fidelity and sends the derived state that scripts would have produced.
+
+A client that supports scripts but encounters one it can't run (fuel exceeded, missing host function, corrupted bytecode) falls back per-script. The entity's animation script fails? The client uses server-sent animation states for that entity. The region's atmosphere script fails? The client uses server-sent theme updates. Fallback is per-script, not all-or-nothing.
+
+This is the same progressive enhancement pattern as everything else in GDL. Scripts are an optimization and latency improvement, not a requirement. The server-driven model is always the fallback. A GDL world works without client scripts — it just has more latency on animation transitions and more observation stream traffic.
+
+**What this replaces**
+
+Client scripts don't replace output streams, input streams, or the observation stream. They complement them:
+
+- **Observation stream:** Authoritative state changes (health changed, entity entered, door opened). Always needed.
+- **Client scripts:** Derived visual/audio state from properties (animation, effects, sound, prediction). Reduces observation traffic.
+- **Output streams:** High-frequency continuous data the domain must drive (motion capture, ragdoll, live performances). Scripts can't replace these — they require server-side data the client doesn't have.
+- **Input streams:** Client→server continuous data (movement, tracking). Orthogonal to scripts.
+
+The relationship: the observation stream sends properties. Client scripts consume properties and produce visual state. Output streams override script output when the domain drives directly. Input streams flow the other direction entirely.
 Input Streams
 
 Affordances model discrete actions: "attack", "open door", "move to [5, 3]". Some interactions are continuous high-frequency data that doesn't fit the request-response pattern: player movement (gamepad stick at 60Hz), mouse aim, VR head/hand pose at 90Hz. Issuing an affordance call per input frame is too heavyweight — that's 90 method calls per second per tracked point.

@@ -52,8 +52,9 @@ Seven core concepts that every GDL client must handle:
 6. **Events** — things that happened. Fire-and-forget happenings.
 7. **Panels** — domain UI as sandboxed web apps.
 
-Six extensions that clients negotiate through fidelity:
+Seven extensions that clients negotiate through fidelity:
 
+- **Client scripts** — deterministic Raido bytecode for client-side logic (animation, effects, sound, prediction)
 - **Spatial layers** — dense data (voxels, heightmaps, tilemaps)
 - **Input streams** — continuous client→server data (movement, tracking, media input)
 - **Output streams** — continuous server→client data (bone poses, blend shapes, physics, deformation)
@@ -63,7 +64,7 @@ Six extensions that clients negotiate through fidelity:
 
 A minimal GDL client handles the core: render regions, display entities with names and descriptions, show affordance menus, display events as log lines, show panel fallback text. That's a text adventure client. Buildable in a weekend.
 
-Each extension adds a capability. A 2D tile client adds spatial layers. A VR client adds input streams, output streams, and media streams. A client with vehicles adds nested spaces. None require the others. A client that doesn't understand an extension ignores it — the core still works.
+Each extension adds a capability. A 2D tile client adds spatial layers. A VR client adds input streams, output streams, client scripts, and media streams. A client with vehicles adds nested spaces. None require the others. A client that doesn't understand an extension ignores it — the core still works.
 Regions
 
 A region is a spatial container. It's the "page" — the top-level context that a client loads and renders. A dungeon room, a forest clearing, a city block, a spaceship interior. Regions connect to other regions through portals.
@@ -715,11 +716,13 @@ client_fidelity:
   audio: true
   media_codecs: [opus, vp9]
   spatial_preference: grid_2d
+  scripts: true
 
 Field	Purpose
 rendering	What rendering modes the client supports (ordered by preference)
 max_entities	How many entities the client can handle at once
 asset_formats	What asset formats the client can load (glb for 3D scenes, png for sprites/icons, ogg/mp3 for audio)
+scripts	Whether the client can execute Raido bytecode for client-side logic (animation, effects, sound, prediction)
 interaction	Input methods available
 audio	Whether the client can play audio
 media_codecs	Audio/video codecs the client supports (for media streams)
@@ -937,11 +940,13 @@ Everything above is the core — what every GDL client handles. Extensions are o
 
 | Extension | What |
 |-----------|------|
+| Client Scripts | Deterministic Raido bytecode for client-side logic (animation, effects, sound, prediction) |
 | Input Streams | Continuous client→server data (movement, tracking, media input) |
 | Output Streams | Continuous server→client data (bone poses, blend shapes, physics, deformation) |
 | Media Streams | Audio/video from entities (voice, live performance, video) |
 | Spatial Layers | Dense data (voxels, heightmaps, tilemaps) |
 | Physics Parameters | Client-side simulation constants |
+| Acoustic Environment | Physical acoustic properties for spatial audio |
 | Nested Spaces | Sub-spaces in entities, relative positioning |
 | Reference Frames | Attachment without containment |
 | Immersive | VR/AR/XR support |
@@ -1007,7 +1012,7 @@ Animation blending. GDL describes animation states (including layered body-regio
 
 Audio design. GDL carries theme tokens for sound mood, sound asset references, media streams, sound events, and physical acoustic properties (volume, absorption, occlusion — see [GDL-extensions: Acoustic Environment](GDL-extensions.md#acoustic-environment)). Spatial audio mixing, music systems, reverb algorithms, and HRTF processing are client-side. The domain describes the physical acoustic environment. The client renders it.
 
-Scripting. No behavior in the description. Ever. Raido handles scripting. GDL handles description. The boundary is load-bearing.
+Scripting. GDL describes. Raido scripts. The boundary is load-bearing. Client scripts (see [GDL-extensions](GDL-extensions.md#client-scripts)) don't blur this — they're sandboxed Raido that derives visual/audio state from entity properties. The description payload carries the bytecode reference. The client executes it. The domain remains authoritative over all properties. Scripts never mutate authoritative state, call affordances, or access other entities.
 
 Entity internals. GDL describes what an entity looks like from outside. Its internal state machine, its Raido scripts, its capabilities graph — all opaque. The domain exposes what it wants through properties and affordances.
 
@@ -1079,6 +1084,8 @@ VR/AR/XR is supported through general-purpose extensions, not a VR-specific prot
 Dense worlds use spatial layers. Tilemaps, voxel chunks, heightmaps, and collision meshes sit alongside entities in a region. Entities are sparse (things you interact with). Layers are dense (the world itself). A Minecraft chunk is a voxel layer. A platformer level is a mesh_2d layer. A terrain system is a heightmap layer. Layers are content-addressed and chunked for viewport-based streaming.
 
 Large regions use viewport filtering. The client reports its viewport (center + radius), and the domain only sends entities within that area. Entity enter/exit deltas fire at the viewport boundary. This scales GDL to open-world regions without dumping 10,000 entities on initial snapshot.
+
+Client-side Raido scripts for derived state. Instead of the server streaming animation state changes, effect updates, and sound events per entity per transition, the domain ships deterministic Raido bytecode. The client executes it locally against entity properties to derive animation states, effects, sound triggers, and movement predictions. The server sends property changes (velocity, health). The client's script derives the visual state with zero latency. The domain can verify any output because Raido is deterministic — identical inputs + identical bytecode = identical output, bitwise. Host functions (noise, distance, lerp) run at native speed for performance-critical math. Scripts that exceed resource limits (fuel, memory) are killed and the client falls back to server-driven state. Progressive enhancement — clients without script support get the current model, just with more observation traffic.
 Deferred
 
     Wire format. Binary vs text. Depends on Leden's wire format decision. GDL is a schema — the encoding is separate.
