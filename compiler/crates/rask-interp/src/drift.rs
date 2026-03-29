@@ -86,6 +86,10 @@ fn dummy_value(type_name: &str) -> Value {
             handle: Mutex::new(None),
             receiver: Mutex::new(None),
         })),
+        "TaskHandle" => Value::TaskHandle(Arc::new(ThreadHandleInner {
+            handle: Mutex::new(None),
+            receiver: Mutex::new(None),
+        })),
         "Sender" => {
             let (tx, _rx) = mpsc::sync_channel(1);
             Value::Sender(Arc::new(Mutex::new(tx)))

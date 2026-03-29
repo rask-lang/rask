@@ -361,13 +361,15 @@ FIX: Consume in both branches or use ensure:
 const point = (10, 20)
 const (x, y) = point
 
-// Mutable destructuring
-let (a, b) = get_pair()
-a = a + 1
+func use_destructuring() {
+    // Mutable destructuring (let requires function scope)
+    let (a, b) = get_pair()
+    a = a + 1
 
-// For loop destructuring
-for (key, value) in map {
-    println("{key}: {value}")
+    // For loop destructuring
+    for (key, value) in map {
+        println("{key}: {value}")
+    }
 }
 
 // Wildcard

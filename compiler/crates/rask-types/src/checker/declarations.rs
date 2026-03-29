@@ -577,11 +577,16 @@ impl TypeChecker {
                 };
                 if let Some(declared) = declared_ty {
                     self.ctx.add_constraint(TypeConstraint::Equal(
-                        declared,
+                        declared.clone(),
                         init_ty,
                         decl.span,
                     ));
+                    self.define_local(c.name.clone(), declared);
+                } else {
+                    self.define_local(c.name.clone(), init_ty);
                 }
+                // ESAD Phase 2: reject volatile views at module level too
+                self.check_view_at_binding(&c.name, &c.init, decl.span);
             }
             DeclKind::Test(t) => {
                 for stmt in &t.body {

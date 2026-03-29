@@ -210,13 +210,13 @@ impl TypeChecker {
     // Source Classification (ESAD Phase 2)
     // ------------------------------------------------------------------------
 
-    /// Classify a type as growable (Vec/Pool/Map) or fixed (string/array/struct).
+    /// Classify a type as growable (Vec/Pool/Map/string) or fixed (array/struct).
     /// Growable sources have instant views (released at semicolon).
     /// Fixed sources have persistent views (released at block end).
     pub(super) fn classify_source(&self, ty: &Type) -> SourceStability {
         let resolved = self.ctx.apply(ty);
         match &resolved {
-            Type::String => SourceStability::Fixed,
+            Type::String => SourceStability::Growable, // heap buffer, same category as Vec (B2)
             Type::Array { .. } | Type::Slice(_) => SourceStability::Fixed,
             Type::Named(id) => {
                 let name = self.types.type_name(*id);
