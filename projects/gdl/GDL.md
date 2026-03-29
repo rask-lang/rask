@@ -31,7 +31,7 @@ GDL carries semantic descriptions, not rendering instructions. "A weathered oak 
 Second Life got this right with parametric prims — 50 bytes of shape parameters instead of megabytes of mesh data. glTF got it right for transmission (GPU-ready buffers). GDL sits one level higher: content-addressed assets as the primary path, with semantic hints as fallback for any renderer.
 4. Progressive Enhancement, Not Multiple Representations
 
-The domain sends one description. Richer clients extract more from it. A text client uses name and description. A 2D client adds position and iconic sprite/palette. A 3D client loads the glTF scene. Same payload, different extraction depths.
+The domain sends one description. Richer clients extract more from it. A text client uses name and description. A 2D client adds position and iconic sprite/palette. A 3D client loads the scene model. Same payload, different extraction depths.
 
 This is HTML's model. One document, many renderers. Not "here's the text version, here's the 2D version, here's the 3D version." That doesn't scale — domains would need to author three descriptions for every entity.
 5. Optimize for the Consumer
@@ -47,7 +47,7 @@ Seven core concepts that every GDL client must handle:
 1. **Regions** — spatial containers. The "page."
 2. **Entities** — things in regions, with extensible properties. The "elements."
 3. **Affordances** — what you can do. The "links and forms."
-4. **Appearance** — what things look like. Semantic → iconic (2D) → scene (glTF). Each layer targets a client capability.
+4. **Appearance** — what things look like. Semantic → iconic (2D) → scene (3D). Each layer targets a client capability.
 5. **Bonds** — visual relationships between entities. Ropes, beams, chains, links.
 6. **Events** — things that happened. Fire-and-forget happenings.
 7. **Panels** — domain UI as sandboxed web apps.
@@ -335,7 +335,7 @@ The client renders this as whatever UI fits — a split-pane trade window, a ser
 When the player completes the interaction, the client packages the inputs and calls the Leden method. The domain validates and executes. The result comes back through the observation stream as entity updates.
 Appearance
 
-Appearance describes what an entity looks like. Three layers, each targeting a different client capability. A domain provides whichever layers make sense — text-only domains skip everything, 2D games provide iconic assets, 3D worlds provide glTF scenes. When a higher layer fails, the client falls back down. Always.
+Appearance describes what an entity looks like. Three layers, each targeting a different client capability. A domain provides whichever layers make sense — text-only domains skip everything, 2D games provide iconic assets, 3D worlds provide scene models. When a higher layer fails, the client falls back down. Always.
 
 Layer 1: Semantic (always available)
 Kind + name + description. Every client can render this. A creature named "Goblin Scout" with a description — that's enough for a text game. This layer costs nothing to author and never fails.
@@ -364,12 +364,19 @@ A 2D client with a sprite renders the sprite. Without one, it uses `shape` to pi
 
 The `shape` vocabulary is for sprite selection, not geometry description. A 2D client that sees `shape: humanoid` picks a humanoid sprite. The term isn't trying to approximate 3D — it's a category for 2D asset lookup.
 
-Layer 3: Scene (3D clients) — glTF
-The 3D representation is glTF. Not a custom hint format that approximates what glTF already does — actual glTF. The entire glTF extension ecosystem is available: `KHR_materials_transmission` (glass, water), `KHR_materials_clearcoat` (car paint, lacquer), `KHR_materials_sheen` (fabric), `KHR_materials_iridescence`, `KHR_lights_punctual` (point/spot/directional lights), `KHR_materials_volume` (subsurface scattering), `MSFT_lod` (level of detail), and everything Khronos standardizes in the future. I chose to build on glTF rather than reinvent a subset of it because the alternative — a custom hint vocabulary for PBR materials, skeletons, and animation — would always lag behind glTF's ecosystem while duplicating its scope.
+Layer 3: Scene (3D clients)
+A scene asset is a content-addressed 3D model containing geometry, materials, skeleton rig, and animation clips. GDL defines the structure — what a scene asset must carry and how parts compose. The concrete file format is negotiated through fidelity.
+
+**Scene asset requirements.** A scene asset carries:
+- **Geometry** — mesh data
+- **Materials** — surface appearance (PBR or otherwise, as the format supports)
+- **Skeleton** — bone hierarchy and rest pose (if the entity animates)
+- **Animation clips** — keyed by state name (idle, walk, attack, etc.)
+- **Named attachment points** — nodes where parts mount (`head`, `torso`, `left_hand`, `right_hand`, `back`, `waist`, `feet` by convention)
 
 appearance:
   scene:
-    model: sha256:d4e5f6...      # .glb — geometry, rig, materials, animations
+    model: sha256:d4e5f6...      # base model — geometry, rig, materials, animations
     animations:                  # additional clips keyed by state name
       attack: sha256:ccc333...
       cast: sha256:ddd444...
@@ -380,23 +387,38 @@ appearance:
 Scene fields:
 
 Field	Required	Purpose
-model	Yes	Content-addressed `.glb` file — the base model. Contains geometry, materials, skeleton (skin), and base animation clips. This is the single source of truth for 3D appearance.
-animations	No	Additional animation clips keyed by state name. Separate `.glb` files sharing the same skeleton. Override or extend clips in the base model.
-parts	No	Attachable sub-models keyed by slot name. Each is a `.glb` that attaches to a named node in the base model's skeleton. Equipment, accessories, modular customization.
+model	Yes	Content-addressed scene asset — the base model. Single source of truth for 3D appearance.
+animations	No	Additional animation clips keyed by state name. Separate assets sharing the same skeleton. Override or extend clips in the base model.
+parts	No	Attachable sub-models keyed by slot name. Each attaches to a named attachment point in the base model's skeleton.
 
-The base `model` carries everything a 3D client needs: mesh geometry, PBR materials (with any glTF extensions the domain wants), skeleton rig, and animation clips for standard states. A domain that ships a good base model is done — the client loads the `.glb` and renders it.
+The base `model` carries everything a 3D client needs. A domain that ships a good base model is done.
 
-`animations` adds or overrides clips. A domain can ship a base model with idle/walk/run baked in, then add domain-specific clips (attack, cast, emote_dance) as separate files sharing the same skeleton. The client merges them — base model clips plus additional clips form the full animation library for this entity.
+`animations` adds or overrides clips. A domain can ship a base model with idle/walk/run baked in, then add domain-specific clips (attack, cast, emote_dance) as separate assets sharing the same skeleton. The client merges them.
 
-`parts` enables modular customization without requiring unique models per entity configuration. The base model defines named nodes as attachment points (glTF nodes named `head`, `torso`, `left_hand`, `right_hand`, `back`, `waist`, `feet` by convention). Part `.glb` files attach to these nodes. A knight is the humanoid base model + `plate_torso` + `horned_helmet`. An archer is the same base model + `leather_torso` + `quiver`. Combinatorial variety from a bounded part library.
+`parts` enables modular customization without requiring unique models per entity configuration. The base model defines named attachment points. Part assets attach to these. A knight is the humanoid base model + `plate_torso` + `horned_helmet`. An archer is the same base model + `leather_torso` + `quiver`. Combinatorial variety from a bounded part library.
 
-Unknown parts are ignored — the entity renders without that attachment. Missing animation clips fall back to the base model's clips, then to idle. If the `.glb` fails entirely, the client falls back to Layer 2 (iconic), then Layer 1 (semantic). Degradation is always graceful.
+Unknown parts are ignored — the entity renders without that attachment. Missing animation clips fall back to the base model's clips, then to idle. If the scene asset fails entirely, the client falls back to Layer 2 (iconic), then Layer 1 (semantic). Degradation is always graceful.
 
-**Why glTF and not a custom scene format.** glTF is the industry standard. Blender, three.js, Unity, Godot, Babylon.js, and every major engine import/export it natively. Its PBR material model covers everything from basic matte surfaces to subsurface scattering, transmission, and iridescence through ratified Khronos extensions. Its binary container (`.glb`) is GPU-ready — no parsing overhead. Every tool in the 3D content pipeline speaks glTF. I don't want GDL competing with Khronos on scene description. GDL's job is the game layer — interaction, observation, theming. glTF's job is the content layer — geometry, materials, animation. Sharp boundary.
+**Baseline format: glTF.**
+
+Every 3D-capable GDL client MUST support glTF 2.0 (`.glb` binary container). glTF is the mandatory baseline — the format you can always count on, the way HTTP can always count on `text/html`.
+
+I chose glTF as the baseline because it's the only format with near-universal engine support (Blender, Unity, Godot, three.js, Babylon.js), a ratified extension ecosystem for advanced materials, and a GPU-ready binary container. It's the closest thing 3D has to JPEG — not perfect, but universally supported.
+
+But glTF is not the only format GDL will ever support. The `asset_formats` fidelity field handles this. A client declares what formats it supports:
+
+client_fidelity:
+  asset_formats: [glb, usdz]
+
+A domain that has assets in multiple formats picks the best match. A domain that only has `.glb` serves `.glb`. The fidelity mechanism already exists — format evolution doesn't require a spec change.
+
+If a future format supersedes glTF (neural radiance fields, gaussian splats, something not yet invented), domains can serve it to clients that declare support. Clients that only support `.glb` still work — they get the baseline. This is how `<img>` worked for 20 years with JPEG/PNG before WebP and AVIF arrived through `<picture>` and content negotiation. The baseline didn't change. New formats layered on top.
+
+What GDL does NOT do: name specific material extensions, shader models, or features of any format as spec-level concepts. "The scene model supports subsurface scattering" is a property of the format the domain chose, not a GDL guarantee. GDL guarantees the structure (model + animations + parts + attachment points). The format delivers the visual fidelity.
 
 **Animation State**
 
-Animation state is a GDL-level concept, not a glTF concept. It lives on the entity and arrives through the observation stream as property updates:
+Animation state is a GDL-level concept, not a scene format concept. It lives on the entity and arrives through the observation stream as property updates:
 
     # Simple — one state drives the whole skeleton
     animation: walk
@@ -408,7 +430,7 @@ Animation state is a GDL-level concept, not a glTF concept. It lives on the enti
       - state: attack
         layer: upper
 
-The state name maps to a clip in the entity's glTF model (or additional animations). For 2D clients, it maps to a sprite sheet row/frame. For text clients, it maps to a description ("The goblin attacks."). One observation delta, three rendering paths.
+The state name maps to a clip in the entity's scene model (or additional animations). For 2D clients, it maps to a sprite sheet row/frame. For text clients, it maps to a description ("The goblin attacks."). One observation delta, three rendering paths.
 
 Layer names are skeleton-dependent conventions. A humanoid rig defines `full`, `upper`, `lower`, `head`, `left_arm`, `right_arm`. A quadruped defines `full`, `front`, `rear`, `head`. Unknown layers are ignored. Single-string animation (`animation: walk`) is shorthand for `[{state: walk, layer: full}]`.
 
@@ -432,7 +454,7 @@ How the client transitions between states — blend trees, crossfade duration, I
 
 **Effects**
 
-Particle and visual effects are GDL-native, not glTF. glTF doesn't cover particle systems well, and effects need to work across all graphical client types (2D and 3D). Effects are lightweight descriptions that clients interpret according to their capability.
+Particle and visual effects are GDL-native, not part of the scene format. Scene formats generally don't cover particle systems well, and effects need to work across all graphical client types (2D and 3D). Effects are lightweight descriptions that clients interpret according to their capability.
 
 appearance:
   effects:
@@ -551,7 +573,7 @@ bridge	Solid walkable surface between points
 pipe	Cylindrical tube, may carry flowing content
 wire	Thin, taut line
 
-Bonds can reference appearance assets — a custom chain `.glb`, a particle effect for the beam. Same content-addressed model as entity appearance. Same fallback chain.
+Bonds can reference appearance assets — a custom chain model, a particle effect for the beam. Same content-addressed model as entity appearance. Same fallback chain.
 
 Bonds also support `appearance_ref` for shared definitions — 50 chains in a dungeon reference one chain appearance.
 
@@ -710,9 +732,9 @@ Fidelity fields are extensible — like everything else in GDL. A client that su
 The domain uses fidelity to:
 
     Choose spatial model. If the domain supports multiple layouts, pick the one that matches the client.
-    Filter appearance layers. A text client gets Layer 1 only. A 2D client gets iconic. A 3D client gets scene (glTF). Don't send `.glb` hashes to a text client.
+    Filter appearance layers. A text client gets Layer 1 only. A 2D client gets iconic. A 3D client gets scene. Don't send scene asset hashes to a text client.
     Limit entity count. Send the most relevant entities within the client's budget. A text client gets the 20 most important things. A 3D client gets 200.
-    Pick asset formats. Match the client's declared formats — `.glb` for 3D, `.png` for sprites.
+    Pick asset formats. Match the client's declared formats for scene assets, sprites, and audio.
     Pick media codecs. Match the client's codec support for media streams.
 
 Fidelity is a declaration, not a negotiation. The domain reads it and adapts. No back-and-forth. If the domain can't serve the client's capabilities at all (a 3D-only domain with a text-only client), it says so at bootstrap and the client can disconnect gracefully.
@@ -955,13 +977,13 @@ Renders a 12x8 grid. Barkeep Marta's `iconic.sprite` displays at position [6, 2]
 Uses: everything above + position, iconic (sprite, shape, palette), animation state, theme tokens
 3D Client
 
-Loads the tavern region's glTF scene assets. Barkeep Marta's `scene.model` is a `.glb` with a humanoid rig, PBR materials (cloth apron with `KHR_materials_sheen`, worn leather boots), and baked idle/walk/talk animation clips. `scene.parts` adds `apron` and `cloth_shirt` sub-models attached to her skeleton's named nodes. The client plays the `idle` clip from her glTF. Candlelight entity has `effects: [{type: fire, scale: 0.3}]` — the client runs a particle system. If the candlelight entity's glTF includes a `KHR_lights_punctual` point light, the client renders dynamic lighting. Spatial audio for tavern_murmur ambient. Player right-clicks Marta to see affordances in a radial menu.
+Loads the tavern region's scene assets. Barkeep Marta's `scene.model` contains a humanoid rig, PBR materials (cloth apron, worn leather boots), and baked idle/walk/talk animation clips. `scene.parts` adds `apron` and `cloth_shirt` sub-models attached to her skeleton's named nodes. The client plays the `idle` clip from her model. Candlelight entity has `effects: [{type: fire, scale: 0.3}]` — the client runs a particle system. If the candlelight entity's scene model includes a point light, the client renders dynamic lighting. Spatial audio for tavern_murmur ambient. Player right-clicks Marta to see affordances in a radial menu.
 
-Uses: everything above + scene (glTF model, parts, animations), animation state, effects, sound, theme tokens
+Uses: everything above + scene (model, parts, animations), animation state, effects, sound, theme tokens
 
 VR Client
 
-Same tavern, but you're standing in it. Head tracking renders the glTF scene at 90Hz from your eye position. Barkeep Marta's glTF skeleton drives full animation blending — her idle animation shifts weight, blinks, polishes a glass. The `KHR_materials_sheen` on her apron catches the candlelight with soft fabric reflection. `KHR_materials_volume` on the dusty bottle gives it translucent amber glass. Reaching toward the bottle triggers its proximity affordance — your hand enters the 0.3m grab range and the client highlights it. Squeeze to grab (affordance call with predicted: true), the bottle follows your hand locally while the server confirms. Spatial audio: Marta's voice stream positioned at her location. Candlelight effects render as volumetric particles with the fire palette. Another player says "nice place" — a chat event renders as a speech bubble above their head. Your voice input stream carries your response back.
+Same tavern, but you're standing in it. Head tracking renders the scene at 90Hz from your eye position. Barkeep Marta's skeleton drives full animation blending — her idle animation shifts weight, blinks, polishes a glass. The scene model's material properties on her apron catch the candlelight with soft fabric reflection. The dusty bottle's translucent material gives it amber glass. Reaching toward the bottle triggers its proximity affordance — your hand enters the 0.3m grab range and the client highlights it. Squeeze to grab (affordance call with predicted: true), the bottle follows your hand locally while the server confirms. Spatial audio: Marta's voice stream positioned at her location. Candlelight effects render as volumetric particles with the fire palette. Another player says "nice place" — a chat event renders as a speech bubble above their head. Your voice input stream carries your response back.
 
 Uses: everything above + orientation, input streams (head, hands, voice), media streams (Marta's voice), events (chat, sound), physics parameters, proximity affordances, haptic hints, comfort settings
 
@@ -970,7 +992,7 @@ The Vocabulary
 
 GDL defines mechanisms (kinds, categories, effect types, iconic shape vocabulary). The initial terms are listed above in their respective sections. The vocabulary is extensible without protocol changes — new terms are just new strings. Clients that don't recognize a term fall back to the category or ignore it.
 
-3D appearance is glTF — its vocabulary (materials, extensions, skeleton conventions) is Khronos's problem. GDL's vocabulary covers entity kinds, affordance categories, effect types, and iconic shape terms for 2D sprite selection.
+3D appearance is a format-negotiated scene asset (glTF `.glb` is the mandatory baseline). GDL defines the structure (model + animations + parts + attachment points). Material fidelity, skeleton features, and format-specific extensions are the scene format's concern, not GDL's. GDL's vocabulary covers entity kinds, affordance categories, effect types, and iconic shape terms for 2D sprite selection.
 
 Over time, commonly-used terms will become de facto standards. When 200 gards all use `shape: humanoid`, that's a standard. No committee needed. The same way HTML elements standardized through browser adoption, not W3C edicts (the edicts came after).
 
@@ -981,7 +1003,7 @@ Client UI chrome. GDL describes the world and domain panels, not the client's ow
 
 Physics simulation. GDL provides physics parameters (gravity, friction, collision rules) and spatial layers (collision geometry). The client runs local physics against these. But the physics engine itself is the client's choice — GDL doesn't specify simulation algorithms, integrator types, or solver iterations. Two clients simulating the same parameters may produce slightly different results. The domain is authoritative; clients predict and reconcile.
 
-Animation blending. GDL describes animation states (including layered body-region animation). The glTF model carries the skeleton and animation clips. How the client transitions between states — blend trees, crossfade duration, IK solvers — is the client's choice. Two clients playing the same `walk` → `attack` transition may blend differently. GDL describes which state to be in, not how to get there. Output streams carry authoritative bone transforms when the domain drives the skeleton directly (ragdoll, motion capture, procedural).
+Animation blending. GDL describes animation states (including layered body-region animation). The scene model carries the skeleton and animation clips. How the client transitions between states — blend trees, crossfade duration, IK solvers — is the client's choice. Two clients playing the same `walk` → `attack` transition may blend differently. GDL describes which state to be in, not how to get there. Output streams carry authoritative bone transforms when the domain drives the skeleton directly (ragdoll, motion capture, procedural).
 
 Audio design. GDL carries theme tokens for sound mood, sound asset references, media streams, sound events, and physical acoustic properties (volume, absorption, occlusion — see [GDL-extensions: Acoustic Environment](GDL-extensions.md#acoustic-environment)). Spatial audio mixing, music systems, reverb algorithms, and HRTF processing are client-side. The domain describes the physical acoustic environment. The client renders it.
 
@@ -998,23 +1020,23 @@ Regions are not entities. A region is a container. Entities are contents. Region
 
 Vocabulary is convention, not protocol. Entity kinds, affordance categories, property names, event types — these are initial conventions that communities extend. The protocol defines mechanisms (entities have a `kind` string, affordances have a `category` string). The specific terms (`agent`, `navigate`, `health`) are conventions that emerge from use. Like HTTP content types — `text/html` is not in the HTTP spec. GDL's `creature` kind should not be in the GDL spec either. I kept a small core set for bootstrapping, but they're conventions, not protocol.
 
-glTF for 3D, not a custom hint format. I considered building a vocabulary of shapes, skeletons, PBR surface hints, and animation layers as a GDL-native "hint" system for 3D clients. I got far enough to see the problem: GDL's hint layer would always be a subset of what glTF already standardizes, maintained by a smaller team, with less tooling support. Every gap — subsurface scattering, anisotropy, clearcoat, transmission, light types, LOD — was something Khronos had already solved through ratified extensions. GDL shouldn't compete with Khronos on scene description. GDL's job is the game layer (interaction, observation, theming). glTF's job is the content layer (geometry, materials, animation, lighting). Sharp boundary. The entire glTF extension ecosystem — present and future — is available to GDL domains for free.
+Existing scene formats for 3D, not a custom hint format. I considered building a vocabulary of shapes, skeletons, PBR surface hints, and animation layers as a GDL-native "hint" system for 3D clients. I got far enough to see the problem: any GDL-native scene vocabulary would always be a subset of what existing 3D formats already standardize, maintained by a smaller team, with less tooling support. GDL shouldn't compete with scene format developers on geometry, materials, and animation. GDL's job is the game layer (interaction, observation, theming). Scene formats handle the content layer (geometry, materials, animation, lighting). Sharp boundary. GDL defines the abstract structure a scene asset must have (model + animations + parts + attachment points) and names glTF `.glb` as the mandatory baseline, but the fidelity mechanism allows future formats without spec changes.
 
-Iconic layer for 2D, separate from glTF. 2D clients don't need a degraded version of 3D. They need sprites, icons, palettes, and a shape vocabulary for fallback sprite selection. The iconic layer is purpose-built for 2D rendering — not a "simple version" of the 3D format, but a proper 2D representation. A domain that cares about 2D provides iconic assets. A domain that only targets 3D skips it. A domain that targets both provides both layers. This is cleaner than the old approach where the same "hint" layer tried to serve both 2D sprite selection and 3D mesh assembly.
+Iconic layer for 2D, separate from 3D. 2D clients don't need a degraded version of 3D. They need sprites, icons, palettes, and a shape vocabulary for fallback sprite selection. The iconic layer is purpose-built for 2D rendering — not a "simple version" of the scene format, but a proper 2D representation. A domain that cares about 2D provides iconic assets. A domain that only targets 3D skips it. A domain that targets both provides both layers. This is cleaner than the old approach where the same "hint" layer tried to serve both 2D sprite selection and 3D mesh assembly.
 
-Animation state is GDL-level, not glTF-level. Animation states (`walk`, `attack`, layered body-region animation) are observation-stream concepts. They drive glTF clip playback for 3D, sprite sheet frame selection for 2D, and text descriptions for text clients. One delta, three rendering paths. The domain sends state names. The client maps them to whatever animation system it uses.
+Animation state is GDL-level, not scene-format-level. Animation states (`walk`, `attack`, layered body-region animation) are observation-stream concepts. They drive clip playback for 3D, sprite sheet frame selection for 2D, and text descriptions for text clients. One delta, three rendering paths. The domain sends state names. The client maps them to whatever animation system it uses.
 
 Animation layers over single state. A single `animation: attack` can't express "attacking while running" — real animation is layered, with different body regions doing different things simultaneously. Animation states can be a single string (simple case, drives the whole skeleton) or a list of `{state, layer}` pairs. Layer names are skeleton-dependent conventions (`upper`, `lower`, `head` for humanoids). Simple clients ignore layers and play the first state. Capable clients blend across body regions. The single-string shorthand keeps the simple case simple.
 
-Modular parts via glTF node attachment. An entity's glTF model defines named nodes as attachment points. Part `.glb` files attach to these nodes. A knight is the base humanoid model + `plate_torso` + `horned_helmet`. This gives domains combinatorial variety from a bounded part library without requiring unique models per entity configuration. The composition happens in glTF's scene graph — not in a GDL-specific assembly system.
+Modular parts via named attachment points. The scene model defines named nodes as attachment points. Part assets attach to these nodes. A knight is the base humanoid model + `plate_torso` + `horned_helmet`. This gives domains combinatorial variety from a bounded part library without requiring unique models per entity configuration. The composition happens in the scene format's scene graph — not in a GDL-specific assembly system.
 
-Effects are GDL-native. Particle and visual effects (fire, glow, trail, mist) are structured descriptions in GDL, not in glTF. glTF doesn't cover particle systems well, and effects need to work across both 2D and 3D clients. An effect anchored to `right_hand` with a fire palette is precise enough for a 3D client to place a particle system, and simple enough for a text client to print "flames lick from the goblin's hand."
+Effects are GDL-native. Particle and visual effects (fire, glow, trail, mist) are structured descriptions in GDL, not in the scene format. Scene formats generally don't cover particle systems well, and effects need to work across both 2D and 3D clients. An effect anchored to `right_hand` with a fire palette is precise enough for a 3D client to place a particle system, and simple enough for a text client to print "flames lick from the goblin's hand."
 
 Bonds are not entities. A rope between two entities is a visual relationship, not an independent thing. It has no affordances, no owner, no identity beyond its endpoints. Making it an entity would mean it needs a kind, properties, an existence lifecycle separate from its endpoints — all wrong. Bonds are a distinct concept: typed, visual connections between entities that the client renders based on endpoint positions. They live in the region alongside entities and update through the same observation stream. When either endpoint moves or is removed, the bond updates or disappears.
 
 Appearance references for shared definitions. A forest of 500 trees shouldn't send the same appearance block 500 times. `appearance_ref` points to a content-addressed appearance definition (covering all layers — iconic, scene, effects). Entities reference it by hash. The client fetches it once, caches it, and applies it to every entity with the same ref. Inline appearance fields override the reference (merge, not replace). When the client sees many entities with the same `appearance_ref` and no overrides, it can instance them — one draw call, many transforms. The content hash makes instancing trivial to detect.
 
-Output streams for continuous server→client data. The observation stream handles discrete state changes. Output streams handle continuous high-frequency data — bone poses, blend shapes, vertex deformation, physics state. They're the mirror of input streams (client→server). Same backpressure, same coalescing (latest frame wins). Output streams compose with animation: the animation state drives glTF clip playback, an output stream overrides it with live bone data. When the stream stops, the client falls back to clips. This keeps the observation model clean — property deltas for state, output streams for continuous data, events for happenings. Three channels, three update patterns, no mixing.
+Output streams for continuous server→client data. The observation stream handles discrete state changes. Output streams handle continuous high-frequency data — bone poses, blend shapes, vertex deformation, physics state. They're the mirror of input streams (client→server). Same backpressure, same coalescing (latest frame wins). Output streams compose with animation: the animation state drives clip playback from the scene model, an output stream overrides it with live bone data. When the stream stops, the client falls back to clips. This keeps the observation model clean — property deltas for state, output streams for continuous data, events for happenings. Three channels, three update patterns, no mixing.
 
 Region schema is minimal. Regions have: name, description, spatial model, extensible properties, theme, layers, entities, bonds. Physics parameters, comfort hints, tick rate, and environmental description all live in properties or theme tokens — not as first-class fields. This keeps the region schema stable as new use cases emerge. A VR fitness app adds `comfort.*` properties. A music visualizer adds `audio.*` properties. Neither requires a spec change.
 
@@ -1026,7 +1048,7 @@ Affordances over methods. The client doesn't call entity methods directly. It di
 
 No inheritance in the entity model. USD and Roblox use class hierarchies. ECS uses composition. GDL uses composition — an entity is a bag of kind + properties + affordances + appearance. No "class GenericSword with subclass Flamebrand." Inheritance creates coupling between entity definitions that breaks across domain boundaries. Composition lets two domains agree on individual properties without agreeing on a type hierarchy.
 
-Content-addressed assets, not URLs. Assets — glTF models, sprite sheets, sounds — are identified by content hash, not location. This means: deduplication across domains is free, integrity verification is free, and caching is trivial. Two domains that independently use the same goblin model share the content hash. The client fetches it once. This falls directly out of Leden's content store.
+Content-addressed assets, not URLs. Assets — scene models, sprite sheets, sounds — are identified by content hash, not location. This means: deduplication across domains is free, integrity verification is free, and caching is trivial. Two domains that independently use the same goblin model share the content hash. The client fetches it once. This falls directly out of Leden's content store.
 
 Entity data relationships are properties. `equipped_by: <ref>`, `contained_in: <ref>`, `group: <ref>`. Properties handle the common cases (equipment, containment, grouping). Visual relationships between entities (ropes, chains, beams) are bonds — a first-class concept with their own rendering and observation updates. Data relationships remain properties because they don't have visual representation or lifecycle concerns. If data relationships prove too limiting for complex entity graphs, they can be promoted to a first-class concept later.
 
@@ -1061,7 +1083,7 @@ Deferred
 
     Wire format. Binary vs text. Depends on Leden's wire format decision. GDL is a schema — the encoding is separate.
     Vocabulary registry. A formal list of kinds, effect types, iconic shapes, and affordance categories with semantic definitions. Needed before implementation, not before design.
-    LOD (Level of Detail). For 3D, glTF's `MSFT_lod` extension handles mesh and material LOD within the `.glb` — domains that care about distance-based simplification bake it into their assets. For observation-level LOD (sending fewer properties for distant entities), the mechanism exists (fidelity negotiation + filtered observation), but the specific policy is implementation-level.
+    LOD (Level of Detail). Scene formats that support LOD (e.g., glTF's `MSFT_lod`) let domains bake distance-based simplification into their assets. For observation-level LOD (sending fewer properties for distant entities), the mechanism exists (fidelity negotiation + filtered observation), but the specific policy is implementation-level.
     Accessibility. Screen reader hints, colorblind palettes, motor-impairment interaction modes. Important, but a layer on top of the base protocol, not a change to it.
     Versioning. GDL will evolve. Version negotiation should follow Leden's model (version handshake at session start, backward-compatible additions don't require version bumps). Details after v1 is stable.
     Entity visibility. Fog of war needs a visibility field on entities: visible, last_known (stale data with timestamp), hidden. The domain controls which entities the client knows about. last_known entities carry stale data that the client renders differently (grayed out, question mark). Deferred because most use cases don't need fog of war, and the viewport filtering mechanism handles the common case of "don't show what's far away."
