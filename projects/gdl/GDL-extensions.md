@@ -9,11 +9,13 @@ Each extension is independent. A 2D tile client adds spatial layers. A VR client
 
 | Extension | What |
 |-----------|------|
+| [Client Scripts](#client-scripts) | Deterministic Raido bytecode for client-side logic (animation, effects, sound, prediction) |
 | [Input Streams](#input-streams) | Continuous client→server data (movement, tracking, media input) |
 | [Output Streams](#output-streams) | Continuous server→client data (bone poses, blend shapes, physics, deformation) |
 | [Media Streams](#media-streams) | Audio/video from entities (voice, live performance, video) |
 | [Spatial Layers](#spatial-layers) | Dense data (voxels, heightmaps, tilemaps) |
 | [Physics Parameters](#physics-parameters) | Client-side simulation constants |
+| [Acoustic Environment](#acoustic-environment) | Physical acoustic properties for spatial audio |
 | [Nested Spaces](#nested-spaces) | Sub-spaces in entities, relative positioning |
 | [Reference Frames](#reference-frames) | Attachment without containment |
 | [Immersive Capabilities](#immersive-capabilities) | VR/AR/XR support |
@@ -23,6 +25,181 @@ Each extension is independent. A 2D tile client adds spatial layers. A VR client
 Extensions
 
 Everything above is the core — what every GDL client handles. Everything below is optional. A client declares which extensions it supports through fidelity negotiation. A domain that uses extensions works fine with clients that don't support them — the core still renders.
+Client Scripts
+
+Most GDL extensions move data between server and client — observation deltas, input streams, output streams. Client scripts flip the model: instead of streaming derived state (animation changes, effect updates, sound triggers), the domain ships deterministic code and the client derives the state locally. The server stops sending "now play walk" 200 times per second and instead sends the velocity property. The client's script decides the animation.
+
+This works because [Raido](../raido/) is deterministic by design. Fixed-point arithmetic, no floating-point drift, content-addressed bytecode. The domain can verify any client output by re-running the same script with the same inputs. Identical inputs + identical code = identical output, bitwise, on every platform.
+
+**Entity scripts**
+
+An entity can carry scripts keyed by output category:
+
+Entity:
+  ref: <leden_object_ref>
+  kind: creature
+  name: "Goblin Scout"
+  properties:
+    velocity: 2.5
+    health: 30
+    attacking: false
+    surface: stone
+  scripts:
+    animation: sha256:abc123...
+    effects: sha256:def456...
+    sound: sha256:789abc...
+
+Script categories:
+
+Category	Output type	What the script produces
+animation	Animation state (string or layered list)	Which animation clip to play, derived from properties
+effects	Effect list	Active effects and their parameters (fire intensity, trail length)
+sound	Sound trigger list	Sounds to play this frame (footstep on stone, sword impact)
+predict	Position/property predictions	Client-side movement and physics prediction
+
+Each category is a separate Raido script — a separate content-addressed bytecode blob. They run independently. A domain can ship an animation script without a sound script. Categories are independent because their outputs are independent — animation doesn't feed into sound. A client that supports animation scripts but not sound scripts runs what it can.
+
+**Region scripts**
+
+Regions can carry scripts for environment-level logic:
+
+Region:
+  name: "Sunset Valley"
+  properties:
+    time_of_day: 0.75
+    weather: clear
+    wind_speed: 3.0
+  scripts:
+    atmosphere: sha256:aaa111...
+    ambient: sha256:bbb222...
+    physics: sha256:ccc333...
+
+Region script categories:
+
+Category	Output type	What the script produces
+atmosphere	Theme token overrides	Day/night cycle, weather-driven lighting/fog changes
+ambient	Sound trigger list	Environmental sounds derived from time, weather, location
+physics	Physics state	Client-side physics simulation from parameters + spatial layers
+procedural	Spatial data / entity hints	Terrain generation, vegetation placement from seeds
+
+Region scripts run once per frame (or at a domain-specified tick rate), not per-entity. An atmosphere script that takes `time_of_day` and produces `atmosphere.ambient_intensity: 0.3, atmosphere.fog_density: 0.6` replaces hundreds of `theme_update` deltas per day/night cycle with a single property update.
+
+**Script interface**
+
+A Raido script in GDL has a constrained interface. It's a pure function from inputs to outputs.
+
+Inputs (read-only):
+
+Input	Available to	Description
+entity.properties	Entity scripts	All properties on this entity
+region.properties	All scripts	Region-level properties (time_of_day, weather, physics.*)
+time.delta	All scripts	Seconds since last frame (fixed-point)
+time.elapsed	All scripts	Seconds since script started (fixed-point)
+time.wall	All scripts	Wall-clock time from domain (fixed-point seconds since epoch)
+
+Scripts cannot read other entities, call affordances, access the network, or mutate authoritative state. They read properties the server sends and produce derived visual/audio/physics state.
+
+Outputs (per category):
+
+The script's return value is interpreted according to its category. An animation script returns a string or layered list. An effects script returns an array of effect descriptors. A sound script returns an array of sound triggers. The output types match what GDL already defines for these concepts.
+
+**Host functions**
+
+Raido's host function mechanism lets the client expose performance-critical operations to scripts. The domain's script calls them by name. The client implements them in native code or WASM.
+
+Standard host functions that GDL clients SHOULD provide to scripts:
+
+Function	Signature	Purpose
+noise_2d(x, y, seed)	(number, number, int) → number	2D simplex/perlin noise (deterministic, fixed-point)
+noise_3d(x, y, z, seed)	(number, number, number, int) → number	3D noise
+distance(x1, y1, x2, y2)	(number, number, number, number) → number	2D distance
+distance_3d(x1, y1, z1, x2, y2, z2)	(number × 6) → number	3D distance
+lerp(a, b, t)	(number, number, number) → number	Linear interpolation
+clamp(v, min, max)	(number, number, number) → number	Clamp value to range
+random(seed)	(int) → number	Deterministic PRNG (0.0–1.0)
+
+These are the math primitives that scripts need but shouldn't implement in interpreted bytecode. The client runs them at native speed. They're all deterministic — same inputs, same output — so they don't break the verification guarantee.
+
+The host function list is extensible through fidelity. A client can declare additional host functions it provides:
+
+client_fidelity:
+  scripts: true
+  script_host_functions: [noise_2d, noise_3d, distance, lerp, clamp, random, physics_step, raycast]
+
+A domain that uses `raycast` in its scripts only works with clients that declare it. A domain that sticks to the standard set works everywhere.
+
+**Resource limits**
+
+Client scripts run per-entity per-frame. Resource limits prevent a malicious or buggy domain from degrading the client.
+
+Limit	Default	Behavior when exceeded
+Fuel (instructions per frame)	10,000 per entity script	Script halted, falls back to server-driven state
+Arena (memory)	64 KB per entity script	Script halted, falls back
+Call depth	64	Script halted, falls back
+
+These are Raido's existing resource limits — not a new mechanism. The client sets the budget per script invocation. A script that exceeds it is killed and the client falls back to the server-driven model for that entity. The entity still renders — it just gets animation states from observation deltas instead of local computation.
+
+Region scripts get higher budgets (they run once per frame, not per-entity):
+
+Limit	Default
+Fuel	100,000 per frame
+Arena	256 KB
+Call depth	128
+
+Clients can adjust these based on hardware. A mobile client might halve the fuel budget. A desktop VR client might double it.
+
+**Verification**
+
+The domain doesn't trust the client blindly. It verifies.
+
+The verification model has three levels, applied at the domain's discretion:
+
+1. **No verification.** The domain trusts the client for purely cosmetic scripts (animation, effects, sound). If the client cheats on animation state, it only hurts its own rendering. Most scripts fall here — the domain doesn't care if a goblin's walk cycle is wrong on one client.
+
+2. **Spot-check verification.** For prediction scripts (movement, physics), the domain periodically re-runs the script with the same inputs and compares the client's reported state. If they diverge, the domain sends an authoritative correction. The check interval is the domain's choice — every 500ms, every 5 seconds, on suspicious behavior. This is the same model every multiplayer game uses for anti-cheat, but with a mathematical guarantee: Raido's determinism means honest clients ALWAYS match.
+
+3. **Full verification.** For high-stakes state (competitive games, economic transactions), the domain runs every frame server-side and compares. This is equivalent to the current server-driven model in computation cost, but the client still gets zero-latency local execution. The verification catches cheating without adding latency to the honest path.
+
+The domain picks the verification level per script category. Animation scripts get level 1. Movement prediction gets level 2. Competitive game physics gets level 3.
+
+**Fallback**
+
+A client that doesn't support client scripts (`scripts: false` or absent in fidelity) falls back to the current model: the domain sends animation states, effect changes, and sound events through the observation stream. The domain detects this from fidelity and sends the derived state that scripts would have produced.
+
+A client that supports scripts but encounters one it can't run (fuel exceeded, missing host function, corrupted bytecode) falls back per-script. The entity's animation script fails? The client uses server-sent animation states for that entity. The region's atmosphere script fails? The client uses server-sent theme updates. Fallback is per-script, not all-or-nothing.
+
+This is the same progressive enhancement pattern as everything else in GDL. Scripts are an optimization and latency improvement, not a requirement. The server-driven model is always the fallback. A GDL world works without client scripts — it just has more latency on animation transitions and more observation stream traffic.
+
+**Script updates**
+
+Scripts are content-addressed. When the domain deploys new logic, the entity's `scripts` field changes through a normal `entity_update` delta — the hash changes, the client fetches the new bytecode from Leden's content store. Same mechanism as any property change. No special update protocol.
+
+Region scripts update through the observation stream as region field changes. The client sees a new hash, fetches the new bytecode, and starts executing it next frame. The old script's state is discarded — Raido scripts are stateless between frames (they're pure functions of properties and time).
+
+Script updates are rare — they represent logic changes (a domain patch, a new ability), not data changes. Data flows through entity properties. Logic flows through script bytecode. Different cadences, same delivery mechanism.
+
+**Script sharing**
+
+Scripts are content-addressed blobs, like scene assets. Two entities with the same animation logic share the same script hash. The client fetches the bytecode once and runs it for both entities with their respective properties as input.
+
+A forest of 500 goblins with the same animation script: one bytecode fetch, 500 executions per frame with different property inputs. The content hash makes deduplication automatic — same as `appearance_ref` for visual assets.
+
+Domains can also share scripts across entity types. A generic "bipedal locomotion" script works for goblins, guards, and players — it reads `velocity` and `health`, outputs animation state. The script doesn't know what kind of entity it's attached to. It reads properties and produces output.
+
+**Scripts in nested spaces**
+
+Entities inside sub-spaces have scripts that work identically to top-level entities. The script reads the entity's own properties — it doesn't know or care whether the entity is in a sub-space or the root region. Position is relative to the containing space, but scripts don't read position (that's a GDL rendering concern, not a script concern). Region-level scripts (atmosphere, ambient) run on the containing region, not the sub-space — sub-spaces inherit their region's environmental logic.
+
+**What this replaces**
+
+Client scripts don't replace output streams, input streams, or the observation stream. They complement them:
+
+- **Observation stream:** Authoritative state changes (health changed, entity entered, door opened). Always needed.
+- **Client scripts:** Derived visual/audio state from properties (animation, effects, sound, prediction). Reduces observation traffic.
+- **Output streams:** High-frequency continuous data the domain must drive (motion capture, ragdoll, live performances). Scripts can't replace these — they require server-side data the client doesn't have.
+- **Input streams:** Client→server continuous data (movement, tracking). Orthogonal to scripts.
+
+The relationship: the observation stream sends properties. Client scripts consume properties and produce visual state. Output streams override script output when the domain drives directly. Input streams flow the other direction entirely.
 Input Streams
 
 Affordances model discrete actions: "attack", "open door", "move to [5, 3]". Some interactions are continuous high-frequency data that doesn't fit the request-response pattern: player movement (gamepad stick at 60Hz), mouse aim, VR head/hand pose at 90Hz. Issuing an affordance call per input frame is too heavyweight — that's 90 method calls per second per tracked point.
@@ -119,9 +296,9 @@ bytes	Raw bytes	Domain-specific continuous data
 
 The client subscribes to output streams through Leden observation. The domain publishes frames at the declared rate. Same backpressure and coalescing as input streams — if the client can't keep up, it gets the latest frame, not a queue of stale ones. The client renders what it receives; interpolation between frames is a client concern.
 
-Output streams compose with skeletal animation. The `animation` hint tells the client which clip to play from its library. An output stream with `type: skeleton_pose` overrides the clip with live bone data — the domain drives the skeleton directly. This is how motion capture, physics ragdoll, and procedural animation work. When the output stream stops (entity goes back to scripted behavior), the client falls back to clip-based animation from the `animation` state.
+Output streams compose with skeletal animation. The animation state tells the client which clip to play from the scene model. An output stream with `type: skeleton_pose` overrides the clip with live bone data — the domain drives the skeleton directly. This is how motion capture, physics ragdoll, and procedural animation work. When the output stream stops (entity goes back to scripted behavior), the client falls back to clip-based animation from the scene model's animation library.
 
-A client that doesn't support output streams ignores the `output_streams` field. It plays animation clips from the `animation` hint. The dancer does a canned dance animation instead of the motion-captured performance. Graceful degradation.
+A client that doesn't support output streams ignores the `output_streams` field. It plays animation clips from the scene model based on the animation state. The dancer does a canned dance animation instead of the motion-captured performance. Graceful degradation.
 
 For **client-side prediction with continuous physics**: the domain sends physics parameters (gravity, friction) and the client runs local simulation. When the domain's authoritative output stream arrives, the client reconciles. This is the same predict-and-reconcile loop every multiplayer game uses, but expressed through GDL's existing mechanisms: physics parameters describe the rules, output streams carry the authoritative state, and the client interpolates between predictions and corrections.
 
@@ -184,7 +361,7 @@ The domain expresses this through stream capabilities. A performer's stream is o
 
 Clients don't need to know the routing. They subscribe to an entity's stream. Whether the audio arrives via direct connection or domain relay is transparent — Leden handles it. The only visible difference is latency.
 
-Pre-recorded audio (a jukebox playing a song) is a content-addressed asset, not a stream. The client fetches it from Leden's content store and plays it locally. Live audio is a stream. GDL describes both — `appearance.assets.sound` for pre-recorded, `streams` for live.
+Pre-recorded audio (a jukebox playing a song) is a content-addressed asset, not a stream. The client fetches it from Leden's content store and plays it locally. Live audio is a stream. GDL describes both — `appearance.sound` for pre-recorded, `streams` for live.
 
 A client that doesn't support media streams ignores the `streams` field entirely. The bard is still there, you just can't hear them sing. Text clients render: "Bard Elara strums a melody on her lute." The description carries the experience for clients that can't play audio.
 Spatial Layers
@@ -326,6 +503,89 @@ properties:
 A VR client uses physics parameters + spatial layers to simulate hand interaction locally: the hand collides with objects, objects have mass and friction, the client predicts the physical result and sends it to the domain for validation. Without physics parameters, VR interaction would require a server round-trip for every hand movement against every object. That's 200ms input lag on touching a table. Unacceptable.
 
 A text client ignores physics parameters. A 2D client might use gravity + friction for simple character movement. A 3D client uses the full set. A VR client adds hand physics on top. Progressive enhancement.
+Acoustic Environment
+
+Sound is half the immersion and the biggest gap in most world description formats. The temptation is to specify reverb presets, attenuation curves, HRTF profiles, and DSP parameters. That's the path to a 2026-era spec that ages like VRML's AudioClip node.
+
+The principle: **describe the physical acoustic properties of spaces and surfaces. Let clients derive the audio processing.** Absorption coefficients, room volume, and surface materials are physics — they don't go out of date. Reverb algorithms, spatial audio engines, and codec implementations change every few years. GDL describes the former. Clients provide the latter.
+
+This is the same pattern as physics parameters (describe gravity and friction, not the integrator) and the same pattern as glTF materials (describe roughness and metallic factor, not the shader).
+
+**Region acoustic properties**
+
+Regions carry acoustic properties in the `acoustic.*` namespace:
+
+properties:
+  acoustic.volume: 450.0        # room volume in cubic meters
+  acoustic.openness: 0.0        # 0.0 = fully enclosed, 1.0 = open air
+  acoustic.absorption: 0.4      # average surface absorption (0.0 = perfect reflection, 1.0 = anechoic)
+
+Three properties. That's it for the region.
+
+Property	Type	Purpose
+acoustic.volume	float	Volume of the space in cubic meters. A small room is 30. A cathedral is 20,000. Open air is absent or very large. The client derives reverb time from volume + absorption (Sabine equation or better).
+acoustic.openness	float (0–1)	How enclosed the space is. 0.0 = sealed room (full reverb). 1.0 = open field (no reflections). Values between = partial enclosure (covered patio, forest canopy, cave mouth). Clients use this to blend between indoor and outdoor audio models.
+acoustic.absorption	float (0–1)	Average acoustic absorption of the space's surfaces. 0.0 = hard reflective surfaces (tile, stone, metal). 1.0 = fully absorptive (recording studio foam, deep snow). Clients use this with volume to derive reverb decay time. A large stone cathedral (volume: 20000, absorption: 0.1) produces long reverb. A carpeted office (volume: 80, absorption: 0.7) produces short, muffled reverb.
+
+Why these three and not more? Because `volume + openness + absorption` is the minimum information a spatial audio engine needs to produce convincing environmental audio. Any modern reverb algorithm (convolution, ray-traced, algorithmic) can take these as inputs. Adding more (surface material breakdown, room dimensions, reflection patterns) would couple GDL to specific propagation models. If a future audio engine needs more detail, it can derive it from the spatial layers (the room geometry is already there in mesh_3d or heightmap data).
+
+A domain that doesn't set acoustic properties gets client defaults. A domain that sets them gets acoustics that match the space. A domain that wants precise acoustic control ships a convolution reverb impulse response as a content-addressed asset in the theme:
+
+theme:
+  tokens:
+    sound.impulse_response: sha256:abc123...
+
+This is the escape hatch. An impulse response IS the acoustic environment, captured or synthesized. A client that supports convolution reverb uses it directly. A client that doesn't falls back to deriving reverb from the acoustic properties. Progressive enhancement.
+
+**Entity acoustic properties**
+
+Entities that emit or block sound carry acoustic properties:
+
+properties:
+  acoustic.occlusion: 0.8     # how much this entity blocks sound (0 = transparent, 1 = solid wall)
+  acoustic.emission_radius: 5.0  # how far this entity's sound carries (meters, before falloff)
+
+Property	Type	Purpose
+acoustic.occlusion	float (0–1)	How much this entity blocks sound passing through it. A stone wall is 0.95. A curtain is 0.2. A glass window is 0.5. An open doorway is 0.0. Clients use this for occlusion calculations — sound from behind a wall is muffled proportional to occlusion.
+acoustic.emission_radius	float	The distance (in region units) at which this entity's sound is at full volume. Beyond this, falloff applies. A whisper is 1.0. A person talking is 5.0. A church bell is 50.0. Clients apply distance falloff beyond this radius using whatever attenuation model they prefer.
+
+That's it. Two properties per entity.
+
+No attenuation curve specification. Distance falloff (inverse square, linear, logarithmic) is a client rendering decision — the same way blend tree transitions are a client animation decision. `emission_radius` tells the client where full volume ends. How fast it falls off from there is the client's audio engine's business. Specifying a falloff curve would couple GDL to a particular spatial audio model. Inverse square is physically correct, but some engines use modified curves for gameplay feel. Let them.
+
+No HRTF specification. Head-related transfer functions are client-side, hardware-dependent, and evolving rapidly (personalized HRTF from ear scans, ML-derived HRTF). GDL provides position and the physical environment. The client's spatial audio engine does the rest.
+
+**Acoustic zones**
+
+Large regions may have different acoustic areas — a cathedral with a side chapel, an outdoor area with a covered walkway. Acoustic zones are entities with `kind: marker` that override the region's acoustic properties within a radius:
+
+Entity:
+  ref: <leden_object_ref>
+  kind: marker
+  name: "Side Chapel"
+  position: [15, 8, 3]
+  properties:
+    acoustic.volume: 80.0
+    acoustic.openness: 0.0
+    acoustic.absorption: 0.3
+    acoustic.radius: 6.0       # zone radius in region units
+    acoustic.blend: 2.0        # transition distance (meters) for crossfade
+
+When the listener enters the zone radius, the client blends from the region's acoustic properties to the zone's. `acoustic.blend` controls the crossfade distance — 2.0 means the transition happens over 2 meters. A hard boundary (doorway) uses `blend: 0.5`. A gradual transition (walking from outside into a cave) uses `blend: 5.0`.
+
+Zones are just marker entities with acoustic properties. They arrive and update through the normal observation stream. No new mechanism.
+
+**What this deliberately doesn't cover**
+
+Audio mixing. How loud music is relative to dialogue, how many simultaneous sources to render, whether to duck ambient when combat starts — all client concerns. The domain provides sources and their physical properties. The client mixes.
+
+Music systems. Music cues, crossfades, layered adaptive music, beat-synced transitions — these are domain behavior expressed through events and theme tokens (`sound.music_mood` in GDL-style). Not acoustic environment.
+
+Codec negotiation. What audio format to use for streams — Leden's concern, declared in fidelity. GDL doesn't name codecs.
+
+Propagation simulation. Ray-traced audio, phonon simulation, wave-based diffraction — client-side rendering choices. GDL provides the physical properties. Clients that do ray-traced audio can use spatial layer geometry for reflections. Clients that don't can use the absorption coefficient for a simpler reverb model. Both work from the same data.
+
+A text client ignores all acoustic properties. A 2D client might use `acoustic.openness` to pick between "indoor" and "outdoor" ambient sound mixing. A 3D client derives full spatial reverb from volume + absorption + openness. A VR client adds HRTF spatialization, occlusion ray-casting against spatial layers, and distance-based falloff from emission_radius. Progressive enhancement, as always.
 Nested Spaces
 
 A ship on an ocean. A building in a city. A chest in a dungeon room. These are entities that contain other entities in their own spatial coordinate system. Without nested spaces, entering a ship means a region transition through a portal — you can't see the ship's deck and the ocean simultaneously. That's wrong for any game where vehicles, buildings, or containers have interiors visible from outside.
@@ -450,4 +710,6 @@ Affordance:
 
 Haptic fields are hints. VR clients with haptic controllers apply them. All other clients ignore them. A text client rendering a proximity affordance shows it as a regular menu item.
 
-Immersive clients are just clients. They render GDL regions, observe entities, call affordance methods. The immersive extensions (input streams, proximity mode, physics, comfort, haptics) are all progressive enhancements. A domain that sends them works fine with a non-immersive client — the extensions are ignored. A VR client connecting to a non-immersive domain works fine too — it uses standard 3D rendering and falls back to menu-based affordances.
+VR and client scripts: Immersive clients benefit heavily from client scripts. A `predict` script runs movement and hand physics locally at 90Hz — no server round-trip per frame. The domain ships the physics rules as Raido bytecode, the client executes them against input stream data (hand position, head pose) and physics parameters. The domain spot-checks periodically. Without scripts, VR physics requires either server-driven output streams (latency) or affordance-per-interaction (too coarse). With scripts, the client runs the same physics the domain would, locally, at display refresh rate.
+
+Immersive clients are just clients. They render GDL regions, observe entities, call affordance methods. The immersive extensions (input streams, proximity mode, physics, comfort, haptics, client scripts) are all progressive enhancements. A domain that sends them works fine with a non-immersive client — the extensions are ignored. A VR client connecting to a non-immersive domain works fine too — it uses standard 3D rendering and falls back to menu-based affordances.
