@@ -156,6 +156,8 @@ entity appearance:
 
 The domain level is the brand. The region level is the scene. The entity level is the individual. Last writer wins. Entity beats region. Region beats domain. No complex specificity rules.
 
+Region-level atmosphere scripts (see [GDL-extensions: Client Scripts](GDL-extensions.md#client-scripts)) add a computed layer: the script outputs token overrides derived from region properties (time_of_day, weather). Script outputs override static region theme tokens of the same name but are overridden by entity appearance. The full precedence: domain theme → region theme → region script outputs → entity appearance. Scripts only affect tokens they explicitly produce; other tokens cascade normally.
+
 A domain with 50 regions doesn't repeat its color palette 50 times. It defines it once. Dark dungeons override atmosphere tokens. The bright overworld overrides them differently. Individual entities stand out when they need to.
 
 Token inheritance is merge, not replace. A region that sets `atmosphere.fog_density: 0.8` inherits all other domain tokens unchanged. Only the explicitly overridden tokens change.
@@ -279,7 +281,11 @@ Theme changes arrive through the observation stream as a `theme_update` delta on
 Update	Payload	When
 theme_update	Changed tokens and/or hints	Region visual identity changes
 
-Token updates are partial — only changed tokens are sent. The client merges them with the current token set. This enables smooth transitions: the domain sends `atmosphere.ambient_intensity: 0.1` → `0.5` over several updates to simulate dawn.
+Token updates are partial — only changed tokens are sent. The client merges them with the current token set.
+
+For dynamic environments (day/night cycles, weather), domains can use region-level atmosphere scripts (see [GDL-extensions: Client Scripts](GDL-extensions.md#client-scripts)) instead of streaming `theme_update` deltas. An atmosphere script takes `time_of_day` as input and computes `atmosphere.ambient_intensity`, `atmosphere.fog_density`, etc. locally on the client. This replaces hundreds of per-frame token updates with a single property change — the domain sends `time_of_day: 0.75` and the client derives the entire atmosphere. More efficient, zero-latency transitions, and the domain can verify the output because the script is deterministic.
+
+`theme_update` deltas remain the mechanism for discrete token changes (quest completion shifts mood, portal arrival changes palette) and for clients that don't support scripts.
 
 Stylesheet changes send a new content hash. The client fetches the new blob and re-applies. Stylesheet swaps are infrequent (portal transitions, major events), not per-frame.
 How Clients Consume Themes — Full Example
@@ -332,7 +338,7 @@ Structured hints AND tokens, not OR. Some people will say "just use tokens" or "
 CSS for panels, tokens for worlds. The stylesheet handles document-like concerns (panel layout, fonts, borders). Tokens handle world-like concerns (fog, lighting, entity treatment). Mixing them in one system would mean CSS parsing is required for atmosphere rendering, which kills the "buildable in a weekend" promise for simple clients.
 Open Questions
 
-Token animation. Should tokens support transition hints? `atmosphere.ambient_intensity: 0.5 [transition: 2s]` would tell the client to smoothly interpolate over 2 seconds instead of snapping. The domain can fake this by sending multiple updates, but that's chattier. A built-in transition hint is cleaner — but adds complexity to the token format. For now, domains send incremental updates and clients interpolate at their own rate.
+Token animation. Resolved: no transition hint syntax. Region-level atmosphere scripts (see [GDL-extensions: Client Scripts](GDL-extensions.md#client-scripts)) handle this natively. An atmosphere script takes `time_of_day` and computes smooth token values over time — the interpolation happens in Raido, not in the token format. For domains without scripts, clients interpolate `theme_update` deltas at their own rate. Adding transition hints to the token format would couple GDL-style to a specific interpolation model and duplicate what scripts already do.
 
 Audio token depth. The sound.* namespace here stays shallow — ambient layer, music mood, footstep style. These are mood/identity tokens (what the domain sounds like), not acoustic environment parameters. Physical acoustics (room volume, absorption, occlusion, emission radius) are specified in [GDL-extensions: Acoustic Environment](GDL-extensions.md#acoustic-environment) as region and entity properties. The split: GDL-style tokens say "this place sounds dark and gritty." Acoustic properties say "this room is 450 cubic meters of stone with 0.1 absorption." Different concerns, different specs.
 

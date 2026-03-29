@@ -170,6 +170,26 @@ A client that supports scripts but encounters one it can't run (fuel exceeded, m
 
 This is the same progressive enhancement pattern as everything else in GDL. Scripts are an optimization and latency improvement, not a requirement. The server-driven model is always the fallback. A GDL world works without client scripts — it just has more latency on animation transitions and more observation stream traffic.
 
+**Script updates**
+
+Scripts are content-addressed. When the domain deploys new logic, the entity's `scripts` field changes through a normal `entity_update` delta — the hash changes, the client fetches the new bytecode from Leden's content store. Same mechanism as any property change. No special update protocol.
+
+Region scripts update through the observation stream as region field changes. The client sees a new hash, fetches the new bytecode, and starts executing it next frame. The old script's state is discarded — Raido scripts are stateless between frames (they're pure functions of properties and time).
+
+Script updates are rare — they represent logic changes (a domain patch, a new ability), not data changes. Data flows through entity properties. Logic flows through script bytecode. Different cadences, same delivery mechanism.
+
+**Script sharing**
+
+Scripts are content-addressed blobs, like scene assets. Two entities with the same animation logic share the same script hash. The client fetches the bytecode once and runs it for both entities with their respective properties as input.
+
+A forest of 500 goblins with the same animation script: one bytecode fetch, 500 executions per frame with different property inputs. The content hash makes deduplication automatic — same as `appearance_ref` for visual assets.
+
+Domains can also share scripts across entity types. A generic "bipedal locomotion" script works for goblins, guards, and players — it reads `velocity` and `health`, outputs animation state. The script doesn't know what kind of entity it's attached to. It reads properties and produces output.
+
+**Scripts in nested spaces**
+
+Entities inside sub-spaces have scripts that work identically to top-level entities. The script reads the entity's own properties — it doesn't know or care whether the entity is in a sub-space or the root region. Position is relative to the containing space, but scripts don't read position (that's a GDL rendering concern, not a script concern). Region-level scripts (atmosphere, ambient) run on the containing region, not the sub-space — sub-spaces inherit their region's environmental logic.
+
 **What this replaces**
 
 Client scripts don't replace output streams, input streams, or the observation stream. They complement them:
@@ -690,4 +710,6 @@ Affordance:
 
 Haptic fields are hints. VR clients with haptic controllers apply them. All other clients ignore them. A text client rendering a proximity affordance shows it as a regular menu item.
 
-Immersive clients are just clients. They render GDL regions, observe entities, call affordance methods. The immersive extensions (input streams, proximity mode, physics, comfort, haptics) are all progressive enhancements. A domain that sends them works fine with a non-immersive client — the extensions are ignored. A VR client connecting to a non-immersive domain works fine too — it uses standard 3D rendering and falls back to menu-based affordances.
+VR and client scripts: Immersive clients benefit heavily from client scripts. A `predict` script runs movement and hand physics locally at 90Hz — no server round-trip per frame. The domain ships the physics rules as Raido bytecode, the client executes them against input stream data (hand position, head pose) and physics parameters. The domain spot-checks periodically. Without scripts, VR physics requires either server-driven output streams (latency) or affordance-per-interaction (too coarse). With scripts, the client runs the same physics the domain would, locally, at display refresh rate.
+
+Immersive clients are just clients. They render GDL regions, observe entities, call affordance methods. The immersive extensions (input streams, proximity mode, physics, comfort, haptics, client scripts) are all progressive enhancements. A domain that sends them works fine with a non-immersive client — the extensions are ignored. A VR client connecting to a non-immersive domain works fine too — it uses standard 3D rendering and falls back to menu-based affordances.

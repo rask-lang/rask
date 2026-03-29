@@ -534,8 +534,10 @@ Bond:
   to: <dock_ref>
   to_anchor: cleat
   appearance:
-    surface: { base: fiber, roughness: 0.9 }
-    palette: [#8b7355]
+    iconic:
+      palette: [#8b7355]
+    scene:
+      model: sha256:rope01...
   properties:
     tension: 0.7
     sag: 0.3
@@ -550,7 +552,7 @@ from	Yes	Source entity ref
 from_anchor	No	Attachment point on source (default: self)
 to	Yes	Target entity ref
 to_anchor	No	Attachment point on target (default: self)
-appearance	No	Visual properties — surface, palette, assets (same structure as entity appearance)
+appearance	No	Same layer structure as entity appearance (iconic, scene). Simpler in practice — most bonds use `type` + `properties` for rendering and only need appearance for custom visuals.
 properties	No	Extensible key-value data (tension, sag, thickness, energy, ...)
 
 Bonds live in the region alongside entities. They arrive in the region snapshot and update through the observation stream:
@@ -718,19 +720,31 @@ client_fidelity:
   spatial_preference: grid_2d
   scripts: true
 
-Field	Purpose
-rendering	What rendering modes the client supports (ordered by preference)
-max_entities	How many entities the client can handle at once
-asset_formats	What asset formats the client can load (glb for 3D scenes, png for sprites/icons, ogg/mp3 for audio)
-scripts	Whether the client can execute Raido bytecode for client-side logic (animation, effects, sound, prediction)
-interaction	Input methods available
-audio	Whether the client can play audio
-media_codecs	Audio/video codecs the client supports (for media streams)
-spatial_preference	Preferred spatial model (domain may override)
-panels	Whether the client can render sandboxed web panels (bool)
-immersive	VR/AR/XR capabilities (see Immersive Capabilities)
+Core fidelity fields:
 
-Fidelity fields are extensible — like everything else in GDL. A client that supports physics declares `physics: true`. A client that handles nested spaces declares `nested_spaces: true`. The domain reads what it recognizes and ignores the rest. No fidelity field requires a spec change to add.
+Field	Type	Purpose
+rendering	string list	What rendering modes the client supports (ordered by preference)
+max_entities	int	How many entities the client can handle at once
+asset_formats	string list	What asset formats the client can load (glb for 3D scenes, png for sprites/icons, ogg/mp3 for audio)
+interaction	string list	Input methods available
+audio	bool	Whether the client can play audio
+media_codecs	string list	Audio/video codecs the client supports (for media streams)
+spatial_preference	string	Preferred spatial model (domain may override)
+panels	bool	Whether the client can render sandboxed web panels
+
+Extension fidelity fields (see [GDL-extensions](GDL-extensions.md)):
+
+Field	Type	Purpose
+scripts	bool	Client can execute Raido bytecode for client-side logic (animation, effects, sound, prediction)
+input_streams	bool	Client can send continuous data to server (movement, tracking)
+output_streams	bool	Client can receive continuous data from server (bone poses, blend shapes)
+media_streams	bool	Client can receive audio/video streams from entities
+spatial_layers	bool	Client can render dense spatial data (heightmaps, tilemaps, voxels)
+acoustic	bool	Client supports acoustic environment properties for spatial audio
+nested_spaces	bool	Client supports entities with sub-spaces and relative positioning
+immersive	object	VR/AR/XR capabilities — structured: `{type, tracking, room_scale, controllers, refresh_rate}` (see [Immersive Capabilities](GDL-extensions.md#immersive-capabilities))
+
+Fidelity fields are extensible — like everything else in GDL. The domain reads what it recognizes and ignores the rest. No fidelity field requires a spec change to add.
 
 The domain uses fidelity to:
 
@@ -739,6 +753,7 @@ The domain uses fidelity to:
     Limit entity count. Send the most relevant entities within the client's budget. A text client gets the 20 most important things. A 3D client gets 200.
     Pick asset formats. Match the client's declared formats for scene assets, sprites, and audio.
     Pick media codecs. Match the client's codec support for media streams.
+    Skip scripts. If the client doesn't support scripts, the domain sends derived state (animation, effects, sounds) through the observation stream instead.
 
 Fidelity is a declaration, not a negotiation. The domain reads it and adapts. No back-and-forth. If the domain can't serve the client's capabilities at all (a 3D-only domain with a text-only client), it says so at bootstrap and the client can disconnect gracefully.
 
