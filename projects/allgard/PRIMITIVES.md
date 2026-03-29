@@ -52,6 +52,12 @@ Every Owner has a home domain — the domain that is authoritative for their ide
 
 The home domain is where your stuff lives by default.
 
+### Presence
+
+An Owner's presence is the set of Domains where the Owner currently has active sessions. Presence is observable state — other Owners with appropriate Grants can subscribe to presence changes. The home domain is the canonical observation point.
+
+See [PRESENCE.md](PRESENCE.md) for the full spec: observability, reachability, and standard relationship Grant conventions.
+
 ### Leased Transfer
 
 When a player visits another domain, objects don't transfer permanently — they transfer on a **lease**. The lease is a time-limited escrow built from existing primitives (Transform + Grant + expiry):

@@ -20,7 +20,7 @@ The name is Old Norse: *all* + *garðr*. All the gards, together.
 ## What Allgard Is Not
 
 - Not a protocol. Leden is the protocol. Allgard is the model that gives protocol messages meaning.
-- Not a registry. Discovery is Leden's gossip layer. Allgard doesn't know who's online.
+- Not a registry. Discovery is Leden's gossip layer. Owner [presence](PRESENCE.md) is observable state — each Domain knows which Owners have active sessions — but there is no central directory.
 - Not a blockchain. No global ledger, no consensus mechanism. Trust is bilateral and capability-based.
 
 ## The Stack
@@ -80,6 +80,7 @@ No step requires permission from a central authority. See [Bootstrapping](#boots
 | [CONSERVATION.md](CONSERVATION.md) | The seven conservation laws every domain must enforce |
 | [TRANSFER.md](TRANSFER.md) | Cross-domain transfer protocol: escrow, timeouts, partition recovery, Law 2 proof |
 | [TRUST.md](TRUST.md) | Adversarial trust model: introductions, reputation, Sybil resistance |
+| [PRESENCE.md](PRESENCE.md) | Owner presence: location, observability, reachability, standard relationship grants |
 
 ## Bootstrapping
 
