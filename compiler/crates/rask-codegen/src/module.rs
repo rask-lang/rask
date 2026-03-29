@@ -506,6 +506,12 @@ impl CodeGenerator {
         self.enum_layouts = mono.enum_layouts.clone();
 
         for mir_fn in mir_functions {
+            // Skip empty-body stubs that shadow stdlib entries (e.g.
+            // fs.write_bytes has an empty .rk body but dispatches to
+            // rask_fs_write_bytes in the C runtime via the dispatch table).
+            if self.func_ids.contains_key(&mir_fn.name) && is_empty_stub(mir_fn) {
+                continue;
+            }
             let mut sig = self.module.make_signature();
 
             // Build parameter list
@@ -764,6 +770,12 @@ impl CodeGenerator {
 
     /// Generate code for a single MIR function.
     pub fn gen_function(&mut self, mir_fn: &MirFunction) -> CodegenResult<()> {
+        // Skip empty stubs — they were not declared as internal functions,
+        // so the stdlib dispatch table handles them at the call site.
+        if !self.internal_fns.contains(&mir_fn.name) {
+            return Ok(());
+        }
+
         // Pre-register source file string for runtime panic locations
         if let Some(ref src_file) = mir_fn.source_file {
             self.register_string(src_file)?;
@@ -871,6 +883,19 @@ impl CodeGenerator {
         Ok(())
     }
 
+}
+
+/// A MIR function is an empty stub if it has a single block with no
+/// statements and a bare return. These come from empty-body `.rk` stubs
+/// that exist only so the type checker sees a signature — the real
+/// implementation lives in the C runtime dispatch table.
+fn is_empty_stub(mir_fn: &MirFunction) -> bool {
+    if mir_fn.blocks.len() != 1 {
+        return false;
+    }
+    let block = &mir_fn.blocks[0];
+    block.statements.is_empty()
+        && matches!(&block.terminator.kind, rask_mir::MirTerminatorKind::Return { .. })
 }
 
 /// Collect all string constants referenced by a single MIR function.

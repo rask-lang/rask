@@ -75,6 +75,17 @@ fn lower_to_mir(
         if skip_main && mono_fn.name == "main" {
             continue;
         }
+        // Skip empty-body stdlib stubs (e.g. fs_write_bytes). The real
+        // implementation lives in the C runtime dispatch table. Lowering
+        // them to MIR produces a no-op that the inliner substitutes for
+        // the call, silently dropping the actual operation.
+        if let rask_ast::decl::DeclKind::Fn(f) = &mono_fn.body.kind {
+            if f.body.is_empty()
+                && rask_stdlib::mir_metadata::lookup(&mono_fn.name).is_some()
+            {
+                continue;
+            }
+        }
         match rask_mir::lower::MirLowerer::lower_function_named(
             &mono_fn.body, all_mono_decls, mir_ctx, Some(&mono_fn.name)
         ) {
