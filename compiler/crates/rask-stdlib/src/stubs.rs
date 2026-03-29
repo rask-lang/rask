@@ -137,7 +137,7 @@ impl StubRegistry {
                 // Include all declarations: functions with bodies, extern blocks,
                 // and struct/enum definitions. The resolver processes these in
                 // stdlib_mode to avoid builtin-shadowing errors.
-                for decl in parse_result.decls {
+                for mut decl in parse_result.decls {
                     let dominated = match &decl.kind {
                         DeclKind::Fn(f) => !f.body.is_empty(),
                         DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
@@ -147,6 +147,12 @@ impl StubRegistry {
                         _ => false,
                     };
                     if dominated {
+                        // Strip empty-body methods from Impl blocks so they
+                        // don't reach the monomorphizer or interpreter as
+                        // no-op stubs that shadow C runtime implementations.
+                        if let DeclKind::Impl(ref mut i) = decl.kind {
+                            i.methods.retain(|m| !m.body.is_empty());
+                        }
                         decls.push(decl);
                     }
                 }

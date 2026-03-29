@@ -514,6 +514,14 @@ pub fn cmd_mir(path: &str, format: Format) {
 
     let mut mir_errors = 0;
     for mono_fn in &mono.functions {
+        // Skip empty-body stdlib stubs (same filter as compile path).
+        if let rask_ast::decl::DeclKind::Fn(f) = &mono_fn.body.kind {
+            if f.body.is_empty()
+                && rask_stdlib::mir_metadata::lookup(&mono_fn.name).is_some()
+            {
+                continue;
+            }
+        }
         match rask_mir::lower::MirLowerer::lower_function_named(&mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)) {
             Ok(mir_fns) => {
                 if format == Format::Human {
