@@ -20,7 +20,7 @@ Without `frozen`, contexts are mutable by default — writes through handles are
 
 **Note:** `h.field` auto-resolution in frozen contexts performs generation checks (same as mutable contexts). The compiler may optimize away checks during iteration in frozen contexts (see `comp.gen-coalesce/FZ1`).
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Named — binding + auto-resolution
 func award_bonus(h: Handle<Player>, amount: i32)
@@ -71,7 +71,7 @@ Order: generics, parameters, return type, `using` clause, `where` clause, body.
 | **CC5: Propagation** | A function's `using` clause satisfies callees requiring the same context type |
 | **CC8: Ambiguity error** | Multiple pools of the same type in scope is a compile error — pass explicitly |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func game_tick() {
     const players = Pool.new()
@@ -136,7 +136,7 @@ Call sites automatically pass the pool as a hidden argument. No runtime lookups,
 
 The compiler can infer an unnamed context from field access, but cannot infer a name. If the body uses a pool for structural operations, the name must be declared.
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // ERROR: public function with Handle parameter needs explicit context
 public func damage(h: Handle<Player>, amount: i32) {
@@ -281,7 +281,7 @@ FIX: Pass the pool as an explicit parameter to the closure.
 ### Patterns & Guidance
 
 **Call chain propagation:**
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Top-level: has the pool
 func game_loop() {
@@ -305,7 +305,7 @@ func apply_physics(h: Handle<Player>, dt: f32) using Pool<Player> {
 ```
 
 **Method access via `self`:**
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct GameWorld {
     players: Pool<Player>,
@@ -325,7 +325,7 @@ extend GameWorld {
 ```
 
 **Disambiguation when ambiguous:** Fall back to explicit pool parameters.
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func damage_explicit(pool: Pool<Player>, h: Handle<Player>, amount: i32) {
     pool[h].health -= amount
@@ -338,7 +338,7 @@ damage_explicit(pool_a, h, 10)
 
 The IDE displays inferred contexts as ghost text:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func damage(h: Handle<Player>, amount: i32) {    // ghost: using Pool<Player>
     h.health -= amount

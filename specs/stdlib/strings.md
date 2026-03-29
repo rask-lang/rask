@@ -366,7 +366,7 @@ Immutable wins over COW: no hidden mutation cost, builder is sole owner so mutat
 
 This is one of the few cases where a type owns heap memory but is still Copy. The immutable + refcounted design makes sharing safe — there's no aliased mutation to worry about. The 16-byte representation (tagged union — see S8) fits under the VS1 threshold. SSO means most short strings never touch the heap at all.
 
-**S2 (inline slicing):** Strings own heap buffers — they're growable sources, same as Vec. Slices are temporary views for the expression. `.to_string()` copies bytes into a new independent string — no shared backing. A 50-byte slice must not silently retain a 10MB source buffer. The `.to_string()` calls are honest cost markers bounded by the slice size, not the source size.
+**S2 (inline slicing):** String slices are temporary views into the buffer without their own refcount — storing one would dangle if the source string is freed. Slices are valid for the expression only. `.to_string()` copies bytes into a new independent string — no shared backing. A 50-byte slice must not silently retain a 10MB source buffer. The `.to_string()` calls are honest cost markers bounded by the slice size, not the source size.
 
 **S3 (public APIs use string):** Forces a clean boundary. Callers never need to know about internal storage strategies.
 

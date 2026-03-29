@@ -10,14 +10,17 @@ A view into `point.x` can't go stale — struct fields sit at fixed offsets. But
 
 **Fixed-layout sources** (struct fields, arrays) can't resize. Views persist until the block ends.
 
-**Growable sources** (Vec, Pool, Map, string) own heap buffers that can reallocate. Each access is temporary — copy out the value for one expression, or use `with` for multi-statement access.
+**Growable sources** (Vec, Pool, Map) own heap buffers that can reallocate. Each access is temporary — copy out the value for one expression, or use `with` for multi-statement access.
+
+`string` is immutable and Copy (16 bytes, refcounted). String slices (`s[i..j]`) are temporary views — they can't be stored because the slice would dangle if the source string's refcount drops to zero. See `std.strings/S2`.
 
 | Rule | Source | Access model | Why |
 |------|--------|-------------|-----|
 | **B1: Fixed = block-scoped** | Struct fields, arrays | View valid until block ends | Layout can't change |
-| **B2: Growable = inline + `with`** | Vec, Pool, Map, string | Copy out (Copy types) or use `with` | Heap buffer can reallocate |
+| **B2: Growable = inline + `with`** | Vec, Pool, Map | Copy out (Copy types) or use `with` | Heap buffer can reallocate |
+| **B3: String slices = inline only** | string | `s[i..j]` temporary for expression | Slice has no refcount; source could be freed |
 
-**The test:** can the source resize? Strings own heap-allocated UTF-8 buffers — they're growable, same as Vec. Struct fields and arrays have fixed in-place layout.
+**The test:** can the source resize? Vec/Pool/Map own heap buffers that can reallocate. Struct fields and arrays have fixed in-place layout. Strings are immutable but slices are temporary views (S2).
 
 ## Parameter and Receiver Borrows
 
@@ -86,14 +89,14 @@ const x = {
 // x would outlive p
 ```
 
-**Strings are growable (B2), not block-scoped:**
+**String slices are temporary (S2):**
 <!-- test: compile-fail -->
 ```rask
 const s = "hello world"
 const slice = s[0..5]    // ERROR: string slices can't be stored
 ```
 
-Strings own heap buffers — same category as Vec. Use `.to_string()` or `string_view` indices:
+String slices are temporary views into the string's buffer — storing one would create a dangling reference if the source string is freed. Use `.to_string()` or `string_view` indices:
 <!-- test: skip -->
 ```rask
 const s = "hello world"
@@ -210,7 +213,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 
 ### Structural mutation restriction (W2)
 
-For Vec, Map, and string: structural mutations are forbidden inside the `with` block — operations that add, remove, or reallocate elements (insert, remove, push, pop, clear). Reading and writing other elements via inline access works normally.
+For Vec and Map: structural mutations are forbidden inside the `with` block — operations that add, remove, or reallocate elements (insert, remove, push, pop, clear). Reading and writing other elements via inline access works normally. (Strings are immutable — `with` doesn't apply to them.)
 
 <!-- test: compile-fail -->
 ```rask
@@ -406,8 +409,8 @@ ERROR [mem.borrowing/B2]: cannot store string slice
 3  |  const slice = line[0..5]
    |                ^^^^^^^^^^ string slices can't be stored
 
-WHY: Strings own heap buffers that can reallocate. Slices are
-     temporary — use inline or copy out.
+WHY: String slices are temporary views without their own refcount.
+     Storing one would dangle if the source is freed.
 
 FIX 1: Copy to owned string:
 
@@ -429,7 +432,7 @@ ERROR [mem.borrowing/W2]: cannot push to `vec` inside with block — vec can rea
 7  |      vec.push(new_item)
    |      ^^^^^^^^^^^^^^^^^^ structural mutation not allowed inside with block
 
-WHY: Vec/Map/string can reallocate, invalidating the borrowed element.
+WHY: Vec/Map can reallocate, invalidating the borrowed element.
      Pool handles survive reallocation — use Pool if you need insert/remove inside with.
 
 FIX: Move the structural mutation outside the with block:
@@ -569,7 +572,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 
 **E5 (sync inline access):** Collections got inline access through `[]` indexing — `pool[h].field` works without `with`. Sync primitives didn't have an equivalent. `.read()`, `.write()`, and `.lock()` now serve the same role: they produce expression-scoped access to the inner value. The lock is visible in the dot-chain (`config.read().timeout`), so cost transparency is preserved. `with` blocks remain for multi-statement access — inline is just the single-expression shorthand.
 
-**Why strings are value-access, not block-scoped:** Strings own heap buffers — structurally the same as Vec. Block-scoped string views would require a hidden view type distinct from `string` and borrow-of-borrow tracking when views are passed to functions. This contradicts the "no storable references" principle. The cost is `.to_string()` calls or `string_view` indices — visible, simple, no borrow tracking needed.
+**Why string slices are temporary:** Strings are immutable and refcounted, but a slice (`s[i..j]`) is a raw view into the buffer without its own refcount. Storing it would require either a hidden view type or borrow tracking — both contradict the "no storable references" principle. The cost is `.to_string()` calls or `string_view` indices — visible, simple, no borrow tracking needed.
 
 **Inline access is still a temporary borrow:** `process(pool[h].name)` where `name` is a string — it's a temporary borrow for the expression. The user sees: "you can use it inline, or copy it out, or use `with`." Value-based framing, borrow-based implementation. Users don't need to understand the implementation.
 

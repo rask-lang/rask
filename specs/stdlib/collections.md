@@ -44,7 +44,7 @@ Growth operations panic on failure (C2). Fallible `try_` variants return `Result
 | `map.insert(k, v)` | `Option<V>` | Panics |
 | `map.try_insert(k, v)` | `Option<V> or InsertError<V>` | Returns `Err(Full(V))` or `Err(Alloc(V))` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum PushError<T> {
     Full(T),   // Bounded collection at capacity
@@ -141,7 +141,7 @@ const name = with vec[i] as v { v.name.clone() }
 | `map.ensure(k, \|\| v)` | `()` | Insert if missing, no-op if present. Panics on alloc failure |
 | `map.ensure_modify(k, \|\| v, \|v\| R)` | `R` | Insert if missing, then mutate. Panics on alloc failure |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 map.ensure(user_id, || User.new(user_id))
 map.ensure_modify(user_id, || User.new(user_id), |u| {
@@ -165,7 +165,7 @@ map.ensure_modify(user_id, || User.new(user_id), |u| {
 
 See `std.iteration` for full iteration spec.
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 for item in vec { }              // item: borrowed T (value iteration, default)
 for i in 0..vec.len() { }        // i: usize (index iteration, explicit)
@@ -235,7 +235,7 @@ items.dedup()                 // [1, 3, 4, 5]
 | `map.keys()` | expression-scoped iterator | Iterate over keys |
 | `map.values()` | expression-scoped iterator | Iterate over values |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const scores = Map.from([["alice", 10], ["bob", 20]])
 scores.contains_key("alice")      // true
@@ -247,7 +247,7 @@ for score in scores.values() { println(format("{}", score)) }
 
 Infallible, best-effort. If the allocator can't provide a smaller block, the collection keeps its current allocation.
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 vec.shrink_to_fit()      // Shrink to len
 vec.shrink_to(n)         // Shrink to at least n capacity
@@ -255,7 +255,7 @@ vec.shrink_to(n)         // Shrink to at least n capacity
 
 ## In-Place Construction
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const idx = vec.push_with(|slot| {
     slot.field1 = compute_expensive()
@@ -317,7 +317,7 @@ At compile time, collections use a compiler-managed allocator and must be frozen
 | **F3: Memory limits** | Subject to comptime memory limits (256MB total, 16MB per array) |
 | **F4: Immutable result** | After freeze, the data is immutable const |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const PRIMES: [u32; _] = comptime {
     const v = Vec<u32>.new()

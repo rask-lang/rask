@@ -45,7 +45,7 @@ process_data()
 
 Closures can accept parameters:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const double = |x| x * 2
 const result = double(5)  // 10
@@ -128,7 +128,7 @@ This is a compiler optimization, not a user concept. Users don't need to think a
 
 Storage detection:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Inline: consumed immediately
 for i in items.filter(|i| vec[*i].active) {
@@ -148,7 +148,7 @@ A closure that captures a block-scoped borrow (struct field, array view) inherit
 | **SL1: Scope inheritance** | Closure is limited to the innermost block of all its captured borrows |
 | **SL2: No escape** | Cannot return, store in struct, or send cross-task |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const entity = get_entity()
 const tags = entity.tags            // block-scoped borrow (struct field, non-Copy)
@@ -171,7 +171,7 @@ let outer_closure
 
 **Fix: clone to owned data:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const tags = entity.tags.clone()   // owned copy
 const f = || process(tags)         // captures owned value
@@ -321,7 +321,7 @@ Conservative local analysis: no cross-function tracking, no dataflow.
 
 **Cell<T> for shared mutable state:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const counter = Cell.new(0)
 

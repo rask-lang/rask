@@ -614,9 +614,9 @@ mod tests {
     }
 
     #[test]
-    fn string_is_opaque_pointer() {
+    fn string_is_sso_inline() {
         let (size, align) = tsa(&Type::String);
-        assert_eq!(size, 8);
+        assert_eq!(size, 16); // 16-byte SSO inline (RaskStr union)
         assert_eq!(align, 8);
     }
 

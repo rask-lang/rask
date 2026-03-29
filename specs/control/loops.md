@@ -167,7 +167,7 @@ In value mode, `item` is a read-only alias. In mutable mode, `item` is a mutable
 
 Value iteration creates inline access per element. Mutable iteration creates mutable inline access.
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Value iteration (Vec):
 for item in vec { body }
@@ -240,7 +240,7 @@ for mutate (k, v) in map { body }
 }
 ```
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Index iteration (explicit):
 for i in 0..vec.len() { body }
@@ -257,7 +257,7 @@ for i in 0..vec.len() { body }
 }
 ```
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Consume iteration (take_all):
 for item in vec.take_all() { body }
@@ -320,7 +320,7 @@ for item in vec.take_all() { body }
 
 **Value iteration (read-only):**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 for item in vec {
     print(item.name)
@@ -356,7 +356,7 @@ for mutate (key, value) in scores {
 
 **Index mode for structural mutation:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 for h in pool.handles() {
     pool[h].health -= damage
@@ -368,7 +368,7 @@ for h in pool.handles() {
 
 **Removing during iteration (Pool):**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Safe: collect handles first
 const to_remove = Vec.new()
@@ -387,7 +387,7 @@ for h in to_remove {
 
 **Nested iteration:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // No borrow conflict — each access is inline
 for a in entities {

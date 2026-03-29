@@ -352,6 +352,16 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("parameters are read-only by default — add `mutate` to indicate the function modifies this value")
             }
 
+            StringSliceStored { source_var, view_var, slice_span, store_span } => {
+                Diagnostic::error(format!("string slice `{}` cannot be stored", view_var))
+                    .with_code("E0324")
+                    .with_primary(*slice_span, format!("`{}[i..j]` is a temporary view", source_var))
+                    .with_secondary(*store_span, format!("`{}` tries to hold the slice across a statement boundary", view_var))
+                    .with_help("use .to_string() to copy the slice, or use string_view indices")
+                    .with_fix(format!("const {} = {}[i..j].to_string()", view_var, source_var))
+                    .with_why("string slices are temporary views into the string's buffer — storing them would create a dangling reference when the source is freed")
+            }
+
             VolatileViewStored { source_var, view_var, source_span, store_span } => {
                 Diagnostic::error(format!("cannot hold view from growable source `{}`", source_var))
                     .with_code("E0322")

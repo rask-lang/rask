@@ -61,6 +61,13 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
+    #[error("string slices are temporary — cannot store `{view_var}`")]
+    StringSliceStored {
+        source_var: String,
+        view_var: String,
+        slice_span: Span,
+        store_span: Span,
+    },
     #[error("cannot hold view from growable source `{source_var}`")]
     VolatileViewStored {
         source_var: String,
