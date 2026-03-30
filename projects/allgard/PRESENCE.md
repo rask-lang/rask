@@ -48,9 +48,21 @@ Presence and profile are observable state. Other Owners can subscribe to changes
 1. Owner A grants Owner B a `presence` Grant (see [Standard Grants](#standard-grants) below).
 2. Owner B subscribes to Owner A's presence via Leden observation at Owner A's home domain.
 3. When Owner A's presence changes (connects to a new domain, disconnects from one), Owner B receives an update.
-4. Owner B can also observe Owner A's [profile Object](PRIMITIVES.md#profile) at the same home domain — avatar, bio, and any other profile fields update automatically.
 
 The home domain is the canonical observation point. It knows the Owner's session state because it manages leases and tracks where the Owner's objects are. Observing presence at the home domain gives a complete view. Observing at a visited domain only tells you about that specific domain.
+
+### Presence vs Profile Observation
+
+Presence and the [profile Object](PRIMITIVES.md#profile) are **separate observations**. A `presence` or `contact` Grant authorizes both, but they're independent Leden observation subscriptions:
+
+| Observation | What changes | Frequency | Subscribe to |
+|---|---|---|---|
+| Presence | Domain set (connect/disconnect) | Minutes to hours | Owner's presence state at home domain |
+| Profile | Avatar, bio, display name, extensions | Rarely (days, weeks) | Owner's profile Object at home domain |
+
+Separating them matters for bandwidth. An Owner tracking 200 contacts doesn't need profile updates every time someone connects to a new domain. Conversely, a domain rendering a player's profile card doesn't need real-time domain-set changes. Clients subscribe to what they need.
+
+Both use standard Leden observation semantics — snapshot on subscribe, delta updates, sequence numbers, backpressure. Profile observation uses Leden's [filtered observation](../leden/observation.md#filtered-observation) if the client only cares about specific fields (e.g., avatar only).
 
 ### Capability Gating
 
@@ -72,6 +84,19 @@ The observer receives which domains were added to or removed from the Owner's ac
 ## Reachability
 
 Knowing where an Owner is located enables contacting them. Reachability is the practical consequence of presence.
+
+### Name Resolution
+
+An Owner's global address is `name@home_domain` (see [PRIMITIVES.md](PRIMITIVES.md#name)). To resolve a name to a contactable identity:
+
+1. **Resolve the domain.** Look up `home_domain` via Leden gossip/discovery. This gives you a transport address — same as DNS resolving a hostname to an IP.
+2. **Contact the greeter.** Hit the home domain's greeter. The greeter is the public entry point for every domain (see [Bootstrapping](README.md#bootstrapping)).
+3. **Resolve the name.** Send a `ResolveName(name)` request. The home domain returns the Owner's public identity (`id`) — or `NameNotFound` if no such Owner exists.
+4. **Contact the Owner.** Use the resolved identity for Grant exchange, presence subscription, or messaging.
+
+Name resolution is a public operation — it doesn't require a Grant. Knowing someone's name and resolving it to an identity is like looking up a phone number in a directory. The identity alone grants nothing — you still need a `presence` or `contact` Grant to observe or message them.
+
+**Caching.** Name-to-identity mappings are stable (Owners don't change their cryptographic identity). Clients and domains can cache the mapping indefinitely. If an Owner re-keys (key compromise, migration), the old mapping returns `IdentityChanged(new_id)` — the cache invalidates and the caller learns the new identity.
 
 ### Routing Through Home Domain
 
@@ -126,7 +151,27 @@ Presence observation plus direct messaging. The grantee can observe the grantor'
 | `target` | The grantor's Owner identity |
 | `revocable` | Yes (always) |
 
-The `message` scope means the grantee can submit messages to the grantor's home domain for delivery. The home domain enforces rate limits (Law 5 applies to messages like any other operation).
+#### Messaging
+
+The `message` scope authorizes the grantee to send messages to the grantor. A message is a Leden method call on the Owner's identity at the home domain:
+
+```
+SendMessage(to: owner_id, content: bytes, content_type: string)
+```
+
+| Field | Description |
+|-------|-------------|
+| `to` | Recipient Owner identity |
+| `content` | Opaque bytes. Interpretation determined by `content_type`. |
+| `content_type` | MIME-style type tag: `text/plain`, `application/gdl+msgpack`, etc. |
+
+**Delivery semantics: at-most-once.** The home domain delivers the message to the recipient if reachable. No guaranteed delivery, no persistent queue obligation. If the recipient is offline, the home domain's queuing policy applies (see [Unreachable Owners](#unreachable-owners)). The sender receives `Delivered`, `Queued`, or `Unreachable`.
+
+**Size limit: 64KB per message.** Messages are for communication, not file transfer. Large payloads use Leden content store references inside the message body.
+
+**Rate limiting.** Law 5 applies. The home domain enforces message rate limits per sender. Default: 10 messages/second per sender-recipient pair. This prevents spam while allowing real-time conversation.
+
+**Content types are conventions.** `text/plain` is universal — every client can render it. Richer types (`application/gdl+msgpack` for structured game data, domain-specific types) degrade to "message received, type not supported" on clients that don't recognize them. Same principle as email MIME types.
 
 ### `block`
 
@@ -162,7 +207,7 @@ Without this, a Grant scoped `[0x42, 0x07]` on Domain A means nothing to Domain 
 ## What This Doesn't Cover
 
 - **Spatial location within a domain.** Presence says "Owner is on Domain X." It doesn't say "Owner is at coordinates (3,4) in region Y." Spatial protocols build on top of presence.
-- **Profile content schema.** The Owner's [profile Object](PRIMITIVES.md#profile) is defined as a mechanism in Allgard. The content schema (which fields, what they mean) is defined in [GDL](../gdl/) — content description is GDL's job.
+- **Profile content schema.** The Owner's [profile Object](PRIMITIVES.md#profile) is defined as a mechanism in Allgard. The content schema (which fields, what they mean) is defined in [GDL](../gdl/GDL.md#owner-profile-schema).
 - **Voice or media channels.** Real-time media between Owners is an application feature using Leden transport. Presence tells you who's reachable; media setup is a separate capability negotiation.
 - **Notification preferences.** Whether an Owner wants to be disturbed, what channels they prefer — local policy stored at the home domain, not a federation concern.
 

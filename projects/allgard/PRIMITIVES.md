@@ -93,15 +93,9 @@ An Owner's profile is an Object — a regular Object with type tag `owner_profil
 
 #### Well-Known Fields
 
-The profile Object's content is a typed map. [GDL](../gdl/) defines the standard schema for well-known fields — the fields that most domains recognize. This is the same pattern as HTTP headers: a small set of well-known names with defined semantics, plus arbitrary extensions.
+The profile Object's content is a typed map. [GDL](../gdl/GDL.md#owner-profile-schema) defines the standard schema — well-known fields like `display_name`, `avatar`, `bio`, `links`, `pronouns`, and `locale`. This is the same pattern as HTTP headers: a small set of well-known names with defined semantics, plus arbitrary extensions via namespaced keys.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `display_name` | string | Preferred display name. Optional — `name` from the Owner primitive is the canonical fallback. |
-| `avatar` | content ref | Content-addressed reference to an image. Fetched via Leden content store. |
-| `bio` | string | Short self-description. Max 500 characters. |
-
-These are defined in GDL because GDL's job is content description — what things look like and how to present them. The profile schema is a GDL concern, not an Allgard concern. Allgard defines the mechanism (profile is an Object, observable, at home domain). GDL defines the content (what fields exist, what they mean).
+The split is deliberate: Allgard defines the mechanism (profile is an Object, observable, at home domain). GDL defines the content (what fields exist, what they mean). Content description is GDL's job.
 
 #### Graceful Degradation
 
