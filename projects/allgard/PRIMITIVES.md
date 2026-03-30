@@ -46,6 +46,66 @@ Owners are cryptographic identities. The specific scheme (ed25519 keys, DIDs, et
 
 An Owner is *not* a person. A person may control multiple Owners. An automated system can be an Owner. The federation doesn't care about the entity behind the key.
 
+### Key Hierarchy
+
+An Owner's identity is a **master key**. The master key is the root of authority — it can do everything: sign Transforms, issue Grants, revoke Grants, migrate home domains, recover from wallet.
+
+The master key should NOT live on a daily-use device. It's too powerful. A compromised master key is total identity loss. The master key lives in cold storage — hardware security key, paper backup, airgapped device. You use it for setup, recovery, and emergencies. Not for logging in.
+
+Daily operations use **device keys**. Each device (phone, laptop, work machine) gets its own keypair. The master key signs a Device Grant to each device key — a scoped delegation of the Owner's authority.
+
+```
+Master key (cold storage)
+    |
+    ├── Device Grant → phone key
+    │     scope: sign_transforms, maintain_sessions, issue_grants(limited)
+    │     expiry: 90 days (auto-renewable while master key confirms)
+    │
+    ├── Device Grant → laptop key
+    │     scope: sign_transforms, maintain_sessions, issue_grants(limited)
+    │     expiry: 90 days
+    │
+    ├── Device Grant → work key
+    │     scope: read_only, maintain_sessions
+    │     expiry: 30 days
+    │
+    └── Relay Grant → relay service
+          scope: forward, queue, presence, name_resolution, lease_renewal
+          expiry: none (revoke-only)
+```
+
+Device Grants are standard [Grants](#grant) — same primitive, same attenuation rules, same revocation. A device key can do everything its Grant allows, nothing more. Different devices can have different scopes:
+
+| Device | Typical scope | Why |
+|---|---|---|
+| Phone (primary) | Full daily operations — sign, session, limited Grant issuance | Your main device, most trusted |
+| Laptop | Full daily operations | Same trust level as phone |
+| Work machine | Read-only, sessions, no signing | Untrusted hardware, limited exposure |
+| Shared/public terminal | Session only, expiry in hours | Minimal trust, auto-expires |
+
+#### Device Key Revocation
+
+Lost phone? Stolen laptop? Revoke the device key from any other device that holds sufficient authority:
+
+1. From another device with `revoke_device` scope — immediate, no master key needed.
+2. From the relay — if the relay holds a `revoke_device` Grant (recommended).
+3. From the master key — always works, the nuclear option.
+
+Device key revocation uses the same propagation mechanism as [Key Compromise](#key-compromise-propagation), but scoped to one device key. The home domain (or relay) broadcasts the revocation to all domains where that device key has active sessions. Sessions from the revoked key are terminated. Transforms signed by the revoked key after the revocation timestamp are rejected.
+
+**This is not a full key compromise.** The master key is safe. Other device keys are safe. Only the revoked device's sessions are affected. The Owner continues operating from other devices without interruption.
+
+#### Why Not Just One Key?
+
+The current spec says "Owners are cryptographic identities" — implying one key. That works for automated systems (one process, one key). It doesn't work for humans who use multiple devices.
+
+Without device keys, the options are:
+- **Copy the master key to every device.** One compromised device = total identity loss. Terrible.
+- **Use one device only.** That device goes offline, you're locked out. Also terrible.
+- **Create separate Owner identities per device.** Your inventory, Grants, and reputation fragment across identities. Defeats the purpose.
+
+Device keys solve all three. The master key stays safe. Any device can act. One device compromise is bounded. The Owner is one identity across all devices.
+
 ### Properties
 
 | Property | Description |
@@ -174,6 +234,72 @@ This is a Grant from the player to the backup domain — scoped to mirror and re
 
 Without a backup, home domain failure is permanent loss. That's the honest tradeoff. But with a backup, it's a recoverable event — same as a disk failure with a RAID mirror.
 
+### Deployment Models
+
+The protocol doesn't prescribe where a home domain runs. Three models, each with different sovereignty/convenience tradeoffs.
+
+#### Hosted
+
+Someone else runs your home domain. A gard operator, a hosting provider, a community server. You hold your device keys. They hold your Objects and run your Domain logic. Every Transform still requires YOUR device key's signature — the host can't forge operations.
+
+| Advantage | Disadvantage |
+|---|---|
+| Always-on, no ops | They have leverage — can refuse migration, change terms |
+| Low barrier | Your Objects are on their hardware |
+| Professional infrastructure | You depend on their availability |
+
+This is the default for most users. The wallet ensures you can leave. The migration protocol ensures you can leave smoothly (cooperative) or roughly (uncooperative). The host is a convenience layer, not a trust anchor.
+
+**The host is not a custodian.** The protocol should structurally discourage custodial hosting (where the host holds the Owner's keys). TRUST.md already says: "domain operators who hold player keys are undermining the ownership model." Device keys make non-custodial hosting natural — the host runs the Domain, the Owner's devices hold the signing keys. A host that demands your master key is a red flag.
+
+#### Self-Hosted
+
+You run your home domain on your own hardware — home server, VPS, dedicated machine. Full sovereignty.
+
+| Advantage | Disadvantage |
+|---|---|
+| Full control | You need ops skills |
+| No external dependency | You need uptime (or a relay) |
+| Your Objects on your hardware | You need a public address or relay |
+
+Viable for technical users, organizations, and automated systems. A Raspberry Pi or NAS running the Allgard runtime is enough for a personal home domain. A VPS is the simplest path for public reachability.
+
+#### Edge + Relay
+
+Your home domain runs on your device (phone, laptop, home server). A relay service handles reachability.
+
+```
+Your devices ──── relay service ──── the federation
+ (authority)      (reachability)
+```
+
+The relay is a thin service with a scoped [Grant](#grant):
+
+| Relay capability | What it does | What it can't do |
+|---|---|---|
+| Forward messages | Routes inbound messages to your active device | Read message content (encrypted end-to-end) |
+| Queue when offline | Holds messages until a device comes online | Sign Transforms or issue Grants |
+| Presence aggregation | Reports which devices are online, serves presence to observers | Modify presence state |
+| Name resolution | Responds to `ResolveName` requests | Change your name or identity |
+| Lease renewal | Renews leases on your behalf (scoped Grant) | Transfer or modify your Objects |
+| Profile cache | Serves cached profile to observers | Modify your profile |
+
+The relay is replaceable. It holds no authority beyond its Grant, no Objects, no master key. Switching relays is revoking one Grant and issuing another — not a home domain migration.
+
+**The relay IS the backup home, thin edition.** The existing backup home concept ranges from "full mirror" (holds all Objects, can promote to primary) to "thin relay" (forwarding + queuing only, Objects stay on devices). Both use the same Grant-based delegation. The difference is scope — a full backup can recover from total device loss, a thin relay can only bridge offline periods.
+
+**Recommended setup:** relay service for reachability + a full backup at a different provider for disaster recovery. The relay handles daily operations (forwarding, presence, lease renewal). The backup handles catastrophes (all devices lost, relay down).
+
+**When your phone is offline and you log in on your laptop:**
+
+1. Laptop has its own device key (from [Key Hierarchy](#key-hierarchy)).
+2. Laptop contacts the relay (stable network address).
+3. Relay validates the laptop's device key against the Owner's published Device Grants.
+4. Laptop can act as the Owner — sign Transforms, maintain sessions, access Objects.
+5. Phone comes back later, syncs state with the relay. Both devices active simultaneously.
+
+No single device is the home domain. The Owner's identity is the master key. Any device with a valid Device Grant can act. The relay aggregates and forwards. If the relay goes down, devices that know each other's addresses can communicate directly — the relay is a convenience, not a dependency.
+
 ### Home Domain Migration
 
 An Owner can change their home domain. This is the voluntary version of home domain failure — same mechanics, controlled circumstances.
@@ -285,11 +411,17 @@ The wallet's historical Proof chains from A remain valid — they're append-only
 
 ### Key Compromise Propagation
 
-When an Owner's key is compromised, the home domain must propagate revocation to every domain where the Owner has active sessions, outstanding Grants, or leased objects. This is the hardest revocation case — it's time-critical and cross-domain.
+With the [key hierarchy](#key-hierarchy), compromise has two severities:
+
+**Device key compromised** (phone stolen, laptop hacked). Bounded damage. Revoke the device key from any other device or the relay. Sessions from that device terminate. Transforms signed after revocation are rejected. Other devices continue unaffected. This is a routine security event, not an emergency.
+
+**Master key compromised** (cold storage breached). Total emergency. The attacker can issue new device keys, migrate the home domain, sign anything. This is the case described below — full propagation, all sessions terminated, identity recovery required.
+
+When an Owner's master key is compromised, the home domain must propagate revocation to every domain where the Owner has active sessions, outstanding Grants, or leased objects. This is the hardest revocation case — it's time-critical and cross-domain.
 
 **Revocation flow:**
 
-1. **Owner or home domain detects compromise.** The Owner reports a compromised key (out-of-band — new key signed by backup key, admin action, etc.), or the home domain detects anomalous behavior (impossible concurrent sessions, operations from conflicting locations).
+1. **Owner or home domain detects compromise.** The Owner reports a compromised key (out-of-band — new key signed by backup key, admin action, etc.), or the home domain detects anomalous behavior (impossible concurrent sessions, operations from conflicting locations, Device Grants issued that the Owner didn't authorize).
 
 2. **Home domain issues `KeyRevocation(owner_id, compromised_key, evidence, new_key)`** to all domains it has bilateral relationships with. This is a broadcast, not targeted — the home domain may not know every domain the Owner visited (Grants can chain through intermediaries). The message includes:
    - The Owner identity being revoked
