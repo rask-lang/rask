@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: function declares return type but body is empty
+// Expected: typecheck error for missing return
+// BUG: currently passes type check — missing return not enforced
+
+func get_value() -> i32 {
+}
+
+func main() {}

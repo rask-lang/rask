@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: using undefined variable
+// Expected: resolve error E0200
+
+func main() {
+    println(x.to_string())
+}

@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: reassigning to a const binding
+// Expected: typecheck or resolve error (const is immutable)
+// BUG: currently passes type check — const reassignment is not enforced
+
+func main() {
+    const x = 42
+    x = 43
+}

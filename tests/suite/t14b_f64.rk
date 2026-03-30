@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// f64 operations in native codegen.
+// BUG: f64 assert codegen passes f64 where Cranelift expects i64
+
+test "f64 copies on assignment" {
+    const a = 3.14
+    const b = a
+    assert a == 3.14
+    assert b == 3.14
+}
+
+func main() {}

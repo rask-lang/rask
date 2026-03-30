@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func main() {
+    const s = "hello"
+    const s2 = "world"
+    const combined = "{s} {s2}"
+    println(combined)
+    println(s.len().to_string())
+}

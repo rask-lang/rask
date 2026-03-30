@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: passing string where i32 expected
+// Expected: typecheck error E0308
+
+func add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+func main() {
+    const x = add(1, "hello")
+}
