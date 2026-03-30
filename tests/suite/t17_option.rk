@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Option type: Some, None, pattern matching.
+// Spec: type.optionals (OPT1-OPT9)
+// BUG: Option match arm assignment broken in native codegen (Some arm doesn't execute)
+
+func find_positive(n: i32) -> i32? {
+    if n > 0 {
+        return Some(n)
+    }
+    return None
+}
+
+test "option some match" {
+    const result = find_positive(5)
+    let value = 0
+    match result {
+        Some(v) => value = v
+        None => value = -1
+    }
+    assert value == 5
+}
+
+test "option none match" {
+    const result = find_positive(-3)
+    let value = 0
+    match result {
+        Some(v) => value = v
+        None => value = -1
+    }
+    assert value == -1
+}
+
+func main() {}

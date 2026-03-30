@@ -162,3 +162,107 @@ fn run_native_copy_rebind() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "42 42\n");
 }
+
+// ─── Native codegen: structs, enums, closures, strings ──────
+
+#[test]
+fn compile_structs() {
+    let (stdout, code) = compile_and_run("structs.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
+fn compile_enums() {
+    let (stdout, code) = compile_and_run("enums.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "75\n24\n");
+}
+
+#[test]
+fn compile_closures() {
+    let (stdout, code) = compile_and_run("closures.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
+fn compile_strings() {
+    let (stdout, code) = compile_and_run("strings.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "hello world\n5\n");
+}
+
+#[test]
+fn compile_control_flow() {
+    let (stdout, code) = compile_and_run("control_flow.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "55\n10\n");
+}
+
+#[test]
+fn compile_vec_basic() {
+    let (stdout, code) = compile_and_run("vec_basic.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "3\n");
+}
+
+// ─── Compile-error tests (should fail to compile) ────────────
+
+fn compile_error(name: &str) -> bool {
+    let rask = rask_binary();
+    let error_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("compile_errors")
+        .join(name);
+
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(&error_fixture)
+        .output()
+        .expect("failed to run rask check");
+
+    // Should NOT succeed — return true if it correctly fails
+    !out.status.success()
+}
+
+#[test]
+fn error_type_mismatch_arg() {
+    assert!(compile_error("type_mismatch_arg.rk"), "should reject type mismatch in argument");
+}
+
+#[test]
+fn error_type_mismatch_return() {
+    assert!(compile_error("type_mismatch_return.rk"), "should reject return type mismatch");
+}
+
+#[test]
+fn error_undefined_variable() {
+    assert!(compile_error("undefined_variable.rk"), "should reject undefined variable");
+}
+
+#[test]
+fn error_wrong_arg_count() {
+    assert!(compile_error("wrong_arg_count.rk"), "should reject wrong argument count");
+}
+
+#[test]
+#[ignore] // BUG: const reassignment not enforced
+fn error_const_reassign() {
+    assert!(compile_error("const_reassign.rk"), "should reject const reassignment");
+}
+
+#[test]
+#[ignore] // BUG: exhaustiveness checking not implemented
+fn error_nonexhaustive_match() {
+    assert!(compile_error("nonexhaustive_match.rk"), "should reject non-exhaustive match");
+}
+
+#[test]
+#[ignore] // BUG: missing return not enforced
+fn error_missing_return() {
+    assert!(compile_error("missing_return.rk"), "should reject missing return");
+}
