@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Result type: Ok, Err, try propagation, match.
+// Spec: type.errors (ER2-ER7)
+// BUG: functions returning `T or E` may break test discovery in native codegen
+
+func divide(a: i32, b: i32) -> i32 or string {
+    if b == 0 {
+        return Err("division by zero")
+    }
+    return a / b
+}
+
+test "result ok match" {
+    const r = divide(10, 2)
+    let value = 0
+    match r {
+        Ok(v) => value = v
+        Err(e) => value = -1
+    }
+    assert value == 5
+}
+
+test "result err match" {
+    const r = divide(10, 0)
+    let is_err = false
+    match r {
+        Ok(v) => is_err = false
+        Err(e) => is_err = true
+    }
+    assert is_err
+}
+
+func compute() -> i32 or string {
+    const x = try divide(10, 2)
+    const y = try divide(x, 0)
+    return x + y
+}
+
+test "try propagates error" {
+    const r = compute()
+    let got_err = false
+    match r {
+        Ok(v) => got_err = false
+        Err(e) => got_err = true
+    }
+    assert got_err
+}
+
+func compute_ok() -> i32 or string {
+    const x = try divide(10, 2)
+    const y = try divide(6, 3)
+    return x + y
+}
+
+test "try passes through ok" {
+    const r = compute_ok()
+    let value = 0
+    match r {
+        Ok(v) => value = v
+        Err(e) => value = -1
+    }
+    assert value == 7
+}
+
+func always_ok(n: i32) -> i32 or string {
+    return n * 2
+}
+
+test "auto-ok wrapping" {
+    const r = always_ok(21)
+    let value = 0
+    match r {
+        Ok(v) => value = v
+        Err(e) => value = -1
+    }
+    assert value == 42
+}
+
+func main() {}

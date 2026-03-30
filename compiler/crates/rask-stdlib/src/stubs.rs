@@ -529,4 +529,183 @@ mod tests {
         let pos = reg.offset_to_lsp_position("stdlib/builtins.rk", 0);
         assert_eq!(pos, Some((0, 0)));
     }
+
+    // ─── Stdlib discoverability: full API surface ──────────────
+
+    #[test]
+    fn vec_full_api() {
+        let reg = StubRegistry::load();
+        let expected = [
+            "new", "with_capacity", "fixed", "len", "is_empty", "capacity",
+            "is_bounded", "remaining", "allocated",
+            "push", "try_push", "pop", "clear", "insert", "remove",
+            "reserve", "try_reserve", "get", "get_clone",
+        ];
+        for method in &expected {
+            assert!(reg.has_method("Vec", method), "Vec missing method: {}", method);
+        }
+    }
+
+    #[test]
+    fn map_full_api() {
+        let reg = StubRegistry::load();
+        let expected = [
+            "new", "with_capacity", "len", "is_empty", "capacity", "is_bounded",
+            "insert", "remove", "clear", "get", "get_clone", "contains_key",
+            "read", "modify", "ensure", "ensure_modify",
+            "iter", "keys", "values", "freeze",
+        ];
+        for method in &expected {
+            assert!(reg.has_method("Map", method), "Map missing method: {}", method);
+        }
+    }
+
+    #[test]
+    fn pool_full_api() {
+        let reg = StubRegistry::load();
+        let expected = [
+            "new", "with_capacity", "remove", "get", "len",
+            "is_empty", "clear",
+        ];
+        for method in &expected {
+            assert!(reg.has_method("Pool", method), "Pool missing method: {}", method);
+        }
+    }
+
+    #[test]
+    #[ignore] // BUG: Pool.alloc stub missing — users can't allocate into pools
+    fn pool_alloc_discoverable() {
+        let reg = StubRegistry::load();
+        assert!(reg.has_method("Pool", "alloc"), "Pool missing method: alloc");
+    }
+
+    #[test]
+    fn string_full_api() {
+        let reg = StubRegistry::load();
+        let expected = [
+            "len", "is_empty", "contains", "starts_with", "ends_with",
+            "trim", "split", "replace", "chars",
+        ];
+        for method in &expected {
+            assert!(reg.has_method("string", method), "string missing method: {}", method);
+        }
+    }
+
+    #[test]
+    #[ignore] // BUG: string.to_upper/to_lower stubs missing
+    fn string_case_methods_discoverable() {
+        let reg = StubRegistry::load();
+        assert!(reg.has_method("string", "to_upper"), "string missing to_upper");
+        assert!(reg.has_method("string", "to_lower"), "string missing to_lower");
+    }
+
+    #[test]
+    fn option_full_api() {
+        let reg = StubRegistry::load();
+        let expected = [
+            "is_some", "is_none", "unwrap", "unwrap_or",
+            "map", "and_then", "or",
+        ];
+        for method in &expected {
+            assert!(reg.has_method("Option", method), "Option missing method: {}", method);
+        }
+    }
+
+    #[test]
+    #[ignore] // BUG: Option.filter stub missing
+    fn option_filter_discoverable() {
+        let reg = StubRegistry::load();
+        assert!(reg.has_method("Option", "filter"), "Option missing filter");
+    }
+
+    #[test]
+    fn result_full_api() {
+        let reg = StubRegistry::load();
+        let expected = [
+            "is_ok", "is_err", "unwrap", "unwrap_err", "unwrap_or",
+            "map", "map_err",
+        ];
+        for method in &expected {
+            assert!(reg.has_method("Result", method), "Result missing method: {}", method);
+        }
+    }
+
+    #[test]
+    fn file_full_api() {
+        let reg = StubRegistry::load();
+        let expected = [
+            "write", "close",
+        ];
+        for method in &expected {
+            assert!(reg.has_method("File", method), "File missing method: {}", method);
+        }
+    }
+
+    #[test]
+    #[ignore] // BUG: File.read and File.read_line stubs missing
+    fn file_read_discoverable() {
+        let reg = StubRegistry::load();
+        assert!(reg.has_method("File", "read"), "File missing method: read");
+        assert!(reg.has_method("File", "read_line"), "File missing method: read_line");
+    }
+
+    #[test]
+    fn builtin_functions_present() {
+        let reg = StubRegistry::load();
+        let fns = reg.functions();
+        let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        let expected = ["println", "print", "panic"];
+        for name in &expected {
+            assert!(names.contains(name), "Missing builtin function: {}", name);
+        }
+    }
+
+    #[test]
+    #[ignore] // BUG: eprintln/eprint/assert stubs missing
+    fn missing_builtin_functions() {
+        let reg = StubRegistry::load();
+        let fns = reg.functions();
+        let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"eprintln"), "Missing eprintln");
+        assert!(names.contains(&"eprint"), "Missing eprint");
+        assert!(names.contains(&"assert"), "Missing assert");
+    }
+
+    #[test]
+    fn method_signatures_have_return_types() {
+        let reg = StubRegistry::load();
+        // These methods must declare return types — not empty string
+        let checks = [
+            ("Vec", "len"), ("Vec", "pop"), ("Vec", "get"),
+            ("Map", "len"), ("Map", "get"), ("Map", "contains_key"),
+            ("string", "len"), ("string", "contains"),
+            ("Option", "unwrap"), ("Option", "is_some"),
+        ];
+        for (ty, method) in &checks {
+            let m = reg.lookup_method(ty, method)
+                .unwrap_or_else(|| panic!("{}.{} not found", ty, method));
+            assert!(!m.ret_ty.is_empty(), "{}.{}() has empty return type", ty, method);
+        }
+    }
+
+    #[test]
+    fn self_receiver_consistency() {
+        let reg = StubRegistry::load();
+        // Static methods should NOT take self
+        let statics = [("Vec", "new"), ("Map", "new"), ("Pool", "new")];
+        for (ty, method) in &statics {
+            let m = reg.lookup_method(ty, method).unwrap();
+            assert!(!m.takes_self, "{}.{} should be static (no self)", ty, method);
+        }
+        // Instance methods should take self
+        let instances = [
+            ("Vec", "push"), ("Vec", "len"), ("Vec", "pop"),
+            ("Map", "insert"), ("Map", "len"), ("Map", "get"),
+            ("string", "len"), ("string", "contains"),
+        ];
+        for (ty, method) in &instances {
+            let m = reg.lookup_method(ty, method).unwrap();
+            assert!(m.takes_self, "{}.{} should take self", ty, method);
+        }
+    }
 }

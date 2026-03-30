@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+enum Shape {
+    Circle(i32)
+    Rectangle(i32, i32)
+}
+
+func area(s: Shape) -> i32 {
+    match s {
+        Circle(r) => return r * r * 3
+        Rectangle(w, h) => return w * h
+    }
+}
+
+func main() {
+    const c = Shape.Circle(5)
+    const r = Shape.Rectangle(4, 6)
+    println(area(c).to_string())
+    println(area(r).to_string())
+}

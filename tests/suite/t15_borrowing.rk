@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Borrowing: field access, struct borrows, function parameter borrows, with blocks.
+// Spec: mem.borrowing (B1-B4, S1-S5, E1-E5, W1-W7, F1-F4)
+
+// --- Struct field access (fixed source, B1) ---
+
+struct Player {
+    name: string
+    score: i32
+    health: i32
+}
+
+test "struct integer field read" {
+    const p = Player { name: "Alice", score: 100, health: 50 }
+    assert p.score == 100
+    assert p.health == 50
+}
+
+// BUG: struct string field access returns "" in native codegen
+test "struct string field read" {
+    const p = Player { name: "Alice", score: 100, health: 50 }
+    assert p.name == "Alice"
+}
+
+test "struct field used in expression" {
+    const p = Player { name: "Bob", score: 10, health: 20 }
+    const total = p.score + p.health
+    assert total == 30
+}
+
+// --- Disjoint field borrows (F1-F2) ---
+
+test "disjoint field reads" {
+    const p = Player { name: "Eve", score: 42, health: 99 }
+    const s = get_score(p)
+    const h = get_health(p)
+    assert s == 42
+    assert h == 99
+}
+
+// --- Parameter borrows (B3) ---
+
+test "struct borrowed for function call" {
+    const p = Player { name: "Test", score: 7, health: 3 }
+    const sum = add_stats(p)
+    assert sum == 10
+    assert p.score == 7
+}
+
+test "multiple reads of same struct" {
+    const p = Player { name: "Multi", score: 5, health: 15 }
+    const a = get_score(p)
+    const b = get_score(p)
+    assert a == b
+    assert a == 5
+}
+
+// --- String is borrowed for call duration ---
+
+test "string borrowed across calls" {
+    const s = "hello world"
+    const a = identity_str(s)
+    const b = identity_str(s)
+    assert a == "hello world"
+    assert b == "hello world"
+    assert s == "hello world"
+}
+
+// --- Nested struct field access ---
+
+struct Rect {
+    origin: Point
+    width: i32
+    height: i32
+}
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+test "nested struct field access" {
+    const r = Rect {
+        origin: Point { x: 10, y: 20 },
+        width: 100,
+        height: 50
+    }
+    assert r.origin.x == 10
+    assert r.origin.y == 20
+    assert r.width == 100
+}
+
+// --- With blocks on growable sources (W1-W7) ---
+// BUG: Vec indexing in native codegen returns garbage values.
+// with blocks depend on Vec indexing, so they also fail natively.
+
+test "with block reads vec element" {
+    const v = Vec<i32>.new()
+    v.push(10)
+    v.push(20)
+    with v[0] as item {
+        assert item == 10
+    }
+}
+
+test "with block reads second element" {
+    const v = Vec<i32>.new()
+    v.push(100)
+    v.push(200)
+    with v[1] as item {
+        assert item == 200
+    }
+}
+
+// --- Helpers ---
+
+func get_score(p: Player) -> i32 {
+    return p.score
+}
+
+func get_health(p: Player) -> i32 {
+    return p.health
+}
+
+func add_stats(p: Player) -> i32 {
+    return p.score + p.health
+}
+
+func identity_str(s: string) -> string {
+    return s
+}
+
+func main() {}

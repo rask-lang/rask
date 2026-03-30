@@ -374,3 +374,144 @@ fn extract_receiver_ident(source: &str, offset: usize) -> Option<String> {
     let ident = &text_before[ident_start..ident_end];
     if ident.is_empty() { None } else { Some(ident.to_string()) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── extract_receiver_ident ─────────────────────────────
+
+    #[test]
+    fn extract_simple_ident() {
+        // "foo." with offset at position after dot
+        let source = "foo.";
+        assert_eq!(extract_receiver_ident(source, 4), Some("foo".to_string()));
+    }
+
+    #[test]
+    fn extract_ident_with_prefix() {
+        let source = "    myVar.";
+        assert_eq!(extract_receiver_ident(source, 10), Some("myVar".to_string()));
+    }
+
+    #[test]
+    fn extract_ident_in_expression() {
+        let source = "const x = items.";
+        assert_eq!(extract_receiver_ident(source, 16), Some("items".to_string()));
+    }
+
+    #[test]
+    fn extract_empty_at_start() {
+        let source = ".foo";
+        assert_eq!(extract_receiver_ident(source, 1), None);
+    }
+
+    // ─── Stub-based completion ──────────────────────────────
+
+    fn get_stub_completions(type_name: &str) -> Vec<String> {
+        let mut items = Vec::new();
+        add_all_stub_methods(type_name, &mut items);
+        items.iter().map(|i| i.label.clone()).collect()
+    }
+
+    fn get_instance_completions(type_name: &str) -> Vec<String> {
+        let mut items = Vec::new();
+        add_stdlib_methods(type_name, &mut items);
+        items.iter().map(|i| i.label.clone()).collect()
+    }
+
+    #[test]
+    fn vec_completion_includes_core_methods() {
+        let items = get_instance_completions("Vec");
+        assert!(items.contains(&"push".to_string()), "missing push in {:?}", items);
+        assert!(items.contains(&"pop".to_string()), "missing pop in {:?}", items);
+        assert!(items.contains(&"len".to_string()), "missing len in {:?}", items);
+        assert!(items.contains(&"is_empty".to_string()), "missing is_empty in {:?}", items);
+    }
+
+    #[test]
+    fn vec_completion_excludes_static_new() {
+        // Instance completions should not include static method `new`
+        let items = get_instance_completions("Vec");
+        assert!(!items.contains(&"new".to_string()),
+            "instance completion should not include static new");
+    }
+
+    #[test]
+    fn vec_static_includes_new() {
+        // All methods (module-style) should include `new`
+        let items = get_stub_completions("Vec");
+        assert!(items.contains(&"new".to_string()), "should include new: {:?}", items);
+    }
+
+    #[test]
+    fn map_completion_includes_core_methods() {
+        let items = get_instance_completions("Map");
+        assert!(items.contains(&"insert".to_string()), "missing insert in {:?}", items);
+        assert!(items.contains(&"get".to_string()), "missing get in {:?}", items);
+        assert!(items.contains(&"len".to_string()), "missing len in {:?}", items);
+        assert!(items.contains(&"contains_key".to_string()), "missing contains_key in {:?}", items);
+    }
+
+    #[test]
+    fn string_completion_includes_core_methods() {
+        let items = get_instance_completions("string");
+        assert!(items.contains(&"len".to_string()), "missing len in {:?}", items);
+        assert!(items.contains(&"contains".to_string()), "missing contains in {:?}", items);
+        assert!(items.contains(&"trim".to_string()), "missing trim in {:?}", items);
+    }
+
+    #[test]
+    fn option_completion_includes_core_methods() {
+        let items = get_instance_completions("Option");
+        assert!(items.contains(&"unwrap".to_string()), "missing unwrap in {:?}", items);
+        assert!(items.contains(&"is_some".to_string()), "missing is_some in {:?}", items);
+        assert!(items.contains(&"map".to_string()), "missing map in {:?}", items);
+    }
+
+    #[test]
+    fn result_completion_includes_core_methods() {
+        let items = get_instance_completions("Result");
+        assert!(items.contains(&"unwrap".to_string()), "missing unwrap in {:?}", items);
+        assert!(items.contains(&"is_ok".to_string()), "missing is_ok in {:?}", items);
+        assert!(items.contains(&"map".to_string()), "missing map in {:?}", items);
+    }
+
+    #[test]
+    fn fs_module_completion_includes_functions() {
+        let items = get_stub_completions("fs");
+        assert!(items.contains(&"read_file".to_string()), "missing read_file in {:?}", items);
+        assert!(items.contains(&"write_file".to_string()), "missing write_file in {:?}", items);
+        assert!(items.contains(&"exists".to_string()), "missing exists in {:?}", items);
+    }
+
+    #[test]
+    fn completion_items_have_detail() {
+        let mut items = Vec::new();
+        add_stdlib_methods("Vec", &mut items);
+        let push = items.iter().find(|i| i.label == "push")
+            .expect("should have push");
+        assert!(push.detail.is_some(), "push should have detail/signature");
+    }
+
+    #[test]
+    fn completion_items_have_insert_text() {
+        let mut items = Vec::new();
+        add_stdlib_methods("Vec", &mut items);
+        let push = items.iter().find(|i| i.label == "push")
+            .expect("should have push");
+        assert!(push.insert_text.is_some(), "push should have insert text");
+        let text = push.insert_text.as_ref().unwrap();
+        assert!(text.starts_with("push("), "insert text should be push(...): {}", text);
+    }
+
+    #[test]
+    fn no_duplicate_completions() {
+        let mut items = Vec::new();
+        add_stdlib_methods("Vec", &mut items);
+        // Add again — should not create duplicates
+        add_stdlib_methods("Vec", &mut items);
+        let push_count = items.iter().filter(|i| i.label == "push").count();
+        assert_eq!(push_count, 1, "should not have duplicate push");
+    }
+}

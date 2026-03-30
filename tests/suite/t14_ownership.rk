@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Ownership: copy semantics, move semantics, clone.
+// Spec: mem.ownership (O1-O4), mem.value (VS1-VS7)
+
+// --- Copy types: primitives always copy (VS2) ---
+
+test "i32 copies on assignment" {
+    const a = 42
+    const b = a
+    assert a == 42
+    assert b == 42
+}
+
+test "bool copies on assignment" {
+    const a = true
+    const b = a
+    assert a == true
+    assert b == true
+}
+
+// f64 test moved to t14b_f64.rk — a single codegen failure kills all tests in the file
+
+// --- Strings are Copy (refcounted, immutable) (VS3) ---
+
+test "string copies on assignment" {
+    const s1 = "hello"
+    const s2 = s1
+    assert s1 == "hello"
+    assert s2 == "hello"
+}
+
+test "string survives function pass" {
+    const s = "test"
+    const upper = identity_string(s)
+    assert s == "test"
+    assert upper == "test"
+}
+
+// --- Small structs copy (<=16 bytes, all fields Copy) (VS1) ---
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+test "small struct copies on assignment" {
+    const p1 = Point { x: 10, y: 20 }
+    const p2 = p1
+    assert p1.x == 10
+    assert p1.y == 20
+    assert p2.x == 10
+    assert p2.y == 20
+}
+
+test "small struct survives function pass" {
+    const p = Point { x: 5, y: 7 }
+    const sum = point_sum(p)
+    assert p.x == 5
+    assert sum == 12
+}
+
+// --- Vec is never Copy (VS3), moves on assignment (O2) ---
+// NOTE: Use-after-move (O3) is not yet enforced by the ownership checker.
+
+test "vec move to new binding" {
+    const v = Vec<i32>.new()
+    v.push(1)
+    v.push(2)
+    const v2 = v
+    assert v2.len() == 2
+}
+
+// --- Clone creates independent copy ---
+
+test "vec clone is independent" {
+    const v1 = Vec<i32>.new()
+    v1.push(10)
+    v1.push(20)
+    const v2 = v1.clone()
+    v2.push(30)
+    assert v1.len() == 2
+    assert v2.len() == 3
+}
+
+// --- Copy semantics across control flow ---
+
+test "copy survives if/else branches" {
+    const x = 42
+    let result = 0
+    if true {
+        result = x
+    }
+    assert x == 42
+    assert result == 42
+}
+
+test "copy in loop iterations" {
+    const base = 10
+    let sum = 0
+    for i in 0..5 {
+        sum = sum + base
+    }
+    assert base == 10
+    assert sum == 50
+}
+
+// --- Helpers ---
+// BUG: helper functions returning u64 break test discovery (0 tests found)
+
+func identity_string(s: string) -> string {
+    return s
+}
+
+func point_sum(p: Point) -> i32 {
+    return p.x + p.y
+}
+
+func main() {}

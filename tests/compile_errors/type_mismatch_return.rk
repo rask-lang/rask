@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: returning string from i32 function
+// Expected: typecheck error E0308
+
+func get_number() -> i32 {
+    return "hello"
+}
+
+func main() {}

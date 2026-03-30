@@ -166,7 +166,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Code generation | MIR-based pipeline, Cranelift backend, runtime library | [codegen.md](specs/compiler/codegen.md) |
 | Raido | Deterministic scripting VM — 32.32 fixed-point, serializable state, content-addressed bytecode. Independent project, also serves as verification engine for Allgard's verifiable transforms | [raido/](projects/raido/) |
 | Leden | Capability-based networking protocol — sessions, capabilities, object references, gossip discovery | [leden/](projects/leden/) |
-| Allgard | Federation model — primitives, conservation laws, domain sovereignty, bilateral trust | [allgard/](projects/allgard/) |
+| Allgard | Federation model — primitives, conservation laws, domain sovereignty, bilateral trust, owner presence | [allgard/](projects/allgard/) |
 | GDL | Gard Description Language — content schema for describing gards over Leden. Regions, entities, affordances, appearance, style system | [gdl/](projects/gdl/) |
 | Midgard | Virtual world example — uses Raido, Allgard, Leden, GDL together | [midgard/](projects/midgard/) |
 

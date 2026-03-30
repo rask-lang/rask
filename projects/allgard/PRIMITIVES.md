@@ -46,11 +46,188 @@ Owners are cryptographic identities. The specific scheme (ed25519 keys, DIDs, et
 
 An Owner is *not* a person. A person may control multiple Owners. An automated system can be an Owner. The federation doesn't care about the entity behind the key.
 
+### Key Hierarchy
+
+An Owner's identity is a **master key**. The master key is the root of authority — it can do everything: sign Transforms, issue Grants, revoke Grants, migrate home domains, recover from wallet.
+
+The master key doesn't live on any device in the clear. It's password-encrypted and stored on the home domain (and backup home, and optionally synced to enrolled devices). The encrypted blob is useless without the password. Redundancy is free — store it everywhere.
+
+```
+encrypted(master_key, password) → stored on home domain, backup, devices
+```
+
+"Log in on a new device" is: contact home domain, authenticate with password, home domain decrypts the master key server-side (or sends the encrypted blob for client-side decryption), issue a Device Grant to the new device's keypair. This is the login flow everyone already understands.
+
+Daily operations use **device keys**. Each device (phone, laptop, work machine) gets its own keypair. The master key signs a Device Grant to each device key — a scoped delegation of the Owner's authority.
+
+```
+Master key (password-encrypted, on home domain)
+    |
+    ├── Device Grant → phone key
+    │     scope: sign_transforms, maintain_sessions, issue_grants(limited)
+    │     expiry: 90 days (auto-renewable)
+    │
+    ├── Device Grant → laptop key
+    │     scope: sign_transforms, maintain_sessions, issue_grants(limited)
+    │     expiry: 90 days
+    │
+    ├── Device Grant → work key
+    │     scope: read_only, maintain_sessions
+    │     expiry: 30 days
+    │
+    └── Relay Grant → relay service
+          scope: forward, queue, presence, name_resolution, lease_renewal
+          expiry: none (revoke-only)
+```
+
+Device Grants are standard [Grants](#grant) — same primitive, same attenuation rules, same revocation. A device key can do everything its Grant allows, nothing more. Different devices can have different scopes:
+
+| Device | Typical scope | Why |
+|---|---|---|
+| Phone (primary) | Full daily operations — sign, session, limited Grant issuance | Your main device, most trusted |
+| Laptop | Full daily operations | Same trust level as phone |
+| Work machine | Read-only, sessions, no signing | Untrusted hardware, limited exposure |
+| Shared/public terminal | Session only, expiry in hours | Minimal trust, auto-expires |
+
+#### Password Security
+
+The encrypted master key blob is protected by a key derived from the password using Argon2 (memory-hard KDF). This makes brute-force expensive — seconds per attempt, not microseconds. The runtime enforces minimum password strength at identity creation.
+
+The home domain never sees the master key in the clear if client-side decryption is used. The home domain stores the encrypted blob and serves it to authenticated devices. The device decrypts locally. This means a compromised home domain gets the encrypted blob but not the password — and a strong password holds up against offline brute-force.
+
+For convenience, the home domain can offer server-side decryption (password sent over the authenticated Leden session, decryption happens on the server, device key issued). This is less sovereign but simpler — same trust model as any password-authenticated web service. The Owner chooses.
+
+#### Recovery
+
+Forgot password, lost all devices — how do you get back in?
+
+**Social recovery.** At identity creation, the Owner designates M-of-N trusted Owners as recovery contacts. The home domain stores encrypted recovery shards (one per contact). To recover: M contacts confirm your identity (through their own authenticated sessions), the home domain releases enough shards to reconstruct access, the Owner sets a new password.
+
+From the user's perspective: "I forgot my password. My three friends confirmed it's me. I set a new password." That's it.
+
+Social recovery is opt-in but the runtime should strongly encourage it during identity creation — same as "add a recovery email" in every account setup flow.
+
+**Home domain recovery.** The home domain operator can offer out-of-band identity verification (email, phone, government ID — domain policy). Less sovereign, more familiar. This is the standard "forgot password" flow. The domain operator has the power to reset access, which means the domain operator is a trust dependency for recovery.
+
+**Both.** Social recovery handles the "domain operator is hostile/gone" case. Home domain recovery handles the "I have no friends online right now" case. They complement each other.
+
+| Scenario | Recovery path |
+|---|---|
+| Forgot password, have a device | Device key still works. Change password from enrolled device. |
+| Forgot password, no devices | Social recovery (M-of-N contacts) or home domain recovery |
+| Lost all devices, know password | Log in from new device with password |
+| Lost all devices, forgot password | Social recovery → new password → new device |
+| Home domain down, have a device | Device key still works via backup home |
+| Home domain down, no devices, know password | Encrypted blob from backup home + password |
+| Everything gone (no devices, no password, home down) | Social recovery via backup home, or wallet recovery if you have a wallet backup |
+
+The bottom row is the real disaster scenario. Without social recovery contacts or a wallet backup, it's permanent loss. That's the honest tradeoff — but every row above it has a recovery path that doesn't require security expertise.
+
+#### Device Key Revocation
+
+Lost phone? Stolen laptop? Revoke the device key from any other device that holds sufficient authority:
+
+1. From another device with `revoke_device` scope — immediate, no master key needed.
+2. From the relay — if the relay holds a `revoke_device` Grant (recommended).
+3. From the master key — always works, the nuclear option.
+
+Device key revocation uses the same propagation mechanism as [Key Compromise](#key-compromise-propagation), but scoped to one device key. The home domain (or relay) broadcasts the revocation to all domains where that device key has active sessions. Sessions from the revoked key are terminated. Transforms signed by the revoked key after the revocation timestamp are rejected.
+
+**This is not a full key compromise.** The master key is safe. Other device keys are safe. Only the revoked device's sessions are affected. The Owner continues operating from other devices without interruption.
+
+#### Why Not Just One Key?
+
+The current spec says "Owners are cryptographic identities" — implying one key. That works for automated systems (one process, one key). It doesn't work for humans who use multiple devices.
+
+Without device keys, the options are:
+- **Copy the master key to every device.** One compromised device = total identity loss. Terrible.
+- **Use one device only.** That device goes offline, you're locked out. Also terrible.
+- **Create separate Owner identities per device.** Your inventory, Grants, and reputation fragment across identities. Defeats the purpose.
+
+Device keys solve all three. The master key stays safe. Any device can act. One device compromise is bounded. The Owner is one identity across all devices.
+
+### Properties
+
+| Property | Description |
+|----------|------------|
+| `id` | Cryptographic identity (public key or derived identifier) |
+| `name` | Human-readable identifier, unique within the home domain. Globally addressed as `name@home_domain`. |
+| `kind` | Advisory type tag: `individual`, `system`, `group`, `service`. Not enforced — domains can use it for policy (rate limits, trust defaults, display). |
+| `home_domain` | The Domain authoritative for this Owner's identity |
+| `profile` | Optional. Object reference to the Owner's profile Object (see [Profile](#profile)). |
+
+### Name
+
+Every Owner has a name — a human-readable identifier, unique within its home domain. The global form is `name@home_domain`, like email addresses. Globally unique by construction, no registry needed.
+
+Names are how Owners refer to each other across the federation. Without standardized naming, every cross-gard interaction would use raw cryptographic IDs. That's fine for machines. It's unusable for anything involving humans.
+
+The home domain is authoritative for name uniqueness within its namespace. Name resolution goes through the home domain, same as email MX resolution.
+
+**Names are not secrets.** An Owner's name is public — it's how you're addressed. Knowing someone's name doesn't grant any capability. You still need a Grant to observe their presence or contact them.
+
+### Kind
+
+Advisory type tag. The federation doesn't enforce it — an Owner claiming `individual` might be a bot. But kind serves two purposes:
+
+1. **Policy defaults.** A domain might apply different rate limits to `system` Owners (higher throughput, lower interactivity) vs `individual` Owners. A `service` Owner connecting at 3am to execute 1000 transfers looks normal. An `individual` doing that looks suspicious.
+
+2. **Interaction expectations.** A `group` Owner (guild, organization) has members and delegation. A `service` Owner (automated trading, monitoring) is expected to be always-on. These expectations aren't enforced — they inform how domains and other Owners interact.
+
+| Kind | Typical use |
+|------|------------|
+| `individual` | A person. May be offline. Has social relationships. |
+| `system` | Automated process. Expected to be always-on. High throughput, low interactivity. |
+| `group` | Multi-member entity (guild, organization). Has an administrator. Delegates via Grants. |
+| `service` | Provides functionality to other Owners (marketplace, exchange, hosting). Publicly reachable. |
+
+Kind is self-declared and immutable once set. Changing kind requires a new Owner identity. I considered making it mutable but rejected it — a `system` that becomes an `individual` mid-session breaks every policy assumption. If you need a different kind, create a new Owner.
+
+### Profile
+
+An Owner's profile is an Object — a regular Object with type tag `owner_profile`, owned by the Owner, published at the home domain. The profile carries identity metadata beyond the fundamental properties (name, kind).
+
+**Why an Object, not more primitive properties?** Because the boundary between "fundamental" and "application-specific" depends on context. Name and kind are universal — every federated system needs them. Avatar, bio, display name — almost universal, but not quite. Game class, sensor type — domain-specific. Putting everything in the primitive forces every system to carry fields it doesn't use. An Object with a typed schema lets each context carry what it needs.
+
+**The profile Object is observable.** Other Owners with a `presence` or `contact` Grant (see [PRESENCE.md](PRESENCE.md#standard-grants)) can observe the profile via Leden observation at the home domain. No transfer needed — read it from the authoritative source, cache locally. Content-addressed, so cache invalidation is free (content changes = new hash = refetch).
+
+#### Well-Known Fields
+
+The profile Object's content is a typed map. [GDL](../gdl/GDL.md#owner-profile-schema) defines the standard schema — well-known fields like `display_name`, `avatar`, `bio`, `links`, `pronouns`, and `locale`. This is the same pattern as HTTP headers: a small set of well-known names with defined semantics, plus arbitrary extensions via namespaced keys.
+
+The split is deliberate: Allgard defines the mechanism (profile is an Object, observable, at home domain). GDL defines the content (what fields exist, what they mean). Content description is GDL's job.
+
+#### Graceful Degradation
+
+Domains render what they recognize, ignore what they don't. GDL's first design principle — "ignore what you don't understand" — applies directly to profiles.
+
+| What the domain recognizes | What it shows |
+|---|---|
+| Full GDL profile schema + domain extensions | Rich profile — avatar, bio, custom fields |
+| Standard GDL profile fields only | Avatar, bio, display name |
+| No profile support | `name` and `kind` from the Owner primitive |
+
+Every step is functional. A supply chain system that doesn't render avatars still has `name` and `kind`. A game domain that adds `class` and `level` fields can render rich character profiles. Neither breaks when encountering the other's profiles — unknown fields are silently ignored.
+
+#### Domain-Specific Extensions
+
+Domains add custom fields to the profile Object. A game domain might add `class`, `level`, `guild`. A supply chain domain might add `facility_type`, `capacity`. These fields travel with the profile Object and are available to any domain that recognizes them.
+
+Custom fields use a namespaced key convention to avoid collisions: `domain_name.field_name`. A game domain `northgard` adding a class field uses `northgard.class`. Domains never need to coordinate field names — the namespace prevents collisions by construction.
+
+Namespaced fields that a domain doesn't recognize are preserved but not rendered. If a player from `northgard` visits `eastgard`, and `eastgard` doesn't know about `northgard.class`, the field survives in the profile Object — it's just not displayed. When the player returns to `northgard`, the field is still there.
+
 ### Home Domain
 
 Every Owner has a home domain — the domain that is authoritative for their identity and primary inventory. An Owner can operate in other domains, but their home domain is the root of trust for their identity.
 
 The home domain is where your stuff lives by default.
+
+### Presence
+
+An Owner's presence is the set of Domains where the Owner currently has active sessions. Presence is observable state — other Owners with appropriate Grants can subscribe to presence changes. The home domain is the canonical observation point.
+
+See [PRESENCE.md](PRESENCE.md) for the full spec: observability, reachability, and standard relationship Grant conventions.
 
 ### Leased Transfer
 
@@ -97,13 +274,194 @@ This is a Grant from the player to the backup domain — scoped to mirror and re
 
 Without a backup, home domain failure is permanent loss. That's the honest tradeoff. But with a backup, it's a recoverable event — same as a disk failure with a RAID mirror.
 
+### Deployment Models
+
+The protocol doesn't prescribe where a home domain runs. Three models, each with different sovereignty/convenience tradeoffs.
+
+#### Hosted
+
+Someone else runs your home domain. A gard operator, a hosting provider, a community server. You hold your device keys. They hold your Objects and run your Domain logic. Every Transform still requires YOUR device key's signature — the host can't forge operations.
+
+| Advantage | Disadvantage |
+|---|---|
+| Always-on, no ops | They have leverage — can refuse migration, change terms |
+| Low barrier | Your Objects are on their hardware |
+| Professional infrastructure | You depend on their availability |
+
+This is the default for most users. The wallet ensures you can leave. The migration protocol ensures you can leave smoothly (cooperative) or roughly (uncooperative). The host is a convenience layer, not a trust anchor.
+
+**The host is not a custodian.** The protocol should structurally discourage custodial hosting (where the host holds the Owner's keys). TRUST.md already says: "domain operators who hold player keys are undermining the ownership model." Device keys make non-custodial hosting natural — the host runs the Domain, the Owner's devices hold the signing keys. A host that demands your master key is a red flag.
+
+#### Self-Hosted
+
+You run your home domain on your own hardware — home server, VPS, dedicated machine. Full sovereignty.
+
+| Advantage | Disadvantage |
+|---|---|
+| Full control | You need ops skills |
+| No external dependency | You need uptime (or a relay) |
+| Your Objects on your hardware | You need a public address or relay |
+
+Viable for technical users, organizations, and automated systems. A Raspberry Pi or NAS running the Allgard runtime is enough for a personal home domain. A VPS is the simplest path for public reachability.
+
+#### Edge + Relay
+
+Your home domain runs on your device (phone, laptop, home server). A relay service handles reachability.
+
+```
+Your devices ──── relay service ──── the federation
+ (authority)      (reachability)
+```
+
+The relay is a thin service with a scoped [Grant](#grant):
+
+| Relay capability | What it does | What it can't do |
+|---|---|---|
+| Forward messages | Routes inbound messages to your active device | Read message content (encrypted end-to-end) |
+| Queue when offline | Holds messages until a device comes online | Sign Transforms or issue Grants |
+| Presence aggregation | Reports which devices are online, serves presence to observers | Modify presence state |
+| Name resolution | Responds to `ResolveName` requests | Change your name or identity |
+| Lease renewal | Renews leases on your behalf (scoped Grant) | Transfer or modify your Objects |
+| Profile cache | Serves cached profile to observers | Modify your profile |
+
+The relay is replaceable. It holds no authority beyond its Grant, no Objects, no master key. Switching relays is revoking one Grant and issuing another — not a home domain migration.
+
+**The relay IS the backup home, thin edition.** The existing backup home concept ranges from "full mirror" (holds all Objects, can promote to primary) to "thin relay" (forwarding + queuing only, Objects stay on devices). Both use the same Grant-based delegation. The difference is scope — a full backup can recover from total device loss, a thin relay can only bridge offline periods.
+
+**Recommended setup:** relay service for reachability + a full backup at a different provider for disaster recovery. The relay handles daily operations (forwarding, presence, lease renewal). The backup handles catastrophes (all devices lost, relay down).
+
+**When your phone is offline and you log in on your laptop:**
+
+1. Laptop has its own device key (from [Key Hierarchy](#key-hierarchy)).
+2. Laptop contacts the relay (stable network address).
+3. Relay validates the laptop's device key against the Owner's published Device Grants.
+4. Laptop can act as the Owner — sign Transforms, maintain sessions, access Objects.
+5. Phone comes back later, syncs state with the relay. Both devices active simultaneously.
+
+No single device is the home domain. The Owner's identity is the master key. Any device with a valid Device Grant can act. The relay aggregates and forwards. If the relay goes down, devices that know each other's addresses can communicate directly — the relay is a convenience, not a dependency.
+
+### Home Domain Migration
+
+An Owner can change their home domain. This is the voluntary version of home domain failure — same mechanics, controlled circumstances.
+
+Migration matters because home domains aren't forever. A domain might shut down (planned), change terms, degrade in quality, or the Owner might just want to move. Without a migration protocol, the Owner's only option is wallet recovery to a new domain — which works but loses all active sessions, leases, presence subscriptions, and message routing. Migration preserves continuity.
+
+#### The Problem
+
+Everything points at the home domain:
+- Name resolution: `erik@northgard` resolves at `northgard`
+- Presence subscriptions: observers watch `northgard` for Owner state
+- Profile observation: profile Object lives on `northgard`
+- Message routing: contacts send messages through `northgard`
+- Inventory: Objects live on `northgard`
+- Leases: `northgard` manages outstanding leases for visited domains
+- Backup home: mirrors `northgard`
+
+Changing home domain means redirecting all of this. The Owner's cryptographic identity stays the same — only the domain changes.
+
+#### Cooperative Migration
+
+The happy path. Old home (Domain A) and new home (Domain B) both cooperate.
+
+```
+Owner              Old Home (A)         New Home (B)
+  |                     |                      |
+  | 1. MigrationIntent  |                      |
+  |────────────────────>|                      |
+  |                     |                      |
+  | 1. MigrationIntent  |                      |
+  |───────────────────────────────────────────>|
+  |                     |                      |
+  |                     | 2. InventoryTransfer |
+  |                     |─────────────────────>|
+  |                     |  (batch, per object) |
+  |                     |                      |
+  |                     | 3. MigrationCommit   |
+  |                     |─────────────────────>|
+  |                     |                      |
+  |                     | 4. Redirect active   |
+  |                     | state → Redirecting  |
+  |                     |                      |
+```
+
+**Phase 1: Intent.** Owner submits a signed `MigrationIntent(from: A, to: B)` to both domains. Both validate the Owner's signature. Domain B checks that it's willing to host this Owner (policy — rate limits, content rules, capacity). Domain A transitions the Owner to "migrating" state — no new leases, no new outbound transfers.
+
+**Phase 2: Inventory transfer.** Domain A transfers all Owner's Objects to Domain B using the existing [cross-domain transfer protocol](TRANSFER.md). This is a batch operation — potentially hundreds of Objects. Each transfer follows the standard escrow→commit→complete flow. The profile Object transfers as part of this batch.
+
+Outstanding leases complicate this. Objects currently leased to visited domains don't transfer through A — they'll return to A on lease expiry, then forward to B. Or A can revoke the leases early, forcing objects home, then transfer to B. The Owner chooses:
+
+| Lease strategy | Behavior | Disruption |
+|---|---|---|
+| **Revoke and transfer** | Revoke all leases, wait for objects to return, transfer to B | Immediate disruption — Owner is kicked from visited domains briefly |
+| **Forward on return** | Let leases expire naturally, forward objects to B as they return | No disruption — but migration isn't complete until the last lease returns |
+| **Re-lease from B** | Transfer unleased objects to B, then B issues new leases to the same visited domains | Minimal disruption — visited domains swap their lease source |
+
+I'd default to "re-lease from B" for the smoothest experience, with "revoke and transfer" as the fallback when speed matters.
+
+**Phase 3: Commit.** Once all Objects are transferred (or forwarded/re-leased), Domain A persists a `MigrationProof(owner_id, new_home: B)` — analogous to a Departure Proof. This is irrevocable. Domain A is no longer the home domain.
+
+**Phase 4: Redirect.** Domain A enters "redirecting" state for this Owner:
+
+- `ResolveName("erik")` → `OwnerMigrated(new_home: B)`. Like an HTTP 301.
+- Presence observers receive `HomeMigrated(new_home: B)`. Clients reconnect to B automatically.
+- Inbound messages receive `OwnerMigrated(new_home: B)`. Senders update their routing.
+- The Owner's name is reserved on A during the redirect period — nobody else can claim `erik@northgard`.
+
+**Redirect duration.** Domain A keeps the redirect for a minimum of 90 days (configurable per bilateral agreement). After that, the Owner's name on A is released. This gives contacts, cached name resolutions, and slow-updating systems time to discover the new home.
+
+The 90-day minimum is a protocol recommendation, not a law. A domain shutting down might redirect for 30 days. A domain with a good relationship might redirect indefinitely. The Owner should assume redirects are temporary and notify contacts directly.
+
+#### Uncooperative Migration
+
+Domain A refuses to cooperate — won't transfer Objects, won't redirect, won't release the name. This is the hostile case.
+
+The Owner still migrates. The tools already exist:
+
+1. **Wallet recovery.** The Owner's wallet contains Proof chains for all Objects. Present the wallet to Domain B. Domain B verifies mechanically and accepts via [witnessed recovery](#witnessed-recovery). Objects are now on B.
+
+2. **Direct notification.** The Owner has sessions with other domains (visited domains, contacts' home domains). The Owner announces the migration directly — "my new home is B." No redirect from A needed.
+
+3. **Gossip.** Trading partners of A learn through bilateral interaction that the Owner is now operating from B. The MigrationProof (if A eventually produces one) or the wallet's Proof chains serve as evidence.
+
+**What the Owner loses in uncooperative migration:**
+- Name on A. `erik@northgard` is gone. The Owner becomes `erik@newdomain`. Contacts using the old address get no redirect.
+- Active leases. Objects on visited domains have leases from A. A won't revoke or forward them. They return to A on lease timeout. The Owner recovers them via wallet once they return to A's inventory — or waits for lease expiry and uses witnessed recovery.
+- Smooth transition. There's a gap where some contacts still route through A and others route through B. This resolves as contacts learn the new address.
+
+This is the same cost as home domain failure without a backup. Uncooperative migration is effectively voluntary homelessness with wallet recovery. It works, but it's not smooth.
+
+#### Name Continuity
+
+`erik@northgard` becomes `erik@eastgard`. The identity (cryptographic key) is the same. The address changes. This is like changing email providers — everyone who had the old address needs the new one.
+
+**The redirect handles the transition.** During the redirect period, the old address forwards to the new one. After the redirect expires, the old address stops working.
+
+**Why not keep the old name permanently?** Because that makes Domain A a permanent dependency. The Owner left A — maybe because A is shutting down, maybe because A is hostile. Permanent redirects mean A has permanent leverage. The clean break is: redirects are temporary, contacts update, the old name is released.
+
+**Backup home as migration accelerator.** If the Owner has a backup home domain that's already mirroring, migration to the backup is nearly instant — it already has the inventory. The backup promotes itself to primary, the old primary becomes the redirect. This is the smoothest migration path and another reason to have a backup.
+
+#### What the Wallet Stores After Migration
+
+The wallet adds:
+- `MigrationProof(from: A, to: B)` — evidence of the migration
+- Updated `home_domain: B`
+- Fresh Proof chains from B for transferred Objects
+
+The wallet's historical Proof chains from A remain valid — they're append-only. The migration is a new entry in the Owner's history, not an edit.
+
 ### Key Compromise Propagation
 
-When an Owner's key is compromised, the home domain must propagate revocation to every domain where the Owner has active sessions, outstanding Grants, or leased objects. This is the hardest revocation case — it's time-critical and cross-domain.
+With the [key hierarchy](#key-hierarchy), compromise has two severities:
+
+**Device key compromised** (phone stolen, laptop hacked). Bounded damage. Revoke the device key from any other device or the relay. Sessions from that device terminate. Transforms signed after revocation are rejected. Other devices continue unaffected. This is a routine security event, not an emergency.
+
+**Master key compromised** (attacker obtained encrypted blob + password, or home domain with server-side decryption was breached). Total emergency. The attacker can issue new device keys, migrate the home domain, sign anything. This is the case described below — full propagation, all sessions terminated, identity recovery required. Note: master key compromise requires both the encrypted blob AND the password — stealing one without the other is insufficient.
+
+When an Owner's master key is compromised, the home domain must propagate revocation to every domain where the Owner has active sessions, outstanding Grants, or leased objects. This is the hardest revocation case — it's time-critical and cross-domain.
 
 **Revocation flow:**
 
-1. **Owner or home domain detects compromise.** The Owner reports a compromised key (out-of-band — new key signed by backup key, admin action, etc.), or the home domain detects anomalous behavior (impossible concurrent sessions, operations from conflicting locations).
+1. **Owner or home domain detects compromise.** The Owner reports a compromised key (out-of-band — new key signed by backup key, admin action, etc.), or the home domain detects anomalous behavior (impossible concurrent sessions, operations from conflicting locations, Device Grants issued that the Owner didn't authorize).
 
 2. **Home domain issues `KeyRevocation(owner_id, compromised_key, evidence, new_key)`** to all domains it has bilateral relationships with. This is a broadcast, not targeted — the home domain may not know every domain the Owner visited (Grants can chain through intermediaries). The message includes:
    - The Owner identity being revoked
