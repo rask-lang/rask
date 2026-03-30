@@ -10,18 +10,13 @@ Issues discovered comparing existing and new tests against specs. Organized by s
 
 The spec defines `x!` for force unwrap. The Option method table lists `map`, `filter`, `to_result`, `is_some`, `is_none` — no `unwrap()`. The Result method table is similar. Tests use `.unwrap()` which is a Rust-ism not in the spec.
 
-**Resolution needed:** Either add `unwrap()` to the spec or update tests to use `x!`.
+**Resolved:** `x!` is correct. Existing tests need updating to use `x!` instead of `.unwrap()`.
 
-### 2. `return` inside closures
-**File:** `t06_closures.rk`
-**Spec:** `ctrl.flow/CF26`, `mem.closures`
+### 2. ~~`return` inside closures~~ (resolved)
 
-CF26 says `return` exits the enclosing function. The closures spec shows closures as expression-bodied (`|x| x * 2`) or block-bodied using last-expression-as-value (`|mutate count| { count += 1 }`). Never with `return`.
+**Decision:** `return` in a closure exits the **closure**, not the enclosing function. Closures are anonymous functions — same return semantics. Block-bodied closures require explicit `return`, same as functions. Expression-bodied closures (`|x| x * 2`) implicitly return.
 
-Every closure in `t06_closures.rk` uses `return` inside a block body. If CF26 applies, these `return`s exit the enclosing function — not the closure. Either:
-- The spec is wrong and `return` in closures returns from the closure
-- The tests are wrong and should use last-expression-as-value
-- Closures are an exception to CF26 (should be documented)
+CF26 and closures.md updated to reflect this. The existing t06_closures.rk tests are correct.
 
 ### 3. `context_missing.rk` contradicts CC7
 **File:** `tests/compile_errors/context_missing.rk`
@@ -50,17 +45,13 @@ Uses `Pool::<Player>.new()` throughout. SYNTAX.md explicitly says "no turbofish.
 
 The spec should document both forms or pick one. All existing tests use the no-parens form.
 
-### 7. Trait body — `func` keyword or not?
-- `SYNTAX.md` lines 368-374: `trait Displayable { func to_string(self) -> string }`
-- `type.traits` (traits.md) line 25: `clone(self) -> Self` (no `func`)
+### 7. ~~Trait body — `func` keyword or not?~~ (resolved)
 
-SYNTAX.md includes `func`, traits.md omits it. One of them is wrong.
+**Decision:** `func` required in trait bodies, same as everywhere else. SYNTAX.md was right. Updated traits.md, generics.md, and memory-layout.md to include `func` in all trait method signatures.
 
-### 8. Qualified vs unqualified variant names in patterns
-- Spec examples (enums.md, SYNTAX.md): Consistently use unqualified names in match arms — `Ok(v)`, `None`, `Circle(r)`
-- Tests (`t04_enums.rk`): Use qualified names — `Shape.Circle(r)`, `Color.Red`
+### 8. ~~Qualified vs unqualified variant names in patterns~~ (resolved)
 
-Both may be valid, but the spec should document both forms if so. Currently all spec examples use unqualified only.
+**Decision:** Both forms valid. Unqualified is idiomatic (compiler infers enum type from match subject). Qualified (`Shape.Circle`) always works. Updated enums.md to document both forms.
 
 ### 9. `map.contains()` vs `map.contains_key()`
 **File:** `t13_map.rk`

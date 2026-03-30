@@ -36,11 +36,11 @@ Traits match by shape — if your type has the right methods, it satisfies the t
 
 ```rask
 trait Name {
-    method_name(self, params...) -> ReturnType
-    another_method(self) -> OtherType
+    func method_name(self, params...) -> ReturnType
+    func another_method(self) -> OtherType
 
     // Default implementation (optional)
-    helper(self) -> bool {
+    func helper(self) -> bool {
         self.method_name(...) != null
     }
 }
@@ -115,7 +115,7 @@ The compiler auto-derives Cloneable where all fields implement Cloneable and no 
 
 ```rask
 trait Cloneable {
-    clone(self) -> Self
+    func clone(self) -> Self
 }
 ```
 
@@ -189,7 +189,7 @@ The compiler auto-derives Comparable where all fields implement Comparable — l
 
 ```rask
 trait Comparable: Equal {
-    compare(self, other: Self) -> Ordering
+    func compare(self, other: Self) -> Ordering
 }
 
 enum Ordering { Less, Equal, Greater }
@@ -282,7 +282,7 @@ Compiler collects all methods from the full supertrait chain, deduplicates ident
 
 ```rask
 trait Hashable: Equal {
-    hash(self) -> u64
+    func hash(self) -> u64
 }
 
 trait HashKey: Hashable + Cloneable {}
@@ -306,10 +306,10 @@ Integer literals auto-coerce to T when `T: Numeric`. Compiler inserts `T.from_in
 
 ```rask
 trait Numeric {
-    add(self, other: Self) -> Self
-    zero() -> Self
-    one() -> Self
-    from_int(n: i64) -> Self
+    func add(self, other: Self) -> Self
+    func zero() -> Self
+    func one() -> Self
+    func from_int(n: i64) -> Self
 }
 
 func increment<T: Numeric>(val: T) -> T {

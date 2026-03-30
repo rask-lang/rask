@@ -9,12 +9,8 @@
 // type parameter. Either inference handles it or there's a `.collect<Map>()`
 // syntax not documented.
 //
-// SPEC ISSUE: The closures spec (mem.closures) shows closures as `|x| expr`
-// (expression body). But for multi-statement closures the spec shows
-// `|mutate count| { count += 1 }` (block body). It's unclear whether
-// block-bodied closures use last-expression-as-value like blocks (CF3) or
-// need `return`. Given CF26 says return exits the function, closures should
-// use last-expression-as-value.
+// Note: Block-bodied closures require explicit `return` (same as functions).
+// Expression-bodied closures (`|x| x * 2`) implicitly return.
 
 // --- filter ---
 

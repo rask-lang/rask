@@ -4,11 +4,9 @@
 //
 // Spec: ctrl.flow (CF1-CF32), ctrl.loops (LP1-LP17)
 //
-// SPEC ISSUE: The spec (CF26) says `return` exits the enclosing function.
-// Existing closure tests (t06) use `return` inside closures to return from
-// the closure itself. Either closures have different `return` semantics than
-// the spec states, or t06 is wrong. The closures spec (mem.closures) shows
-// closures as expression-bodied without `return`.
+// Note: CF26 updated — `return` in closures exits the closure, not the
+// enclosing function. Block-bodied closures require explicit `return`,
+// same as functions. Expression-bodied closures implicitly return.
 
 // --- if as expression (CF1, CF4) ---
 

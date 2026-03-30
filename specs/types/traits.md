@@ -22,8 +22,8 @@ Any trait can be used with `any`. Individual methods that depend on the concrete
 <!-- test: parse -->
 ```rask
 trait Clonable {
-    clone(self) -> Self       // can't call through any (returns Self)
-    name(self) -> string      // fine — concrete return type
+    func clone(self) -> Self       // can't call through any (returns Self)
+    func name(self) -> string      // fine — concrete return type
 }
 
 const c: any Clonable = foo
@@ -160,7 +160,7 @@ FIX: Add a type annotation or use explicit conversion:
 <!-- test: parse -->
 ```rask
 trait Handler {
-    handle(self, req: Request) -> Response
+    func handle(self, req: Request) -> Response
 }
 
 struct Router {
@@ -186,8 +186,8 @@ extend Router {
 <!-- test: parse -->
 ```rask
 trait Widget {
-    draw(self, canvas: Canvas)
-    size(self) -> (i32, i32)
+    func draw(self, canvas: Canvas)
+    func size(self) -> (i32, i32)
 }
 
 struct Container {
@@ -309,9 +309,9 @@ Borrowed fat pointers (function parameters where data_ptr points to stack data) 
 <!-- test: parse -->
 ```rask
 trait Plugin {
-    name(self) -> string
-    init(self)
-    run(self, ctx: Context)
+    func name(self) -> string
+    func init(self)
+    func run(self, ctx: Context)
 }
 
 struct App {
