@@ -46,6 +46,83 @@ Owners are cryptographic identities. The specific scheme (ed25519 keys, DIDs, et
 
 An Owner is *not* a person. A person may control multiple Owners. An automated system can be an Owner. The federation doesn't care about the entity behind the key.
 
+### Properties
+
+| Property | Description |
+|----------|------------|
+| `id` | Cryptographic identity (public key or derived identifier) |
+| `name` | Human-readable identifier, unique within the home domain. Globally addressed as `name@home_domain`. |
+| `kind` | Advisory type tag: `individual`, `system`, `group`, `service`. Not enforced — domains can use it for policy (rate limits, trust defaults, display). |
+| `home_domain` | The Domain authoritative for this Owner's identity |
+| `profile` | Optional. Object reference to the Owner's profile Object (see [Profile](#profile)). |
+
+### Name
+
+Every Owner has a name — a human-readable identifier, unique within its home domain. The global form is `name@home_domain`, like email addresses. Globally unique by construction, no registry needed.
+
+Names are how Owners refer to each other across the federation. Without standardized naming, every cross-gard interaction would use raw cryptographic IDs. That's fine for machines. It's unusable for anything involving humans.
+
+The home domain is authoritative for name uniqueness within its namespace. Name resolution goes through the home domain, same as email MX resolution.
+
+**Names are not secrets.** An Owner's name is public — it's how you're addressed. Knowing someone's name doesn't grant any capability. You still need a Grant to observe their presence or contact them.
+
+### Kind
+
+Advisory type tag. The federation doesn't enforce it — an Owner claiming `individual` might be a bot. But kind serves two purposes:
+
+1. **Policy defaults.** A domain might apply different rate limits to `system` Owners (higher throughput, lower interactivity) vs `individual` Owners. A `service` Owner connecting at 3am to execute 1000 transfers looks normal. An `individual` doing that looks suspicious.
+
+2. **Interaction expectations.** A `group` Owner (guild, organization) has members and delegation. A `service` Owner (automated trading, monitoring) is expected to be always-on. These expectations aren't enforced — they inform how domains and other Owners interact.
+
+| Kind | Typical use |
+|------|------------|
+| `individual` | A person. May be offline. Has social relationships. |
+| `system` | Automated process. Expected to be always-on. High throughput, low interactivity. |
+| `group` | Multi-member entity (guild, organization). Has an administrator. Delegates via Grants. |
+| `service` | Provides functionality to other Owners (marketplace, exchange, hosting). Publicly reachable. |
+
+Kind is self-declared and immutable once set. Changing kind requires a new Owner identity. I considered making it mutable but rejected it — a `system` that becomes an `individual` mid-session breaks every policy assumption. If you need a different kind, create a new Owner.
+
+### Profile
+
+An Owner's profile is an Object — a regular Object with type tag `owner_profile`, owned by the Owner, published at the home domain. The profile carries identity metadata beyond the fundamental properties (name, kind).
+
+**Why an Object, not more primitive properties?** Because the boundary between "fundamental" and "application-specific" depends on context. Name and kind are universal — every federated system needs them. Avatar, bio, display name — almost universal, but not quite. Game class, sensor type — domain-specific. Putting everything in the primitive forces every system to carry fields it doesn't use. An Object with a typed schema lets each context carry what it needs.
+
+**The profile Object is observable.** Other Owners with a `presence` or `contact` Grant (see [PRESENCE.md](PRESENCE.md#standard-grants)) can observe the profile via Leden observation at the home domain. No transfer needed — read it from the authoritative source, cache locally. Content-addressed, so cache invalidation is free (content changes = new hash = refetch).
+
+#### Well-Known Fields
+
+The profile Object's content is a typed map. [GDL](../gdl/) defines the standard schema for well-known fields — the fields that most domains recognize. This is the same pattern as HTTP headers: a small set of well-known names with defined semantics, plus arbitrary extensions.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `display_name` | string | Preferred display name. Optional — `name` from the Owner primitive is the canonical fallback. |
+| `avatar` | content ref | Content-addressed reference to an image. Fetched via Leden content store. |
+| `bio` | string | Short self-description. Max 500 characters. |
+
+These are defined in GDL because GDL's job is content description — what things look like and how to present them. The profile schema is a GDL concern, not an Allgard concern. Allgard defines the mechanism (profile is an Object, observable, at home domain). GDL defines the content (what fields exist, what they mean).
+
+#### Graceful Degradation
+
+Domains render what they recognize, ignore what they don't. GDL's first design principle — "ignore what you don't understand" — applies directly to profiles.
+
+| What the domain recognizes | What it shows |
+|---|---|
+| Full GDL profile schema + domain extensions | Rich profile — avatar, bio, custom fields |
+| Standard GDL profile fields only | Avatar, bio, display name |
+| No profile support | `name` and `kind` from the Owner primitive |
+
+Every step is functional. A supply chain system that doesn't render avatars still has `name` and `kind`. A game domain that adds `class` and `level` fields can render rich character profiles. Neither breaks when encountering the other's profiles — unknown fields are silently ignored.
+
+#### Domain-Specific Extensions
+
+Domains add custom fields to the profile Object. A game domain might add `class`, `level`, `guild`. A supply chain domain might add `facility_type`, `capacity`. These fields travel with the profile Object and are available to any domain that recognizes them.
+
+Custom fields use a namespaced key convention to avoid collisions: `domain_name.field_name`. A game domain `northgard` adding a class field uses `northgard.class`. Domains never need to coordinate field names — the namespace prevents collisions by construction.
+
+Namespaced fields that a domain doesn't recognize are preserved but not rendered. If a player from `northgard` visits `eastgard`, and `eastgard` doesn't know about `northgard.class`, the field survives in the profile Object — it's just not displayed. When the player returns to `northgard`, the field is still there.
+
 ### Home Domain
 
 Every Owner has a home domain — the domain that is authoritative for their identity and primary inventory. An Owner can operate in other domains, but their home domain is the root of trust for their identity.

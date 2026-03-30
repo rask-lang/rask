@@ -41,13 +41,14 @@ An Owner with no active sessions has an empty presence set. This is valid state 
 
 ## Observability
 
-Presence is observable state. Other Owners can subscribe to presence changes via [Leden observation](../leden/observation.md), gated by a Grant.
+Presence and profile are observable state. Other Owners can subscribe to changes via [Leden observation](../leden/observation.md), gated by a Grant.
 
 ### How It Works
 
 1. Owner A grants Owner B a `presence` Grant (see [Standard Grants](#standard-grants) below).
 2. Owner B subscribes to Owner A's presence via Leden observation at Owner A's home domain.
 3. When Owner A's presence changes (connects to a new domain, disconnects from one), Owner B receives an update.
+4. Owner B can also observe Owner A's [profile Object](PRIMITIVES.md#profile) at the same home domain — avatar, bio, and any other profile fields update automatically.
 
 The home domain is the canonical observation point. It knows the Owner's session state because it manages leases and tracks where the Owner's objects are. Observing presence at the home domain gives a complete view. Observing at a visited domain only tells you about that specific domain.
 
@@ -161,7 +162,7 @@ Without this, a Grant scoped `[0x42, 0x07]` on Domain A means nothing to Domain 
 ## What This Doesn't Cover
 
 - **Spatial location within a domain.** Presence says "Owner is on Domain X." It doesn't say "Owner is at coordinates (3,4) in region Y." Spatial protocols build on top of presence.
-- **Owner profiles or identity metadata.** What an Owner looks like, their display name, their preferences — application-level concerns, not federation physics. GDL or application-specific schemas handle this.
+- **Profile content schema.** The Owner's [profile Object](PRIMITIVES.md#profile) is defined as a mechanism in Allgard. The content schema (which fields, what they mean) is defined in [GDL](../gdl/) — content description is GDL's job.
 - **Voice or media channels.** Real-time media between Owners is an application feature using Leden transport. Presence tells you who's reachable; media setup is a separate capability negotiation.
 - **Notification preferences.** Whether an Owner wants to be disturbed, what channels they prefer — local policy stored at the home domain, not a federation concern.
 
