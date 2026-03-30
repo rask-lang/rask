@@ -129,9 +129,15 @@ The viewport mechanism from [GDL fidelity](GDL.md#fidelity-negotiation) helps �
 
 ### Relevance Zones
 
-The domain partitions space around each observer into zones. Entities in closer zones get more frequent updates. Entities in farther zones get less.
+The space around each observer is partitioned into zones. Entities in closer zones get more frequent updates. Entities in farther zones get less. The question is who decides the zone boundaries.
 
-The domain declares the zone configuration as a region property:
+Both sides have information the other doesn't. The domain knows its spatial density, server capacity, and visibility rules (fog of war, walls, stealth). The client knows its camera — FOV, zoom level, screen size, rendering budget. A VR headset at 110 degrees sees different spatial density than a minimap zoomed out to the whole region.
+
+So it's negotiated.
+
+**Step 1: Domain declares constraints.**
+
+The region advertises what it can provide — maximum rates and minimum radii. This is part of the region snapshot:
 
 ```
 Region:
@@ -139,28 +145,52 @@ Region:
   spatial: continuous_2d { bounds: [20, 15] }
   properties:
     tick_rate: 20
-    spatial.zones:
-      - { radius: 5,  rate: 20, label: "near" }
-      - { radius: 15, rate: 5,  label: "mid" }
-      - { radius: 40, rate: 1,  label: "far" }
+    spatial.constraints:
+      max_zones: 3
+      max_rate: 20
+      min_radius: 2.0
+      visibility: circle    # or "line_of_sight", "domain_controlled"
 ```
 
-Zone fields:
+Constraint fields:
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `radius` | float | Distance from observer in region units |
-| `rate` | int | Update rate in Hz for entities in this zone |
-| `label` | string | Human-readable name (for debugging, client UI) |
+| `max_zones` | int | Maximum number of zones the domain will track per observer |
+| `max_rate` | int | Highest update rate the domain provides (Hz) |
+| `min_radius` | float | Smallest allowed zone radius (region units). Prevents "give me 0.1 radius at 60Hz" abuse. |
+| `visibility` | string | How visibility is computed: `circle` (distance only), `line_of_sight` (walls block), `domain_controlled` (domain decides, client can't predict) |
 
-Zones are observer-centric circles. Every observer has the same zone radii, but a different set of entities in each zone (because observers are at different positions). The domain computes this per observer.
+**Step 2: Client requests zones.**
+
+The client sends its desired zone configuration as part of its viewport update:
+
+```
+client_viewport:
+  center: [10, 7]
+  radius: 25
+  zones:
+    - { radius: 3,  rate: 20, label: "near" }
+    - { radius: 12, rate: 5,  label: "mid" }
+    - { radius: 25, rate: 1,  label: "far" }
+```
+
+A VR client requests tight zones — it renders close-up detail at high fidelity, distant entities as silhouettes. A minimap client requests wide zones at low rates — it renders dots and doesn't need 20Hz position for anyone. A mobile client with limited bandwidth requests fewer zones with lower rates.
+
+The client can update zones at any time alongside viewport updates. Switching from a close-up view to an overview? Widen the zones. Entering a crowded area? Tighten them.
+
+**Step 3: Domain applies.**
+
+The domain clamps the client's request to its constraints (max_rate, min_radius, max_zones) and applies server load adjustments. If the server is overloaded, it can reduce rates below what the client requested — the client handles whatever rates it receives.
+
+The domain doesn't confirm the applied zones in a response message. The client sends its request and the domain adapts delivery. If rates are lower than requested, the client notices from the actual update frequency and adapts rendering (more interpolation, lower detail). No negotiation round-trip.
 
 **Zone semantics:**
 
 - Zones are ordered by radius. An entity falls into the smallest zone that contains it.
 - Entities beyond the outermost zone follow the viewport rules — they enter/exit the observation stream as they cross the viewport boundary.
 - The `rate` is a *maximum*. An entity that isn't moving doesn't generate updates regardless of zone.
-- Zone config is per-region. Different regions can have different zones. A cramped tavern might have tight zones. An open field might have wide ones.
+- Zone requests are per-region. The client sends different zones for different regions if it has multiple regions observed simultaneously (portal preview, minimap of a different area).
 
 **What changes between zones:**
 
@@ -217,16 +247,22 @@ The domain fires these events. The client uses them however it wants, or ignores
 
 ### Observer Feedback
 
-The standard viewport mechanism (`client_viewport: { center, radius }`) tells the domain *where* the observer is looking. Spatial awareness adds one field:
+The viewport is already how the client tells the domain where it's looking. Spatial awareness extends the viewport with zones (above) and a `capacity` field:
 
 ```
 client_viewport:
   center: [10, 7]
   radius: 25
   capacity: 100
+  zones:
+    - { radius: 3,  rate: 20, label: "near" }
+    - { radius: 12, rate: 5,  label: "mid" }
+    - { radius: 25, rate: 1,  label: "far" }
 ```
 
-`capacity` is the number of entities the observer can meaningfully track right now. It defaults to `max_entities` from fidelity, but can change dynamically — a client that's lagging reduces capacity to request fewer updates. The domain uses capacity to prioritize: if 200 entities are in the viewport but capacity is 100, the domain sends the 100 most relevant (nearest first, plus any the observer is interacting with).
+`capacity` is the number of entities the observer can meaningfully track right now. It defaults to `max_entities` from fidelity, but can change dynamically — a client that's lagging reduces capacity, a client entering a sparse area raises it. The domain uses capacity to prioritize: if 200 entities are in the viewport but capacity is 100, the domain sends the 100 most relevant (nearest first, plus any the observer is interacting with).
+
+Zones and capacity work together. Zones control *rate*. Capacity controls *count*. A client might request wide zones but low capacity ("show me the whole field but only the 50 nearest players") or tight zones but high capacity ("I can track lots of entities but only need detail on the close ones").
 
 ### Interaction Override
 
@@ -246,14 +282,14 @@ This works for small entity counts. For large counts, the domain's options are l
 
 ## Worked Example: 50 Players in a Tavern
 
-Region: `continuous_2d`, tick_rate: 20, zones: near(5, 20Hz), mid(15, 5Hz).
+Region: `continuous_2d`, tick_rate: 20, constraints: max_rate 20, min_radius 2.0.
 
-Player A is at position [8, 6]. Their client declared `spatial_awareness: true`, `max_entities: 200`.
+Player A is at position [8, 6]. Their client declared `spatial_awareness: true`, `max_entities: 200`, and requested zones: near(5, 20Hz), mid(15, 5Hz), far(25, 1Hz).
 
-The domain computes for Player A:
+The domain clamps (all within constraints) and computes for Player A:
 - 4 players within 5 units → near zone, 20Hz position updates
 - 38 players within 15 units → mid zone, 5Hz position updates
-- 7 players beyond 15 units (near the door) → viewport edge, 1Hz
+- 7 players beyond 15 units (near the door) → far zone, 1Hz
 
 Outbound for Player A:
 - Near: 4 × 20Hz = 80 position deltas/second
@@ -266,6 +302,8 @@ Compare to naive: 49 × 20Hz = 980 deltas/second. The zone model cuts it to 28% 
 Player A's client dead-reckons mid-zone entities between 5Hz updates using velocity. The visual result: nearby players move smoothly, distant players move almost as smoothly (4 frames of interpolation between updates at 60fps), and players near the door move in noticeable steps.
 
 As Player A walks toward a group, those entities transition from mid to near zone. The domain fires `entity_nearby` events. The client loads high-detail models and shows nameplates. Update rate increases to 20Hz. Smooth transition.
+
+Meanwhile, Player B is on a mobile client. They requested zones: near(3, 10Hz), mid(10, 2Hz), capacity 30. Same tavern, same 50 players, but Player B receives fewer updates for fewer entities. The domain sends the 30 nearest players and drops the rest from the observation stream. Player B's client renders a simpler scene — it asked for what it can handle.
 
 ## Worked Example: Region Transition
 
@@ -305,8 +343,8 @@ If both regions are on the same domain, this is a local operation. If the destin
 
 ## Open Questions
 
-**Zone shape.** Circles are simple but don't match rectangular viewports well. Should zones support rectangles or oriented boxes? I lean toward circles — they're rotationally invariant and match how humans perceive "nearby." The viewport is already a circle (center + radius). Matching shapes avoids a mismatch between "what I see" and "what updates I get."
-
-**Zone renegotiation.** Can the client request different zone radii? Currently the domain declares zones per-region. A VR client with a narrow FOV might want tighter zones. A minimap client might want wider ones. Letting the client override zones adds complexity. Leaving it domain-only keeps things simple but less adaptive. I lean toward domain-only with the `capacity` field as the client's pressure valve.
+**Zone shape.** Circles are simple but don't match rectangular viewports well. Should zones support rectangles or oriented boxes? I lean toward circles — they're rotationally invariant and match how humans perceive "nearby." The viewport is already a circle (center + radius). Matching shapes avoids a mismatch between "what I see" and "what updates I get." A client with a wide rectangular view can circumscribe it with a circle and accept some wasted updates at the corners.
 
 **Observation multiplexing cost.** In the current model, the client observes the region (for enter/exit) and individual entities (for property changes). With 50 entities, that's 51 observations over one session. Leden multiplexes these over one connection, but the per-observation bookkeeping on both sides isn't free. Should the extension define a bulk spatial observation mode — "observe all entities in this region, position-only, domain handles filtering"? GDL already hints at this with `Observe(region_ref, entity_filter: [position])`. Might be sufficient.
+
+**Domain pushback.** The domain silently clamps zone requests to its constraints. Should it tell the client what it actually applied? Knowing "you asked for 20Hz near but I'm giving you 10Hz" lets the client adjust interpolation. Not knowing means the client detects it from actual update frequency, which works but adds latency to adaptation. I lean toward no explicit response — the client adapts to what it receives, same as how Leden backpressure works (the server just sends less, the client notices).
