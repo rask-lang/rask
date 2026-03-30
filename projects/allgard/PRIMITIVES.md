@@ -50,16 +50,22 @@ An Owner is *not* a person. A person may control multiple Owners. An automated s
 
 An Owner's identity is a **master key**. The master key is the root of authority — it can do everything: sign Transforms, issue Grants, revoke Grants, migrate home domains, recover from wallet.
 
-The master key should NOT live on a daily-use device. It's too powerful. A compromised master key is total identity loss. The master key lives in cold storage — hardware security key, paper backup, airgapped device. You use it for setup, recovery, and emergencies. Not for logging in.
+The master key doesn't live on any device in the clear. It's password-encrypted and stored on the home domain (and backup home, and optionally synced to enrolled devices). The encrypted blob is useless without the password. Redundancy is free — store it everywhere.
+
+```
+encrypted(master_key, password) → stored on home domain, backup, devices
+```
+
+"Log in on a new device" is: contact home domain, authenticate with password, home domain decrypts the master key server-side (or sends the encrypted blob for client-side decryption), issue a Device Grant to the new device's keypair. This is the login flow everyone already understands.
 
 Daily operations use **device keys**. Each device (phone, laptop, work machine) gets its own keypair. The master key signs a Device Grant to each device key — a scoped delegation of the Owner's authority.
 
 ```
-Master key (cold storage)
+Master key (password-encrypted, on home domain)
     |
     ├── Device Grant → phone key
     │     scope: sign_transforms, maintain_sessions, issue_grants(limited)
-    │     expiry: 90 days (auto-renewable while master key confirms)
+    │     expiry: 90 days (auto-renewable)
     │
     ├── Device Grant → laptop key
     │     scope: sign_transforms, maintain_sessions, issue_grants(limited)
@@ -82,6 +88,40 @@ Device Grants are standard [Grants](#grant) — same primitive, same attenuation
 | Laptop | Full daily operations | Same trust level as phone |
 | Work machine | Read-only, sessions, no signing | Untrusted hardware, limited exposure |
 | Shared/public terminal | Session only, expiry in hours | Minimal trust, auto-expires |
+
+#### Password Security
+
+The encrypted master key blob is protected by a key derived from the password using Argon2 (memory-hard KDF). This makes brute-force expensive — seconds per attempt, not microseconds. The runtime enforces minimum password strength at identity creation.
+
+The home domain never sees the master key in the clear if client-side decryption is used. The home domain stores the encrypted blob and serves it to authenticated devices. The device decrypts locally. This means a compromised home domain gets the encrypted blob but not the password — and a strong password holds up against offline brute-force.
+
+For convenience, the home domain can offer server-side decryption (password sent over the authenticated Leden session, decryption happens on the server, device key issued). This is less sovereign but simpler — same trust model as any password-authenticated web service. The Owner chooses.
+
+#### Recovery
+
+Forgot password, lost all devices — how do you get back in?
+
+**Social recovery.** At identity creation, the Owner designates M-of-N trusted Owners as recovery contacts. The home domain stores encrypted recovery shards (one per contact). To recover: M contacts confirm your identity (through their own authenticated sessions), the home domain releases enough shards to reconstruct access, the Owner sets a new password.
+
+From the user's perspective: "I forgot my password. My three friends confirmed it's me. I set a new password." That's it.
+
+Social recovery is opt-in but the runtime should strongly encourage it during identity creation — same as "add a recovery email" in every account setup flow.
+
+**Home domain recovery.** The home domain operator can offer out-of-band identity verification (email, phone, government ID — domain policy). Less sovereign, more familiar. This is the standard "forgot password" flow. The domain operator has the power to reset access, which means the domain operator is a trust dependency for recovery.
+
+**Both.** Social recovery handles the "domain operator is hostile/gone" case. Home domain recovery handles the "I have no friends online right now" case. They complement each other.
+
+| Scenario | Recovery path |
+|---|---|
+| Forgot password, have a device | Device key still works. Change password from enrolled device. |
+| Forgot password, no devices | Social recovery (M-of-N contacts) or home domain recovery |
+| Lost all devices, know password | Log in from new device with password |
+| Lost all devices, forgot password | Social recovery → new password → new device |
+| Home domain down, have a device | Device key still works via backup home |
+| Home domain down, no devices, know password | Encrypted blob from backup home + password |
+| Everything gone (no devices, no password, home down) | Social recovery via backup home, or wallet recovery if you have a wallet backup |
+
+The bottom row is the real disaster scenario. Without social recovery contacts or a wallet backup, it's permanent loss. That's the honest tradeoff — but every row above it has a recovery path that doesn't require security expertise.
 
 #### Device Key Revocation
 
@@ -415,7 +455,7 @@ With the [key hierarchy](#key-hierarchy), compromise has two severities:
 
 **Device key compromised** (phone stolen, laptop hacked). Bounded damage. Revoke the device key from any other device or the relay. Sessions from that device terminate. Transforms signed after revocation are rejected. Other devices continue unaffected. This is a routine security event, not an emergency.
 
-**Master key compromised** (cold storage breached). Total emergency. The attacker can issue new device keys, migrate the home domain, sign anything. This is the case described below — full propagation, all sessions terminated, identity recovery required.
+**Master key compromised** (attacker obtained encrypted blob + password, or home domain with server-side decryption was breached). Total emergency. The attacker can issue new device keys, migrate the home domain, sign anything. This is the case described below — full propagation, all sessions terminated, identity recovery required. Note: master key compromise requires both the encrypted blob AND the password — stealing one without the other is insufficient.
 
 When an Owner's master key is compromised, the home domain must propagate revocation to every domain where the Owner has active sessions, outstanding Grants, or leased objects. This is the hardest revocation case — it's time-critical and cross-domain.
 
