@@ -395,30 +395,41 @@ pub fn print_fmt_help() {
     println!("{}", output::section_header("Format"));
     println!();
     println!("Format Rask source files according to standard style.");
-    println!("Accepts a single file or a directory (formats all .rk files recursively).");
+    println!("Reads from stdin when no file argument is given. Writes to stdout by default.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("fmt"),
-        output::arg("<file.rk | dir> [--check]"));
+        output::arg("[file.rk | dir] [-w] [--check]"));
     println!();
     println!("{}", output::section_header("Options:"));
-    println!("  {}  Check if files are formatted without modifying", output::arg("--check"));
+    println!("  {}       Write formatted output back to file(s) in place", output::arg("-w, --write"));
+    println!("  {}     Check if files are formatted without modifying", output::arg("--check"));
     println!();
     println!("{}", output::section_header("Examples:"));
-    println!("  {} {} {}          Format a file",
+    println!("  {} {} {}          Preview formatted output",
         output::command("rask"),
         output::command("fmt"),
         output::arg("main.rk"));
-    println!("  {} {} {}            Format all files in directory",
+    println!("  {} {} {} {}     Format a file in place",
         output::command("rask"),
         output::command("fmt"),
+        output::arg("-w"),
+        output::arg("main.rk"));
+    println!("  {} {} {} {}       Format all files in directory",
+        output::command("rask"),
+        output::command("fmt"),
+        output::arg("-w"),
         output::arg("src/"));
     println!("  {} {} {} {}  Check formatting",
         output::command("rask"),
         output::command("fmt"),
         output::arg("main.rk"),
         output::arg("--check"));
+    println!("  cat main.rk | {} {} {}          Format from stdin",
+        output::command("rask"),
+        output::command("fmt"),
+        output::arg(""));
 }
 
 pub fn print_api_help() {

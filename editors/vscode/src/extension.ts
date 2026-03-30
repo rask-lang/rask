@@ -7,7 +7,7 @@ import {
     LanguageClientOptions,
     ServerOptions,
 } from 'vscode-languageclient/node';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 
 let client: LanguageClient | undefined;
 
@@ -85,10 +85,15 @@ export function activate(context: ExtensionContext) {
 
         languages.registerDocumentFormattingEditProvider('rask', {
             provideDocumentFormattingEdits(document: TextDocument): Promise<TextEdit[]> {
-                return new Promise((resolve, reject) => {
-                    execFile(getRaskPath(), ['fmt', document.fileName], (err, stdout) => {
-                        if (err) {
-                            window.showWarningMessage(`rask fmt failed: ${err.message}`);
+                return new Promise((resolve) => {
+                    const proc = spawn(getRaskPath(), ['fmt']);
+                    let stdout = '';
+                    let stderr = '';
+                    proc.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+                    proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+                    proc.on('close', (code: number) => {
+                        if (code !== 0) {
+                            window.showWarningMessage(`rask fmt failed: ${stderr}`);
                             resolve([]);
                             return;
                         }
@@ -98,6 +103,8 @@ export function activate(context: ExtensionContext) {
                         );
                         resolve([TextEdit.replace(fullRange, stdout)]);
                     });
+                    proc.stdin.write(document.getText());
+                    proc.stdin.end();
                 });
             }
         })

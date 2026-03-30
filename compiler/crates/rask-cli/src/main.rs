@@ -551,21 +551,13 @@ fn main() {
                 help::print_fmt_help();
                 return;
             }
-            if cmd_args.len() < 3 {
-                eprintln!("{}: missing file or directory argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("fmt"), output::arg("<file.rk | dir>"));
-                process::exit(1);
-            }
             let check_only = cmd_args.iter().any(|a| *a == "--check");
+            let write_in_place = cmd_args.iter().any(|a| *a == "-w" || *a == "--write");
             let file_arg = find_positional_arg(&cmd_args, 2, &[]);
-            let file = match file_arg {
-                Some(f) => f,
-                None => {
-                    eprintln!("{}: missing file or directory argument", output::error_label());
-                    process::exit(1);
-                }
-            };
-            commands::tools::cmd_fmt(file, check_only);
+            match file_arg {
+                Some(file) => commands::tools::cmd_fmt(file, check_only, write_in_place),
+                None => commands::tools::cmd_fmt_stdin(),
+            }
         }
         "api" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

@@ -8,7 +8,17 @@ use std::process;
 
 use crate::{output, Format, collect_rk_files};
 
-pub fn cmd_fmt(path: &str, check_only: bool) {
+pub fn cmd_fmt_stdin() {
+    use std::io::Read;
+    let mut source = String::new();
+    std::io::stdin().read_to_string(&mut source).unwrap_or_else(|e| {
+        eprintln!("{}: reading stdin: {}", output::error_label(), e);
+        process::exit(1);
+    });
+    print!("{}", rask_fmt::format_source(&source));
+}
+
+pub fn cmd_fmt(path: &str, check_only: bool, write_in_place: bool) {
     let p = Path::new(path);
     let files: Vec<String> = if p.is_dir() {
         collect_rk_files(p)
@@ -35,16 +45,22 @@ pub fn cmd_fmt(path: &str, check_only: bool) {
 
         let formatted = rask_fmt::format_source(&source);
 
-        if formatted == source {
-            if check_only {
+        if check_only {
+            if formatted == source {
                 println!("{} {}", output::status_pass(), output::file_path(file));
+            } else {
+                println!("{} {} (would reformat)", output::status_fail(), output::file_path(file));
+                had_failure = true;
             }
             continue;
         }
 
-        if check_only {
-            println!("{} {} (would reformat)", output::status_fail(), output::file_path(file));
-            had_failure = true;
+        if !write_in_place {
+            print!("{}", formatted);
+            continue;
+        }
+
+        if formatted == source {
             continue;
         }
 
