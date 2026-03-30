@@ -12,6 +12,12 @@ extend io {
 public struct File { }
 
 extend File {
+    /// Read the entire file contents as a string.
+    public func read(self) -> string or IoError { }
+
+    /// Read a single line from the file.
+    public func read_line(self) -> string or IoError { }
+
     /// Read the entire file contents as bytes.
     public func read_all(self) -> string or IoError { }
 

@@ -573,7 +573,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: Pool.alloc stub missing — users can't allocate into pools
     fn pool_alloc_discoverable() {
         let reg = StubRegistry::load();
         assert!(reg.has_method("Pool", "alloc"), "Pool missing method: alloc");
@@ -592,7 +591,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: string.to_upper/to_lower stubs missing
     fn string_case_methods_discoverable() {
         let reg = StubRegistry::load();
         assert!(reg.has_method("string", "to_upper"), "string missing to_upper");
@@ -612,7 +610,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: Option.filter stub missing
     fn option_filter_discoverable() {
         let reg = StubRegistry::load();
         assert!(reg.has_method("Option", "filter"), "Option missing filter");
@@ -642,7 +639,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: File.read and File.read_line stubs missing
     fn file_read_discoverable() {
         let reg = StubRegistry::load();
         assert!(reg.has_method("File", "read"), "File missing method: read");
@@ -661,7 +657,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: eprintln/eprint/assert stubs missing
     fn missing_builtin_functions() {
         let reg = StubRegistry::load();
         let fns = reg.functions();

@@ -17,5 +17,14 @@ public func todo(msg: string?) { }
 /// Returns `!` (Never) so it works in any type context.
 public func unreachable(msg: string?) { }
 
+/// Print a value followed by a newline to stderr.
+public func eprintln(msg: string) { }
+
+/// Print a value to stderr without a trailing newline.
+public func eprint(msg: string) { }
+
+/// Assert a condition is true. Panics with message if false.
+public func assert(condition: bool, msg: string?) { }
+
 /// Format values into a string.
 public func format(fmt: string) -> string { }

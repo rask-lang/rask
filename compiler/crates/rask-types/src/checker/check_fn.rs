@@ -174,12 +174,9 @@ impl TypeChecker {
         let ret_ty = self.current_return_type.as_ref().unwrap();
         let resolved_ret_ty = self.ctx.apply(ret_ty);
 
-        // Empty body with a return type annotation is a stub — skip return check.
-        if f.body.is_empty() && f.ret_ty.is_some() {
-            self.current_return_type = None;
-            self.pop_scope();
-            return;
-        }
+        // Empty body with non-Unit return type is a missing return (unless it's
+        // a trait method declaration with no body — those are handled separately).
+        // Stdlib stubs are never passed through check_fn.
 
         match &resolved_ret_ty {
             Type::Unit | Type::Never => {

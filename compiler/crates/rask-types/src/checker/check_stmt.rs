@@ -61,10 +61,10 @@ impl TypeChecker {
                 let binding_ty = if let Some(declared) = declared_ty {
                     self.ctx
                         .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
-                    self.define_local(name.clone(), declared.clone());
+                    self.define_local_read_only(name.clone(), declared.clone());
                     declared
                 } else {
-                    self.define_local(name.clone(), init_ty.clone());
+                    self.define_local_read_only(name.clone(), init_ty.clone());
                     init_ty
                 };
                 self.span_types.insert((name_span.start, name_span.end), binding_ty);
@@ -191,13 +191,18 @@ impl TypeChecker {
                 }
             }
             StmtKind::LetTuple { names, init } | StmtKind::ConstTuple { names, init } => {
+                let is_const = matches!(&stmt.kind, StmtKind::ConstTuple { .. });
                 let init_ty = self.infer_expr(init);
                 // Bind each destructured name to its tuple element type
                 let resolved = self.ctx.apply(&init_ty);
                 if let Type::Tuple(elems) = &resolved {
                     for (i, name) in names.iter().enumerate() {
                         if let Some(elem_ty) = elems.get(i) {
-                            self.define_local(name.clone(), elem_ty.clone());
+                            if is_const {
+                                self.define_local_read_only(name.clone(), elem_ty.clone());
+                            } else {
+                                self.define_local(name.clone(), elem_ty.clone());
+                            }
                         }
                     }
                 } else {
@@ -210,7 +215,11 @@ impl TypeChecker {
                     let tuple_ty = Type::Tuple(elem_vars.clone());
                     let _ = self.unify(&init_ty, &tuple_ty, stmt.span);
                     for (name, var) in names.iter().zip(elem_vars) {
-                        self.define_local(name.clone(), var);
+                        if is_const {
+                            self.define_local_read_only(name.clone(), var);
+                        } else {
+                            self.define_local(name.clone(), var);
+                        }
                     }
                 }
             }

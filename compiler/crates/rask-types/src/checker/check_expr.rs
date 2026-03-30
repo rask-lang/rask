@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Expression type inference and specific type checks.
 
-use rask_ast::expr::{BinOp, CallArg, Expr, ExprKind};
+use rask_ast::expr::{BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern};
 use rask_ast::stmt::StmtKind;
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
@@ -294,6 +294,10 @@ impl TypeChecker {
                         ));
                     }
                 }
+
+                // Exhaustiveness check for enum scrutinees
+                self.check_match_exhaustiveness(&scrutinee_ty, arms, expr.span);
+
                 result_ty
             }
 
@@ -1628,5 +1632,76 @@ impl TypeChecker {
         let var = self.ctx.fresh_var();
         self.symbol_types.insert(sym_id, var.clone());
         var
+    }
+
+    /// Check that a match on an enum covers all variants.
+    fn check_match_exhaustiveness(&mut self, scrutinee_ty: &Type, arms: &[MatchArm], span: Span) {
+        let resolved = self.ctx.apply(scrutinee_ty);
+
+        // Only check enums
+        let type_id = match &resolved {
+            Type::Named(id) => *id,
+            _ => return,
+        };
+
+        let all_variants: Vec<String> = match self.types.get(type_id) {
+            Some(TypeDef::Enum { variants, .. }) => {
+                variants.iter().map(|(name, _)| name.clone()).collect()
+            }
+            _ => return,
+        };
+
+        // Collect covered variant names from patterns
+        let mut has_wildcard = false;
+        let mut covered = std::collections::HashSet::new();
+        for arm in arms {
+            self.collect_covered_variants(&arm.pattern, &mut covered, &mut has_wildcard, &all_variants);
+        }
+
+        if has_wildcard {
+            return;
+        }
+
+        let missing: Vec<String> = all_variants
+            .into_iter()
+            .filter(|v| !covered.contains(v))
+            .collect();
+
+        if !missing.is_empty() {
+            self.errors.push(TypeError::NonExhaustiveMatch {
+                missing,
+                span,
+            });
+        }
+    }
+
+    fn collect_covered_variants(
+        &self,
+        pattern: &Pattern,
+        covered: &mut std::collections::HashSet<String>,
+        has_wildcard: &mut bool,
+        enum_variants: &[String],
+    ) {
+        match pattern {
+            Pattern::Wildcard => *has_wildcard = true,
+            Pattern::Ident(name) => {
+                // Bare identifier matching an enum variant name is a variant match,
+                // not a catch-all binding
+                if enum_variants.contains(name) {
+                    covered.insert(name.clone());
+                } else {
+                    *has_wildcard = true;
+                }
+            }
+            Pattern::Constructor { name, .. } => {
+                covered.insert(name.clone());
+            }
+            Pattern::Or(patterns) => {
+                for p in patterns {
+                    self.collect_covered_variants(p, covered, has_wildcard, enum_variants);
+                }
+            }
+            _ => {}
+        }
     }
 }
