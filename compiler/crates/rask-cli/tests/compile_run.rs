@@ -250,19 +250,16 @@ fn error_wrong_arg_count() {
 }
 
 #[test]
-#[ignore] // BUG: const reassignment not enforced
 fn error_const_reassign() {
     assert!(compile_error("const_reassign.rk"), "should reject const reassignment");
 }
 
 #[test]
-#[ignore] // BUG: exhaustiveness checking not implemented
 fn error_nonexhaustive_match() {
     assert!(compile_error("nonexhaustive_match.rk"), "should reject non-exhaustive match");
 }
 
 #[test]
-#[ignore] // BUG: missing return not enforced
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
 }

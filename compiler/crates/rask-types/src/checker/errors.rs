@@ -156,6 +156,12 @@ pub enum TypeError {
         span: Span,
     },
 
+    #[error("non-exhaustive match: missing variants {missing:?}")]
+    NonExhaustiveMatch {
+        missing: Vec<String>,
+        span: Span,
+    },
+
     #[error("undefined name `{name}`")]
     UndefinedName {
         name: String,

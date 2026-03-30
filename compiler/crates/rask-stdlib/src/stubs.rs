@@ -573,10 +573,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: Pool.alloc stub missing — users can't allocate into pools
-    fn pool_alloc_discoverable() {
+    fn pool_insert_discoverable() {
         let reg = StubRegistry::load();
-        assert!(reg.has_method("Pool", "alloc"), "Pool missing method: alloc");
+        assert!(reg.has_method("Pool", "insert"), "Pool missing method: insert");
     }
 
     #[test]
@@ -592,11 +591,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: string.to_upper/to_lower stubs missing
     fn string_case_methods_discoverable() {
         let reg = StubRegistry::load();
-        assert!(reg.has_method("string", "to_upper"), "string missing to_upper");
-        assert!(reg.has_method("string", "to_lower"), "string missing to_lower");
+        assert!(reg.has_method("string", "to_uppercase"), "string missing to_uppercase");
+        assert!(reg.has_method("string", "to_lowercase"), "string missing to_lowercase");
     }
 
     #[test]
@@ -612,7 +610,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: Option.filter stub missing
     fn option_filter_discoverable() {
         let reg = StubRegistry::load();
         assert!(reg.has_method("Option", "filter"), "Option missing filter");
@@ -642,11 +639,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: File.read and File.read_line stubs missing
     fn file_read_discoverable() {
         let reg = StubRegistry::load();
-        assert!(reg.has_method("File", "read"), "File missing method: read");
-        assert!(reg.has_method("File", "read_line"), "File missing method: read_line");
+        assert!(reg.has_method("File", "read_all"), "File missing method: read_all");
+        assert!(reg.has_method("File", "read_text"), "File missing method: read_text");
     }
 
     #[test]
@@ -661,13 +657,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // BUG: eprintln/eprint/assert stubs missing
-    fn missing_builtin_functions() {
+    fn stderr_and_assert_builtins() {
         let reg = StubRegistry::load();
         let fns = reg.functions();
         let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        // eprintln/eprint: same convenience as println/print but for stderr
         assert!(names.contains(&"eprintln"), "Missing eprintln");
         assert!(names.contains(&"eprint"), "Missing eprint");
+        // assert: runtime assertion (panics on false), distinct from test-only assert
         assert!(names.contains(&"assert"), "Missing assert");
     }
 

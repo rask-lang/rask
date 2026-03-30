@@ -34,6 +34,9 @@ extend Option<T> {
     /// Return this option if it contains a value, otherwise compute an alternative.
     public func or_else(self, f: func() -> Option<T>) -> Option<T> { }
 
+    /// Keep the value only if the predicate returns true.
+    public func filter(self, f: func(T) -> bool) -> Option<T> { }
+
     /// Convert to a Result, using the given error if empty.
     public func ok_or(self, err: E) -> T or E { }
 }

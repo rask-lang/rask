@@ -500,6 +500,16 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_help("use the \"Make error type explicit\" quick action to fill in the inferred union")
             }
 
+            NonExhaustiveMatch { missing, span } => {
+                let missing_str = missing.join(", ");
+                Diagnostic::error(format!("non-exhaustive match: missing {}", missing_str))
+                    .with_code("E0340")
+                    .with_primary(*span, format!("missing variants: {}", missing_str))
+                    .with_help("add the missing variants or a wildcard `_` arm")
+                    .with_fix("add the missing variants or a wildcard `_` arm")
+                    .with_why("match expressions must cover all possible values")
+            }
+
             UndefinedName { name, span } => {
                 Diagnostic::error(format!("undefined name `{}`", name))
                     .with_code("E0341")
