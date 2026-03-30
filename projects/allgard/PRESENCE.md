@@ -41,9 +41,40 @@ An Owner with no active sessions has an empty presence set. This is valid state 
 
 ## Observability
 
-Presence and profile are observable state. Other Owners can subscribe to changes via [Leden observation](../leden/observation.md), gated by a Grant.
+Presence operates at two tiers. The distinction matters: local presence is physics (you see who's in the room), cross-domain presence is a relationship (you choose who can track you).
 
-### How It Works
+### Tier 1: Local Presence (Same Domain)
+
+When you're on a Domain, you can see who else is there. No Grant needed.
+
+This falls out of existing mechanics. A Domain sends you its region state via [GDL](../gdl/GDL.md) — entities in the region, their names, their properties. Some entities are Owners (kind `agent`). Seeing them is just observing the region. The Domain already decides what entities you see (viewport filtering, fog of war, stealth mechanics). Local presence is part of that — not a separate system.
+
+**The Domain controls local visibility, not the Owner.** If the Domain shows you who's in the tavern, that's the Domain's policy. An Owner can't opt out of being visible to co-located Owners — that would be like demanding invisibility in someone else's house. What the Owner controls is which Domains they visit. What the Domain controls is what visitors see.
+
+| Domain policy | What visitors see | Use case |
+|---|---|---|
+| Full identity | Name, kind, profile ref | Social spaces, taverns, marketplaces |
+| Masked identity | "A hooded traveler" | Anonymity-supporting domains |
+| Selective visibility | Some Owners hidden | Stealth mechanics, admin-invisible mode |
+| No visitor list | Only entities you directly interact with | Privacy-focused domains |
+
+This is sovereignty. The protocol doesn't prescribe which policy a Domain uses. It requires that co-located Owners are representable as GDL entities — the Domain decides which Owners become visible entities and how much identity information to expose.
+
+**What local presence reveals:**
+
+At minimum, the Owner's GDL entity representation — whatever the Domain chooses to expose. At maximum, the entity carries a reference to the Owner's identity, letting the observer resolve name, kind, and profile. The Domain decides where on this spectrum each Owner lands.
+
+**What local presence does NOT reveal:**
+
+Which *other* Domains the Owner is connected to. Local presence tells you "this Owner is here." It doesn't tell you "this Owner is also on Domain C and Domain D." That's cross-domain presence — Tier 2.
+
+### Tier 2: Cross-Domain Presence (Granted)
+
+Seeing where an Owner is when you're NOT in the same place. This requires a `presence` or `contact` Grant.
+
+Cross-domain presence is the relationship layer. It answers: "where is my friend right now?" This is the tracking-capable tier — knowing someone's location across the federation — which is why it requires explicit authorization.
+
+#### How It Works
 
 1. Owner A grants Owner B a `presence` Grant (see [Standard Grants](#standard-grants) below).
 2. Owner B subscribes to Owner A's presence via Leden observation at Owner A's home domain.
@@ -63,12 +94,6 @@ Presence and the [profile Object](PRIMITIVES.md#profile) are **separate observat
 Separating them matters for bandwidth. An Owner tracking 200 contacts doesn't need profile updates every time someone connects to a new domain. Conversely, a domain rendering a player's profile card doesn't need real-time domain-set changes. Clients subscribe to what they need.
 
 Both use standard Leden observation semantics — snapshot on subscribe, delta updates, sequence numbers, backpressure. Profile observation uses Leden's [filtered observation](../leden/observation.md#filtered-observation) if the client only cares about specific fields (e.g., avatar only).
-
-### Capability Gating
-
-Presence is not observable by default. You need a Grant. This is different from Object observation, where holding a reference implies observation permission. The reason: Objects are things; Owners are entities. Knowing where an entity is located is a stronger capability than knowing what a thing contains.
-
-A Domain's greeter does NOT grant presence observation on its hosted Owners. A stranger connecting to a domain can see what the domain hosts (catalog observation), but not which specific Owners are currently active. That would make every greeter a tracking service.
 
 ### What Updates Contain
 
