@@ -34,14 +34,8 @@ extend string {
     /// Convert to uppercase.
     public func to_uppercase(self) -> string { }
 
-    /// Convert to uppercase (short alias).
-    public func to_upper(self) -> string { }
-
     /// Convert to lowercase.
     public func to_lowercase(self) -> string { }
-
-    /// Convert to lowercase (short alias).
-    public func to_lower(self) -> string { }
 
     /// Remove leading and trailing whitespace.
     public func trim(self) -> string { }
