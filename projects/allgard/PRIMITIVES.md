@@ -174,6 +174,115 @@ This is a Grant from the player to the backup domain — scoped to mirror and re
 
 Without a backup, home domain failure is permanent loss. That's the honest tradeoff. But with a backup, it's a recoverable event — same as a disk failure with a RAID mirror.
 
+### Home Domain Migration
+
+An Owner can change their home domain. This is the voluntary version of home domain failure — same mechanics, controlled circumstances.
+
+Migration matters because home domains aren't forever. A domain might shut down (planned), change terms, degrade in quality, or the Owner might just want to move. Without a migration protocol, the Owner's only option is wallet recovery to a new domain — which works but loses all active sessions, leases, presence subscriptions, and message routing. Migration preserves continuity.
+
+#### The Problem
+
+Everything points at the home domain:
+- Name resolution: `erik@northgard` resolves at `northgard`
+- Presence subscriptions: observers watch `northgard` for Owner state
+- Profile observation: profile Object lives on `northgard`
+- Message routing: contacts send messages through `northgard`
+- Inventory: Objects live on `northgard`
+- Leases: `northgard` manages outstanding leases for visited domains
+- Backup home: mirrors `northgard`
+
+Changing home domain means redirecting all of this. The Owner's cryptographic identity stays the same — only the domain changes.
+
+#### Cooperative Migration
+
+The happy path. Old home (Domain A) and new home (Domain B) both cooperate.
+
+```
+Owner              Old Home (A)         New Home (B)
+  |                     |                      |
+  | 1. MigrationIntent  |                      |
+  |────────────────────>|                      |
+  |                     |                      |
+  | 1. MigrationIntent  |                      |
+  |───────────────────────────────────────────>|
+  |                     |                      |
+  |                     | 2. InventoryTransfer |
+  |                     |─────────────────────>|
+  |                     |  (batch, per object) |
+  |                     |                      |
+  |                     | 3. MigrationCommit   |
+  |                     |─────────────────────>|
+  |                     |                      |
+  |                     | 4. Redirect active   |
+  |                     | state → Redirecting  |
+  |                     |                      |
+```
+
+**Phase 1: Intent.** Owner submits a signed `MigrationIntent(from: A, to: B)` to both domains. Both validate the Owner's signature. Domain B checks that it's willing to host this Owner (policy — rate limits, content rules, capacity). Domain A transitions the Owner to "migrating" state — no new leases, no new outbound transfers.
+
+**Phase 2: Inventory transfer.** Domain A transfers all Owner's Objects to Domain B using the existing [cross-domain transfer protocol](TRANSFER.md). This is a batch operation — potentially hundreds of Objects. Each transfer follows the standard escrow→commit→complete flow. The profile Object transfers as part of this batch.
+
+Outstanding leases complicate this. Objects currently leased to visited domains don't transfer through A — they'll return to A on lease expiry, then forward to B. Or A can revoke the leases early, forcing objects home, then transfer to B. The Owner chooses:
+
+| Lease strategy | Behavior | Disruption |
+|---|---|---|
+| **Revoke and transfer** | Revoke all leases, wait for objects to return, transfer to B | Immediate disruption — Owner is kicked from visited domains briefly |
+| **Forward on return** | Let leases expire naturally, forward objects to B as they return | No disruption — but migration isn't complete until the last lease returns |
+| **Re-lease from B** | Transfer unleased objects to B, then B issues new leases to the same visited domains | Minimal disruption — visited domains swap their lease source |
+
+I'd default to "re-lease from B" for the smoothest experience, with "revoke and transfer" as the fallback when speed matters.
+
+**Phase 3: Commit.** Once all Objects are transferred (or forwarded/re-leased), Domain A persists a `MigrationProof(owner_id, new_home: B)` — analogous to a Departure Proof. This is irrevocable. Domain A is no longer the home domain.
+
+**Phase 4: Redirect.** Domain A enters "redirecting" state for this Owner:
+
+- `ResolveName("erik")` → `OwnerMigrated(new_home: B)`. Like an HTTP 301.
+- Presence observers receive `HomeMigrated(new_home: B)`. Clients reconnect to B automatically.
+- Inbound messages receive `OwnerMigrated(new_home: B)`. Senders update their routing.
+- The Owner's name is reserved on A during the redirect period — nobody else can claim `erik@northgard`.
+
+**Redirect duration.** Domain A keeps the redirect for a minimum of 90 days (configurable per bilateral agreement). After that, the Owner's name on A is released. This gives contacts, cached name resolutions, and slow-updating systems time to discover the new home.
+
+The 90-day minimum is a protocol recommendation, not a law. A domain shutting down might redirect for 30 days. A domain with a good relationship might redirect indefinitely. The Owner should assume redirects are temporary and notify contacts directly.
+
+#### Uncooperative Migration
+
+Domain A refuses to cooperate — won't transfer Objects, won't redirect, won't release the name. This is the hostile case.
+
+The Owner still migrates. The tools already exist:
+
+1. **Wallet recovery.** The Owner's wallet contains Proof chains for all Objects. Present the wallet to Domain B. Domain B verifies mechanically and accepts via [witnessed recovery](#witnessed-recovery). Objects are now on B.
+
+2. **Direct notification.** The Owner has sessions with other domains (visited domains, contacts' home domains). The Owner announces the migration directly — "my new home is B." No redirect from A needed.
+
+3. **Gossip.** Trading partners of A learn through bilateral interaction that the Owner is now operating from B. The MigrationProof (if A eventually produces one) or the wallet's Proof chains serve as evidence.
+
+**What the Owner loses in uncooperative migration:**
+- Name on A. `erik@northgard` is gone. The Owner becomes `erik@newdomain`. Contacts using the old address get no redirect.
+- Active leases. Objects on visited domains have leases from A. A won't revoke or forward them. They return to A on lease timeout. The Owner recovers them via wallet once they return to A's inventory — or waits for lease expiry and uses witnessed recovery.
+- Smooth transition. There's a gap where some contacts still route through A and others route through B. This resolves as contacts learn the new address.
+
+This is the same cost as home domain failure without a backup. Uncooperative migration is effectively voluntary homelessness with wallet recovery. It works, but it's not smooth.
+
+#### Name Continuity
+
+`erik@northgard` becomes `erik@eastgard`. The identity (cryptographic key) is the same. The address changes. This is like changing email providers — everyone who had the old address needs the new one.
+
+**The redirect handles the transition.** During the redirect period, the old address forwards to the new one. After the redirect expires, the old address stops working.
+
+**Why not keep the old name permanently?** Because that makes Domain A a permanent dependency. The Owner left A — maybe because A is shutting down, maybe because A is hostile. Permanent redirects mean A has permanent leverage. The clean break is: redirects are temporary, contacts update, the old name is released.
+
+**Backup home as migration accelerator.** If the Owner has a backup home domain that's already mirroring, migration to the backup is nearly instant — it already has the inventory. The backup promotes itself to primary, the old primary becomes the redirect. This is the smoothest migration path and another reason to have a backup.
+
+#### What the Wallet Stores After Migration
+
+The wallet adds:
+- `MigrationProof(from: A, to: B)` — evidence of the migration
+- Updated `home_domain: B`
+- Fresh Proof chains from B for transferred Objects
+
+The wallet's historical Proof chains from A remain valid — they're append-only. The migration is a new entry in the Owner's history, not an edit.
+
 ### Key Compromise Propagation
 
 When an Owner's key is compromised, the home domain must propagate revocation to every domain where the Owner has active sessions, outstanding Grants, or leased objects. This is the hardest revocation case — it's time-critical and cross-domain.

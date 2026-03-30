@@ -249,4 +249,7 @@ Without this, a Grant scoped `[0x42, 0x07]` on Domain A means nothing to Domain 
 ## Open Questions
 
 - **Presence privacy across trust levels.** Should a `presence` Grant reveal which specific Domains the Owner is on, or just "online/offline"? Full domain list is useful for routing but reveals movement patterns. Maybe two Grant scopes: `observe_liveness` (online/offline only) and `observe_presence` (full domain set). Keeping it simple for now — one scope, full presence. Can split later if privacy concerns are real.
-- **Home domain migration.** An Owner can change their home domain. What happens to existing presence subscriptions? The old home should redirect observers to the new home. This is a protocol concern that needs specifying — probably in TRANSFER.md, since it's a special case of identity transfer.
+
+## Resolved
+
+**Home domain migration.** Specified in [PRIMITIVES.md](PRIMITIVES.md#home-domain-migration). During cooperative migration, the old home sends `HomeMigrated(new_home)` to all presence observers — clients reconnect to the new home automatically. Name resolution redirects (`OwnerMigrated`) handle cached addresses. During uncooperative migration, the Owner notifies contacts directly through existing sessions. Presence subscriptions at the old home eventually fail; contacts that have the Owner's cryptographic identity can re-subscribe at the new home.
