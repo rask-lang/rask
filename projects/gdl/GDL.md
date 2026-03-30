@@ -1038,6 +1038,30 @@ Resolved
 
 Regions are not entities. A region is a container. Entities are contents. Regions have metadata (name, description, spatial model, properties, theme). Entities have affordances and appearance. Mixing them creates ambiguity about what "observing an entity" means vs. "observing a region." Clean separation.
 
+Owner profile schema. [Allgard](../allgard/PRIMITIVES.md#profile) defines the mechanism: every Owner can publish a profile Object at their home domain. GDL defines the content — what fields exist and what they mean. The profile Object's content is a typed map with well-known fields and domain-specific extensions.
+
+**Well-known fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `display_name` | string | No | Preferred display name. Fallback: `name` from the Owner primitive. Max 64 characters. |
+| `avatar` | content ref | No | Content-addressed reference to an image (PNG or WebP, max 512×512, max 256KB). Fetched via Leden content store. |
+| `bio` | string | No | Short self-description. Max 500 characters. |
+| `links` | list of `{label, url}` | No | External references — website, social, documentation. Max 10 entries. |
+| `pronouns` | string | No | For `individual` kind Owners. Free-form: "he/him", "they/them", etc. |
+| `locale` | string | No | BCP 47 language tag. Hint for communication preferences, not a rendering directive. |
+
+**Domain-specific extensions** use namespaced keys: `domain_name.field_name`. A game domain `northgard` adds `northgard.class: "warrior"`. A supply chain domain `logistics` adds `logistics.facility_type: "warehouse"`. Namespaces prevent collisions by construction.
+
+**Rendering rules:**
+- Unknown fields: skip (GDL principle #1)
+- Missing optional fields: omit from display, don't show blank placeholders
+- `avatar` not present: client uses a generated icon from the Owner's `name` and `kind`
+- `display_name` not present: use `name` from the Owner primitive
+- Domain-specific fields: render if the client has a handler for the namespace, skip otherwise
+
+This follows the same pattern as entity properties — typed key-value pairs with conventions for common patterns and graceful degradation for unknown fields.
+
 Vocabulary is convention, not protocol. Entity kinds, affordance categories, property names, event types — these are initial conventions that communities extend. The protocol defines mechanisms (entities have a `kind` string, affordances have a `category` string). The specific terms (`agent`, `navigate`, `health`) are conventions that emerge from use. Like HTTP content types — `text/html` is not in the HTTP spec. GDL's `creature` kind should not be in the GDL spec either. I kept a small core set for bootstrapping, but they're conventions, not protocol.
 
 Existing scene formats for 3D, not a custom hint format. I considered building a vocabulary of shapes, skeletons, PBR surface hints, and animation layers as a GDL-native "hint" system for 3D clients. I got far enough to see the problem: any GDL-native scene vocabulary would always be a subset of what existing 3D formats already standardize, maintained by a smaller team, with less tooling support. GDL shouldn't compete with scene format developers on geometry, materials, and animation. GDL's job is the game layer (interaction, observation, theming). Scene formats handle the content layer (geometry, materials, animation, lighting). Sharp boundary. GDL defines the abstract structure a scene asset must have (model + animations + parts + attachment points) and names glTF `.glb` as the mandatory baseline, but the fidelity mechanism allows future formats without spec changes.
