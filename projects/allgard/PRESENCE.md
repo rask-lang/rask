@@ -223,11 +223,108 @@ A group is not a primitive. It's a pattern composed from Grants:
 
 Groups compose from existing primitives (Object + Grant). The "standard" part is the type tag (`group`) and the expected Grant structure, so any domain recognizing the `group` type can display membership, route group messages, and honor administrator actions.
 
+#### Group Object
+
+The group Object lives on the administrator's home domain (or any domain the administrator chooses to host it). It's observable — members subscribe to it for membership changes.
+
+| Property | Description |
+|---|---|
+| `type` | `group` |
+| `name` | Group display name |
+| `admin` | Owner identity of the administrator |
+| `members` | Set of Owner identities |
+| `roles` | Optional. Map of Owner → role string (`admin`, `moderator`, `member`) |
+
+The group Object is the source of truth for membership. When the administrator adds a member, the Object updates, observers see the delta, and the new member receives their Grants. When a member is removed, their Grants are revoked and the Object updates.
+
+#### Group Messaging
+
+A message to a group is a message to the group Object's hosting domain:
+
+```
+SendMessage(to: group_object_ref, content: bytes, content_type: string)
+```
+
+The hosting domain is responsible for fan-out — delivering the message to all current members. Fan-out uses each member's home domain for routing (same as individual messaging). The sender sends one message; the hosting domain multiplies it.
+
+| Concern | How it works |
+|---|---|
+| Delivery | At-most-once per member, same as individual messages |
+| Rate limiting | Law 5 applies per sender per group |
+| Ordering | Messages carry sequence numbers on the group Object. Members see the same order. |
+| Offline members | Member's home domain queuing policy applies, same as individual messages |
+| Large groups | Hosting domain's fan-out capacity is the bottleneck. Domain policy can cap group size. |
+
+**Cross-domain groups.** Members can be on different home domains. The group Object's hosting domain routes to each member's home domain. This is the same pattern as any cross-domain interaction — bilateral sessions, capability-gated delivery. A group with members across 10 domains means the hosting domain maintains sessions with 10 home domains for fan-out.
+
+#### Group Presence
+
+A group's presence is the aggregated presence of its members. The group Object can be observed for member presence:
+
+- Observe the group Object → receive membership changes + per-member online/offline status
+- The hosting domain aggregates presence from members' home domains
+- Individual member domain sets are NOT exposed through group observation (only the member's home domain knows that). Group presence shows: member X is online/offline. Where they are is gated by individual `presence` Grants between members.
+
 ### Cross-Domain Consistency
 
 Standard Grants carry their type tag (`presence`, `contact`, `group`) so receiving domains know the convention. A `contact` Grant issued on Domain A is recognized on Domain B with the same semantics — Domain B knows what `observe_presence` + `message` means because the convention is standardized.
 
 Without this, a Grant scoped `[0x42, 0x07]` on Domain A means nothing to Domain B. Named conventions give Grants portable semantics.
+
+## Message Encryption
+
+Messages route through home domains. Home domains can read them unless they're encrypted. The protocol requires that message encryption is available, but does not mandate a specific cryptographic scheme.
+
+### Requirements
+
+1. **End-to-end encryption must be possible.** The protocol must support messages that the home domain cannot read. This is a structural requirement — the message `content` field is opaque bytes, and the protocol never requires the home domain to inspect content for routing or delivery.
+
+2. **The specific scheme is not specified.** Cryptographic standards evolve. Mandating a specific protocol (Signal, MLS, etc.) in a federation spec creates a migration problem when better schemes emerge. Instead, the protocol provides the mechanism; implementations choose the cryptography.
+
+3. **Key exchange uses existing primitives.** Owners have cryptographic identities ([key hierarchy](PRIMITIVES.md#key-hierarchy)). Key exchange for E2E encryption uses these identities — the Owner's device keys are the foundation for establishing encrypted channels. The specific key exchange protocol (X3DH, post-quantum KEM, etc.) is negotiated between clients.
+
+### How It Works
+
+The `contact` Grant establishes that two Owners can communicate. The encrypted channel setup happens at first message (or on Grant acceptance):
+
+1. Both Owners' device keys are public (published at their home domains as part of their identity).
+2. The sending client derives a shared secret using the recipient's public device key and its own private device key.
+3. Messages are encrypted client-side before submission to the home domain.
+4. The home domain routes the encrypted blob — it sees `to`, `content_type`, and opaque `content`. It cannot decrypt.
+5. The receiving client decrypts using the shared secret.
+
+**Content type signals encryption.** An encrypted message uses a content type like `application/encrypted+X` where X identifies the scheme. Clients that support the scheme decrypt and render. Clients that don't show "encrypted message, unsupported scheme." The home domain doesn't need to know the scheme — it routes the opaque blob.
+
+**Group encryption.** For group messages, the hosting domain fans out encrypted blobs. Each member receives the same ciphertext. Group encryption schemes (MLS, Sender Keys, etc.) handle the multi-party key management. The protocol's role is the same: route opaque bytes, let clients handle cryptography.
+
+### What the Protocol Guarantees
+
+- Message content is opaque bytes at every routing layer. No protocol operation requires content inspection.
+- Home domains and relays can be honest-but-curious — they route correctly but learn nothing from content.
+- Metadata (sender, recipient, timestamp, size) is visible to routing domains. Metadata privacy is a harder problem and out of scope — it requires onion routing or mixnets, which are transport-layer concerns (Leden), not federation-layer concerns (Allgard).
+
+### What the Protocol Does Not Guarantee
+
+- That a specific encryption scheme is secure. That's the scheme's job.
+- Metadata privacy. The home domain knows who talks to whom and when.
+- Forward secrecy, post-compromise security, deniability. These are properties of specific schemes, not the routing protocol.
+
+## Presence Privacy
+
+A `presence` Grant reveals which Domains the Owner is currently active on. This is useful for routing (contact them directly on Domain B instead of routing through home) but reveals movement patterns (Owner was on Domain X at 3am, moved to Domain Y at 9am).
+
+Two scopes, chosen by the grantor when issuing the Grant:
+
+| Scope | What the observer sees | Use case |
+|---|---|---|
+| `observe_liveness` | Online or offline. Nothing more. | Casual contacts — "is my friend online?" |
+| `observe_presence` | Full domain set (which Domains, when) | Close contacts — "where is my friend so I can join them?" |
+
+The grantor chooses per-grantee. Close friends get `observe_presence`. Acquaintances get `observe_liveness`. The choice is part of the Grant's scope field — same mechanism, different scope strings.
+
+**Default: `observe_liveness`.** When the spec says "a `presence` Grant" without qualification, it means `observe_liveness`. Full presence requires explicit `observe_presence` scope. This is the privacy-safe default — you have to opt in to revealing your location across domains.
+
+The `contact` Grant includes `observe_liveness` by default (not `observe_presence`). An Owner who wants a contact to see their full domain set upgrades the Grant scope explicitly.
 
 ## What This Doesn't Cover
 
@@ -235,6 +332,7 @@ Without this, a Grant scoped `[0x42, 0x07]` on Domain A means nothing to Domain 
 - **Profile content schema.** The Owner's [profile Object](PRIMITIVES.md#profile) is defined as a mechanism in Allgard. The content schema (which fields, what they mean) is defined in [GDL](../gdl/GDL.md#owner-profile-schema).
 - **Voice or media channels.** Real-time media between Owners is an application feature using Leden transport. Presence tells you who's reachable; media setup is a separate capability negotiation.
 - **Notification preferences.** Whether an Owner wants to be disturbed, what channels they prefer — local policy stored at the home domain, not a federation concern.
+- **Metadata privacy.** Who talks to whom and when is visible to routing domains. Hiding this requires onion routing or mixnets at the transport layer (Leden), not the federation layer.
 
 ## Relationship to Existing Specs
 
@@ -246,10 +344,8 @@ Without this, a Grant scoped `[0x42, 0x07]` on Domain A means nothing to Domain 
 | [TRUST.md](TRUST.md) | Presence enables richer trust signals — Owners that are consistently reachable build reputation faster than ghosts. |
 | [Leden observation](../leden/observation.md) | Presence updates are delivered via Leden observation. All existing observation semantics (backpressure, reconnection, filtered observation) apply. |
 
-## Open Questions
-
-- **Presence privacy across trust levels.** Should a `presence` Grant reveal which specific Domains the Owner is on, or just "online/offline"? Full domain list is useful for routing but reveals movement patterns. Maybe two Grant scopes: `observe_liveness` (online/offline only) and `observe_presence` (full domain set). Keeping it simple for now — one scope, full presence. Can split later if privacy concerns are real.
-
 ## Resolved
+
+**Presence privacy.** Two scopes: `observe_liveness` (online/offline only, the default) and `observe_presence` (full domain set). See [Presence Privacy](#presence-privacy). The grantor chooses per-grantee. Default is the privacy-safe option.
 
 **Home domain migration.** Specified in [PRIMITIVES.md](PRIMITIVES.md#home-domain-migration). During cooperative migration, the old home sends `HomeMigrated(new_home)` to all presence observers — clients reconnect to the new home automatically. Name resolution redirects (`OwnerMigrated`) handle cached addresses. During uncooperative migration, the Owner notifies contacts directly through existing sessions. Presence subscriptions at the old home eventually fail; contacts that have the Owner's cryptographic identity can re-subscribe at the new home.
