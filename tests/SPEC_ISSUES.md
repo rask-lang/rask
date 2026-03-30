@@ -33,7 +33,7 @@ The test expects a compile error for a *private* function accessing handle field
 **File:** `tests/compile_errors/borrow_stored.rk`
 **Spec:** `mem.borrowing/S3, B3`
 
-The test claims to demonstrate "Cannot store a reference type in a struct" but stores `input: string`. In Rask, `string` is owned and Copy (16 bytes, refcounted). The "broken" struct and the "fix" struct are identical. To actually test S3, the test needs to store a view/slice in a struct. Also, line 56 stores a string slice result without `.to_string()`, which should itself be a borrow error per B3.
+The test claims to demonstrate "Cannot store a reference type in a struct" but stores `input: string`. In Rask, `string` is owned, immutable, refcounted, and Copy (16 bytes) — it has different semantics than other collections. Strings don't participate in `with` blocks (W2 note: "Strings are immutable — `with` doesn't apply"). Storing a `string` in a struct is completely fine. To actually test S3 (borrow escape), the test needs to attempt storing a string *slice* (`s[0..5]`) in a struct, which are temporary per B3. Line 56 also stores a slice result without `.to_string()` — that itself should be the error under test.
 
 ### 5. Turbofish in `context_ambiguous.rk`
 **File:** `tests/compile_errors/context_ambiguous.rk`
@@ -74,15 +74,13 @@ Spec says `contains_key(k)`. Test uses `contains()`. One is wrong.
 
 The collections spec lists `remove(i)` but not `pop()`. Either the spec is missing it or the test uses a non-existent API.
 
-### 11. `mutate` on Copy types — contradictory statements
-**Spec:** `mem.parameters`
+### 11. ~~`mutate` on Copy types~~ (resolved)
 
-The spec says "Copy types are always copied in regardless of mode." But the parameter mode table says `mutate` = "caller keeps ownership, callee has mutable access." If the value is always copied in, then `mutate` on a Copy type can never affect the caller — making it meaningless. But for a `mutate i32` parameter, would the caller see the mutation or not? The spec needs to resolve this.
+The edge case table in `mem.parameters` is explicit: "Copy type + mutate: Value is copied in; mutations affect the copy." Caller never sees changes. Not a contradiction — `mutate` on Copy is intentionally a no-op for the caller. The function gets its own copy.
 
-### 12. `with` blocks — always mutable vs read-only use
-**Spec:** `mem.borrowing/W5`
+### 12. ~~`with` blocks — always mutable~~ (resolved)
 
-W5 says "with bindings are always mutable" and "Compiler warns when binding is never mutated." But the spec also shows read-only uses of `with`. If the compiler warns on read-only `with` use, then what's the read-only access pattern for growable collections? Just `v[i]` (inline expression access per E1-E4)?
+W5 is consistent: `with` is specifically for multi-statement *mutable* access. Read-only access uses inline expressions (`v[i]` copies out for Copy types per E1-E4, `.get()` returns `Option`). The compiler warning on never-mutated `with` bindings is correct — it guides users toward inline access when mutation isn't needed. The existing `t15_borrowing.rk` tests that only read inside `with` would correctly trigger this warning.
 
 ### 13. `x!` precedence with message
 **Spec:** `type.errors`
