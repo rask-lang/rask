@@ -34,9 +34,16 @@ test "vec pop" {
     const v = Vec.new()
     v.push(10)
     v.push(20)
-    v.pop()
+    const popped = v.pop()
+    assert popped! == 20
     assert v.len() == 1
     assert v[0] == 10
+}
+
+test "vec pop empty" {
+    const v = Vec<i32>.new()
+    const popped = v.pop()
+    assert popped is None
 }
 
 test "vec sum via loop" {
@@ -75,7 +82,7 @@ test "vec get returns option" {
     const v = Vec.new()
     v.push(42)
     assert v.get(0) is Some
-    assert v.get(0).unwrap() == 42
+    assert v.get(0)! == 42
     assert v.get(99) is None
 }
 

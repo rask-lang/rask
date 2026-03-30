@@ -11,7 +11,8 @@ struct Player {
 
 // ERROR: Missing context clause
 // The function accesses h.health, which requires Pool<Player> to be available
-func damage(h: Handle<Player>, amount: i32) {
+// Must be `public` — private functions get contexts inferred automatically (CC7)
+public func damage(h: Handle<Player>, amount: i32) {
     h.health -= amount
 }
 

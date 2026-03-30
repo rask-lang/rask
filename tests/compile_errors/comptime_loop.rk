@@ -36,13 +36,13 @@ comptime func build_table() -> [u8; 256] {
     for i in 0..256 {  // 256 iterations, well under limit
         table[i] = (i * i) as u8
     }
-    table
+    return table
 }
 
 // This is also fine - reasonable recursion
 comptime func factorial(n: u64) -> u64 {
-    if n <= 1 { 1 }
-    else { n * factorial(n - 1) }
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
 }
 
 const FACT_10 = comptime factorial(10)  // OK: 10 recursive calls
@@ -53,13 +53,13 @@ comptime func too_many_iterations() -> i32 {
     for i in 0..1_000_000 {  // COMPILE ERROR: exceeds iteration limit
         sum += i
     }
-    sum
+    return sum
 }
 
 // This would also fail - recursion depth
 comptime func deep_recursion(n: u64) -> u64 {
-    if n == 0 { 0 }
-    else { 1 + deep_recursion(n - 1) }
+    if n == 0 { return 0 }
+    return 1 + deep_recursion(n - 1)
 }
 
 // const DEEP = comptime deep_recursion(10_000)  // ERROR: stack overflow
@@ -82,13 +82,13 @@ comptime func try_io() -> string {
 
     // Only @embed_file works:
     const data = @embed_file("data.txt")  // OK: resolved at compile time
-    data
+    return data
 }
 
 // Another error: comptime with allocation beyond limits
 comptime func huge_array() -> [u8; 100_000_000] {
     // COMPILE ERROR: array size exceeds comptime limit (16 MB)
-    [0u8; 100_000_000]
+    return [0u8; 100_000_000]
 }
 
 func main() {

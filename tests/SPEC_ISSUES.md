@@ -2,15 +2,11 @@
 
 Issues discovered comparing existing and new tests against specs. Organized by severity.
 
-## Contradictions Between Spec and Tests
+## Resolved
 
-### 1. `.unwrap()` doesn't exist in spec
-**Files:** `t07_option.rk`, `t08_result.rk`, `t09_vec.rk`
-**Spec:** `type.optionals/OPT7`, `type.errors`
+### 1. ~~`.unwrap()` doesn't exist in spec~~ (fixed)
 
-The spec defines `x!` for force unwrap. The Option method table lists `map`, `filter`, `to_result`, `is_some`, `is_none` — no `unwrap()`. The Result method table is similar. Tests use `.unwrap()` which is a Rust-ism not in the spec.
-
-**Resolved:** `x!` is correct. Existing tests need updating to use `x!` instead of `.unwrap()`.
+Tests updated to use `x!` per spec (OPT7). `.unwrap()` removed from t07, t08, t09.
 
 ### 2. ~~`return` inside closures~~ (resolved)
 
@@ -18,25 +14,17 @@ The spec defines `x!` for force unwrap. The Option method table lists `map`, `fi
 
 CF26 and closures.md updated to reflect this. The existing t06_closures.rk tests are correct.
 
-### 3. `context_missing.rk` contradicts CC7
-**File:** `tests/compile_errors/context_missing.rk`
-**Spec:** `mem.context/CC7`
+### 3. ~~`context_missing.rk` contradicts CC7~~ (fixed)
 
-The test expects a compile error for a *private* function accessing handle fields without `using`. But CC7 says private functions get unnamed contexts inferred automatically. The function should be `public` to trigger this error.
+Added `public` keyword to the function. Private functions get contexts inferred (CC7); only public functions require explicit `using` clauses.
 
-### 4. `borrow_stored.rk` doesn't test borrow escape
-**File:** `tests/compile_errors/borrow_stored.rk`
-**Spec:** `mem.borrowing/S3, B3`
+### 4. ~~`borrow_stored.rk` doesn't test borrow escape~~ (fixed)
 
-The test claims to demonstrate "Cannot store a reference type in a struct" but stores `input: string`. In Rask, `string` is owned, immutable, refcounted, and Copy (16 bytes) — it has different semantics than other collections. Strings don't participate in `with` blocks (W2 note: "Strings are immutable — `with` doesn't apply"). Storing a `string` in a struct is completely fine. To actually test S3 (borrow escape), the test needs to attempt storing a string *slice* (`s[0..5]`) in a struct, which are temporary per B3. Line 56 also stores a slice result without `.to_string()` — that itself should be the error under test.
+Rewrote to actually test S3/B3: storing a string slice (`string[..]`) in a struct, returning a slice from a function. `string` is owned/Copy and fine to store; slices are temporary borrows and cannot escape.
 
-### 5. Turbofish in `context_ambiguous.rk`
-**File:** `tests/compile_errors/context_ambiguous.rk`
-**Spec:** `SYNTAX.md`
+### 5. ~~Turbofish in `context_ambiguous.rk`~~ (fixed)
 
-Uses `Pool::<Player>.new()` throughout. SYNTAX.md explicitly says "no turbofish." Should be `Pool<Player>.new()`.
-
-## Spec Internal Inconsistencies
+Replaced `Pool::<Player>.new()` with `Pool<Player>.new()` throughout.
 
 ### 6. ~~`assert` — parens or not?~~ (resolved)
 
@@ -50,17 +38,13 @@ Uses `Pool::<Player>.new()` throughout. SYNTAX.md explicitly says "no turbofish.
 
 **Decision:** Both forms valid. Unqualified is idiomatic (compiler infers enum type from match subject). Qualified (`Shape.Circle`) always works. Updated enums.md to document both forms.
 
-### 9. `map.contains()` vs `map.contains_key()`
-**File:** `t13_map.rk`
-**Spec:** `std.collections` Map Convenience Methods table
+### 9. ~~`map.contains()` vs `map.contains_key()`~~ (fixed)
 
-Spec says `contains_key(k)`. Test uses `contains()`. One is wrong.
+Test updated to use `contains_key()` per spec.
 
-### 10. `vec.pop()` not in spec
-**File:** `t09_vec.rk`
-**Spec:** `std.collections`
+### 10. ~~`vec.pop()` not in spec~~ (fixed)
 
-The collections spec lists `remove(i)` but not `pop()`. Either the spec is missing it or the test uses a non-existent API.
+Added `pop()` to collections spec as V6: `vec.pop()` returns `Option<T>`, `none` on empty. Test updated to check return value.
 
 ### 11. ~~`mutate` on Copy types~~ (resolved)
 
@@ -74,27 +58,24 @@ W5 is consistent: `with` is specifically for multi-statement *mutable* access. R
 
 **Decision:** `x! "msg"` accepts a string literal or string interpolation only — not arbitrary expressions. `x! "failed for {id}"` works. No precedence ambiguity since string literals are unambiguous tokens. Updated optionals.md and error-types.md.
 
-### 14. Comptime implicit returns
-**File:** `tests/compile_errors/comptime_loop.rk`
-**Spec:** `ctrl.comptime/CT9`
+### 14. ~~Comptime implicit returns~~ (fixed)
 
-CT9 requires explicit `return` in comptime functions. The `factorial` function in `comptime_loop.rk` uses implicit block expression returns (`if n <= 1 { 1 } else { n * factorial(n - 1) }`), which contradicts CT9.
+Added explicit `return` to all comptime functions in comptime_loop.rk.
 
-### 15. `error_mismatch.rk` mixes concerns
-**File:** `tests/compile_errors/error_mismatch.rk`
+### 15. ~~`error_mismatch.rk` mixes concerns~~ (fixed)
 
-Lines 108-128 contain Rust syntax (`pub`, `fn`, `::`, `let mut`) mixed into a file whose purpose is testing error type mismatch. These should be separate test files in compile_errors/ if they're intentional syntax rejection tests.
+Moved Rust syntax rejection tests (`pub`, `fn`, `::`, `let mut`) to a new file `compile_errors/rust_syntax_rejected.rk`. error_mismatch.rk now only tests error type mismatch.
 
 ## Spec Gaps (features with zero test coverage)
 
-See the audit summary in the PR/commit for the full missing coverage table. The most critical gaps:
-- `x!`, `??`, `?.`, `none` — now covered by `t18_option_operators.rk`
-- `if`/`match` as expressions, `loop`+`break value`, `is` patterns — now covered by `t20_control_expressions.rk`
-- `let` rebinding — now covered by `t21_let_bindings.rk`
-- `mutate`/`take` parameter modes — now covered by `t22_parameter_modes.rk`
-- `with` mutation — now covered by `t23_with_blocks.rk`
-- Bitwise operators — now covered by `t24_bitwise_ops.rk`
-- Iterator adapters — now covered by `t25_iterator_adapters.rk`
+The most critical gaps are now covered by new test files:
+- `x!`, `??`, `?.`, `none` — `t18_option_operators.rk`
+- `if`/`match` as expressions, `loop`+`break value`, `is` patterns — `t20_control_expressions.rk`
+- `let` rebinding — `t21_let_bindings.rk`
+- `mutate`/`take` parameter modes — `t22_parameter_modes.rk`
+- `with` mutation — `t23_with_blocks.rk`
+- Bitwise operators — `t24_bitwise_ops.rk`
+- Iterator adapters — `t25_iterator_adapters.rk`
 
 ### Still uncovered
 - Float NaN/Infinity/f32 (F1-F4)

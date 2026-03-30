@@ -27,7 +27,7 @@ test "None construction" {
 
 test "unwrap Some" {
     const x = Some(42)
-    assert x.unwrap() == 42
+    assert x! == 42
 }
 
 test "is Some with binding" {
@@ -49,7 +49,7 @@ test "is None" {
 
 test "optional from function" {
     assert safe_div(10, 2) is Some
-    assert safe_div(10, 2).unwrap() == 5
+    assert safe_div(10, 2)! == 5
     assert safe_div(10, 0) is None
 }
 
@@ -61,7 +61,7 @@ test "optional with Vec" {
 
     const found = find(v, 20)
     assert found is Some
-    assert found.unwrap() == 20
+    assert found! == 20
 
     const not_found = find(v, 99)
     assert not_found is None
