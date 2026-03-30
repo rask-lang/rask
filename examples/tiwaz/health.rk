@@ -1,0 +1,26 @@
+import http
+import time
+
+const status = Shared<Map<string, bool>>.new(Map<string, bool>.new())
+const health_url = "/health"
+
+const health_check_interval = 10 // seconds
+
+func health_checker(backends : Vec<Backend>) -> () {
+    loop {
+        const result = check_health(backends)
+        if result is Err(e) {
+            // Log the error and continue with the next check.
+            println("health check error: {e}")
+        }
+        time.sleep(health_check_interval)
+    }
+}
+
+func check_health(backends : Vec<Backend>) -> () or HttpError  {
+    for backend in backends {
+        const url = "http://{backend.url}{health_url}"
+        const response = try http.get(url)
+        status.write().insert(backend.url, response.status == 200)
+    }
+}

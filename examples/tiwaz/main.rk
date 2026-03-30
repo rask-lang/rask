@@ -10,7 +10,8 @@ func main() -> () or Error {
         const server = try HttpServer.listen("0.0.0.0:8080")
         ensure server.close()
         println("listening on 8080")
-        const upstream = "example.com"
+        const all_routes = routes()
+        spawn(|| { health_checker(backend_pool.backends) }).detach()
         loop {
             println("waiting for request")
             const (request, responder) = try server.accept()
@@ -27,10 +28,13 @@ func main() -> () or Error {
                     return
                 }
 
-                const matched_route = match_route(request.path(), routes())
+                const matched_route = match_route(request.path(), all_routes)
                 if matched_route is Some(route) {
                     const route_and_forward = |request: Request| -> Response {
-                        const result = forward(request, route.upstream)
+                        const backend = route.pool.next_healthy() is Ok else {
+                            return Response.internal_error("no healthy backends")
+                        }
+                        const result = forward(request, backend.url)
                         if result is Ok(response) {
                             return response
                         }

@@ -1,8 +1,21 @@
 struct Route {
     prefix: string
-    upstream: string
+    pool: BackendPool
+}
+
+const backend_pool = BackendPool { 
+    backends: Vec<Backend>.from([
+        Backend { url: "localhost:8081" },
+        Backend { url: "localhost:8082" } 
+    ]), 
+    index: Mutex<usize>.new(0) 
 }
 
 func routes() -> Vec<Route> {
-    return Vec<Route>.from([Route { prefix: "/", upstream: "example.com" }])
+    return Vec<Route>.from([
+        Route { 
+            prefix: "/", 
+            pool: backend_pool
+        }
+    ])
 }

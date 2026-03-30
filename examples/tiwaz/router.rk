@@ -1,9 +1,11 @@
+
+
 func match_route(path: string, routes: Vec<Route>) -> Route? {
     for route in routes {
         if path.starts_with(route.prefix) {
             // Strip the prefix before forwarding to upstream.
             const stripped = path.substr(route.prefix.len(), path.len())
-            return Some(Route { prefix: stripped, upstream: route.upstream })
+            return Some(Route { prefix: stripped, pool: route.pool })
         }
     }
     return None
