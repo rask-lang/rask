@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// let rebinding, const vs let, shadowing.
+//
+// Spec: SYNTAX.md (bindings section)
+//
+// SPEC ISSUE: Every existing test uses only `const`. Zero coverage of `let`
+// with reassignment, which is a core language feature. `let` is the mutable
+// binding keyword (rebindable), `const` is permanent.
+//
+// Note: `const` controls the binding, not the value. `const v = Vec.new()`
+// allows `v.push(1)` but not `v = other_vec`. This is like JS `const`.
+
+// --- const cannot be reassigned ---
+
+test "const binding is permanent" {
+    const x = 42
+    // x = 43 would be a compile error (tested in compile_errors/const_reassign.rk)
+    assert x == 42
+}
+
+// --- let can be reassigned ---
+
+test "let binding reassignment" {
+    let x = 1
+    assert x == 1
+    x = 2
+    assert x == 2
+    x = x + 10
+    assert x == 12
+}
+
+test "let in loop" {
+    let sum = 0
+    for i in 0..5 {
+        sum += i
+    }
+    assert sum == 10
+}
+
+test "let multiple reassignments" {
+    let s = "hello"
+    assert s == "hello"
+    s = "world"
+    assert s == "world"
+    s = "final"
+    assert s == "final"
+}
+
+// --- shadowing (SYNTAX.md) ---
+
+test "const shadows const" {
+    const x = 1
+    const x = x + 1
+    assert x == 2
+}
+
+test "const shadows let" {
+    let x = 1
+    x = 5
+    const x = x * 2
+    assert x == 10
+}
+
+test "shadow changes type" {
+    const x = 42
+    const x = "now a string"
+    assert x == "now a string"
+}
+
+test "shadow in nested block" {
+    const x = 1
+    {
+        const x = 2
+        assert x == 2
+    }
+    // Outer x still 1 — block shadow doesn't leak
+    assert x == 1
+}
+
+// --- const allows value mutation (like JS const) ---
+
+test "const vec allows push" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    assert v.len() == 2
+}
+
+test "const map allows insert" {
+    const m = Map.new()
+    m.insert("a", 1)
+    assert m["a"] == 1
+}
+
+// --- let with struct field mutation ---
+
+struct Counter {
+    value: i32
+}
+
+test "let struct reassignment" {
+    let c = Counter { value: 0 }
+    assert c.value == 0
+    c = Counter { value: 10 }
+    assert c.value == 10
+}
+
+func main() {}

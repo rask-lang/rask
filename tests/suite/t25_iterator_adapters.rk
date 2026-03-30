@@ -1,0 +1,275 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Iterator adapters and terminal operations.
+//
+// Spec: type.iterators (I1-I4, adapters, terminals), std.iteration (I1-I4)
+//
+// SPEC ISSUE: The iterator spec says adapters are lazy and monomorphized.
+// But the collect() terminal "defaults to Vec" (spec). What's the syntax
+// to collect into a Map or other type? The spec shows `.collect()` with no
+// type parameter. Either inference handles it or there's a `.collect<Map>()`
+// syntax not documented.
+//
+// SPEC ISSUE: The closures spec (mem.closures) shows closures as `|x| expr`
+// (expression body). But for multi-statement closures the spec shows
+// `|mutate count| { count += 1 }` (block body). It's unclear whether
+// block-bodied closures use last-expression-as-value like blocks (CF3) or
+// need `return`. Given CF26 says return exits the function, closures should
+// use last-expression-as-value.
+
+// --- filter ---
+
+test "filter even numbers" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+    v.push(5)
+
+    const evens = v.filter(|x| x % 2 == 0).collect()
+    assert evens.len() == 2
+    assert evens[0] == 2
+    assert evens[1] == 4
+}
+
+// --- map ---
+
+test "map doubles" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+
+    const doubled = v.map(|x| x * 2).collect()
+    assert doubled.len() == 3
+    assert doubled[0] == 2
+    assert doubled[1] == 4
+    assert doubled[2] == 6
+}
+
+// --- filter + map chain ---
+
+test "filter then map" {
+    const v = Vec.new()
+    for i in 1..6 {
+        v.push(i)
+    }
+
+    const result = v.filter(|x| x > 2).map(|x| x * 10).collect()
+    assert result.len() == 3
+    assert result[0] == 30
+    assert result[1] == 40
+    assert result[2] == 50
+}
+
+// --- fold ---
+
+test "fold sum" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+
+    const sum = v.fold(0, |acc, x| acc + x)
+    assert sum == 10
+}
+
+test "fold product" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+
+    const product = v.fold(1, |acc, x| acc * x)
+    assert product == 24
+}
+
+// --- sum ---
+
+test "sum" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+
+    assert v.sum() == 60
+}
+
+// --- count ---
+
+test "count" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+
+    assert v.filter(|x| x > 1).count() == 2
+}
+
+// --- find ---
+
+test "find existing" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+
+    const found = v.find(|x| x == 2)
+    assert found is Some
+    assert found! == 2
+}
+
+test "find missing" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+
+    const found = v.find(|x| x == 99)
+    assert found is None
+}
+
+// --- any / all ---
+
+test "any true" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+
+    assert v.any(|x| x > 2)
+}
+
+test "any false" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+
+    assert !v.any(|x| x > 10)
+}
+
+test "all true" {
+    const v = Vec.new()
+    v.push(2)
+    v.push(4)
+    v.push(6)
+
+    assert v.all(|x| x % 2 == 0)
+}
+
+test "all false" {
+    const v = Vec.new()
+    v.push(2)
+    v.push(3)
+    v.push(4)
+
+    assert !v.all(|x| x % 2 == 0)
+}
+
+// --- enumerate ---
+
+test "enumerate" {
+    const v = Vec.new()
+    v.push("a")
+    v.push("b")
+    v.push("c")
+
+    const pairs = v.enumerate().collect()
+    assert pairs.len() == 3
+    const (i0, v0) = pairs[0]
+    const (i1, v1) = pairs[1]
+    const (i2, v2) = pairs[2]
+    assert i0 == 0 && v0 == "a"
+    assert i1 == 1 && v1 == "b"
+    assert i2 == 2 && v2 == "c"
+}
+
+// --- take ---
+
+test "take first n" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    v.push(40)
+
+    const first_two = v.take(2).collect()
+    assert first_two.len() == 2
+    assert first_two[0] == 10
+    assert first_two[1] == 20
+}
+
+// --- skip ---
+
+test "skip first n" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    v.push(40)
+
+    const rest = v.skip(2).collect()
+    assert rest.len() == 2
+    assert rest[0] == 30
+    assert rest[1] == 40
+}
+
+// --- for-in on range (basic, already tested elsewhere, included for completeness) ---
+
+test "range iteration" {
+    let sum = 0
+    for i in 0..5 {
+        sum += i
+    }
+    assert sum == 10
+}
+
+// --- for (k, v) in map (DS1, LP desugaring) ---
+
+test "map iteration with destructuring" {
+    const m = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+
+    let total = 0
+    for (key, value) in m {
+        total += value
+    }
+    assert total == 3
+}
+
+// --- for mutate (LP11-LP12) ---
+
+test "for mutate doubles in place" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+
+    for mutate item in v {
+        item = item * 2
+    }
+
+    assert v[0] == 2
+    assert v[1] == 4
+    assert v[2] == 6
+}
+
+// --- take_all consuming iteration (I3) ---
+
+test "take_all consumes vec" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+
+    let sum = 0
+    for item in v.take_all() {
+        sum += item
+    }
+    assert sum == 60
+    // v is now empty/consumed
+}
+
+func main() {}
