@@ -38,12 +38,9 @@ Uses `Pool::<Player>.new()` throughout. SYNTAX.md explicitly says "no turbofish.
 
 ## Spec Internal Inconsistencies
 
-### 6. `assert` — parens or not?
-**Spec:** `SYNTAX.md` line 908 shows `assert(1 + 1 == 2)` with parens.
-**Tests:** Every test file uses `assert expr` without parens.
-**Compiler:** Accepts both.
+### 6. ~~`assert` — parens or not?~~ (resolved)
 
-The spec should document both forms or pick one. All existing tests use the no-parens form.
+**Decision:** `assert expr` without parens, consistent with `return`, `break`, `try`. Optional message: `assert expr, "message"`. Updated SYNTAX.md.
 
 ### 7. ~~Trait body — `func` keyword or not?~~ (resolved)
 
@@ -73,10 +70,9 @@ The edge case table in `mem.parameters` is explicit: "Copy type + mutate: Value 
 
 W5 is consistent: `with` is specifically for multi-statement *mutable* access. Read-only access uses inline expressions (`v[i]` copies out for Copy types per E1-E4, `.get()` returns `Option`). The compiler warning on never-mutated `with` bindings is correct — it guides users toward inline access when mutation isn't needed. The existing `t15_borrowing.rk` tests that only read inside `with` would correctly trigger this warning.
 
-### 13. `x!` precedence with message
-**Spec:** `type.errors`
+### 13. ~~`x!` precedence with message~~ (resolved)
 
-The spec says `x! "msg"` provides a custom panic message but doesn't clarify precedence. Is `result! "msg".len()` parsed as `(result! "msg").len()` or `result! ("msg".len())`?
+**Decision:** `x! "msg"` accepts a string literal or string interpolation only — not arbitrary expressions. `x! "failed for {id}"` works. No precedence ambiguity since string literals are unambiguous tokens. Updated optionals.md and error-types.md.
 
 ### 14. Comptime implicit returns
 **File:** `tests/compile_errors/comptime_loop.rk`
