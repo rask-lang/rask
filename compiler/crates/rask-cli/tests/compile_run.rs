@@ -266,3 +266,237 @@ fn error_nonexhaustive_match() {
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
 }
+
+// ─── Error message quality ──────────────────────────────────
+
+/// Run `rask check` and return combined stdout+stderr.
+fn check_output(source: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let rask = rask_binary();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("rask_errtest_{}_{}.rk", std::process::id(), id));
+    std::fs::write(&tmp, source).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask check");
+
+    let _ = std::fs::remove_file(&tmp);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    format!("{}{}", stdout, stderr)
+}
+
+#[test]
+fn error_message_includes_line_number() {
+    let output = check_output("func main() {\n    const x: i32 = \"hello\"\n}");
+    assert!(output.contains("E0308"), "should include error code");
+    assert!(output.contains(":2:"), "should include line number");
+}
+
+#[test]
+fn error_message_shows_mismatched_types() {
+    let output = check_output("func add(a: i32, b: i32) -> i32 { return a + b }\nfunc main() { add(1, \"x\") }");
+    assert!(output.contains("mismatched"), "should mention mismatched types: {}", output);
+}
+
+#[test]
+fn error_message_shows_undefined_symbol() {
+    let output = check_output("func main() { println(x.to_string()) }");
+    assert!(output.contains("undefined"), "should mention undefined: {}", output);
+    assert!(output.contains("x"), "should mention the symbol name: {}", output);
+}
+
+#[test]
+fn error_message_includes_fix_hint() {
+    let output = check_output("func main() {\n    const x: i32 = \"hello\"\n}");
+    assert!(output.contains("fix:"), "should include fix suggestion: {}", output);
+}
+
+// ─── rask fmt integration ───────────────────────────────────
+
+#[test]
+fn fmt_normalizes_spacing() {
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir().join(format!("rask_fmttest_{}.rk", std::process::id()));
+    std::fs::write(&tmp, "func    main(   ) {\nconst x=42\n}").unwrap();
+
+    let _ = Command::new(&rask)
+        .arg("fmt")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask fmt");
+
+    let formatted = std::fs::read_to_string(&tmp).unwrap();
+    let _ = std::fs::remove_file(&tmp);
+
+    assert!(formatted.contains("func main()"), "should normalize func spacing: {}", formatted);
+    assert!(formatted.contains("const x = 42"), "should add spaces: {}", formatted);
+}
+
+// ─── rask lint integration ──────────────────────────────────
+
+fn lint_output(source: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let rask = rask_binary();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("rask_linttest_{}_{}.rk", std::process::id(), id));
+    std::fs::write(&tmp, source).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("lint")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask lint");
+
+    let _ = std::fs::remove_file(&tmp);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    format!("{}{}", stdout, stderr)
+}
+
+#[test]
+fn lint_flags_camel_case_function() {
+    let output = lint_output("func getData() -> i32 { return 1 }\nfunc main() {}");
+    assert!(output.contains("snake_case") || output.contains("getData"),
+        "should flag camelCase function: {}", output);
+}
+
+#[test]
+fn lint_clean_code_passes() {
+    let output = lint_output("func get_data() -> i32 { return 1 }\nfunc main() {}");
+    assert!(output.contains("No lint issues") || !output.contains("warning"),
+        "clean code should pass lint: {}", output);
+}
+
+// ─── rask api integration ───────────────────────────────────
+
+#[test]
+fn api_shows_vec_methods() {
+    let rask = rask_binary();
+    let stdlib = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("stdlib")
+        .join("collections.rk");
+
+    let out = Command::new(&rask)
+        .arg("api")
+        .arg(&stdlib)
+        .output()
+        .expect("failed to run rask api");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Vec"), "should show Vec type: {}", stdout);
+    assert!(stdout.contains("push"), "should show push method: {}", stdout);
+    assert!(stdout.contains("pop"), "should show pop method: {}", stdout);
+    assert!(stdout.contains("len"), "should show len method: {}", stdout);
+}
+
+#[test]
+fn api_shows_map_methods() {
+    let rask = rask_binary();
+    let stdlib = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("stdlib")
+        .join("collections.rk");
+
+    let out = Command::new(&rask)
+        .arg("api")
+        .arg(&stdlib)
+        .output()
+        .expect("failed to run rask api");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Map"), "should show Map type: {}", stdout);
+    assert!(stdout.contains("insert"), "should show insert method: {}", stdout);
+    assert!(stdout.contains("contains_key"), "should show contains_key method: {}", stdout);
+}
+
+// ─── Stdlib method discoverability via type checker ─────────
+// Verify that calling stdlib methods actually passes type checking.
+// This catches stubs that exist but aren't wired into the resolver.
+
+fn check_succeeds(source: &str) -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let rask = rask_binary();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("rask_disctest_{}_{}.rk", std::process::id(), id));
+    std::fs::write(&tmp, source).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask check");
+
+    let _ = std::fs::remove_file(&tmp);
+    out.status.success()
+}
+
+#[test]
+fn discover_vec_push_len() {
+    assert!(check_succeeds(
+        "func main() {\n    const v = Vec<i32>.new()\n    v.push(1)\n    println(v.len().to_string())\n}"
+    ), "Vec.new/push/len should pass type check");
+}
+
+#[test]
+fn discover_vec_pop() {
+    assert!(check_succeeds(
+        "func main() {\n    const v = Vec<i32>.new()\n    v.push(1)\n    v.pop()\n}"
+    ), "Vec.pop should pass type check");
+}
+
+#[test]
+fn discover_string_len_contains() {
+    assert!(check_succeeds(
+        "func main() {\n    const s = \"hello\"\n    println(s.len().to_string())\n    s.contains(\"ell\")\n}"
+    ), "string.len/contains should pass type check");
+}
+
+#[test]
+fn discover_string_trim() {
+    // string.trim() returns a slice — can't store it (S2), but can use inline
+    assert!(check_succeeds(
+        "func main() {\n    const s = \"  hello  \"\n    println(s.trim())\n}"
+    ), "string.trim should pass type check");
+}
+
+#[test]
+fn discover_map_insert_len() {
+    assert!(check_succeeds(
+        "func main() {\n    const m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    println(m.len().to_string())\n}"
+    ), "Map.new/insert/len should pass type check");
+}
+
+#[test]
+fn discover_map_contains_key() {
+    assert!(check_succeeds(
+        "func main() {\n    const m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    m.contains_key(\"a\")\n}"
+    ), "Map.contains_key should pass type check");
+}
+
+#[test]
+fn discover_println_print() {
+    assert!(check_succeeds(
+        "func main() {\n    println(\"hello\")\n    print(\"world\")\n}"
+    ), "println/print should pass type check");
+}
+
+#[test]
+fn discover_to_string() {
+    assert!(check_succeeds(
+        "func main() {\n    const s = 42.to_string()\n    println(s)\n}"
+    ), "i32.to_string should pass type check");
+}
