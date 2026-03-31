@@ -1128,10 +1128,10 @@ impl<'a> Printer<'a> {
                 self.emit(" = ");
                 self.format_expr(init);
             }
-            StmtKind::LetTuple { names, init } => {
-                self.emit("let (");
-                self.emit(&names.join(", "));
-                self.emit(") = ");
+            StmtKind::LetTuple { patterns, init } => {
+                self.emit("let ");
+                self.format_tuple_pat_list(patterns);
+                self.emit(" = ");
                 self.format_expr(init);
             }
             StmtKind::Const { name, name_span: _, ty, init } => {
@@ -1145,10 +1145,10 @@ impl<'a> Printer<'a> {
                 self.emit(" = ");
                 self.format_expr(init);
             }
-            StmtKind::ConstTuple { names, init } => {
-                self.emit("const (");
-                self.emit(&names.join(", "));
-                self.emit(") = ");
+            StmtKind::ConstTuple { patterns, init } => {
+                self.emit("const ");
+                self.format_tuple_pat_list(patterns);
+                self.emit(" = ");
                 self.format_expr(init);
             }
             StmtKind::Assign { target, value } => {
@@ -1283,6 +1283,25 @@ impl<'a> Printer<'a> {
                 self.emit_indent();
                 self.emit("}");
             }
+        }
+    }
+
+    fn format_tuple_pat_list(&mut self, pats: &[rask_ast::stmt::TuplePat]) {
+        self.emit("(");
+        for (i, pat) in pats.iter().enumerate() {
+            if i > 0 {
+                self.emit(", ");
+            }
+            self.format_tuple_pat(pat);
+        }
+        self.emit(")");
+    }
+
+    fn format_tuple_pat(&mut self, pat: &rask_ast::stmt::TuplePat) {
+        match pat {
+            rask_ast::stmt::TuplePat::Name(n) => self.emit(n),
+            rask_ast::stmt::TuplePat::Wildcard => self.emit("_"),
+            rask_ast::stmt::TuplePat::Nested(pats) => self.format_tuple_pat_list(pats),
         }
     }
 

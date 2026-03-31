@@ -2,56 +2,71 @@
 //! Assignment and destructuring.
 
 use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::stmt::TuplePat;
 
 use crate::value::Value;
 
 use super::{Interpreter, RuntimeError};
 
 impl Interpreter {
-    pub(super) fn destructure_tuple(&mut self, names: &[String], value: Value) -> Result<(), RuntimeError> {
-        match value {
-            Value::Vec(v) => {
-                let vec = v.lock().unwrap();
-                if vec.len() != names.len() {
-                    return Err(RuntimeError::TypeError(format!(
-                        "tuple destructuring: expected {} elements, got {}",
-                        names.len(), vec.len()
-                    )));
-                }
-                for (name, val) in names.iter().zip(vec.iter()) {
-                    self.env.define(name.clone(), val.clone());
-                }
+    /// Destructure a value according to a list of TuplePat patterns.
+    /// Handles nested patterns like `(a, (b, c), _)` recursively.
+    pub(super) fn destructure_tuple_pats(&mut self, pats: &[TuplePat], value: Value) -> Result<(), RuntimeError> {
+        let elements = Self::value_to_elements(value, pats.len())?;
+        for (pat, val) in pats.iter().zip(elements) {
+            self.bind_tuple_pat(pat, val)?;
+        }
+        Ok(())
+    }
+
+    fn bind_tuple_pat(&mut self, pat: &TuplePat, value: Value) -> Result<(), RuntimeError> {
+        match pat {
+            TuplePat::Name(name) => {
+                self.env.define(name.clone(), value);
             }
-            Value::Struct(ref s) => {
-                let guard = s.lock().unwrap();
-                // Try named destructuring first, fall back to positional
-                let has_named = names.iter().any(|n| guard.fields.contains_key(n));
-                if has_named {
-                    for name in names {
-                        let val = guard.fields.get(name).cloned().unwrap_or(Value::Unit);
-                        self.env.define(name.clone(), val);
-                    }
-                } else {
-                    // Positional: iterate field values in insertion order
-                    let vals: Vec<_> = guard.fields.values().cloned().collect();
-                    if vals.len() != names.len() {
-                        return Err(RuntimeError::TypeError(format!(
-                            "tuple destructuring: expected {} elements, got {}",
-                            names.len(), vals.len()
-                        )));
-                    }
-                    for (name, val) in names.iter().zip(vals) {
-                        self.env.define(name.clone(), val);
-                    }
-                }
+            TuplePat::Wildcard => {
+                // discard
             }
-            _ => {
-                return Err(RuntimeError::TypeError(format!(
-                    "cannot destructure {} into tuple", value.type_name()
-                )));
+            TuplePat::Nested(inner_pats) => {
+                let elements = Self::value_to_elements(value, inner_pats.len())?;
+                for (p, v) in inner_pats.iter().zip(elements) {
+                    self.bind_tuple_pat(p, v)?;
+                }
             }
         }
         Ok(())
+    }
+
+    /// Extract positional elements from a tuple-like value (Vec or Struct).
+    fn value_to_elements(value: Value, expected: usize) -> Result<Vec<Value>, RuntimeError> {
+        match value {
+            Value::Vec(v) => {
+                let vec = v.lock().unwrap();
+                if vec.len() != expected {
+                    return Err(RuntimeError::TypeError(format!(
+                        "tuple destructuring: expected {} elements, got {}",
+                        expected, vec.len()
+                    )));
+                }
+                Ok(vec.clone())
+            }
+            Value::Struct(ref s) => {
+                let guard = s.lock().unwrap();
+                let vals: Vec<_> = guard.fields.values().cloned().collect();
+                if vals.len() != expected {
+                    return Err(RuntimeError::TypeError(format!(
+                        "tuple destructuring: expected {} elements, got {}",
+                        expected, vals.len()
+                    )));
+                }
+                Ok(vals)
+            }
+            _ => {
+                Err(RuntimeError::TypeError(format!(
+                    "cannot destructure {} into tuple", value.type_name()
+                )))
+            }
+        }
     }
 
     fn assign_nested_field(obj: &Value, field_chain: &[String], value: Value) -> Result<(), RuntimeError> {

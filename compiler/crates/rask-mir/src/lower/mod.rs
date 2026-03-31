@@ -1218,9 +1218,9 @@ impl<'a> MirLowerer<'a> {
                 | rask_ast::stmt::StmtKind::Const { name, .. } => {
                     local_bound.insert(name.clone());
                 }
-                rask_ast::stmt::StmtKind::LetTuple { names, .. }
-                | rask_ast::stmt::StmtKind::ConstTuple { names, .. } => {
-                    for n in names { local_bound.insert(n.clone()); }
+                rask_ast::stmt::StmtKind::LetTuple { patterns, .. }
+                | rask_ast::stmt::StmtKind::ConstTuple { patterns, .. } => {
+                    for n in rask_ast::stmt::tuple_pats_flat_names(patterns) { local_bound.insert(n.to_string()); }
                 }
                 _ => {}
             }

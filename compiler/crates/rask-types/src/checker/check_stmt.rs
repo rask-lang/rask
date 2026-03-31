@@ -83,9 +83,15 @@ impl TypeChecker {
                         });
                     }
                 }
-                // Reject mutation of read-only parameters (default params are read-only)
+                // Reject mutation of read-only parameters (default params are read-only).
+                // Exception: index assignment on collection types (Vec, Map, Pool)
+                // is interior mutation, not rebinding — allowed on const bindings.
                 if let Some(root) = Self::root_ident_name(target) {
-                    if self.is_local_read_only(&root) {
+                    // Index assignment (v[i] = x) is interior mutation — allowed
+                    // on const bindings. Collections (Vec, Map) are heap-allocated;
+                    // index assignment doesn't rebind the variable.
+                    let is_index_assign = matches!(&target.kind, rask_ast::expr::ExprKind::Index { .. });
+                    if self.is_local_read_only(&root) && !is_index_assign {
                         self.errors.push(TypeError::MutateReadOnlyParam {
                             name: root.clone(),
                             span: stmt.span,
@@ -190,38 +196,10 @@ impl TypeChecker {
                     self.check_stmt(s);
                 }
             }
-            StmtKind::LetTuple { names, init } | StmtKind::ConstTuple { names, init } => {
+            StmtKind::LetTuple { patterns, init } | StmtKind::ConstTuple { patterns, init } => {
                 let is_const = matches!(&stmt.kind, StmtKind::ConstTuple { .. });
                 let init_ty = self.infer_expr(init);
-                // Bind each destructured name to its tuple element type
-                let resolved = self.ctx.apply(&init_ty);
-                if let Type::Tuple(elems) = &resolved {
-                    for (i, name) in names.iter().enumerate() {
-                        if let Some(elem_ty) = elems.get(i) {
-                            if is_const {
-                                self.define_local_read_only(name.clone(), elem_ty.clone());
-                            } else {
-                                self.define_local(name.clone(), elem_ty.clone());
-                            }
-                        }
-                    }
-                } else {
-                    // Init type not yet resolved — create fresh vars for each
-                    // element and unify with a tuple so destructuring works
-                    // when constraints are solved later.
-                    let elem_vars: Vec<Type> = names.iter()
-                        .map(|_| self.ctx.fresh_var())
-                        .collect();
-                    let tuple_ty = Type::Tuple(elem_vars.clone());
-                    let _ = self.unify(&init_ty, &tuple_ty, stmt.span);
-                    for (name, var) in names.iter().zip(elem_vars) {
-                        if is_const {
-                            self.define_local_read_only(name.clone(), var);
-                        } else {
-                            self.define_local(name.clone(), var);
-                        }
-                    }
-                }
+                self.bind_tuple_patterns(patterns, &init_ty, is_const, stmt.span);
             }
             StmtKind::WhileLet { pattern, expr, body } => {
                 let value_ty = self.infer_expr(expr);
@@ -241,6 +219,60 @@ impl TypeChecker {
                     self.check_stmt(s);
                 }
                 self.pop_scope();
+            }
+        }
+    }
+
+    /// Recursively bind tuple destructuring patterns to types.
+    /// Handles nested patterns like `(a, (b, c))` matched against `(i32, (i32, i32))`.
+    fn bind_tuple_patterns(
+        &mut self,
+        patterns: &[rask_ast::stmt::TuplePat],
+        init_ty: &Type,
+        is_const: bool,
+        span: rask_ast::Span,
+    ) {
+        use rask_ast::stmt::TuplePat;
+
+        let resolved = self.ctx.apply(init_ty);
+        if let Type::Tuple(elems) = &resolved {
+            for (i, pat) in patterns.iter().enumerate() {
+                let elem_ty = elems.get(i).cloned().unwrap_or(Type::Error);
+                match pat {
+                    TuplePat::Name(name) => {
+                        if is_const {
+                            self.define_local_read_only(name.clone(), elem_ty);
+                        } else {
+                            self.define_local(name.clone(), elem_ty);
+                        }
+                    }
+                    TuplePat::Wildcard => {} // discard
+                    TuplePat::Nested(sub_pats) => {
+                        self.bind_tuple_patterns(sub_pats, &elem_ty, is_const, span);
+                    }
+                }
+            }
+        } else {
+            // Type not yet resolved — create fresh vars for each element
+            let elem_vars: Vec<Type> = patterns.iter()
+                .map(|_| self.ctx.fresh_var())
+                .collect();
+            let tuple_ty = Type::Tuple(elem_vars.clone());
+            let _ = self.unify(init_ty, &tuple_ty, span);
+            for (pat, var) in patterns.iter().zip(elem_vars) {
+                match pat {
+                    TuplePat::Name(name) => {
+                        if is_const {
+                            self.define_local_read_only(name.clone(), var);
+                        } else {
+                            self.define_local(name.clone(), var);
+                        }
+                    }
+                    TuplePat::Wildcard => {}
+                    TuplePat::Nested(sub_pats) => {
+                        self.bind_tuple_patterns(sub_pats, &var, is_const, span);
+                    }
+                }
             }
         }
     }

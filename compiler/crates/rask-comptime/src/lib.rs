@@ -1092,9 +1092,10 @@ impl ComptimeInterpreter {
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }
 
-            StmtKind::LetTuple { names, init } | StmtKind::ConstTuple { names, init } => {
+            StmtKind::LetTuple { patterns, init } | StmtKind::ConstTuple { patterns, init } => {
                 let value = self.eval_expr(init)?;
                 if let ComptimeValue::Tuple(values) = value {
+                    let names: Vec<&str> = rask_ast::stmt::tuple_pats_flat_names(patterns);
                     if values.len() != names.len() {
                         return Err(ComptimeError::TypeMismatch {
                             expected: format!("tuple of {} elements", names.len()),
@@ -1102,7 +1103,7 @@ impl ComptimeInterpreter {
                         });
                     }
                     for (name, val) in names.iter().zip(values) {
-                        self.env.define(name.clone(), val);
+                        self.env.define(name.to_string(), val);
                     }
                 } else {
                     return Err(ComptimeError::TypeMismatch {

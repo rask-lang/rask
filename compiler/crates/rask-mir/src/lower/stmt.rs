@@ -225,9 +225,11 @@ impl<'a> MirLowerer<'a> {
             StmtKind::Continue(label) => self.lower_continue(label.as_deref()),
 
             // Tuple destructuring
-            StmtKind::LetTuple { names, init }
-            | StmtKind::ConstTuple { names, init } => {
-                self.lower_tuple_destructure(names, init)
+            StmtKind::LetTuple { patterns, init }
+            | StmtKind::ConstTuple { patterns, init } => {
+                let names: Vec<String> = rask_ast::stmt::tuple_pats_flat_names(patterns)
+                    .into_iter().map(|s| s.to_string()).collect();
+                self.lower_tuple_destructure(&names, init)
             }
 
             // While-let pattern loop

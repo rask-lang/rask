@@ -78,7 +78,7 @@ struct LargeData {
     values: Vec<i32>
 }
 
-func consume(take data: LargeData) -> i32 {
+func consume(take data: LargeData) -> u64 {
     return data.values.len()
 }
 
@@ -87,7 +87,7 @@ test "take mode transfers ownership" {
     data.values.push(1)
     data.values.push(2)
     const len = consume(data)
-    assert len == 2
+    assert len == 2u64
     // data is now invalid — using it would be a compile error (O3)
 }
 
