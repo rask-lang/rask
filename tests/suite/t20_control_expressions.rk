@@ -54,6 +54,7 @@ test "match expression in binding" {
 }
 
 // --- loop + break value (CF15-CF18) ---
+// BUG: parser doesn't support loop-as-expression yet
 
 test "loop with break value" {
     let i = 0
@@ -237,6 +238,7 @@ test "block expression value" {
 }
 
 // --- destructuring (DS1-DS7) ---
+// BUG: parser doesn't support tuple destructuring yet
 
 test "tuple destructuring" {
     const (a, b) = (10, 20)

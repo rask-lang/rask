@@ -39,40 +39,39 @@ test "comparison chains" {
 // --- Short-circuit verification (BL1) ---
 // && and || must not evaluate the right-hand side when the result
 // is already determined by the left-hand side.
+// Uses a Vec as a side-effect witness — push is observable via len().
 
-let side_effect_count = 0
-
-func has_side_effect() -> bool {
-    side_effect_count += 1
+func side_effect(witness: Vec<i32>) -> bool {
+    witness.push(1)
     return true
 }
 
 test "and short-circuits on false" {
-    side_effect_count = 0
-    const result = false && has_side_effect()
+    const w = Vec<i32>.new()
+    const result = false && side_effect(w)
     assert !result
-    assert side_effect_count == 0, "right side should not be evaluated"
+    assert w.len() == 0, "right side should not be evaluated"
 }
 
 test "or short-circuits on true" {
-    side_effect_count = 0
-    const result = true || has_side_effect()
+    const w = Vec<i32>.new()
+    const result = true || side_effect(w)
     assert result
-    assert side_effect_count == 0, "right side should not be evaluated"
+    assert w.len() == 0, "right side should not be evaluated"
 }
 
 test "and evaluates right when left is true" {
-    side_effect_count = 0
-    const result = true && has_side_effect()
+    const w = Vec<i32>.new()
+    const result = true && side_effect(w)
     assert result
-    assert side_effect_count == 1
+    assert w.len() == 1
 }
 
 test "or evaluates right when left is false" {
-    side_effect_count = 0
-    const result = false || has_side_effect()
+    const w = Vec<i32>.new()
+    const result = false || side_effect(w)
     assert result
-    assert side_effect_count == 1
+    assert w.len() == 1
 }
 
 func main() {}

@@ -236,6 +236,7 @@ test "map iteration with destructuring" {
 }
 
 // --- for mutate (LP11-LP12) ---
+// BUG: parser doesn't support `for mutate` yet
 
 test "for mutate doubles in place" {
     const v = Vec.new()

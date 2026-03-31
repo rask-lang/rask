@@ -119,6 +119,7 @@ test "read other elements during with" {
 }
 
 // --- with one-liner shorthand (W7) ---
+// BUG: parser doesn't support `with...as...: expr` colon shorthand yet
 
 test "with one-liner" {
     const v = Vec.new()
