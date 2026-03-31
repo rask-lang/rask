@@ -458,7 +458,7 @@ impl Hasher {
                 }
                 self.hash_stmts(body);
             }
-            StmtKind::For { label, binding, iter, body } => {
+            StmtKind::For { label, binding, mutate, iter, body } => {
                 self.feed_tag(32);
                 if let Some(l) = label {
                     self.feed_bool(true);
@@ -466,6 +466,7 @@ impl Hasher {
                 } else {
                     self.feed_bool(false);
                 }
+                self.feed_bool(*mutate);
                 match binding {
                     ForBinding::Single(n) => {
                         self.feed_u8(0);
@@ -749,6 +750,16 @@ impl Hasher {
             }
             ExprKind::Comptime { body } => {
                 self.feed_tag(75);
+                self.hash_stmts(body);
+            }
+            ExprKind::Loop { label, body } => {
+                self.feed_tag(79);
+                if let Some(lbl) = label {
+                    self.feed_bool(true);
+                    self.feed_str(lbl);
+                } else {
+                    self.feed_bool(false);
+                }
                 self.hash_stmts(body);
             }
             ExprKind::Select { arms, is_priority } => {

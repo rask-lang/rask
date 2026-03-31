@@ -66,6 +66,32 @@ Added explicit `return` to all comptime functions in comptime_loop.rk.
 
 Moved Rust syntax rejection tests (`pub`, `fn`, `::`, `let mut`) to a new file `compile_errors/rust_syntax_rejected.rk`. error_mismatch.rk now only tests error type mismatch.
 
+## Test Results (interpreter)
+
+20 pass, 6 fail. Remaining failures are deeper compiler gaps (type narrowing, call-site policy).
+
+### Fixed since initial audit
+
+| Test | Fix |
+|------|-----|
+| t13 | Added `contains_key` as Map method alias |
+| t15 | Added missing `mutate` call-site annotations in test |
+| t19 | Added `to_option`/`ok` on Result, `map`/`map_err` in type checker |
+| t23 | Parser now supports `with...as...: expr` colon shorthand |
+| t24 | Shift ops use i32 semantics when operands fit i32 |
+| t25 (partial) | Parser supports `for mutate`, interpreter writes back values |
+
+### Remaining failures
+
+| Test | Issue | Category |
+|------|-------|----------|
+| t09 | `v[0] = 99` on const Vec rejected by type checker | type checker strictness |
+| t10 | `max` shadows builtin name | resolver policy |
+| t18 | Type narrowing after `is Some` not implemented (OPT10) | type checker feature |
+| t20 | Labeled `loop` expression, nested tuple destructuring not parsed | parser gap |
+| t22 | Test expects no call-site `mutate` annotation; compiler requires it | spec-vs-compiler policy |
+| t25 | `count()` on chained iterator, `take_all()` not in type checker | type checker registration |
+
 ## Spec Gaps (features with zero test coverage)
 
 The most critical gaps are now covered by new test files:

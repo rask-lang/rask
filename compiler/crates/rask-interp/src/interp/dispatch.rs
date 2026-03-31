@@ -374,7 +374,7 @@ impl Interpreter {
     }
 
     /// Check if a value is truthy.
-    pub(super) fn is_truthy(&self, val: &Value) -> bool {
+    pub(crate) fn is_truthy(&self, val: &Value) -> bool {
         match val {
             Value::Bool(b) => *b,
             Value::Unit => false,

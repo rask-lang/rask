@@ -559,7 +559,8 @@ impl HiddenParamPass {
             ExprKind::Spawn { body }
             | ExprKind::Unsafe { body }
             | ExprKind::Comptime { body }
-            | ExprKind::BlockCall { body, .. } => {
+            | ExprKind::BlockCall { body, .. }
+            | ExprKind::Loop { body, .. } => {
                 self.rewrite_stmts(body);
             }
             ExprKind::Assert { condition, message }
@@ -850,7 +851,8 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
         ExprKind::Spawn { body }
         | ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }
-        | ExprKind::BlockCall { body, .. } => {
+        | ExprKind::BlockCall { body, .. }
+        | ExprKind::Loop { body, .. } => {
             for s in body {
                 collect_callees_from_stmt(s, callees);
             }

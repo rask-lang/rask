@@ -924,7 +924,7 @@ impl Interpreter {
                     })
                 }
             }
-            "contains" => {
+            "contains" | "contains_key" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 let map = m.lock().unwrap();
 

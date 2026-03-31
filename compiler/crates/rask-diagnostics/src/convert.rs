@@ -1003,7 +1003,7 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
             // Control flow and special cases - no diagnostic
             RuntimeError::Exit(_)
             | RuntimeError::Return(_)
-            | RuntimeError::Break
+            | RuntimeError::Break(_)
             | RuntimeError::Continue
             | RuntimeError::TryError(_) => {
                 // These are not actual errors, just control flow

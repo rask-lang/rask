@@ -699,6 +699,14 @@ impl TypeChecker {
                 target
             }
 
+            ExprKind::Loop { body, .. } => {
+                for stmt in body {
+                    self.check_stmt(stmt);
+                }
+                // Loop-as-expression gets its type from break values
+                self.ctx.fresh_var()
+            }
+
             ExprKind::Unsafe { body } => {
                 let was_unsafe = self.in_unsafe;
                 self.in_unsafe = true;
@@ -778,6 +786,14 @@ impl TypeChecker {
                     name: "ThreadHandle".to_string(),
                     args: vec![GenericArg::Type(Box::new(spawn_return_type))],
                 }
+            }
+
+            ExprKind::Loop { body, .. } => {
+                for stmt in body {
+                    self.check_stmt(stmt);
+                }
+                // Loop expressions type as Never — they run until break
+                Type::Never
             }
 
             ExprKind::UsingBlock { name, args, body } => {
@@ -868,15 +884,27 @@ impl TypeChecker {
             }
 
             ExprKind::OptionalField { object, field } => {
-                let obj_ty = self.infer_expr(object);
+                let inferred = self.infer_expr(object);
+                let obj_ty = self.ctx.apply(&inferred);
+                // ?. unwraps Option, accesses field, wraps in Option (flatten if already Option)
+                let inner_ty = match &obj_ty {
+                    Type::Option(inner) => *inner.clone(),
+                    _ => obj_ty.clone(),
+                };
                 let field_ty = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::HasField {
-                    ty: obj_ty,
+                    ty: inner_ty,
                     field: field.clone(),
                     expected: field_ty.clone(),
                     span: expr.span,
                 });
-                Type::Option(Box::new(field_ty))
+                // Flatten: if field is already Option<T>, return Option<T> not Option<Option<T>>
+                let resolved_field = self.ctx.apply(&field_ty);
+                if matches!(&resolved_field, Type::Option(_)) {
+                    resolved_field
+                } else {
+                    Type::Option(Box::new(field_ty))
+                }
             }
 
             ExprKind::Select { arms, .. } => {

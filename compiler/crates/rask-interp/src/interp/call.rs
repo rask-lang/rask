@@ -95,12 +95,25 @@ impl Interpreter {
         let returns_result = func.ret_ty.as_ref()
             .map(|t| t.starts_with("Result<"))
             .unwrap_or(false);
+        let returns_option = func.ret_ty.as_ref()
+            .map(|t| t.ends_with('?'))
+            .unwrap_or(false);
         if returns_result {
             match &value {
                 Value::Enum { name, .. } if name == "Result" => Ok(value),
                 _ => Ok(Value::Enum {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
+                    fields: vec![value],
+                    variant_index: 0,
+                }),
+            }
+        } else if returns_option {
+            match &value {
+                Value::Enum { name, .. } if name == "Option" => Ok(value),
+                _ => Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "Some".to_string(),
                     fields: vec![value],
                     variant_index: 0,
                 }),

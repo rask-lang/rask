@@ -291,11 +291,13 @@ impl TypeSubstitutor {
                 StmtKind::For {
                     label,
                     binding,
+                    mutate,
                     iter,
                     body,
                 } => StmtKind::For {
                     label: label.clone(),
                     binding: binding.clone(),
+                    mutate: *mutate,
                     iter: self.clone_expr(iter),
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),
                 },
@@ -538,6 +540,10 @@ impl TypeSubstitutor {
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),
                 },
                 ExprKind::Comptime { body } => ExprKind::Comptime {
+                    body: body.iter().map(|s| self.clone_stmt(s)).collect(),
+                },
+                ExprKind::Loop { label, body } => ExprKind::Loop {
+                    label: label.clone(),
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),
                 },
 

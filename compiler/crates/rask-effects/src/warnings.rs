@@ -252,7 +252,7 @@ impl<'a> WarnContext<'a> {
             }
             ExprKind::Closure { body, .. } => self.check_expr(body, warnings),
             ExprKind::Unsafe { body } | ExprKind::Comptime { body }
-            | ExprKind::BlockCall { body, .. } => {
+            | ExprKind::BlockCall { body, .. } | ExprKind::Loop { body, .. } => {
                 self.check_stmts(body, warnings);
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
@@ -451,6 +451,7 @@ mod tests {
             kind: StmtKind::For {
                 label: None,
                 binding: ForBinding::Single("x".into()),
+                mutate: false,
                 iter: ident("items"),
                 body: vec![expr_stmt(call("println"))],
             },
@@ -471,6 +472,7 @@ mod tests {
             kind: StmtKind::For {
                 label: None,
                 binding: ForBinding::Single("x".into()),
+                mutate: false,
                 iter: ident("items"),
                 body: vec![expr_stmt(call("println"))],
             },
@@ -498,6 +500,7 @@ mod tests {
             kind: StmtKind::For {
                 label: None,
                 binding: ForBinding::Single("x".into()),
+                mutate: false,
                 iter: ident("items"),
                 body: vec![expr_stmt(call("add"))],
             },

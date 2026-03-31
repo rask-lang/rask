@@ -469,7 +469,8 @@ impl DefaultDesugarer {
                 for s in body { self.desugar_stmt(s); }
             }
             ExprKind::Spawn { body } | ExprKind::Unsafe { body }
-            | ExprKind::BlockCall { body, .. } | ExprKind::Comptime { body } => {
+            | ExprKind::BlockCall { body, .. } | ExprKind::Comptime { body }
+            | ExprKind::Loop { body, .. } => {
                 for s in body { self.desugar_stmt(s); }
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {

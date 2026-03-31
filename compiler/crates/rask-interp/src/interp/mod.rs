@@ -607,7 +607,7 @@ pub enum RuntimeError {
     Return(Value),
 
     #[error("break")]
-    Break,
+    Break(Value),
 
     #[error("continue")]
     Continue,

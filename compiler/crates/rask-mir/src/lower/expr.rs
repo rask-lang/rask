@@ -2571,6 +2571,11 @@ impl<'a> MirLowerer<'a> {
                 self.lower_block(body)
             }
 
+            // Loop expression — lower as block for now
+            ExprKind::Loop { body, .. } => {
+                self.lower_block(body)
+            }
+
             // Comptime expression — try compile-time evaluation (CC1)
             ExprKind::Comptime { body } => {
                 if let Some(ref interp_cell) = self.ctx.comptime_interp {

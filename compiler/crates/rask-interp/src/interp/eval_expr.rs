@@ -448,6 +448,30 @@ impl Interpreter {
                 result
             }
 
+            ExprKind::Loop { body, .. } => loop {
+                self.env.push_scope();
+                match self.exec_stmts(body) {
+                    Ok(_) => {}
+                    Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                        let val = match diag.error {
+                            RuntimeError::Break(v) => v,
+                            _ => unreachable!(),
+                        };
+                        self.env.pop_scope();
+                        break Ok(val);
+                    }
+                    Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                        self.env.pop_scope();
+                        continue;
+                    }
+                    Err(e) => {
+                        self.env.pop_scope();
+                        break Err(e);
+                    }
+                }
+                self.env.pop_scope();
+            },
+
             ExprKind::If {
                 cond,
                 then_branch,
@@ -704,6 +728,60 @@ impl Interpreter {
                         )),
                         expr.span
                     )),
+                }
+            }
+
+            ExprKind::OptionalField { object, field } => {
+                let obj_val = self.eval_expr(object)?;
+                match obj_val {
+                    Value::Enum { variant, fields, .. } if variant == "Some" => {
+                        let inner = fields.into_iter().next().unwrap_or(Value::Unit);
+                        // Access field on the inner value
+                        let field_val = match inner {
+                            Value::Struct(ref s) => {
+                                s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit)
+                            }
+                            _ => {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::TypeError(format!(
+                                        "cannot access field '{}' on {}",
+                                        field, inner.type_name()
+                                    )),
+                                    expr.span,
+                                ));
+                            }
+                        };
+                        // If the field is already an Option, return it directly
+                        if let Value::Enum { ref name, .. } = field_val {
+                            if name == "Option" {
+                                return Ok(field_val);
+                            }
+                        }
+                        // Wrap in Some
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![field_val],
+                            variant_index: 0,
+                        })
+                    }
+                    Value::Enum { variant, .. } if variant == "None" => {
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "None".to_string(),
+                            fields: vec![],
+                            variant_index: 0,
+                        })
+                    }
+                    _ => {
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "?. requires Option type, got {}",
+                                obj_val.type_name()
+                            )),
+                            expr.span,
+                        ))
+                    }
                 }
             }
 

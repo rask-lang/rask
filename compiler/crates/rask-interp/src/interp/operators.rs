@@ -80,8 +80,26 @@ impl Interpreter {
             (BinOp::BitAnd, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a & b)),
             (BinOp::BitOr, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a | b)),
             (BinOp::BitXor, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a ^ b)),
-            (BinOp::Shl, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a << b)),
-            (BinOp::Shr, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a >> b)),
+            (BinOp::Shl, Value::Int(a), Value::Int(b)) => {
+                // Default integer width is i32; perform shift in i32 if
+                // operands fit, then sign-extend back to i64.
+                if *a >= i32::MIN as i64 && *a <= i32::MAX as i64
+                    && *b >= 0 && *b < 32
+                {
+                    Ok(Value::Int(((*a as i32) << (*b as u32)) as i64))
+                } else {
+                    Ok(Value::Int(a << b))
+                }
+            }
+            (BinOp::Shr, Value::Int(a), Value::Int(b)) => {
+                if *a >= i32::MIN as i64 && *a <= i32::MAX as i64
+                    && *b >= 0 && *b < 32
+                {
+                    Ok(Value::Int(((*a as i32) >> (*b as u32)) as i64))
+                } else {
+                    Ok(Value::Int(a >> b))
+                }
+            }
             _ => Err(RuntimeError::TypeError(format!(
                 "unsupported binary op {:?} on {} and {}", op, l.type_name(), r.type_name()
             ))),

@@ -212,6 +212,7 @@ impl<'a> MirLowerer<'a> {
                 binding,
                 iter,
                 body,
+                ..
             } => self.lower_for(label.as_deref(), binding, iter, body),
 
             // Infinite loop
@@ -1205,7 +1206,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Infinite loop.
-    fn lower_loop(&mut self, label: Option<&str>, body: &[Stmt]) -> Result<(), LoweringError> {
+    pub(super) fn lower_loop(&mut self, label: Option<&str>, body: &[Stmt]) -> Result<(), LoweringError> {
         let loop_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 

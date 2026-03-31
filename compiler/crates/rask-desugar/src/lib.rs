@@ -419,7 +419,8 @@ impl Desugarer {
             ExprKind::Cast { expr: inner, .. } => {
                 self.desugar_expr(inner);
             }
-            ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::BlockCall { body, .. } | ExprKind::Comptime { body } => {
+            ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::BlockCall { body, .. }
+            | ExprKind::Comptime { body } | ExprKind::Loop { body, .. } => {
                 for s in body {
                     self.desugar_stmt(s);
                 }
