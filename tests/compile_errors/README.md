@@ -1,38 +1,67 @@
 # Compile Error Examples
 
-This directory contains code that **should not compile**. Each file demonstrates a specific safety guarantee enforced by the Rask compiler.
+This directory contains code that **should not compile**. Each file demonstrates specific safety guarantees enforced by the Rask compiler.
 
-These examples serve two purposes:
-1. **Documentation:** Show what errors look like and explain why they occur
-2. **Testing:** The compiler test suite verifies these files produce the expected errors
+Each `// ERROR:` comment indicates the expected error. If the compiler accepts any of these, that's a bug in the compiler — the spec says it should be rejected.
 
-## Examples
+## Files
 
-### [borrow_stored.rk](borrow_stored.rk)
-**Error:** Cannot store a reference in a struct
+### Syntax
 
-Demonstrates that references are block-scoped only. You cannot store a borrow in a struct, return it from a function, or let it escape its scope. This prevents use-after-free and dangling pointers by construction.
+| File | What it tests |
+|------|--------------|
+| [syntax_rejected.rk](syntax_rejected.rk) | Rust-isms (`pub`, `fn`, `::`, `let mut`, turbofish, `?`), const reassignment, missing return, chained comparison |
+| [rust_syntax_rejected.rk](rust_syntax_rejected.rk) | Additional Rust keyword rejections |
 
-### [resource_leak.rk](resource_leak.rk)
-**Error:** Resource type not consumed
+### Type System
 
-Demonstrates that `@resource` types (files, connections, etc.) must be consumed exactly once. Forgetting to close a file or dropping a connection without cleanup is a compile error.
+| File | What it tests |
+|------|--------------|
+| [type_errors.rk](type_errors.rk) | Implicit bool conversion, narrowing `as`, float comparison, Option no-auto-unwrap, try type mismatch, branch type mismatch, break value types |
+| [type_mismatch_arg.rk](type_mismatch_arg.rk) | Wrong argument type |
+| [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
+| [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
+| [error_mismatch.rk](error_mismatch.rk) | Incompatible error types with `try` |
+| [missing_return.rk](missing_return.rk) | Function without return statement |
 
-### [comptime_loop.rk](comptime_loop.rk)
-**Error:** Comptime iteration limit exceeded
+### Ownership & Borrowing
 
-Demonstrates that compile-time execution has safety limits. Infinite loops or excessive computation at comptime produces a clear error rather than hanging the compiler.
+| File | What it tests |
+|------|--------------|
+| [ownership_errors.rk](ownership_errors.rk) | Use-after-move, conditional move, @unique, @resource leak/double-consume, Vec never Copy |
+| [borrow_errors.rk](borrow_errors.rk) | Mutating read-only param, moving from borrow, storing slices, borrow escape, structural mutation in `with`, non-Copy element binding |
+| [borrow_stored.rk](borrow_stored.rk) | Storing a string slice in a struct |
 
-### [error_mismatch.rk](error_mismatch.rk)
-**Error:** Incompatible error types with `?`
+### Pattern Matching
 
-Demonstrates that error propagation with `?` requires compatible error types. You cannot propagate an error that doesn't fit in the function's return type without explicit conversion.
+| File | What it tests |
+|------|--------------|
+| [match_errors.rk](match_errors.rk) | Non-exhaustive match, wildcard on linear resource, guard without diverge, or-pattern binding mismatch |
+| [nonexhaustive_match.rk](nonexhaustive_match.rk) | Non-exhaustive enum match |
+
+### Closures
+
+| File | What it tests |
+|------|--------------|
+| [closure_errors.rk](closure_errors.rk) | Double mutable capture, scope-limited escape, mutate params on closures |
+
+### Other
+
+| File | What it tests |
+|------|--------------|
+| [const_reassign.rk](const_reassign.rk) | Reassigning a const binding |
+| [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
+| [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |
+| [resource_leak.rk](resource_leak.rk) | Resource type not consumed |
+| [context_missing.rk](context_missing.rk) | Missing pool context clause |
+| [context_ambiguous.rk](context_ambiguous.rk) | Ambiguous pool context |
+| [context_unavailable.rk](context_unavailable.rk) | Pool context not in scope |
+| [context_unnamed_structural.rk](context_unnamed_structural.rk) | Unnamed context used as binding |
 
 ## Running Tests
 
 ```bash
-# Verify all files fail to compile with expected errors
-rask test-errors tests/compile_errors/
+rask test-specs tests/compile_errors/
 ```
 
-Each file includes a `// ERROR:` comment indicating the expected error message pattern.
+Each file includes `// ERROR:` comments indicating expected error patterns. If the compiler accepts any of these files, it's a compiler bug — the spec requires rejection.

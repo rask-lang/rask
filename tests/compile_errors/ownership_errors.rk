@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: Ownership and move violations
+//
+// Spec: mem.ownership (O1-O4), mem.value (VS1-VS4)
+
+// --- use after move (O3) ---
+// ERROR: 'v' used after being moved
+func test_use_after_move() {
+    const v = Vec<i32>.new()
+    v.push(1)
+    const v2 = v
+    v.push(2)       // ERROR: v was moved to v2
+}
+
+// --- use after move in function (O3, PM3) ---
+// ERROR: 'data' used after being taken
+struct LargeData { values: Vec<i32> }
+
+func consume(take data: LargeData) {}
+
+func test_use_after_take() {
+    const data = LargeData { values: Vec.new() }
+    consume(data)
+    println("{data.values.len()}")   // ERROR: data was taken
+}
+
+// --- use after move in one branch (O3 edge case) ---
+// ERROR: 'v' may have been moved
+func test_conditional_move(cond: bool) {
+    const v = Vec<i32>.new()
+    if cond {
+        const v2 = v     // moved in this branch
+    }
+    v.push(1)            // ERROR: v may have been moved
+}
+
+// --- double move (O3) ---
+// ERROR: 'v' used after being moved
+func test_double_move() {
+    const v = Vec<i32>.new()
+    const a = v
+    const b = v          // ERROR: v already moved to a
+}
+
+// --- @unique prevents copy on small types (U1) ---
+// ERROR: cannot copy @unique type
+@unique
+struct Token { id: i32 }
+
+func test_unique_no_copy() {
+    const t = Token { id: 1 }
+    const t2 = t         // moves, not copies (despite being small)
+    println("{t.id}")    // ERROR: t was moved
+}
+
+// --- discard on @resource (D3) ---
+// ERROR: cannot discard @resource type, must consume explicitly
+@resource
+struct FileHandle { fd: i32 }
+
+func test_discard_resource() {
+    const f = FileHandle { fd: 3 }
+    discard f            // ERROR: @resource must be consumed, not discarded
+}
+
+// --- @resource must be consumed (R1) ---
+// ERROR: resource 'f' not consumed before scope exit
+func test_resource_leak() {
+    const f = FileHandle { fd: 3 }
+    // f goes out of scope without being consumed
+}
+
+// --- @resource double consume (R2) ---
+// ERROR: resource 'f' consumed more than once
+func close_file(take f: FileHandle) {}
+
+func test_double_consume() {
+    const f = FileHandle { fd: 3 }
+    close_file(f)
+    close_file(f)        // ERROR: f already consumed
+}
+
+// --- Vec is never Copy (VS3) ---
+// ERROR: Vec does not implement Copy
+func take_vec(take v: Vec<i32>) {}
+
+func test_vec_no_copy() {
+    const v = Vec<i32>.new()
+    take_vec(v)
+    v.push(1)            // ERROR: v was taken
+}
