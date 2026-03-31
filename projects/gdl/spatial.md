@@ -29,24 +29,39 @@ Standard property names for entity movement. These are additions to the [propert
 | Property | Type | Meaning |
 |----------|------|---------|
 | `velocity` | float list | Movement vector in region units/second. `[vx, vy]` for 2D, `[vx, vy, vz]` for 3D. |
-| `speed` | float | Scalar speed in region units/second. Redundant with `velocity` magnitude — use when direction comes from `heading`. |
-| `heading` | float | Facing direction in degrees (0 = +x, 90 = +y). For 2D spatial models. |
-| `angular_velocity` | float | Rotation speed in degrees/second. |
-| `move_state` | string | Movement mode: `idle`, `walk`, `run`, `sprint`, `swim`, `fly`, `fall`, `climb`. |
-| `move_target` | float list | Where the entity is moving toward. For pathfinding — client can interpolate along the projected path. |
-| `grounded` | bool | Whether the entity is on a surface. Affects client-side gravity prediction. |
+| `acceleration` | float list | Acceleration vector in region units/second². Same dimensionality as velocity. |
+| `grounded` | bool | Whether the entity is on a surface. When true, client ignores vertical acceleration for prediction. |
+| `move_target` | float list | Where the entity is moving toward. Client can interpolate along the projected path instead of straight-line extrapolation. |
 
-These compose with the existing `position` and `orientation` fields on entities.
+Four properties. Three for physics prediction, one for pathfinding.
+
+**`velocity`** is the essential one. It enables linear dead reckoning — predicting position between server updates. Without it, clients render position snapshots at tick_rate, which stutters at any frame rate above the tick rate.
+
+**`acceleration`** gives parabolic prediction — jumping, falling, thrown objects, any non-linear motion. `predicted = position + velocity * t + 0.5 * acceleration * t²`. This covers most natural movement. A client that doesn't understand acceleration falls back to linear extrapolation from velocity alone.
+
+**`grounded`** distinguishes "walking on a slope" from "falling." A grounded entity doesn't need vertical acceleration prediction — the client can assume it stays on the surface. An airborne entity does. Without this, the client can't dead-reckon a walking character correctly in a 3D region with gravity.
+
+**`move_target`** is optional. A domain with pathfinding includes the destination so clients draw smoother curves instead of straight-line extrapolation. A domain without pathfinding skips it.
+
+These are the mechanical minimum for client-side prediction without extensions. A domain that wants richer physics (friction, drag, collision) uses the [physics parameters extension](GDL-extensions.md#physics-parameters) or ships a [prediction script](GDL-extensions.md#client-scripts). The conventions cover the 90% case — entities that move in straight lines or parabolic arcs.
+
+**What's intentionally excluded:** `speed` (velocity magnitude — redundant), `heading` (use the existing `orientation` field on entities), `angular_velocity` (niche), `move_state` (this is animation state, already covered by GDL's [animation vocabulary](GDL.md#animation-state)). Domains can use any of these as regular properties — the extensible property system handles them. They don't need protocol-level convention status.
 
 ### Dead Reckoning
 
 A client that sees `position: [10, 5]` and `velocity: [2, 0]` on an entity can predict the entity's position between server updates. At tick_rate 20 (50ms between updates), this eliminates the stutter that comes from rendering position-only snapshots at 60fps.
 
-The formula is trivial:
+```
+// Linear (velocity only)
+predicted = position + velocity * t
 
+// Parabolic (velocity + acceleration)
+predicted = position + velocity * t + 0.5 * acceleration * t²
 ```
-predicted_position = last_position + velocity * time_since_update
-```
+
+The client uses whichever properties are present. Position only → no prediction, snap between updates. Velocity → linear. Velocity + acceleration → parabolic. Each level up produces smoother interpolation between server updates.
+
+For grounded entities in 3D regions, the client zeroes vertical acceleration — the entity follows the surface. This prevents grounded characters from sinking through floors or floating during prediction.
 
 When an authoritative position update arrives, the client has three choices:
 
@@ -149,7 +164,11 @@ Region:
       max_zones: 3
       max_rate: 20
       min_radius: 2.0
-      visibility: circle    # or "line_of_sight", "domain_controlled"
+      visibility: circle
+    spatial.defaults:
+      - { radius: 5,  rate: 20 }
+      - { radius: 15, rate: 5 }
+      - { radius: 40, rate: 1 }
 ```
 
 Constraint fields:
@@ -159,38 +178,59 @@ Constraint fields:
 | `max_zones` | int | Maximum number of zones the domain will track per observer |
 | `max_rate` | int | Highest update rate the domain provides (Hz) |
 | `min_radius` | float | Smallest allowed zone radius (region units). Prevents "give me 0.1 radius at 60Hz" abuse. |
-| `visibility` | string | How visibility is computed: `circle` (distance only), `line_of_sight` (walls block), `domain_controlled` (domain decides, client can't predict) |
+| `visibility` | string | How visibility is computed (see below) |
+
+Visibility modes:
+
+| Mode | Meaning |
+|------|---------|
+| `circle` | Distance only. Entity within zone radius = visible. Simple, predictable, cheap. |
+| `line_of_sight` | Walls and obstacles block visibility. An entity 3 units away but behind a wall gets no updates. The domain computes occlusion server-side. |
+| `domain_controlled` | The domain applies arbitrary visibility rules — fog of war, stealth, instancing, phase shifts. The client can't predict what it'll receive. |
+
+`spatial.defaults` are the zone configuration used for clients that don't send their own. Most clients accept these. The domain picks defaults appropriate for its typical spatial density.
 
 **Step 2: Client requests zones.**
 
-The client sends its desired zone configuration as part of its viewport update:
+Zone configuration and viewport position are separate messages. The viewport center changes constantly (every time the player moves). Zone config changes rarely — when the client zooms, switches rendering mode, or enters a dense area. Bundling them wastes parsing on every position update.
 
 ```
-client_viewport:
-  center: [10, 7]
-  radius: 25
+// Sent once at session start, updated when rendering mode changes
+spatial_zones:
+  region: <region_ref>
+  capacity: 100
   zones:
     - { radius: 3,  rate: 20, label: "near" }
     - { radius: 12, rate: 5,  label: "mid" }
     - { radius: 25, rate: 1,  label: "far" }
+
+// Sent at movement rate, unchanged from existing GDL
+client_viewport:
+  center: [10, 7]
+  radius: 25
 ```
 
 A VR client requests tight zones — it renders close-up detail at high fidelity, distant entities as silhouettes. A minimap client requests wide zones at low rates — it renders dots and doesn't need 20Hz position for anyone. A mobile client with limited bandwidth requests fewer zones with lower rates.
 
-The client can update zones at any time alongside viewport updates. Switching from a close-up view to an overview? Widen the zones. Entering a crowded area? Tighten them.
+The outermost zone radius should match the viewport radius. Zones beyond the viewport are nonsensical — you can't receive updates for entities you're not observing. If the viewport radius changes (zoom), the client sends an updated zone config.
+
+`capacity` is the number of entities the observer can meaningfully track. Defaults to `max_entities` from fidelity. The domain uses it to prioritize: if 200 entities are in the viewport but capacity is 100, the domain sends the 100 most relevant (nearest first, plus any the observer is interacting with). Zones control *rate*. Capacity controls *count*.
+
+If the client declares `spatial_awareness: true` but never sends `spatial_zones`, the domain uses its default zone configuration from `spatial.defaults` (see constraints above). This is the common case — most clients accept the domain's defaults.
 
 **Step 3: Domain applies.**
 
 The domain clamps the client's request to its constraints (max_rate, min_radius, max_zones) and applies server load adjustments. If the server is overloaded, it can reduce rates below what the client requested — the client handles whatever rates it receives.
 
-The domain doesn't confirm the applied zones in a response message. The client sends its request and the domain adapts delivery. If rates are lower than requested, the client notices from the actual update frequency and adapts rendering (more interpolation, lower detail). No negotiation round-trip.
+No confirmation message. The client adapts to actual delivery rates, same as Leden backpressure — the server sends less, the client notices. Adding a confirmation round-trip would mean the client waits for the domain to acknowledge before adapting, which is worse than measuring actual rates.
 
 **Zone semantics:**
 
 - Zones are ordered by radius. An entity falls into the smallest zone that contains it.
 - Entities beyond the outermost zone follow the viewport rules — they enter/exit the observation stream as they cross the viewport boundary.
 - The `rate` is a *maximum*. An entity that isn't moving doesn't generate updates regardless of zone.
-- Zone requests are per-region. The client sends different zones for different regions if it has multiple regions observed simultaneously (portal preview, minimap of a different area).
+- Zone config is per-region. The client sends different configs for different regions if it has multiple regions observed simultaneously (portal preview, minimap of a different area).
+- Visibility applies before zones. With `visibility: line_of_sight`, an entity 3 units away but behind a wall gets no position updates — it's not visible, regardless of zone. With `visibility: circle`, distance is the only factor. With `visibility: domain_controlled`, the domain applies arbitrary visibility rules (fog of war, stealth, instancing) and the client can't predict what it'll receive.
 
 **What changes between zones:**
 
@@ -203,11 +243,11 @@ Within each zone, the domain applies update tiers — priority ordering for what
 | Tier | Data | Priority |
 |------|------|----------|
 | 1 | `position` | Always sent at zone rate |
-| 2 | `velocity`, `heading`, `move_state` | Sent at zone rate, coalesced under backpressure |
-| 3 | `orientation`, `angular_velocity` | Sent at zone rate, dropped under heavy backpressure |
+| 2 | `velocity`, `acceleration`, `grounded` | Sent at zone rate, coalesced under backpressure |
+| 3 | `orientation` | Sent at zone rate, dropped under heavy backpressure |
 | 4 | Other properties | Event-driven, normal observation |
 
-Under normal conditions, all tiers flow. Under backpressure, the domain drops lower tiers first. A client getting only tier 1 can still render entities — they pop to new positions each update instead of interpolating smoothly. Degradation is graceful.
+Under normal conditions, all tiers flow. Under backpressure, the domain drops lower tiers first. A client getting only tier 1 can still render entities — they pop to new positions each update instead of interpolating smoothly. Tier 1 + 2 gives smooth dead reckoning. Tier 1 + 2 + 3 adds facing direction. Degradation is graceful at each level.
 
 The tier structure is a domain implementation concern — the spec defines the priority order, but the domain decides when to shed tiers. The client doesn't negotiate tiers. It receives what the domain sends and renders accordingly.
 
@@ -245,24 +285,17 @@ These are rendering hints. A client might:
 
 The domain fires these events. The client uses them however it wants, or ignores them.
 
-### Observer Feedback
+### How Observation Works
 
-The viewport is already how the client tells the domain where it's looking. Spatial awareness extends the viewport with zones (above) and a `capacity` field:
+The recommended observation pattern for spatial awareness uses region-level filtered observation, not per-entity subscriptions:
 
 ```
-client_viewport:
-  center: [10, 7]
-  radius: 25
-  capacity: 100
-  zones:
-    - { radius: 3,  rate: 20, label: "near" }
-    - { radius: 12, rate: 5,  label: "mid" }
-    - { radius: 25, rate: 1,  label: "far" }
+Observe(region_ref, entity_filter: [position, velocity, acceleration, grounded])
 ```
 
-`capacity` is the number of entities the observer can meaningfully track right now. It defaults to `max_entities` from fidelity, but can change dynamically — a client that's lagging reduces capacity, a client entering a sparse area raises it. The domain uses capacity to prioritize: if 200 entities are in the viewport but capacity is 100, the domain sends the 100 most relevant (nearest first, plus any the observer is interacting with).
+This gives position and motion updates for all entities in the region as a single subscription. The domain applies zone-based throttling server-side — the client doesn't need one observation per entity. Combined with the region observation for structural changes (entity_enter/exit), this is two observations total regardless of entity count.
 
-Zones and capacity work together. Zones control *rate*. Capacity controls *count*. A client might request wide zones but low capacity ("show me the whole field but only the 50 nearest players") or tight zones but high capacity ("I can track lots of entities but only need detail on the close ones").
+Per-entity observations are still available for detailed tracking (a targeted entity's full property set, for example). But bulk position streaming should go through the region-level filter to avoid multiplexing overhead.
 
 ### Interaction Override
 
@@ -282,9 +315,9 @@ This works for small entity counts. For large counts, the domain's options are l
 
 ## Worked Example: 50 Players in a Tavern
 
-Region: `continuous_2d`, tick_rate: 20, constraints: max_rate 20, min_radius 2.0.
+Region: `continuous_2d`, tick_rate: 20, constraints: max_rate 20, min_radius 2.0, defaults: near(5, 20Hz), mid(15, 5Hz), far(40, 1Hz).
 
-Player A is at position [8, 6]. Their client declared `spatial_awareness: true`, `max_entities: 200`, and requested zones: near(5, 20Hz), mid(15, 5Hz), far(25, 1Hz).
+Player A is at position [8, 6]. Their client declared `spatial_awareness: true`, `max_entities: 200`, and sent a zone config: near(5, 20Hz), mid(15, 5Hz), far(25, 1Hz).
 
 The domain clamps (all within constraints) and computes for Player A:
 - 4 players within 5 units → near zone, 20Hz position updates
@@ -329,8 +362,6 @@ If both regions are on the same domain, this is a local operation. If the destin
 
 - **Pathfinding.** The `move_target` property tells the client where an entity is heading. How the domain computed the path is not the client's concern.
 
-- **Cross-domain spatial adjacency.** Two domains sharing a physical border (walk from one domain into another without a portal). This is an unsolved federation problem — it requires two domains to agree on a shared coordinate system at their boundary. The leased transfer model handles discrete transitions (portals). Seamless adjacency is a future problem.
-
 ## Relationship to Existing Specs
 
 | Spec | Relationship |
@@ -341,10 +372,14 @@ If both regions are on the same domain, this is a local operation. If the destin
 | [Allgard presence](../allgard/PRESENCE.md) | Presence says "Owner is on Domain X." Spatial awareness says "Owner's entity is at position [8, 6] in the tavern." Different layers. |
 | [Allgard transfer](../allgard/TRANSFER.md) | Region transitions that cross domains use leased transfer. Spatial protocol doesn't change the transfer mechanics. |
 
+## Resolved
+
+**Zone shape.** Circles. They're rotationally invariant, match human perception of "nearby," and match the existing viewport shape (center + radius). A client with a wide rectangular display circumscribes it with a circle. The wasted updates at corners are marginal compared to the complexity of supporting rectangles, oriented boxes, and frustums.
+
+**Domain pushback.** No explicit confirmation. The client adapts to actual delivery rates, same as Leden backpressure. Measuring actual update frequency is trivial — count updates per second per zone. Adding a confirmation round-trip would mean the client waits for acknowledgment before adapting, which is worse.
+
+**Observation multiplexing.** Region-level filtered observation (`Observe(region_ref, entity_filter: [position, velocity, ...])`) handles bulk position streaming. The domain applies zone-based throttling server-side within this single observation. Per-entity observations reserved for detailed tracking of specific entities. See [How Observation Works](#how-observation-works).
+
 ## Open Questions
 
-**Zone shape.** Circles are simple but don't match rectangular viewports well. Should zones support rectangles or oriented boxes? I lean toward circles — they're rotationally invariant and match how humans perceive "nearby." The viewport is already a circle (center + radius). Matching shapes avoids a mismatch between "what I see" and "what updates I get." A client with a wide rectangular view can circumscribe it with a circle and accept some wasted updates at the corners.
-
-**Observation multiplexing cost.** In the current model, the client observes the region (for enter/exit) and individual entities (for property changes). With 50 entities, that's 51 observations over one session. Leden multiplexes these over one connection, but the per-observation bookkeeping on both sides isn't free. Should the extension define a bulk spatial observation mode — "observe all entities in this region, position-only, domain handles filtering"? GDL already hints at this with `Observe(region_ref, entity_filter: [position])`. Might be sufficient.
-
-**Domain pushback.** The domain silently clamps zone requests to its constraints. Should it tell the client what it actually applied? Knowing "you asked for 20Hz near but I'm giving you 10Hz" lets the client adjust interpolation. Not knowing means the client detects it from actual update frequency, which works but adds latency to adaptation. I lean toward no explicit response — the client adapts to what it receives, same as how Leden backpressure works (the server just sends less, the client notices).
+**Cross-domain spatial adjacency.** Two domains sharing a physical border — walking seamlessly from one domain into another without a portal. This requires two domains to agree on a shared coordinate system at their boundary, shared visibility across the border, and synchronized entity handoff. The leased transfer model handles discrete transitions (portals). Continuous borders are a harder problem that this spec doesn't attempt. Worth solving eventually — it would enable open-world federation where domains tile together geographically.
