@@ -177,9 +177,11 @@ search: loop {
 
 | Rule | Description |
 |------|-------------|
-| **CF26: Exits function** | `return` immediately exits current function (not just block) |
+| **CF26: Exits function** | `return` immediately exits current function or closure (not just block) |
 | **CF27: Ensure trigger** | `return` triggers `ensure` cleanup before exiting |
 | **CF28: Never type** | Type of `return` expression is `Never` |
+
+Closures are independent scopes for `return`. `return` inside a closure exits the **closure**, not the enclosing function. This matches function semantics — a closure is an anonymous function. Block-bodied closures require explicit `return`, same as functions.
 
 ```rask
 func format_size(bytes: i64) -> string {
@@ -187,6 +189,14 @@ func format_size(bytes: i64) -> string {
         return "{bytes} B"
     }
     return "{bytes / 1024} KB"
+}
+
+// return in closure exits the closure, not process_items
+func process_items(items: Vec<Item>) -> Vec<string> {
+    return items.map(|item| {
+        if item.is_empty() { return "empty" }
+        return item.format()
+    }).collect()
 }
 
 func process(file: File) -> Data or Error {
@@ -401,7 +411,7 @@ FIX: Match the number of bindings, use _ to discard:
 
 **CF1/CF2 (context-dependent):** Most control flow is for side effects (logging, validation, mutation). Assignment context (`const x = match/if ...`) naturally signals value production; standalone constructs are side effects. This eliminates trailing semicolons without ambiguity.
 
-**CF26 (explicit return):** `return` always means "exit the function" — no overloading. Inside a match arm or if block, `return` exits the **function**, not just the construct. This is consistent and predictable.
+**CF26 (explicit return):** `return` exits the innermost function or closure scope. Inside a match arm or if block within a function, `return` exits the **function**. Inside a closure body, `return` exits the **closure**. Closures are anonymous functions — same return semantics. Block-bodied closures require explicit `return`, same as functions. Expression-bodied closures (`|x| x * 2`) implicitly return their expression.
 
 **CF15 (break value):** `loop` with `break value` provides clear syntax for value-returning loops. The alternative (while with mutation, implicit last expression) is ambiguous and error-prone.
 

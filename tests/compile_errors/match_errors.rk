@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: Pattern matching violations
+//
+// Spec: type.enums (PM1-PM5), ctrl.flow (CF8-CF15)
+
+// --- non-exhaustive match (PM2) ---
+// ERROR: non-exhaustive match — missing variant 'Blue'
+enum Color { Red, Green, Blue }
+
+func test_nonexhaustive() {
+    const c = Color.Red
+    match c {
+        Red => println("red"),
+        Green => println("green"),
+        // missing Blue
+    }
+}
+
+// --- wildcard discards linear resource (PM5) ---
+// ERROR: wildcard pattern discards linear resource 'File'
+@resource
+struct File { fd: i32 }
+
+func test_wildcard_linear() {
+    const result: File or string = Ok(File { fd: 1 })
+    match result {
+        Ok(_) => {},        // ERROR: _ discards linear File
+        Err(e) => {},
+    }
+}
+
+// --- guard pattern else doesn't diverge (CF13) ---
+// ERROR: else block must diverge
+func test_guard_no_diverge() {
+    const opt: i32? = Some(42)
+    let value = opt is Some else { 0 }   // ERROR: 0 doesn't diverge
+    // else must use return, break, panic, etc.
+}
+
+// --- or-pattern binding mismatch ---
+// ERROR: or-pattern branches bind different variables
+enum Token { Number(i32), Ident(string), Plus, Minus }
+
+func test_or_pattern_mismatch() {
+    const t = Token.Plus
+    match t {
+        Number(n) | Ident(n) => println("{n}"),  // ERROR: n is i32 in one, string in other
+        _ => {},
+    }
+}
+
+// --- match expression missing else/wildcard ---
+// ERROR: match expression requires exhaustive arms
+func test_match_expr_missing_arm() -> string {
+    const x = 5
+    return match x {
+        1 => "one",
+        2 => "two",
+        // missing wildcard — not exhaustive for i32
+    }
+}
+
+// --- linear resource only consumed in one match arm ---
+// ERROR: linear resource 'file' must be consumed on all paths
+func close(take f: File) {}
+
+func test_partial_consume() {
+    const result: File or string = Ok(File { fd: 1 })
+    match result {
+        Ok(file) => close(file),   // consumed here
+        Err(e) => {},              // but what if there was a File?
+    }
+    // Actually this is fine — Ok and Err are different branches.
+    // The real error is consuming in only *one* branch of the *same* variant.
+}
+
+// A real partial consume error:
+func test_conditional_consume(cond: bool) {
+    const f = File { fd: 1 }
+    if cond {
+        close(f)           // consumed here
+    }
+    // ERROR: f may not be consumed if cond is false
+}

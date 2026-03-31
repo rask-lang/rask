@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Result operators: x! force unwrap, auto-Ok wrapping, try...else,
+// error composition, error methods.
+//
+// Spec: type.errors (ER1-ER26)
+//
+// SPEC ISSUE: Existing tests (t08) use .unwrap() but the spec defines x! as
+// the force unwrap operator. There is no .unwrap() in the Result method table.
+//
+// SPEC ISSUE: The spec says x! "msg" provides a custom panic message, but
+// doesn't clarify precedence. Is `x! "msg".len()` parsed as `(x! "msg").len()`
+// or `x! ("msg".len())`? Spec should clarify.
+
+struct DivError {
+    func message(self) -> string {
+        return "division by zero"
+    }
+}
+
+struct ParseError {
+    detail: string
+    func message(self) -> string {
+        return "parse error: {self.detail}"
+    }
+}
+
+// --- x! force unwrap on Result (ER spec) ---
+
+func safe_div(a: i32, b: i32) -> i32 or DivError {
+    if b == 0 { return Err(DivError {}) }
+    return a / b
+}
+
+test "force unwrap Ok" {
+    const result = safe_div(10, 2)
+    assert result! == 5
+}
+
+// --- auto-Ok wrapping (ER7) ---
+
+func double(x: i32) -> i32 or DivError {
+    return x * 2
+}
+
+test "auto-Ok wrapping" {
+    const result = double(21)
+    assert result is Ok
+    assert result! == 42
+}
+
+// --- implicit Ok(()) for () or E (ER8) ---
+
+func do_nothing() -> () or DivError {
+    // No explicit return — ER8 says implicit Ok(())
+}
+
+test "implicit Ok unit" {
+    const result = do_nothing()
+    assert result is Ok
+}
+
+// --- try propagation (ER4-ER5) ---
+
+func compute(a: i32, b: i32) -> i32 or DivError {
+    const x = try safe_div(a, b)
+    return x + 1
+}
+
+test "try extracts Ok" {
+    const result = compute(10, 2)
+    assert result! == 6
+}
+
+test "try propagates Err" {
+    const result = compute(10, 0)
+    assert result is Err
+}
+
+// --- try binds to full expression (ER5) ---
+// (try file.read()).trim() — parens needed for chaining
+
+func parse_number(s: string) -> i32 or ParseError {
+    if s == "42" { return 42 }
+    return Err(ParseError { detail: "not a number" })
+}
+
+func parse_and_double(s: string) -> i32 or ParseError {
+    const n = try parse_number(s)
+    return n * 2
+}
+
+test "try with chaining" {
+    assert parse_and_double("42")! == 84
+    assert parse_and_double("bad") is Err
+}
+
+// --- try...else (ER18) ---
+//
+// SPEC ISSUE: ER18 syntax is `try expr else |e| error_expr`. The spec says
+// this "transforms and propagates in one step" but doesn't clarify whether
+// the else branch must return an Err or can return any diverging expression.
+// The examples show `try expr else |e| ContextError.wrap(e)` which returns
+// a new error that gets auto-wrapped in Err.
+
+struct ContextError {
+    source: string
+    func message(self) -> string {
+        return "context: {self.source}"
+    }
+}
+
+func load_value(s: string) -> i32 or ContextError {
+    const n = try parse_number(s) else |e| ContextError { source: e.message() }
+    return n
+}
+
+test "try else transforms error" {
+    const result = load_value("bad")
+    assert result is Err
+}
+
+test "try else passes through Ok" {
+    const result = load_value("42")
+    assert result! == 42
+}
+
+// --- Result methods from spec ---
+
+test "is_ok and is_err" {
+    const ok = safe_div(10, 2)
+    const err = safe_div(10, 0)
+    assert ok.is_ok()
+    assert !ok.is_err()
+    assert err.is_err()
+    assert !err.is_ok()
+}
+
+test "map on Ok" {
+    const result = safe_div(10, 2).map(|v| v * 3)
+    assert result! == 15
+}
+
+test "map on Err" {
+    const result = safe_div(10, 0).map(|v| v * 3)
+    assert result is Err
+}
+
+test "to_option on Ok" {
+    const opt = safe_div(10, 2).to_option()
+    assert opt! == 5
+}
+
+test "to_option on Err" {
+    const opt = safe_div(10, 0).to_option()
+    assert opt is None
+}
+
+// --- Error union composition (ER12-ER14) ---
+//
+// SPEC ISSUE: The spec says `T or (A | B)` is the union syntax, and try
+// auto-widens when the return error is a superset. But the spec doesn't
+// define how to match on union errors. Is it `match result { Err(e) => ... }`
+// where e is `A | B`? Or do you match on variants? The enums spec doesn't
+// cover union error matching.
+
+func combined(s: string, b: i32) -> i32 or (ParseError | DivError) {
+    const n = try parse_number(s)
+    const result = try safe_div(n, b)
+    return result
+}
+
+test "error union Ok path" {
+    assert combined("42", 2)! == 21
+}
+
+test "error union parse error" {
+    assert combined("bad", 2) is Err
+}
+
+test "error union div error" {
+    assert combined("42", 0) is Err
+}
+
+// --- match on Result ---
+
+test "match on Result" {
+    const result = safe_div(10, 2)
+    const value = match result {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+    assert value == 5
+}
+
+func main() {}

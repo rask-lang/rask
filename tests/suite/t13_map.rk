@@ -33,11 +33,12 @@ test "map len" {
     assert m.len() == 2
 }
 
-test "map contains" {
+// BUG: interpreter has .contains() but spec says .contains_key()
+test "map contains_key" {
     const m = Map.new()
     m.insert("exists", 1)
-    assert m.contains("exists")
-    assert !m.contains("missing")
+    assert m.contains_key("exists")
+    assert !m.contains_key("missing")
 }
 
 test "map string values" {

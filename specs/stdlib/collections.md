@@ -90,6 +90,7 @@ const users = Map.from([
 | `with vec[i] as v { ... }` | block value (mutable) | None | Yes (OOB) |
 | `vec.insert(i, x)` | `()` | None | Yes (OOB or alloc) |
 | `vec.remove(i)` | `T` | None | Yes (OOB) |
+| `vec.pop()` | `T?` | None | No |
 
 ### Positional Insert/Remove
 
@@ -97,6 +98,7 @@ const users = Map.from([
 |------|-------------|
 | **V4: Insert at index** | `vec.insert(i, x)` inserts before position `i`, shifting later elements right. Panics on `i > len()` or alloc failure |
 | **V5: Remove at index** | `vec.remove(i)` removes and returns the element at `i`, shifting later elements left. Panics on `i >= len()` |
+| **V6: Pop last** | `vec.pop()` removes and returns the last element as `Option<T>`. Returns `none` on empty vec |
 
 <!-- test: skip -->
 ```rask

@@ -905,7 +905,8 @@ func main() {
 }
 
 test "addition" {
-    assert(1 + 1 == 2)
+    assert 1 + 1 == 2
+    assert x > 0, "x must be positive"   // optional message after comma
 }
 
 ```

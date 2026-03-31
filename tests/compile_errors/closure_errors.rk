@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: Closure violations
+//
+// Spec: mem.closures (MC1-MC4, SL1-SL2, IO1-IO4)
+
+// --- mutable capture conflict (MC2) ---
+// ERROR: variable 'x' already mutably captured
+func test_double_mutable_capture() {
+    let x = 0
+    const a = |mutate x| { x += 1 }
+    const b = |mutate x| { x += 2 }   // ERROR: x already captured by a
+}
+
+// --- scope-limited closure escape (SL2) ---
+// ERROR: closure cannot escape scope
+struct Entity { tags: Vec<string> }
+
+func test_closure_escape() -> || {
+    const entity = Entity { tags: Vec.new() }
+    const tags = entity.tags           // block-scoped borrow
+    const f = || println("{tags.len()}")
+    return f                           // ERROR: f captures scoped borrow
+}
+
+// --- mutate parameter on closure (mem.closures) ---
+// ERROR: closure parameters use borrow mode only
+func test_closure_mutate_param() {
+    const f = |mutate x: i32| { x += 1 }   // ERROR: ambiguous — is this
+                                             // mutable capture or mutate param?
+    // Closures don't support mutate/take params. Extract to a function.
+}

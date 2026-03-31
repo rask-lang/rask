@@ -51,6 +51,22 @@ const double = |x| x * 2
 const result = double(5)  // 10
 ```
 
+**Return semantics:** Closures follow the same rules as functions. Expression-bodied closures (`|x| x * 2`) implicitly return their expression. Block-bodied closures require explicit `return`:
+
+<!-- test: parse -->
+```rask
+// Expression body — implicit return
+const double = |x| x * 2
+
+// Block body — explicit return required (same as functions)
+const parse = |s| {
+    if s == "" { return none }
+    return Some(parse_inner(s))
+}
+```
+
+`return` inside a closure exits the **closure**, not the enclosing function (`ctrl.flow/CF26`). A closure is an anonymous function — same return semantics apply.
+
 Closure parameters use borrow mode only — no `mutate` or `take`. The `||` list already serves double duty for captures and parameters (e.g., `|item, mutate total|` where `item` is a parameter and `mutate total` is a capture). Adding parameter modes would create ambiguity: `|mutate x|` could mean either "mutable capture of outer `x`" or "parameter `x` by mutable borrow." If a closure needs `mutate` parameters, extract it to a standalone function.
 
 ## Mutable Capture

@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Parameter modes: borrow (default), mutate, take. Self modes.
+//
+// Spec: mem.parameters (PM1-PM3), type.structs (M1)
+//
+// Note: No call-site markers for mutate — the caller writes `increment(x)`,
+// IDE shows ghost annotations. Deliberate design choice (see spec rationale).
+//
+// BUG: t10_generics.rk has `Pair.swap(self)` that moves fields out of a
+// borrow. Per spec, this needs `take self`.
+
+// --- borrow mode (default) ---
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+func distance_sq(p: Point) -> i32 {
+    return p.x * p.x + p.y * p.y
+}
+
+test "borrow mode reads without consuming" {
+    const p = Point { x: 3, y: 4 }
+    const d = distance_sq(p)
+    assert d == 25
+    // p still valid after borrow
+    assert p.x == 3
+}
+
+// --- mutate mode ---
+
+func increment(mutate p: Point) {
+    p.x += 1
+    p.y += 1
+}
+
+test "mutate mode modifies caller value" {
+    let p = Point { x: 1, y: 2 }
+    increment(p)
+    assert p.x == 2
+    assert p.y == 3
+}
+
+func double_all(mutate v: Vec<i32>) {
+    for i in 0..v.len() {
+        v[i] = v[i] * 2
+    }
+}
+
+test "mutate mode on vec" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    double_all(v)
+    assert v[0] == 2
+    assert v[1] == 4
+    assert v[2] == 6
+}
+
+// --- mutate allows full reassignment ---
+
+func reset(mutate p: Point) {
+    p = Point { x: 0, y: 0 }
+}
+
+test "mutate allows reassignment" {
+    let p = Point { x: 99, y: 99 }
+    reset(p)
+    assert p.x == 0
+    assert p.y == 0
+}
+
+// --- take mode (ownership transfer) ---
+
+struct LargeData {
+    values: Vec<i32>
+}
+
+func consume(take data: LargeData) -> i32 {
+    return data.values.len()
+}
+
+test "take mode transfers ownership" {
+    const data = LargeData { values: Vec.new() }
+    data.values.push(1)
+    data.values.push(2)
+    const len = consume(data)
+    assert len == 2
+    // data is now invalid — using it would be a compile error (O3)
+}
+
+// --- self modes in methods ---
+
+extend Point {
+    // self = borrow (M1 default)
+    func magnitude_sq(self) -> i32 {
+        return self.x * self.x + self.y * self.y
+    }
+
+    // mutate self = mutable access
+    func translate(mutate self, dx: i32, dy: i32) {
+        self.x += dx
+        self.y += dy
+    }
+
+    // take self = consuming method
+    func into_tuple(take self) -> (i32, i32) {
+        return (self.x, self.y)
+    }
+}
+
+test "self borrow" {
+    const p = Point { x: 3, y: 4 }
+    assert p.magnitude_sq() == 25
+    // p still valid
+    assert p.x == 3
+}
+
+test "mutate self" {
+    let p = Point { x: 1, y: 2 }
+    p.translate(10, 20)
+    assert p.x == 11
+    assert p.y == 22
+}
+
+test "take self" {
+    const p = Point { x: 5, y: 10 }
+    const (a, b) = p.into_tuple()
+    assert a == 5
+    assert b == 10
+    // p is now invalid
+}
+
+// --- Copy types are always copied in (mem.parameters edge case table) ---
+// "Copy type + mutate: Value is copied in; mutations affect the copy."
+// Caller never sees changes. mutate on Copy is effectively a no-op for
+// the caller — the function gets its own copy to mutate freely.
+
+func modify_int(mutate x: i32) {
+    x = 999
+}
+
+test "mutate on copy type only affects local copy" {
+    let x = 42
+    modify_int(x)
+    assert x == 42
+}
+
+// --- Disjoint field borrows with mutate ---
+
+func swap_fields(mutate x: i32, mutate y: i32) {
+    const tmp = x
+    x = y
+    y = tmp
+}
+
+test "disjoint field mutate" {
+    let p = Point { x: 1, y: 2 }
+    swap_fields(p.x, p.y)
+    assert p.x == 2
+    assert p.y == 1
+}
+
+func main() {}

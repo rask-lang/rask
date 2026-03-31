@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: Type system violations
+//
+// Each section tests a specific type rule the checker should enforce.
+
+// --- implicit bool conversion (CF4, BL3) ---
+// ERROR: expected bool, found i32
+func test_int_as_bool() {
+    const x = 42
+    if x {
+        println("nope")
+    }
+}
+
+// --- implicit int<->bool (BL3) ---
+// ERROR: cannot convert bool to i32
+func test_bool_to_int() {
+    const x: i32 = true
+}
+
+// --- narrowing cast via `as` (CV1) ---
+// ERROR: cannot use 'as' for narrowing conversion, use 'truncate to'
+func test_narrowing_as() {
+    const big: i64 = 1000
+    const small: i32 = big as i32
+}
+
+// --- float to int via `as` (CV5) ---
+// ERROR: cannot use 'as' for float-to-int, use 'truncate to' or 'round to'
+func test_float_to_int_as() {
+    const f: f64 = 3.14
+    const i: i32 = f as i32
+}
+
+// --- int to char via `as` (CH5) ---
+// ERROR: cannot use 'as' to convert integer to char, use char.from_u32()
+func test_int_to_char() {
+    const n: u32 = 65
+    const c: char = n as char
+}
+
+// --- float comparison with < (ORD3) ---
+// ERROR: f64 does not implement Comparable, cannot use '<'
+func test_float_compare() {
+    const a: f64 = 1.0
+    const b: f64 = 2.0
+    const result = a < b
+}
+
+// --- Option<T> does not auto-unwrap (OPT9) ---
+// ERROR: expected i32, found i32?
+func test_option_no_auto_unwrap() {
+    const opt: i32? = Some(42)
+    const x: i32 = opt
+}
+
+// --- try in non-Option function (OPT13) ---
+// ERROR: cannot use try on Option in non-Option function
+func test_try_option_wrong_return() -> i32 {
+    const opt: i32? = Some(42)
+    const x = try opt
+    return x
+}
+
+// --- try error type mismatch (ER4) ---
+// ERROR: cannot propagate ParseError where IoError is expected
+struct IoError { msg: string }
+struct ParseError { msg: string }
+
+extend IoError {
+    func message(self) -> string { return self.msg }
+}
+extend ParseError {
+    func message(self) -> string { return self.msg }
+}
+
+func parse() -> i32 or ParseError {
+    return 42
+}
+
+func load() -> i32 or IoError {
+    const x = try parse()
+    return x
+}
+
+// --- wrong number of type arguments ---
+// ERROR: Option takes 1 type argument, found 2
+func test_wrong_type_args() {
+    const x: Option<i32, string> = Some(42)
+}
+
+// --- branch type mismatch in if expression (CF6) ---
+// ERROR: if branches have incompatible types: i32 vs string
+func test_if_type_mismatch() {
+    const x = if true: 42 else: "hello"
+}
+
+// --- break value type mismatch (CF16) ---
+// ERROR: break expressions have inconsistent types
+func test_break_type_mismatch() {
+    const x = loop {
+        if true { break 42 }
+        if false { break "hello" }
+    }
+}
+
+// --- break value in while (CF20) ---
+// ERROR: cannot break with value from while loop
+func test_while_break_value() {
+    while true {
+        break 42
+    }
+}

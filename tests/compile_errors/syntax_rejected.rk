@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: Syntax that Rask rejects
+//
+// Each section tests a specific syntax rule from SYNTAX.md.
+// The compiler should reject all of these with helpful error messages.
+
+// --- Rust-ism: `pub` instead of `public` ---
+// ERROR: unknown keyword 'pub', did you mean 'public'?
+pub struct BadVisibility { x: i32 }
+
+// --- Rust-ism: `fn` instead of `func` ---
+// ERROR: unknown keyword 'fn', did you mean 'func'?
+fn bad_func(a: i32) -> i32 { return a }
+
+// --- Rust-ism: `::` path separator ---
+// ERROR: unexpected '::', use '.' for path access
+func test_double_colon() {
+    const x = Result::Ok(42)
+}
+
+// --- Rust-ism: `let mut` ---
+// ERROR: 'mut' is not a keyword, 'let' is already rebindable
+func test_let_mut() {
+    let mut x = 0
+}
+
+// --- Rust-ism: `impl` instead of `extend` ---
+// ERROR: unknown keyword 'impl', did you mean 'extend'?
+impl Point {
+    func origin() -> Point { return Point { x: 0, y: 0 } }
+}
+
+// --- Rust-ism: turbofish `::<T>` ---
+// ERROR: unexpected '::<', use 'Type<T>' without '::'
+func test_turbofish() {
+    const v = Vec::<i32>.new()
+}
+
+// --- Rust-ism: `?` for error propagation ---
+// ERROR: unexpected '?', use 'try' for error propagation
+func test_question_mark() -> i32 or string {
+    const x = might_fail()?
+    return x
+}
+
+// --- Rust-ism: `&` reference syntax ---
+// ERROR: Rask uses parameter modes, not reference syntax
+func test_ref(x: &i32) -> i32 {
+    return x
+}
+
+// --- Rust-ism: `match` with `=>` without comma ---
+// Match arms should use commas as separators (per SYNTAX.md examples).
+// Newlines also work as terminators, but missing both is ambiguous.
+
+// --- const reassignment (SYNTAX.md) ---
+// ERROR: cannot reassign 'const' binding
+func test_const_reassign() {
+    const x = 42
+    x = 43
+}
+
+// --- missing return in non-unit function ---
+// ERROR: function 'bad_return' must return i32
+func bad_return() -> i32 {
+    const x = 42
+}
+
+// --- comparison chaining (P2) ---
+// ERROR: comparison operators cannot be chained
+func test_chained_comparison() {
+    const x = 1 < 2 < 3
+}
+
+struct Point { x: i32, y: i32 }
+
+func might_fail() -> i32 or string {
+    return 42
+}

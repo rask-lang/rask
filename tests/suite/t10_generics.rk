@@ -5,7 +5,7 @@ struct Box<T> {
     value: T
 }
 
-extend Box {
+extend Box<T> {
     func get(self) -> T {
         return self.value
     }
@@ -16,8 +16,9 @@ struct Pair<A, B> {
     second: B
 }
 
-extend Pair {
-    func swap(self) -> Pair<B, A> {
+extend Pair<A, B> {
+    // take self: moves fields out, caller loses the original
+    func swap(take self) -> Pair<B, A> {
         return Pair { first: self.second, second: self.first }
     }
 }

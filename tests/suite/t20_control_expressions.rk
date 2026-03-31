@@ -1,0 +1,293 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Control flow as expressions: if/match expressions, loop+break value,
+// is patterns, guard patterns, inline colon syntax, destructuring, labels.
+//
+// Spec: ctrl.flow (CF1-CF32), ctrl.loops (LP1-LP17)
+//
+// Note: CF26 updated — `return` in closures exits the closure, not the
+// enclosing function. Block-bodied closures require explicit `return`,
+// same as functions. Expression-bodied closures implicitly return.
+
+// --- if as expression (CF1, CF4) ---
+
+func sign(x: i32) -> string {
+    const s = if x > 0: "positive" else if x < 0: "negative" else: "zero"
+    return s
+}
+
+test "if as expression" {
+    assert sign(5) == "positive"
+    assert sign(-3) == "negative"
+    assert sign(0) == "zero"
+}
+
+test "if expression in binding" {
+    const x = 10
+    const abs_x = if x >= 0: x else: -x
+    assert abs_x == 10
+}
+
+// --- match as expression (CF1) ---
+
+func describe(n: i32) -> string {
+    return match n {
+        0 => "zero",
+        1 => "one",
+        _ => "other",
+    }
+}
+
+test "match as expression" {
+    assert describe(0) == "zero"
+    assert describe(1) == "one"
+    assert describe(99) == "other"
+}
+
+test "match expression in binding" {
+    const x = 2
+    const label = match x {
+        1 => "a",
+        2 => "b",
+        _ => "c",
+    }
+    assert label == "b"
+}
+
+// --- loop + break value (CF15-CF18) ---
+// BUG: parser doesn't support loop-as-expression yet
+
+test "loop with break value" {
+    let i = 0
+    const found = loop {
+        if i == 5: break i * 10
+        i += 1
+    }
+    assert found == 50
+}
+
+test "loop break value type" {
+    let n = 1
+    const result = loop {
+        if n > 100: break n
+        n = n * 2
+    }
+    assert result == 128
+}
+
+// --- labeled loop with break value (CF22-CF25) ---
+
+test "labeled loop break" {
+    let found = -1
+    outer: for i in 0..10 {
+        for j in 0..10 {
+            if i * 10 + j == 42 {
+                found = i * 10 + j
+                break outer
+            }
+        }
+    }
+    assert found == 42
+}
+
+test "labeled loop break value" {
+    const result = search: loop {
+        for i in 0..10 {
+            if i == 7: break search i
+        }
+        break search -1
+    }
+    assert result == 7
+}
+
+// --- continue with label (CF25) ---
+
+test "continue label" {
+    let count = 0
+    outer: for i in 0..5 {
+        for j in 0..5 {
+            if j == 2: continue outer
+            count += 1
+        }
+    }
+    // Each outer iteration does j=0, j=1, then continues outer. 5 * 2 = 10
+    assert count == 10
+}
+
+// --- is pattern in if (CF8-CF12) ---
+
+enum Shape {
+    Circle(f64)
+    Rectangle(f64, f64)
+    Point
+}
+
+test "is pattern with binding" {
+    const s = Shape.Circle(3.14)
+    if s is Circle(r) {
+        assert r == 3.14
+    } else {
+        assert false, "expected Circle"
+    }
+}
+
+test "is pattern non-match skips" {
+    const s = Shape.Point
+    let matched = false
+    if s is Circle(r) {
+        matched = true
+    }
+    assert !matched
+}
+
+// SPEC ISSUE: CF8 shows unqualified variant names inside `is` patterns
+// (e.g., `if state is Connected(sock)`). Existing tests (t04) use qualified
+// names (Shape.Circle). The spec should clarify whether both forms are valid
+// or only unqualified.
+
+test "is pattern with combined condition" {
+    const s = Shape.Rectangle(10.0, 5.0)
+    if s is Rectangle(w, h) && w > h {
+        assert true
+    } else {
+        assert false, "expected wide rectangle"
+    }
+}
+
+// --- is Some implicit unwrap (CF12, OPT10) ---
+
+test "is Some implicit unwrap" {
+    const opt = Some(42)
+    if opt is Some {
+        // Per OPT10/CF12, `opt` is rebound to the inner value
+        assert opt == 42
+    } else {
+        assert false, "expected Some"
+    }
+}
+
+// --- while...is pattern (CF8) ---
+
+test "while is pattern" {
+    const items = Vec.new()
+    items.push(Some(1))
+    items.push(Some(2))
+    items.push(Some(3))
+
+    let sum = 0
+    let idx = 0
+    while idx < items.len() {
+        if items[idx] is Some(v) {
+            sum += v
+        }
+        idx += 1
+    }
+    assert sum == 6
+}
+
+// --- guard pattern: let...is...else (CF13-CF15) ---
+
+func extract_or_zero(opt: i32?) -> i32 {
+    let value = opt is Some else { return 0 }
+    return value * 2
+}
+
+test "guard pattern Some" {
+    assert extract_or_zero(Some(5)) == 10
+}
+
+test "guard pattern None diverges" {
+    assert extract_or_zero(none) == 0
+}
+
+func extract_ok(result: i32 or string) -> i32 {
+    let value = result is Ok else { return -1 }
+    return value
+}
+
+test "guard pattern Ok" {
+    assert extract_ok(Ok(42)) == 42
+}
+
+test "guard pattern Err diverges" {
+    assert extract_ok(Err("fail")) == -1
+}
+
+// --- inline colon syntax (CF5) ---
+
+func clamp(x: i32, lo: i32, hi: i32) -> i32 {
+    if x < lo: return lo
+    if x > hi: return hi
+    return x
+}
+
+test "inline colon if" {
+    assert clamp(5, 0, 10) == 5
+    assert clamp(-5, 0, 10) == 0
+    assert clamp(15, 0, 10) == 10
+}
+
+// --- block expressions (CF29-CF31) ---
+
+test "block expression value" {
+    const x = {
+        const a = 10
+        const b = 20
+        a + b
+    }
+    assert x == 30
+}
+
+// --- destructuring (DS1-DS7) ---
+// BUG: parser doesn't support tuple destructuring yet
+
+test "tuple destructuring" {
+    const (a, b) = (10, 20)
+    assert a == 10
+    assert b == 20
+}
+
+test "nested destructuring" {
+    const (a, (b, c)) = (1, (2, 3))
+    assert a == 1
+    assert b == 2
+    assert c == 3
+}
+
+test "destructuring with wildcard" {
+    const (_, b, _) = (1, 2, 3)
+    assert b == 2
+}
+
+// --- pattern guards in match (PM3 from SYNTAX.md) ---
+
+func classify_pair(a: i32, b: i32) -> string {
+    const pair = (a, b)
+    return match pair {
+        (0, 0) => "origin",
+        (x, y) if x == y => "diagonal",
+        (x, 0) => "x-axis",
+        (0, y) => "y-axis",
+        _ => "general",
+    }
+}
+
+test "pattern guards" {
+    assert classify_pair(0, 0) == "origin"
+    assert classify_pair(5, 5) == "diagonal"
+    assert classify_pair(3, 0) == "x-axis"
+    assert classify_pair(0, 7) == "y-axis"
+    assert classify_pair(1, 2) == "general"
+}
+
+// --- Never type (CF32) ---
+// return, break, continue, panic all have type Never and coerce to any type.
+// This is tested implicitly by if expressions where one branch diverges.
+
+test "never coercion in if expression" {
+    let x = 5
+    const y = if x > 0: x else { panic("negative") }
+    // The else branch has type Never, which coerces to i32
+    assert y == 5
+}
+
+func main() {}

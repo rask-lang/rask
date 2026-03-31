@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: Rust syntax that Rask rejects
+//
+// Common mistakes from Rust users. Each should produce a helpful error
+// pointing to the Rask equivalent.
+
+// ERROR: `pub` is not a keyword — use `public`
+pub struct Point { x: i32 }
+
+// ERROR: `fn` is not a keyword — use `func`
+fn add(a: i32, b: i32) -> i32 { return a + b }
+
+// ERROR: `::` path separator — use `.`
+func test_path() {
+    const x = Result::Ok(42)
+}
+
+// ERROR: `let mut` — use `let` (rebindable by default)
+func test_let_mut() {
+    let mut counter = 0
+}

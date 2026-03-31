@@ -237,9 +237,9 @@ Example vtable for `Button: Widget`:
 
 ```rask
 trait Widget {
-    draw(self, canvas: Canvas)
-    size(self) -> (i32, i32)
-    click(self, x: i32, y: i32)
+    func draw(self, canvas: Canvas)
+    func size(self) -> (i32, i32)
+    func click(self, x: i32, y: i32)
 }
 ```
 

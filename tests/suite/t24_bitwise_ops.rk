@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Bitwise operators, shifts, compound assignment.
+//
+// Spec: type.operators (BW1-BW3, CA1), type.integer-overflow (SH1-SH2)
+//
+// SPEC ISSUE: The operators spec lists `~` as bitwise NOT (BW1), but doesn't
+// clarify if this is the same operator as logical NOT `!` or a separate one.
+// Rust uses `!` for both bitwise and logical NOT. The spec listing `~`
+// separately implies Rask uses `~` for bitwise and `!` for logical, which is
+// cleaner but unusual. Should be explicitly stated.
+
+// --- bitwise AND (BW1) ---
+
+test "bitwise and" {
+    assert (0b1100 & 0b1010) == 0b1000
+    assert (0xFF & 0x0F) == 0x0F
+    assert (7 & 3) == 3
+}
+
+// --- bitwise OR (BW1) ---
+
+test "bitwise or" {
+    assert (0b1100 | 0b1010) == 0b1110
+    assert (0xF0 | 0x0F) == 0xFF
+    assert (4 | 2) == 6
+}
+
+// --- bitwise XOR (BW1) ---
+
+test "bitwise xor" {
+    assert (0b1100 ^ 0b1010) == 0b0110
+    assert (0xFF ^ 0xFF) == 0
+    assert (5 ^ 3) == 6
+}
+
+// --- bitwise NOT (BW1) ---
+// Per spec, ~ is bitwise NOT on integers.
+
+test "bitwise not" {
+    // ~0 should be -1 for signed integers (all bits set)
+    assert ~0 == -1
+    assert ~1 == -2
+    assert ~~42 == 42
+}
+
+// --- left shift (BW2) ---
+
+test "left shift" {
+    assert (1 << 0) == 1
+    assert (1 << 1) == 2
+    assert (1 << 4) == 16
+    assert (3 << 2) == 12
+}
+
+// --- right shift (BW2-BW3) ---
+// BW3: >> is arithmetic on signed (preserves sign), logical on unsigned
+
+test "right shift signed" {
+    assert (16 >> 2) == 4
+    assert (100 >> 1) == 50
+    // Arithmetic right shift: -8 >> 1 preserves sign
+    assert (-8 >> 1) == -4
+}
+
+test "right shift unsigned" {
+    const x: u32 = 0xFF000000
+    // Logical shift: fills with zeros
+    assert (x >> 8) == 0x00FF0000
+}
+
+// --- shift panics on excessive width (SH1) ---
+// Shifting by >= bit width should panic. Can't test panics in a passing test,
+// but we test valid edge cases.
+
+test "shift by zero" {
+    assert (42 << 0) == 42
+    assert (42 >> 0) == 42
+}
+
+test "shift near limit" {
+    // i32 is 32 bits, so shifting by 31 is the max valid shift
+    assert (1 << 31) == -2147483648  // i32.MIN
+    assert (-1 >> 31) == -1  // arithmetic shift preserves sign
+}
+
+// --- compound assignment (CA1) ---
+
+test "compound bitwise assignment" {
+    let x = 0xFF
+    x &= 0x0F
+    assert x == 0x0F
+
+    let y = 0xF0
+    y |= 0x0F
+    assert y == 0xFF
+
+    let z = 0xFF
+    z ^= 0xF0
+    assert z == 0x0F
+}
+
+test "compound shift assignment" {
+    let x = 1
+    x <<= 4
+    assert x == 16
+    x >>= 2
+    assert x == 4
+}
+
+// --- precedence (P1) ---
+// Bitwise: & (prec 8) > ^ (prec 7) > | (prec 6)
+// All below comparison (prec 9) and above logical && (prec 5)
+
+test "bitwise precedence" {
+    // & binds tighter than |
+    assert (1 | 2 & 3) == (1 | (2 & 3))
+    // ^ between & and |
+    assert (1 | 2 ^ 3 & 3) == (1 | (2 ^ (3 & 3)))
+}
+
+// --- hex and binary literals (L2) ---
+
+test "hex literals" {
+    assert 0xFF == 255
+    assert 0x0 == 0
+    assert 0xDEAD == 57005
+}
+
+test "binary literals" {
+    assert 0b0 == 0
+    assert 0b1 == 1
+    assert 0b1111 == 15
+    assert 0b10101010 == 170
+}
+
+test "octal literals" {
+    assert 0o0 == 0
+    assert 0o7 == 7
+    assert 0o77 == 63
+    assert 0o777 == 511
+}
+
+// --- underscore separators (L1) ---
+
+test "underscore separators" {
+    assert 1_000_000 == 1000000
+    assert 0xFF_FF == 0xFFFF
+    assert 0b1111_0000 == 0xF0
+}
+
+func main() {}

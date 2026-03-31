@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// with...as blocks for growable collection access.
+//
+// Spec: mem.borrowing (W1-W7, E1-E5)
+//
+// SPEC ISSUE: Existing tests (t15) only read inside `with` blocks, but the
+// spec (W5) says "with bindings are always mutable." Zero existing coverage
+// of mutation through `with`.
+//
+// SPEC ISSUE: The spec (W5) says the compiler warns when a `with` binding is
+// never mutated. This implies `with` is specifically for mutable access. But
+// the spec also shows read-only uses. If the compiler warns on read-only use,
+// then all the t15 tests would trigger warnings. Contradicts itself.
+
+// --- with block for Vec element mutation (W5) ---
+
+test "with mutates vec element" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+
+    with v[1] as item {
+        item = 99
+    }
+    assert v[1] == 99
+}
+
+test "with mutates multiple elements sequentially" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+
+    with v[0] as item { item = item * 10 }
+    with v[1] as item { item = item * 10 }
+    with v[2] as item { item = item * 10 }
+
+    assert v[0] == 10
+    assert v[1] == 20
+    assert v[2] == 30
+}
+
+// --- with block on Map (W1, E5) ---
+
+test "with mutates map value" {
+    const m = Map.new()
+    m.insert("score", 0)
+
+    with m["score"] as val {
+        val = val + 10
+    }
+    assert m["score"] == 10
+}
+
+// --- with block as first-class scope (W1) ---
+// return, try, break all work inside with blocks
+
+func find_and_double(v: Vec<i32>, idx: i32) -> i32 {
+    if idx >= v.len() { return -1 }
+    with v[idx] as item {
+        return item * 2
+    }
+}
+
+test "return inside with" {
+    const v = Vec.new()
+    v.push(5)
+    assert find_and_double(v, 0) == 10
+}
+
+test "break inside with" {
+    const v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+
+    let found = -1
+    for i in 0..v.len() {
+        with v[i] as item {
+            if item == 2 {
+                found = item
+                break
+            }
+        }
+    }
+    assert found == 2
+}
+
+// --- with produces a value (W6) ---
+
+test "with as expression" {
+    const v = Vec.new()
+    v.push(42)
+
+    const doubled = with v[0] as item {
+        item * 2
+    }
+    assert doubled == 84
+}
+
+// --- structural mutation forbidden inside with (W2) ---
+// vec.push(), vec.pop(), vec.remove() are compile errors inside with.
+// This is a negative test — would need compile_errors/ to fully test.
+// Here we just verify normal element access works.
+
+test "read other elements during with" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+
+    with v[1] as item {
+        // Can still read the vec (LP3: collection accessible)
+        assert v.len() == 3
+        item = item + v[0]
+    }
+    assert v[1] == 30
+}
+
+// --- with one-liner shorthand (W7) ---
+// BUG: parser doesn't support `with...as...: expr` colon shorthand yet
+
+test "with one-liner" {
+    const v = Vec.new()
+    v.push(5)
+    with v[0] as item: item = item * 3
+    assert v[0] == 15
+}
+
+// --- struct field access in with ---
+
+struct Player {
+    name: string
+    score: i32
+}
+
+test "with on vec of structs" {
+    const players = Vec.new()
+    players.push(Player { name: "Alice", score: 0 })
+    players.push(Player { name: "Bob", score: 0 })
+
+    with players[0] as p {
+        p.score = 100
+    }
+    with players[1] as p {
+        p.score = 50
+    }
+
+    assert players[0].score == 100
+    assert players[1].score == 50
+}
+
+func main() {}

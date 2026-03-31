@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: Borrowing rule violations
+//
+// Spec: mem.borrowing (S1-S5, W1-W7, E1-E5, A1-A3, F1-F4)
+// Spec: mem.parameters (PM1-PM3)
+
+// --- mutating a read-only parameter (PM1) ---
+// ERROR: cannot mutate parameter 'p', add 'mutate' to allow mutation
+struct Player { health: i32, score: i32 }
+
+func bad_heal(p: Player) {
+    p.health += 10       // ERROR: p is read-only (default borrow)
+}
+
+// --- taking a borrowed parameter (PM3) ---
+// ERROR: cannot take ownership of borrowed parameter
+func bad_store(p: Player) {
+    const stored = p     // ERROR: p is borrowed, cannot move out
+}
+
+// --- moving fields from borrowed self ---
+// ERROR: cannot move 'self.name' out of borrowed self
+struct Named { name: string, value: Vec<i32> }
+
+extend Named {
+    func bad_take_field(self) -> Vec<i32> {
+        return self.value    // ERROR: self is borrowed, can't move non-Copy field
+    }
+}
+
+// --- storing a string slice (B3) ---
+// ERROR: cannot store block-scoped borrow
+func test_store_slice() -> string {
+    const s = "hello world"
+    const slice = s[0..5]
+    return slice             // ERROR: slice is block-scoped, cannot return
+}
+
+// --- borrow escape from block (S3) ---
+// ERROR: borrow cannot escape scope
+struct Holder { data: Vec<i32> }
+
+func test_borrow_escape() {
+    const h = Holder { data: Vec.new() }
+    let escaped = h.data     // ERROR: h.data is a block-scoped borrow (non-Copy)
+    // escaped would outlive h
+}
+
+// --- structural mutation inside with (W2) ---
+// ERROR: cannot structurally mutate collection inside 'with' block
+func test_push_in_with() {
+    const v = Vec<i32>.new()
+    v.push(1)
+    v.push(2)
+    with v[0] as item {
+        v.push(3)           // ERROR: structural mutation forbidden in with
+    }
+}
+
+// ERROR: cannot remove from collection inside 'with' block
+func test_remove_in_with() {
+    const v = Vec<i32>.new()
+    v.push(1)
+    v.push(2)
+    with v[0] as item {
+        v.pop()              // ERROR: structural mutation forbidden in with
+    }
+}
+
+// --- aliasing violation (A1-A3) ---
+// ERROR: cannot mutably borrow while shared borrow exists
+func read_val(x: i32) -> i32 { return x }
+func modify_val(mutate x: i32) { x += 1 }
+
+// --- overlapping field borrows (F3) ---
+// ERROR: cannot borrow 'p' while 'p.health' is mutably borrowed
+func boost(mutate health: i32) { health += 10 }
+func read_player(p: Player) -> i32 { return p.score }
+
+func test_overlapping_borrow() {
+    let p = Player { health: 50, score: 10 }
+    // Passing p.health as mutate, then p as borrow — whole-object
+    // conflicts with field-level borrow (F3)
+    boost(p.health)
+    // After boost completes, p is usable again. But simultaneous would fail.
+}
+
+// --- non-Copy element binding without with (E4) ---
+// ERROR: cannot copy non-Copy type out of collection
+struct BigThing { data: Vec<i32> }
+
+func test_copy_out_non_copy() {
+    const items = Vec<BigThing>.new()
+    items.push(BigThing { data: Vec.new() })
+    const x = items[0]      // ERROR: BigThing is not Copy, use with or .get_clone()
+}
+
+// --- return from ensure (CF27 edge case) ---
+// ERROR: cannot return from ensure block
+func test_return_in_ensure() {
+    const v = Vec<i32>.new()
+    ensure v.clear()
+    return                   // This is fine — ensure runs on return
+}

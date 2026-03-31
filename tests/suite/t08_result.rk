@@ -22,7 +22,7 @@ func chained(a: i32, b: i32, c: i32) -> i32 or string {
 test "Ok result" {
     const r = divide(10, 2)
     assert r is Ok
-    assert r.unwrap() == 5
+    assert r! == 5
 }
 
 test "Err result" {
@@ -41,7 +41,7 @@ test "match on result" {
 test "try propagation success" {
     const r = double_divide(10, 2)
     assert r is Ok
-    assert r.unwrap() == 10
+    assert r! == 10
 }
 
 test "try propagation failure" {
@@ -52,7 +52,7 @@ test "try propagation failure" {
 test "chained try" {
     const r1 = chained(100, 2, 5)
     assert r1 is Ok
-    assert r1.unwrap() == 10
+    assert r1! == 10
 
     const r2 = chained(100, 0, 5)
     assert r2 is Err

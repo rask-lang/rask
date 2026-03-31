@@ -79,10 +79,12 @@ Short-circuits: `y` evaluated only if `x` is none.
 ## Force Unwrap: `!`
 
 ```rask
-const user = get_user()!    // panics if none
+const user = get_user()!                  // panics: "force unwrap on None"
+const user = get_user()! "user required"  // panics: "user required"
+const user = get_user()! "no user {id}"   // panics: "no user 42" (interpolation)
 ```
 
-Use sparingly. Prefer `??` or pattern matching.
+The message argument is a string literal or string interpolation — not an arbitrary expression. Use sparingly. Prefer `??` or pattern matching.
 
 ## Methods
 

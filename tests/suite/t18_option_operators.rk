@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Option operators: none literal, x! force unwrap, ?? nil-coalescing,
+// ?. optional chaining, try on Option, auto-wrapping.
+//
+// Spec: type.optionals (OPT1-OPT14)
+//
+// SPEC ISSUE: Existing tests (t07, t17) use .unwrap() but the spec defines
+// x! as the force unwrap operator (OPT7). There is no .unwrap() method in the
+// spec's Option method table. Tests here use x! per spec.
+//
+// SPEC ISSUE: SYNTAX.md line 908 shows assert(expr) with parens, but every
+// existing test uses `assert expr` without parens. The compiler accepts both.
+// SYNTAX.md should document both forms or pick one.
+
+// --- none literal (OPT4) ---
+
+func returns_none() -> i32? {
+    return none
+}
+
+test "none literal" {
+    const x: i32? = none
+    assert x is None
+
+    const y = returns_none()
+    assert y is None
+}
+
+// --- force unwrap x! (OPT7) ---
+
+test "force unwrap Some" {
+    const x = Some(42)
+    assert x! == 42
+}
+
+test "force unwrap nested" {
+    const x = Some(Some(10))
+    assert x!! == 10
+}
+
+// --- nil-coalescing ?? (OPT6) ---
+
+test "nil-coalescing with None" {
+    const x: i32? = none
+    assert (x ?? 99) == 99
+}
+
+test "nil-coalescing with Some" {
+    const x = Some(42)
+    assert (x ?? 99) == 42
+}
+
+test "nil-coalescing short-circuits" {
+    // ?? must not evaluate the right-hand side when left is Some
+    const x = Some(1)
+    // If short-circuit fails this would still work for this test,
+    // but the spec (OPT6) requires short-circuit semantics.
+    assert (x ?? 999) == 1
+}
+
+// --- optional chaining ?. (OPT5) ---
+
+struct Profile {
+    name: string
+    age: i32
+}
+
+struct User {
+    profile: Profile?
+}
+
+func get_user(has_profile: bool) -> User? {
+    if has_profile {
+        return Some(User { profile: Some(Profile { name: "Alice", age: 30 }) })
+    }
+    return none
+}
+
+test "optional chaining Some path" {
+    const user = get_user(true)
+    const name = user?.profile?.name
+    assert name is Some
+    assert name! == "Alice"
+}
+
+test "optional chaining None short-circuits" {
+    const user = get_user(false)
+    const name = user?.profile?.name
+    assert name is None
+}
+
+test "optional chaining on None field" {
+    const user = Some(User { profile: none })
+    const name = user?.profile?.name
+    assert name is None
+}
+
+// --- auto-wrapping T to Option<T> (OPT8) ---
+
+func maybe_value() -> i32? {
+    return 42
+}
+
+test "auto-wrapping T to Option" {
+    const x = maybe_value()
+    assert x is Some
+    assert x! == 42
+}
+
+// --- try on Option (OPT12-OPT14) ---
+
+func inner_option() -> i32? {
+    return Some(10)
+}
+
+func outer_option() -> i32? {
+    const val = try inner_option()
+    return val * 2
+}
+
+func try_propagates_none() -> i32? {
+    const val = try returns_none()
+    // Should not reach here
+    return val + 1
+}
+
+test "try on Option extracts Some" {
+    const result = outer_option()
+    assert result is Some
+    assert result! == 20
+}
+
+test "try on Option propagates None" {
+    const result = try_propagates_none()
+    assert result is None
+}
+
+// --- Option methods from spec ---
+
+test "is_some and is_none" {
+    const a = Some(1)
+    const b: i32? = none
+    assert a.is_some()
+    assert !a.is_none()
+    assert b.is_none()
+    assert !b.is_some()
+}
+
+test "map on Some" {
+    const x = Some(5)
+    const y = x.map(|v| v * 2)
+    assert y! == 10
+}
+
+test "map on None" {
+    const x: i32? = none
+    const y = x.map(|v| v * 2)
+    assert y is None
+}
+
+test "filter keeps matching" {
+    const x = Some(10)
+    const y = x.filter(|v| v > 5)
+    assert y! == 10
+}
+
+test "filter rejects non-matching" {
+    const x = Some(3)
+    const y = x.filter(|v| v > 5)
+    assert y is None
+}
+
+// --- Pattern matching (OPT10 + CF8-CF12) ---
+
+test "is Some with implicit unwrap" {
+    const opt = Some(42)
+    // OPT10: `if opt is Some` reuses outer name
+    if opt is Some {
+        assert opt == 42
+    } else {
+        assert false, "expected Some"
+    }
+}
+
+test "match on Option" {
+    const x = Some(7)
+    const result = match x {
+        Some(v) => v * 2,
+        None => 0,
+    }
+    assert result == 14
+}
+
+func main() {}

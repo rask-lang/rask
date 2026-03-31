@@ -7,11 +7,11 @@ func find(items: Vec<i32>, target: i32) -> i32? {
             return Some(items[i])
         }
     }
-    return None
+    return none
 }
 
 func safe_div(a: i32, b: i32) -> i32? {
-    if b == 0 { return None }
+    if b == 0 { return none }
     return Some(a / b)
 }
 
@@ -20,14 +20,14 @@ test "Some construction" {
     assert x is Some
 }
 
-test "None construction" {
-    const x: i32? = None
+test "none construction" {
+    const x: i32? = none
     assert x is None
 }
 
 test "unwrap Some" {
     const x = Some(42)
-    assert x.unwrap() == 42
+    assert x! == 42
 }
 
 test "is Some with binding" {
@@ -40,7 +40,7 @@ test "is Some with binding" {
 }
 
 test "is None" {
-    const x: i32? = None
+    const x: i32? = none
     assert x is None
     if x is Some {
         assert false, "expected None"
@@ -49,7 +49,7 @@ test "is None" {
 
 test "optional from function" {
     assert safe_div(10, 2) is Some
-    assert safe_div(10, 2).unwrap() == 5
+    assert safe_div(10, 2)! == 5
     assert safe_div(10, 0) is None
 }
 
@@ -61,7 +61,7 @@ test "optional with Vec" {
 
     const found = find(v, 20)
     assert found is Some
-    assert found.unwrap() == 20
+    assert found! == 20
 
     const not_found = find(v, 99)
     assert not_found is None

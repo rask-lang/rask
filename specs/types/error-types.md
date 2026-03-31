@@ -71,7 +71,7 @@ For `Option<T>`, see [Optionals](optionals.md).
 
 Force unwrap uses operators, not methods:
 - `x!` — panic with auto message (includes error info)
-- `x! "msg"` — panic with custom message
+- `x! "msg"` — panic with custom message (string literal or interpolation only, not arbitrary expressions)
 
 ## Error Propagation
 

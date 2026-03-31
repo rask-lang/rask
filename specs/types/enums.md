@@ -56,14 +56,14 @@ enum Event {
 }
 ```
 
-**Pattern matching follows the variant form:**
+**Pattern matching follows the variant form.** Inside `match`, the compiler infers the enum type from the subject, so variant names are unqualified. Qualified names (`Token.Plus`) also work but are unnecessary when the type is known from context.
 
 ```rask
 match token {
     Number(n) => process(n),         // positional: bind by position
     Ident(s) => lookup(s),           // positional
-    Plus => ...,
-    Minus => ...,
+    Plus => ...,                     // unqualified (idiomatic)
+    Token.Minus => ...,              // qualified (also valid)
 }
 
 match shape {
