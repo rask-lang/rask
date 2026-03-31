@@ -236,9 +236,9 @@ spatial_zones:
   region: <region_ref>
   capacity: 100
   zones:
-    - { radius: 3,  rate: 20, label: "near" }
-    - { radius: 12, rate: 5,  label: "mid" }
-    - { radius: 25, rate: 1,  label: "far" }
+    - { radius: 3,  rate: 20 }
+    - { radius: 12, rate: 5 }
+    - { radius: 25, rate: 1 }
 
 // Sent at movement rate, unchanged from existing GDL
 client_viewport:
@@ -291,27 +291,31 @@ The tier structure is a domain implementation concern — the spec defines the p
 
 The extension formalizes two events that the core spec leaves implicit:
 
-**`entity_nearby`** — An entity crossed into the observer's near zone. Different from `entity_enter` (which fires at the viewport boundary). Nearby is semantically closer — "this entity is now close enough to matter."
+**`entity_nearby`** — An entity crossed into a closer zone. Different from `entity_enter` (which fires at the viewport boundary). Nearby is semantically closer — "this entity is now close enough to matter."
 
 ```
 Event:
   type: "entity_nearby"
   source: <entity_ref>
   data:
-    zone: "near"
-    distance: 4.2
+    zone: 0
+    radius: 3.0
+    distance: 2.8
 ```
 
-**`entity_distant`** — An entity crossed out of the near zone into a farther zone.
+**`entity_distant`** — An entity crossed out into a farther zone.
 
 ```
 Event:
   type: "entity_distant"
   source: <entity_ref>
   data:
-    zone: "mid"
-    distance: 16.1
+    zone: 1
+    radius: 12.0
+    distance: 12.4
 ```
+
+`zone` is the zero-based index into the observer's zone list (0 = innermost/nearest). `radius` is the zone's configured radius — the threshold that was crossed. `distance` is the actual distance at crossing time.
 
 These are rendering hints. A client might:
 - Show nameplates only for nearby entities
