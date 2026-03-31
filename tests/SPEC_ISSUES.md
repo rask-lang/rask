@@ -66,6 +66,41 @@ Added explicit `return` to all comptime functions in comptime_loop.rk.
 
 Moved Rust syntax rejection tests (`pub`, `fn`, `::`, `let mut`) to a new file `compile_errors/rust_syntax_rejected.rk`. error_mismatch.rk now only tests error type mismatch.
 
+## Test Results (interpreter)
+
+14 pass, 5 partial, 4 parse fail. Every failure is a compiler/interpreter gap — no test bugs.
+
+### Parse failures (parser doesn't handle valid syntax)
+
+| Test | What's not parsed |
+|------|-------------------|
+| t20 | `loop` as expression, tuple destructuring |
+| t23 | `with` one-liner colon syntax |
+| t25 | `for mutate` |
+
+### Missing interpreter builtins
+
+| Test | Score | Missing |
+|------|-------|---------|
+| t13 | 5/6 | `contains_key` — interp only has `contains` |
+| t19 | 15/17 | `to_option` on Result |
+| t24 | 15/16 | `1 << 31` typed as i64 instead of i32 |
+
+### Unimplemented language features
+
+| Test | Score | Missing |
+|------|-------|---------|
+| t15 | 10/11 | `mutate` params don't propagate field changes |
+| t18 | 13/19 | `?.`, auto-wrapping, `filter` on Option |
+| t22 | 8/10 | `mutate` reassignment, disjoint field mutation |
+
+### Native-only issues (interpreter passes)
+
+| Test | Issue |
+|------|-------|
+| t10 | `max` shadows builtin |
+| t11 | vtable missing |
+
 ## Spec Gaps (features with zero test coverage)
 
 The most critical gaps are now covered by new test files:
