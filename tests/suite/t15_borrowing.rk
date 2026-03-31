@@ -29,6 +29,26 @@ test "struct field used in expression" {
 }
 
 // --- Disjoint field borrows (F1-F2) ---
+// F1: when passing value.field to a mutate parameter, the borrow checker
+// tracks at field granularity. Non-overlapping fields can be borrowed
+// simultaneously.
+
+func boost_score(mutate score: i32) {
+    score += 10
+}
+
+func boost_health(mutate health: i32) {
+    health += 20
+}
+
+test "disjoint field mutation" {
+    let p = Player { name: "Eve", score: 42, health: 99 }
+    // These borrow disjoint fields — both should be allowed
+    boost_score(p.score)
+    boost_health(p.health)
+    assert p.score == 52
+    assert p.health == 119
+}
 
 test "disjoint field reads" {
     const p = Player { name: "Eve", score: 42, health: 99 }
@@ -91,25 +111,29 @@ test "nested struct field access" {
 }
 
 // --- With blocks on growable sources (W1-W7) ---
+// W5: with bindings are always mutable. Compiler warns on read-only use.
+// Use inline v[i] for read-only access (E1-E4), with for mutation.
 // BUG: Vec indexing in native codegen returns garbage values.
-// with blocks depend on Vec indexing, so they also fail natively.
 
-test "with block reads vec element" {
+test "with block mutates vec element" {
     const v = Vec<i32>.new()
     v.push(10)
     v.push(20)
     with v[0] as item {
-        assert item == 10
+        item = item + 5
     }
+    assert v[0] == 15
 }
 
-test "with block reads second element" {
+test "with block mutates second element" {
     const v = Vec<i32>.new()
     v.push(100)
     v.push(200)
     with v[1] as item {
-        assert item == 200
+        item = 999
     }
+    assert v[1] == 999
+    assert v[0] == 100
 }
 
 // --- Helpers ---
