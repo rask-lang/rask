@@ -26,42 +26,78 @@ Standard property names for entity movement. These are additions to the [propert
 
 ### Motion Properties
 
+Entity motion is rigid body state — linear and angular components, both following the same Newtonian pattern.
+
+**Linear (translation):**
+
 | Property | Type | Meaning |
 |----------|------|---------|
-| `velocity` | float list | Movement vector in region units/second. `[vx, vy]` for 2D, `[vx, vy, vz]` for 3D. |
-| `acceleration` | float list | Acceleration vector in region units/second². Same dimensionality as velocity. |
-| `grounded` | bool | Whether the entity is on a surface. When true, client ignores vertical acceleration for prediction. |
-| `move_target` | float list | Where the entity is moving toward. Client can interpolate along the projected path instead of straight-line extrapolation. |
+| `velocity` | float list | `[vx, vy]` or `[vx, vy, vz]` — region units/second |
+| `acceleration` | float list | `[ax, ay]` or `[ax, ay, az]` — region units/second² |
 
-Four properties. Three for physics prediction, one for pathfinding.
+**Angular (rotation):**
 
-**`velocity`** is the essential one. It enables linear dead reckoning — predicting position between server updates. Without it, clients render position snapshots at tick_rate, which stutters at any frame rate above the tick rate.
+| Property | Type | Meaning |
+|----------|------|---------|
+| `angular_velocity` | float list | `[rx, ry, rz]` — axis-angle vector, radians/second. Direction = rotation axis, magnitude = angular speed. |
+| `angular_acceleration` | float list | `[rax, ray, raz]` — axis-angle vector, radians/second² |
 
-**`acceleration`** gives parabolic prediction — jumping, falling, thrown objects, any non-linear motion. `predicted = position + velocity * t + 0.5 * acceleration * t²`. This covers most natural movement. A client that doesn't understand acceleration falls back to linear extrapolation from velocity alone.
+**Supplemental:**
 
-**`grounded`** distinguishes "walking on a slope" from "falling." A grounded entity doesn't need vertical acceleration prediction — the client can assume it stays on the surface. An airborne entity does. Without this, the client can't dead-reckon a walking character correctly in a 3D region with gravity.
+| Property | Type | Meaning |
+|----------|------|---------|
+| `grounded` | bool | Entity is on a surface. Client zeroes vertical acceleration for prediction. |
+| `move_target` | float list | Where the entity is heading. Client can interpolate along projected path instead of straight-line extrapolation. |
 
-**`move_target`** is optional. A domain with pathfinding includes the destination so clients draw smoother curves instead of straight-line extrapolation. A domain without pathfinding skips it.
+These compose with the existing entity fields `position` (float list) and `orientation` (quaternion `[qx, qy, qz, qw]`).
 
-These are the mechanical minimum for client-side prediction without extensions. A domain that wants richer physics (friction, drag, collision) uses the [physics parameters extension](GDL-extensions.md#physics-parameters) or ships a [prediction script](GDL-extensions.md#client-scripts). The conventions cover the 90% case — entities that move in straight lines or parabolic arcs.
+**Representation choices:**
 
-**What's intentionally excluded:** `speed` (velocity magnitude — redundant), `heading` (use the existing `orientation` field on entities), `angular_velocity` (niche), `move_state` (this is animation state, already covered by GDL's [animation vocabulary](GDL.md#animation-state)). Domains can use any of these as regular properties — the extensible property system handles them. They don't need protocol-level convention status.
+Linear properties are float lists matching the region's spatial dimensionality — `[x, y]` for 2D, `[x, y, z]` for 3D. Same format as `position`.
+
+Angular properties are axis-angle vectors, not quaternions or Euler angles. Axis-angle composes naturally with time (`angular_velocity * t` gives a rotation to apply) and avoids gimbal lock. The client converts to quaternion for applying the rotation to `orientation`:
+
+```
+// Linear prediction
+predicted_pos = pos + vel * t + 0.5 * accel * t²
+
+// Angular prediction
+rotation_delta = quaternion_from_axis_angle(ang_vel * t + 0.5 * ang_accel * t²)
+predicted_orient = orient * rotation_delta
+```
+
+Not matrices. A 4×4 transform matrix encodes position + orientation + scale as a single structure, but it's a rendering representation, not physics state. The client derives the transform matrix from predicted position and orientation at render time.
+
+**What each level of property support gives the client:**
+
+| Properties present | Prediction quality |
+|---|---|
+| `position` only | No prediction. Snap between updates. |
+| + `velocity` | Linear extrapolation. Covers walking, running, sliding. |
+| + `acceleration` | Parabolic arcs. Covers jumping, falling, projectiles. |
+| + `angular_velocity` | Smooth rotation. Covers turning characters, spinning objects. |
+| + `angular_acceleration` | Rotational arcs. Covers banking turns, spinning up/down. |
+
+Each level is additive. A domain sends what it has. A client uses what it understands. A 2D top-down gard sends `velocity` only. A 3D flight sim sends everything. A text client ignores all of it.
 
 ### Dead Reckoning
 
-A client that sees `position: [10, 5]` and `velocity: [2, 0]` on an entity can predict the entity's position between server updates. At tick_rate 20 (50ms between updates), this eliminates the stutter that comes from rendering position-only snapshots at 60fps.
+A client that sees `position: [10, 5, 0]` and `velocity: [2, 0, 0]` on an entity can predict the entity's position between server updates. At tick_rate 20 (50ms between updates), this eliminates the stutter that comes from rendering position-only snapshots at 60fps.
 
 ```
-// Linear (velocity only)
-predicted = position + velocity * t
+t = time_since_last_update
 
-// Parabolic (velocity + acceleration)
-predicted = position + velocity * t + 0.5 * acceleration * t²
+// Linear
+predicted_pos = pos + vel * t + 0.5 * accel * t²
+
+// Angular
+rot_delta = quaternion_from_axis_angle(ang_vel * t + 0.5 * ang_accel * t²)
+predicted_orient = orient * rot_delta
 ```
 
-The client uses whichever properties are present. Position only → no prediction, snap between updates. Velocity → linear. Velocity + acceleration → parabolic. Each level up produces smoother interpolation between server updates.
+The client uses whichever properties are present. Missing properties are treated as zero — no velocity means stationary, no acceleration means constant velocity, no angular velocity means no rotation.
 
-For grounded entities in 3D regions, the client zeroes vertical acceleration — the entity follows the surface. This prevents grounded characters from sinking through floors or floating during prediction.
+For `grounded` entities in 3D regions, the client zeroes vertical components of acceleration and velocity — the entity follows the surface. This prevents grounded characters from sinking through floors or floating during prediction.
 
 When an authoritative position update arrives, the client has three choices:
 
@@ -243,11 +279,11 @@ Within each zone, the domain applies update tiers — priority ordering for what
 | Tier | Data | Priority |
 |------|------|----------|
 | 1 | `position` | Always sent at zone rate |
-| 2 | `velocity`, `acceleration`, `grounded` | Sent at zone rate, coalesced under backpressure |
-| 3 | `orientation` | Sent at zone rate, dropped under heavy backpressure |
-| 4 | Other properties | Event-driven, normal observation |
+| 2 | `velocity`, `acceleration` | Sent at zone rate, coalesced under backpressure |
+| 3 | `orientation`, `angular_velocity`, `angular_acceleration` | Sent at zone rate, dropped under heavy backpressure |
+| 4 | Other properties (`grounded`, `move_target`, domain-specific) | Event-driven, normal observation |
 
-Under normal conditions, all tiers flow. Under backpressure, the domain drops lower tiers first. A client getting only tier 1 can still render entities — they pop to new positions each update instead of interpolating smoothly. Tier 1 + 2 gives smooth dead reckoning. Tier 1 + 2 + 3 adds facing direction. Degradation is graceful at each level.
+Under normal conditions, all tiers flow. Under backpressure, the domain drops lower tiers first. Tier 1 alone: entities pop to new positions each update. Tier 1 + 2: smooth linear/parabolic dead reckoning. Tier 1 + 2 + 3: full rigid body prediction including rotation. Graceful degradation at each level.
 
 The tier structure is a domain implementation concern — the spec defines the priority order, but the domain decides when to shed tiers. The client doesn't negotiate tiers. It receives what the domain sends and renders accordingly.
 
