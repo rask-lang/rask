@@ -68,38 +68,29 @@ Moved Rust syntax rejection tests (`pub`, `fn`, `::`, `let mut`) to a new file `
 
 ## Test Results (interpreter)
 
-14 pass, 5 partial, 4 parse fail. Every failure is a compiler/interpreter gap — no test bugs.
+20 pass, 6 fail. Remaining failures are deeper compiler gaps (type narrowing, call-site policy).
 
-### Parse failures (parser doesn't handle valid syntax)
+### Fixed since initial audit
 
-| Test | What's not parsed |
-|------|-------------------|
-| t20 | `loop` as expression, tuple destructuring |
-| t23 | `with` one-liner colon syntax |
-| t25 | `for mutate` |
+| Test | Fix |
+|------|-----|
+| t13 | Added `contains_key` as Map method alias |
+| t15 | Added missing `mutate` call-site annotations in test |
+| t19 | Added `to_option`/`ok` on Result, `map`/`map_err` in type checker |
+| t23 | Parser now supports `with...as...: expr` colon shorthand |
+| t24 | Shift ops use i32 semantics when operands fit i32 |
+| t25 (partial) | Parser supports `for mutate`, interpreter writes back values |
 
-### Missing interpreter builtins
+### Remaining failures
 
-| Test | Score | Missing |
-|------|-------|---------|
-| t13 | 5/6 | `contains_key` — interp only has `contains` |
-| t19 | 15/17 | `to_option` on Result |
-| t24 | 15/16 | `1 << 31` typed as i64 instead of i32 |
-
-### Unimplemented language features
-
-| Test | Score | Missing |
-|------|-------|---------|
-| t15 | 10/11 | `mutate` params don't propagate field changes |
-| t18 | 13/19 | `?.`, auto-wrapping, `filter` on Option |
-| t22 | 8/10 | `mutate` reassignment, disjoint field mutation |
-
-### Native-only issues (interpreter passes)
-
-| Test | Issue |
-|------|-------|
-| t10 | `max` shadows builtin |
-| t11 | vtable missing |
+| Test | Issue | Category |
+|------|-------|----------|
+| t09 | `v[0] = 99` on const Vec rejected by type checker | type checker strictness |
+| t10 | `max` shadows builtin name | resolver policy |
+| t18 | Type narrowing after `is Some` not implemented (OPT10) | type checker feature |
+| t20 | Labeled `loop` expression, nested tuple destructuring not parsed | parser gap |
+| t22 | Test expects no call-site `mutate` annotation; compiler requires it | spec-vs-compiler policy |
+| t25 | `count()` on chained iterator, `take_all()` not in type checker | type checker registration |
 
 ## Spec Gaps (features with zero test coverage)
 

@@ -330,7 +330,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.register_pattern_bindings(pattern);
                 self.check_block(body);
             }
-            StmtKind::For { label: _, binding, iter, body } => {
+            StmtKind::For { label: _, binding, iter, body, .. } => {
                 self.check_expr(iter);
                 match binding {
                     ForBinding::Single(name) => {
@@ -800,7 +800,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Unsafe { body } => {
                 self.check_block(body);
             }
-            ExprKind::Comptime { body } => {
+            ExprKind::Comptime { body } | ExprKind::Loop { body, .. } => {
                 self.check_block(body);
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
@@ -1415,7 +1415,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.collect_free_vars(&arm.body, locals, out);
                 }
             }
-            ExprKind::Unsafe { body } | ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. } => {
+            ExprKind::Unsafe { body } | ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. } | ExprKind::Loop { body, .. } => {
                 for s in body { self.collect_free_vars_stmt(s, locals, out); }
             }
             _ => {

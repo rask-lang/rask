@@ -1340,7 +1340,7 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            StmtKind::For { label, binding, iter, body } => {
+            StmtKind::For { label, binding, mutate, iter, body } => {
                 self.resolve_expr(iter);
                 self.scopes.push(ScopeKind::Loop { label: label.clone() });
                 let names = match binding {
@@ -1350,7 +1350,7 @@ impl Resolver {
                 for name in &names {
                     let sym_id = self.symbols.insert(
                         name.clone(),
-                        SymbolKind::Variable { mutable: false },
+                        SymbolKind::Variable { mutable: *mutate },
                         None,
                         stmt.span,
                         false,
@@ -1812,6 +1812,13 @@ impl Resolver {
                 self.resolve_expr(inner);
             }
             ExprKind::Spawn { body } => {
+                self.scopes.push(ScopeKind::Block);
+                for stmt in body {
+                    self.resolve_stmt(stmt);
+                }
+                self.scopes.pop();
+            }
+            ExprKind::Loop { body, .. } => {
                 self.scopes.push(ScopeKind::Block);
                 for stmt in body {
                     self.resolve_stmt(stmt);

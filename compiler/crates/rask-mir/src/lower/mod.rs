@@ -1178,7 +1178,8 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.walk_free_vars_block(body, bound, seen, free);
             }
-            ExprKind::Spawn { body } | ExprKind::BlockCall { body, .. } => {
+            ExprKind::Spawn { body } | ExprKind::BlockCall { body, .. }
+            | ExprKind::Loop { body, .. } => {
                 self.walk_free_vars_block(body, bound, seen, free);
             }
             ExprKind::Select { arms, .. } => {
@@ -1775,6 +1776,7 @@ mod tests {
             kind: StmtKind::For {
                 label: None,
                 binding: ForBinding::Single(binding.to_string()),
+                mutate: false,
                 iter,
                 body,
             },

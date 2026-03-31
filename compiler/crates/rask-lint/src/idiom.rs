@@ -169,7 +169,8 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
         | ExprKind::Spawn { body: stmts }
         | ExprKind::Unsafe { body: stmts }
         | ExprKind::Comptime { body: stmts }
-        | ExprKind::BlockCall { body: stmts, .. } => {
+        | ExprKind::BlockCall { body: stmts, .. }
+        | ExprKind::Loop { body: stmts, .. } => {
             walk_stmts_for_unwrap(stmts, source, diags);
         }
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
@@ -411,7 +412,8 @@ fn recurse_ensure_ordering_in_expr(expr: &Expr, source: &str, diags: &mut Vec<Li
         | ExprKind::Spawn { body: stmts }
         | ExprKind::Unsafe { body: stmts }
         | ExprKind::Comptime { body: stmts }
-        | ExprKind::BlockCall { body: stmts, .. } => {
+        | ExprKind::BlockCall { body: stmts, .. }
+        | ExprKind::Loop { body: stmts, .. } => {
             check_ensure_ordering_in_block(stmts, source, diags);
         }
         _ => {}
@@ -527,7 +529,8 @@ fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mu
         | ExprKind::UsingBlock { body: stmts, .. }
         | ExprKind::Spawn { body: stmts }
         | ExprKind::Comptime { body: stmts }
-        | ExprKind::BlockCall { body: stmts, .. } => {
+        | ExprKind::BlockCall { body: stmts, .. }
+        | ExprKind::Loop { body: stmts, .. } => {
             walk_for_large_unsafe(stmts, source, max, diags);
         }
         ExprKind::If { cond, then_branch, else_branch } => {

@@ -363,7 +363,8 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             classify_body(body, effects, callees);
         }
         ExprKind::Closure { body, .. } => classify_expr(body, effects, callees),
-        ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. } => {
+        ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. }
+        | ExprKind::Loop { body, .. } => {
             classify_body(body, effects, callees);
         }
         ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {

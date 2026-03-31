@@ -76,7 +76,7 @@ impl Interpreter {
                     self.env.push_scope();
                     match self.exec_stmts(body) {
                         Ok(_) => {}
-                        Err(diag) if matches!(diag.error, RuntimeError::Break) => {
+                        Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
                             self.env.pop_scope();
                             break;
                         }
@@ -109,7 +109,7 @@ impl Interpreter {
                         }
                         match self.exec_stmts(body) {
                             Ok(_) => {}
-                            Err(diag) if matches!(diag.error, RuntimeError::Break) => {
+                            Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
                                 self.env.pop_scope();
                                 break;
                             }
@@ -134,7 +134,7 @@ impl Interpreter {
                 self.env.push_scope();
                 match self.exec_stmts(body) {
                     Ok(_) => {}
-                    Err(diag) if matches!(diag.error, RuntimeError::Break) => {
+                    Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
                         self.env.pop_scope();
                         break Ok(Value::Unit);
                     }
@@ -150,12 +150,19 @@ impl Interpreter {
                 self.env.pop_scope();
             },
 
-            StmtKind::Break { .. } => Err(RuntimeDiagnostic::new(RuntimeError::Break, stmt.span)),
+            StmtKind::Break { value, .. } => {
+                let val = match value {
+                    Some(expr) => self.eval_expr(expr)?,
+                    None => Value::Unit,
+                };
+                Err(RuntimeDiagnostic::new(RuntimeError::Break(val), stmt.span))
+            }
 
             StmtKind::Continue(_) => Err(RuntimeDiagnostic::new(RuntimeError::Continue, stmt.span)),
 
             StmtKind::For {
                 binding,
+                mutate,
                 iter,
                 body,
                 ..
@@ -174,7 +181,7 @@ impl Interpreter {
                             self.define_for_binding(binding, Value::Int(i));
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break) => {
+                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
                                     self.env.pop_scope();
                                     break;
                                 }
@@ -191,6 +198,52 @@ impl Interpreter {
                         }
                         Ok(Value::Unit)
                     }
+                    Value::Vec(ref v) if *mutate => {
+                        let len = v.lock().unwrap().len();
+                        for i in 0..len {
+                            let item = v.lock().unwrap()[i].clone();
+                            self.env.push_scope();
+                            self.define_for_binding(binding, item);
+                            match self.exec_stmts(body) {
+                                Ok(_) => {}
+                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                    // Write back before breaking
+                                    if let ForBinding::Single(name) = binding {
+                                        if let Some(val) = self.env.get(name) {
+                                            let val = val.clone();
+                                            v.lock().unwrap()[i] = val;
+                                        }
+                                    }
+                                    self.env.pop_scope();
+                                    break;
+                                }
+                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                    // Write back before continuing
+                                    if let ForBinding::Single(name) = binding {
+                                        if let Some(val) = self.env.get(name) {
+                                            let val = val.clone();
+                                            v.lock().unwrap()[i] = val;
+                                        }
+                                    }
+                                    self.env.pop_scope();
+                                    continue;
+                                }
+                                Err(e) => {
+                                    self.env.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                            // Write back the (possibly mutated) value
+                            if let ForBinding::Single(name) = binding {
+                                if let Some(val) = self.env.get(name) {
+                                    let val = val.clone();
+                                    v.lock().unwrap()[i] = val;
+                                }
+                            }
+                            self.env.pop_scope();
+                        }
+                        Ok(Value::Unit)
+                    }
                     Value::Vec(v) => {
                         let items: Vec<Value> = v.lock().unwrap().clone();
                         for item in items {
@@ -198,7 +251,7 @@ impl Interpreter {
                             self.define_for_binding(binding, item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break) => {
+                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
                                     self.env.pop_scope();
                                     break;
                                 }
@@ -238,7 +291,7 @@ impl Interpreter {
                             self.define_for_binding(binding, item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break) => {
+                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
                                     self.env.pop_scope();
                                     break;
                                 }
@@ -264,7 +317,7 @@ impl Interpreter {
                                     self.define_for_binding(binding, item);
                                     match self.exec_stmts(body) {
                                         Ok(_) => {}
-                                        Err(diag) if matches!(diag.error, RuntimeError::Break) => {
+                                        Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
                                             self.env.pop_scope();
                                             break;
                                         }

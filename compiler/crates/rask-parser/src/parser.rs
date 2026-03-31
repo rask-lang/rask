@@ -2450,6 +2450,8 @@ impl Parser {
     fn parse_for_stmt(&mut self, label: Option<String>) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::For)?;
 
+        let mutate = self.match_token(&TokenKind::MutateKw);
+
         let binding = if self.match_token(&TokenKind::LParen) {
             let mut names = Vec::new();
             loop {
@@ -2470,7 +2472,7 @@ impl Parser {
             self.skip_newlines();
             self.parse_block_body()?
         };
-        Ok(StmtKind::For { label, binding, iter, body })
+        Ok(StmtKind::For { label, binding, mutate, iter, body })
     }
 
     fn parse_ensure_stmt(&mut self) -> Result<StmtKind, ParseError> {
@@ -2791,6 +2793,18 @@ impl Parser {
             TokenKind::Pipe => self.parse_closure(),
 
             TokenKind::If => self.parse_if_expr(),
+
+            TokenKind::Loop => {
+                self.advance();
+                self.skip_newlines();
+                let body = self.parse_block_body()?;
+                let end = self.tokens[self.pos - 1].span.end;
+                Ok(Expr {
+                    id: self.next_id(),
+                    kind: ExprKind::Loop { label: None, body },
+                    span: Span::new(start, end),
+                })
+            }
 
             TokenKind::Match => self.parse_match_expr(),
 
@@ -3566,8 +3580,20 @@ impl Parser {
             });
         }
 
-        self.skip_newlines();
-        let body = self.parse_block_body()?;
+        let body = if self.match_token(&TokenKind::Colon) {
+            let inline = self.parse_inline_block(start)?;
+            match inline.kind {
+                ExprKind::Block(stmts) => stmts,
+                _ => vec![Stmt {
+                    id: self.next_id(),
+                    kind: StmtKind::Expr(inline.clone()),
+                    span: inline.span,
+                }],
+            }
+        } else {
+            self.skip_newlines();
+            self.parse_block_body()?
+        };
         let end = self.tokens[self.pos - 1].span.end;
         Ok(Expr {
             id: self.next_id(),

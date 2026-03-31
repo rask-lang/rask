@@ -178,6 +178,11 @@ pub enum ExprKind {
         arms: Vec<SelectArm>,
         is_priority: bool,
     },
+    /// Loop expression (loop { ... } with break value)
+    Loop {
+        label: Option<String>,
+        body: Vec<super::stmt::Stmt>,
+    },
     /// Assert expression (assert condition, "message")
     Assert {
         condition: Box<Expr>,

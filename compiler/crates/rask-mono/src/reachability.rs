@@ -446,7 +446,8 @@ impl<'a> Monomorphizer<'a> {
                 self.visit_expr(body);
             }
             ExprKind::Cast { expr, .. } => self.visit_expr(expr),
-            ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::Comptime { body } => {
+            ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::Comptime { body }
+            | ExprKind::Loop { body, .. } => {
                 for s in body {
                     self.visit_stmt(s);
                 }

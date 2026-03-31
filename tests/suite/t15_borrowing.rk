@@ -44,8 +44,8 @@ func boost_health(mutate health: i32) {
 test "disjoint field mutation" {
     let p = Player { name: "Eve", score: 42, health: 99 }
     // These borrow disjoint fields — both should be allowed
-    boost_score(p.score)
-    boost_health(p.health)
+    boost_score(mutate p.score)
+    boost_health(mutate p.health)
     assert p.score == 52
     assert p.health == 119
 }

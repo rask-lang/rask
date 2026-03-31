@@ -1218,12 +1218,16 @@ impl<'a> Printer<'a> {
                 self.emit_indent();
                 self.emit("}");
             }
-            StmtKind::For { label, binding, iter, body } => {
+            StmtKind::For { label, binding, mutate, iter, body } => {
                 if let Some(ref l) = label {
                     self.emit(l);
                     self.emit(": ");
                 }
-                self.emit("for ");
+                if *mutate {
+                    self.emit("for mutate ");
+                } else {
+                    self.emit("for ");
+                }
                 match binding {
                     ForBinding::Single(name) => self.emit(name),
                     ForBinding::Tuple(names) => {
@@ -1661,6 +1665,20 @@ impl<'a> Printer<'a> {
             }
             ExprKind::Spawn { body } => {
                 self.emit("spawn {");
+                self.emit_newline();
+                self.indent += 1;
+                self.format_stmts(body);
+                self.indent -= 1;
+                self.emit_indent();
+                self.emit("}");
+            }
+            ExprKind::Loop { label, body } => {
+                if let Some(lbl) = label {
+                    self.emit("'");
+                    self.emit(lbl);
+                    self.emit(" ");
+                }
+                self.emit("loop {");
                 self.emit_newline();
                 self.indent += 1;
                 self.format_stmts(body);

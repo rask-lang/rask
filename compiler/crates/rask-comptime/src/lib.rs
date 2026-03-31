@@ -236,6 +236,7 @@ fn eliminate_in_expr(expr: &mut Expr, cfg_values: &HashMap<String, String>) {
         }
         ExprKind::Unsafe { body } => eliminate_in_stmts(body, cfg_values),
         ExprKind::Spawn { body } => eliminate_in_stmts(body, cfg_values),
+        ExprKind::Loop { body, .. } => eliminate_in_stmts(body, cfg_values),
         ExprKind::StructLit { fields, .. } => {
             for f in fields { eliminate_in_expr(&mut f.value, cfg_values); }
         }

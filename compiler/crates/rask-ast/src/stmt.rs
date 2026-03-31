@@ -21,6 +21,17 @@ pub enum ForBinding {
     Tuple(Vec<String>),
 }
 
+impl ForBinding {
+    /// Whether the binding is mutable (`for mutate x in ...`).
+    /// Stored separately in StmtKind::For.
+    pub fn names(&self) -> Vec<&str> {
+        match self {
+            ForBinding::Single(n) => vec![n.as_str()],
+            ForBinding::Tuple(ns) => ns.iter().map(|n| n.as_str()).collect(),
+        }
+    }
+}
+
 /// The kind of statement.
 #[derive(Debug, Clone)]
 pub enum StmtKind {
@@ -84,6 +95,7 @@ pub enum StmtKind {
     For {
         label: Option<String>,
         binding: ForBinding,
+        mutate: bool,
         iter: Expr,
         body: Vec<Stmt>,
     },

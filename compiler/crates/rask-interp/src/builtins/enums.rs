@@ -60,7 +60,7 @@ impl Interpreter {
                 }),
                 _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
-            "ok" => match variant {
+            "ok" | "to_option" => match variant {
                 "Ok" => Ok(Value::Enum {
                     name: "Option".to_string(),
                     variant: "Some".to_string(),
@@ -138,6 +138,37 @@ impl Interpreter {
             "unwrap" => match variant {
                 "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                 "None" => Err(RuntimeError::Panic("called unwrap on None".to_string())),
+                _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
+            },
+            "filter" => match variant {
+                "Some" => {
+                    let closure = args.into_iter().next().ok_or_else(|| {
+                        RuntimeError::ArityMismatch { expected: 1, got: 0 }
+                    })?;
+                    let inner = fields.first().cloned().unwrap_or(Value::Unit);
+                    let result = self.call_value(closure, vec![inner.clone()])?;
+                    if self.is_truthy(&result) {
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![inner],
+                            variant_index: 0,
+                        })
+                    } else {
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "None".to_string(),
+                            fields: vec![],
+                            variant_index: 0,
+                        })
+                    }
+                }
+                "None" => Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
+                    variant_index: 0,
+                }),
                 _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
             },
             _ => Err(RuntimeError::NoSuchMethod {

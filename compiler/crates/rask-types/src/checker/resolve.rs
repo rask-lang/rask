@@ -170,6 +170,11 @@ impl TypeChecker {
                     Err(TypeError::NoSuchField { ty, field, span })
                 }
             }
+            // Option<T> field access: unwrap and access inner type
+            Type::Option(inner) => {
+                let inner = *inner.clone();
+                self.resolve_field(inner, field, expected, span)
+            }
             _ => Err(TypeError::NoSuchField {
                 ty,
                 field,
@@ -523,6 +528,15 @@ impl TypeChecker {
                         span,
                     })
                 }
+            }
+            Type::Option(inner) => {
+                let inner = *inner.clone();
+                self.resolve_option_method(&inner, &method, &args, &ret, span)
+            }
+            Type::Result { ok, err } => {
+                let ok = *ok.clone();
+                let err = *err.clone();
+                self.resolve_result_method(&ok, &err, &method, &args, &ret, span)
             }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
@@ -1870,6 +1884,114 @@ impl TypeChecker {
                 self.unify(ret, &Type::Unit, span)
             }
 
+            _ => Err(TypeError::NoSuchMethod {
+                ty: self_ty,
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve methods on Option<T> (i.e., T?)
+    fn resolve_option_method(
+        &mut self,
+        inner: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let self_ty = Type::Option(Box::new(inner.clone()));
+        match method {
+            "is_some" | "is_none" if args.is_empty() => {
+                self.unify(ret, &Type::Bool, span)
+            }
+            "unwrap" if args.is_empty() => {
+                self.unify(ret, inner, span)
+            }
+            "unwrap_or" if args.len() == 1 => {
+                let _ = self.unify(&args[0], inner, span);
+                self.unify(ret, inner, span)
+            }
+            "map" if args.len() == 1 => {
+                let result_inner = self.ctx.fresh_var();
+                let expected_fn = Type::Fn {
+                    params: vec![inner.clone()],
+                    ret: Box::new(result_inner.clone()),
+                };
+                let _ = self.unify(&args[0], &expected_fn, span);
+                self.unify(ret, &Type::Option(Box::new(result_inner)), span)
+            }
+            "filter" if args.len() == 1 => {
+                let expected_fn = Type::Fn {
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Bool),
+                };
+                let _ = self.unify(&args[0], &expected_fn, span);
+                self.unify(ret, &self_ty, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: self_ty,
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve methods on Result<T, E> (i.e., T or E)
+    fn resolve_result_method(
+        &mut self,
+        ok: &Type,
+        err: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let self_ty = Type::Result {
+            ok: Box::new(ok.clone()),
+            err: Box::new(err.clone()),
+        };
+        match method {
+            "is_ok" | "is_err" if args.is_empty() => {
+                self.unify(ret, &Type::Bool, span)
+            }
+            "unwrap" if args.is_empty() => {
+                self.unify(ret, ok, span)
+            }
+            "unwrap_or" if args.len() == 1 => {
+                let _ = self.unify(&args[0], ok, span);
+                self.unify(ret, ok, span)
+            }
+            "map" if args.len() == 1 => {
+                let result_inner = self.ctx.fresh_var();
+                let expected_fn = Type::Fn {
+                    params: vec![ok.clone()],
+                    ret: Box::new(result_inner.clone()),
+                };
+                let _ = self.unify(&args[0], &expected_fn, span);
+                let result_type = Type::Result {
+                    ok: Box::new(result_inner),
+                    err: Box::new(err.clone()),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "map_err" if args.len() == 1 => {
+                let result_err = self.ctx.fresh_var();
+                let expected_fn = Type::Fn {
+                    params: vec![err.clone()],
+                    ret: Box::new(result_err.clone()),
+                };
+                let _ = self.unify(&args[0], &expected_fn, span);
+                let result_type = Type::Result {
+                    ok: Box::new(ok.clone()),
+                    err: Box::new(result_err),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "to_option" | "ok" if args.is_empty() => {
+                self.unify(ret, &Type::Option(Box::new(ok.clone())), span)
+            }
             _ => Err(TypeError::NoSuchMethod {
                 ty: self_ty,
                 method: method.to_string(),
