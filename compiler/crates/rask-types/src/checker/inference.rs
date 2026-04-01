@@ -18,6 +18,8 @@ pub enum TypeConstraint {
         field: String,
         expected: Type,
         span: Span,
+        /// V5: Self type at constraint creation site (for private field checks)
+        self_type: Option<Type>,
     },
     /// Type must have a method with given signature.
     HasMethod {

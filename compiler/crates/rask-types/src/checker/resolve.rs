@@ -19,6 +19,7 @@ impl TypeChecker {
         field: String,
         expected: Type,
         span: Span,
+        self_type: Option<Type>,
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
 
@@ -31,10 +32,26 @@ impl TypeChecker {
                     field,
                     expected,
                     span,
+                    self_type,
                 });
                 Ok(false)
             }
             Type::Named(type_id) => {
+                // V5: check private field access
+                if let Some(TypeDef::Struct { private_fields, name, .. }) = self.types.get(*type_id) {
+                    if private_fields.contains(&field) {
+                        let is_self = self_type.as_ref()
+                            .is_some_and(|st| matches!(st, Type::Named(id) if *id == *type_id));
+                        if !is_self {
+                            return Err(TypeError::PrivateFieldAccess {
+                                ty: name.clone(),
+                                field,
+                                span,
+                            });
+                        }
+                    }
+                }
+
                 let result = self.types.get(*type_id).and_then(|def| {
                     match def {
                         TypeDef::Struct { fields, .. } | TypeDef::Union { fields, .. } => {
@@ -136,7 +153,7 @@ impl TypeChecker {
             Type::UnresolvedGeneric { args, .. } => {
                 if let Some(GenericArg::Type(elem)) = args.first() {
                     let elem_ty = self.resolve_named(elem);
-                    self.resolve_field(elem_ty, field, expected, span)
+                    self.resolve_field(elem_ty, field, expected, span, self_type)
                 } else {
                     Err(TypeError::NoSuchField { ty, field, span })
                 }
@@ -173,7 +190,7 @@ impl TypeChecker {
             // Option<T> field access: unwrap and access inner type
             Type::Option(inner) => {
                 let inner = *inner.clone();
-                self.resolve_field(inner, field, expected, span)
+                self.resolve_field(inner, field, expected, span, self_type)
             }
             _ => Err(TypeError::NoSuchField {
                 ty,
@@ -305,6 +322,9 @@ impl TypeChecker {
                                 span,
                             })
                         }
+                    } else if method == "discriminant" && args.is_empty() {
+                        // E9: .discriminant() returns u16 variant index
+                        self.unify(&Type::U16, &ret, span)
                     } else {
                         Err(TypeError::NoSuchMethod {
                             ty,

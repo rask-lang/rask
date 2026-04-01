@@ -115,33 +115,33 @@ Spec requires two borrows on different fields of the same struct to not conflict
 
 Closures capturing block-scoped borrows should be scope-limited and can't escape (SL2). No error for returning or storing such closures.
 
-### 14. `private` field enforcement — not type-checked (V5)
+### 14. ~~`private` field enforcement — not type-checked (V5)~~ FIXED
 
-Parser accepts `private` on struct fields. Type checker doesn't prevent construction or field access from outside the `extend` block.
+Private fields now checked in struct literals and field access. Extend-block context carried through HasField constraints.
 
 ---
 
 ## Minor Gaps (edge cases, polish, non-critical paths)
 
-### 15. Single-element tuple `(T,)` — not parsed (TU4)
+### 15. ~~Single-element tuple `(T,)` — not parsed (TU4)~~ FIXED
 
-Spec says `(T,)` with trailing comma is a 1-tuple, `(T)` is a parenthesized expression. Parser doesn't handle this — confirmed in TODO.md.
+Parser now distinguishes `(T)` (parenthesized) from `(T,)` (single-element tuple) for both expressions and types.
 
-### 16. Labeled break with value — MIR doesn't allocate result slots (CF25)
+### 16. ~~Labeled break with value — MIR doesn't allocate result slots (CF25)~~ FIXED
 
-Parser accepts `break 'label value`. MIR lowering always sets `result_local: None` for labeled loops, so the value is lost.
+Loop expressions now allocate `result_local` so `break value` stores correctly. Works for both statement and expression loops.
 
-### 17. Cyclic type alias detection — silent (T6)
+### 17. ~~Cyclic type alias detection — silent (T6)~~ FIXED
 
-`type A = B; type B = A` silently returns `None` instead of emitting a clear compile error with the cycle path.
+Cycle detection at registration time with clear error showing the cycle path.
 
-### 18. Enum `.discriminant()` builtin — not exposed (E9)
+### 18. ~~Enum `.discriminant()` builtin — not exposed (E9)~~ FIXED
 
-Spec requires `func discriminant(e: T) -> u16 where T: Enum`. Not in stdlib stubs.
+`.discriminant()` method on enum values returns `u16` variant index. Type checker, interpreter, and MIR lowering all support it.
 
-### 19. `.variants()` error on payload enums — not checked (E10)
+### 19. ~~`.variants()` error on payload enums — not checked (E10)~~ ALREADY FIXED
 
-Should be a compile error to call `.variants()` on enums with payloads. Not validated.
+Both type checker and interpreter reject `.variants()` on enums with payload fields. Was implemented before audit.
 
 ### 20. Iterator trait — not user-visible (type.iterators)
 

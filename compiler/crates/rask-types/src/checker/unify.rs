@@ -109,7 +109,8 @@ impl TypeChecker {
                 field,
                 expected,
                 span,
-            } => self.resolve_field(ty, field, expected, span),
+                self_type,
+            } => self.resolve_field(ty, field, expected, span, self_type),
             TypeConstraint::HasMethod {
                 ty,
                 method,

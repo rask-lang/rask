@@ -528,6 +528,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`using` blocks require a known runtime context to initialize")
             }
 
+            CyclicTypeAlias { cycle, span } => {
+                Diagnostic::error(format!("cyclic type alias: {}", cycle))
+                    .with_code("E0343")
+                    .with_primary(*span, "cycle detected here")
+                    .with_help("break the cycle by removing one of the aliases")
+                    .with_fix("break the cycle by removing one of the aliases")
+                    .with_why("type aliases cannot form cycles — each alias must eventually resolve to a concrete type (T6)")
+            }
+
+            PrivateFieldAccess { ty, field, span } => {
+                Diagnostic::error(format!("field `{}` on `{}` is private", field, ty))
+                    .with_code("E0344")
+                    .with_primary(*span, "private field")
+                    .with_help("private fields can only be accessed inside extend blocks for this type")
+                    .with_fix("use a public method to access this field")
+                    .with_why("private fields restrict access to the type's own extend blocks (V5)")
+            }
+
             PublicMissingAnnotation { function_name, params, missing_return, span } => {
                 let mut msg = format!("public function `{}` requires explicit type annotations", function_name);
                 if !params.is_empty() {

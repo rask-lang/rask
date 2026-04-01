@@ -4,7 +4,7 @@
 
 use super::{
     binop_result_type, is_type_constructor_name, lower_binop, lower_unaryop,
-    operator_method_to_binop, operator_method_to_unaryop, LoweringError,
+    operator_method_to_binop, operator_method_to_unaryop, LoopContext, LoweringError,
     MirLowerer, TypedOperand, HANDLE_NONE_SENTINEL,
 };
 use crate::{
@@ -535,6 +535,19 @@ impl<'a> MirLowerer<'a> {
                 // Try to recognize an iterator chain on the receiver and fuse it inline.
                 if let Some(result) = self.try_lower_iter_terminal(expr, object, method, args)? {
                     return Ok(result);
+                }
+
+                // E9: .discriminant() on enum values — extract tag via EnumTag
+                if method == "discriminant" && args.is_empty() {
+                    let (obj_op, obj_ty) = self.lower_expr(object)?;
+                    if matches!(obj_ty, MirType::Enum(_)) {
+                        let result_local = self.builder.alloc_temp(MirType::U16);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: result_local,
+                            rvalue: MirRValue::EnumTag { value: obj_op },
+                        }));
+                        return Ok((MirOperand::Local(result_local), MirType::U16));
+                    }
                 }
 
                 // Module.Type.method() pattern: time.Instant.now() → Instant_now
@@ -2572,9 +2585,38 @@ impl<'a> MirLowerer<'a> {
                 self.lower_block(body)
             }
 
-            // Loop expression — lower as block for now
-            ExprKind::Loop { body, .. } => {
-                self.lower_block(body)
+            // CF25: loop expression — allocate result slot for break-with-value
+            ExprKind::Loop { body, label } => {
+                let result_local = self.builder.alloc_local(
+                    "__loop_result".to_string(),
+                    MirType::I64,
+                );
+                let loop_block = self.builder.create_block();
+                let exit_block = self.builder.create_block();
+
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: loop_block,
+                }));
+                self.builder.switch_to_block(loop_block);
+
+                self.loop_stack.push(LoopContext {
+                    label: label.as_ref().map(|s| s.to_string()),
+                    continue_block: loop_block,
+                    exit_block,
+                    result_local: Some(result_local),
+                });
+
+                for stmt in body {
+                    self.lower_stmt(stmt)?;
+                }
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: loop_block,
+                }));
+
+                self.loop_stack.pop();
+                self.builder.switch_to_block(exit_block);
+
+                Ok((MirOperand::Local(result_local), MirType::I64))
             }
 
             // Comptime expression — try compile-time evaluation (CC1)

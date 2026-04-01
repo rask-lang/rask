@@ -923,13 +923,25 @@ impl Parser {
                 self.advance();
                 return Ok("()".to_string());
             }
-            let mut types = Vec::new();
-            loop {
-                types.push(self.parse_type_name()?);
-                if !self.match_token(&TokenKind::Comma) { break; }
+            let first_ty = self.parse_type_name()?;
+            if self.match_token(&TokenKind::Comma) {
+                // Tuple type: (T,) or (T, U, ...)
+                let mut types = vec![first_ty];
+                // TU4: trailing comma before `)` — allows single-element tuples like (T,)
+                while !self.check(&TokenKind::RParen) && !self.at_end() {
+                    types.push(self.parse_type_name()?);
+                    if !self.match_token(&TokenKind::Comma) { break; }
+                }
+                self.expect(&TokenKind::RParen)?;
+                if types.len() == 1 {
+                    // TU4: single-element tuple — trailing comma distinguishes from parens
+                    return Ok(format!("({},)", types[0]));
+                }
+                return Ok(format!("({})", types.join(", ")));
             }
+            // Parenthesized type: (T) — not a tuple
             self.expect(&TokenKind::RParen)?;
-            return Ok(format!("({})", types.join(", ")));
+            return Ok(first_ty);
         }
 
         if self.check(&TokenKind::LBracket) {

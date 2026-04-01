@@ -23,7 +23,7 @@ impl TypeChecker {
                 DeclKind::Enum(e) => self.register_enum(e),
                 DeclKind::Trait(t) => self.register_trait(t),
                 DeclKind::Union(u) => self.register_union(u),
-                DeclKind::TypeAlias(a) => self.register_type_alias(a),
+                DeclKind::TypeAlias(a) => self.register_type_alias(a, decl.span),
                 DeclKind::Fn(f) if !f.type_params.is_empty() => {
                     // Find this function's SymbolId by matching name + Function kind.
                     // Strip generic suffix: parser stores "foo<T: Trait>" but resolver
@@ -147,6 +147,14 @@ impl TypeChecker {
             })
             .collect();
 
+        // V5: collect private field names for access checking
+        let private_fields: Vec<String> = s
+            .fields
+            .iter()
+            .filter(|f| f.visibility == rask_ast::decl::FieldVisibility::Private)
+            .map(|f| f.name.clone())
+            .collect();
+
         let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
 
         let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
@@ -157,6 +165,7 @@ impl TypeChecker {
             fields,
             methods,
             is_resource,
+            private_fields,
         });
     }
 
@@ -196,9 +205,16 @@ impl TypeChecker {
         });
     }
 
-    pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl) {
+    pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl, span: rask_ast::Span) {
         if a.is_transparent {
-            // `type alias X = Y` — transparent, same as before
+            // T6: check for cycles before registering
+            if let Some(path) = self.types.check_alias_cycle(&a.name, &a.target) {
+                self.errors.push(TypeError::CyclicTypeAlias {
+                    cycle: path.join(" → "),
+                    span,
+                });
+                return;
+            }
             self.types.register_alias(a.name.clone(), a.target.clone());
         } else {
             // `type X = Y` — nominal, gets its own TypeId
@@ -615,7 +631,7 @@ impl TypeChecker {
                                 DeclKind::Struct(s) => self.register_struct(s),
                                 DeclKind::Enum(e) => self.register_enum(e),
                                 DeclKind::Trait(t) => self.register_trait(t),
-                                DeclKind::TypeAlias(a) => self.register_type_alias(a),
+                                DeclKind::TypeAlias(a) => self.register_type_alias(a, ext_decl.span),
                                 _ => {}
                             }
                         }
