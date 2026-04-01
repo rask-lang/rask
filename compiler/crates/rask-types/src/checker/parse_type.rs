@@ -39,6 +39,12 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         if inner.is_empty() {
             return Ok(Type::Unit);
         }
+        // TU4: single-element tuple "(T,)" — trailing comma distinguishes from parens
+        if inner.ends_with(',') {
+            let elem_str = inner[..inner.len() - 1].trim();
+            let elem = parse_type_string(elem_str, types)?;
+            return Ok(Type::Tuple(vec![elem]));
+        }
         let parts = split_type_args(inner);
         if parts.len() == 1 && !inner.contains(',') {
             return parse_type_string(inner, types);

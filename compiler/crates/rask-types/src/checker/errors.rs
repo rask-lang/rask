@@ -174,6 +174,21 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// T6: cyclic type alias
+    #[error("cyclic type alias: {cycle}")]
+    CyclicTypeAlias {
+        cycle: String,
+        span: Span,
+    },
+
+    /// V5: private field accessed outside extend block
+    #[error("field `{field}` on `{ty}` is private")]
+    PrivateFieldAccess {
+        ty: String,
+        field: String,
+        span: Span,
+    },
+
     /// GC5: public function missing type annotation
     #[error("public function `{function_name}` requires explicit type annotations")]
     PublicMissingAnnotation {

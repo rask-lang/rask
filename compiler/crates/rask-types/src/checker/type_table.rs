@@ -117,10 +117,17 @@ impl TypeTable {
     /// Returns None if name is not an alias.
     fn resolve_alias<'a>(&'a self, name: &'a str) -> Option<&'a str> {
         let mut current = name;
-        // Walk the chain with a depth limit to catch cycles
-        for _ in 0..32 {
+        let mut visited = Vec::new();
+        loop {
             match self.type_aliases.get(current) {
-                Some(target) => current = target.as_str(),
+                Some(target) => {
+                    if visited.contains(&current) {
+                        // Cycle — caller should have caught this at registration
+                        return None;
+                    }
+                    visited.push(current);
+                    current = target.as_str();
+                }
                 None => {
                     if current == name {
                         return None;
@@ -129,7 +136,25 @@ impl TypeTable {
                 }
             }
         }
-        None // cycle detected — silently return None, resolver should catch cycles
+    }
+
+    /// Check if registering `name -> target` would create a cycle.
+    /// Returns the cycle path if so.
+    pub fn check_alias_cycle(&self, name: &str, target: &str) -> Option<Vec<String>> {
+        let mut current = target;
+        let mut path = vec![name.to_string(), target.to_string()];
+        loop {
+            if current == name {
+                return Some(path);
+            }
+            match self.type_aliases.get(current) {
+                Some(next) => {
+                    path.push(next.clone());
+                    current = next.as_str();
+                }
+                None => return None,
+            }
+        }
     }
 
     /// Look up a type by name.

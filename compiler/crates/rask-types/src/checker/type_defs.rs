@@ -19,6 +19,8 @@ pub enum TypeDef {
         fields: Vec<(String, Type)>,
         methods: Vec<MethodSig>,
         is_resource: bool,
+        /// V5: fields marked `private` — accessible only inside extend blocks
+        private_fields: Vec<String>,
     },
     Enum {
         name: String,

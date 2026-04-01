@@ -352,12 +352,27 @@ impl TypeChecker {
             ExprKind::StructLit { name, fields, .. } => {
                 if let Some(ty) = self.types.lookup(name) {
                     if let Type::Named(type_id) = &ty {
-                        let (struct_fields, type_params) = match self.types.get(*type_id) {
-                            Some(TypeDef::Struct { fields: sf, type_params: tp, .. }) => {
-                                (sf.clone(), tp.clone())
+                        let (struct_fields, type_params, private_fields) = match self.types.get(*type_id) {
+                            Some(TypeDef::Struct { fields: sf, type_params: tp, private_fields: pf, .. }) => {
+                                (sf.clone(), tp.clone(), pf.clone())
                             }
-                            _ => (vec![], vec![]),
+                            _ => (vec![], vec![], vec![]),
                         };
+
+                        // V5: check private fields in struct literal construction
+                        let is_self_type = self.current_self_type.as_ref()
+                            .is_some_and(|st| matches!(st, Type::Named(id) if id == type_id));
+                        if !is_self_type {
+                            for field_init in fields.iter() {
+                                if private_fields.contains(&field_init.name) {
+                                    self.errors.push(TypeError::PrivateFieldAccess {
+                                        ty: name.clone(),
+                                        field: field_init.name.clone(),
+                                        span: field_init.value.span,
+                                    });
+                                }
+                            }
+                        }
 
                         if type_params.is_empty() {
                             // Non-generic struct: constrain directly
@@ -925,6 +940,7 @@ impl TypeChecker {
                     field: field.clone(),
                     expected: field_ty.clone(),
                     span: expr.span,
+                    self_type: self.current_self_type.clone(),
                 });
                 // Flatten: if field is already Option<T>, return Option<T> not Option<Option<T>>
                 let resolved_field = self.ctx.apply(&field_ty);
@@ -1544,6 +1560,7 @@ impl TypeChecker {
             field: field.to_string(),
             expected: field_ty.clone(),
             span,
+            self_type: self.current_self_type.clone(),
         });
 
         field_ty
