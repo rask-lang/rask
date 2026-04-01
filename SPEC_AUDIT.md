@@ -187,21 +187,41 @@ No ARM, no WASM codegen paths. Cranelift supports them, but the compiler doesn't
 
 ## Stdlib Gaps (interp has more coverage than codegen)
 
-### Testing framework (std.testing T1–B2)
+### Completely missing subsystems (0% implemented)
 
-- `test` blocks parsed but: no parallel execution (T7), no seeded random (T8), no `check` (soft assert, A2), no `skip()`/`expect_fail()` (T12–T13), no `benchmark` blocks (B1–B2), no doc test extraction (T14–T15), no subtests (T10)
+**Encoding (std.encoding)** — No stub file. No `Encode`/`Decode` traits, no auto-derive, no field annotations (`@rename`, `@skip`, `@default`, `@tag`). Blocked on `comptime for` + reflection (gap #6 above).
 
-### Formatting (std.fmt)
+**Formatting (std.fmt)** — No stub file. No `format(template, ...args)` with compile-time checking, no format specifiers (`{:?}`, `{:x}`, `{:>10}`, `{:.3}`), no `Displayable`/`Debug` traits, no named interpolation in `println()`. Current state: basic `print()`/`println()` with string args only.
 
-- `format()` with interpolation partially works in interp. Codegen dispatch limited to basic `to_string` conversions. No format specifiers (width, precision, padding).
+**Testing (std.testing)** — No stub file. No `test` block execution infrastructure, no `check` (soft assert, A2), no `skip()`/`expect_fail()` (T12–T13), no `benchmark` blocks (B1–B2), no doc test extraction (T14–T15), no subtests (T10), no parallel execution (T7), no seeded random (T8).
 
-### I/O (std.io)
+### Significantly incomplete (20–50% implemented)
 
-- `Reader`/`Writer` traits not exposed as user-implementable. Buffered I/O wrappers not in stdlib.
+**I/O (std.io ~20%)** — No `Reader`/`Writer` traits. No `BufReader`/`BufWriter`. No `Stdin`/`Stdout`/`Stderr` as linear resources. No `Buffer` type. No `io.copy()`. File has `read_all()` but doesn't formally implement traits.
+
+**Strings (std.strings ~40%)** — Core string type works, but missing: `string_builder` type, `string_view` type (lightweight indices), `StringPool` type, `cstring` type and `c"literal"` syntax, `from_utf8()` validation, `char_count()`, `is_ascii()` with caching.
+
+**OS (std.os ~50%)** — Env/args/exit/platform work. Missing: `Command` builder for subprocess spawning, `Process` as `@resource` with `wait()`/`kill_and_wait()`, `Signal` enum, `os.on_signal()` handler, `os.set_env()`/`os.remove_env()`.
+
+### Mostly complete with notable gaps (60–85%)
+
+**Collections (std.collections ~85%)** — Core Vec/Map/Pool work. Missing: `try_push()`/`try_insert()` error variants, `AllocError` enum, `vec.with()` block syntax, `vec.modify_many()`, `SliceDescriptor<T>` type, `vec.shrink_to_fit()`.
+
+**Time (std.time ~75%)** — `Duration` and `Instant` work. Missing: `SystemTime` type entirely (only `Instant` exists), `Duration.from_secs_f64()`, arithmetic operators on Duration.
+
+**FS (std.fs ~75%)** — Read/write/append/list work. Missing: `OpenOptions` builder pattern, `Metadata` struct (`is_file`, `is_dir`, `size`, `modified`), `DirEntry` struct, `File` doesn't implement Reader/Writer traits.
+
+**Net (std.net ~70%)** — TCP listener/connection work. Missing: `UdpSocket` entirely, `net.resolve()` DNS resolution.
+
+**HTTP (std.http ~65%)** — Basic server/client work. Missing: `Request.query_param()`/`query_params()`, `HttpClient` builder, `Responder` as `@resource` linear handle, `http.listen_and_serve()`.
+
+**JSON (std.json ~70%)** — Parse/stringify work. Missing: typed `encode()`/`decode()` depends on missing Encode/Decode traits, field annotations depend on encoding spec.
+
+**CLI (std.cli ~60%)** — Quick API works. Missing: `cli.Parser` builder pattern, auto-generated `--help`/`--version`, `CliError` enum.
 
 ### Bits (std.bits)
 
-- Binary parsing utilities specified but not implemented (tied to `@binary` gap above).
+Binary parsing utilities specified but not implemented (tied to `@binary` gap above).
 
 ---
 
