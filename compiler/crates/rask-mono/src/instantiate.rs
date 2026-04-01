@@ -230,8 +230,8 @@ impl TypeSubstitutor {
                     init: self.clone_expr(init),
                 },
 
-                StmtKind::LetTuple { names, init } => StmtKind::LetTuple {
-                    names: names.clone(),
+                StmtKind::LetTuple { patterns, init } => StmtKind::LetTuple {
+                    patterns: patterns.clone(),
                     init: self.clone_expr(init),
                 },
 
@@ -247,8 +247,8 @@ impl TypeSubstitutor {
                     init: self.clone_expr(init),
                 },
 
-                StmtKind::ConstTuple { names, init } => StmtKind::ConstTuple {
-                    names: names.clone(),
+                StmtKind::ConstTuple { patterns, init } => StmtKind::ConstTuple {
+                    patterns: patterns.clone(),
                     init: self.clone_expr(init),
                 },
 

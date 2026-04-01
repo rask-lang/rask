@@ -37,16 +37,16 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            StmtKind::LetTuple { names, init } => {
+            StmtKind::LetTuple { patterns, init } => {
                 let value = self.eval_expr(init)?;
-                self.destructure_tuple(names, value)
+                self.destructure_tuple_pats(patterns, value)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
             }
 
-            StmtKind::ConstTuple { names, init } => {
+            StmtKind::ConstTuple { patterns, init } => {
                 let value = self.eval_expr(init)?;
-                self.destructure_tuple(names, value)
+                self.destructure_tuple_pats(patterns, value)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
             }
@@ -150,10 +150,22 @@ impl Interpreter {
                 self.env.pop_scope();
             },
 
-            StmtKind::Break { value, .. } => {
+            StmtKind::Break { label, value } => {
                 let val = match value {
                     Some(expr) => self.eval_expr(expr)?,
-                    None => Value::Unit,
+                    None => {
+                        // Ambiguity: `break ident` parsed as label — if the label
+                        // is actually a variable name, evaluate it as a value.
+                        if let Some(name) = label {
+                            if let Some(v) = self.env.get(name) {
+                                v.clone()
+                            } else {
+                                Value::Unit
+                            }
+                        } else {
+                            Value::Unit
+                        }
+                    }
                 };
                 Err(RuntimeDiagnostic::new(RuntimeError::Break(val), stmt.span))
             }

@@ -251,20 +251,21 @@ impl<'a> OwnershipChecker<'a> {
                     self.resource_bindings.insert(name.clone());
                 }
             }
-            StmtKind::LetTuple { names, init } => {
+            StmtKind::LetTuple { patterns, init } => {
                 self.check_expr(init);
                 self.handle_assignment(init, stmt.span, true);
+                let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
                 let elem_types = match self.program.node_types.get(&init.id) {
                     Some(Type::Tuple(elems)) => Some(elems.clone()),
                     _ => None,
                 };
                 for (i, name) in names.iter().enumerate() {
-                    self.bindings.insert(name.clone(), BindingState::Owned);
+                    self.bindings.insert(name.to_string(), BindingState::Owned);
                     if let Some(ref elems) = elem_types {
                         if let Some(elem_ty) = elems.get(i) {
-                            self.binding_types.insert(name.clone(), elem_ty.clone());
+                            self.binding_types.insert(name.to_string(), elem_ty.clone());
                             if self.type_is_resource(elem_ty) {
-                                self.resource_bindings.insert(name.clone());
+                                self.resource_bindings.insert(name.to_string());
                             }
                         }
                     }
@@ -288,20 +289,21 @@ impl<'a> OwnershipChecker<'a> {
                     self.resource_bindings.insert(name.clone());
                 }
             }
-            StmtKind::ConstTuple { names, init } => {
+            StmtKind::ConstTuple { patterns, init } => {
                 self.check_expr(init);
                 self.handle_assignment(init, stmt.span, false);
+                let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
                 let elem_types = match self.program.node_types.get(&init.id) {
                     Some(Type::Tuple(elems)) => Some(elems.clone()),
                     _ => None,
                 };
                 for (i, name) in names.iter().enumerate() {
-                    self.bindings.insert(name.clone(), BindingState::Owned);
+                    self.bindings.insert(name.to_string(), BindingState::Owned);
                     if let Some(ref elems) = elem_types {
                         if let Some(elem_ty) = elems.get(i) {
-                            self.binding_types.insert(name.clone(), elem_ty.clone());
+                            self.binding_types.insert(name.to_string(), elem_ty.clone());
                             if self.type_is_resource(elem_ty) {
-                                self.resource_bindings.insert(name.clone());
+                                self.resource_bindings.insert(name.to_string());
                             }
                         }
                     }

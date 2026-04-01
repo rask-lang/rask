@@ -2222,6 +2222,26 @@ impl Parser {
         op
     }
 
+    /// Parse a single element in a tuple destructuring pattern.
+    /// Supports names, wildcards `_`, and nested tuples `(a, b)`.
+    fn parse_tuple_pat_element(&mut self) -> Result<rask_ast::stmt::TuplePat, ParseError> {
+        use rask_ast::stmt::TuplePat;
+        if self.match_token(&TokenKind::LParen) {
+            let mut pats = Vec::new();
+            loop {
+                pats.push(self.parse_tuple_pat_element()?);
+                if !self.match_token(&TokenKind::Comma) { break; }
+            }
+            self.expect(&TokenKind::RParen)?;
+            Ok(TuplePat::Nested(pats))
+        } else if matches!(self.current_kind(), TokenKind::Ident(s) if s == "_") {
+            self.advance();
+            Ok(TuplePat::Wildcard)
+        } else {
+            Ok(TuplePat::Name(self.expect_ident()?))
+        }
+    }
+
     fn parse_let_stmt(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Let)?;
 
@@ -2237,16 +2257,16 @@ impl Parser {
         }
 
         if self.match_token(&TokenKind::LParen) {
-            let mut names = Vec::new();
+            let mut patterns = Vec::new();
             loop {
-                names.push(self.expect_ident()?);
+                patterns.push(self.parse_tuple_pat_element()?);
                 if !self.match_token(&TokenKind::Comma) { break; }
             }
             self.expect(&TokenKind::RParen)?;
             self.expect(&TokenKind::Eq)?;
             let init = self.parse_expr()?;
             self.expect_terminator()?;
-            return Ok(StmtKind::LetTuple { names, init });
+            return Ok(StmtKind::LetTuple { patterns, init });
         }
 
         let name_span = self.current().span;
@@ -2290,16 +2310,16 @@ impl Parser {
         self.expect(&TokenKind::Const)?;
 
         if self.match_token(&TokenKind::LParen) {
-            let mut names = Vec::new();
+            let mut patterns = Vec::new();
             loop {
-                names.push(self.expect_ident()?);
+                patterns.push(self.parse_tuple_pat_element()?);
                 if !self.match_token(&TokenKind::Comma) { break; }
             }
             self.expect(&TokenKind::RParen)?;
             self.expect(&TokenKind::Eq)?;
             let init = self.parse_expr()?;
             self.expect_terminator()?;
-            return Ok(StmtKind::ConstTuple { names, init });
+            return Ok(StmtKind::ConstTuple { patterns, init });
         }
 
         let name_span = self.current().span;
@@ -2363,9 +2383,28 @@ impl Parser {
         }
 
         if let TokenKind::Ident(name) = self.current_kind().clone() {
+            // Disambiguate: `break label expr` vs `break value_expr`
+            // If the ident is followed by a clear infix operator, it's a value expr.
+            // Note: Minus excluded — `break label -1` is label + negative value.
+            let next_is_infix = matches!(self.peek(1),
+                TokenKind::Plus | TokenKind::Star | TokenKind::Slash |
+                TokenKind::Percent | TokenKind::EqEq | TokenKind::BangEq |
+                TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq |
+                TokenKind::AmpAmp | TokenKind::PipePipe | TokenKind::Dot | TokenKind::LParen |
+                TokenKind::LBracket | TokenKind::DotDot
+            );
+            if next_is_infix {
+                // `break expr` — parse whole thing as value expression
+                let value = self.parse_expr()?;
+                self.expect_terminator()?;
+                return Ok(StmtKind::Break { label: None, value: Some(value) });
+            }
+
             self.advance();
-            if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
-                // `break ident` — could be label or value; treat as label (like before)
+            if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end()
+                || self.check(&TokenKind::RBrace) || self.check(&TokenKind::Comma)
+            {
+                // `break ident` at end of statement — treat as label
                 self.expect_terminator()?;
                 Ok(StmtKind::Break { label: Some(name), value: None })
             } else if self.is_expr_start() {
@@ -2672,6 +2711,35 @@ impl Parser {
 
             TokenKind::Ident(name) => {
                 self.advance();
+
+                // Labeled loop/for/while expression: `label: loop { ... }`
+                if self.check(&TokenKind::Colon)
+                    && matches!(self.peek(1), TokenKind::Loop | TokenKind::For | TokenKind::While)
+                {
+                    self.advance(); // consume ':'
+                    let label = Some(name);
+                    match self.current_kind() {
+                        TokenKind::Loop => {
+                            self.advance();
+                            self.skip_newlines();
+                            let body = self.parse_block_body()?;
+                            let end = self.tokens[self.pos - 1].span.end;
+                            return Ok(Expr {
+                                id: self.next_id(),
+                                kind: ExprKind::Loop { label, body },
+                                span: Span::new(start, end),
+                            });
+                        }
+                        _ => {
+                            return Err(ParseError::not_implemented(
+                                "labeled for/while expressions",
+                                "only labeled `loop` expressions are supported",
+                                Span::new(start, self.current().span.end),
+                            ));
+                        }
+                    }
+                }
+
                 let mut full_name = name.clone();
 
                 // Parse generic arguments: ident<T>(...), Type<T>.method(), Type<T> { ... }
@@ -3404,13 +3472,25 @@ impl Parser {
                 if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
                     StmtKind::Break { label: None, value: None }
                 } else if let TokenKind::Ident(name) = self.current_kind().clone() {
-                    self.advance();
-                    if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
-                        StmtKind::Break { label: Some(name), value: None }
-                    } else if self.is_expr_start() {
-                        StmtKind::Break { label: Some(name), value: Some(self.parse_expr()?) }
+                    // Disambiguate label vs value: if followed by infix op, it's a value
+                    let next_is_infix = matches!(self.peek(1),
+                        TokenKind::Plus | TokenKind::Star | TokenKind::Slash |
+                        TokenKind::Percent | TokenKind::EqEq | TokenKind::BangEq |
+                        TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq |
+                        TokenKind::AmpAmp | TokenKind::PipePipe | TokenKind::Dot | TokenKind::LParen |
+                        TokenKind::LBracket | TokenKind::DotDot
+                    );
+                    if next_is_infix {
+                        StmtKind::Break { label: None, value: Some(self.parse_expr()?) }
                     } else {
-                        StmtKind::Break { label: Some(name), value: None }
+                        self.advance();
+                        if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
+                            StmtKind::Break { label: Some(name), value: None }
+                        } else if self.is_expr_start() {
+                            StmtKind::Break { label: Some(name), value: Some(self.parse_expr()?) }
+                        } else {
+                            StmtKind::Break { label: Some(name), value: None }
+                        }
                     }
                 } else if self.is_expr_start() {
                     StmtKind::Break { label: None, value: Some(self.parse_expr()?) }

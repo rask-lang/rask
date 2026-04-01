@@ -181,16 +181,36 @@ impl TypeChecker {
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, expr.span));
 
+                // Type narrowing: if the condition is `opt is Some` (OPT10),
+                // rebind `opt` to the inner type inside the then-branch.
+                let narrowing = self.extract_is_some_narrowing(cond);
+
+                if let Some((ref var_name, ref inner_ty)) = narrowing {
+                    self.push_scope();
+                    self.define_local(var_name.clone(), inner_ty.clone());
+                }
                 let then_ty = self.infer_expr(then_branch);
+                if narrowing.is_some() {
+                    self.pop_scope();
+                }
 
                 if let Some(else_branch) = else_branch {
                     let else_ty = self.infer_expr(else_branch);
-                    self.ctx.add_constraint(TypeConstraint::Equal(
-                        then_ty.clone(),
-                        else_ty,
-                        expr.span,
-                    ));
-                    then_ty
+                    let resolved_then = self.ctx.apply(&then_ty);
+                    let resolved_else = self.ctx.apply(&else_ty);
+                    // Never coerces to any type (CF32) — don't constrain
+                    if matches!(resolved_else, Type::Never) {
+                        then_ty
+                    } else if matches!(resolved_then, Type::Never) {
+                        else_ty
+                    } else {
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            then_ty.clone(),
+                            else_ty,
+                            expr.span,
+                        ));
+                        then_ty
+                    }
                 } else {
                     Type::Unit
                 }
@@ -206,7 +226,15 @@ impl TypeChecker {
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 for (name, ty) in bindings {
-                    self.define_local(name, ty);
+                    if name.is_empty() {
+                        // OPT10: `if opt is Some` with no explicit binding —
+                        // rebind the original variable to the inner type.
+                        if let ExprKind::Ident(var_name) = &value.kind {
+                            self.define_local(var_name.clone(), ty);
+                        }
+                    } else {
+                        self.define_local(name, ty);
+                    }
                 }
                 let then_ty = self.infer_expr(then_branch);
                 self.pop_scope();
@@ -1071,7 +1099,9 @@ impl TypeChecker {
             }
         }
 
-        // Validate call-site annotations before type inference
+        // Call-site annotations (mutate/own) are optional — IDE shows ghost
+        // annotations but the compiler doesn't require them (spec decision).
+        // Validate when present, but don't error on missing annotations.
         self.check_call_annotations(func, args, span);
 
         // For generic function calls, create fresh type vars for each type param
@@ -1214,23 +1244,23 @@ impl TypeChecker {
             let param_name = &param_sym.name;
 
             match (&arg.mode, is_take, is_mutate) {
-                // Missing `own` annotation when parameter is `take`
-                (ArgMode::Default | ArgMode::Mutate, true, _) => {
-                    self.errors.push(TypeError::MissingOwnAnnotation {
+                // Missing annotations are OK — call-site markers are optional.
+                // IDE shows ghost annotations for visibility (spec decision).
+                (ArgMode::Default, true, _) => {}
+                (ArgMode::Default, _, true) => {}
+                // Correct annotations are fine
+                (ArgMode::Own, true, _) => {}
+                (ArgMode::Mutate, _, true) => {}
+                // Wrong annotation type: `mutate` where `take` expected
+                (ArgMode::Mutate, true, false) => {
+                    self.errors.push(TypeError::UnexpectedAnnotation {
+                        annotation: "mutate".to_string(),
                         param_name: param_name.clone(),
                         param_index: i,
                         span: arg.expr.span,
                     });
                 }
-                // Missing `mutate` annotation when parameter is `mutate`
-                (ArgMode::Default | ArgMode::Own, _, true) => {
-                    self.errors.push(TypeError::MissingMutateAnnotation {
-                        param_name: param_name.clone(),
-                        param_index: i,
-                        span: arg.expr.span,
-                    });
-                }
-                // Unexpected `own` annotation
+                // Unexpected `own` annotation on borrow param
                 (ArgMode::Own, false, _) => {
                     self.errors.push(TypeError::UnexpectedAnnotation {
                         annotation: "own".to_string(),
@@ -1239,7 +1269,7 @@ impl TypeChecker {
                         span: arg.expr.span,
                     });
                 }
-                // Unexpected `mutate` annotation
+                // Unexpected `mutate` annotation on borrow param
                 (ArgMode::Mutate, _, false) => {
                     self.errors.push(TypeError::UnexpectedAnnotation {
                         annotation: "mutate".to_string(),
@@ -1730,6 +1760,34 @@ impl TypeChecker {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Detect `opt is Some` (no bindings) in an if-condition and extract
+    /// the variable name and its narrowed inner type (OPT10 type narrowing).
+    /// Also handles `opt is Some` within `&&` chains.
+    fn extract_is_some_narrowing(&self, cond: &Expr) -> Option<(String, Type)> {
+        match &cond.kind {
+            ExprKind::IsPattern { expr: value, pattern } => {
+                // Only narrow for `is Some` with no explicit binding
+                if let Pattern::Constructor { name, fields } = pattern {
+                    if name == "Some" && fields.is_empty() {
+                        if let ExprKind::Ident(var_name) = &value.kind {
+                            let var_ty = self.lookup_local(var_name)?;
+                            let resolved = self.ctx.apply(&var_ty);
+                            if let Type::Option(inner) = &resolved {
+                                return Some((var_name.clone(), *inner.clone()));
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            // Handle `opt is Some && ...` — narrow on the left side
+            ExprKind::Binary { op: rask_ast::expr::BinOp::And, left, .. } => {
+                self.extract_is_some_narrowing(left)
+            }
+            _ => None,
         }
     }
 }

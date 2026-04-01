@@ -372,8 +372,9 @@ impl Hasher {
                 }
                 self.hash_expr(init);
             }
-            StmtKind::LetTuple { names, init } => {
+            StmtKind::LetTuple { patterns, init } => {
                 self.feed_tag(22);
+                let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
                 self.feed_u32(names.len() as u32);
                 for n in names {
                     self.feed_var(n);
@@ -391,8 +392,9 @@ impl Hasher {
                 }
                 self.hash_expr(init);
             }
-            StmtKind::ConstTuple { names, init } => {
+            StmtKind::ConstTuple { patterns, init } => {
                 self.feed_tag(24);
+                let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
                 self.feed_u32(names.len() as u32);
                 for n in names {
                     self.feed_var(n);

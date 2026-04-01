@@ -113,7 +113,7 @@ const VEC_METHODS: &[&str] = &[
     "filter", "map", "flat_map", "fold", "reduce",
     "enumerate", "zip", "limit", "flatten",
     "sort", "sort_by", "any", "all", "find", "position",
-    "dedup", "sum", "min", "max",
+    "dedup", "sum", "min", "max", "count", "take_all",
 ];
 
 const MAP_METHODS: &[&str] = &[

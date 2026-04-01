@@ -68,7 +68,7 @@ Moved Rust syntax rejection tests (`pub`, `fn`, `::`, `let mut`) to a new file `
 
 ## Test Results (interpreter)
 
-20 pass, 6 fail. Remaining failures are deeper compiler gaps (type narrowing, call-site policy).
+26 pass, 0 fail. All test suite tests pass.
 
 ### Fixed since initial audit
 
@@ -80,17 +80,12 @@ Moved Rust syntax rejection tests (`pub`, `fn`, `::`, `let mut`) to a new file `
 | t23 | Parser now supports `with...as...: expr` colon shorthand |
 | t24 | Shift ops use i32 semantics when operands fit i32 |
 | t25 (partial) | Parser supports `for mutate`, interpreter writes back values |
-
-### Remaining failures
-
-| Test | Issue | Category |
-|------|-------|----------|
-| t09 | `v[0] = 99` on const Vec rejected by type checker | type checker strictness |
-| t10 | `max` shadows builtin name | resolver policy |
-| t18 | Type narrowing after `is Some` not implemented (OPT10) | type checker feature |
-| t20 | Labeled `loop` expression, nested tuple destructuring not parsed | parser gap |
-| t22 | Test expects no call-site `mutate` annotation; compiler requires it | spec-vs-compiler policy |
-| t25 | `count()` on chained iterator, `take_all()` not in type checker | type checker registration |
+| t09 | Index assignment on const Vec allowed (interior mutation, not rebinding) |
+| t10 | User functions can shadow builtin function names (max, min, etc.) |
+| t18 | OPT10 type narrowing: `if opt is Some` rebinds `opt` to inner type |
+| t20 | Labeled loop expressions, nested tuple destructuring, break value disambiguation, Never coercion |
+| t22 | Call-site mutate/own annotations optional per spec |
+| t25 | `count()` and `take_all()` registered in type checker and stdlib registry |
 
 ## Spec Gaps (features with zero test coverage)
 

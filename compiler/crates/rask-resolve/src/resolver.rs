@@ -363,6 +363,23 @@ impl Resolver {
         false
     }
 
+    /// Check if a name refers to a builtin type or enum (not a builtin function).
+    /// User-defined functions can shadow builtin functions like `max`, `min`,
+    /// but not builtin types like `Vec`, `Map`, `Option`.
+    fn is_builtin_type_name(&self, name: &str) -> bool {
+        if let Some(sym_id) = self.scopes.lookup(name) {
+            if let Some(sym) = self.symbols.get(sym_id) {
+                return matches!(
+                    sym.kind,
+                    SymbolKind::BuiltinType { .. }
+                        | SymbolKind::BuiltinModule { .. }
+                ) || (matches!(sym.kind, SymbolKind::Enum { .. })
+                    && sym.span == Span::new(0, 0));
+            }
+        }
+        false
+    }
+
     fn resolve_inner(decls: &[Decl], stdlib_mode: bool) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
         resolver.stdlib_mode = stdlib_mode;
@@ -700,7 +717,9 @@ impl Resolver {
 
     fn declare_function(&mut self, fn_decl: &FnDecl, span: Span, is_pub: bool) -> SymbolId {
         let base = Self::base_name(&fn_decl.name).to_string();
-        if !self.stdlib_mode && self.is_builtin_name(&base) {
+        // User functions can shadow builtin functions (max, min, etc.)
+        // but not builtin types (Vec, Map, etc.)
+        if !self.stdlib_mode && self.is_builtin_type_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
 
@@ -1253,32 +1272,32 @@ impl Resolver {
                     self.errors.push(e);
                 }
             }
-            StmtKind::LetTuple { names, init } => {
+            StmtKind::LetTuple { patterns, init } => {
                 self.resolve_expr(init);
-                for name in names {
+                for name in rask_ast::stmt::tuple_pats_flat_names(patterns) {
                     let sym_id = self.symbols.insert(
-                        name.clone(),
+                        name.to_string(),
                         SymbolKind::Variable { mutable: true },
                         None,
                         stmt.span,
                         false,
                     );
-                    if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
+                    if let Err(e) = self.scopes.define(name.to_string(), sym_id, stmt.span) {
                         self.errors.push(e);
                     }
                 }
             }
-            StmtKind::ConstTuple { names, init } => {
+            StmtKind::ConstTuple { patterns, init } => {
                 self.resolve_expr(init);
-                for name in names {
+                for name in rask_ast::stmt::tuple_pats_flat_names(patterns) {
                     let sym_id = self.symbols.insert(
-                        name.clone(),
+                        name.to_string(),
                         SymbolKind::Variable { mutable: false },
                         None,
                         stmt.span,
                         false,
                     );
-                    if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
+                    if let Err(e) = self.scopes.define(name.to_string(), sym_id, stmt.span) {
                         self.errors.push(e);
                     }
                 }
@@ -1298,7 +1317,14 @@ impl Resolver {
             StmtKind::Break { label, value } => {
                 if let Some(lbl) = label {
                     if !self.scopes.label_in_scope(lbl) {
-                        self.errors.push(ResolveError::invalid_break(Some(lbl.clone()), stmt.span));
+                        // Ambiguity: `break ident` parsed with ident as label,
+                        // but it's not a known label. If we're in a loop, this
+                        // is likely `break value` — suppress the error and let
+                        // the interpreter/type-checker treat the label as a value.
+                        if !self.scopes.in_loop() {
+                            self.errors.push(ResolveError::invalid_break(Some(lbl.clone()), stmt.span));
+                        }
+                        // else: silently allow — interpreter handles reinterpretation
                     }
                 } else if !self.scopes.in_loop() {
                     self.errors.push(ResolveError::invalid_break(None, stmt.span));
@@ -1818,8 +1844,8 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            ExprKind::Loop { body, .. } => {
-                self.scopes.push(ScopeKind::Block);
+            ExprKind::Loop { label, body } => {
+                self.scopes.push(ScopeKind::Loop { label: label.clone() });
                 for stmt in body {
                     self.resolve_stmt(stmt);
                 }

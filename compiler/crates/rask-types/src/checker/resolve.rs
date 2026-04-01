@@ -1478,6 +1478,14 @@ impl TypeChecker {
                 let opt_ty = Type::Option(Box::new(Type::I64));
                 self.unify(ret, &opt_ty, span)
             }
+            // vec.count() -> u64
+            "count" if args.is_empty() => {
+                self.unify(ret, &Type::U64, span)
+            }
+            // vec.take_all() -> Vec<T> (consuming iteration)
+            "take_all" if args.is_empty() => {
+                self.unify(ret, &self_ty, span)
+            }
             // vec.sum() -> T
             "sum" if args.is_empty() => {
                 self.unify(ret, &inner_type, span)

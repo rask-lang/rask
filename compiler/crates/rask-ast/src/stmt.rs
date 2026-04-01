@@ -21,6 +21,17 @@ pub enum ForBinding {
     Tuple(Vec<String>),
 }
 
+/// Pattern element in tuple destructuring: `const (a, (b, c), _) = ...`
+#[derive(Debug, Clone)]
+pub enum TuplePat {
+    /// Named binding
+    Name(String),
+    /// Wildcard `_`
+    Wildcard,
+    /// Nested tuple: `(b, c)`
+    Nested(Vec<TuplePat>),
+}
+
 impl ForBinding {
     /// Whether the binding is mutable (`for mutate x in ...`).
     /// Stored separately in StmtKind::For.
@@ -30,6 +41,22 @@ impl ForBinding {
             ForBinding::Tuple(ns) => ns.iter().map(|n| n.as_str()).collect(),
         }
     }
+}
+
+impl TuplePat {
+    /// Collect all named bindings (flattened), skipping wildcards.
+    pub fn flat_names(&self) -> Vec<&str> {
+        match self {
+            TuplePat::Name(n) => vec![n.as_str()],
+            TuplePat::Wildcard => vec![],
+            TuplePat::Nested(pats) => pats.iter().flat_map(|p| p.flat_names()).collect(),
+        }
+    }
+}
+
+/// Collect all named bindings from a list of TuplePat elements.
+pub fn tuple_pats_flat_names(pats: &[TuplePat]) -> Vec<&str> {
+    pats.iter().flat_map(|p| p.flat_names()).collect()
 }
 
 /// The kind of statement.
@@ -46,7 +73,7 @@ pub enum StmtKind {
     },
     /// Let tuple destructuring
     LetTuple {
-        names: Vec<String>,
+        patterns: Vec<TuplePat>,
         init: Expr,
     },
     /// Const binding (immutable)
@@ -58,7 +85,7 @@ pub enum StmtKind {
     },
     /// Const tuple destructuring
     ConstTuple {
-        names: Vec<String>,
+        patterns: Vec<TuplePat>,
         init: Expr,
     },
     /// Assignment
