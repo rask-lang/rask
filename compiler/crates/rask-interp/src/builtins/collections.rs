@@ -59,7 +59,7 @@ impl Interpreter {
                     }),
                 }
             }
-            "len" => Ok(Value::Int(v.lock().unwrap().len() as i64)),
+            "len" | "count" => Ok(Value::Int(v.lock().unwrap().len() as i64)),
             "get" => {
                 let idx = self.expect_int(&args, 0)? as usize;
                 match v.lock().unwrap().get(idx).cloned() {

@@ -324,6 +324,7 @@ fn fmt_normalizes_spacing() {
 
     let _ = Command::new(&rask)
         .arg("fmt")
+        .arg("-w")
         .arg(&tmp)
         .output()
         .expect("failed to run rask fmt");

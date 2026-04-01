@@ -2066,10 +2066,11 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_function_shadowing_error() {
+    fn test_builtin_function_shadowing_allowed() {
+        // User functions can shadow builtin functions (println, max, min, etc.)
         let decls = vec![make_fn_decl("println")];
         let result = Resolver::resolve(&decls);
-        assert!(result.is_err(), "Shadowing built-in function should fail");
+        assert!(result.is_ok(), "Shadowing built-in function should be allowed");
     }
 
     #[test]
