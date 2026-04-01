@@ -176,6 +176,10 @@ impl Interpreter {
             }
             Value::Struct(..) if method == "clone" => return Ok(receiver.deep_clone()),
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),
+            // E9: .discriminant() returns variant index as u16
+            Value::Enum { variant_index, .. } if method == "discriminant" => {
+                return Ok(Value::Int(*variant_index as i64));
+            }
             _ => {}
         }
 

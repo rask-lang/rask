@@ -322,6 +322,9 @@ impl TypeChecker {
                                 span,
                             })
                         }
+                    } else if method == "discriminant" && args.is_empty() {
+                        // E9: .discriminant() returns u16 variant index
+                        self.unify(&Type::U16, &ret, span)
                     } else {
                         Err(TypeError::NoSuchMethod {
                             ty,

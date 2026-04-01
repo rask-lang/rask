@@ -1258,6 +1258,12 @@ impl<'a> MirLowerer<'a> {
         let loop_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
+        // CF25: allocate result slot so break-with-value can store to it
+        let result_local = self.builder.alloc_local(
+            "__loop_result".to_string(),
+            MirType::I64,
+        );
+
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: loop_block,
         }));
@@ -1268,7 +1274,7 @@ impl<'a> MirLowerer<'a> {
             label: label.map(|s| s.to_string()),
             continue_block: loop_block,
             exit_block,
-            result_local: None,
+            result_local: Some(result_local),
         });
 
         for stmt in body {
