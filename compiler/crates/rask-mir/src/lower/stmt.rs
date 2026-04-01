@@ -210,10 +210,10 @@ impl<'a> MirLowerer<'a> {
             StmtKind::For {
                 label,
                 binding,
+                mutate,
                 iter,
                 body,
-                ..
-            } => self.lower_for(label.as_deref(), binding, iter, body),
+            } => self.lower_for(label.as_deref(), binding, *mutate, iter, body),
 
             // Infinite loop
             StmtKind::Loop { label, body } => self.lower_loop(label.as_deref(), body),
@@ -751,6 +751,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         label: Option<&str>,
         binding: &ForBinding,
+        mutate: bool,
         iter_expr: &Expr,
         body: &[Stmt],
     ) -> Result<(), LoweringError> {
@@ -861,6 +862,21 @@ impl<'a> MirLowerer<'a> {
         let inc_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
+        // For `for mutate`, create writeback blocks that call Vec_set
+        // before continuing or breaking out of the loop.
+        let (wb_block, break_wb_block) = if mutate && !is_array {
+            let wb = self.builder.create_block();
+            let break_wb = self.builder.create_block();
+            (Some(wb), Some(break_wb))
+        } else {
+            (None, None)
+        };
+
+        // continue target: writeback block (if mutate), otherwise inc_block
+        let continue_target = wb_block.unwrap_or(inc_block);
+        // break target: break-writeback block (if mutate), otherwise exit_block
+        let break_target = break_wb_block.unwrap_or(exit_block);
+
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         // check: _i < _len
@@ -957,15 +973,45 @@ impl<'a> MirLowerer<'a> {
 
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
-            continue_block: inc_block,
-            exit_block,
+            continue_block: continue_target,
+            exit_block: break_target,
             result_local: None,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_target }));
+
+        // Writeback blocks for `for mutate`: Vec_set(collection, idx, binding_local)
+        if let Some(wb) = wb_block {
+            // Normal/continue writeback → inc
+            self.builder.switch_to_block(wb);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Vec_set".to_string()),
+                args: vec![
+                    MirOperand::Local(collection),
+                    MirOperand::Local(idx),
+                    MirOperand::Local(binding_local),
+                ],
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
+        }
+        if let Some(break_wb) = break_wb_block {
+            // Break writeback → exit
+            self.builder.switch_to_block(break_wb);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Vec_set".to_string()),
+                args: vec![
+                    MirOperand::Local(collection),
+                    MirOperand::Local(idx),
+                    MirOperand::Local(binding_local),
+                ],
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
+        }
 
         // inc: _i = _i + 1
         self.builder.switch_to_block(inc_block);

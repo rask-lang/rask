@@ -1121,9 +1121,10 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
-                // .ok(): Result<T,E> → Option<T> (pass through as-is since runtime
-                // results aren't wrapped yet)
-                if method == "ok" && args.is_empty() {
+                // .ok() / .to_option(): Result<T,E> → Option<T>
+                // Pass through as-is — runtime uses the same tagged-union layout
+                // (tag 0 = Ok/Some, tag 1 = Err/None).
+                if (method == "ok" || method == "to_option") && args.is_empty() {
                     return Ok((obj_op, obj_ty));
                 }
 
