@@ -1261,6 +1261,8 @@ impl ComptimeInterpreter {
             StmtKind::WhileLet { .. } => {
                 Err(ComptimeError::NotSupported("while-let at comptime".to_string()))
             }
+
+            StmtKind::Discard { .. } => Ok(ControlFlow::Normal(ComptimeValue::Unit)),
         }
     }
 

@@ -216,6 +216,12 @@ impl Default for ErrorCodeRegistry {
                 "E0806" => ("move from borrowed parameter", Ownership,
                     "A borrowed parameter was used in a context that requires ownership. Parameters are borrowed by default — the caller retains ownership. Use `take` to transfer ownership into the function.",
                     "func push(self, value: T) {\n    self.data[i] = value  // error: value is borrowed\n}\n// fix: func push(self, take value: T)"),
+                "E0811" => ("use after discard", Ownership,
+                    "`discard` explicitly drops a value and invalidates its binding. Using the binding after `discard` is a compile error (D1).",
+                    "const data = load_data()\ndiscard data\nprintln(data)  // error: use of discarded value"),
+                "E0812" => ("discard resource type", Ownership,
+                    "Resource types (@resource) must be consumed properly via their consuming method (.close(), .release(), etc). `discard` on a resource type is a compile error (D3).",
+                    "@resource\nstruct File { fd: i32 }\nconst f = File { fd: 1 }\ndiscard f  // error: use f.close() instead"),
             },
         }
     }

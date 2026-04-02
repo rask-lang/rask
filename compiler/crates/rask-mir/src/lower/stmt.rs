@@ -317,6 +317,18 @@ impl<'a> MirLowerer<'a> {
                 Ok(())
             }
 
+            // Discard (D1): value dropped, binding invalidated.
+            // At MIR level this is a no-op — the value becomes dead.
+            // Ownership checker handles use-after-discard errors.
+            StmtKind::Discard { name, .. } => {
+                // If the local exists, remove it from scope so later
+                // references fail during lowering rather than silently.
+                self.locals.remove(name);
+                Ok(())
+            }
+
+            StmtKind::Discard { .. } => Ok(()),
+
             // Comptime (compile-time evaluated)
             StmtKind::Comptime(stmts) => {
                 // Try to evaluate comptime if at compile time (CC1)

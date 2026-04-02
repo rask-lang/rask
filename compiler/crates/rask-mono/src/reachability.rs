@@ -288,6 +288,7 @@ impl<'a> Monomorphizer<'a> {
             }
             StmtKind::Break { value: Some(e), .. } => self.visit_expr(e),
             StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
+            StmtKind::Discard { .. } => {}
         }
     }
 

@@ -62,6 +62,15 @@ impl Environment {
         false
     }
 
+    /// Remove a variable from the environment (for `discard`).
+    pub fn remove(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.bindings.remove(name).is_some() {
+                return;
+            }
+        }
+    }
+
     /// Get a mutable reference to a variable (for in-place field assignment).
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
         for scope in self.scopes.iter_mut().rev() {

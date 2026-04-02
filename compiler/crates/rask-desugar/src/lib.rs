@@ -287,6 +287,7 @@ impl Desugarer {
                     self.desugar_stmt(s);
                 }
             }
+            StmtKind::Discard { .. } => {}
         }
     }
 

@@ -1283,6 +1283,10 @@ impl<'a> Printer<'a> {
                 self.emit_indent();
                 self.emit("}");
             }
+            StmtKind::Discard { name, .. } => {
+                self.emit("discard ");
+                self.emit(name);
+            }
         }
     }
 

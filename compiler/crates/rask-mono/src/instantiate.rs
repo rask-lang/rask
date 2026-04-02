@@ -318,6 +318,11 @@ impl TypeSubstitutor {
                 StmtKind::Comptime(stmts) => {
                     StmtKind::Comptime(stmts.iter().map(|s| self.clone_stmt(s)).collect())
                 }
+
+                StmtKind::Discard { name, name_span } => StmtKind::Discard {
+                    name: name.clone(),
+                    name_span: name_span.clone(),
+                },
             },
             span: stmt.span.clone(),
         }

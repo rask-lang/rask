@@ -371,6 +371,20 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Comptime(body) => {
                 self.check_block(body);
             }
+            StmtKind::Discard { name, .. } => {
+                // D3: resource types cannot be discarded
+                if self.resource_bindings.contains(name) {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::DiscardResource {
+                            name: name.clone(),
+                        },
+                        span: stmt.span,
+                    });
+                } else {
+                    // Mark the binding as discarded — subsequent uses are errors
+                    self.bindings.insert(name.clone(), BindingState::Discarded { at: stmt.span });
+                }
+            }
         }
     }
 
@@ -379,18 +393,30 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Ident(name) => {
                 // Check if this identifier is used after move
                 if let Some(state) = self.bindings.get(name) {
-                    if let BindingState::Moved { at } = state {
-                        let reason = self.program.node_types.get(&expr.id)
-                            .map(|ty| self.move_reason(ty))
-                            .unwrap_or_else(|| self.move_reason_for(name));
-                        self.errors.push(OwnershipError {
-                            kind: OwnershipErrorKind::UseAfterMove {
-                                name: name.clone(),
-                                moved_at: *at,
-                                reason,
-                            },
-                            span: expr.span,
-                        });
+                    match state {
+                        BindingState::Moved { at } => {
+                            let reason = self.program.node_types.get(&expr.id)
+                                .map(|ty| self.move_reason(ty))
+                                .unwrap_or_else(|| self.move_reason_for(name));
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::UseAfterMove {
+                                    name: name.clone(),
+                                    moved_at: *at,
+                                    reason,
+                                },
+                                span: expr.span,
+                            });
+                        }
+                        BindingState::Discarded { at } => {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::UseAfterDiscard {
+                                    name: name.clone(),
+                                    discarded_at: *at,
+                                },
+                                span: expr.span,
+                            });
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -908,6 +934,16 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                                 return;
                             }
+                            BindingState::Discarded { at } => {
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::UseAfterDiscard {
+                                        name: source_name.clone(),
+                                        discarded_at: *at,
+                                    },
+                                    span,
+                                });
+                                return;
+                            }
                             BindingState::Owned => {}
                         }
                     }
@@ -1015,6 +1051,15 @@ impl<'a> OwnershipChecker<'a> {
                             name: source_name,
                             moved_at: *at,
                             reason,
+                        },
+                        span,
+                    });
+                }
+                BindingState::Discarded { at } => {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::UseAfterDiscard {
+                            name: source_name,
+                            discarded_at: *at,
                         },
                         span,
                     });
@@ -1467,7 +1512,7 @@ impl<'a> OwnershipChecker<'a> {
                 for s in body { self.collect_free_vars_stmt(s, locals, out); }
             }
             StmtKind::Return(None) | StmtKind::Break { value: None, .. }
-            | StmtKind::Continue(_) => {}
+            | StmtKind::Continue(_) | StmtKind::Discard { .. } => {}
         }
     }
 

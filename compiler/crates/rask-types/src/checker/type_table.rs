@@ -204,9 +204,15 @@ impl TypeTable {
     /// Check if a type name refers to a `@resource` struct.
     pub fn is_resource_type(&self, name: &str) -> bool {
         if let Some(&id) = self.type_names.get(name) {
-            if let Some(TypeDef::Struct { is_resource, .. }) = self.types.get(id.0 as usize) {
-                return *is_resource;
-            }
+            return self.is_resource_type_by_id(id);
+        }
+        false
+    }
+
+    /// Check if a TypeId refers to a `@resource` struct.
+    pub fn is_resource_type_by_id(&self, id: TypeId) -> bool {
+        if let Some(TypeDef::Struct { is_resource, .. }) = self.types.get(id.0 as usize) {
+            return *is_resource;
         }
         false
     }

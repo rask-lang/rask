@@ -270,6 +270,7 @@ impl Parser {
             // Other
             TokenKind::Extern => "extern".to_string(),
             TokenKind::Asm => "asm".to_string(),
+            TokenKind::Discard => "discard".to_string(),
             // Build system
             TokenKind::Package => "package".to_string(),
             TokenKind::Scope => "scope".to_string(),
@@ -2163,6 +2164,7 @@ impl Parser {
             TokenKind::For => self.parse_for_stmt(label)?,
             TokenKind::Ensure => self.parse_ensure_stmt()?,
             TokenKind::Comptime => self.parse_comptime_stmt()?,
+            TokenKind::Discard => self.parse_discard_stmt()?,
             TokenKind::If => {
                 let expr = self.parse_if_expr()?;
                 self.expect_terminator()?;
@@ -2369,6 +2371,18 @@ impl Parser {
 
         self.expect_terminator()?;
         Ok(StmtKind::Const { name, name_span, ty, init })
+    }
+
+    fn parse_discard_stmt(&mut self) -> Result<StmtKind, ParseError> {
+        self.expect(&TokenKind::Discard)?;
+        let name_start = self.current().span.start;
+        let name = self.expect_ident()?;
+        let name_end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(name_start);
+        self.expect_terminator()?;
+        Ok(StmtKind::Discard {
+            name,
+            name_span: Span::new(name_start, name_end),
+        })
     }
 
     fn parse_return_stmt(&mut self) -> Result<StmtKind, ParseError> {

@@ -79,6 +79,15 @@ impl TypeChecker {
             ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),
 
             ExprKind::Ident(name) => {
+                // D1: use after discard is a compile error
+                if let Some(&discard_span) = self.discarded_bindings.get(name.as_str()) {
+                    self.errors.push(TypeError::UseAfterDiscard {
+                        name: name.clone(),
+                        discarded_at: discard_span,
+                        span: expr.span,
+                    });
+                    return Type::Error;
+                }
                 if let Some(ty) = self.lookup_local(name) {
                     ty
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {

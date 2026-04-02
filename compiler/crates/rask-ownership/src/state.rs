@@ -12,6 +12,8 @@ pub enum BindingState {
     Moved { at: Span },
     /// The value is currently borrowed.
     Borrowed { mode: BorrowMode, scope: BorrowScope },
+    /// The value was explicitly discarded; any use is an error (D1).
+    Discarded { at: Span },
 }
 
 /// Whether a borrow is shared (read-only) or exclusive (mutable).

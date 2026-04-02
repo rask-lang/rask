@@ -1288,6 +1288,7 @@ impl<'a> MirLowerer<'a> {
             StmtKind::Comptime(body) => {
                 self.walk_free_vars_block(body, bound, seen, free);
             }
+            StmtKind::Discard { .. } => {}
         }
     }
 }

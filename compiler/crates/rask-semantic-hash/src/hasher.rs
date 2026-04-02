@@ -500,6 +500,10 @@ impl Hasher {
                 self.feed_tag(34);
                 self.hash_stmts(body);
             }
+            StmtKind::Discard { name, .. } => {
+                self.feed_tag(35);
+                self.feed_str(name);
+            }
         }
     }
 
