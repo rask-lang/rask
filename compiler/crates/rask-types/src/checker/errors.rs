@@ -221,4 +221,18 @@ pub enum TypeError {
         discarded_at: Span,
         span: Span,
     },
+
+    /// SP3: zero step on range
+    #[error("zero step")]
+    ZeroStep {
+        span: Span,
+    },
+
+    /// ER26: @message variant missing coverage
+    #[error("@message variant `{variant}` has no message template and cannot auto-delegate")]
+    MessageCoverageMissing {
+        variant: String,
+        enum_name: String,
+        span: Span,
+    },
 }

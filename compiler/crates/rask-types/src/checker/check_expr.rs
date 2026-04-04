@@ -1387,6 +1387,25 @@ impl TypeChecker {
         let obj_ty = self.resolve_named(&obj_ty_raw);
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
 
+        // SP3: zero step on range is a compile error
+        if method == "step" {
+            let is_range = matches!(
+                &self.ctx.apply(&obj_ty),
+                Type::UnresolvedNamed(n) if n == "Range"
+            );
+            if is_range {
+                if let Some(first_arg) = args.first() {
+                    let is_zero = matches!(
+                        &first_arg.expr.kind,
+                        rask_ast::expr::ExprKind::Int(0, _)
+                    );
+                    if is_zero {
+                        self.errors.push(TypeError::ZeroStep { span: first_arg.expr.span });
+                    }
+                }
+            }
+        }
+
         // Raw pointer methods — resolve directly instead of through HasMethod constraints
         let resolved_obj = self.ctx.apply(&obj_ty);
         if let Type::RawPtr(ref inner) = resolved_obj {
