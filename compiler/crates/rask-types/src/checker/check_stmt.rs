@@ -220,6 +220,30 @@ impl TypeChecker {
                 }
                 self.pop_scope();
             }
+            StmtKind::Discard { name, name_span } => {
+                if let Some(ty) = self.lookup_local(name) {
+                    let resolved = self.ctx.apply(&ty);
+                    // D3: @resource types cannot be discarded
+                    if self.is_resource_type(&resolved) {
+                        self.errors.push(TypeError::DiscardResourceType {
+                            name: name.clone(),
+                            ty: resolved,
+                            span: stmt.span,
+                        });
+                    }
+                    // D2: Copy types — accepted but semantically a no-op.
+                    // Warning emitted by the lint pass, not the type checker,
+                    // because D2 is advisory, not a blocking error.
+                    self.span_types.insert((name_span.start, name_span.end), ty);
+                    // D1: Invalidate the binding
+                    self.discarded_bindings.insert(name.clone(), stmt.span);
+                } else {
+                    self.errors.push(TypeError::UndefinedName {
+                        name: name.clone(),
+                        span: *name_span,
+                    });
+                }
+            }
         }
     }
 
@@ -274,6 +298,25 @@ impl TypeChecker {
                     }
                 }
             }
+        }
+    }
+
+    /// Check if a type is a primitive Copy type (trivially cleaned up).
+    fn is_copy_type(&self, ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::F32 | Type::F64 | Type::Char | Type::Unit
+        )
+    }
+
+    /// Check if a type is marked @resource.
+    fn is_resource_type(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Named(id) => self.types.is_resource_type_by_id(*id),
+            Type::UnresolvedNamed(name) => self.types.is_resource_type(name),
+            _ => false,
         }
     }
 }

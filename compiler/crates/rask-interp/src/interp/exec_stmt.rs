@@ -361,6 +361,12 @@ impl Interpreter {
 
             StmtKind::Ensure { .. } => Ok(Value::Unit),
 
+            StmtKind::Discard { name, .. } => {
+                // Remove the binding from the environment (D1: invalidates binding)
+                self.env.remove(name);
+                Ok(Value::Unit)
+            }
+
             StmtKind::Comptime(body) => {
                 self.env.push_scope();
                 let result = self.exec_stmts(body);

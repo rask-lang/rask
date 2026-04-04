@@ -134,4 +134,9 @@ pub enum StmtKind {
     },
     /// Comptime block (compile-time evaluated)
     Comptime(Vec<Stmt>),
+    /// Discard statement — explicitly drop a value and invalidate its binding (D1–D3)
+    Discard {
+        name: String,
+        name_span: Span,
+    },
 }

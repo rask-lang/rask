@@ -1427,6 +1427,9 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
+            StmtKind::Discard { .. } => {
+                // Name is resolved during type checking — nothing to do here
+            }
         }
     }
 

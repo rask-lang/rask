@@ -120,6 +120,19 @@ pub enum OwnershipErrorKind {
         collection: String,
         binding_span: Span,
     },
+
+    /// D1: use after discard
+    #[error("use of discarded value `{name}`")]
+    UseAfterDiscard {
+        name: String,
+        discarded_at: Span,
+    },
+
+    /// D3: discard on @resource type
+    #[error("cannot discard resource `{name}` — use its consuming method")]
+    DiscardResource {
+        name: String,
+    },
 }
 
 /// User-friendly access kind for error messages.

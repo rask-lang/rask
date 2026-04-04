@@ -197,4 +197,28 @@ pub enum TypeError {
         missing_return: bool,
         span: Span,
     },
+
+    /// D2: discard on Copy type (warning)
+    #[error("`discard {name}` on Copy type `{ty}` has no effect")]
+    DiscardCopyType {
+        name: String,
+        ty: Type,
+        span: Span,
+    },
+
+    /// D3: discard on @resource type (error)
+    #[error("cannot `discard` resource `{name}` — use its consuming method instead")]
+    DiscardResourceType {
+        name: String,
+        ty: Type,
+        span: Span,
+    },
+
+    /// D1: use after discard
+    #[error("use of discarded value: `{name}`")]
+    UseAfterDiscard {
+        name: String,
+        discarded_at: Span,
+        span: Span,
+    },
 }

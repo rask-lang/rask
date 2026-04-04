@@ -92,6 +92,7 @@ pub enum TokenKind {
     Exclusive,
     Profile,
     Union,
+    Discard,
 
     // Operators
     Plus,
@@ -224,6 +225,7 @@ impl TokenKind {
             TokenKind::Exclusive => "'exclusive'",
             TokenKind::Profile => "'profile'",
             TokenKind::Union => "'union'",
+            TokenKind::Discard => "'discard'",
 
             // Operators
             TokenKind::Plus => "'+'",

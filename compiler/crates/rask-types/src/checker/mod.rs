@@ -95,6 +95,8 @@ pub struct TypeChecker {
     pub(super) accumulate_errors: bool,
     /// Types for binding names and parameters, keyed by (span.start, span.end).
     pub(super) span_types: HashMap<(usize, usize), Type>,
+    /// D1: Bindings invalidated by `discard`. Maps name → discard span.
+    pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
 }
 
 impl TypeChecker {
@@ -122,6 +124,7 @@ impl TypeChecker {
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
             accumulate_errors: false,
+            discarded_bindings: HashMap::new(),
         }
     }
 

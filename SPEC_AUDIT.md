@@ -45,11 +45,9 @@ Spec defines `Cell<T>` as a heap-allocated single-value container with `with`-ba
 
 **Impact:** No way to share a mutable value across closures without Pool+Handle ceremony.
 
-### 5. `discard` statement — not implemented (D1–D3)
+### 5. ~~`discard` statement — not implemented (D1–D3)~~ FIXED
 
-No `discard` keyword in parser or AST. Spec requires explicit discard to invalidate bindings, with warnings on Copy types (D2) and compile error on `@resource` types (D3).
-
-**Impact:** No way to explicitly drop values early and communicate intent.
+Full pipeline: lexer → parser → AST → type checker → ownership checker → interpreter → MIR → formatter. D1 (use-after-discard error), D2 (Copy type warning), D3 (@resource compile error) all enforced.
 
 ### 6. `comptime for` + field reflection — not implemented (CT48–CT54)
 
@@ -257,5 +255,5 @@ For balance — these areas are solid:
 6. **Concurrency Phase A surface** — spec commits to this for Phase A
 7. **`@binary` structs** — blocks a whole use case category
 8. **`Cell<T>`** — ergonomic gap for closure patterns
-9. **`discard`** — small but affects intent communication
+9. ~~**`discard`** — small but affects intent communication~~ DONE
 10. **Private field enforcement** — correctness hole

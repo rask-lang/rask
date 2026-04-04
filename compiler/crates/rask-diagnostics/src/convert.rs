@@ -563,6 +563,38 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
                 diag
             }
+
+            DiscardCopyType { name, ty, span } => {
+                Diagnostic::warning(format!(
+                    "`discard {}` on Copy type `{}` has no effect",
+                    name, ty
+                ))
+                .with_code("W0301")
+                .with_primary(*span, "Copy types are trivially cleaned up")
+                .with_help(format!("remove `discard {}` — Copy types don't need explicit cleanup", name))
+                .with_why("Copy types (primitives, small values) are cleaned up automatically — `discard` is only meaningful for heap-allocated or move-only types")
+            }
+
+            DiscardResourceType { name, ty, span } => {
+                Diagnostic::error(format!(
+                    "cannot `discard` resource `{}` of type `{}`",
+                    name, ty
+                ))
+                .with_code("E0335")
+                .with_primary(*span, "resource types must be consumed properly")
+                .with_help(format!("call `.close()` or another consuming method on `{}`", name))
+                .with_fix(format!("replace `discard {}` with `{}.close()`", name, name))
+                .with_why("resource types must be consumed exactly once — `discard` would silently leak the resource")
+            }
+
+            UseAfterDiscard { name, discarded_at, span } => {
+                Diagnostic::error(format!("use of discarded value: `{}`", name))
+                    .with_code("E0336")
+                    .with_primary(*span, "value used here after discard")
+                    .with_secondary(*discarded_at, "value discarded here")
+                    .with_help("remove the `discard` or restructure so the value isn't needed after this point")
+                    .with_why("`discard` explicitly drops a value and invalidates its binding — using it afterwards is an error")
+            }
         }
     }
 }
@@ -871,6 +903,27 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_help("move the clear outside the with block")
                 .with_fix("move the clear outside the with block")
                 .with_why("clearing the collection frees all elements — the binding would dangle")
+            }
+
+            UseAfterDiscard { name, discarded_at } => {
+                Diagnostic::error(format!("use of discarded value: `{}`", name))
+                    .with_code("E0811")
+                    .with_primary(self.span, "value used here after discard")
+                    .with_secondary(*discarded_at, "value discarded here")
+                    .with_help("remove the `discard` or restructure so the value isn't needed after this point")
+                    .with_why("`discard` explicitly drops a value and invalidates its binding — using it afterwards is an error")
+            }
+
+            DiscardResource { name } => {
+                Diagnostic::error(format!(
+                    "cannot discard resource `{}` — use its consuming method",
+                    name
+                ))
+                .with_code("E0812")
+                .with_primary(self.span, "resource types cannot be discarded")
+                .with_help(format!("call `.close()` or another consuming method on `{}`", name))
+                .with_fix(format!("replace `discard {}` with `{}.close()`", name, name))
+                .with_why("resource types must be consumed properly — `discard` would silently leak the resource")
             }
         }
     }

@@ -377,6 +377,7 @@ impl HiddenParamPass {
                 }
             }
             StmtKind::Comptime(body) => self.rewrite_stmts(body),
+            StmtKind::Discard { .. } => {}
         }
     }
 
@@ -721,6 +722,7 @@ fn collect_callees_from_stmt(stmt: &Stmt, callees: &mut HashSet<String>) {
                 collect_callees_from_stmt(s, callees);
             }
         }
+        StmtKind::Discard { .. } => {}
     }
 }
 

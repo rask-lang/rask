@@ -202,6 +202,7 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
         StmtKind::Return(None) => {}
         StmtKind::Break { value: Some(v), .. } => classify_expr(v, effects, callees),
         StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
+        StmtKind::Discard { .. } => {}
         StmtKind::While { cond, body } => {
             classify_expr(cond, effects, callees);
             classify_body(body, effects, callees);
