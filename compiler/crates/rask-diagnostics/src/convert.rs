@@ -944,6 +944,18 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_fix(format!("replace `discard {}` with `{}.close()`", name, name))
                 .with_why("resource types must be consumed properly — `discard` would silently leak the resource")
             }
+
+            ScopeLimitedClosureEscapes { name } => {
+                Diagnostic::error(format!(
+                    "closure `{}` captures scoped borrow and cannot escape",
+                    name
+                ))
+                .with_code("E0813")
+                .with_primary(self.span, "closure would outlive its captured borrow")
+                .with_help(format!("clone the captured data instead of borrowing, or use `{}` within the current scope", name))
+                .with_fix("clone the borrowed value before capturing it in the closure")
+                .with_why("closures that capture block-scoped borrows are limited to that block's lifetime — returning or storing them would create a dangling reference (SL2)")
+            }
         }
     }
 }

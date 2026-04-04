@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Closure scoping: field-level captures (F4) and scope-limited closures (SL1-SL2).
+// Spec: mem.borrowing/F4, mem.closures/SL1-SL2
+
+struct Player {
+    name: string
+    score: i32
+    health: i32
+}
+
+// --- F4: Closures capturing disjoint fields don't conflict ---
+
+test "closure captures value, not field borrow" {
+    const p = Player { name: "Alice", score: 42, health: 100 }
+    // Closure captures p.score (i32 is Copy, so it's a value copy)
+    const get_score = || p.score
+    assert get_score() == 42
+}
+
+test "closure using struct field inline" {
+    const p = Player { name: "Bob", score: 10, health: 20 }
+    const total = || p.score + p.health
+    assert total() == 30
+}
+
+// --- SL1: Scope-limited closures can be used within their scope ---
+
+test "scope-limited closure used in same scope" {
+    const items = Vec<string>.new()
+    items.push("hello")
+    items.push("world")
+    const count = || items.len()
+    assert count() == 2
+}
+
+func main() {}
