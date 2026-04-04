@@ -359,3 +359,5 @@ Each stage is playable and fun on its own.
 **Client experience.** What does the minimum viable client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? GDL supports all of these — which is the Stage 1 target?
 
 **Managed hosting.** Players who can't self-host need easy domain deployment. Click-button hosting with migration to self-hosted hardware later. Critical for adoption. Contradicts nothing — sovereignty is about control, not where the server physically runs.
+
+**Founding cluster power.** The founding cluster controls the galaxy seed, standard physics, material table, asset types, currency, and update schedule. That's a lot of centralization for a decentralized system. Deliberate — pure decentralization from day one fails every time. The escape valve: nothing stops a player alliance from publishing competing standards. The founding cluster's power lasts exactly as long as its standards are the best option.
