@@ -101,17 +101,17 @@ Spec's own Phase A requirements (runtime-strategy.md) not met:
 | `Timer.after(duration)` | Channels |
 | `ensure` cleanup on cancellation | CN2 |
 
-### 11. Disjoint field borrowing — unclear enforcement (F1–F4)
+### 11. ~~Disjoint field borrowing — unclear enforcement (F1–F4)~~ PARTIALLY FIXED
 
-Spec requires two borrows on different fields of the same struct to not conflict (F2). Borrow checker has `root_ident_name()` extraction but field-level granularity tracking isn't clearly implemented. Closures capturing individual fields (F4) not verified.
+F1–F3 (direct field borrows) fully implemented: `extract_root_and_fields()`, `ActiveBorrow.projection`, `overlaps()` all work — disjoint field borrows coexist correctly. F4 (closure field-level captures) now implemented: `collect_free_vars` tracks field projections so closures capturing `state.score` register a field-level borrow, not a whole-object borrow on `state`. Closure captures of disjoint fields no longer conflict.
 
 ### 12. `@unique` move-only types — enforcement unclear (U1–U4)
 
 `@unique` forces move semantics even for ≤16-byte types. Transitive propagation (U4: struct containing unique field is automatically unique) has no visible enforcement.
 
-### 13. Scope-limited closures — escape not detected (SL1–SL2)
+### 13. ~~Scope-limited closures — escape not detected (SL1–SL2)~~ FIXED
 
-Closures capturing block-scoped borrows should be scope-limited and can't escape (SL2). No error for returning or storing such closures.
+Closures capturing non-Copy `const` bindings (block-scoped borrows) are now scope-limited. Ownership checker tracks borrow bindings and closure scope limits. Two escape paths detected: (1) `return f` where `f` is scope-limited → E0813 error; (2) assigning scope-limited closure to outer-scope variable → E0813 at block exit. Valid in-scope use (calling the closure, passing it to functions) works fine.
 
 ### 14. ~~`private` field enforcement — not type-checked (V5)~~ FIXED
 

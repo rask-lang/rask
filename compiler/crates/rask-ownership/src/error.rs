@@ -133,6 +133,12 @@ pub enum OwnershipErrorKind {
     DiscardResource {
         name: String,
     },
+
+    /// SL2: scope-limited closure escapes its scope
+    #[error("closure `{name}` captures scoped borrow and cannot escape")]
+    ScopeLimitedClosureEscapes {
+        name: String,
+    },
 }
 
 /// User-friendly access kind for error messages.
