@@ -958,12 +958,24 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("resource types must be consumed properly — `discard` would silently leak the resource")
             }
 
+            ScopeLimitedClosureEscapes { name } => {
+                Diagnostic::error(format!(
+                    "closure `{}` captures scoped borrow and cannot escape",
+                    name
+                ))
+                .with_code("E0813")
+                .with_primary(self.span, "closure would outlive its captured borrow")
+                .with_help(format!("clone the captured data instead of borrowing, or use `{}` within the current scope", name))
+                .with_fix("clone the borrowed value before capturing it in the closure")
+                .with_why("closures that capture block-scoped borrows are limited to that block's lifetime — returning or storing them would create a dangling reference (SL2)")
+            }
+
             ForMutateStructuralMutation { collection, operation, loop_span } => {
                 Diagnostic::error(format!(
                     "cannot {} `{}` during `for mutate` — invalidates iteration",
                     operation, collection
                 ))
-                .with_code("E0813")
+                .with_code("E0814")
                 .with_primary(self.span, format!("{} not allowed during mutable iteration", operation))
                 .with_secondary(*loop_span, format!("`{}` is being iterated here", collection))
                 .with_help("collect changes and apply them after the loop")
@@ -975,7 +987,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "cannot pass `{}` to `take` parameter — borrowed from `{}`",
                     item, collection
                 ))
-                .with_code("E0814")
+                .with_code("E0815")
                 .with_primary(self.span, "would move element out of collection")
                 .with_secondary(*loop_span, format!("`{}` is borrowed from `{}` during iteration", item, collection))
                 .with_help(format!("clone `{}` before passing, or restructure to avoid taking ownership", item))

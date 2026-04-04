@@ -86,6 +86,20 @@ pub struct OwnershipChecker<'a> {
     active_for_mutates: Vec<ForMutateInfo>,
     /// Parameter type strings: param name → type annotation (e.g. "Pool<Entity>").
     param_type_strings: HashMap<String, String>,
+    /// SL1: Bindings created by `const` from non-copy expressions (block-scoped borrows).
+    /// Maps binding name → block_id where the borrow was created.
+    borrow_bindings: HashMap<String, u32>,
+    /// Block where each binding was declared (first introduced via let/const).
+    binding_decl_blocks: HashMap<String, u32>,
+    /// SL1: Bindings that hold scope-limited closures.
+    /// Maps binding name → (borrow_block, binding_block).
+    /// borrow_block: the block where the captured borrow lives.
+    /// binding_block: the block where the closure binding was declared.
+    /// Escape: binding_block < borrow_block (binding outlives borrow).
+    scope_limited_closures: HashMap<String, (u32, u32)>,
+    /// Temporary: scope limit from the last closure expression processed.
+    /// Picked up by the next Let/Const binding that uses it.
+    last_closure_scope_limit: Option<u32>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
 }
@@ -106,6 +120,10 @@ impl<'a> OwnershipChecker<'a> {
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
             param_type_strings: HashMap::new(),
+            borrow_bindings: HashMap::new(),
+            binding_decl_blocks: HashMap::new(),
+            scope_limited_closures: HashMap::new(),
+            last_closure_scope_limit: None,
             errors: Vec::new(),
         }
     }
@@ -242,6 +260,40 @@ impl<'a> OwnershipChecker<'a> {
 
         // Release persistent borrows at block end
         self.release_persistent_borrows(block_id);
+
+        // SL2: Check if any scope-limited closures would escape this block.
+        // A closure escapes if its borrow_block is inside the block being exited
+        // but its binding_block is outside (binding outlives the borrow).
+        let block_inner = block_id + 1;
+        let escaping: Vec<String> = self.scope_limited_closures.iter()
+            .filter(|(_, &(borrow_block, binding_block))| {
+                // Borrow was created in this block or deeper, but binding is in outer scope
+                borrow_block >= block_inner && binding_block < block_inner
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in &escaping {
+            if matches!(self.bindings.get(name), Some(BindingState::Owned)) {
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                        name: name.clone(),
+                    },
+                    span: stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0)),
+                });
+            }
+            self.scope_limited_closures.remove(name);
+        }
+
+        // Clean up scope-limited closures whose bindings were in this block
+        // (they naturally die with the block — no escape).
+        let dying: Vec<String> = self.scope_limited_closures.iter()
+            .filter(|(_, &(_, binding_block))| binding_block >= block_inner)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in dying {
+            self.scope_limited_closures.remove(&name);
+        }
+
         self.current_block = block_id;
     }
 
@@ -253,8 +305,13 @@ impl<'a> OwnershipChecker<'a> {
                 // non-Copy types are moved (source invalidated)
                 self.handle_assignment(init, stmt.span, true);
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
                     self.binding_types.insert(name.clone(), t);
+                }
+                // SL1: inherit scope limit from closure expression
+                if let Some(borrow_block) = self.last_closure_scope_limit.take() {
+                    self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
                 }
                 // Track resource types
                 if let Some(ty_str) = ty {
@@ -291,8 +348,18 @@ impl<'a> OwnershipChecker<'a> {
                 // a block-scoped borrow (source stays valid but frozen)
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
-                    self.binding_types.insert(name.clone(), t);
+                    self.binding_types.insert(name.clone(), t.clone());
+                    // SL1: If this is a non-copy type, this const is a borrow view.
+                    // Track it so closures capturing it are scope-limited.
+                    if !self.is_copy(&t) {
+                        self.borrow_bindings.insert(name.clone(), self.current_block);
+                    }
+                }
+                // SL1: inherit scope limit from closure expression
+                if let Some(borrow_block) = self.last_closure_scope_limit.take() {
+                    self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
                 }
                 // Track resource types
                 if let Some(ty_str) = ty {
@@ -331,10 +398,51 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(target);
                 // Assignments move the value
                 self.handle_assignment(value, stmt.span, true);
+                // SL2: Check if assigning a scope-limited closure to an outer variable.
+                // SL2: Propagate scope limit to target binding.
+                // Use the target's *declaration* block, not the current block.
+                if let ExprKind::Ident(value_name) = &value.kind {
+                    if let Some(&(borrow_block, _)) = self.scope_limited_closures.get(value_name) {
+                        if let ExprKind::Ident(target_name) = &target.kind {
+                            let decl_block = self.binding_decl_blocks
+                                .get(target_name).copied()
+                                .unwrap_or(self.current_block);
+                            self.scope_limited_closures.insert(
+                                target_name.clone(),
+                                (borrow_block, decl_block),
+                            );
+                        }
+                    }
+                }
+                // Also pick up scope limit from a closure literal assigned directly
+                if let Some(borrow_block) = self.last_closure_scope_limit.take() {
+                    if let ExprKind::Ident(target_name) = &target.kind {
+                        let decl_block = self.binding_decl_blocks
+                            .get(target_name).copied()
+                            .unwrap_or(self.current_block);
+                        self.scope_limited_closures.insert(
+                            target_name.clone(),
+                            (borrow_block, decl_block),
+                        );
+                    }
+                }
             }
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
                     self.check_expr(expr);
+                    // SL2: Check if returning a scope-limited closure
+                    if let ExprKind::Ident(name) = &expr.kind {
+                        if self.scope_limited_closures.contains_key(name) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                    name: name.clone(),
+                                },
+                                span: stmt.span,
+                            });
+                            // Remove to avoid double-reporting at block exit
+                            self.scope_limited_closures.remove(name);
+                        }
+                    }
                 }
             }
             StmtKind::While { cond, body } => {
@@ -637,9 +745,10 @@ impl<'a> OwnershipChecker<'a> {
                 // Collect names from closure params (these shadow outer bindings)
                 let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
-                // Scan body for free variables
+                // Scan body for free variables with field projection tracking (F4)
                 let mut captures = Vec::new();
-                self.collect_free_vars(body, &param_names, &mut captures);
+                let mut capture_projections: HashMap<String, Option<Vec<String>>> = HashMap::new();
+                self.collect_free_vars_with_projections(body, &param_names, &mut captures, &mut capture_projections);
 
                 // Separate resource captures from non-resource captures
                 let resource_captures: Vec<String> = captures.iter()
@@ -652,16 +761,46 @@ impl<'a> OwnershipChecker<'a> {
                     self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                 }
 
-                // Shared borrow for non-resource captures
+                // SL1: Check if any capture references a borrow binding (a `const`
+                // from a non-copy source) — if so, this closure is scope-limited.
+                let mut scope_limit: Option<u32> = None;
+                for name in &captures {
+                    if resource_captures.contains(name) { continue; }
+                    // Check if the captured variable is itself a borrow binding
+                    if let Some(&block_id) = self.borrow_bindings.get(name) {
+                        scope_limit = Some(match scope_limit {
+                            None => block_id,
+                            Some(existing) => existing.max(block_id),
+                        });
+                    }
+                    // Also check active borrows on the captured variable
+                    for borrow in &self.borrows {
+                        if borrow.source == *name {
+                            if let BorrowScope::Persistent { block_id } = borrow.scope {
+                                scope_limit = Some(match scope_limit {
+                                    None => block_id,
+                                    Some(existing) => existing.max(block_id),
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Shared borrow for non-resource captures (F4: with field projections)
                 for name in &captures {
                     if !resource_captures.contains(name) {
                         if self.bindings.contains_key(name) {
-                            self.borrows.push(ActiveBorrow::new(
+                            let projection = capture_projections.get(name).cloned().flatten();
+                            let mut borrow = ActiveBorrow::new(
                                 name.clone(),
                                 BorrowMode::Shared,
                                 BorrowScope::Persistent { block_id: self.current_block },
                                 expr.span,
-                            ));
+                            );
+                            if let Some(fields) = projection {
+                                borrow = borrow.with_projection(fields);
+                            }
+                            self.borrows.push(borrow);
                         }
                     }
                 }
@@ -707,6 +846,9 @@ impl<'a> OwnershipChecker<'a> {
                 for name in &resource_captures {
                     self.resource_bindings.remove(name);
                 }
+
+                // SL1: Record scope limit for the next binding to pick up
+                self.last_closure_scope_limit = scope_limit;
             }
             ExprKind::If { cond, then_branch, else_branch } => {
                 self.check_expr(cond);
@@ -1442,119 +1584,187 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Collect free variables referenced in an expression (excluding local bindings).
+    /// Also collects field projections for each capture (F4: closure field-level captures).
     fn collect_free_vars(&self, expr: &Expr, locals: &HashSet<String>, out: &mut Vec<String>) {
+        self.collect_free_vars_inner(expr, locals, out, &mut HashMap::new());
+    }
+
+    /// Collect free variables with field projection tracking.
+    /// `projections` maps captured var name → narrowest field projection used in the closure.
+    fn collect_free_vars_with_projections(
+        &self,
+        expr: &Expr,
+        locals: &HashSet<String>,
+        out: &mut Vec<String>,
+        projections: &mut HashMap<String, Option<Vec<String>>>,
+    ) {
+        self.collect_free_vars_inner(expr, locals, out, projections);
+    }
+
+    fn collect_free_vars_inner(
+        &self,
+        expr: &Expr,
+        locals: &HashSet<String>,
+        out: &mut Vec<String>,
+        projections: &mut HashMap<String, Option<Vec<String>>>,
+    ) {
+        // F4: For field access expressions, try to extract root + projection
+        // and record the field-level capture instead of whole-object.
+        if let ExprKind::Field { .. } = &expr.kind {
+            let (root, fields) = Self::extract_root_and_fields(expr);
+            if let Some(ref root_name) = root {
+                if !locals.contains(root_name) && self.bindings.contains_key(root_name) {
+                    if !out.contains(root_name) {
+                        out.push(root_name.clone());
+                    }
+                    // Record or merge field projection for this capture.
+                    // If this capture already has a whole-object access (None), keep it.
+                    // If it has a different field, widen to whole-object.
+                    let entry = projections.entry(root_name.clone());
+                    match entry {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(fields);
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            // Merge: if existing is None (whole-object), keep None.
+                            // If existing is Some(fields_a) and new is Some(fields_b),
+                            // union the field sets. If new is None, widen to None.
+                            match (e.get_mut(), &fields) {
+                                (None, _) => {} // already whole-object
+                                (existing @ Some(_), None) => { *existing = None; }
+                                (Some(ref mut existing_fields), Some(new_fields)) => {
+                                    for f in new_fields {
+                                        if !existing_fields.contains(f) {
+                                            existing_fields.push(f.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return; // Don't recurse into Field — we already handled the root
+                }
+            }
+        }
+
         match &expr.kind {
             ExprKind::Ident(name) => {
                 if !locals.contains(name) && self.bindings.contains_key(name) {
                     if !out.contains(name) {
                         out.push(name.clone());
+                        // Whole-object access (no field projection)
+                        projections.entry(name.clone()).or_insert(None);
+                    } else {
+                        // Already captured — widen to whole-object if accessed directly
+                        projections.insert(name.clone(), None);
                     }
                 }
             }
             ExprKind::Binary { left, right, .. } => {
-                self.collect_free_vars(left, locals, out);
-                self.collect_free_vars(right, locals, out);
+                self.collect_free_vars_inner(left, locals, out, projections);
+                self.collect_free_vars_inner(right, locals, out, projections);
             }
             ExprKind::Unary { operand, .. } => {
-                self.collect_free_vars(operand, locals, out);
+                self.collect_free_vars_inner(operand, locals, out, projections);
             }
             ExprKind::Call { func, args } => {
-                self.collect_free_vars(func, locals, out);
-                for arg in args { self.collect_free_vars(&arg.expr, locals, out); }
+                self.collect_free_vars_inner(func, locals, out, projections);
+                for arg in args { self.collect_free_vars_inner(&arg.expr, locals, out, projections); }
             }
             ExprKind::MethodCall { object, args, .. } => {
-                self.collect_free_vars(object, locals, out);
-                for arg in args { self.collect_free_vars(&arg.expr, locals, out); }
+                self.collect_free_vars_inner(object, locals, out, projections);
+                for arg in args { self.collect_free_vars_inner(&arg.expr, locals, out, projections); }
             }
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
-                self.collect_free_vars(object, locals, out);
+                // Field access on non-free-var roots (handled above for free vars)
+                self.collect_free_vars_inner(object, locals, out, projections);
             }
             ExprKind::Index { object, index } => {
-                self.collect_free_vars(object, locals, out);
-                self.collect_free_vars(index, locals, out);
+                self.collect_free_vars_inner(object, locals, out, projections);
+                self.collect_free_vars_inner(index, locals, out, projections);
             }
             ExprKind::If { cond, then_branch, else_branch } => {
-                self.collect_free_vars(cond, locals, out);
-                self.collect_free_vars(then_branch, locals, out);
-                if let Some(e) = else_branch { self.collect_free_vars(e, locals, out); }
+                self.collect_free_vars_inner(cond, locals, out, projections);
+                self.collect_free_vars_inner(then_branch, locals, out, projections);
+                if let Some(e) = else_branch { self.collect_free_vars_inner(e, locals, out, projections); }
             }
             ExprKind::Block(stmts) => {
-                for s in stmts { self.collect_free_vars_stmt(s, locals, out); }
+                for s in stmts { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             ExprKind::Closure { params, body, .. } => {
                 let mut inner_locals = locals.clone();
                 for p in params { inner_locals.insert(p.name.clone()); }
-                self.collect_free_vars(body, &inner_locals, out);
+                self.collect_free_vars_inner(body, &inner_locals, out, projections);
             }
             ExprKind::Match { scrutinee, arms } => {
-                self.collect_free_vars(scrutinee, locals, out);
+                self.collect_free_vars_inner(scrutinee, locals, out, projections);
                 for arm in arms {
-                    self.collect_free_vars(&arm.body, locals, out);
-                    if let Some(g) = &arm.guard { self.collect_free_vars(g, locals, out); }
+                    self.collect_free_vars_inner(&arm.body, locals, out, projections);
+                    if let Some(g) = &arm.guard { self.collect_free_vars_inner(g, locals, out, projections); }
                 }
             }
             ExprKind::IfLet { expr: scrutinee, then_branch, else_branch, .. } => {
-                self.collect_free_vars(scrutinee, locals, out);
-                self.collect_free_vars(then_branch, locals, out);
-                if let Some(e) = else_branch { self.collect_free_vars(e, locals, out); }
+                self.collect_free_vars_inner(scrutinee, locals, out, projections);
+                self.collect_free_vars_inner(then_branch, locals, out, projections);
+                if let Some(e) = else_branch { self.collect_free_vars_inner(e, locals, out, projections); }
             }
             ExprKind::GuardPattern { expr: scrutinee, else_branch, .. } => {
-                self.collect_free_vars(scrutinee, locals, out);
-                self.collect_free_vars(else_branch, locals, out);
+                self.collect_free_vars_inner(scrutinee, locals, out, projections);
+                self.collect_free_vars_inner(else_branch, locals, out, projections);
             }
             ExprKind::IsPattern { expr: scrutinee, .. } => {
-                self.collect_free_vars(scrutinee, locals, out);
+                self.collect_free_vars_inner(scrutinee, locals, out, projections);
             }
             ExprKind::Try { expr: inner, else_clause } => {
-                self.collect_free_vars(inner, locals, out);
+                self.collect_free_vars_inner(inner, locals, out, projections);
                 if let Some(tc) = else_clause {
-                    self.collect_free_vars(&tc.body, locals, out);
+                    self.collect_free_vars_inner(&tc.body, locals, out, projections);
                 }
             }
             ExprKind::Unwrap { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
-                self.collect_free_vars(inner, locals, out);
+                self.collect_free_vars_inner(inner, locals, out, projections);
             }
             ExprKind::NullCoalesce { value, default } => {
-                self.collect_free_vars(value, locals, out);
-                self.collect_free_vars(default, locals, out);
+                self.collect_free_vars_inner(value, locals, out, projections);
+                self.collect_free_vars_inner(default, locals, out, projections);
             }
             ExprKind::Range { start, end, .. } => {
-                if let Some(s) = start { self.collect_free_vars(s, locals, out); }
-                if let Some(e) = end { self.collect_free_vars(e, locals, out); }
+                if let Some(s) = start { self.collect_free_vars_inner(s, locals, out, projections); }
+                if let Some(e) = end { self.collect_free_vars_inner(e, locals, out, projections); }
             }
             ExprKind::StructLit { fields, spread, .. } => {
-                for f in fields { self.collect_free_vars(&f.value, locals, out); }
-                if let Some(s) = spread { self.collect_free_vars(s, locals, out); }
+                for f in fields { self.collect_free_vars_inner(&f.value, locals, out, projections); }
+                if let Some(s) = spread { self.collect_free_vars_inner(s, locals, out, projections); }
             }
             ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
-                for e in elems { self.collect_free_vars(e, locals, out); }
+                for e in elems { self.collect_free_vars_inner(e, locals, out, projections); }
             }
             ExprKind::ArrayRepeat { value, count } => {
-                self.collect_free_vars(value, locals, out);
-                self.collect_free_vars(count, locals, out);
+                self.collect_free_vars_inner(value, locals, out, projections);
+                self.collect_free_vars_inner(count, locals, out, projections);
             }
             ExprKind::UsingBlock { args, body, .. } => {
-                for arg in args { self.collect_free_vars(&arg.expr, locals, out); }
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                for arg in args { self.collect_free_vars_inner(&arg.expr, locals, out, projections); }
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             ExprKind::WithAs { bindings, body } => {
-                for b in bindings { self.collect_free_vars(&b.source, locals, out); }
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                for b in bindings { self.collect_free_vars_inner(&b.source, locals, out, projections); }
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             ExprKind::Spawn { body } => {
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message, .. } => {
-                self.collect_free_vars(condition, locals, out);
-                if let Some(m) = message { self.collect_free_vars(m, locals, out); }
+                self.collect_free_vars_inner(condition, locals, out, projections);
+                if let Some(m) = message { self.collect_free_vars_inner(m, locals, out, projections); }
             }
             ExprKind::Select { arms, .. } => {
                 for arm in arms {
-                    self.collect_free_vars(&arm.body, locals, out);
+                    self.collect_free_vars_inner(&arm.body, locals, out, projections);
                 }
             }
             ExprKind::Unsafe { body } | ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. } | ExprKind::Loop { body, .. } => {
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             _ => {
                 // Literals, string interpolation, etc.
@@ -1563,44 +1773,54 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn collect_free_vars_stmt(&self, stmt: &Stmt, locals: &HashSet<String>, out: &mut Vec<String>) {
+        self.collect_free_vars_stmt_inner(stmt, locals, out, &mut HashMap::new());
+    }
+
+    fn collect_free_vars_stmt_inner(
+        &self,
+        stmt: &Stmt,
+        locals: &HashSet<String>,
+        out: &mut Vec<String>,
+        projections: &mut HashMap<String, Option<Vec<String>>>,
+    ) {
         match &stmt.kind {
-            StmtKind::Expr(e) => self.collect_free_vars(e, locals, out),
+            StmtKind::Expr(e) => self.collect_free_vars_inner(e, locals, out, projections),
             StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
-                self.collect_free_vars(init, locals, out);
+                self.collect_free_vars_inner(init, locals, out, projections);
             }
             StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
-                self.collect_free_vars(init, locals, out);
+                self.collect_free_vars_inner(init, locals, out, projections);
             }
             StmtKind::Assign { target, value } => {
-                self.collect_free_vars(target, locals, out);
-                self.collect_free_vars(value, locals, out);
+                self.collect_free_vars_inner(target, locals, out, projections);
+                self.collect_free_vars_inner(value, locals, out, projections);
             }
             StmtKind::Return(Some(e)) | StmtKind::Break { value: Some(e), .. } => {
-                self.collect_free_vars(e, locals, out);
+                self.collect_free_vars_inner(e, locals, out, projections);
             }
             StmtKind::While { cond, body } => {
-                self.collect_free_vars(cond, locals, out);
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                self.collect_free_vars_inner(cond, locals, out, projections);
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             StmtKind::WhileLet { expr, body, .. } => {
-                self.collect_free_vars(expr, locals, out);
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                self.collect_free_vars_inner(expr, locals, out, projections);
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             StmtKind::Loop { body, .. } => {
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             StmtKind::For { iter, body, .. } => {
-                self.collect_free_vars(iter, locals, out);
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                self.collect_free_vars_inner(iter, locals, out, projections);
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             StmtKind::Ensure { body, else_handler } => {
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
                 if let Some((_, handler_body)) = else_handler {
-                    for s in handler_body { self.collect_free_vars_stmt(s, locals, out); }
+                    for s in handler_body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
                 }
             }
             StmtKind::Comptime(body) => {
-                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             StmtKind::Return(None) | StmtKind::Break { value: None, .. }
             | StmtKind::Continue(_) | StmtKind::Discard { .. } => {}

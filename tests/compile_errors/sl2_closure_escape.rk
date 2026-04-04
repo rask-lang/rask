@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: Scope-limited closure escape (SL2)
+//
+// Spec: mem.closures/SL1-SL2
+//
+// Closures that capture block-scoped borrows (non-Copy const bindings)
+// cannot be returned or stored in outer-scope variables.
+
+struct Entity {
+    tags: Vec<string>
+}
+
+func get_entity() -> Entity {
+    return Entity { tags: Vec<string>.new() }
+}
+
+func use_tags(tags: Vec<string>) -> u64 {
+    return tags.len()
+}
+
+// ERROR: returning a scope-limited closure
+func test_return_escape() {
+    const entity = get_entity()
+    const tags = entity.tags
+    const f = || use_tags(tags)
+    return f                        // ERROR E0813: f captures scoped borrow
+}
+
+func main() {}
