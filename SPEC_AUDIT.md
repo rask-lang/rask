@@ -149,9 +149,9 @@ The `trait Iterator<Item>` isn't registered in stdlib for user code to write gen
 
 Desugar now only auto-delegates for single-field variants whose type name ends with "Error" (ER25). Variants with fields but no `@message` and no auto-delegatable payload trigger an ER26 coverage error. Pipeline reports desugar errors before proceeding.
 
-### 22. ~~Step range validation (SP3)~~ PARTIALLY FIXED
+### 22. ~~Step range validation (SP1–SP3)~~ FIXED
 
-SP3 (zero step) now produces a compile error when `.step(0)` is called on a range with a literal zero argument. SP1/SP2 (direction mismatch) still produce empty ranges at runtime rather than compile-time warnings.
+SP3 (zero step) produces a compile error. SP1/SP2 (direction mismatch) now produce compile-time warnings when start, end, and step are all integer literals — e.g., `(10..0).step(2)` warns that the positive step on a descending range will produce zero iterations. Handles desugared negative literals (`-1` → `(1).neg()`).
 
 ### 23. ~~Comptime safety limits (CT27–CT35)~~ FIXED
 

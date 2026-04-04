@@ -1388,6 +1388,7 @@ impl TypeChecker {
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
 
         // SP3: zero step on range is a compile error
+        // SP1/SP2: step direction mismatch is a warning
         if method == "step" {
             let is_range = matches!(
                 &self.ctx.apply(&obj_ty),
@@ -1401,6 +1402,9 @@ impl TypeChecker {
                     );
                     if is_zero {
                         self.errors.push(TypeError::ZeroStep { span: first_arg.expr.span });
+                    } else {
+                        // SP1/SP2: check direction mismatch when literals are available
+                        self.check_step_direction(object, first_arg);
                     }
                 }
             }
@@ -1425,6 +1429,71 @@ impl TypeChecker {
         });
 
         ret_ty
+    }
+
+    /// SP1/SP2: Check for step direction mismatch on range literals.
+    /// Only fires when start, end, and step are all integer literals.
+    fn check_step_direction(&mut self, range_expr: &rask_ast::expr::Expr, step_arg: &rask_ast::expr::CallArg) {
+        use rask_ast::expr::ExprKind;
+
+        // Extract step value from literal
+        let step_val: Option<i64> = match &step_arg.expr.kind {
+            ExprKind::Int(v, _) => Some(*v),
+            // After desugar, `-1` becomes `(1).neg()`
+            ExprKind::MethodCall { object, method: neg_method, args: neg_args, .. }
+                if neg_method == "neg" && neg_args.is_empty() =>
+            {
+                if let ExprKind::Int(v, _) = &object.kind {
+                    Some(-v)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        let step_val = match step_val {
+            Some(v) => v,
+            None => return, // non-literal step, can't check at compile time
+        };
+
+        // Extract start/end from Range expression
+        let (start_val, end_val, range_span) = match &range_expr.kind {
+            ExprKind::Range { start, end, .. } => {
+                let s = start.as_ref().and_then(|e| {
+                    if let ExprKind::Int(v, _) = &e.kind { Some(*v) } else { None }
+                });
+                let e = end.as_ref().and_then(|e| {
+                    if let ExprKind::Int(v, _) = &e.kind { Some(*v) } else { None }
+                });
+                (s, e, range_expr.span)
+            }
+            _ => return,
+        };
+
+        let (start, end) = match (start_val, end_val) {
+            (Some(s), Some(e)) => (s, e),
+            _ => return, // non-literal bounds, can't check
+        };
+
+        // SP1: positive step requires start < end (ascending)
+        // SP2: negative step requires start > end (descending)
+        let mismatch = if step_val > 0 && start >= end {
+            Some(("descending", "positive"))
+        } else if step_val < 0 && start <= end {
+            Some(("ascending", "negative"))
+        } else {
+            None
+        };
+
+        if let Some((range_dir, step_dir)) = mismatch {
+            self.errors.push(TypeError::StepDirectionMismatch {
+                range_span,
+                step_span: step_arg.expr.span,
+                range_direction: range_dir.to_string(),
+                step_direction: step_dir.to_string(),
+            });
+        }
     }
 
     /// Resolve methods on raw pointer types (*T).

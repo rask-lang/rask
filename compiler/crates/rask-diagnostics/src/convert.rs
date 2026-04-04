@@ -604,6 +604,19 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
             }
 
+            StepDirectionMismatch { range_span, step_span, range_direction, step_direction } => {
+                Diagnostic::warning("step direction mismatch — range will be empty".to_string())
+                    .with_code("W0302")
+                    .with_primary(*step_span, format!("{} step on {} range", step_direction, range_direction))
+                    .with_secondary(*range_span, format!("range is {}", range_direction))
+                    .with_help(format!(
+                        "use a {} step for a {} range, or swap start and end",
+                        if *step_direction == "positive" { "negative" } else { "positive" },
+                        range_direction
+                    ))
+                    .with_why("a positive step on a descending range (or negative step on ascending range) produces zero iterations [ctrl.ranges/SP1-SP2]")
+            }
+
             MessageCoverageMissing { variant, enum_name, span } => {
                 Diagnostic::error(format!(
                     "@message variant `{}` on `{}` has no message template and cannot auto-delegate",
