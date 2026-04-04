@@ -169,6 +169,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Allgard | Federation model — primitives, conservation laws, domain sovereignty, bilateral trust, owner presence | [allgard/](projects/allgard/) |
 | GDL | Gard Description Language — content schema for describing gards over Leden. Regions, entities, affordances, appearance, style system, spatial protocol | [gdl/](projects/gdl/) |
 | Midgard | Virtual world example — uses Raido, Allgard, Leden, GDL together | [midgard/](projects/midgard/) |
+| Apeiron | Federated space game — seed-generated galaxy, player-hosted star systems, ships as domains | [apeiron/](projects/apeiron/) |
 
 ### Open
 
