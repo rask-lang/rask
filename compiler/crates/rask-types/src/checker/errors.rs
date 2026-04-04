@@ -228,6 +228,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// SP1/SP2: step direction doesn't match range direction (warning)
+    #[error("step direction mismatch — range will be empty")]
+    StepDirectionMismatch {
+        range_span: Span,
+        step_span: Span,
+        /// "ascending" or "descending"
+        range_direction: String,
+        /// "positive" or "negative"
+        step_direction: String,
+    },
+
     /// ER26: @message variant missing coverage
     #[error("@message variant `{variant}` has no message template and cannot auto-delegate")]
     MessageCoverageMissing {

@@ -68,12 +68,12 @@ Full pipeline: lexer → parser → AST → type checker → ownership checker �
 
 ## Major Gaps (partially implemented, key behaviors missing)
 
-### 8. `for mutate` iteration — parsed but not enforced (LP11–LP16)
+### 8. `for mutate` iteration — partially enforced (LP11–LP16)
 
-Parser accepts `for mutate item in vec { ... }`. Type checker doesn't validate:
-- No structural mutation check inside body (LP14 — `vec.push()` during `for mutate` not rejected)
-- No enforcement that `item` can't be passed to `take` parameters (LP16)
-- MIR doesn't generate different access patterns for mutable vs immutable iteration
+Parser accepts `for mutate item in vec { ... }`. Ownership checker now enforces:
+- ~~No structural mutation check inside body (LP14 — `vec.push()` during `for mutate` not rejected)~~ FIXED — push/pop/insert/remove/clear/drain rejected on iterated collection
+- ~~No enforcement that `item` can't be passed to `take` parameters (LP16)~~ FIXED — `own item` to take params rejected with clear error
+- MIR doesn't generate different access patterns for mutable vs immutable iteration (LP11–LP13 in-place mutation codegen still pending)
 
 ### 9. Pool API — missing several spec-required features
 
@@ -105,9 +105,9 @@ Spec's own Phase A requirements (runtime-strategy.md) not met:
 
 F1–F3 (direct field borrows) fully implemented: `extract_root_and_fields()`, `ActiveBorrow.projection`, `overlaps()` all work — disjoint field borrows coexist correctly. F4 (closure field-level captures) now implemented: `collect_free_vars` tracks field projections so closures capturing `state.score` register a field-level borrow, not a whole-object borrow on `state`. Closure captures of disjoint fields no longer conflict.
 
-### 12. `@unique` move-only types — enforcement unclear (U1–U4)
+### 12. ~~`@unique` move-only types — enforcement unclear (U1–U4)~~ FIXED
 
-`@unique` forces move semantics even for ≤16-byte types. Transitive propagation (U4: struct containing unique field is automatically unique) has no visible enforcement.
+`is_unique` flag on TypeDef::Struct, parsed from `@unique` attribute. Ownership checker's `is_copy()` returns false for unique types. `MoveReason::Unique` wired through diagnostics. U4 transitive propagation via fixed-point iteration in `propagate_uniqueness()` — structs containing unique fields are automatically marked unique.
 
 ### 13. ~~Scope-limited closures — escape not detected (SL1–SL2)~~ FIXED
 
@@ -149,9 +149,9 @@ The `trait Iterator<Item>` isn't registered in stdlib for user code to write gen
 
 Desugar now only auto-delegates for single-field variants whose type name ends with "Error" (ER25). Variants with fields but no `@message` and no auto-delegatable payload trigger an ER26 coverage error. Pipeline reports desugar errors before proceeding.
 
-### 22. ~~Step range validation (SP3)~~ PARTIALLY FIXED
+### 22. ~~Step range validation (SP1–SP3)~~ FIXED
 
-SP3 (zero step) now produces a compile error when `.step(0)` is called on a range with a literal zero argument. SP1/SP2 (direction mismatch) still produce empty ranges at runtime rather than compile-time warnings.
+SP3 (zero step) produces a compile error. SP1/SP2 (direction mismatch) now produce compile-time warnings when start, end, and step are all integer literals — e.g., `(10..0).step(2)` warns that the positive step on a descending range will produce zero iterations. Handles desugared negative literals (`-1` → `(1).neg()`).
 
 ### 23. ~~Comptime safety limits (CT27–CT35)~~ FIXED
 
@@ -251,7 +251,7 @@ For balance — these areas are solid:
 2. **Error origin tracking** — fundamental to error handling ergonomics
 3. **`comptime for` + reflection** — blocks encoding/serialization patterns
 4. **Pool weak handles + `try_insert`** — needed for real graph/entity patterns
-5. **`for mutate` enforcement** — correctness hole
+5. ~~**`for mutate` enforcement** — correctness hole~~ LP14/LP16 DONE (MIR codegen pending)
 6. **Concurrency Phase A surface** — spec commits to this for Phase A
 7. **`@binary` structs** — blocks a whole use case category
 8. **`Cell<T>`** — ergonomic gap for closure patterns

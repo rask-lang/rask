@@ -604,6 +604,19 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
             }
 
+            StepDirectionMismatch { range_span, step_span, range_direction, step_direction } => {
+                Diagnostic::warning("step direction mismatch — range will be empty".to_string())
+                    .with_code("W0302")
+                    .with_primary(*step_span, format!("{} step on {} range", step_direction, range_direction))
+                    .with_secondary(*range_span, format!("range is {}", range_direction))
+                    .with_help(format!(
+                        "use a {} step for a {} range, or swap start and end",
+                        if *step_direction == "positive" { "negative" } else { "positive" },
+                        range_direction
+                    ))
+                    .with_why("a positive step on a descending range (or negative step on ascending range) produces zero iterations [ctrl.ranges/SP1-SP2]")
+            }
+
             MessageCoverageMissing { variant, enum_name, span } => {
                 Diagnostic::error(format!(
                     "@message variant `{}` on `{}` has no message template and cannot auto-delegate",
@@ -955,6 +968,30 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_help(format!("clone the captured data instead of borrowing, or use `{}` within the current scope", name))
                 .with_fix("clone the borrowed value before capturing it in the closure")
                 .with_why("closures that capture block-scoped borrows are limited to that block's lifetime — returning or storing them would create a dangling reference (SL2)")
+            }
+
+            ForMutateStructuralMutation { collection, operation, loop_span } => {
+                Diagnostic::error(format!(
+                    "cannot {} `{}` during `for mutate` — invalidates iteration",
+                    operation, collection
+                ))
+                .with_code("E0814")
+                .with_primary(self.span, format!("{} not allowed during mutable iteration", operation))
+                .with_secondary(*loop_span, format!("`{}` is being iterated here", collection))
+                .with_help("collect changes and apply them after the loop")
+                .with_why("structural mutations (insert, remove, push, clear) invalidate the iterator — elements may shift or be reallocated")
+            }
+
+            ForMutateTakeItem { item, collection, loop_span } => {
+                Diagnostic::error(format!(
+                    "cannot pass `{}` to `take` parameter — borrowed from `{}`",
+                    item, collection
+                ))
+                .with_code("E0815")
+                .with_primary(self.span, "would move element out of collection")
+                .with_secondary(*loop_span, format!("`{}` is borrowed from `{}` during iteration", item, collection))
+                .with_help(format!("clone `{}` before passing, or restructure to avoid taking ownership", item))
+                .with_why("for-mutate borrows elements in place — taking ownership would leave a hole in the collection")
             }
         }
     }

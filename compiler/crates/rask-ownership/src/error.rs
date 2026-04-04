@@ -121,6 +121,22 @@ pub enum OwnershipErrorKind {
         binding_span: Span,
     },
 
+    /// LP14: structural mutation during `for mutate`
+    #[error("cannot {operation} `{collection}` during `for mutate` — invalidates iteration")]
+    ForMutateStructuralMutation {
+        collection: String,
+        operation: String,
+        loop_span: Span,
+    },
+
+    /// LP16: passing `for mutate` item to `take` parameter
+    #[error("cannot pass `{item}` to `take` parameter — item is borrowed from collection")]
+    ForMutateTakeItem {
+        item: String,
+        collection: String,
+        loop_span: Span,
+    },
+
     /// D1: use after discard
     #[error("use of discarded value `{name}`")]
     UseAfterDiscard {
