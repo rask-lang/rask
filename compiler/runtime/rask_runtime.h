@@ -588,6 +588,8 @@ void    rask_recver_drop_i64(int64_t rx);
 int64_t rask_sender_clone_i64(int64_t tx);
 int64_t rask_channel_try_send_i64(int64_t tx, int64_t value);
 int64_t rask_channel_try_recv_i64(int64_t rx);
+int64_t rask_sender_close_i64(int64_t tx);
+int64_t rask_recver_close_i64(int64_t rx);
 
 // ─── Async I/O (dual-path: green task or blocking) ──────────
 // Inside a green task, these submit async ops and return PENDING.
@@ -673,6 +675,8 @@ void    rask_shared_drop_i64(int64_t shared);
 int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
 int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
+int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure);
+int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 
 // Pointer-based channel wrappers for aggregate element types.
 int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity);

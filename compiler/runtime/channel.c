@@ -447,6 +447,17 @@ void rask_recver_drop_i64(int64_t rx) {
     rask_recver_drop((RaskRecver *)(intptr_t)rx);
 }
 
+// Explicit close (CH4): drop disconnects the channel, returns Ok(unit)=0
+int64_t rask_sender_close_i64(int64_t tx) {
+    rask_sender_drop((RaskSender *)(intptr_t)tx);
+    return 0; // Ok(())
+}
+
+int64_t rask_recver_close_i64(int64_t rx) {
+    rask_recver_drop((RaskRecver *)(intptr_t)rx);
+    return 0; // Ok(())
+}
+
 int64_t rask_sender_clone_i64(int64_t tx) {
     return (int64_t)(intptr_t)rask_sender_clone((RaskSender *)(intptr_t)tx);
 }
