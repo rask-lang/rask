@@ -68,12 +68,12 @@ Full pipeline: lexer → parser → AST → type checker → ownership checker �
 
 ## Major Gaps (partially implemented, key behaviors missing)
 
-### 8. `for mutate` iteration — parsed but not enforced (LP11–LP16)
+### 8. `for mutate` iteration — partially enforced (LP11–LP16)
 
-Parser accepts `for mutate item in vec { ... }`. Type checker doesn't validate:
-- No structural mutation check inside body (LP14 — `vec.push()` during `for mutate` not rejected)
-- No enforcement that `item` can't be passed to `take` parameters (LP16)
-- MIR doesn't generate different access patterns for mutable vs immutable iteration
+Parser accepts `for mutate item in vec { ... }`. Ownership checker now enforces:
+- ~~No structural mutation check inside body (LP14 — `vec.push()` during `for mutate` not rejected)~~ FIXED — push/pop/insert/remove/clear/drain rejected on iterated collection
+- ~~No enforcement that `item` can't be passed to `take` parameters (LP16)~~ FIXED — `own item` to take params rejected with clear error
+- MIR doesn't generate different access patterns for mutable vs immutable iteration (LP11–LP13 in-place mutation codegen still pending)
 
 ### 9. Pool API — missing several spec-required features
 
@@ -105,9 +105,9 @@ Spec's own Phase A requirements (runtime-strategy.md) not met:
 
 Spec requires two borrows on different fields of the same struct to not conflict (F2). Borrow checker has `root_ident_name()` extraction but field-level granularity tracking isn't clearly implemented. Closures capturing individual fields (F4) not verified.
 
-### 12. `@unique` move-only types — enforcement unclear (U1–U4)
+### 12. ~~`@unique` move-only types — enforcement unclear (U1–U4)~~ FIXED
 
-`@unique` forces move semantics even for ≤16-byte types. Transitive propagation (U4: struct containing unique field is automatically unique) has no visible enforcement.
+`is_unique` flag on TypeDef::Struct, parsed from `@unique` attribute. Ownership checker's `is_copy()` returns false for unique types. `MoveReason::Unique` wired through diagnostics. U4 transitive propagation via fixed-point iteration in `propagate_uniqueness()` — structs containing unique fields are automatically marked unique.
 
 ### 13. Scope-limited closures — escape not detected (SL1–SL2)
 
@@ -251,7 +251,7 @@ For balance — these areas are solid:
 2. **Error origin tracking** — fundamental to error handling ergonomics
 3. **`comptime for` + reflection** — blocks encoding/serialization patterns
 4. **Pool weak handles + `try_insert`** — needed for real graph/entity patterns
-5. **`for mutate` enforcement** — correctness hole
+5. ~~**`for mutate` enforcement** — correctness hole~~ LP14/LP16 DONE (MIR codegen pending)
 6. **Concurrency Phase A surface** — spec commits to this for Phase A
 7. **`@binary` structs** — blocks a whole use case category
 8. **`Cell<T>`** — ergonomic gap for closure patterns

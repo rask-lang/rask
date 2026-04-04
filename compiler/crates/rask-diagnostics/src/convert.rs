@@ -944,6 +944,30 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_fix(format!("replace `discard {}` with `{}.close()`", name, name))
                 .with_why("resource types must be consumed properly — `discard` would silently leak the resource")
             }
+
+            ForMutateStructuralMutation { collection, operation, loop_span } => {
+                Diagnostic::error(format!(
+                    "cannot {} `{}` during `for mutate` — invalidates iteration",
+                    operation, collection
+                ))
+                .with_code("E0813")
+                .with_primary(self.span, format!("{} not allowed during mutable iteration", operation))
+                .with_secondary(*loop_span, format!("`{}` is being iterated here", collection))
+                .with_help("collect changes and apply them after the loop")
+                .with_why("structural mutations (insert, remove, push, clear) invalidate the iterator — elements may shift or be reallocated")
+            }
+
+            ForMutateTakeItem { item, collection, loop_span } => {
+                Diagnostic::error(format!(
+                    "cannot pass `{}` to `take` parameter — borrowed from `{}`",
+                    item, collection
+                ))
+                .with_code("E0814")
+                .with_primary(self.span, "would move element out of collection")
+                .with_secondary(*loop_span, format!("`{}` is borrowed from `{}` during iteration", item, collection))
+                .with_help(format!("clone `{}` before passing, or restructure to avoid taking ownership", item))
+                .with_why("for-mutate borrows elements in place — taking ownership would leave a hole in the collection")
+            }
         }
     }
 }

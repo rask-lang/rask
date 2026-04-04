@@ -46,6 +46,17 @@ struct WithBindingInfo {
     span: Span,
 }
 
+/// LP14/LP16: Tracks the collection being iterated in a `for mutate` loop.
+#[derive(Debug, Clone)]
+struct ForMutateInfo {
+    /// Collection variable name (e.g. "items" from `for mutate item in items`)
+    collection_name: String,
+    /// Binding variable names (e.g. ["item"])
+    binding_names: Vec<String>,
+    /// Span for error messages
+    span: Span,
+}
+
 /// Ownership and borrow checker.
 pub struct OwnershipChecker<'a> {
     /// The typed program from type checking.
@@ -71,6 +82,8 @@ pub struct OwnershipChecker<'a> {
     frozen_contexts: HashSet<String>,
     /// Active `with` block bindings for W2 checking.
     active_with_bindings: Vec<WithBindingInfo>,
+    /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
+    active_for_mutates: Vec<ForMutateInfo>,
     /// Parameter type strings: param name → type annotation (e.g. "Pool<Entity>").
     param_type_strings: HashMap<String, String>,
     /// Errors accumulated during analysis.
@@ -91,6 +104,7 @@ impl<'a> OwnershipChecker<'a> {
             in_ensure: false,
             frozen_contexts: HashSet::new(),
             active_with_bindings: Vec::new(),
+            active_for_mutates: Vec::new(),
             param_type_strings: HashMap::new(),
             errors: Vec::new(),
         }
@@ -332,8 +346,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.register_pattern_bindings(pattern);
                 self.check_block(body);
             }
-            StmtKind::For { label: _, binding, iter, body, .. } => {
+            StmtKind::For { label: _, binding, mutate, iter, body, .. } => {
                 self.check_expr(iter);
+                let binding_names: Vec<String> = binding.names().iter().map(|s| s.to_string()).collect();
                 match binding {
                     ForBinding::Single(name) => {
                         self.bindings.insert(name.clone(), BindingState::Owned);
@@ -344,7 +359,21 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
+                // LP14/LP16: track for-mutate context
+                if *mutate {
+                    let collection_name = Self::extract_iter_collection(iter);
+                    if let Some(coll) = collection_name {
+                        self.active_for_mutates.push(ForMutateInfo {
+                            collection_name: coll,
+                            binding_names: binding_names.clone(),
+                            span: stmt.span,
+                        });
+                    }
+                }
                 self.check_block(body);
+                if *mutate {
+                    self.active_for_mutates.pop();
+                }
             }
             StmtKind::Loop { label: _, body } => {
                 self.check_block(body);
@@ -435,7 +464,18 @@ impl<'a> OwnershipChecker<'a> {
                 for arg in args {
                     self.check_expr(&arg.expr);
                     if arg.mode == ArgMode::Own {
+                        // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
+                            if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.binding_names.contains(name)) {
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::ForMutateTakeItem {
+                                        item: name.clone(),
+                                        collection: fm.collection_name.clone(),
+                                        loop_span: fm.span,
+                                    },
+                                    span: arg.expr.span,
+                                });
+                            }
                             self.bindings.insert(name.clone(), BindingState::Moved { at: arg.expr.span });
                         }
                     }
@@ -446,7 +486,18 @@ impl<'a> OwnershipChecker<'a> {
                 for arg in args {
                     self.check_expr(&arg.expr);
                     if arg.mode == ArgMode::Own {
+                        // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
+                            if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.binding_names.contains(name)) {
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::ForMutateTakeItem {
+                                        item: name.clone(),
+                                        collection: fm.collection_name.clone(),
+                                        loop_span: fm.span,
+                                    },
+                                    span: arg.expr.span,
+                                });
+                            }
                             self.bindings.insert(name.clone(), BindingState::Moved { at: arg.expr.span });
                         }
                     }
@@ -510,6 +561,24 @@ impl<'a> OwnershipChecker<'a> {
                                         span: expr.span,
                                     });
                                 }
+                                break;
+                            }
+                        }
+                    }
+                }
+                // LP14: Check structural mutations on collection during `for mutate`
+                if matches!(method.as_str(), "insert" | "remove" | "clear" | "push" | "pop" | "drain") {
+                    if let ExprKind::Ident(coll_name) = &object.kind {
+                        for fm in &self.active_for_mutates {
+                            if fm.collection_name == *coll_name {
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::ForMutateStructuralMutation {
+                                        collection: coll_name.clone(),
+                                        operation: method.clone(),
+                                        loop_span: fm.span,
+                                    },
+                                    span: expr.span,
+                                });
                                 break;
                             }
                         }
@@ -982,6 +1051,22 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// LP14: Extract the collection name from a for-loop iterator expression.
+    /// `items` → Some("items"), `items.iter()` → Some("items")
+    fn extract_iter_collection(iter: &Expr) -> Option<String> {
+        match &iter.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::MethodCall { object, .. } => {
+                if let ExprKind::Ident(name) = &object.kind {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
 
     fn create_borrow_with_projection(
         &mut self,
@@ -1109,7 +1194,9 @@ impl<'a> OwnershipChecker<'a> {
             Type::Named(type_id) => {
                 if let Some(def) = self.program.types.get(*type_id) {
                     match def {
-                        rask_types::TypeDef::Struct { fields, .. } => {
+                        rask_types::TypeDef::Struct { fields, is_unique, .. } => {
+                            // U1: @unique disables implicit copy regardless of size
+                            if *is_unique { return false; }
                             fields.iter().all(|(_, t)| self.is_copy(t))
                                 && self.type_size(ty) <= 16
                         }
@@ -1220,7 +1307,11 @@ impl<'a> OwnershipChecker<'a> {
             Type::Named(type_id) => {
                 if let Some(def) = self.program.types.get(*type_id) {
                     match def {
-                        rask_types::TypeDef::Struct { fields, .. } => {
+                        rask_types::TypeDef::Struct { fields, is_unique, .. } => {
+                            // U1: @unique types report as Unique, not size/heap
+                            if *is_unique {
+                                return MoveReason::Unique { type_name };
+                            }
                             let all_fields_copy = fields.iter().all(|(_, t)| self.is_copy(t));
                             if all_fields_copy {
                                 MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }

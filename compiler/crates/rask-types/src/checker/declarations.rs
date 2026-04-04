@@ -46,6 +46,7 @@ impl TypeChecker {
                 self.register_impl_methods(i);
             }
         }
+        self.propagate_uniqueness();
         self.auto_derive_traits();
 
         // GC1/GC2: Pre-register type vars for functions with inferred params/returns
@@ -159,12 +160,14 @@ impl TypeChecker {
 
         let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
         let is_resource = s.attrs.iter().any(|a| a == "resource");
+        let is_unique = s.attrs.iter().any(|a| a == "unique");
         self.types.register_type(TypeDef::Struct {
             name: s.name.clone(),
             type_params,
             fields,
             methods,
             is_resource,
+            is_unique,
             private_fields,
         });
     }
@@ -287,6 +290,41 @@ impl TypeChecker {
             self_param,
             params,
             ret,
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // U4: Transitive uniqueness — struct containing @unique field is itself unique.
+    // Fixed-point iteration: propagate until no changes.
+    // ------------------------------------------------------------------------
+
+    fn propagate_uniqueness(&mut self) {
+        use crate::types::TypeId;
+
+        loop {
+            let mut changed = false;
+            let type_count = self.types.types.len();
+            for idx in 0..type_count {
+                let id = TypeId(idx as u32);
+                let def = self.types.get(id).unwrap().clone();
+                if let TypeDef::Struct { fields, is_unique, .. } = &def {
+                    if *is_unique { continue; }
+                    let has_unique_field = fields.iter().any(|(_, ty)| {
+                        match ty {
+                            Type::Named(field_id) => self.types.is_unique_type_by_id(*field_id),
+                            Type::Generic { base, .. } => self.types.is_unique_type_by_id(*base),
+                            _ => false,
+                        }
+                    });
+                    if has_unique_field {
+                        if let Some(TypeDef::Struct { is_unique, .. }) = self.types.get_mut(id) {
+                            *is_unique = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed { break; }
         }
     }
 

@@ -217,6 +217,14 @@ impl TypeTable {
         false
     }
 
+    /// Check if a TypeId refers to a `@unique` struct.
+    pub fn is_unique_type_by_id(&self, id: TypeId) -> bool {
+        if let Some(TypeDef::Struct { is_unique, .. }) = self.types.get(id.0 as usize) {
+            return *is_unique;
+        }
+        false
+    }
+
     /// Get TypeId for the builtin Option<T> enum.
     pub fn get_option_type_id(&self) -> Option<TypeId> {
         self.option_type_id
