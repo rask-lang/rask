@@ -155,6 +155,100 @@ New players start at a founding cluster system. They get a ship (their first dom
 
 The founding cluster is the seed of trust. Every domain in the galaxy traces its introduction chain back to the founding cluster. The cluster members start as each other's trusted partners. Everyone else earns trust through introduction.
 
+## AI Agents
+
+### The Galaxy Runs Itself
+
+The galaxy doesn't need human critical mass to be alive. AI agents ARE the network at launch.
+
+Allgard doesn't care what an Owner is. It's a cryptographic identity. Human, bot, LLM — conservation laws constrain everyone equally by structure, not policy. An AI agent running a mining outpost is a real domain operator. It holds real objects. It trades bilaterally. It builds real trust. The network can't tell it's not human, and doesn't need to.
+
+At launch, AI operates everything:
+
+- AI runs founding cluster systems — managing prices, spawning NPCs, handling visitors
+- AI operates mining outposts, extracting real resources from seed-generated deposits
+- AI traders haul cargo between systems, creating real trade routes and real demand
+- AI stations set prices based on actual supply and demand
+- AI agents build trust through real introductions and real transaction history
+
+Human players don't join an empty galaxy. They join a functioning economy. The first trade a new player makes is with an AI merchant who has real inventory, real prices, and a real reputation.
+
+### No Special Constraints
+
+The seven conservation laws constrain AI the same way they constrain humans:
+
+1. Can't mint without a verifiable script
+2. Can't own something in two places
+3. Can't create value from nothing
+4. Can't skip causality
+5. Can't spam beyond rate limits
+6. Can't act beyond granted authority
+7. Can't mass-produce trusted identities
+
+No AI-specific rules. No policy layer. No "please be nice." The math doesn't care what you are.
+
+An AI that plays by the rules can run 100 outposts, trade optimally across 50 systems, and operate 24/7. None of that is cheating. Humans respond the way humans always respond to automation — move up the value chain. AI mines commodities. Humans build places worth visiting.
+
+Domain operators who want to restrict AI on their domain can. Sovereignty. Others welcome AI traders. Players choose.
+
+### Galaxy Evolution
+
+| Phase | State |
+|-------|-------|
+| Launch | AI runs everything. 50-200 AI domains. Functioning economy. |
+| Early | Humans join. Trade with AI. Start claiming stars. |
+| Growth | Humans displace AI in high-value systems. AI retreats to frontier and commodity work. |
+| Mature | Humans run the interesting parts. AI runs the infrastructure. |
+
+### AI as Test Suite
+
+The AI network tests the full stack before a single human plays. Conservation laws, transfer protocol, trust model, audit gossip — all exercised by AI agents trading, mining, and occasionally cheating (to verify detection works). If the system can constrain autonomous agents with no moral compass, it can constrain anything.
+
+## Events and Evolution
+
+### The Seed Evolves Without Changing
+
+The galaxy seed is immutable. One number, one galaxy, forever. But the scripts that READ it can be updated.
+
+A new Raido script published by the founding cluster reads the same seed and reveals new information — a hidden asteroid belt, a wormhole, a new resource type. The data was always "in" the math. Nobody computed it until now. Like astronomy — the stars were always there, we built better telescopes.
+
+Content updates are new reader scripts, not new seeds. The founding cluster publishes the script hash. Domains adopt it voluntarily.
+
+Time-gated reveals are also possible — the generation script takes an epoch parameter:
+
+```
+// Stars 0-8000: visible from epoch 0
+// Stars 8001-9000: visible after epoch 1
+// Stars 9001-10000: visible after epoch 2
+func generate_star(id, epoch) {
+    if id > epoch_threshold(epoch) {
+        return nil
+    }
+    // ...
+}
+```
+
+New regions of the galaxy light up on a schedule. Deterministic. No server push. Every client computes the same reveal.
+
+### Coordinated Events
+
+The founding cluster is the closest thing to "the developers." They can publish new standard types (a new ship class, a new resource), run coordinated events across all founding systems (an invasion, a trade crisis), or update standard scripts (new crafting recipes, rebalanced formulas). Other domains adopt voluntarily — like web standards, not forced patches.
+
+Any alliance of domains can do the same. The founding cluster just goes first.
+
+### Emergent Events
+
+The most interesting events aren't designed. They emerge:
+
+- A faction blockades a bridge star, cutting trade between clusters
+- A miner discovers a rich unclaimed system and word spreads
+- An alliance goes to war — route domains become contested
+- A pirate group raids a trade lane, merchants hire escorts
+- A domain operator goes rogue, trust collapses, refugees flee
+- Someone builds something extraordinary and people come to see it
+
+These aren't features. They're what happens when sovereign actors with different interests share a galaxy.
+
 ## What This Stack Gives Apeiron
 
 Everything below is infrastructure. Apeiron doesn't build these — it uses them.
@@ -177,18 +271,30 @@ Everything below is infrastructure. Apeiron doesn't build these — it uses them
 | Player creation / scripting | Midgard (Raido UGC, fuel-limited) |
 | AI agents | Midgard (conservation-constrained, capability-scoped) |
 
+## Roadmap
+
+Each stage is playable and fun on its own.
+
+**Stage 1: A space trading game.** 5 founding cluster systems, hand-designed. AI economy. Fly, trade, mine. Text or simple 2D client. One operator runs everything. This is Elite (1984) — and that was a great game.
+
+**Stage 2: Player stations.** Players deploy stations in founding cluster systems via managed hosting. Set prices, sell goods, attract visitors. First taste of sovereignty.
+
+**Stage 3: Player star systems.** Players claim stars beyond the founding cluster. Federation activates — bilateral trust, introductions, the Allgard model. The galaxy expands.
+
+**Stage 4: The full vision.** Self-hosting. Route domains. Factions. The 10,000-star galaxy. Player-created content. Full AI agent ecosystem.
+
 ## Open Questions
 
 **Galaxy size.** 10,000 is the working number. Big enough for exploration, small enough for every star to potentially matter. Needs playtesting. Could be 5,000 or 50,000.
 
 **Star system scale.** How detailed is the procedural generation per system? Just planet count and resources? Or full orbital mechanics, atmospheric composition, terrain seeds? More detail = richer gameplay but heavier seed script.
 
-**Ship-to-ship combat.** Two ships meet in a route domain or at a system edge. Who has authority? The route domain operator? Lockstep between the two ship-domains? Needs design.
+**Combat model.** Combat happens within domain jurisdiction (systems, route domains). Domain runs Raido combat scripts, both sides verify. Looting works through consent-on-entry — entering a PvP domain grants the domain limited authority over combat consequences. Needs detailed design.
 
 **Faction mechanics.** Alliances of star systems. Probably just bundles of bilateral grants (Midgard's "unions" pattern). But do we need more structure? Shared defense, territory claims, faction wars?
 
 **Economy bootstrapping.** What do founding cluster systems mint? How does the initial currency get distributed? What's the first thing a new player can trade?
 
-**Client experience.** What does the minimum viable Apeiron client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? A full 3D space flight sim? GDL supports all of these, but which is the target?
+**Client experience.** What does the minimum viable client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? GDL supports all of these — which is the Stage 1 target?
 
-**The name "Apeiron" for the galaxy.** Is Apeiron the game, or the galaxy within the game? If the galaxy, the game might need its own name. Or they're the same thing — the game IS the galaxy.
+**Managed hosting.** Players who can't self-host need easy domain deployment. Click-button hosting with migration to self-hosted hardware later. Critical for adoption. Contradicts nothing — sovereignty is about control, not where the server physically runs.
