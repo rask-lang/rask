@@ -1032,6 +1032,18 @@ impl TypeChecker {
                 let result_var = self.ctx.fresh_var();
                 self.unify(ret, &result_var, span)
             }
+            // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
+            ("Shared", "try_read") if args.len() == 1 => {
+                let result_var = self.ctx.fresh_var();
+                let opt_ty = Type::Option(Box::new(result_var));
+                self.unify(ret, &opt_ty, span)
+            }
+            // Shared<T>.try_write(|T| -> R) -> Option<R>  (non-blocking, R3)
+            ("Shared", "try_write") if args.len() == 1 => {
+                let result_var = self.ctx.fresh_var();
+                let opt_ty = Type::Option(Box::new(result_var));
+                self.unify(ret, &opt_ty, span)
+            }
             // Shared<T>.clone() -> Shared<T>
             ("Shared", "clone") if args.is_empty() => {
                 let shared_ty = Type::UnresolvedGeneric {
@@ -1072,6 +1084,23 @@ impl TypeChecker {
                 };
                 self.unify(ret, &result_type, span)
             }
+            // Sender<T>.try_send(value: T) -> () or string
+            ("Sender", "try_send") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
+                    err: Box::new(Type::String),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            // Sender<T>.close() -> () or string
+            ("Sender", "close") if args.is_empty() => {
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
+                    err: Box::new(Type::String),
+                };
+                self.unify(ret, &result_type, span)
+            }
             // Sender<T>.clone() -> Sender<T>
             ("Sender", "clone") if args.is_empty() => {
                 let sender_ty = Type::UnresolvedGeneric {
@@ -1092,6 +1121,14 @@ impl TypeChecker {
             ("Receiver", "try_recv") if args.is_empty() => {
                 let result_type = Type::Result {
                     ok: Box::new(inner_type),
+                    err: Box::new(Type::String),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            // Receiver<T>.close() -> () or string
+            ("Receiver", "close") if args.is_empty() => {
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
                     err: Box::new(Type::String),
                 };
                 self.unify(ret, &result_type, span)

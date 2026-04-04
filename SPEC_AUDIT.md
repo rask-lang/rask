@@ -85,15 +85,14 @@ Missing from both interp and codegen:
 - Performance escape hatches: `pool.with_valid()`, `pool.get_unchecked()`
 - `Pool<@resource>` runtime panic when non-empty at scope exit (R5)
 
-### 10. Concurrency — missing Phase A surface area
+### 10. Concurrency — missing Phase A surface area (PARTIALLY FIXED)
 
-Spec's own Phase A requirements (runtime-strategy.md) not met:
+~~`try_send()` on channels~~ FIXED — non-blocking send returns "channel full" or "channel closed" error. ~~`close()` on Sender/Receiver~~ FIXED — replaces internal handle to disconnect the channel. ~~`Shared<T>.try_read()` / `.try_write()`~~ FIXED — non-blocking closure-based access returns `Option<R>`, `try_write` writes back like regular write. All three implemented in interpreter with type checker and registry support.
+
+Remaining Phase A gaps:
 
 | Missing | Spec rule |
 |---------|-----------|
-| `try_send()` on channels | CH1 |
-| `close()` on Sender/Receiver | CH4 |
-| `Shared<T>.try_read()` / `.try_write()` | R3 |
 | `join_all(handles)` | M1 |
 | `select_first(handles)` | M2 |
 | `TaskGroup<T>` struct + methods | M3 |
@@ -252,7 +251,7 @@ For balance — these areas are solid:
 3. **`comptime for` + reflection** — blocks encoding/serialization patterns
 4. **Pool weak handles + `try_insert`** — needed for real graph/entity patterns
 5. ~~**`for mutate` enforcement** — correctness hole~~ LP14/LP16 DONE (MIR codegen pending)
-6. **Concurrency Phase A surface** — spec commits to this for Phase A
+6. **Concurrency Phase A surface** — `try_send`, `close`, `try_read`/`try_write` DONE; `join_all`, `select_first`, `TaskGroup`, `cancelled` still pending
 7. **`@binary` structs** — blocks a whole use case category
 8. **`Cell<T>`** — ergonomic gap for closure patterns
 9. ~~**`discard`** — small but affects intent communication~~ DONE
