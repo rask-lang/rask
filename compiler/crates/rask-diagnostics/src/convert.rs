@@ -595,6 +595,25 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("remove the `discard` or restructure so the value isn't needed after this point")
                     .with_why("`discard` explicitly drops a value and invalidates its binding — using it afterwards is an error")
             }
+
+            ZeroStep { span } => {
+                Diagnostic::error("zero step".to_string())
+                    .with_code("E0337")
+                    .with_primary(*span, "step must be non-zero")
+                    .with_help("use a positive step for ascending ranges, or a negative step for descending ranges")
+                    .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
+            }
+
+            MessageCoverageMissing { variant, enum_name, span } => {
+                Diagnostic::error(format!(
+                    "@message variant `{}` on `{}` has no message template and cannot auto-delegate",
+                    variant, enum_name
+                ))
+                    .with_code("E0338")
+                    .with_primary(*span, "variant needs @message(\"...\") annotation")
+                    .with_help("add @message(\"template\") to this variant, or change the payload to an error type")
+                    .with_why("every variant in a @message enum must have an explicit template or a single Error payload that auto-delegates [type.errors/ER26]")
+            }
         }
     }
 }

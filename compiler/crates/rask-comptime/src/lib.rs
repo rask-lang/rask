@@ -579,6 +579,9 @@ pub enum ComptimeError {
 
     #[error("not supported at comptime: {0}")]
     NotSupported(String),
+
+    #[error("comptime stack overflow (depth {0}); reduce recursion or increase limit")]
+    StackOverflow(usize),
 }
 
 /// Result type for comptime operations.
@@ -602,8 +605,12 @@ pub struct ComptimeEnv {
     functions: HashMap<String, FnDecl>,
     /// Backwards branch counter (loops + recursion).
     branch_count: usize,
-    /// Maximum allowed backwards branches.
+    /// Maximum allowed backwards branches (CT35: default 1,000).
     branch_quota: usize,
+    /// Current call stack depth (CT29).
+    call_depth: usize,
+    /// Maximum allowed call depth (CT29).
+    max_call_depth: usize,
 }
 
 impl ComptimeEnv {
@@ -612,7 +619,9 @@ impl ComptimeEnv {
             scopes: vec![HashMap::new()],
             functions: HashMap::new(),
             branch_count: 0,
-            branch_quota: 10_000, // Default
+            branch_quota: 1_000, // CT35: default 1,000
+            call_depth: 0,
+            max_call_depth: 256, // CT29: stack depth limit
         }
     }
 
@@ -622,6 +631,8 @@ impl ComptimeEnv {
             functions: HashMap::new(),
             branch_count: 0,
             branch_quota: quota,
+            call_depth: 0,
+            max_call_depth: 256,
         }
     }
 
@@ -678,6 +689,20 @@ impl ComptimeEnv {
         } else {
             Ok(())
         }
+    }
+
+    /// CT29: track call depth to prevent stack overflow.
+    fn push_call(&mut self) -> ComptimeResult<()> {
+        self.call_depth += 1;
+        if self.call_depth > self.max_call_depth {
+            Err(ComptimeError::StackOverflow(self.max_call_depth))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn pop_call(&mut self) {
+        self.call_depth = self.call_depth.saturating_sub(1);
     }
 }
 
@@ -1443,6 +1468,7 @@ impl ComptimeInterpreter {
             });
         }
 
+        self.env.push_call()?; // CT29: stack depth check
         self.env.push_scope();
 
         // Bind parameters
@@ -1451,10 +1477,11 @@ impl ComptimeInterpreter {
         }
 
         // Execute body
-        let result = self.eval_block(&func.body)?;
+        let result = self.eval_block(&func.body);
         self.env.pop_scope();
+        self.env.pop_call();
 
-        Ok(result.value())
+        Ok(result?.value())
     }
 
     fn call_closure(
@@ -1471,6 +1498,8 @@ impl ComptimeInterpreter {
             });
         }
 
+        self.env.push_call()?; // CT29: stack depth check
+
         // Swap in the captured environment, preserving current env
         let saved_scopes = std::mem::replace(&mut self.env.scopes, captures.to_vec());
 
@@ -1484,6 +1513,7 @@ impl ComptimeInterpreter {
 
         // Restore original environment
         self.env.scopes = saved_scopes;
+        self.env.pop_call();
 
         Ok(result?.value())
     }
@@ -2002,6 +2032,6 @@ mod tests {
 
         // We'd need to construct AST nodes for proper testing
         // For now, just verify the interpreter can be created
-        assert_eq!(interp.env.branch_quota, 10_000);
+        assert_eq!(interp.env.branch_quota, 1_000); // CT35: default 1,000
     }
 }

@@ -105,8 +105,21 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &cfg);
 
-    rask_desugar::desugar(&mut parse_result.decls);
+    let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut parse_result.decls);
     rask_desugar::desugar_default_args(&mut parse_result.decls);
+
+    if !desugar_errors.is_empty() {
+        let diags: Vec<Diagnostic> = desugar_errors.iter().map(|e| {
+            Diagnostic::error(e.message.clone())
+                .with_code("E0338")
+                .with_primary(e.span, "variant needs @message(\"...\") annotation")
+        }).collect();
+        show_diagnostics(&diags, &source, path, "desugar", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Desugar", desugar_errors.len()));
+        }
+        process::exit(1);
+    }
 
     let resolved = match rask_resolve::resolve_with_cfg(&parse_result.decls, cfg.to_cfg_values()) {
         Ok(r) => r,
@@ -197,8 +210,22 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     rask_comptime::eliminate_comptime_if(&mut pkg_ctx.all_decls, &cfg);
 
-    rask_desugar::desugar(&mut pkg_ctx.all_decls);
+    let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut pkg_ctx.all_decls);
     rask_desugar::desugar_default_args(&mut pkg_ctx.all_decls);
+
+    if !desugar_errors.is_empty() {
+        let diags: Vec<Diagnostic> = desugar_errors.iter().map(|e| {
+            Diagnostic::error(e.message.clone())
+                .with_code("E0338")
+                .with_primary(e.span, "variant needs @message(\"...\") annotation")
+        }).collect();
+        show_multifile_diagnostics(&diags, &source_files, format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Desugar", desugar_errors.len()));
+        }
+        process::exit(1);
+    }
+
     let resolved = match rask_resolve::resolve_package_with_cfg(
         &pkg_ctx.all_decls,
         &pkg_ctx.registry,

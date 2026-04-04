@@ -36,14 +36,31 @@ pub fn desugar_with_start_id(decls: &mut [Decl], start_id: u32) {
     }
 }
 
+/// ER26 coverage error from @message desugaring.
+#[derive(Debug, Clone)]
+pub struct DesugarError {
+    pub message: String,
+    pub span: Span,
+}
+
+/// Desugar all operators, returning any ER26 coverage errors.
+pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
+    let mut desugarer = Desugarer::new(1_000_000);
+    for decl in decls {
+        desugarer.desugar_decl(decl);
+    }
+    desugarer.errors
+}
+
 /// The desugaring context.
 struct Desugarer {
     next_id: u32,
+    errors: Vec<DesugarError>,
 }
 
 impl Desugarer {
     fn new(start_id: u32) -> Self {
-        Self { next_id: start_id }
+        Self { next_id: start_id, errors: Vec::new() }
     }
 
     fn fresh_id(&mut self) -> NodeId {
@@ -111,7 +128,20 @@ impl Desugarer {
         let mut arms = Vec::new();
 
         for variant in &e.variants {
-            let template = self.extract_message_template(variant);
+            let template = match self.extract_message_template(variant) {
+                Some(t) => t,
+                None => {
+                    // ER26: missing coverage — record error, use variant name as fallback
+                    self.errors.push(DesugarError {
+                        message: format!(
+                            "@message variant `{}` on `{}` has no message template and cannot auto-delegate",
+                            variant.name, e.name
+                        ),
+                        span: sp,
+                    });
+                    MessageTemplate::Format(variant.name.clone())
+                }
+            };
 
             // Build pattern bindings for this variant
             let field_patterns: Vec<Pattern> = if variant.fields.is_empty() {
@@ -207,19 +237,27 @@ impl Desugarer {
     }
 
     /// Extract the message template for a variant.
-    fn extract_message_template(&self, variant: &rask_ast::decl::Variant) -> MessageTemplate {
+    ///
+    /// ER24: explicit @message("template") on the variant.
+    /// ER25: single-field variant with Error-typed payload auto-delegates to inner.message().
+    /// ER26: variants without coverage return None (caller must handle).
+    fn extract_message_template(&self, variant: &rask_ast::decl::Variant) -> Option<MessageTemplate> {
         // Check for @message("template") on the variant
         for attr in &variant.attrs {
             if let Some(tmpl) = extract_message_attr_template(attr) {
-                return MessageTemplate::Format(tmpl);
+                return Some(MessageTemplate::Format(tmpl));
             }
         }
-        // Auto-delegate: single payload field → delegate to inner.message()
-        if variant.fields.len() == 1 {
-            return MessageTemplate::Delegate(variant.fields[0].name.clone());
+        // No-payload variants use the variant name as a reasonable default
+        if variant.fields.is_empty() {
+            return Some(MessageTemplate::Format(variant.name.clone()));
         }
-        // Fallback: variant name as message
-        MessageTemplate::Format(variant.name.clone())
+        // ER25: auto-delegate for single-field variants with Error-typed payload
+        if variant.fields.len() == 1 && is_error_type_name(&variant.fields[0].ty) {
+            return Some(MessageTemplate::Delegate(variant.fields[0].name.clone()));
+        }
+        // ER26: missing coverage — caller should report error
+        None
     }
 
     fn desugar_trait(&mut self, t: &mut TraitDecl) {
@@ -619,6 +657,12 @@ enum MessageTemplate {
     Format(String),
     /// Delegate to inner value: `inner.message()`
     Delegate(String),
+}
+
+/// Heuristic: does this type name look like an error type?
+/// Matches names ending in "Error" (e.g., IoError, ManifestError).
+fn is_error_type_name(ty: &str) -> bool {
+    ty.ends_with("Error")
 }
 
 /// Extract the template from a `message("template")` attribute string.

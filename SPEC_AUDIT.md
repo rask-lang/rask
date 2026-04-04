@@ -145,17 +145,17 @@ Both type checker and interpreter reject `.variants()` on enums with payload fie
 
 The `trait Iterator<Item>` isn't registered in stdlib for user code to write generic bounds like `T: Iterator<Item>`. Custom iterators can't be constrained.
 
-### 21. Error auto-delegation for `@message` wrapper variants (ER25)
+### 21. ~~Error auto-delegation for `@message` wrapper variants (ER25)~~ FIXED
 
-Variants with a single Error payload and no `@message` should auto-delegate to `inner.message()`. Desugar doesn't implement this.
+Desugar now only auto-delegates for single-field variants whose type name ends with "Error" (ER25). Variants with fields but no `@message` and no auto-delegatable payload trigger an ER26 coverage error. Pipeline reports desugar errors before proceeding.
 
-### 22. Step range validation (SP1–SP3)
+### 22. ~~Step range validation (SP3)~~ PARTIALLY FIXED
 
-No compile-time or runtime check for zero step (`step(0)`) or wrong-direction step (`(0..10).step(-1)`).
+SP3 (zero step) now produces a compile error when `.step(0)` is called on a range with a literal zero argument. SP1/SP2 (direction mismatch) still produce empty ranges at runtime rather than compile-time warnings.
 
-### 23. Comptime safety limits (CT27–CT35)
+### 23. ~~Comptime safety limits (CT27–CT35)~~ FIXED
 
-Backwards branch quota and recursion depth limits not enforced during compile-time evaluation.
+Default backwards branch quota set to 1,000 (CT35, was incorrectly 10,000). Call depth tracking added with 256-frame limit (CT29) — stack overflow detected separately from branch quota with clear error. `@comptime_quota(N)` attribute override not yet implemented.
 
 ### 24. Context clause auto-resolution — opaque (CC1–CC10)
 
