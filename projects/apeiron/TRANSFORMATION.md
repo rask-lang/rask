@@ -39,19 +39,44 @@ Real chemistry is beautiful but computationally unbounded. Protein folding, quan
 
 ## Grounding: Everything Is Objects
 
-A domain is a server running scripts. There's no physical lab, no physical reactor, no physical anything. The only things that are real — externally verifiable, auditable, unfakeable — are **Allgard objects** and the **transforms that consume and produce them**.
+The only things that are real — externally verifiable, auditable, unfakeable — are **Allgard objects** and the **transforms that consume and produce them**. Every input to a transformation must be a real object with a proof chain. No free parameters. No declarations without material backing.
 
-A transformation consumes input objects and produces output objects. The physics script verifies that the claimed outputs are consistent with the claimed inputs. Conservation laws verify that the inputs existed and were destroyed. That's the entire enforcement surface.
+A transformation has four categories of input, all Allgard objects:
 
-This means **every parameter to the interaction function must come from consumed objects.** You can't declare a free parameter — everything costs something real.
+**Element inputs** — the materials being combined. Consumed in the transform. Verified via proof chain back to seed-verified extraction.
 
-**Element inputs** are Allgard objects (minted from extraction, traded, or crafted). Consumed in the transform. Verified via proof chain.
+**Fuel** — the energy source. Energy is NOT a free parameter. It comes from fuel objects consumed in the transform. The energy available is `fuel.energy_density × fuel.mass_consumed`. Fuel quality (energy density) is itself a material property, derived from element composition via the interaction function. You can't claim high energy without burning fuel that contains it. Better fuel requires better material science — the spiral.
 
-**Energy** is NOT a free parameter. Energy comes from **fuel objects** consumed in the transform. Fuel has an energy density (a material property, derived from its element composition via the same interaction function). The energy available for the transformation is `fuel.energy_density × fuel.mass_consumed`. You can't claim high energy without burning fuel objects that contain that energy. Better fuel requires better material science — the spiral.
+**Catalysts** — present but not consumed (or minimally consumed — a small fraction lost per use, tunable constant). Their continued existence is verifiable.
 
-**Catalysts** are Allgard objects. Present but not consumed (or minimally consumed — a small fraction lost per use, tunable constant). Their continued existence is verifiable.
+**The facility** — the physical infrastructure that performs the transform. A facility is an Allgard object with a component tree, evaluated by the constraint laws like any other object. Its capabilities derive from its composition:
 
-No reactors, no labs, no infrastructure enters the verification. A domain could run the crafting script on a phone or a supercomputer — doesn't matter. What matters: real objects went in, the physics script confirms the output is valid for those inputs, real objects came out. Everything else is flavor.
+- Its **reactor components** determine maximum energy throughput — how much fuel energy per transform it can channel. A facility with a crude reactor can burn fuel, but can't efficiently deliver high energy density to the reaction. The reactor's power output limits the energy_per_mass achievable in a single transform, regardless of fuel quality.
+- Its **containment components** determine what processes are safe — high-energy or high-reactivity transforms require containment rated for those conditions. The containment's stress tolerance (Law 4) and shielding (Law 5) set the bounds.
+- Its **precision instruments** determine ratio control — how finely the facility can target specific element fractions. Crude equipment means noisy ratios (the actual fractions scatter around the target). Precision equipment means tight control (actual fractions match the target closely).
+
+The crafting proof includes the facility's object ID. Trading partners can verify:
+1. The facility exists (proof chain — it was built from real materials)
+2. Its component tree produces the claimed capabilities (physics script evaluates it)
+3. The transform is consistent with the facility's capabilities (energy within reactor limits, containment sufficient for the process, etc.)
+
+A domain operator who wants to skip building the facility needs to fabricate its entire supply chain — extraction proofs, material transforms, assembly proofs. All auditable. All traceable to the seed.
+
+### Why Facilities Prevent the Singularity
+
+Without facilities, everything collapses to a point. A domain runs scripts, consumes objects, produces objects. No spatial extent. No world.
+
+With facilities, the five constraint laws create physical extent:
+
+- Facilities have **volume** (reaction chambers, containment vessels, reactor mass). Law 2 — structural scaling means bigger facilities cost superlinearly more structure.
+- Facilities have **coupling costs** (Law 5 — the reactor radiates heat into the instruments, requiring shielding mass between them). More capable facilities have more internal coupling to manage.
+- Facilities have **energy budgets** (Law 3 — the reactor powering the facility is part of the facility, with its own mass and volume).
+- Facilities **degrade** (Law 4 — running high-energy transforms stresses containment and instruments).
+- Facilities have **mass** (Law 1 — everything is made of something).
+
+A domain that wants to do advanced material research, system design, manufacturing, AND ship maintenance needs facilities for each. Those facilities occupy space, consume energy, require structure, and couple with each other. The five laws prevent cramming infinite capability into a point — same way they prevent the 10-million-km ship.
+
+This is why worlds have spatial structure. A planetary foundry is next to the mines (short material transport). The research lab is isolated from the foundry (vibration and thermal coupling). The reactor is shielded from both. The shipyard is in orbit (different structural scaling in zero-g). The layout isn't decorative. It's physics.
 
 ## Combination Physics
 
@@ -277,19 +302,22 @@ This is universe design. The founding cluster tunes it through playtesting. The 
 When a domain mints a crafted material, the proof includes:
 
 1. **Input proof** — what elements went in (references to prior object proofs)
-2. **Process proof** — the crafting script hash (content-addressed Raido bytecode)
-3. **Output claim** — the resulting material's property vector
-4. **Physics evaluation** — standard physics script applied to the inputs and process
+2. **Fuel proof** — what fuel was consumed (references to fuel object proofs, derives energy)
+3. **Facility proof** — which facility performed the transform (reference to facility object proof)
+4. **Process proof** — the crafting script hash (content-addressed Raido bytecode)
+5. **Output claim** — the resulting material's property vector
+6. **Physics evaluation** — standard physics script applied to all of the above
 
 Any domain can verify by re-executing:
 
-1. Fetch the crafting script (by hash). Run it against the claimed inputs.
-2. Fetch the standard physics script. Evaluate the transformation — does the claimed output fall within the bounds that the combination physics compute for those inputs at that energy?
-3. Evaluate the finished object against the five constraint laws (existing verification).
+1. **Verify the facility.** Fetch the facility's object proof. Evaluate its component tree against the constraint laws. Derive its capabilities: reactor energy throughput, containment limits, precision rating.
+2. **Verify the inputs.** Check that element inputs and fuel objects existed and were consumed (conservation law proof chain).
+3. **Verify the transform.** Is the claimed energy within the facility's reactor capacity? Is the process within containment limits? Does the claimed output match the interaction function evaluation for those inputs at that energy? Is the mass budget satisfied?
+4. **Verify the output.** Evaluate the finished material/object against the five constraint laws.
 
-If the crafting script claims an output outside the bounds computed by the combination physics, the transformation is invalid. The material can't exist. Trust flag.
+If any step fails — facility can't deliver the claimed energy, containment insufficient for the process, output doesn't match the physics — trust flag.
 
-This is the same verification pattern as constraint physics — re-executable, deterministic, independent. The transformation physics extends the standard physics script with a `verify_transformation(inputs, process, output) -> bool` function alongside the existing `verify_object(component_tree) -> bool`.
+This is the same verification pattern as constraint physics: re-executable, deterministic, independent. The transformation physics extends the standard physics script with `verify_transformation(facility, inputs, fuel, process, output) -> bool` alongside the existing `verify_object(component_tree) -> bool`.
 
 ## Level 2: System Design
 
@@ -413,25 +441,31 @@ These categories aren't prescribed. They emerge because different performance fu
 
 **Geographic scarcity:** The seed distributes elements and their abundances. Common elements appear everywhere. Rare elements appear in specific systems. Catalyst elements may be extremely scarce. The combination physics makes rare elements valuable not by fiat but because they enable transformations that common elements can't.
 
-**Fuel as energy gate:** The energy available for transformation comes from consumed fuel objects. Fuel quality (energy density) is itself a product of material synthesis. Better fuel → higher energy per experiment → access to more of the phase landscape → better materials → better fuel. The spiral is intentional. A faction's research frontier is bounded by the best fuel they can produce or trade for.
+**Fuel and facilities as energy gate:** The energy available for a transform comes from consumed fuel, channeled through a facility's reactor. Both are Allgard objects, both verifiable. Better fuel → more energy available. Better facility → more energy deliverable per transform. Both require better materials to build, which require research, which requires fuel and facilities. The spiral is intentional.
 
 ## Research Economics
 
 ### What's Actually Enforced
 
-Domains are sovereign. Nobody polices how fast you run experiments. The externally verified constraints are:
+Domains are sovereign. Nobody polices how fast you run experiments. But every experiment requires real objects — and those objects are externally verifiable:
 
-1. **Material consumption.** Each experiment consumes real inputs — Allgard objects destroyed via verifiable transforms. Your proof chain is auditable. You can't conjure materials. This is the hard constraint on research volume.
+1. **Material consumption.** Each experiment consumes real element inputs and real fuel. Allgard objects destroyed via verifiable transforms. Proof chain auditable. Can't conjure materials.
 
-2. **Output validity.** The claimed output must match the interaction function evaluation for the claimed inputs at the claimed energy. Trading partners re-execute the physics script. They don't know or care about your lab. They verify the math.
+2. **Facility capability.** Each experiment happens in a real facility. The facility's reactor limits energy throughput. Its containment limits process intensity. Its precision limits ratio control. The facility is an Allgard object — its capabilities derive from its component tree, verifiable by anyone.
 
-That's it. How many experiments you run per hour, what equipment you use, whether you run them sequentially or in parallel — domain-internal. Your sovereignty.
+3. **Output validity.** The claimed output must match the interaction function evaluation for those inputs, at the energy the facility can deliver, with the precision the facility achieves. Trading partners re-execute the physics script against the full proof (inputs + fuel + facility + output).
 
-### What Constrains Research Pace in Practice
+### What Constrains Research
 
-Material supply is the binding constraint. Every experiment burns inputs. A faction with 10,000 units of iron can run more experiments than a faction with 100. Rich factions research faster because they can afford to burn more material on exploration.
+Three things, all verifiable:
 
-Fuel quality determines what you can *attempt*. Energy comes from consumed fuel objects. Crude fuel (low energy density) means low energy per experiment. Advanced fuel (high energy density, itself a product of material research) means high energy — access to high-energy phase regions where latent properties live. A faction can't claim high-energy transformations without burning fuel that actually contains that energy. The fuel objects are consumed, verified by conservation laws. The energy derived from them feeds the interaction function. Lying about energy doesn't work — you'd need to produce fuel objects with the claimed energy density, which requires the material science to make them.
+**Material supply** — every experiment burns inputs. Rich factions research faster. The binding constraint on research *volume*.
+
+**Fuel quality** — energy comes from consumed fuel. Crude fuel means low energy, limited to low-energy phase regions. Advanced fuel (itself a product of material research) means access to high-energy regions where latent properties live. The binding constraint on research *depth*.
+
+**Facility capability** — the facility's reactor determines maximum energy throughput per transform. Its containment determines what processes are safe. Its precision determines how accurately you can target specific ratios in the input space. A crude workshop with a small reactor can't channel the energy from advanced fuel even if you have it. A precision lab built from advanced materials can target narrow phase regions that a crude facility would scatter across. The binding constraint on research *capability*.
+
+All three compose. A faction needs materials (to burn on experiments), fuel (to provide energy), and a facility (to channel that energy into the transform). Building a better facility requires better materials, which requires research, which requires a facility. The spiral is real and every step is verifiable.
 
 ### Batch Strategy Still Matters
 
