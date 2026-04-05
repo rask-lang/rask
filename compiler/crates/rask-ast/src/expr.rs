@@ -57,6 +57,11 @@ pub enum ExprKind {
         object: Box<Expr>,
         field: String,
     },
+    /// Dynamic field access: value.(expr) — comptime field name
+    DynamicField {
+        object: Box<Expr>,
+        field_expr: Box<Expr>,
+    },
     /// Optional chaining field access (a?.b)
     OptionalField {
         object: Box<Expr>,

@@ -164,7 +164,8 @@ pub enum ModuleKind {
     Net,    // net.tcp_listen, net.tcp_connect
     Async,  // async.spawn (green task spawner)
     Thread, // thread.Thread, thread.ThreadPool
-    Http,   // http.listen_and_serve, http.get, etc.
+    Http,    // http.listen_and_serve, http.get, etc.
+    Reflect, // std.reflect — compile-time type introspection
 }
 
 /// Inner state for a spawned thread/task handle.
@@ -809,6 +810,7 @@ impl fmt::Display for Value {
                 ModuleKind::Async => write!(f, "<module async>"),
                 ModuleKind::Thread => write!(f, "<module thread>"),
                 ModuleKind::Http => write!(f, "<module http>"),
+                ModuleKind::Reflect => write!(f, "<module reflect>"),
             },
             Value::Package(name) => write!(f, "<package {}>", name),
             Value::File(file) => {

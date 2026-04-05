@@ -1254,6 +1254,10 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Field { object, .. } => {
                 self.walk_free_vars(object, bound, seen, free);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.walk_free_vars(object, bound, seen, free);
+                self.walk_free_vars(field_expr, bound, seen, free);
+            }
             ExprKind::Index { object, index } => {
                 self.walk_free_vars(object, bound, seen, free);
                 self.walk_free_vars(index, bound, seen, free);

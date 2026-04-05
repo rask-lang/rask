@@ -3,13 +3,14 @@
 
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl, UnionDecl, TypeAliasDecl};
 use rask_resolve::SymbolKind;
-use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode};
+use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, BinaryFieldSpec, BinaryStructInfo, Endian};
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
 
 use crate::types::Type;
+use rask_ast::Span;
 
 impl TypeChecker {
     // ------------------------------------------------------------------------
@@ -48,6 +49,7 @@ impl TypeChecker {
         }
         self.propagate_uniqueness();
         self.auto_derive_traits();
+        self.register_binary_methods();
 
         // GC1/GC2: Pre-register type vars for functions with inferred params/returns
         self.pre_register_inferred_fns(decls);
@@ -161,15 +163,40 @@ impl TypeChecker {
         let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
-        self.types.register_type(TypeDef::Struct {
+        let is_binary = s.attrs.iter().any(|a| a == "binary");
+
+        // For @binary structs, convert binary field specifiers to runtime types
+        let (fields, binary_info) = if is_binary {
+            let result = parse_binary_struct_fields(&s.name, &s.fields);
+            match result {
+                Ok((typed_fields, info)) => {
+                    (typed_fields, Some(info))
+                }
+                Err(errors) => {
+                    for err in errors {
+                        self.errors.push(err);
+                    }
+                    (fields, None)
+                }
+            }
+        } else {
+            (fields, None)
+        };
+
+        let type_id = self.types.register_type(TypeDef::Struct {
             name: s.name.clone(),
             type_params,
             fields,
             methods,
             is_resource,
             is_unique,
+            is_binary,
             private_fields,
         });
+
+        if let Some(info) = binary_info {
+            self.types.register_binary_info(type_id, info);
+        }
     }
 
     pub(super) fn register_enum(&mut self, e: &EnumDecl) {
@@ -687,4 +714,204 @@ impl TypeChecker {
             _ => {}
         }
     }
+
+    /// G1–G4: Register parse/build/build_into methods and SIZE/SIZE_BITS for @binary structs.
+    fn register_binary_methods(&mut self) {
+        use crate::types::TypeId;
+
+        let type_count = self.types.types.len();
+        for idx in 0..type_count {
+            let id = TypeId(idx as u32);
+            if !self.types.is_binary_type_by_id(id) {
+                continue;
+            }
+
+            let struct_type = Type::Named(id);
+
+            // G1: parse(data: []u8) -> (T, []u8) or ParseError
+            let parse_result = Type::Result {
+                ok: Box::new(Type::Tuple(vec![
+                    struct_type.clone(),
+                    Type::Slice(Box::new(Type::U8)),
+                ])),
+                err: Box::new(Type::UnresolvedNamed("ParseError".to_string())),
+            };
+
+            // G2: build(self) -> Vec<u8>
+            let vec_u8 = Type::UnresolvedGeneric {
+                name: "Vec".to_string(),
+                args: vec![crate::types::GenericArg::Type(Box::new(Type::U8))],
+            };
+
+            // G3: build_into(self, buffer: []u8) -> usize or BuildError
+            let build_into_result = Type::Result {
+                ok: Box::new(Type::U64), // usize
+                err: Box::new(Type::UnresolvedNamed("BuildError".to_string())),
+            };
+
+            let mut methods = vec![
+                MethodSig {
+                    name: "parse".to_string(),
+                    self_param: SelfParam::None,
+                    params: vec![(Type::Slice(Box::new(Type::U8)), ParamMode::Default)],
+                    ret: parse_result,
+                },
+                MethodSig {
+                    name: "build".to_string(),
+                    self_param: SelfParam::Value,
+                    params: vec![],
+                    ret: vec_u8,
+                },
+                MethodSig {
+                    name: "build_into".to_string(),
+                    self_param: SelfParam::Value,
+                    params: vec![(Type::Slice(Box::new(Type::U8)), ParamMode::Mutate)],
+                    ret: build_into_result,
+                },
+            ];
+
+            if let Some(TypeDef::Struct { methods: existing, .. }) = self.types.get_mut(id) {
+                existing.append(&mut methods);
+            }
+        }
+    }
+}
+
+/// Parse a binary field type specifier and return (bits, endian, runtime_type).
+fn parse_binary_field_spec(ty_str: &str) -> Result<(u32, Option<Endian>, Type, bool, usize), String> {
+    let s = ty_str.trim();
+
+    // [N]u8 — fixed byte array
+    if s.starts_with('[') {
+        let bracket_end = s.find(']').ok_or_else(|| format!("invalid binary type: {}", s))?;
+        let count_str = &s[1..bracket_end];
+        let elem_str = &s[bracket_end + 1..];
+        if elem_str != "u8" {
+            return Err(format!("binary byte arrays only support u8, found [{}]{}", count_str, elem_str));
+        }
+        let count: usize = count_str.parse()
+            .map_err(|_| format!("invalid byte array count: {}", count_str))?;
+        let bits = (count as u32) * 8;
+        return Ok((bits, None, Type::Array { elem: Box::new(Type::U8), len: count }, true, count));
+    }
+
+    // Bare number — N bits
+    if let Ok(n) = s.parse::<u32>() {
+        if n == 0 || n > 64 {
+            return Err(format!("bit count must be >= 1 and <= 64, found {}", n));
+        }
+        let runtime_type = match n {
+            1..=8 => Type::U8,
+            9..=16 => Type::U16,
+            17..=32 => Type::U32,
+            33..=64 => Type::U64,
+            _ => unreachable!(),
+        };
+        return Ok((n, None, runtime_type, false, 0));
+    }
+
+    // Endian types: u16be, i32le, f64be, etc.
+    let (base, endian) = if let Some(base) = s.strip_suffix("be") {
+        (base, Endian::Big)
+    } else if let Some(base) = s.strip_suffix("le") {
+        (base, Endian::Little)
+    } else {
+        // Non-endian types: u8, i8
+        return match s {
+            "u8" => Ok((8, None, Type::U8, false, 0)),
+            "i8" => Ok((8, None, Type::I8, false, 0)),
+            _ => Err(format!("multi-byte field '{}' must specify endianness (be/le)", s)),
+        };
+    };
+
+    let (bits, runtime_type) = match base {
+        "u16" => (16, Type::U16),
+        "i16" => (16, Type::I16),
+        "u32" => (32, Type::U32),
+        "i32" => (32, Type::I32),
+        "u64" => (64, Type::U64),
+        "i64" => (64, Type::I64),
+        "f32" => (32, Type::F32),
+        "f64" => (64, Type::F64),
+        _ => return Err(format!("unknown binary type: {}", s)),
+    };
+
+    Ok((bits, Some(endian), runtime_type, false, 0))
+}
+
+/// B1–V4: Parse and validate all fields of a @binary struct.
+fn parse_binary_struct_fields(
+    struct_name: &str,
+    fields: &[rask_ast::decl::Field],
+) -> Result<(Vec<(String, Type)>, BinaryStructInfo), Vec<TypeError>> {
+    let mut errors = Vec::new();
+    let mut typed_fields = Vec::new();
+    let mut binary_fields = Vec::new();
+    let mut bit_offset: u32 = 0;
+
+    for field in fields {
+        match parse_binary_field_spec(&field.ty) {
+            Ok((bits, endian, runtime_type, is_byte_array, byte_array_len)) => {
+                // F3: multi-byte endian types must be byte-aligned
+                if endian.is_some() && bits > 8 && (bit_offset % 8) != 0 {
+                    errors.push(TypeError::GenericError(
+                        format!(
+                            "[type.binary/F3] endian type '{}' not byte-aligned: starts at bit {}, not a byte boundary",
+                            field.ty, bit_offset
+                        ),
+                        field.name_span,
+                    ));
+                }
+
+                // V1: bit count range
+                if !is_byte_array && (bits == 0 || bits > 64) {
+                    errors.push(TypeError::GenericError(
+                        format!("[type.binary/V1] invalid bit count: {} (must be 1-64)", bits),
+                        field.name_span,
+                    ));
+                }
+
+                typed_fields.push((field.name.clone(), runtime_type.clone()));
+                binary_fields.push(BinaryFieldSpec {
+                    name: field.name.clone(),
+                    bits,
+                    endian,
+                    runtime_type,
+                    bit_offset,
+                    is_byte_array,
+                    byte_array_len,
+                });
+                bit_offset += bits;
+            }
+            Err(msg) => {
+                errors.push(TypeError::GenericError(msg, field.name_span));
+                typed_fields.push((field.name.clone(), Type::Error));
+            }
+        }
+    }
+
+    // V3: total size limit (65535 bits = 8KB)
+    if bit_offset > 65535 {
+        errors.push(TypeError::GenericError(
+            format!(
+                "[type.binary/V3] total size {} bits exceeds 65535-bit limit (8KB)",
+                bit_offset
+            ),
+            Span::new(0, 0),
+        ));
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let size_bytes = (bit_offset + 7) / 8;
+    let info = BinaryStructInfo {
+        name: struct_name.to_string(),
+        fields: binary_fields,
+        total_bits: bit_offset,
+        size_bytes,
+    };
+
+    Ok((typed_fields, info))
 }

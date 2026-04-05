@@ -17,6 +17,7 @@ mod net;
 mod os;
 mod path;
 mod random;
+mod reflect;
 mod thread;
 mod time;
 #[cfg(not(target_arch = "wasm32"))]
@@ -69,6 +70,8 @@ impl Interpreter {
             ModuleKind::Http => Err(RuntimeError::Generic(
                 "http module not available in browser playground".to_string()
             )),
+
+            ModuleKind::Reflect => self.call_reflect_method(method, args),
 
             // Legacy aliases — forward to new modules
             ModuleKind::Env => self.call_env_method(method, args),

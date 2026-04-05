@@ -21,6 +21,8 @@ pub enum TypeDef {
         is_resource: bool,
         /// U1–U4: marked @unique — no implicit copy even if small enough
         is_unique: bool,
+        /// B1–G4: @binary struct for wire-format parsing/building
+        is_binary: bool,
         /// V5: fields marked `private` — accessible only inside extend blocks
         private_fields: Vec<String>,
     },
@@ -80,6 +82,37 @@ pub struct ModuleMethodSig {
     pub name: String,
     pub params: Vec<Type>,
     pub ret: Type,
+}
+
+/// Endianness for multi-byte binary fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Endian {
+    Big,
+    Little,
+}
+
+/// A single field's binary layout specifier.
+#[derive(Debug, Clone)]
+pub struct BinaryFieldSpec {
+    pub name: String,
+    pub bits: u32,
+    pub endian: Option<Endian>,
+    pub runtime_type: Type,
+    /// Byte offset within the struct where this field's bits start
+    pub bit_offset: u32,
+    /// Whether this is a fixed byte array ([N]u8)
+    pub is_byte_array: bool,
+    pub byte_array_len: usize,
+}
+
+/// Metadata for a @binary struct.
+#[derive(Debug, Clone)]
+pub struct BinaryStructInfo {
+    pub name: String,
+    pub fields: Vec<BinaryFieldSpec>,
+    pub total_bits: u32,
+    /// SIZE in bytes (rounded up)
+    pub size_bytes: u32,
 }
 
 /// Result of type checking.

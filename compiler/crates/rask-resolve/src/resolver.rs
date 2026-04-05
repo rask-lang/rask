@@ -1644,6 +1644,10 @@ impl Resolver {
             ExprKind::OptionalField { object, .. } => {
                 self.resolve_expr(object);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.resolve_expr(object);
+                self.resolve_expr(field_expr);
+            }
             ExprKind::Index { object, index } => {
                 self.resolve_expr(object);
                 self.resolve_expr(index);

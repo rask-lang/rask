@@ -141,6 +141,14 @@ impl TypeChecker {
 
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
+            ExprKind::DynamicField { object, field_expr } => {
+                // Infer both sub-expressions; actual comptime field resolution
+                // happens in the comptime pass — here we just type-check children.
+                let _obj_ty = self.infer_expr(object);
+                let _field_ty = self.infer_expr(field_expr);
+                Type::Error
+            }
+
             ExprKind::Index { object, index } => {
                 let raw_obj_ty = self.infer_expr(object);
                 let _idx_ty = self.infer_expr(index);

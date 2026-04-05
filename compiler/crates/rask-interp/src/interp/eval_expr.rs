@@ -353,6 +353,17 @@ impl Interpreter {
                         }
                     }
 
+                    // @binary static methods (e.g. IpHeader.parse(data))
+                    if self.binary_structs.contains_key(name) {
+                        let arg_vals: Vec<Value> = args
+                            .iter()
+                            .map(|a| self.eval_expr(&a.expr))
+                            .collect::<Result<_, _>>()?;
+                        if let Some(result) = self.try_binary_static_method(name, method, arg_vals, expr.span) {
+                            return result;
+                        }
+                    }
+
                     if let Some(type_methods) = self.methods.get(name).cloned() {
                         if let Some(method_fn) = type_methods.get(method) {
                             // Skip empty-body stubs (e.g. fs.write_bytes) —
@@ -381,7 +392,7 @@ impl Interpreter {
                     .map(|a| self.eval_expr(&a.expr))
                     .collect::<Result<_, _>>()?;
 
-                // Inject type_args for generic methods (e.g. json.decode<T>)
+                // Inject type_args for generic methods (e.g. json.decode<T>, reflect.fields<T>)
                 if let Some(ta) = type_args {
                     if let Some(first_type) = ta.first() {
                         if let Value::Module(ModuleKind::Json) = &receiver {
@@ -391,6 +402,12 @@ impl Interpreter {
                                     Value::String(Arc::new(Mutex::new(first_type.clone()))),
                                 );
                             }
+                        }
+                        if let Value::Module(ModuleKind::Reflect) = &receiver {
+                            arg_vals.insert(
+                                0,
+                                Value::String(Arc::new(Mutex::new(first_type.clone()))),
+                            );
                         }
                     }
                 }
@@ -765,6 +782,45 @@ impl Interpreter {
                             obj.type_name()
                         )),
                         expr.span
+                    )),
+                }
+            }
+
+            // CT49: Dynamic field access — value.(expr) resolves to field access by string
+            ExprKind::DynamicField { object, field_expr } => {
+                let field_name_val = self.eval_expr(field_expr)?;
+                let field_name = match &field_name_val {
+                    Value::String(s) => s.lock().unwrap().clone(),
+                    _ => {
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(
+                                "dynamic field access requires a string expression".into(),
+                            ),
+                            expr.span,
+                        ));
+                    }
+                };
+                let obj = self.eval_expr(object)?;
+                match obj {
+                    Value::Struct(ref s) => {
+                        let guard = s.lock().unwrap();
+                        match guard.fields.get(&field_name) {
+                            Some(val) => Ok(val.clone()),
+                            None => Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "struct '{}' has no field '{}'",
+                                    guard.name, field_name
+                                )),
+                                expr.span,
+                            )),
+                        }
+                    }
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "cannot access dynamic field on {}",
+                            obj.type_name()
+                        )),
+                        expr.span,
                     )),
                 }
             }

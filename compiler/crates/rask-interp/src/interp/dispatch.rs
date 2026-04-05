@@ -266,6 +266,20 @@ impl Interpreter {
                     "f32x8 has no method '{}'", method
                 ))),
             },
+            // @binary struct instance methods (build, build_into)
+            Value::Struct(ref s) => {
+                let name = s.lock().unwrap().name.clone();
+                if self.binary_structs.contains_key(&name)
+                    && matches!(method, "build" | "build_into")
+                {
+                    let span = rask_ast::Span::new(0, 0);
+                    if let Some(result) = self.try_binary_instance_method(&receiver, &name, method, args, span) {
+                        return result.map_err(|d| d.error);
+                    }
+                    unreachable!();
+                }
+                self.call_builtin_method(receiver, method, args)
+            }
             _ => self.call_builtin_method(receiver, method, args),
         }
     }

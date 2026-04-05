@@ -1813,6 +1813,14 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result_local), result_ty))
             }
 
+            // Dynamic field access: value.(expr) — should be resolved by comptime before MIR
+            ExprKind::DynamicField { object, field_expr } => {
+                let _ = (object, field_expr);
+                Err(LoweringError::InvalidConstruct(
+                    "dynamic field access (value.(expr)) must be resolved at comptime before MIR lowering".into()
+                ))
+            }
+
             // Index access
             ExprKind::Index { object, index } => {
                 // Range index → slice operation: vec[start..end] or string[start..end]

@@ -703,6 +703,10 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Field { object, field: _ } => {
                 self.check_expr(object);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.check_expr(object);
+                self.check_expr(field_expr);
+            }
             ExprKind::OptionalField { object, field: _ } => {
                 self.check_expr(object);
             }
