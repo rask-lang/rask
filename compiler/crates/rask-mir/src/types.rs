@@ -2,6 +2,12 @@
 
 //! MIR type system - all types are concrete, no generics.
 
+/// Result layout offsets (must match rask-codegen/src/layouts.rs).
+pub const RESULT_TAG_OFFSET: u32 = 0;
+pub const RESULT_ORIGIN_FILE_OFFSET: u32 = 8;
+pub const RESULT_ORIGIN_LINE_OFFSET: u32 = 16;
+pub const RESULT_PAYLOAD_OFFSET: u32 = 24;
+
 /// MIR type - all sizes known, no generic type parameters
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MirType {
@@ -88,8 +94,9 @@ impl MirType {
                 8 + inner.size()
             }
             MirType::Result { ok, err } => {
-                // tag (8 bytes, aligned) + max(ok, err) payload
-                8 + ok.size().max(err.size())
+                // tag (8) + origin_file (8) + origin_line (8) + max(ok, err) payload
+                // Origin fields added for error tracking (ER15).
+                24 + ok.size().max(err.size())
             }
             MirType::Union(variants) => {
                 variants.iter().map(|v| v.size()).max().unwrap_or(0)

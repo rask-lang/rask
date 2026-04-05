@@ -107,6 +107,10 @@ impl BlockBuilder {
         self.current_span = span;
     }
 
+    pub fn current_span(&self) -> Span {
+        self.current_span
+    }
+
     pub fn push_stmt(&mut self, mut stmt: MirStmt) {
         // Stamp current span onto dummy-spanned statements
         if stmt.span.start == 0 && stmt.span.end == 0 && self.current_span.end > 0 {

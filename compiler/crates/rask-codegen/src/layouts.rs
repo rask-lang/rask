@@ -20,6 +20,12 @@ pub const FAT_PTR_VTABLE_OFFSET: i32 = 8;
 pub const TAG_OFFSET: i32 = 0;
 pub const PAYLOAD_OFFSET: i32 = 8;
 
+// Result includes error origin fields (ER15) between tag and payload.
+// Layout: [tag:8][origin_file_ptr:8][origin_line:8][payload:max(ok,err)]
+pub const ORIGIN_FILE_OFFSET: i32 = 8;
+pub const ORIGIN_LINE_OFFSET: i32 = 16;
+pub const RESULT_PAYLOAD_OFFSET: i32 = 24;
+
 // ── String SSO (string.c) ────────────────────────────────────────
 // Empty string: 16 zero bytes except byte 15 = 0x0F (remaining capacity = 15).
 pub const EMPTY_STRING_LO: i64 = 0;

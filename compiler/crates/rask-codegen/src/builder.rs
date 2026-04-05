@@ -1856,13 +1856,15 @@ impl<'a> FunctionBuilder<'a> {
                         }
                         crate::layouts::PAYLOAD_OFFSET + (*field_index * 8) as i32
                     }
-                    Some(MirType::Result { ok, .. }) => {
-                        // Aggregate Ok payload: return address, not load
-                        if *field_index == 0 && matches!(ok.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String) {
-                            let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::PAYLOAD_OFFSET as i64);
+                    Some(MirType::Result { ok, err }) => {
+                        // Aggregate payload (Ok or Err): return address, not load.
+                        // MIR uses field_index 0 for both Ok and Err payloads — check both.
+                        let is_aggregate = |t: &MirType| matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String);
+                        if *field_index == 0 && (is_aggregate(ok.as_ref()) || is_aggregate(err.as_ref())) {
+                            let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::RESULT_PAYLOAD_OFFSET as i64);
                             return Ok(payload_addr);
                         }
-                        crate::layouts::PAYLOAD_OFFSET + (*field_index * 8) as i32
+                        crate::layouts::RESULT_PAYLOAD_OFFSET + (*field_index * 8) as i32
                     }
                     // Fallback: use pre-computed byte offset from MIR when available
                     _ => byte_offset.map(|o| o as i32).unwrap_or((*field_index * 8) as i32)
@@ -2214,7 +2216,8 @@ impl<'a> FunctionBuilder<'a> {
                     .unwrap_or(ok.size());
                 let err_size = Self::resolve_type_alloc_size(err, struct_layouts, enum_layouts)
                     .unwrap_or(err.size());
-                Some(8 + ok_size.max(err_size))
+                // tag (8) + origin_file (8) + origin_line (8) + payload
+                Some(crate::layouts::RESULT_PAYLOAD_OFFSET as u32 + ok_size.max(err_size))
             }
             MirType::Option(inner) => {
                 let inner_size = Self::resolve_type_alloc_size(inner, struct_layouts, enum_layouts)
@@ -2279,7 +2282,11 @@ impl<'a> FunctionBuilder<'a> {
     fn wrap_ok_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
         let tag = builder.ins().iconst(types::I64, 0);
         builder.ins().stack_store(tag, dst_slot, crate::layouts::TAG_OFFSET);
-        builder.ins().stack_store(value, dst_slot, crate::layouts::PAYLOAD_OFFSET);
+        // Zero origin fields (Ok path has no origin)
+        let zero = builder.ins().iconst(types::I64, 0);
+        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_FILE_OFFSET);
+        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_LINE_OFFSET);
+        builder.ins().stack_store(value, dst_slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
     }
 
     /// C functions that use "negative return = error" convention.
@@ -2302,7 +2309,10 @@ impl<'a> FunctionBuilder<'a> {
         let is_err = builder.ins().icmp(IntCC::SignedLessThan, value, zero);
         let tag = builder.ins().uextend(types::I64, is_err);
         builder.ins().stack_store(tag, dst_slot, crate::layouts::TAG_OFFSET);
-        builder.ins().stack_store(value, dst_slot, crate::layouts::PAYLOAD_OFFSET);
+        // Zero origin fields — C FFI errors don't carry Rask origin
+        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_FILE_OFFSET);
+        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_LINE_OFFSET);
+        builder.ins().stack_store(value, dst_slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
     }
 
     /// Store a value to a stack slot and return its address.

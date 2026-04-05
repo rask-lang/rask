@@ -476,9 +476,29 @@ impl<'a> MirLowerer<'a> {
                             store_size: None,
                         }));
                         if let Some(payload) = arg_operands.first() {
+                            let payload_offset = if matches!(result_ty, MirType::Result { .. }) {
+                                crate::types::RESULT_PAYLOAD_OFFSET
+                            } else {
+                                8 // Option payload offset
+                            };
+                            // Result: zero origin fields
+                            if matches!(result_ty, MirType::Result { .. }) {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: result_local,
+                                    offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
+                                    value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+                                    store_size: None,
+                                }));
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: result_local,
+                                    offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
+                                    value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+                                    store_size: None,
+                                }));
+                            }
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: result_local,
-                                offset: 8,
+                                offset: payload_offset,
                                 value: payload.clone(),
                                 store_size: None,
                             }));

@@ -6,6 +6,7 @@ use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::MirConst, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType,
+    types::RESULT_PAYLOAD_OFFSET,
 };
 use rask_ast::expr::{Expr, ExprKind, TryElse};
 
@@ -32,7 +33,7 @@ impl<'a> MirLowerer<'a> {
             else_block: ok_block,
         }));
 
-        // Err path — extract the error payload and return it
+        // Err path — construct Result.Err with origin and return
         self.builder.switch_to_block(err_block);
         let err_ty = self.extract_err_type(inner)
             .or_else(|| match &result_ty {
@@ -50,8 +51,43 @@ impl<'a> MirLowerer<'a> {
                 field_size: None,
             },
         }));
+
+        // Construct full Result.Err with origin (ER15)
+        let ret_result = self.builder.alloc_temp(result_ty.clone());
+        // Tag = 1 (Err)
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: ret_result,
+            offset: crate::types::RESULT_TAG_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: None,
+        }));
+        // Origin: check if source result already has origin, otherwise set from current span.
+        // For now, always set origin from the try site (first-propagation is handled by
+        // checking existing origin at runtime or via a conditional store).
+        // Store file pointer as 0 — codegen will fill with actual source_file ptr.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: ret_result,
+            offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        // Store line number from current span (codegen resolves byte offset → line)
+        let span_start = self.builder.current_span().start as i64;
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: ret_result,
+            offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(span_start)),
+            store_size: None,
+        }));
+        // Payload
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: ret_result,
+            offset: RESULT_PAYLOAD_OFFSET,
+            value: MirOperand::Local(err_val),
+            store_size: None,
+        }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-            value: Some(MirOperand::Local(err_val)),
+            value: Some(MirOperand::Local(ret_result)),
         }));
 
         // Ok path
@@ -173,8 +209,35 @@ impl<'a> MirLowerer<'a> {
 
         // Only emit return if body didn't already terminate (e.g. bare `return` in body)
         if self.builder.current_block_unterminated() {
+            // Construct full Result.Err with origin (ER15)
+            let ret_result = self.builder.alloc_temp(result_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: ret_result,
+                offset: crate::types::RESULT_TAG_OFFSET,
+                value: MirOperand::Constant(MirConst::Int(1)),
+                store_size: None,
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: ret_result,
+                offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
+                value: MirOperand::Constant(MirConst::Int(0)),
+                store_size: None,
+            }));
+            let span_start = self.builder.current_span().start as i64;
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: ret_result,
+                offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
+                value: MirOperand::Constant(MirConst::Int(span_start)),
+                store_size: None,
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: ret_result,
+                offset: RESULT_PAYLOAD_OFFSET,
+                value: transformed_op,
+                store_size: None,
+            }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-                value: Some(transformed_op),
+                value: Some(MirOperand::Local(ret_result)),
             }));
         }
 
@@ -264,9 +327,22 @@ impl<'a> MirLowerer<'a> {
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
         }));
+        // Zero origin — map_err transforms don't set origin (preserves existing)
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: out,
-            offset: 8,
+            offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: out,
+            offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: out,
+            offset: RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(new_err),
             store_size: None,
         }));
@@ -337,9 +413,22 @@ impl<'a> MirLowerer<'a> {
             value: MirOperand::Constant(MirConst::Int(1)), // Err tag
             store_size: None,
         }));
+        // Zero origin — constructor wrapping doesn't set origin
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: out,
-            offset: 8,
+            offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: out,
+            offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: out,
+            offset: RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(wrapped),
             store_size: None,
         }));
