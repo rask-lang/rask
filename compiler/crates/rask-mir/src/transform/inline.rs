@@ -276,7 +276,19 @@ fn try_inline_call(
             new_stmts.push(remap_stmt(stmt, &local_map, &block_map));
         }
 
-        // Remap terminator — Return becomes Goto merge_block + optional assign
+        // CleanupReturn: inline cleanup chain statements before the Goto.
+        // The cleanup blocks' code must run before returning to merge_block.
+        if let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &callee_block.terminator.kind {
+            for chain_block_id in cleanup_chain {
+                if let Some(chain_block) = callee.blocks.iter().find(|b| b.id == *chain_block_id) {
+                    for stmt in &chain_block.statements {
+                        new_stmts.push(remap_stmt(stmt, &local_map, &block_map));
+                    }
+                }
+            }
+        }
+
+        // Remap terminator — Return/CleanupReturn become Goto merge_block
         let new_terminator = remap_terminator(
             &callee_block.terminator,
             &local_map,
@@ -629,16 +641,12 @@ fn remap_terminator(
             default: block_map.get(default).copied().unwrap_or(*default),
         },
         MirTerminatorKind::Unreachable => MirTerminatorKind::Unreachable,
-        MirTerminatorKind::CleanupReturn {
-            value,
-            cleanup_chain,
-        } => MirTerminatorKind::CleanupReturn {
-            value: value.as_ref().map(|v| remap_operand(v, local_map)),
-            cleanup_chain: cleanup_chain
-                .iter()
-                .map(|bid| block_map.get(bid).copied().unwrap_or(*bid))
-                .collect(),
-        },
+        MirTerminatorKind::CleanupReturn { .. } => {
+            // When inlining, CleanupReturn becomes Goto merge_block.
+            // Cleanup chain statements are inlined by try_inline_call,
+            // and value assignment is handled by fixup_return_values.
+            MirTerminatorKind::Goto { target: merge_block }
+        }
     };
 
     MirTerminator::new(kind, term.span)
@@ -669,7 +677,12 @@ fn fixup_return_values(
     ret_dst: LocalId,
 ) {
     for callee_block in &callee.blocks {
-        if let MirTerminatorKind::Return { value: Some(ref op) } = callee_block.terminator.kind {
+        let ret_value = match &callee_block.terminator.kind {
+            MirTerminatorKind::Return { value: Some(ref op) } => Some(op),
+            MirTerminatorKind::CleanupReturn { value: Some(ref op), .. } => Some(op),
+            _ => None,
+        };
+        if let Some(op) = ret_value {
             let new_block_id = block_map[&callee_block.id];
             // Find this block in the caller
             if let Some(block) = caller.blocks.iter_mut().find(|b| b.id == new_block_id) {

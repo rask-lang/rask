@@ -506,6 +506,10 @@ pub struct MirLowerer<'a> {
     /// target local and jumps to the continuation block instead of emitting
     /// MirTerminator::Return.  Used by fold/reduce/etc.
     inline_return_target: Option<(LocalId, BlockId)>,
+    /// Stack of active ensure cleanup blocks (innermost last).
+    /// At function exit points (return, try error, implicit return),
+    /// this becomes the cleanup_chain on CleanupReturn terminators.
+    ensure_stack: Vec<BlockId>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -519,6 +523,11 @@ impl<'a> MirLowerer<'a> {
     /// Get the metadata entry for a variable (read-only).
     pub(crate) fn meta(&self, name: &str) -> Option<&LocalMeta> {
         self.local_meta.get(name)
+    }
+
+    /// Current cleanup chain in LIFO order (last-registered ensure runs first).
+    fn cleanup_chain(&self) -> Vec<BlockId> {
+        self.ensure_stack.iter().rev().copied().collect()
     }
 
     /// `all_decls` provides function signatures for resolving call return types.
@@ -619,6 +628,7 @@ impl<'a> MirLowerer<'a> {
             local_meta: HashMap::new(),
             with_pool_bindings: HashMap::new(),
             inline_return_target: None,
+            ensure_stack: Vec::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -730,7 +740,14 @@ impl<'a> MirLowerer<'a> {
             let implicit_ok = matches!(ret_ty, MirType::Void)
                 || matches!(&ret_ty, MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void));
             if implicit_ok {
-                lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+                if lowerer.ensure_stack.is_empty() {
+                    lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+                } else {
+                    lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
+                        value: None,
+                        cleanup_chain: lowerer.cleanup_chain(),
+                    }));
+                }
             } else {
                 lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
             }
@@ -1919,6 +1936,10 @@ mod tests {
         })
     }
 
+    fn find_cleanup_return(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| matches!(b.terminator.kind, MirTerminatorKind::CleanupReturn { .. }))
+    }
+
     fn find_enum_tag(f: &MirFunction) -> bool {
         f.blocks.iter().any(|b| {
             b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::Assign { rvalue: MirRValue::EnumTag { .. }, .. }))
@@ -2285,7 +2306,7 @@ mod tests {
     }
 
     #[test]
-    fn lower_ensure_push_pop() {
+    fn lower_ensure_push_cleanup_return() {
         let decl = make_fn("f", vec![], None, vec![
             ensure_stmt(
                 vec![expr_stmt(call_expr("do_work", vec![]))],
@@ -2295,7 +2316,8 @@ mod tests {
         ]);
         let f = lower_one(&decl);
         assert!(find_ensure_push(&f));
-        assert!(find_ensure_pop(&f));
+        // Body goes in cleanup block, exit uses CleanupReturn
+        assert!(find_cleanup_return(&f));
     }
 
     #[test]
@@ -2309,7 +2331,7 @@ mod tests {
         ]);
         let f = lower_one(&decl);
         assert!(find_ensure_push(&f));
-        assert!(find_ensure_pop(&f));
+        assert!(find_cleanup_return(&f));
         assert!(f.locals.iter().any(|l| l.name.as_deref() == Some("err")));
     }
 

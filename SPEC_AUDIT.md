@@ -6,22 +6,26 @@ Systematic comparison of what the specs require vs what the compiler implements 
 
 ## Critical Gaps (spec features with zero implementation)
 
-### 1. `ensure` cleanup — does nothing (EN1–EN7)
+### 1. ~~`ensure` cleanup — does nothing (EN1–EN7)~~ PARTIALLY FIXED
 
-Parser accepts `ensure` syntax. Both interpreter and codegen **ignore it entirely**.
+**Interpreter:** Fully working. `exec_stmts()` collects ensures and runs them in LIFO order on any block exit (normal, error, return). Consumption cancellation (C1) tracked via `ensure_receiver_consumed()`. Error handling (ER1–ER5) implemented with `else` handler support.
 
-- **Interpreter:** `StmtKind::Ensure { .. } => Ok(Value::Unit)` — no-op
-- **MIR:** No lowering for ensure blocks
-- **Codegen:** `EnsurePush`/`EnsurePop` are no-ops; cleanup chains not materialized on normal exits
+**MIR/Codegen:** Ensure bodies now lower into cleanup blocks. `CleanupReturn` terminators at `return`, `try` error, and implicit function exit chain through cleanup blocks in LIFO order. Inliner converts `CleanupReturn` to inline cleanup + goto when functions are inlined.
 
-This means:
-- No LIFO cleanup on scope exit (EN2)
-- No cleanup on `return`, `break`, `continue`, `try` propagation (EN3)
-- No per-iteration cleanup in loops (EN7)
-- No linear resource consumption commitment (L1–L3)
-- `ensure file.close()` does nothing — resources leak silently
+Working:
+- LIFO cleanup on function exit (EN2) ✓
+- Cleanup on `return` (EX2) ✓
+- Cleanup on `try` error propagation (EX3) ✓
+- Cleanup on implicit function exit (EX1) ✓
+- Multiple ensures with correct LIFO ordering ✓
+- Function inlining preserves cleanup semantics ✓
 
-**Impact:** Every spec example showing `ensure` for resource cleanup is broken. The HTTP server spec, file handling, connection cleanup — all affected.
+Remaining:
+- No cleanup on `break`/`continue` (EX4) — loop-scoped ensures not yet wired
+- No per-iteration cleanup in loops (EN7) — blocked on EX4
+- No explicit consumption cancellation (C1/C2) in codegen — interpreter has it
+- `else` handler error routing in codegen — interpreter has it
+- Linear resource consumption commitment (L1–L3) — ownership checker tracks it, codegen doesn't enforce
 
 ### 2. `@binary` structs — completely unimplemented (type.binary B1–G4)
 
@@ -37,7 +41,7 @@ Zero parser support, zero codegen, zero stdlib. The entire binary struct feature
 
 **Interpreter:** `Value::Enum` carries `origin: Option<Arc<str>>`. `try` sets origin to `"file.rk:line"` at first propagation only (first-wins per ER15). `.origin()` universal method — enums return stored origin, other types return `"<no origin>"`. SourceInfo (file name + LineMap) passed from CLI.
 
-**Codegen:** Result layout changed to `[tag:8][origin_file:8][origin_line:8][payload]` (+16 bytes per Result). MIR `lower_try` constructs full Result.Err with origin line from LineMap on err path; conditional branch preserves source origin if already set (first-propagation semantics). `.origin()` calls `rask_result_origin` C runtime helper which reads origin_line and formats as `"line N"`. File pointer not yet wired (returns line number only).
+**Codegen:** Result layout changed to `[tag:8][origin_file:8][origin_line:8][payload]` (+16 bytes per Result). MIR `lower_try` constructs full Result.Err with origin line from LineMap on err path; conditional branch preserves source origin if already set (first-propagation semantics). `.origin()` calls `rask_result_origin` C runtime helper. `rask_set_origin_file()` called at start of `rask_main` to register the source file name — codegen now returns `"file.rk:line"` matching interpreter output.
 
 ### 4. `Cell<T>` type — doesn't exist (CE1–CE6)
 
@@ -246,7 +250,7 @@ For balance — these areas are solid:
 
 ## Suggested Priority
 
-1. **`ensure` cleanup** — everything else depends on safe resource cleanup
+1. ~~**`ensure` cleanup** — everything else depends on safe resource cleanup~~ PARTIALLY DONE (function-level return/try; loop-scoped break/continue pending)
 2. ~~**Error origin tracking** — fundamental to error handling ergonomics~~ DONE (interpreter)
 3. **`comptime for` + reflection** — blocks encoding/serialization patterns
 4. **Pool weak handles + `try_insert`** — needed for real graph/entity patterns
@@ -255,4 +259,4 @@ For balance — these areas are solid:
 7. **`@binary` structs** — blocks a whole use case category
 8. **`Cell<T>`** — ergonomic gap for closure patterns
 9. ~~**`discard`** — small but affects intent communication~~ DONE
-10. **Private field enforcement** — correctness hole
+10. ~~**Private field enforcement** — correctness hole~~ DONE

@@ -92,8 +92,13 @@ impl<'a> MirLowerer<'a> {
                         }));
                     }
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
-                } else {
+                } else if self.ensure_stack.is_empty() {
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value }));
+                } else {
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
+                        value,
+                        cleanup_chain: self.cleanup_chain(),
+                    }));
                 }
                 Ok(())
             }
@@ -285,24 +290,26 @@ impl<'a> MirLowerer<'a> {
                 Ok(())
             }
 
-            // Ensure (spec L4)
+            // Ensure (EN1–EN7): schedule cleanup to run at scope exit.
+            // Body is lowered into a cleanup block; CleanupReturn terminators
+            // at return/try sites chain through these blocks.
             StmtKind::Ensure { body, else_handler } => {
                 let cleanup_block = self.builder.create_block();
                 let continue_block = self.builder.create_block();
 
+                // Marker for MIRI/analysis
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block }));
+                self.ensure_stack.push(cleanup_block);
 
+                // Main flow skips to continue block (body runs at scope exit)
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
+
+                // Lower ensure body into cleanup block
+                self.builder.switch_to_block(cleanup_block);
                 for s in body {
                     self.lower_stmt(s)?;
                 }
-
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
-
-                self.builder.switch_to_block(cleanup_block);
                 if let Some((param_name, handler_body)) = else_handler {
-                    // Needs full type inference to determine exact error type from
-                    // try expressions in the body. I64 matches runtime error representation.
                     let param_ty = MirType::I64;
                     let param_local = self.builder.alloc_local(param_name.clone(), param_ty.clone());
                     self.locals.insert(param_name.clone(), (param_local, param_ty));
@@ -310,8 +317,11 @@ impl<'a> MirLowerer<'a> {
                         self.lower_stmt(s)?;
                     }
                 }
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
+                // Cleanup block is only read for its statements by codegen;
+                // terminate with Unreachable as a sentinel.
+                if self.builder.current_block_unterminated() {
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                }
 
                 self.builder.switch_to_block(continue_block);
                 Ok(())
