@@ -165,7 +165,14 @@ pub fn print_compile_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {} {}   Output executable path (default: input stem)", output::arg("-o"), output::arg("<path>"));
+    println!("  {}    Print MIR before codegen (debug codegen issues)", output::arg("--dump-mir"));
     println!("  {}        Output diagnostics as structured JSON", output::arg("--json"));
+    println!();
+    println!("{}", output::section_header("Debugging:"));
+    println!("  {} prints the MIR for all functions. Use to verify", output::arg("--dump-mir"));
+    println!("  that calls, locals, and types are correct before codegen.");
+    println!("  {} turns null-deref segfaults into panics", output::arg("RASK_RUNTIME_CHECKS=1"));
+    println!("  with messages at runtime.");
     println!();
     println!("{}", output::section_header("Examples:"));
     println!("  {} {} {}           Produces ./main",

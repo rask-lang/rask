@@ -30,9 +30,13 @@ Choose simple over easy
 | `rask fmt <file>` | Format .rk source files |
 | `rask check <file>` | Type-check a .rk file |
 | `rask run <file>` | Execute a .rk program |
+| `rask run --interp <file>` | Execute via interpreter (no codegen) |
+| `rask compile --dump-mir <file>` | Print MIR before codegen (debug codegen issues) |
 
 Binary: `compiler/target/release/rask` (build: `cd compiler && cargo build --release -p rask-cli`)
 Releases: https://github.com/rask-lang/rask/releases
+
+**Debugging codegen:** If a compiled binary segfaults, use `--dump-mir` to inspect the MIR and `RASK_RUNTIME_CHECKS=1 ./binary` to turn null-deref segfaults into panics with messages. Compile the C runtime with `-DRASK_DEBUG` for unconditional checks.
 
 Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after editing `specs/*.md`.
 
