@@ -24,13 +24,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(content)))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -46,14 +46,14 @@ impl Interpreter {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![Value::Vec(Arc::new(Mutex::new(values)))],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -69,14 +69,14 @@ impl Interpreter {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![Value::Vec(Arc::new(Mutex::new(lines)))],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -88,13 +88,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -122,13 +122,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -146,13 +146,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -181,14 +181,14 @@ impl Interpreter {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![Value::File(arc)],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -203,14 +203,14 @@ impl Interpreter {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![Value::File(arc)],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -223,13 +223,13 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(
                             p.to_string_lossy().to_string(),
                         )))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -257,14 +257,14 @@ impl Interpreter {
                                 fields,
                                 None,
                             )],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -275,13 +275,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -292,13 +292,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -309,13 +309,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -326,13 +326,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -344,13 +344,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -362,13 +362,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Int(bytes as i64)],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -388,14 +388,14 @@ impl Interpreter {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![Value::Vec(Arc::new(Mutex::new(names)))],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -438,13 +438,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(content)))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -460,13 +460,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -482,13 +482,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }

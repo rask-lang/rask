@@ -23,6 +23,7 @@ mod operators;
 mod dispatch;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};
+use rask_ast::span::LineMap;
 use rask_ast::Span;
 
 use crate::env::Environment;
@@ -80,6 +81,15 @@ pub struct Interpreter {
     pub(crate) cli_args: Vec<String>,
     /// Build script state (set when running via `run_build`).
     pub(crate) build_state: Option<crate::build_context::BuildState>,
+    /// Source info for error origin tracking (ER15): file name + line map.
+    pub(crate) source_info: Option<SourceInfo>,
+}
+
+/// Source location info for computing error origins (ER15).
+#[derive(Clone)]
+pub struct SourceInfo {
+    pub file_name: String,
+    pub line_map: LineMap,
 }
 
 impl Interpreter {
@@ -95,6 +105,7 @@ impl Interpreter {
             output_buffer: None,
             cli_args: vec![],
             build_state: None,
+            source_info: None,
         }
     }
 
@@ -110,6 +121,7 @@ impl Interpreter {
             output_buffer: None,
             cli_args: args,
             build_state: None,
+            source_info: None,
         }
     }
 
@@ -127,11 +139,30 @@ impl Interpreter {
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],
             build_state: None,
+            source_info: None,
         };
         (interp, buffer)
     }
 
     /// Inject `cfg` build configuration into the interpreter environment (CT11-CT16).
+    /// Set source info for error origin tracking (ER15).
+    pub fn set_source_info(&mut self, file_name: &str, source: &str) {
+        self.source_info = Some(SourceInfo {
+            file_name: file_name.to_string(),
+            line_map: LineMap::new(source),
+        });
+    }
+
+    /// Compute an error origin string like `"file.rk:42"` from a span.
+    pub(crate) fn origin_string(&self, span: Span) -> Arc<str> {
+        if let Some(info) = &self.source_info {
+            let (line, _) = info.line_map.offset_to_line_col(span.start);
+            Arc::from(format!("{}:{}", info.file_name, line))
+        } else {
+            Arc::from("<unknown>")
+        }
+    }
+
     pub fn inject_cfg(&mut self, cfg: &rask_comptime::CfgConfig) {
         let mut fields = IndexMap::new();
         fields.insert("os".to_string(), Value::String(Arc::new(Mutex::new(cfg.os.clone()))));

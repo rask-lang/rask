@@ -476,11 +476,37 @@ impl<'a> MirLowerer<'a> {
                             store_size: None,
                         }));
                         if let Some(payload) = arg_operands.first() {
+                            let payload_offset = if matches!(result_ty, MirType::Result { .. }) {
+                                crate::types::RESULT_PAYLOAD_OFFSET
+                            } else {
+                                8 // Option payload offset
+                            };
+                            // Result: zero origin fields
+                            if matches!(result_ty, MirType::Result { .. }) {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: result_local,
+                                    offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
+                                    value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+                                    store_size: None,
+                                }));
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: result_local,
+                                    offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
+                                    value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+                                    store_size: None,
+                                }));
+                            }
+                            // Set store_size for aggregate payloads (strings are 16 bytes)
+                            let payload_store_size = if payload_ty.size() > 8 {
+                                Some(payload_ty.size())
+                            } else {
+                                None
+                            };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: result_local,
-                                offset: 8,
+                                offset: payload_offset,
                                 value: payload.clone(),
-                                store_size: None,
+                                store_size: payload_store_size,
                             }));
                         }
                         return Ok((MirOperand::Local(result_local), result_ty));
@@ -535,6 +561,25 @@ impl<'a> MirLowerer<'a> {
                 // Try to recognize an iterator chain on the receiver and fuse it inline.
                 if let Some(result) = self.try_lower_iter_terminal(expr, object, method, args)? {
                     return Ok(result);
+                }
+
+                // ER16: .origin() on Result — read origin fields and format as string
+                if method == "origin" && args.is_empty() {
+                    let (obj_op, obj_ty) = self.lower_expr(object)?;
+                    if matches!(obj_ty, MirType::Result { .. }) {
+                        let result_local = self.builder.alloc_temp(MirType::String);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(result_local),
+                            func: crate::FunctionRef::internal("rask_result_origin".to_string()),
+                            args: vec![obj_op],
+                        }));
+                        return Ok((MirOperand::Local(result_local), MirType::String));
+                    }
+                    // Non-Result: return "<no origin>"
+                    return Ok((
+                        MirOperand::Constant(crate::operand::MirConst::String("<no origin>".to_string())),
+                        MirType::String,
+                    ));
                 }
 
                 // E9: .discriminant() on enum values — extract tag via EnumTag

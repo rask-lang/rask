@@ -25,6 +25,17 @@ impl Interpreter {
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
+        // ER16: .origin() on any value returns the error origin string.
+        if method == "origin" {
+            let origin_str = match &receiver {
+                Value::Enum { origin, .. } => origin.as_ref()
+                    .map(|o| o.to_string())
+                    .unwrap_or_else(|| "<no origin>".to_string()),
+                _ => "<no origin>".to_string(),
+            };
+            return Ok(Value::String(Arc::new(Mutex::new(origin_str))));
+        }
+
         match &receiver {
             Value::Int(a) => return self.call_int_method(*a, method, &args),
             Value::Int128(a) => return self.call_int128_method(*a, method, &args),
@@ -122,14 +133,14 @@ impl Interpreter {
                             std::cmp::Ordering::Greater => "Greater".to_string(),
                         },
                         fields: vec![],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     });
                 }
                 return Ok(Value::Enum {
                     name: "Ordering".to_string(),
                     variant: "Equal".to_string(),
                     fields: vec![],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 });
             }
             Value::Enum { .. } if method == "compare" => {
@@ -143,14 +154,14 @@ impl Interpreter {
                             std::cmp::Ordering::Greater => "Greater".to_string(),
                         },
                         fields: vec![],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     });
                 }
                 return Ok(Value::Enum {
                     name: "Ordering".to_string(),
                     variant: "Equal".to_string(),
                     fields: vec![],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 });
             }
             // ORD1: lt/le/gt/ge derived from compare via value_cmp

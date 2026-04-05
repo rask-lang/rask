@@ -226,7 +226,7 @@ impl Interpreter {
                 name: "Option".to_string(),
                 variant: "None".to_string(),
                 fields: vec![],
-                variant_index: 1,
+                variant_index: 1, origin: None,
             },
         );
         self.env.define(

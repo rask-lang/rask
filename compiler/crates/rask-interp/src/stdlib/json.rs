@@ -598,7 +598,7 @@ fn value_to_json(value: &Value) -> Result<Value, RuntimeError> {
                 name: name.clone(),
                 variant: variant.clone(),
                 fields: fields.clone(),
-                variant_index: 0,
+                variant_index: 0, origin: None,
             })
         }
         _ => Err(RuntimeError::TypeError(format!(
@@ -615,7 +615,7 @@ fn make_json_null() -> Value {
         name: "JsonValue".to_string(),
         variant: "Null".to_string(),
         fields: vec![],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -624,7 +624,7 @@ fn make_json_bool(b: bool) -> Value {
         name: "JsonValue".to_string(),
         variant: "Bool".to_string(),
         fields: vec![Value::Bool(b)],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -633,7 +633,7 @@ fn make_json_number(n: f64) -> Value {
         name: "JsonValue".to_string(),
         variant: "Number".to_string(),
         fields: vec![Value::Float(n)],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -642,7 +642,7 @@ fn make_json_string(s: &str) -> Value {
         name: "JsonValue".to_string(),
         variant: "String".to_string(),
         fields: vec![Value::String(Arc::new(Mutex::new(s.to_string())))],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -651,7 +651,7 @@ fn make_json_array(items: Vec<Value>) -> Value {
         name: "JsonValue".to_string(),
         variant: "Array".to_string(),
         fields: vec![Value::Vec(Arc::new(Mutex::new(items)))],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -669,7 +669,7 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
             map,
             None,
         )],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -854,7 +854,7 @@ fn make_result_ok(value: Value) -> Value {
         name: "Result".to_string(),
         variant: "Ok".to_string(),
         fields: vec![value],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -863,7 +863,7 @@ fn make_result_err(msg: &str) -> Value {
         name: "Result".to_string(),
         variant: "Err".to_string(),
         fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -872,7 +872,7 @@ fn option_some(value: Value) -> Value {
         name: "Option".to_string(),
         variant: "Some".to_string(),
         fields: vec![value],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -881,6 +881,6 @@ fn option_none() -> Value {
         name: "Option".to_string(),
         variant: "None".to_string(),
         fields: vec![],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }

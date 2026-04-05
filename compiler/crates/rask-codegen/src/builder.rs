@@ -236,6 +236,18 @@ impl<'a> FunctionBuilder<'a> {
             builder.def_var(var, addr);
         }
 
+        // For main(): emit rask_set_origin_file(source_file) so .origin() includes file name
+        if self.mir_fn.name == "main" {
+            if let Some(file_name) = self.mir_fn.source_file.as_deref() {
+                if let Some(gv) = self.string_globals.get(file_name) {
+                    let file_ptr = builder.ins().global_value(types::I64, *gv);
+                    if let Some(func_ref) = self.func_refs.get("rask_set_origin_file") {
+                        builder.ins().call(*func_ref, &[file_ptr]);
+                    }
+                }
+            }
+        }
+
         let mut ctx = CodegenCtx {
             var_map: &self.var_map,
             locals: &self.mir_fn.locals,
@@ -455,21 +467,44 @@ impl<'a> FunctionBuilder<'a> {
 
                 if !is_aggregate {
                     let val = Self::lower_operand(builder, value, ctx)?;
-                    let val_ty = builder.func.dfg.value_type(val);
 
-                    // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
-                    // values to fill the full slot — otherwise a 4-byte f32 store
-                    // leaves stale upper bytes that corrupt the f64 read-back.
-                    let val = if val_ty == types::F32 {
-                        builder.ins().fpromote(types::F64, val)
-                    } else if val_ty.is_int() && val_ty.bits() < 64 {
-                        Self::convert_value(builder, val, val_ty, types::I64)
+                    // store_size > 8: the lowered value is a pointer to aggregate data
+                    // (e.g., string constant → 16-byte SSO). Copy word-by-word from
+                    // the source pointer instead of storing the pointer itself.
+                    if store_size.map_or(false, |s| s > 8) {
+                        let size = store_size.unwrap() as i32;
+                        let mut byte_offset = 0i32;
+                        while byte_offset + 8 <= size {
+                            let word = builder.ins().load(types::I64, MemFlags::new(), val, byte_offset);
+                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
+                            byte_offset += 8;
+                        }
+                        if size - byte_offset >= 4 {
+                            let word = builder.ins().load(types::I32, MemFlags::new(), val, byte_offset);
+                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
+                            byte_offset += 4;
+                        }
+                        if size - byte_offset >= 1 {
+                            let word = builder.ins().load(types::I8, MemFlags::new(), val, byte_offset);
+                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
+                        }
                     } else {
-                        val
-                    };
+                        let val_ty = builder.func.dfg.value_type(val);
 
-                    let flags = MemFlags::new();
-                    builder.ins().store(flags, val, addr_val, *offset as i32);
+                        // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
+                        // values to fill the full slot — otherwise a 4-byte f32 store
+                        // leaves stale upper bytes that corrupt the f64 read-back.
+                        let val = if val_ty == types::F32 {
+                            builder.ins().fpromote(types::F64, val)
+                        } else if val_ty.is_int() && val_ty.bits() < 64 {
+                            Self::convert_value(builder, val, val_ty, types::I64)
+                        } else {
+                            val
+                        };
+
+                        let flags = MemFlags::new();
+                        builder.ins().store(flags, val, addr_val, *offset as i32);
+                    }
                 }
             }
 
@@ -1856,13 +1891,20 @@ impl<'a> FunctionBuilder<'a> {
                         }
                         crate::layouts::PAYLOAD_OFFSET + (*field_index * 8) as i32
                     }
-                    Some(MirType::Result { ok, .. }) => {
-                        // Aggregate Ok payload: return address, not load
-                        if *field_index == 0 && matches!(ok.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String) {
-                            let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::PAYLOAD_OFFSET as i64);
-                            return Ok(payload_addr);
+                    Some(MirType::Result { ok, err }) => {
+                        // Use explicit byte_offset when provided (e.g., origin field reads)
+                        if let Some(off) = byte_offset {
+                            *off as i32
+                        } else {
+                            // Aggregate payload (Ok or Err): return address, not load.
+                            // MIR uses field_index 0 for both Ok and Err payloads — check both.
+                            let is_aggregate = |t: &MirType| matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String);
+                            if *field_index == 0 && (is_aggregate(ok.as_ref()) || is_aggregate(err.as_ref())) {
+                                let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::RESULT_PAYLOAD_OFFSET as i64);
+                                return Ok(payload_addr);
+                            }
+                            crate::layouts::RESULT_PAYLOAD_OFFSET + (*field_index * 8) as i32
                         }
-                        crate::layouts::PAYLOAD_OFFSET + (*field_index * 8) as i32
                     }
                     // Fallback: use pre-computed byte offset from MIR when available
                     _ => byte_offset.map(|o| o as i32).unwrap_or((*field_index * 8) as i32)
@@ -2214,7 +2256,8 @@ impl<'a> FunctionBuilder<'a> {
                     .unwrap_or(ok.size());
                 let err_size = Self::resolve_type_alloc_size(err, struct_layouts, enum_layouts)
                     .unwrap_or(err.size());
-                Some(8 + ok_size.max(err_size))
+                // tag (8) + origin_file (8) + origin_line (8) + payload
+                Some(crate::layouts::RESULT_PAYLOAD_OFFSET as u32 + ok_size.max(err_size))
             }
             MirType::Option(inner) => {
                 let inner_size = Self::resolve_type_alloc_size(inner, struct_layouts, enum_layouts)
@@ -2279,7 +2322,11 @@ impl<'a> FunctionBuilder<'a> {
     fn wrap_ok_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
         let tag = builder.ins().iconst(types::I64, 0);
         builder.ins().stack_store(tag, dst_slot, crate::layouts::TAG_OFFSET);
-        builder.ins().stack_store(value, dst_slot, crate::layouts::PAYLOAD_OFFSET);
+        // Zero origin fields (Ok path has no origin)
+        let zero = builder.ins().iconst(types::I64, 0);
+        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_FILE_OFFSET);
+        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_LINE_OFFSET);
+        builder.ins().stack_store(value, dst_slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
     }
 
     /// C functions that use "negative return = error" convention.
@@ -2302,7 +2349,10 @@ impl<'a> FunctionBuilder<'a> {
         let is_err = builder.ins().icmp(IntCC::SignedLessThan, value, zero);
         let tag = builder.ins().uextend(types::I64, is_err);
         builder.ins().stack_store(tag, dst_slot, crate::layouts::TAG_OFFSET);
-        builder.ins().stack_store(value, dst_slot, crate::layouts::PAYLOAD_OFFSET);
+        // Zero origin fields — C FFI errors don't carry Rask origin
+        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_FILE_OFFSET);
+        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_LINE_OFFSET);
+        builder.ins().stack_store(value, dst_slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
     }
 
     /// Store a value to a stack slot and return its address.

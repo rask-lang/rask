@@ -21,7 +21,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: fields.to_vec(),
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
                 "Err" => {
                     let closure = args.into_iter().next().ok_or_else(|| {
@@ -33,7 +33,7 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![mapped],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     })
                 }
                 _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
@@ -49,14 +49,14 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![mapped],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     })
                 }
                 "Err" => Ok(Value::Enum {
                     name: "Result".to_string(),
                     variant: "Err".to_string(),
                     fields: fields.to_vec(),
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
                 _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
@@ -65,13 +65,13 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "Some".to_string(),
                     fields: fields.to_vec(),
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
                 "Err" => Ok(Value::Enum {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
                 _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
@@ -124,14 +124,14 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![mapped],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     })
                 }
                 "None" => Ok(Value::Enum {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
                 _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
             },
@@ -152,14 +152,14 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![inner],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     } else {
                         Ok(Value::Enum {
                             name: "Option".to_string(),
                             variant: "None".to_string(),
                             fields: vec![],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                 }
@@ -167,7 +167,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
                 _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
             },

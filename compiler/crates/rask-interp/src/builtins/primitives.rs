@@ -18,7 +18,7 @@ fn ordering_value(ord: std::cmp::Ordering) -> Value {
             std::cmp::Ordering::Greater => "Greater".to_string(),
         },
         fields: vec![],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 

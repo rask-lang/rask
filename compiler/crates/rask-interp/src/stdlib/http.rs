@@ -16,7 +16,7 @@ fn make_result_ok(value: Value) -> Value {
         name: "Result".to_string(),
         variant: "Ok".to_string(),
         fields: vec![value],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -372,6 +372,7 @@ impl Interpreter {
             variant: variant_name.to_string(),
             fields: vec![],
             variant_index,
+            origin: None,
         })
     }
 }

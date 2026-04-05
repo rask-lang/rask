@@ -16,7 +16,7 @@ fn make_result_ok(value: Value) -> Value {
         name: "Result".to_string(),
         variant: "Ok".to_string(),
         fields: vec![value],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -26,7 +26,7 @@ fn make_result_err(msg: &str) -> Value {
         name: "Result".to_string(),
         variant: "Err".to_string(),
         fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
-        variant_index: 0,
+        variant_index: 0, origin: None,
     }
 }
 
@@ -279,6 +279,7 @@ impl Interpreter {
                 "OPTIONS" => 6,
                 _ => 0,
             },
+            origin: None,
         };
 
         let mut fields = IndexMap::new();

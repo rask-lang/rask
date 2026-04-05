@@ -10,6 +10,44 @@ use crate::value::{ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, Typ
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
+/// Set origin on an error value (the inner payload of Err). Only sets if not already set (ER15).
+fn set_error_origin(val: Value, origin: &Arc<str>) -> Value {
+    match val {
+        Value::Enum { name, variant, fields, variant_index, origin: existing } => {
+            Value::Enum {
+                name,
+                variant,
+                fields,
+                variant_index,
+                origin: Some(existing.unwrap_or_else(|| origin.clone())),
+            }
+        }
+        other => other,
+    }
+}
+
+/// Set origin on a Result.Err or Option.None wrapper and its inner error value.
+/// Only sets if not already set (first propagation site wins, per ER15).
+fn set_result_origin(val: Value, origin: &Arc<str>) -> Value {
+    match val {
+        Value::Enum { name, variant, fields, variant_index, origin: existing }
+            if variant == "Err" || variant == "None" =>
+        {
+            let fields_with_origin: Vec<Value> = fields.into_iter()
+                .map(|f| set_error_origin(f, origin))
+                .collect();
+            Value::Enum {
+                name,
+                variant,
+                fields: fields_with_origin,
+                variant_index,
+                origin: Some(existing.unwrap_or_else(|| origin.clone())),
+            }
+        }
+        other => other,
+    }
+}
+
 /// Map comparison method names back to operator symbols.
 fn comparison_op_symbol(method: &str) -> Option<&'static str> {
     match method {
@@ -229,7 +267,7 @@ impl Interpreter {
                                         name: "Option".to_string(),
                                         variant: "Some".to_string(),
                                         fields: vec![result],
-                                        variant_index: 0,
+                                        variant_index: 0, origin: None,
                                     });
                                 }
                                 "None" => {
@@ -237,7 +275,7 @@ impl Interpreter {
                                         name: "Option".to_string(),
                                         variant: "None".to_string(),
                                         fields: vec![],
-                                        variant_index: 0,
+                                        variant_index: 0, origin: None,
                                     });
                                 }
                                 _ => {}
@@ -284,7 +322,7 @@ impl Interpreter {
                                     name: name.clone(),
                                     variant: v.name.clone(),
                                     fields: vec![],
-                                    variant_index: idx as u32,
+                                    variant_index: idx as u32, origin: None,
                                 }
                             }).collect();
                             return Ok(Value::Vec(Arc::new(Mutex::new(values))));
@@ -310,7 +348,7 @@ impl Interpreter {
                                 name: name.clone(),
                                 variant: method.clone(),
                                 fields: arg_vals,
-                                variant_index: vidx as u32,
+                                variant_index: vidx as u32, origin: None,
                             });
                         }
                     }
@@ -576,7 +614,7 @@ impl Interpreter {
                                     name: enum_name.clone(),
                                     variant: field.clone(),
                                     fields: vec![],
-                                    variant_index: vidx as u32,
+                                    variant_index: vidx as u32, origin: None,
                                 });
                             } else {
                                 return Ok(Value::EnumConstructor {
@@ -701,7 +739,7 @@ impl Interpreter {
                                         name: type_name,
                                         variant: field.clone(),
                                         fields: vec![],
-                                        variant_index: vidx as u32,
+                                        variant_index: vidx as u32, origin: None,
                                     });
                                 } else {
                                     return Ok(Value::EnumConstructor {
@@ -762,7 +800,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![field_val],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Value::Enum { variant, .. } if variant == "None" => {
@@ -770,7 +808,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "None".to_string(),
                             fields: vec![],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     _ => {
@@ -983,6 +1021,7 @@ impl Interpreter {
                     } => match variant.as_str() {
                         "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                         "Err" | "None" => {
+                            let origin = self.origin_string(expr.span);
                             if let Some(ec) = else_clause {
                                 // try...else: bind error value, evaluate handler, wrap in Err and propagate
                                 let err_val = fields.first().cloned().unwrap_or(Value::Unit);
@@ -993,12 +1032,14 @@ impl Interpreter {
                                 let wrapped = Value::Enum {
                                     name: "Result".to_string(),
                                     variant: "Err".to_string(),
-                                    fields: vec![transformed],
+                                    fields: vec![set_error_origin(transformed, &origin)],
                                     variant_index: 0,
+                                    origin: Some(origin),
                                 };
                                 Err(RuntimeDiagnostic::new(RuntimeError::TryError(wrapped), expr.span))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::TryError(val), expr.span))
+                                let propagated = set_result_origin(val, &origin);
+                                Err(RuntimeDiagnostic::new(RuntimeError::TryError(propagated), expr.span))
                             }
                         }
                         _ => Err(RuntimeDiagnostic::new(
@@ -1788,7 +1829,7 @@ impl Interpreter {
                             fields: vec![Value::String(Arc::new(Mutex::new(
                                 "all channels closed".to_string(),
                             )))],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         });
                     }
 

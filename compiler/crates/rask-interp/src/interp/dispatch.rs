@@ -41,6 +41,7 @@ impl Interpreter {
                     variant: variant_name,
                     fields: args,
                     variant_index,
+                    origin: None,
                 })
             }
             Value::Closure {

@@ -1120,9 +1120,32 @@ impl Parser {
                 // Regular type parameter: `T` or `T: Trait` or `T: A + B`
                 let mut bounds = vec![];
                 if self.match_token(&TokenKind::Colon) {
-                    bounds.push(self.expect_ident()?);
+                    let mut bound = self.expect_ident()?;
+                    // Support generic trait bounds: `T: Iterator<Item>`
+                    if self.match_token(&TokenKind::Lt) {
+                        bound.push('<');
+                        bound.push_str(&self.parse_type_name()?);
+                        while self.match_token(&TokenKind::Comma) {
+                            bound.push_str(", ");
+                            bound.push_str(&self.parse_type_name()?);
+                        }
+                        self.expect_gt_in_generic()?;
+                        bound.push('>');
+                    }
+                    bounds.push(bound);
                     while self.match_token(&TokenKind::Plus) {
-                        bounds.push(self.expect_ident()?);
+                        let mut bound = self.expect_ident()?;
+                        if self.match_token(&TokenKind::Lt) {
+                            bound.push('<');
+                            bound.push_str(&self.parse_type_name()?);
+                            while self.match_token(&TokenKind::Comma) {
+                                bound.push_str(", ");
+                                bound.push_str(&self.parse_type_name()?);
+                            }
+                            self.expect_gt_in_generic()?;
+                            bound.push('>');
+                        }
+                        bounds.push(bound);
                     }
                 }
 
@@ -1140,6 +1163,10 @@ impl Parser {
                 }
             }
 
+            // If >> was split in a nested generic bound, pending_gt is our closing >
+            if self.pending_gt {
+                break;
+            }
             if self.match_token(&TokenKind::Comma) {
                 name_suffix.push_str(", ");
             } else {
@@ -1147,7 +1174,7 @@ impl Parser {
             }
         }
 
-        self.expect(&TokenKind::Gt)?;
+        self.expect_gt_in_generic()?;
         name_suffix.push('>');
 
         Ok((type_params, name_suffix))

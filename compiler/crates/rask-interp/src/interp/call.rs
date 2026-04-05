@@ -105,7 +105,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: vec![value],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
             }
         } else if returns_option {
@@ -115,7 +115,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "Some".to_string(),
                     fields: vec![value],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
             }
         } else {
