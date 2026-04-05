@@ -188,6 +188,84 @@ The combination physics defines a landscape over material space. Every possible 
 
 **Information asymmetry:** A faction that discovers a breakthrough material knows the recipe (crafting script). They can produce the material. They can sell finished goods (trading partners see the output, not the process). They can sell the recipe (valuable but creates competitors). Or they can keep it secret — but the component tree is visible on transfer, so sophisticated rivals can reverse-engineer the composition and narrow down the search space.
 
+## Latent Physics
+
+The interaction table contains terms that evaluate to zero or negligible at normal conditions. They're not hidden — anyone can read the standard physics script. But under extreme conditions — very high energy, specific rare element combinations, unusual catalyst configurations — these dormant terms activate and produce effects that aren't just "better structural efficiency" but qualitatively new capabilities.
+
+This is how real physics works. Relativistic effects are always in the equations. They're negligible at walking speed. At 0.9c they dominate. Nobody unlocked relativity. The math was always there. The conditions to observe it are just extreme.
+
+### How It Works
+
+The interaction formulas already have the mechanism: energy_factor scales interaction effects, and activation thresholds gate when effects manifest. Latent physics extends this with **threshold cascades** — certain interaction terms have activation thresholds so high that they require materials produced by *prior* discoveries to reach.
+
+```
+// A normal interaction: activates at energy_per_mass > 100
+binary[iron][carbon][hardness] = 2.4, threshold = 100
+
+// A latent interaction: activates at energy_per_mass > 50000
+// (unreachable without advanced reactor tech providing the energy)
+binary[exotic_A][exotic_B][spatial_compression] = 8.1, threshold = 50000
+```
+
+The `spatial_compression` property does nothing at the system design level until a performance function reads it. The founding cluster can publish performance functions that reference properties nobody can produce yet — the function exists, the property evaluates to zero with all known materials, and the system produces no novel effect. When someone eventually produces a material with non-zero spatial_compression, the performance function activates and a new class of system becomes possible.
+
+### New Properties, Not New Rules
+
+The element property vector has a fixed set of dimensions. But nothing requires all dimensions to be useful from day one. The founding cluster can define property dimensions that no known element combination produces in significant quantities:
+
+| Property | Status at launch | What it enables when non-zero |
+|----------|-----------------|-------------------------------|
+| Hardness | Active — common materials produce it | Structural components, armor, tools |
+| Conductivity | Active — common materials produce it | Power routing, sensors, communications |
+| Spatial distortion | Latent — no known combination produces it above noise | Jump drives, gravity manipulation, spatial compression |
+| Field coherence | Latent — requires exotic catalysts at extreme energy | Force fields, containment, directed energy |
+| Phase stability | Latent — requires ternary exotic combinations | Metamaterials, cloaking, sensor dampening |
+
+The latent properties are in the physics script from day one. The formulas that produce them require conditions that day-one technology can't reach. As factions push into extreme regimes — higher energy, rarer elements, more complex combinations — the latent properties start appearing in their experimental outputs. First as noise. Then as signal.
+
+A faction running high-energy experiments with rare elements notices a tiny non-zero value for "spatial distortion" in their output material. What is that? The physics script has formulas for it. The performance functions reference it. But nobody has ever produced enough of it to matter. The faction runs more experiments. Spends more material. Maps the landscape around that anomalous result. Eventually produces a material with significant spatial distortion. Plugs it into a system design. The performance function evaluates — and the system does something nobody has seen before.
+
+That's discovery. Not a tech tree unlock. Not a recipe. A physicist pushing into unknown territory and finding that the universe has more to offer than anyone suspected.
+
+### Why Not Just Hide It
+
+I considered making latent physics truly hidden — obfuscated bytecode, encrypted interaction tables, unknown property dimensions. I rejected that because it contradicts the design philosophy. The physics is public. The standard physics script is readable. Transparency is a core value.
+
+Instead, latent physics relies on **computational opacity**: the formulas are public but the combinatorial search space is too large to map analytically. You can read the code and see that spatial_distortion has non-zero interaction terms for exotic_A + exotic_B at threshold 50000. But you still need to:
+
+1. Find or trade for exotic_A and exotic_B (geographic scarcity)
+2. Build a facility capable of energy_per_mass > 50000 (requires prior material breakthroughs for the reactor and containment)
+3. Run actual experiments to find the optimal ratio and catalyst (costs real materials each attempt)
+4. Design a system that exploits the new property (system design research)
+
+Knowing the math exists doesn't make it free. Theoretical physics and engineering are different disciplines. Both are required.
+
+### Progression Tiers
+
+The latent physics creates a natural progression without prescribing it:
+
+**Tier 0 — Common chemistry.** Standard element interactions at moderate energy. Basic alloys, structural materials, simple conductors. Available from day one with founding cluster starter recipes.
+
+**Tier 1 — Advanced materials.** Strong binary and some ternary interactions. Requires access to uncommon elements and higher-energy facilities. Better structural efficiency, better thermal management, better shielding. What PHYSICS.md calls the "orbital phase" and "interstellar phase."
+
+**Tier 2 — Exotic materials.** Ternary interactions with rare elements and catalysts. Extreme energy thresholds. Materials with unusual property combinations — extremely high values in one dimension, or moderate values in dimensions that are normally zero. The first hints of latent properties appearing. Enables the "industrial space phase."
+
+**Tier 3 — New physics.** Materials with significant values in latent property dimensions. New system types become viable — force fields, jump drives, gravitational manipulation. Requires cascading breakthroughs: tier 2 materials to build the labs that produce tier 3 materials. The "stellar phase" becomes theoretically accessible.
+
+These tiers aren't prescribed. They emerge from the threshold cascade structure of the interaction table. A faction might reach tier 3 in one property dimension while stuck at tier 1 in others. Progress is multidimensional, like PHYSICS.md describes for the technology arc.
+
+### Founding Cluster Design Responsibility
+
+The interaction table and latent physics are the founding cluster's most important creative act. They're designing the universe's chemistry and exotic physics — not as lore, but as math. The constants determine:
+
+- How many meaningful material tiers exist
+- How long discovery takes at each tier
+- Which rare elements are strategically valuable
+- What new capabilities are theoretically possible
+- How hard each capability is to unlock
+
+This is universe design. The founding cluster tunes it through playtesting. Constants can evolve (new script version, voluntary adoption) but the relationships don't change. Once the interaction table is published, the discovery landscape is fixed. Factions explore a continent that already exists — the founding cluster drew the map but nobody has it.
+
 ## Verification
 
 When a domain mints a crafted material, the proof includes:
