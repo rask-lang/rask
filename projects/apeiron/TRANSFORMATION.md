@@ -438,3 +438,7 @@ The element count and interaction table size determine the game's discovery dept
 | Natural difficulty curve | Common alloys → exotic materials → basic systems → optimized systems → breakthrough designs |
 
 No tech trees. No recipe books. No unlock gates. Elements interact to produce materials. Materials compose into systems. Systems assemble into objects. The constraint laws judge the result. Everything in between is discovery.
+
+## Future Directions
+
+**Biological science.** Genetics, breeding, ecosystem engineering, terraforming, alien life. The transformation model extends naturally — genetic building blocks combine via an interaction function, organisms have trait vectors, ecosystems are system-design problems. Not designed yet. The core material/system science needs to validate first. Nothing in this spec forecloses it.
