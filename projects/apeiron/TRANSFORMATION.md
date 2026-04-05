@@ -278,27 +278,79 @@ This is the same verification pattern as constraint physics — re-executable, d
 
 ## Level 2: System Design
 
-Material synthesis produces materials with properties. System design produces *functional systems* — engines, reactors, shields, weapons, sensors — with performance characteristics. This is the second transformation layer.
+Material synthesis produces materials with properties. System design produces *functional systems* — engines, reactors, shields, weapons, sensors — with performance characteristics.
 
-The problem is identical in structure: without design rules, a crafting script can claim "I built a 1kg engine that produces infinite thrust." The finished object passes the constraint laws (it has mass, volume, energy draw). But the performance claim is ungrounded. System design physics constrains the relationship between what goes in and what comes out.
+Without design rules, a crafting script can claim "I built a 1kg engine with infinite thrust." The constraint laws check mass and energy budget but don't derive performance from composition. System design physics fills that gap.
 
-### System Properties Derive From Composition
+System design is deliberately **more predictable** than material synthesis. Material science is exploration of an opaque landscape. System design is optimization under known physics. The difficulty comes from multi-objective tradeoffs and the five constraint laws interacting, not from hidden landscapes. You can mostly *compute* how an engine should perform from its material properties. The surprises are at the edges.
 
-A system is a component tree. Its performance characteristics derive from its materials and structure — not declared. An engine's thrust derives from its combustion chamber material (thermal tolerance), nozzle geometry (structural properties under heat), fuel injector precision (material conductivity and hardness), and power supply. The physics script computes performance from composition.
+### Base Performance: Analytical and Transparent
 
-Each system type has a **performance function** — a formula that takes the component tree and derives performance:
+Each system type has a **performance function** — an analytical formula that takes component material properties and design parameters, and derives performance:
 
 ```
-thrust = f(chamber_material.stability, chamber_material.radiance,
-           nozzle_material.hardness, nozzle_mass,
-           fuel_flow_rate, power_input)
+base_thrust = combustion_efficiency(chamber.stability, chamber.radiance)
+            * nozzle_expansion(nozzle.hardness, nozzle_area)
+            * fuel_energy_density
+            * (1 - thermal_loss(chamber.conductivity))
 ```
 
-The performance functions are part of the standard physics script. They're the system-level equivalent of the element interaction table — deterministic, verifiable, published.
+These are published in the standard physics script. Analytical. Readable. Anyone can plug in their material properties and compute expected performance. No opacity. A competent engineer can optimize the design parameters for their available materials by studying the formulas.
+
+This is intentional. System design rewards understanding, not blind search. A faction that studies the performance functions deeply and optimizes carefully builds better systems than one that experiments randomly. Knowledge of physics matters.
+
+### Why Analytical Isn't Easy
+
+The performance functions are transparent, but optimizing them is hard because the five constraint laws create **coupled feedback loops**:
+
+- More thrust requires a bigger combustion chamber (more mass, Law 1)
+- Bigger chamber requires more structural support (superlinear cost, Law 2)
+- More thrust needs more fuel flow needs more power (energy budget, Law 3)
+- Higher operating temperature means faster component degradation (stress, Law 4)
+- The reactor powering the engine couples thermally with the chamber (shielding mass, Law 5)
+
+Optimizing thrust means solving a system of coupled equations where improving one variable worsens others. The Pareto frontier is high-dimensional and non-convex. There's no single "best engine" — there are tradeoff surfaces. A light fast engine. A heavy efficient engine. A reliable slow engine. Each point on the surface is a different design.
+
+This is genuinely hard optimization even with full transparency. Two engineers with the same materials and the same physics knowledge will produce different designs because they weight the tradeoffs differently.
+
+### Resonance Effects: Where Surprises Live
+
+The base performance is analytical. But specific combinations of materials in specific component roles produce non-linear bonuses that the base formula doesn't capture. These are **resonance effects** — emergent performance gains from material interactions within a system.
+
+```
+actual_thrust = base_thrust * (1 + resonance(chamber.properties, nozzle.properties, injector.properties))
+```
+
+The resonance function is smoother and sparser than the material interaction function. No phase boundaries. No chaotic discontinuities. Instead: **peaks** at specific material-property combinations, with gradual falloff away from the peak.
+
+```
+resonance = sum(
+    amplitude[k] * exp(-distance(component_properties, peak_center[k])^2 / width[k])
+)
+```
+
+Each resonance peak has a center (a specific combination of material properties across components), an amplitude (how much bonus it gives), and a width (how precise the combination needs to be).
+
+The peaks are **not seed-dependent**. They're determined by the resonance function in the standard physics script — fixed for all galaxies. But their locations in material-property space mean they're effectively hidden until someone has the right materials AND tests the right combination. A resonance peak centered at (chamber.stability=0.8, nozzle.conductivity=0.6, injector.hardness=0.9) is invisible to anyone without materials near those property values.
+
+**Why not seed-dependent?** Material synthesis is seed-dependent because each galaxy should have unique chemistry — that's the exploration game. System design is NOT seed-dependent because engineering knowledge should be transferable. An engine design that exploits a resonance should work in any galaxy, given materials with the right properties. Physics is universal. Chemistry (in this model) is local.
+
+### New Materials Shift the Landscape
+
+Here's where the two layers compose. When material synthesis produces a new material with novel property values, it potentially lands near resonance peaks that no previous material could access. The system designer plugs the new material into their performance calculations, and — surprise — the resonance function produces a bonus nobody expected.
+
+This creates a cascade:
+1. Material researcher discovers an alloy with unusual property profile
+2. System designer tests it in various component roles
+3. One combination hits near a resonance peak — performance jumps 15% beyond the analytical base
+4. The designer optimizes around the peak — fine-tunes the design parameters for the new material
+5. The optimized system enables a new class of ship that wasn't viable before
+
+The material researcher doesn't know they enabled a system breakthrough. The system designer doesn't know what's in the material — they just know it works unusually well in this role. Knowledge flows across the two layers but doesn't automatically transfer. Collaboration between material scientists and system engineers is valuable.
 
 ### Design Parameters
 
-Where material synthesis has element ratios and energy, system design has **design parameters**: choices about how to arrange and configure components. These aren't material choices — they're engineering choices.
+System design has **design parameters** — engineering choices about how to arrange and configure components:
 
 - **Geometry** — how components are arranged spatially (affects proximity coupling, Law 5)
 - **Operating point** — where on the performance curve the system targets (affects stress, Law 4)
@@ -307,52 +359,36 @@ Where material synthesis has element ratios and energy, system design has **desi
 
 Design parameters create tradeoffs within the physics. Two engines with identical materials can have different thrust if one uses a higher operating point (more thrust, faster degradation) or tighter geometry (lighter, more coupling interference). The physics computes the consequences. The designer chooses the tradeoffs.
 
-### The Design Landscape
+Design parameters also affect resonance — the same materials at different operating points might be closer to or further from a resonance peak. Tuning the operating point IS part of finding the resonance.
 
-System design has its own discovery landscape, orthogonal to material discovery:
-
-**Material researchers** explore element combinations to produce better materials. The discovery is: "these elements at this ratio and energy produce a material with excellent thermal stability."
-
-**System designers** explore component arrangements to produce better systems. The discovery is: "this chamber geometry with this nozzle configuration and this material produces 20% more thrust than the standard design."
-
-Both are experiments. Both cost resources (materials consumed, lab time, energy). Both produce knowledge (crafting scripts). Both benefit from the combination landscape being too large to brute-force.
-
-A faction with better materials AND better system designs has a compounding advantage. But they're separable — you can be a material scientist who sells raw alloys, or a system engineer who buys materials and designs engines. Specialization is viable at both levels.
-
-### Interaction Effects in System Design
-
-Like element interactions, component interactions have non-linear effects. An engine with a standard fuel injector performs linearly with fuel flow. But a fuel injector built from a high-conductivity material paired with a precision-machined nozzle might exhibit a resonance effect — fuel atomization improves non-linearly, producing a thrust boost that neither component achieves alone.
-
-These system-level interactions are encoded in the performance functions. They depend on the material properties of the components (tying back to the element interaction layer) and on the design parameters. The interaction table exists at both levels, and they compose.
-
-This is where the real depth lives. A breakthrough material enables a breakthrough system design that enables a new class of ship that changes the strategic landscape. The progression isn't linear — it's a web of interacting discoveries across material and system layers.
-
-### Process Types for System Design
+### Process Types
 
 | Process | Character |
 |---------|-----------|
-| **Assembly** | Combining components into a system. Standard construction. |
-| **Optimization** | Modifying an existing system's design parameters without changing materials. Cheaper than rebuilding. |
-| **Reverse engineering** | Studying a system's component tree to infer its design parameters. Produces partial knowledge — you learn what's in it, but reconstructing the crafting script requires experiments. |
-| **Scaling** | Building a larger or smaller version of a known design. Not free — structural scaling (Law 2) means naive scaling fails. Requires re-solving the design at the new scale. |
+| **Assembly** | Combining components into a system. Standard construction. Performance determined by physics. |
+| **Optimization** | Modifying design parameters without changing materials. Cheaper than rebuilding. Searching for resonances. |
+| **Reverse engineering** | Studying a system's component tree to learn its materials and design parameters. You see the composition but not the resonance analysis — you know WHAT but not WHY it performs well. |
+| **Scaling** | Building a larger or smaller version of a known design. Not free — structural scaling (Law 2) means resonances shift at different scales. Re-optimization required. |
 
-### What This Means for Research Categories
+### Research Categories
 
-Research isn't a single activity. It decomposes naturally along the two transformation layers:
+Research decomposes naturally along the two layers:
 
-**Materials research** — combining elements, finding interaction effects, producing alloys with specific property profiles. Requires: element inputs, energy, catalysts, materials labs.
+**Materials research** — exploring the phase landscape. Opaque. Requires element inputs, energy, catalysts, materials labs.
 
-**Propulsion research** — designing engines with better thrust-to-weight, fuel efficiency, reliability. Requires: candidate materials, energy, propulsion test facilities.
+**System research** — optimizing performance functions and finding resonances. Semi-transparent. Requires candidate materials, test facilities, and understanding of the physics.
 
-**Reactor research** — designing power sources with higher energy density, lower mass, better thermal management. Requires: high-energy materials, shielding materials, reactor test labs with heavy coupling isolation.
+System research further specializes by what you're building:
 
-**Weapons research** — designing systems that concentrate energy effectively at range. Requires: high-conductivity materials, high-stability materials, weapons test ranges.
+| Domain | Key material properties | Key constraint interactions |
+|--------|------------------------|---------------------------|
+| Propulsion | stability, radiance | L1 (fuel mass), L3 (power), L4 (thermal stress) |
+| Reactors | radiance, stability, conductivity | L1 (reactor mass), L3 (output vs. draw), L5 (thermal coupling to everything) |
+| Weapons | conductivity, radiance, hardness | L3 (power draw), L4 (stress from repeated firing), L5 (EM coupling) |
+| Shielding | density, hardness, stability | L1 (shield mass), L2 (coverage area), L5 (absorption vs. re-radiation) |
+| Sensors | conductivity, stability | L5 (isolation from noise sources), L3 (power for sensitivity) |
 
-**Shielding research** — designing systems that absorb, deflect, or dissipate incoming energy. Requires: high-absorption materials, structural materials, shielding test facilities.
-
-**Sensor research** — designing systems that detect faint signals in noisy environments. Requires: high-sensitivity materials, vibration isolation, EM-quiet test environments.
-
-None of these categories are prescribed by the physics. They emerge because different performance functions depend on different material properties, which means different research paths need different inputs and facilities. A faction that wants better engines pursues thermal stability and radiance in their material research. A faction that wants better shields pursues conductivity and stability. The same element interaction table serves both — but they're exploring different regions of it.
+These categories aren't prescribed. They emerge because different performance functions depend on different material properties and different constraint interactions. A faction that wants better engines pursues thermal stability and radiance in their material research. A faction that wants better shields pursues density and hardness. The same interaction function serves both — but they're exploring different regions of it.
 
 ## Interaction With Existing Systems
 
