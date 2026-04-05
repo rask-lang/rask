@@ -136,13 +136,93 @@ None of these laws is individually very restrictive. Their power comes from inte
 
 The "10 million km ship" fails not because of one law but because all five compound: unimaginable material mass (L1), superlinear structural cost (L2), reactor mass to power it (L3), extreme stress tolerances needed (L4), and astronomical shielding/routing mass from millions of system interfaces (L5). Each law alone might be surmountable. Together, they create a wall that scales with ambition.
 
-## What About Stations and Structures?
+## Environment
 
-Same laws apply. A space station is a composition of components with mass, volume, structural requirements, and an energy budget. The difference: stations don't need to move. No fuel cost, no thrust-to-weight ratio. This is why stations can be much larger than ships — they only fight the structural scaling law, not the mass-fuel spiral.
+The five laws are general. But WHERE you build changes which constraints bite hardest. A foundry on a planet and a foundry on a space station face the same laws with different parameters.
 
-But stations still face structural scaling (Law 2), energy budgets (Law 3), and proximity coupling (Law 5). A station the size of a moon is possible — but the structural mass is enormous, the power requirements are vast, and the shielding between thousands of diverse systems is a civilization-level engineering effort. The tiers emerge.
+The galaxy seed generates environmental properties for every body — gravity, atmosphere, radiation, temperature. These properties modify law parameters directly:
 
-Outposts are small with few systems — coupling costs are minimal. Stations are bigger with more diverse systems — reactor shielding, life support isolation, docking bay EM management. Megastructures are theoretically possible but the interface mass alone rivals the structural mass. Nobody prescribes the tiers. The physics creates them.
+**Gravity** modifies energy cost (Law 3). Launching mass out of a gravity well costs energy proportional to mass and surface gravity. Deep wells (large rocky planets) are expensive to leave. Shallow wells (asteroids, moons) are cheap. Zero gravity (open space) has no launch cost but no structural support either.
+
+**Atmosphere** modifies coupling cost (Law 5). Heat dissipation in atmosphere is cheap — convection carries waste heat away. In vacuum, radiation is the only option, requiring dedicated radiators with surface area and mass. This is why industrial activity favors planets — foundries, refineries, and reactors dump heat into the air for free. In space, the same facility needs massive radiator arrays.
+
+**Ground support** modifies structural scaling (Law 2). On a surface, the ground bears load. Structures only need to support themselves against gravity, not hold their entire shape against internal forces. The structural scaling exponent effectively drops on a planetary surface — bigger is cheaper when the planet holds you up. In space, everything is self-supporting, and the full exponent applies.
+
+**Radiation environment** modifies baseline shielding (Law 5). Near a star, ambient radiation is high — more baseline shielding needed for every system. In deep space, ambient radiation is low. On a planet with a magnetosphere, radiation shielding is nearly free.
+
+### What Environment Creates
+
+| Environment | Structural cost | Energy cost | Heat dissipation | Natural role |
+|-------------|----------------|-------------|-----------------|-------------|
+| Planet surface | Low (ground support) | High to leave (gravity well) | Cheap (atmosphere) | Manufacturing, cities, civilization |
+| Low orbit | High (self-supporting) | Medium (shallow well) | Expensive (vacuum) | Transit, observation, docking |
+| Asteroid/moon | Medium (some support, low gravity) | Low to leave | Expensive (no atmosphere) | Mining, outposts |
+| Deep space | High (self-supporting) | None (no well) | Expensive (vacuum) | Transit, stations, gates |
+| Near star | High | Abundant solar energy | Very expensive (ambient heat) | Energy harvesting, exotic industry |
+
+This is why civilizations start on planets. The environment is forgiving — structure is cheap, heat dissipation is free, you just can't easily leave. Expanding into space means overcoming the gravity well AND accepting harsher constraint parameters. That transition is a real milestone, not a game-design gate.
+
+A space station is expensive not because a rule says so, but because vacuum means self-supporting structure, radiation-only cooling, and full shielding — all law parameters at their worst. A planetary city is cheap because the ground, atmosphere, and magnetosphere handle the hard parts. Same laws. Different environment. Different cost.
+
+A Dyson sphere faces structural scaling at stellar radius — the volume is incomprehensible, the exponent is merciless. But it captures a star's entire energy output, so the energy budget is nearly infinite. Whether the structural cost can be paid with the available energy is an open question that depends entirely on material constants. That's a civilization-scale engineering problem, not a spec question.
+
+### Gravity Wells and Movement
+
+Getting mass off a planet is the local equivalent of interstellar fuel cost. The natural law (distance costs fuel) applies between stars. Gravity wells apply within systems. Both are energy costs proportional to mass — same physics, different scale.
+
+```
+launch_cost = mass * surface_gravity * escape_factor
+```
+
+This creates a two-tier economy. **Planetary economies** are heavy industry — foundries, refineries, cities, agriculture. Cheap to build, expensive to export from. **Space economies** are logistics — stations, shipyards, trade hubs. Expensive to build, cheap to move between. The gravity well IS the border between them.
+
+Mining an asteroid and processing the ore on a planet means: cheap extraction (low gravity), expensive landing (gravity well), cheap processing (atmosphere, ground support). Mining and processing in space means: cheap extraction, no landing cost, but expensive facilities (self-supporting, vacuum-cooled). The optimal supply chain depends on the specific star system's geography. Players figure this out — the physics just provides the cost functions.
+
+## Technology and Progression
+
+The five laws define relationships. Technology changes the constants.
+
+Better materials have better structural efficiency — lower `k` in Law 2. Better reactors have higher energy density — more watts per kilogram in Law 3. Better shielding has lower mass per coupling pair in Law 5. Better alloys have higher stress tolerance in Law 4. Progress means pushing the same constraint curves further before they bite.
+
+This is how real technology works. The square-cube law didn't change between wooden ships and steel ships. Steel just has better structural efficiency. Thermodynamics didn't change between steam engines and nuclear reactors. Nuclear just has higher energy density. Same laws, better constants.
+
+### The Natural Progression Arc
+
+Nobody prescribes a tech tree. But the physics creates a natural arc:
+
+**Planetary phase.** Early tech has poor constants — heavy materials, inefficient reactors, bulky shielding. The environment is forgiving (ground support, atmosphere, magnetosphere), so you can build despite crude technology. Cities, ground industry, local economy. Getting to orbit is hard because the gravity well costs energy you can barely afford with heavy, inefficient fuel.
+
+**Orbital phase.** Better materials and energy tech relax the constraints enough to sustain orbital operations. Space stations become viable — structure and cooling are expensive but affordable. Orbital shipyards, system-local trade. Still bound to your home star.
+
+**Interstellar phase.** Materials and energy tech good enough that ships can carry enough fuel to jump between stars at reasonable mass cost. Outposts in neighboring systems. The founding cluster's starter tech puts new players here — capable of basic interstellar travel with standard ships.
+
+**Industrial space phase.** Advanced materials push structural scaling further. Megastructures become viable. Orbital foundries that rival planetary ones. Large stations, fleet operations, deep-space mining at scale.
+
+**Stellar phase.** If material constants get good enough, stellar-scale construction becomes theoretically possible. Dyson swarms, star-powered gates, civilization-scale engineering. The physics doesn't forbid it — it just requires constants that make the structural and thermal costs manageable at that scale.
+
+Each phase isn't unlocked by a tech tree node. It becomes viable when the material and energy constants cross a threshold where the constraint curves permit it. Different factions might reach different phases for different capabilities — one faction's reactor tech enables large stations while their structural materials still can't do megastructures. Progress is multidimensional.
+
+### How Technology Exists in the Game
+
+A material or technology is a component type with specific physical properties — structural efficiency, energy density, mass per unit, shielding effectiveness, stress tolerance. These properties are what the physics script evaluates. The name, the lore, the crafting recipe, the rarity — that's all game content defined by the founding cluster or player communities.
+
+Discovering or inventing better technology means: someone (founding cluster, faction, player) publishes a new component type with better constants. It requires specific inputs to construct (Raido crafting script, verifiable). The inputs might include rare materials from specific star systems (geographic scarcity drives exploration), or components from multiple existing technologies (composition drives trade), or knowledge shared between allied factions (trust drives diplomacy).
+
+The physics doesn't care how you got the better reactor. It evaluates the reactor's energy density, mass, volume, heat output, and coupling properties. If the numbers check out against the construction proof, it's physically valid.
+
+### Bounding Exponential Growth
+
+Better technology enables more extraction, bigger facilities, wider reach. Without bounds, this compounds into exponential growth that eats the galaxy. The physics provides natural friction:
+
+**Resource deposits are finite.** The seed encodes total extractable resources per body. Better extraction tech gets more out, but can't exceed what's there. A mined-out asteroid is mined out regardless of technology level.
+
+**Hosting costs are real.** Every domain costs compute and bandwidth to run. More domains = more infrastructure. Technology doesn't change this — it's a real-world cost outside the game physics.
+
+**Structural scaling is superlinear.** Better materials push the ceiling higher but don't eliminate the exponent. A faction with the best materials in the galaxy still faces `volume^e` at large scales. The exponent wins eventually.
+
+**Maintenance scales with complexity.** More advanced systems have more coupling interfaces, more stress points, more decay. Running a stellar-scale operation means stellar-scale maintenance. Technology makes things possible but not free.
+
+**Geographic scarcity remains.** No amount of technology makes a single system self-sufficient if the seed didn't put all resource types there. Advanced civilizations still need trade networks. The topology of need persists.
 
 ## What About Spaceport Design? How Things Look?
 
@@ -166,7 +246,7 @@ What the physics provides is the evaluation function: given a component tree, de
 
 The constraint laws aren't enforced by any authority. They're verified by every trading partner.
 
-One Raido script — the **standard physics script** — evaluates all five constraint laws plus the natural laws (fuel costs, decay rates) in a single pass. The founding cluster publishes it. It's content-addressed. Any domain can fetch, inspect, and execute it independently.
+One Raido script — the **standard physics script** — evaluates all five constraint laws, environmental modifiers, and natural laws (fuel costs, decay rates) in a single pass. The founding cluster publishes it. It's content-addressed. Any domain can fetch, inspect, and execute it independently.
 
 **On minting:** A domain mints an object (ship, station, component). The physics script evaluates the component tree — derives mass, checks structural requirements, verifies energy budget, evaluates stress tolerances, computes coupling costs. The evaluation result and script hash go into the minting proof.
 
@@ -196,10 +276,10 @@ These are knobs, not laws. The founding cluster sets initial values through play
 
 ## What This Doesn't Cover
 
-**Materials.** The physics says components have mass, volume, structural efficiency, and energy properties. It doesn't say what materials exist. Steel, carbon fiber, alien alloys — those are game content that the founding cluster and player communities define. The physics just requires that whatever you call your material, it has consistent physical properties that other domains can verify.
+**Specific materials and component types.** The physics says components have mass, volume, structural efficiency, and energy properties. It doesn't say what materials exist. Those are game content — the founding cluster publishes starter types, player communities evolve them. The physics just requires consistent, verifiable physical properties.
 
-**Technology.** The physics doesn't define tech trees, research mechanics, or progression. A "warp drive" is a component that provides thrust with certain mass/energy/volume properties. Whether it requires rare materials, research time, or faction reputation to build — that's game design, not physics.
+**Combat.** The physics ensures ships have physically consistent properties. How combat works — turn-based, real-time, deterministic Raido scripts — is a domain-level system. Weapons have mass and power draw (constraint physics). What they do to targets at a distance is domain logic.
 
-**Combat.** The physics defines that weapons have mass and power draw, and that damage creates stress. How combat actually works (turn-based, real-time, deterministic) is a separate system. The physics just ensures that whatever combat system exists, the ships involved have physically consistent properties.
+**Governance, factions, diplomacy.** Organizational structures are Allgard concerns (owners, grants, domains, bilateral trust), not physics. A planetary government is an arrangement of grants and authority scoping, not a physical object.
 
 **Economy.** Allgard's conservation laws handle economic integrity. This spec handles physical integrity. They compose — an object must be both economically valid (proper minting, balanced exchange) and physically valid (mass checks out, structure sufficient, energy budget balanced).
