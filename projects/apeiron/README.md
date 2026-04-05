@@ -161,7 +161,7 @@ The founding cluster is the seed of trust. Every domain in the galaxy traces its
 
 Allgard's seven conservation laws keep the economy honest. Natural laws keep the game interesting. Conservation laws say "you can't cheat." Natural laws say "the universe has friction."
 
-The laws below are the economic layer — friction that makes trade and logistics meaningful. [Constraint physics](PHYSICS.md) goes deeper: general structural laws (mass-energy conservation, structural scaling, energy budgets, composition, stress, complexity) that determine what CAN exist. Those laws interact to create natural size tiers, specialization pressure, and engineering tradeoffs without prescribing specific ship classes or material tables.
+The laws below are the economic layer — friction that makes trade and logistics meaningful. [Constraint physics](PHYSICS.md) goes deeper: general physical laws (mass-energy conservation, structural scaling, energy budgets, composition, stress, proximity coupling) that determine what CAN exist. Those laws interact to create natural size tiers, specialization pressure, and engineering tradeoffs without prescribing specific ship classes or material tables.
 
 The founding cluster publishes a **standard physics script** — a content-addressed Raido script that encodes these laws as formulas. Domains that run standard physics include the script hash in their departure proofs. Receiving domains verify: standard physics? Trust the proof. Non-standard? Flag it. Not banned — just transparent. A domain running zero-gravity economics is visible to everyone in the proof chain.
 

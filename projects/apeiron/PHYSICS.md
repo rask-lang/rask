@@ -96,21 +96,27 @@ Where the stress multiplier is 1.0 at normal load, rises gradually as load appro
 
 **Interaction with entropy:** The existing entropy law says things decay. This law says the rate isn't constant — it responds to how hard you push. A well-maintained ship running within limits lasts a long time. An overloaded hauler cutting corners burns through hull integrity. Same ship, different choices, different outcomes.
 
-## Law 6: Conservation of Complexity
+## Law 6: Proximity Coupling
 
-Building complex things requires proportionally more effort than simple things. This isn't just "more components = more mass" (that's Law 4). This is: integrating more systems has overhead beyond their individual costs.
+Systems in physical proximity exchange energy whether you want them to or not. Heat radiates. Vibration propagates through structure. Electromagnetic fields leak. This isn't an engineering problem to be solved — it's physics. Managing unwanted coupling requires material (insulation, shielding, damping), and that material has mass and volume.
 
-**The rule:** Assembly complexity grows with the number of distinct systems. Each additional system type adds integration overhead — mass, energy, volume — beyond what the system itself costs.
+**The rule:** Every pair of systems that share physical proximity has a coupling cost. The cost depends on the pair — how much unwanted energy they exchange. Managing that exchange requires interface material with real mass and volume.
 
-```
-integration_overhead = c * n_systems * ln(n_systems)
-```
+Coupling has two components:
 
-Where `c` is a constant and `n_systems` is the count of distinct system types. The n*ln(n) relationship means: a few systems integrate cheaply. Many systems compound. A ship with 3 system types (engine, hull, cargo) has low overhead. A ship with 20 system types (engine, hull, cargo, weapons, shields, sensors, cloak, medical, hangar, mining, refinery, ...) has substantial integration cost.
+**Unwanted coupling (interference).** A reactor radiates heat. Weapons generate EM pulses. Engines vibrate. Cryo storage must stay cold. These are proximity effects — they happen because systems share the same structure. Mitigating them requires physical material: thermal insulation, EM shielding, vibration damping, radiation barriers. Each interface pair has a coupling intensity based on what the two systems emit and what they're sensitive to.
 
-**What this creates:** Specialization pressure. A jack-of-all-trades ship pays heavy integration overhead. A focused ship (pure hauler, pure fighter, pure miner) is lean. This isn't because we declared ship classes — it's because complexity has a cost. Player-designed "do everything" ships exist but they're expensive, fragile, and inefficient compared to specialists.
+**Wanted coupling (routing).** Power must travel from reactor to systems via conduits. Coolant must circulate via pipes. Data must flow via lines. Fuel must reach engines. Every connection between systems is a physical conduit with mass, volume, and routing distance. More systems means more routing.
 
-**Why n*ln(n) and not n²?** n² would make anything beyond 5-6 systems nearly impossible. n*ln(n) is gentler — it allows ambitious designs but taxes them. A capital ship with 15 systems is viable but expensive. One with 30 is technically possible but probably not worth it. The curve creates soft boundaries that players discover through experience.
+**What this creates:** The interface count between n systems scales as `n*(n-1)/2`. But the cost isn't uniform — it depends on WHAT you're combining. An engine next to a fuel tank is cheap (short fuel line, compatible thermal profile). A reactor next to a medical bay is expensive (heavy radiation shielding). A weapons array next to sensitive sensors is expensive (EM isolation). Some pairs are nearly free. Others dominate the mass budget.
+
+This means specialization emerges from physics, not from a rule. A ship with three compatible systems (engine + fuel + cargo) has cheap interfaces. A ship with fifteen diverse systems has hundreds of interface pairs, many of them expensive. The penalty isn't abstract "complexity overhead" — it's the actual mass of shielding, insulation, conduits, and damping that holds a diverse system together.
+
+**Why this is better than a formula:** There's no single equation. The coupling cost depends on what's next to what. Players who design clever layouts — putting compatible systems adjacent, routing carefully, isolating hostile pairs — build better ships than players who stuff everything in. Ship design becomes spatial problem-solving, not plugging numbers into a formula.
+
+**Interaction with other laws:** Interface material has mass (Law 1). It occupies volume inside the structure (Law 2 — more volume means more structural support). Shielding and active isolation draw power (Law 3). Interface components can fail under stress (Law 5). Every law touches every other. The coupling cost feeds back into the same spirals that constrain everything else.
+
+**What the physics script evaluates:** Given a component tree with spatial layout, compute pairwise coupling costs between adjacent systems. Sum the interface material mass and volume. Verify that shielding meets minimum requirements for each pair. A ship that puts a reactor next to unshielded crew quarters is physically invalid — the radiation flux exceeds survivable limits. Not because a rule says "don't do that" but because the physics says "that crew is dead."
 
 ## How The Laws Interact
 
@@ -118,21 +124,21 @@ None of these laws is individually very restrictive. Their power comes from inte
 
 | Want this | Law 1 says | Law 2 says | Law 3 says | Law 4 says | Law 5 says | Law 6 says |
 |-----------|-----------|-----------|-----------|-----------|-----------|-----------|
-| Bigger ship | More material mass | More structural mass (superlinear) | More energy for systems | More components | More stress on structure | — |
-| More weapons | — | — | More power draw → bigger reactor → more mass | More components → more volume → more structure | Higher operational stress | More system types → integration overhead |
-| Longer range | More fuel mass | — | Fuel has volume → structure cost | — | — | — |
+| Bigger ship | More material mass | More structural mass (superlinear) | More energy for systems | More components | More stress on structure | More internal interfaces to manage |
+| More weapons | — | — | More power draw → bigger reactor → more mass | More components → more volume → more structure | Higher operational stress | Weapons generate EM/heat → shielding cost against adjacent systems |
+| Longer range | More fuel mass | — | Fuel has volume → structure cost | — | — | Fuel routing to engines has mass |
 | More cargo | More hull mass | More volume → more structure | — | Bigger bays, more mass | Risk of overload | — |
-| Do everything | All of the above | All of the above | All of the above | All of the above | All of the above | Integration overhead on top |
+| Do everything | All of the above | All of the above | All of the above | All of the above | All of the above | Hundreds of interface pairs, many expensive (reactor↔medical, weapons↔sensors) |
 
-The "10 million km ship" fails not because of one law but because all six compound: unimaginable material mass (L1), superlinear structural cost (L2), reactor mass to power it (L3), millions of integrated components (L4), extreme stress tolerances needed (L5), integration overhead for all those systems (L6). Each law alone might be surmountable. Together, they create a wall that scales with ambition.
+The "10 million km ship" fails not because of one law but because all six compound: unimaginable material mass (L1), superlinear structural cost (L2), reactor mass to power it (L3), millions of integrated components (L4), extreme stress tolerances needed (L5), and astronomical shielding/routing mass from millions of system interfaces (L6). Each law alone might be surmountable. Together, they create a wall that scales with ambition.
 
 ## What About Stations and Structures?
 
 Same laws apply. A space station is a composition of components with mass, volume, structural requirements, and an energy budget. The difference: stations don't need to move. No fuel cost, no thrust-to-weight ratio. This is why stations can be much larger than ships — they only fight the structural scaling law, not the mass-fuel spiral.
 
-But stations still face structural scaling (Law 2), energy budgets (Law 3), and complexity overhead (Law 6). A station the size of a moon is possible — but the structural mass is enormous, the power requirements are vast, and maintaining it is a civilization-level effort. Again, the physics creates natural tiers without prescribing them.
+But stations still face structural scaling (Law 2), energy budgets (Law 3), and proximity coupling (Law 6). A station the size of a moon is possible — but the structural mass is enormous, the power requirements are vast, and the shielding between thousands of diverse systems is a civilization-level engineering effort. The tiers emerge.
 
-Outposts are small, simple (few systems, low complexity overhead), and cheap. Stations are bigger, moderate complexity. Megastructures are theoretically possible but require economic empires. The tiers emerge.
+Outposts are small with few systems — coupling costs are minimal. Stations are bigger with more diverse systems — reactor shielding, life support isolation, docking bay EM management. Megastructures are theoretically possible but the interface mass alone rivals the structural mass. Nobody prescribes the tiers. The physics creates them.
 
 ## What About Spaceport Design? How Things Look?
 
@@ -169,7 +175,7 @@ The laws define relationships. The founding cluster publishes constants:
 | Structural exponent (`e`) | How fast structural needs grow with size | Higher = smaller ships. Lower = bigger ships. |
 | Structural coefficient (`k`) | Base structural cost per volume | Higher = heavier everything. Lower = lighter. |
 | Energy density | Power output per unit mass of reactor | Higher = more capable at same mass. Lower = heavier for same capability. |
-| Integration coefficient (`c`) | Complexity overhead per system type | Higher = more specialist. Lower = more generalist. |
+| Coupling intensity table | Base interference between system type pairs | Higher values = more shielding needed. Determines which combinations are expensive. |
 | Stress curve | How fast decay accelerates under load | Steeper = more punishing. Flatter = more forgiving. |
 
 These are knobs, not laws. The founding cluster sets initial values through playtesting. They can publish updated constants (new script hash, voluntary adoption). The laws — the relationships themselves — don't change.
