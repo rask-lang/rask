@@ -400,64 +400,47 @@ These categories aren't prescribed. They emerge because different performance fu
 
 **Labs and infrastructure:** Lab quality determines what energy levels and process types are available. A crude workshop can alloy at low energy. A plasma forge operates at high energy, activating interactions that a workshop can't reach. Lab equipment (from PHYSICS.md) has mass, volume, power draw, structural requirements — constrained by the five laws like everything else. Better labs require better materials, which require better labs. The spiral is intentional. See also: Batch Economics (below) for how lab throughput changes research strategy.
 
-## Batch Economics
+## Research Economics
 
-The spec so far assumes sequential experimentation — run one experiment, observe the result, decide the next. Real research doesn't work that way. Researchers commit batches: "run these 50 variations simultaneously." Batch economics changes optimal strategy fundamentally and creates a genuine infrastructure investment axis.
+### What's Actually Enforced
 
-### Lab Throughput
+Domains are sovereign. Nobody polices how fast you run experiments. The externally verified constraints are:
 
-A lab has a **throughput** — how many experiments it can run per time window. Throughput is a physical property of the facility, derived from its component tree like everything else:
+1. **Material consumption.** Each experiment consumes real inputs — Allgard objects destroyed via verifiable transforms. Your proof chain is auditable. You can't conjure materials. This is the hard constraint on research volume.
 
-- More reaction chambers = more parallel experiments
-- Each chamber has mass, volume, power draw, structural requirements (the five laws constrain it)
-- Chambers share infrastructure (power, cooling, containment) with coupling costs (Law 5)
-- Adding the 10th chamber is cheaper than adding the 50th (coupling scales with count)
+2. **Output validity.** The claimed output must match the interaction function evaluation for the claimed inputs at the claimed energy. Trading partners re-execute the physics script. They don't know or care about your lab. They verify the math.
 
-A crude workshop: throughput 1. One experiment at a time. Sequential decisions. Hill-climbing is natural.
+That's it. How many experiments you run per hour, what equipment you use, whether you run them sequentially or in parallel — domain-internal. Your sovereignty.
 
-A research lab: throughput 20-50. Must commit a batch of inputs before seeing any results. Can't use result N to inform experiment N+1 within the same batch.
+### What Constrains Research Pace in Practice
 
-A planetary research complex: throughput 200-500. Massive parallel exploration. Can map entire regions of the landscape in a single batch.
+Material supply is the binding constraint. Every experiment burns inputs. A faction with 10,000 units of iron can run more experiments than a faction with 100 — regardless of lab quality. Rich factions research faster because they can afford to burn more material on exploration.
 
-### How Batches Change Strategy
+Energy capacity determines what you can *attempt*, not how fast. Your reactor's output limits the energy_per_mass you can invest, which determines which phase regions you can access. A faction with a crude reactor can run experiments all day — but they're exploring only low-energy regions. A faction with an advanced reactor can probe high-energy regions where latent properties live.
 
-**Sequential (throughput 1):** Each experiment informs the next. Hill-climbing is optimal — observe the gradient, follow it. Slow but efficient. Every experiment is maximally informed. Good for exploitation of a known region.
+Lab infrastructure is a domain-internal optimization. Better equipment might reduce waste (improving yield), achieve more precise ratios (accessing sharp gradient regions more reliably), or reach higher energy densities (accessing more of the phase landscape). But none of this is externally verified. Your lab quality affects your research *effectiveness*, not your *permission* to research.
 
-**Small batch (throughput 20-50):** Must decide 20 inputs up front. Can't hill-climb within the batch. Optimal strategy: **cluster and spread.** Allocate half the batch to exploiting the best known region (cluster around the current best, mapping the local gradient). Allocate the other half to exploring (spread across unknown territory, hoping to cross a phase boundary). Information from the batch informs the next batch.
+### Batch Strategy Still Matters
 
-**Large batch (throughput 200+):** Can afford systematic grid search of a region. Or broad exploration across many element combinations. Or both simultaneously. The faction running 500 experiments per batch maps landscape 500x faster than the workshop running one at a time. This is a genuine advantage — not from better physics knowledge, but from better infrastructure.
+Even without enforced throughput limits, batch economics is relevant because of **information flow**. A researcher running experiments sequentially can use each result to inform the next — hill-climbing. A researcher committing to many experiments at once (because they have materials to burn) must decide inputs before seeing results.
 
-### The Infrastructure Investment
+A wealthy faction dumping 1,000 experiments worth of materials into blind exploration maps the landscape fast but wastefully. A careful faction running 10 experiments, studying results, then running 10 more is slower but more efficient per unit of material. The optimal strategy depends on the ratio of material wealth to search space size.
 
-Lab throughput creates a research investment decision:
+**Early game (scarce materials, narrow search space):** Sequential hill-climbing dominates. Every experiment is precious. Observe, adjust, repeat.
 
-Building a bigger lab requires materials (which could be used for experiments instead), energy infrastructure, structural support, and coupling management. The five laws make each additional chamber progressively more expensive (coupling scales, structural needs grow, power draw increases). There's a natural lab size ceiling per technology tier — same principle as ship size ceilings from PHYSICS.md.
+**Late game (abundant materials, vast search space):** Parallel exploration dominates. The search space grows exponentially with element count and energy range. Sequential exploration of a 5-element landscape would take geological time. Burning thousands of experiments to map regions in bulk is the only viable approach.
 
-A faction must choose: spend materials on experiments (more data, slower) or spend materials on lab infrastructure (less data now, faster later). Early game, a small lab running many sequential experiments is more efficient. Late game, large labs with massive throughput dominate because the search space is too large for sequential exploration.
-
-This also creates economic specialization. A faction with a planetary research complex can sell research services — "bring us your rare elements, we'll run 200 experiments and give you the results." Research-as-a-service, gated by infrastructure investment rather than knowledge.
-
-### Batch Costs
-
-Each experiment in a batch consumes its inputs independently. A batch of 50 experiments consumes 50 sets of inputs. The mass budget applies per experiment. No economies of scale on material consumption — the physics doesn't care that you're running experiments in parallel.
-
-But there IS an economy of scale on overhead. The lab's base operating cost (power, cooling, maintenance) is amortized across the batch. Running 50 experiments costs less total energy than running 50 experiments sequentially, because the lab's fixed infrastructure cost is paid once per batch window rather than once per experiment.
-
-```
-total_batch_cost = sum(per_experiment_material_cost) + lab_operating_cost_per_window
-```
-
-This means larger batches have lower per-experiment overhead, incentivizing full utilization of lab capacity. A half-empty lab is wasteful. This creates demand for research collaboration — multiple researchers sharing a facility to fill its throughput.
+This creates a natural economic role for **research services.** A faction rich in common materials but poor in rare elements partners with a faction rich in rare elements but poor in volume. One provides the exotic inputs. The other provides the bulk materials to burn through exploration. The crafting scripts they discover are the shared profit.
 
 ### Implications for the Simulation
 
-The playtest simulation should model batch economics explicitly:
+The playtest simulation should model research economics:
 
-- Run researchers at different throughput levels (1, 20, 50, 200)
-- Compare discovery curves: when does throughput advantage become decisive?
-- Test whether batch hill-climbing (cluster + spread) outperforms sequential hill-climbing
-- Find the crossover point where infrastructure investment pays off
-- Model collaborative research (multiple researchers sharing throughput)
+- Vary material budgets (scarce, moderate, abundant)
+- Compare sequential vs. parallel exploration at each budget level
+- Find the material-budget crossover where parallel beats sequential
+- Model energy-capacity constraints (low-energy-only vs. full-range access)
+- Test research partnerships (shared inputs, shared discoveries)
 
 ## Constants and Tuning
 
