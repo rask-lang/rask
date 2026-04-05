@@ -2289,7 +2289,8 @@ impl<'a> FunctionBuilder<'a> {
         matches!(name,
             "net_tcp_listen" | "TcpListener_accept" |
             "TcpConnection_read_http_request" | "TcpConnection_write_http_response" |
-            "Sender_send" | "Sender_try_send" |
+            "Sender_send" | "Sender_try_send" | "Sender_close" |
+            "Receiver_close" |
             "ThreadHandle_join" | "Thread_join"
         )
     }

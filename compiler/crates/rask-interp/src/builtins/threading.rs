@@ -264,6 +264,49 @@ impl Interpreter {
                     }),
                 }
             }
+            "try_send" => {
+                let val = args.into_iter().next().unwrap_or(Value::Unit);
+                let tx = tx.lock().unwrap();
+                match tx.try_send(val) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                        variant_index: 0,
+                    }),
+                    Err(mpsc::TrySendError::Full(_)) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(
+                            "channel full".to_string(),
+                        )))],
+                        variant_index: 0,
+                    }),
+                    Err(mpsc::TrySendError::Disconnected(_)) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(
+                            "channel closed".to_string(),
+                        )))],
+                        variant_index: 0,
+                    }),
+                }
+            }
+            "close" => {
+                // Drop the sender to close the channel
+                let mut guard = tx.lock().unwrap();
+                // Replace with a disconnected sender by dropping the inner value
+                // We can't actually drop through Arc<Mutex<>>, so we create a
+                // disconnected channel and swap in its sender.
+                let (replacement, _) = mpsc::sync_channel(0);
+                *guard = replacement;
+                Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![Value::Unit],
+                    variant_index: 0,
+                })
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Sender".to_string(),
                 method: method.to_string(),
@@ -321,6 +364,19 @@ impl Interpreter {
                         variant_index: 0,
                     }),
                 }
+            }
+            "close" => {
+                // Drop the receiver to close the channel
+                let mut guard = rx.lock().unwrap();
+                // Replace with a disconnected receiver
+                let (_, replacement) = mpsc::sync_channel(0);
+                *guard = replacement;
+                Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![Value::Unit],
+                    variant_index: 0,
+                })
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Receiver".to_string(),

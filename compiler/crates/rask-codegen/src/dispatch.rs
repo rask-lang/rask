@@ -703,6 +703,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Sender_try_send", "rask_channel_try_send_i64", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Sender_close", "rask_sender_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
         StdlibEntry {
@@ -721,6 +722,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Receiver_try_recv", "rask_channel_try_recv_i64", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Receiver_close", "rask_recver_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Receiver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
         StdlibEntry::simple("recv", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("recver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
@@ -733,6 +735,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Shared_read", "rask_shared_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_write", "rask_shared_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Shared_try_read", "rask_shared_try_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Shared_try_write", "rask_shared_try_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_clone", "rask_shared_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_drop", "rask_shared_drop_i64", &[types::I64], None, false),
 

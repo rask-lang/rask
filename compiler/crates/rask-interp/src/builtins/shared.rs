@@ -58,6 +58,60 @@ impl Interpreter {
                 })?;
                 self.call_shared_write_closure(shared, &closure)
             }
+            // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
+            "try_read" => {
+                let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0,
+                })?;
+                match shared.try_read() {
+                    Ok(guard) => {
+                        let snapshot = guard.clone();
+                        drop(guard);
+                        let result = self.call_closure_with_arg(&closure, snapshot)?;
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![result],
+                            variant_index: 0,
+                        })
+                    }
+                    Err(_) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                        variant_index: 1,
+                    }),
+                }
+            }
+            // Shared<T>.try_write(|T| -> R) -> Option<R>  (non-blocking, R3)
+            "try_write" => {
+                let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0,
+                })?;
+                match shared.try_write() {
+                    Ok(mut guard) => {
+                        let result = self.call_closure_with_arg(&closure, guard.clone())?;
+                        // Write back the result (same as regular write closure)
+                        if !matches!(&result, Value::Unit) {
+                            *guard = result.clone();
+                        }
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![result],
+                            variant_index: 0,
+                        })
+                    }
+                    Err(_) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                        variant_index: 1,
+                    }),
+                }
+            }
             "clone" => Ok(Value::Shared(Arc::clone(shared))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Shared".to_string(),

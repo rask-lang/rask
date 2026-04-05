@@ -173,9 +173,9 @@ const ARGS_METHODS: &[&str] = &[
 
 const THREAD_HANDLE_METHODS: &[&str] = &["join", "detach"];
 const TASK_HANDLE_METHODS: &[&str] = &["join", "detach", "cancel"];
-const SENDER_METHODS: &[&str] = &["send"];
-const RECEIVER_METHODS: &[&str] = &["recv", "try_recv"];
-const SHARED_METHODS: &[&str] = &["read", "write", "clone"];
+const SENDER_METHODS: &[&str] = &["send", "try_send", "close"];
+const RECEIVER_METHODS: &[&str] = &["recv", "try_recv", "close"];
+const SHARED_METHODS: &[&str] = &["read", "write", "try_read", "try_write", "clone"];
 const MUTEX_METHODS: &[&str] = &["lock", "try_lock", "clone"];
 const SIMD_METHODS: &[&str] = &[
     "splat", "load", "store",

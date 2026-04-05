@@ -637,8 +637,20 @@ impl<'a> MirLowerer<'a> {
 
     /// Lower tuple destructuring: evaluate init, extract each element by field index.
     fn lower_tuple_destructure(&mut self, names: &[String], init: &Expr) -> Result<(), LoweringError> {
-        let (init_op, init_mir_ty) = self.lower_expr(init)?;
+        // Channel.buffered()/unbuffered() returns a raw channel pointer in
+        // codegen, not a (Sender, Receiver) tuple. Emit channel_tx/channel_rx
+        // calls to extract the handles instead of field extraction.
+        let is_channel_create = match &init.kind {
+            ExprKind::MethodCall { object, method, .. } => {
+                if let ExprKind::Ident(type_name) = &object.kind {
+                    let base = type_name.split('<').next().unwrap_or(type_name);
+                    base == "Channel" && (method == "buffered" || method == "unbuffered")
+                } else { false }
+            }
+            _ => false,
+        };
 
+        let (init_op, init_mir_ty) = self.lower_expr(init)?;
         // Extract tuple element types from type checker for type prefix tracking.
         // e.g. Channel<T>.buffered() → (Sender<T>, Receiver<T>)
         let tuple_elems: Option<Vec<rask_types::Type>> =
@@ -657,21 +669,37 @@ impl<'a> MirLowerer<'a> {
         };
 
         for (i, name) in names.iter().enumerate() {
-            let elem_ty = mir_elem_types.as_ref()
-                .and_then(|elems| elems.get(i).cloned())
-                .or_else(|| self.lookup_expr_type(init))
-                .unwrap_or(MirType::I64);
+            let elem_ty = if is_channel_create {
+                // Channel tx/rx handles are opaque i64 pointers
+                MirType::I64
+            } else {
+                mir_elem_types.as_ref()
+                    .and_then(|elems| elems.get(i).cloned())
+                    .or_else(|| self.lookup_expr_type(init))
+                    .unwrap_or(MirType::I64)
+            };
             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
             self.locals.insert(name.clone(), (local_id, elem_ty));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: local_id,
-                rvalue: MirRValue::Field {
-                    base: init_op.clone(),
-                    field_index: i as u32,
-                    byte_offset: None,
-                    field_size: None,
-                },
-            }));
+
+            if is_channel_create && names.len() == 2 {
+                // Extract tx (index 0) or rx (index 1) from the raw channel ptr.
+                let extract_fn = if i == 0 { "channel_tx" } else { "channel_rx" };
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(local_id),
+                    func: FunctionRef::internal(extract_fn.to_string()),
+                    args: vec![init_op.clone()],
+                }));
+            } else {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: local_id,
+                    rvalue: MirRValue::Field {
+                        base: init_op.clone(),
+                        field_index: i as u32,
+                        byte_offset: None,
+                        field_size: None,
+                    },
+                }));
+            }
 
             // Track type prefix so method calls get qualified names.
             // First try type-checker info (works when types are fully resolved).

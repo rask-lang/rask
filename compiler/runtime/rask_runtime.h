@@ -39,6 +39,19 @@ void  rask_free(void *ptr);
 
 // Overflow-checked arithmetic for allocation sizes.
 _Noreturn void rask_panic(const char *msg);
+_Noreturn void rask_panic_fmt(const char *fmt, ...);
+
+// Debug null/validity checks. Active in debug builds (RASK_DEBUG defined)
+// or when the RASK_RUNTIME_CHECKS=1 environment variable is set at startup.
+// In release builds without the env var, these compile to nothing.
+#ifdef RASK_DEBUG
+#define RASK_CHECK_NONNULL(ptr, msg) \
+    do { if (!(ptr)) rask_panic(msg); } while(0)
+#else
+#define RASK_CHECK_NONNULL(ptr, msg) \
+    do { if (__builtin_expect(rask_runtime_checks_enabled, 0) && !(ptr)) rask_panic(msg); } while(0)
+#endif
+extern int rask_runtime_checks_enabled;
 
 static inline int64_t rask_safe_mul(int64_t a, int64_t b) {
     if (a > 0 && b > 0 && a > INT64_MAX / b) rask_panic("allocation size overflow");
@@ -588,6 +601,8 @@ void    rask_recver_drop_i64(int64_t rx);
 int64_t rask_sender_clone_i64(int64_t tx);
 int64_t rask_channel_try_send_i64(int64_t tx, int64_t value);
 int64_t rask_channel_try_recv_i64(int64_t rx);
+int64_t rask_sender_close_i64(int64_t tx);
+int64_t rask_recver_close_i64(int64_t rx);
 
 // ─── Async I/O (dual-path: green task or blocking) ──────────
 // Inside a green task, these submit async ops and return PENDING.
@@ -673,6 +688,8 @@ void    rask_shared_drop_i64(int64_t shared);
 int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
 int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
+int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure);
+int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 
 // Pointer-based channel wrappers for aggregate element types.
 int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity);

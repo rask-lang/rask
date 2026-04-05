@@ -99,12 +99,14 @@ void rask_shared_free(RaskShared *s) {
 }
 
 void rask_shared_read(RaskShared *s, RaskAccessFn f, void *ctx) {
+    RASK_CHECK_NONNULL(s, "Shared.read: shared handle is null");
     pthread_rwlock_rdlock(&s->lock);
     f(s->data, ctx);
     pthread_rwlock_unlock(&s->lock);
 }
 
 void rask_shared_write(RaskShared *s, RaskAccessFn f, void *ctx) {
+    RASK_CHECK_NONNULL(s, "Shared.write: shared handle is null");
     pthread_rwlock_wrlock(&s->lock);
     f(s->data, ctx);
     pthread_rwlock_unlock(&s->lock);
@@ -252,4 +254,32 @@ int64_t rask_shared_write_ptr(int64_t shared, int64_t closure) {
     return result;
 }
 
+// Non-blocking read: returns 1+result on success, 0 if contended (R3)
+int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    if (pthread_rwlock_tryrdlock(&s->lock) == 0) {
+        RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
+        int64_t env = CLOSURE_ENV(closure);
+        int64_t result = fn(env, (int64_t)(intptr_t)s->data);
+        pthread_rwlock_unlock(&s->lock);
+        // Encode as Option: tag=0 (Some) in high bits, payload in low bits
+        // For i64 results, pack as (result << 1) | 1 to distinguish from None(0)
+        return (result << 1) | 1;
+    }
+    return 0; // None
+}
+
+// Non-blocking write: returns 1+result on success, 0 if contended (R3)
+int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    if (pthread_rwlock_trywrlock(&s->lock) == 0) {
+        RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
+        int64_t env = CLOSURE_ENV(closure);
+        int64_t result = fn(env, (int64_t)(intptr_t)s->data);
+        *(int64_t *)s->data = result;
+        pthread_rwlock_unlock(&s->lock);
+        return (result << 1) | 1;
+    }
+    return 0; // None
+}
 

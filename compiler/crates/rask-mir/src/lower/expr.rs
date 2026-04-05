@@ -897,12 +897,25 @@ impl<'a> MirLowerer<'a> {
                                 .get(&func_name)
                                 .map(|s| s.ret_ty.clone())
                                 .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                            // Channel.buffered()/unbuffered() C runtime returns a
+                            // single i64 (raw channel pair pointer), not a tuple.
+                            // Override the Tuple return type from stubs to I64 so the
+                            // codegen allocates a register, not a stack slot. The
+                            // tuple destructure emits channel_tx/channel_rx calls.
+                            let ret_ty = if base_name == "Channel"
+                                && (method == "buffered" || method == "unbuffered")
+                            {
+                                MirType::I64
+                            } else {
+                                ret_ty
+                            };
                             let result_local = self.builder.alloc_temp(ret_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(result_local),
                                 func: FunctionRef::internal(func_name),
                                 args: arg_operands,
                             }));
+
                             return Ok((MirOperand::Local(result_local), ret_ty));
                         }
                     }

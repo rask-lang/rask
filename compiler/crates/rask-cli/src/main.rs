@@ -298,6 +298,7 @@ fn main() {
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
             let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![] };
+            let dump_mir = cmd_args.contains(&"--dump-mir");
             let file_arg = find_positional_arg(&cmd_args, 2, &["-o", "--link-lib", "--link-obj", "--target"]);
             let file = match file_arg {
                 Some(f) => f,
@@ -306,7 +307,11 @@ fn main() {
                     process::exit(1);
                 }
             };
-            commands::codegen::cmd_compile(file, output_path.as_deref(), format, false, &link_opts, release, target.as_deref());
+            if dump_mir {
+                commands::codegen::cmd_dump_mir(file, format, release);
+            } else {
+                commands::codegen::cmd_compile(file, output_path.as_deref(), format, false, &link_opts, release, target.as_deref());
+            }
         }
         "test" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

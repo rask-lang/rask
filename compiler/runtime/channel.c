@@ -334,6 +334,7 @@ void rask_channel_new(int64_t elem_size, int64_t capacity,
 }
 
 int64_t rask_channel_send(RaskSender *tx, const void *data) {
+    RASK_CHECK_NONNULL(tx, "Sender.send: tx handle is null (bad channel destructure?)");
     RaskChannel *ch = tx->chan;
     if (ch->capacity > 0) {
         return buffered_send(ch, data);
@@ -342,6 +343,7 @@ int64_t rask_channel_send(RaskSender *tx, const void *data) {
 }
 
 int64_t rask_channel_recv(RaskRecver *rx, void *data_out) {
+    RASK_CHECK_NONNULL(rx, "Receiver.recv: rx handle is null (bad channel destructure?)");
     RaskChannel *ch = rx->chan;
     if (ch->capacity > 0) {
         return buffered_recv(ch, data_out);
@@ -350,6 +352,7 @@ int64_t rask_channel_recv(RaskRecver *rx, void *data_out) {
 }
 
 int64_t rask_channel_try_send(RaskSender *tx, const void *data) {
+    RASK_CHECK_NONNULL(tx, "Sender.try_send: tx handle is null");
     RaskChannel *ch = tx->chan;
     if (ch->capacity > 0) {
         return buffered_try_send(ch, data);
@@ -445,6 +448,17 @@ void rask_sender_drop_i64(int64_t tx) {
 
 void rask_recver_drop_i64(int64_t rx) {
     rask_recver_drop((RaskRecver *)(intptr_t)rx);
+}
+
+// Explicit close (CH4): drop disconnects the channel, returns Ok(unit)=0
+int64_t rask_sender_close_i64(int64_t tx) {
+    rask_sender_drop((RaskSender *)(intptr_t)tx);
+    return 0; // Ok(())
+}
+
+int64_t rask_recver_close_i64(int64_t rx) {
+    rask_recver_drop((RaskRecver *)(intptr_t)rx);
+    return 0; // Ok(())
 }
 
 int64_t rask_sender_clone_i64(int64_t tx) {
