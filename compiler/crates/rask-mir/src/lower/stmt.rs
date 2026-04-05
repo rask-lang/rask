@@ -274,17 +274,22 @@ impl<'a> MirLowerer<'a> {
                 let payload_ty = self.extract_payload_type(expr)
                     .unwrap_or(MirType::I64);
                 self.bind_pattern_payload(pattern, val, payload_ty);
+                let ensure_depth = self.ensure_stack.len();
                 self.loop_stack.push(LoopContext {
                     label: None,
                     continue_block: check_block,
                     exit_block,
                     result_local: None,
+                    ensure_depth,
                 });
                 for s in body {
                     self.lower_stmt(s)?;
                 }
+                // EN7: run loop-scoped ensures at iteration end
+                self.emit_loop_cleanup(ensure_depth);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
                 self.loop_stack.pop();
+                self.ensure_stack.truncate(ensure_depth);
 
                 self.builder.switch_to_block(exit_block);
                 Ok(())
@@ -777,21 +782,26 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(body_block);
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: None,
             continue_block: check_block,
             exit_block,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: check_block,
         }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
@@ -1021,16 +1031,20 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
             continue_block: continue_target,
             exit_block: break_target,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_target }));
 
         // Writeback blocks for `for mutate`: Vec_set(collection, idx, binding_local)
@@ -1081,6 +1095,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
@@ -1173,16 +1188,20 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
             continue_block: inc_block,
             exit_block,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
 
         // inc: _i = _i + 1
@@ -1203,6 +1222,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
@@ -1269,16 +1289,20 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(body_block);
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
             continue_block: inc_block,
             exit_block,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
 
         // counter = counter + 1
@@ -1299,6 +1323,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
@@ -1320,26 +1345,32 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(loop_block);
 
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
             continue_block: loop_block,
             exit_block,
             result_local: Some(result_local),
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: loop_block,
         }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
 
     /// Break statement - jump to enclosing loop's exit block.
+    /// EX4: runs loop-scoped ensures before exiting.
     fn lower_break(
         &mut self,
         label: Option<&str>,
@@ -1348,6 +1379,7 @@ impl<'a> MirLowerer<'a> {
         let ctx = self.find_loop(label)?;
         let exit_block = ctx.exit_block;
         let result_local = ctx.result_local;
+        let ensure_depth = ctx.ensure_depth;
 
         if let Some(val_expr) = value {
             let (val_op, _) = self.lower_expr(val_expr)?;
@@ -1359,6 +1391,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: exit_block,
         }));
@@ -1370,10 +1403,13 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Continue statement - jump to enclosing loop's check block.
+    /// EX4: runs loop-scoped ensures before continuing.
     fn lower_continue(&mut self, label: Option<&str>) -> Result<(), LoweringError> {
         let ctx = self.find_loop(label)?;
         let continue_block = ctx.continue_block;
+        let ensure_depth = ctx.ensure_depth;
 
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: continue_block,
         }));
@@ -1460,19 +1496,24 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(super::LoopContext {
             label: label.map(|s| s.to_string()),
             continue_block: setup.inc_block,
             exit_block: setup.exit_block,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
 
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);

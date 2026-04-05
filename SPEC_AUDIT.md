@@ -17,14 +17,15 @@ Working:
 - Cleanup on `return` (EX2) ✓
 - Cleanup on `try` error propagation (EX3) ✓
 - Cleanup on implicit function exit (EX1) ✓
+- Cleanup on `break`/`continue` (EX4) ✓
+- Per-iteration cleanup in loops (EN7) ✓
 - Multiple ensures with correct LIFO ordering ✓
 - Function inlining preserves cleanup semantics ✓
+- Loop-scoped ensures: `ensure_depth` on LoopContext, inline cleanup at break/continue/iteration-end, stack truncated after loop ✓
 
 Remaining:
-- No cleanup on `break`/`continue` (EX4) — loop-scoped ensures not yet wired
-- No per-iteration cleanup in loops (EN7) — blocked on EX4
-- No explicit consumption cancellation (C1/C2) in codegen — interpreter has it
-- `else` handler error routing in codegen — interpreter has it
+- No explicit consumption cancellation (C1/C2) in codegen — needs C runtime resource tracker (interpreter has it)
+- `else` handler error routing in codegen (ER2) — needs cleanup block branching support (interpreter has it)
 - Linear resource consumption commitment (L1–L3) — ownership checker tracks it, codegen doesn't enforce
 
 ### 2. `@binary` structs — completely unimplemented (type.binary B1–G4)

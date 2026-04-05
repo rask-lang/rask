@@ -143,6 +143,11 @@ impl BlockBuilder {
         false
     }
 
+    /// Read statements from a block (for inlining cleanup at exit points).
+    pub fn block_stmts(&self, block: BlockId) -> &[MirStmt] {
+        &self.function.blocks[block.0 as usize].statements
+    }
+
     /// Check if the current block still has the default Unreachable terminator.
     pub fn current_block_unterminated(&self) -> bool {
         matches!(

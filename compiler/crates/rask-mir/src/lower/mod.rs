@@ -78,6 +78,9 @@ struct LoopContext {
     exit_block: BlockId,
     /// For `break value` - local to assign the value to
     result_local: Option<LocalId>,
+    /// ensure_stack depth when loop started — loop-scoped ensures
+    /// are stack[ensure_depth..] and must run on break/continue/iteration-end.
+    ensure_depth: usize,
 }
 
 /// Metadata for a comptime-evaluated global constant.
@@ -528,6 +531,18 @@ impl<'a> MirLowerer<'a> {
     /// Current cleanup chain in LIFO order (last-registered ensure runs first).
     fn cleanup_chain(&self) -> Vec<BlockId> {
         self.ensure_stack.iter().rev().copied().collect()
+    }
+
+    /// Inline loop-scoped ensure cleanup at break/continue/iteration-end.
+    /// Copies statements from ensures registered after `depth` in LIFO order.
+    fn emit_loop_cleanup(&mut self, depth: usize) {
+        for i in (depth..self.ensure_stack.len()).rev() {
+            let block_id = self.ensure_stack[i];
+            let stmts: Vec<_> = self.builder.block_stmts(block_id).to_vec();
+            for stmt in stmts {
+                self.builder.push_stmt(stmt);
+            }
+        }
     }
 
     /// `all_decls` provides function signatures for resolving call return types.
