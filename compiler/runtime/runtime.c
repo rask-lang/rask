@@ -1549,10 +1549,20 @@ int64_t rask_json_decode(const RaskStr *s) {
     return (int64_t)(uintptr_t)rask_json_parse(s);
 }
 
+// ─── Runtime checks ──────────────────────────────────────────────
+
+// When RASK_RUNTIME_CHECKS=1 is set, null-pointer and validity checks
+// are active in the C runtime. Debug builds (RASK_DEBUG) always check.
+int rask_runtime_checks_enabled = 0;
+
 // ─── Entry point ──────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
+    const char *checks_env = getenv("RASK_RUNTIME_CHECKS");
+    if (checks_env && checks_env[0] == '1') {
+        rask_runtime_checks_enabled = 1;
+    }
     rask_args_init(argc, argv);
     rask_main();
     return 0;

@@ -39,6 +39,19 @@ void  rask_free(void *ptr);
 
 // Overflow-checked arithmetic for allocation sizes.
 _Noreturn void rask_panic(const char *msg);
+_Noreturn void rask_panic_fmt(const char *fmt, ...);
+
+// Debug null/validity checks. Active in debug builds (RASK_DEBUG defined)
+// or when the RASK_RUNTIME_CHECKS=1 environment variable is set at startup.
+// In release builds without the env var, these compile to nothing.
+#ifdef RASK_DEBUG
+#define RASK_CHECK_NONNULL(ptr, msg) \
+    do { if (!(ptr)) rask_panic(msg); } while(0)
+#else
+#define RASK_CHECK_NONNULL(ptr, msg) \
+    do { if (__builtin_expect(rask_runtime_checks_enabled, 0) && !(ptr)) rask_panic(msg); } while(0)
+#endif
+extern int rask_runtime_checks_enabled;
 
 static inline int64_t rask_safe_mul(int64_t a, int64_t b) {
     if (a > 0 && b > 0 && a > INT64_MAX / b) rask_panic("allocation size overflow");

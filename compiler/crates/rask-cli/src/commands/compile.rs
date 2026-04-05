@@ -13,7 +13,7 @@ use std::collections::HashMap;
 /// Build the qualified mono decl list used for MIR lowering.
 ///
 /// `include_consts` — regular compile includes DeclKind::Const, benchmarks don't.
-fn build_mono_decls(mono: &MonoProgram, decls: &[Decl], include_consts: bool) -> Vec<Decl> {
+pub(super) fn build_mono_decls(mono: &MonoProgram, decls: &[Decl], include_consts: bool) -> Vec<Decl> {
     let mut all: Vec<_> = mono.functions.iter().map(|f| {
         let mut decl = f.body.clone();
         if let DeclKind::Fn(ref mut fn_decl) = decl.kind {
@@ -31,7 +31,7 @@ fn build_mono_decls(mono: &MonoProgram, decls: &[Decl], include_consts: bool) ->
 }
 
 /// Extract type name map from typed program.
-fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask_types::TypeId, String> {
+pub(super) fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask_types::TypeId, String> {
     typed.types.iter()
         .enumerate()
         .map(|(i, def)| {
@@ -48,7 +48,7 @@ fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask_types::Typ
 }
 
 /// Extract trait method lists for trait object dispatch.
-fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<String>> {
+pub(super) fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<String>> {
     typed.types.iter()
         .filter_map(|def| {
             if let rask_types::TypeDef::Trait { name, methods, .. } = def {

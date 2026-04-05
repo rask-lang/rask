@@ -99,12 +99,14 @@ void rask_shared_free(RaskShared *s) {
 }
 
 void rask_shared_read(RaskShared *s, RaskAccessFn f, void *ctx) {
+    RASK_CHECK_NONNULL(s, "Shared.read: shared handle is null");
     pthread_rwlock_rdlock(&s->lock);
     f(s->data, ctx);
     pthread_rwlock_unlock(&s->lock);
 }
 
 void rask_shared_write(RaskShared *s, RaskAccessFn f, void *ctx) {
+    RASK_CHECK_NONNULL(s, "Shared.write: shared handle is null");
     pthread_rwlock_wrlock(&s->lock);
     f(s->data, ctx);
     pthread_rwlock_unlock(&s->lock);

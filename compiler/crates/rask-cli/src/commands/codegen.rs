@@ -553,6 +553,60 @@ pub fn cmd_mir(path: &str, format: Format) {
     }
 }
 
+/// Dump MIR for a .rk file — runs the full pipeline up to MIR lowering
+/// and prints the MIR functions to stderr. Used for debugging codegen issues.
+pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
+    let (mono, typed, decls, source, package_names) = run_pipeline(path, format);
+    let profile = if release { "release" } else { "debug" };
+    let cfg = rask_comptime::CfgConfig::from_host(profile, vec![]);
+    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }));
+    let type_names = super::compile::build_type_names(&typed);
+    let trait_methods = super::compile::build_trait_methods(&typed);
+    let extern_funcs = collect_extern_func_names(&decls);
+    let line_map = source.as_deref().map(rask_ast::LineMap::new);
+    let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
+
+    let mir_ctx = rask_mir::lower::MirContext {
+        struct_layouts: &mono.struct_layouts,
+        enum_layouts: &mono.enum_layouts,
+        node_types: &typed.node_types,
+        type_names: &type_names,
+        comptime_globals: &comptime_globals,
+        extern_funcs: &extern_funcs,
+        package_modules: &package_modules,
+        trait_methods: trait_methods.clone(),
+        line_map: line_map.as_ref(),
+        source_file: Some(path),
+        shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        comptime_interp: None,
+        trait_coercions: &typed.trait_coercions,
+        call_rewrites: &mono.call_rewrites,
+    };
+
+    let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);
+    for mono_fn in &mono.functions {
+        if let rask_ast::decl::DeclKind::Fn(f) = &mono_fn.body.kind {
+            if f.body.is_empty()
+                && rask_stdlib::mir_metadata::lookup(&mono_fn.name).is_some()
+            {
+                continue;
+            }
+        }
+        match rask_mir::lower::MirLowerer::lower_function_named(
+            &mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)
+        ) {
+            Ok(mir_fns) => {
+                for func in &mir_fns {
+                    eprintln!("{}", func);
+                }
+            }
+            Err(e) => {
+                eprintln!("{}: MIR lowering '{}': {:?}", output::error_label(), mono_fn.name, e);
+            }
+        }
+    }
+}
+
 /// Compile a single .rk file to a native executable.
 /// Full pipeline: lex → parse → desugar → resolve → typecheck → ownership →
 /// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
