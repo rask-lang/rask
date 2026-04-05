@@ -62,22 +62,67 @@ impl<'a> MirLowerer<'a> {
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
         }));
-        // Origin: check if source result already has origin, otherwise set from current span.
-        // For now, always set origin from the try site (first-propagation is handled by
-        // checking existing origin at runtime or via a conditional store).
-        // Store file pointer as 0 — codegen will fill with actual source_file ptr.
+        // Origin (ER15): copy from source Result, then set if not already set.
+        // Err(...) construction zeros origin, so first try site wins.
+        let src_origin_line = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: src_origin_line,
+            rvalue: MirRValue::Field {
+                base: result.clone(),
+                field_index: 1, // origin_line is the second field (after tag, before payload)
+                byte_offset: Some(crate::types::RESULT_ORIGIN_LINE_OFFSET),
+                field_size: Some(8),
+            },
+        }));
+        // Compute this try site's line number
+        let try_line = self.ctx.line_map
+            .map(|lm| lm.offset_to_line_col(self.builder.current_span().start).0 as i64)
+            .unwrap_or(0);
+
+        // If source origin_line is 0 (unset), use this try site; otherwise preserve source.
+        // MIR doesn't have select/cmov, so use branch.
+        let origin_set_block = self.builder.create_block();
+        let origin_unset_block = self.builder.create_block();
+        let origin_merge_block = self.builder.create_block();
+        let origin_line_local = self.builder.alloc_temp(MirType::I64);
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(src_origin_line),
+            then_block: origin_set_block,
+            else_block: origin_unset_block,
+        }));
+
+        // Source had origin → copy it
+        self.builder.switch_to_block(origin_set_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: origin_line_local,
+            rvalue: MirRValue::Use(MirOperand::Local(src_origin_line)),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: origin_merge_block,
+        }));
+
+        // Source had no origin → set from this try site
+        self.builder.switch_to_block(origin_unset_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: origin_line_local,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(try_line))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: origin_merge_block,
+        }));
+
+        self.builder.switch_to_block(origin_merge_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: ret_result,
             offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
         }));
-        // Store line number from current span (codegen resolves byte offset → line)
-        let span_start = self.builder.current_span().start as i64;
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: ret_result,
             offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
-            value: MirOperand::Constant(MirConst::Int(span_start)),
+            value: MirOperand::Local(origin_line_local),
             store_size: None,
         }));
         // Payload — use store_size for aggregates (strings are 16 bytes)
@@ -203,6 +248,18 @@ impl<'a> MirLowerer<'a> {
             },
         }));
 
+        // Read source origin before transform body (ER15 first-propagation)
+        let src_origin_line = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: src_origin_line,
+            rvalue: MirRValue::Field {
+                base: result.clone(),
+                field_index: 1,
+                byte_offset: Some(crate::types::RESULT_ORIGIN_LINE_OFFSET),
+                field_size: Some(8),
+            },
+        }));
+
         let err_binding = &try_else.error_binding;
         self.locals.insert(err_binding.clone(), (err_val, err_ty));
 
@@ -218,17 +275,42 @@ impl<'a> MirLowerer<'a> {
                 value: MirOperand::Constant(MirConst::Int(1)),
                 store_size: None,
             }));
+            // Preserve source origin if set, otherwise use this try site
+            let try_line = self.ctx.line_map
+                .map(|lm| lm.offset_to_line_col(self.builder.current_span().start).0 as i64)
+                .unwrap_or(0);
+            let origin_set_blk = self.builder.create_block();
+            let origin_unset_blk = self.builder.create_block();
+            let origin_merge_blk = self.builder.create_block();
+            let origin_line_local = self.builder.alloc_temp(MirType::I64);
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(src_origin_line),
+                then_block: origin_set_blk,
+                else_block: origin_unset_blk,
+            }));
+            self.builder.switch_to_block(origin_set_blk);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: origin_line_local,
+                rvalue: MirRValue::Use(MirOperand::Local(src_origin_line)),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: origin_merge_blk }));
+            self.builder.switch_to_block(origin_unset_blk);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: origin_line_local,
+                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(try_line))),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: origin_merge_blk }));
+            self.builder.switch_to_block(origin_merge_blk);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: ret_result,
                 offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
                 value: MirOperand::Constant(MirConst::Int(0)),
                 store_size: None,
             }));
-            let span_start = self.builder.current_span().start as i64;
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: ret_result,
                 offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
-                value: MirOperand::Constant(MirConst::Int(span_start)),
+                value: MirOperand::Local(origin_line_local),
                 store_size: None,
             }));
             let transformed_store_size = if transformed_ty.size() > 8 { Some(transformed_ty.size()) } else { None };

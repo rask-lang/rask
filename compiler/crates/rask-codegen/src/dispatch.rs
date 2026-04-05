@@ -222,6 +222,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringClone, ret_adapt: RetAdapt::FromArgAdapt,
         },
 
+        // Error origin (ER15/ER16)
+        StdlibEntry {
+            mir_name: "rask_result_origin", c_name: "rask_result_origin",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+
         // Constructors (out-param)
         StdlibEntry {
             mir_name: "string_new", c_name: "rask_string_new",

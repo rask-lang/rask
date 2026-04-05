@@ -1880,14 +1880,19 @@ impl<'a> FunctionBuilder<'a> {
                         crate::layouts::PAYLOAD_OFFSET + (*field_index * 8) as i32
                     }
                     Some(MirType::Result { ok, err }) => {
-                        // Aggregate payload (Ok or Err): return address, not load.
-                        // MIR uses field_index 0 for both Ok and Err payloads — check both.
-                        let is_aggregate = |t: &MirType| matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String);
-                        if *field_index == 0 && (is_aggregate(ok.as_ref()) || is_aggregate(err.as_ref())) {
-                            let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::RESULT_PAYLOAD_OFFSET as i64);
-                            return Ok(payload_addr);
+                        // Use explicit byte_offset when provided (e.g., origin field reads)
+                        if let Some(off) = byte_offset {
+                            *off as i32
+                        } else {
+                            // Aggregate payload (Ok or Err): return address, not load.
+                            // MIR uses field_index 0 for both Ok and Err payloads — check both.
+                            let is_aggregate = |t: &MirType| matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String);
+                            if *field_index == 0 && (is_aggregate(ok.as_ref()) || is_aggregate(err.as_ref())) {
+                                let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::RESULT_PAYLOAD_OFFSET as i64);
+                                return Ok(payload_addr);
+                            }
+                            crate::layouts::RESULT_PAYLOAD_OFFSET + (*field_index * 8) as i32
                         }
-                        crate::layouts::RESULT_PAYLOAD_OFFSET + (*field_index * 8) as i32
                     }
                     // Fallback: use pre-computed byte offset from MIR when available
                     _ => byte_offset.map(|o| o as i32).unwrap_or((*field_index * 8) as i32)

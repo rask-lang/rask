@@ -35,7 +35,9 @@ Zero parser support, zero codegen, zero stdlib. The entire binary struct feature
 
 ### 3. ~~Error origin tracking — not implemented (ER15, ER16)~~ FIXED
 
-`Value::Enum` now carries `origin: Option<Arc<str>>`. When `try` propagates an error, origin is set to `"file.rk:line"` at the first propagation site only (first-wins semantics per ER15). `.origin()` is a universal method in the type checker and interpreter — works on all types (enums return the stored origin, other types return `"<no origin>"`). SourceInfo (file name + LineMap) passed from CLI into interpreter. ER16 `.origin` access works in both debug and release.
+**Interpreter:** `Value::Enum` carries `origin: Option<Arc<str>>`. `try` sets origin to `"file.rk:line"` at first propagation only (first-wins per ER15). `.origin()` universal method — enums return stored origin, other types return `"<no origin>"`. SourceInfo (file name + LineMap) passed from CLI.
+
+**Codegen:** Result layout changed to `[tag:8][origin_file:8][origin_line:8][payload]` (+16 bytes per Result). MIR `lower_try` constructs full Result.Err with origin line from LineMap on err path; conditional branch preserves source origin if already set (first-propagation semantics). `.origin()` calls `rask_result_origin` C runtime helper which reads origin_line and formats as `"line N"`. File pointer not yet wired (returns line number only).
 
 ### 4. `Cell<T>` type — doesn't exist (CE1–CE6)
 

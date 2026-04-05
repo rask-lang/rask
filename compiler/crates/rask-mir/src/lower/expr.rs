@@ -563,6 +563,25 @@ impl<'a> MirLowerer<'a> {
                     return Ok(result);
                 }
 
+                // ER16: .origin() on Result — read origin fields and format as string
+                if method == "origin" && args.is_empty() {
+                    let (obj_op, obj_ty) = self.lower_expr(object)?;
+                    if matches!(obj_ty, MirType::Result { .. }) {
+                        let result_local = self.builder.alloc_temp(MirType::String);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(result_local),
+                            func: crate::FunctionRef::internal("rask_result_origin".to_string()),
+                            args: vec![obj_op],
+                        }));
+                        return Ok((MirOperand::Local(result_local), MirType::String));
+                    }
+                    // Non-Result: return "<no origin>"
+                    return Ok((
+                        MirOperand::Constant(crate::operand::MirConst::String("<no origin>".to_string())),
+                        MirType::String,
+                    ));
+                }
+
                 // E9: .discriminant() on enum values — extract tag via EnumTag
                 if method == "discriminant" && args.is_empty() {
                     let (obj_op, obj_ty) = self.lower_expr(object)?;
