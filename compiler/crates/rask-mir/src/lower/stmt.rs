@@ -20,6 +20,9 @@ impl<'a> MirLowerer<'a> {
         match &stmt.kind {
             StmtKind::Expr(e) => {
                 self.lower_expr(e)?;
+                // C1/C2: if this is a consuming method call on an ensure receiver,
+                // emit ResourceConsume so the ensure is cancelled at cleanup time.
+                self.check_resource_consume(e);
                 Ok(())
             }
 
@@ -304,13 +307,60 @@ impl<'a> MirLowerer<'a> {
 
                 // Marker for MIRI/analysis
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block }));
+
+                // C1/C2: extract receiver variable from body (e.g. `ensure tx.rollback()` → "tx").
+                // Register a resource_id so consumption can be tracked at runtime.
+                let receiver_name = Self::extract_ensure_receiver(body);
+                if let Some(ref name) = receiver_name {
+                    if let Some((local_id, _)) = self.locals.get(name) {
+                        let resource_id = self.builder.alloc_local(
+                            format!("__ensure_res_{}", cleanup_block.0),
+                            MirType::I64,
+                        );
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceRegister {
+                            dst: resource_id,
+                            type_name: name.clone(),
+                            scope_depth: 0,
+                        }));
+                        self.ensure_receivers.insert(cleanup_block, (name.clone(), resource_id));
+                        // Store resource_id in local_meta so method calls on this
+                        // receiver can find it for ResourceConsume.
+                        self.meta_mut(name).resource_id = Some(resource_id);
+                    }
+                }
                 self.ensure_stack.push(cleanup_block);
 
                 // Main flow skips to continue block (body runs at scope exit)
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
 
-                // Lower ensure body into cleanup block
+                // Lower ensure body into cleanup block.
+                // C1/C2: if receiver has a resource_id, check consumption first.
                 self.builder.switch_to_block(cleanup_block);
+                if let Some((_, resource_id)) = receiver_name
+                    .as_ref()
+                    .and_then(|name| self.ensure_receivers.get(&cleanup_block).cloned())
+                {
+                    // Check if resource was consumed → skip cleanup
+                    let consumed = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(consumed),
+                        func: crate::FunctionRef::internal("rask_resource_is_consumed".to_string()),
+                        args: vec![MirOperand::Local(resource_id)],
+                    }));
+                    let body_block = self.builder.create_block();
+                    let skip_block = self.builder.create_block();
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: MirOperand::Local(consumed),
+                        then_block: skip_block,
+                        else_block: body_block,
+                    }));
+                    // skip_block: sentinel (consumed → skip cleanup)
+                    self.builder.switch_to_block(skip_block);
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                    // body_block: run the actual cleanup
+                    self.builder.switch_to_block(body_block);
+                }
+
                 for s in body {
                     self.lower_stmt(s)?;
                 }

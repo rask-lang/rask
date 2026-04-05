@@ -26,8 +26,9 @@ Working:
 - `else` handler error routing (ER2): cleanup blocks form proper sub-CFGs with Branch terminators. Codegen processes full cleanup sub-CFGs. Inliner redirects Unreachable sentinels to merge blocks ✓
 - Error type inferred from body call's Result type for handler binding ✓
 
+- Consumption cancellation (C1/C2): C runtime resource tracker (`rask_resource_register/consume/is_consumed`). MIR lowerer extracts ensure receiver, emits ResourceRegister. `take self` method calls detected from monomorphized decls emit ResourceConsume. Cleanup blocks check consumption and skip if consumed ✓
+
 Remaining:
-- No explicit consumption cancellation (C1/C2) in codegen — needs C runtime resource tracker (interpreter has it)
 - Linear resource consumption commitment (L1–L3) — ownership checker tracks it, codegen doesn't enforce
 
 ### 2. `@binary` structs — completely unimplemented (type.binary B1–G4)

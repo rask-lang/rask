@@ -689,6 +689,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("rask_ensure_push", "rask_ensure_push", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("rask_ensure_pop", "rask_ensure_pop", &[], None, false),
 
+        // ── Resource tracking (C1/C2 consumption cancellation) ───
+        StdlibEntry::simple("rask_resource_register", "rask_resource_register", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_resource_consume", "rask_resource_consume", &[types::I64], None, false),
+        StdlibEntry::simple("rask_resource_is_consumed", "rask_resource_is_consumed", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_resource_scope_check", "rask_resource_scope_check", &[types::I64], None, false),
+
         // ── Memory allocation ─────────────────────────────────────
         StdlibEntry::simple("rask_alloc", "rask_alloc", &[types::I64], Some(types::I64), false),
 

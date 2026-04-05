@@ -217,6 +217,7 @@ pub fn compile_to_object(
     let type_names = build_type_names(typed);
     let trait_methods = build_trait_methods(typed);
     let extern_funcs = super::codegen::collect_extern_func_names(decls);
+    let empty_resource_types = std::collections::HashSet::new();
 
     let comptime_interp = cfg.map(|c| {
         let mut interp = rask_comptime::ComptimeInterpreter::new();
@@ -240,6 +241,7 @@ pub fn compile_to_object(
         comptime_interp,
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
+        resource_types: &empty_resource_types,
     };
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
@@ -466,6 +468,7 @@ pub fn compile_tests_to_object(
     let type_names = build_type_names(typed);
     let trait_methods = build_trait_methods(typed);
     let extern_funcs = super::codegen::collect_extern_func_names(decls);
+    let empty_resource_types = std::collections::HashSet::new();
 
     let comptime_interp = cfg.map(|c| {
         let mut interp = rask_comptime::ComptimeInterpreter::new();
@@ -490,6 +493,7 @@ pub fn compile_tests_to_object(
         comptime_interp,
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
+        resource_types: &empty_resource_types,
     };
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
@@ -648,6 +652,7 @@ pub fn compile_benchmarks_to_object(
     let type_names = build_type_names(typed);
     let trait_methods = build_trait_methods(typed);
     let extern_funcs = super::codegen::collect_extern_func_names(decls);
+    let empty_resource_types = std::collections::HashSet::new();
 
     let comptime_interp = cfg.map(|c| {
         let mut interp = rask_comptime::ComptimeInterpreter::new();
@@ -672,6 +677,7 @@ pub fn compile_benchmarks_to_object(
         comptime_interp,
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
+        resource_types: &empty_resource_types,
     };
 
     let (mut mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
