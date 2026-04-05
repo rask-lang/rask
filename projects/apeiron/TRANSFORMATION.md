@@ -39,7 +39,7 @@ Real chemistry is beautiful but computationally unbounded. Protein folding, quan
 
 ## Combination Physics
 
-When elements combine, the output material's properties are determined by three things: the input ratios, the energy invested, and the interaction effects between element pairs.
+When elements combine, the output material's properties are determined by three things: the input ratios, the energy invested, and the **interaction function** — a deterministic but computationally opaque mapping from inputs to property modifications.
 
 ### Base Properties: The Weighted Average
 
@@ -51,61 +51,60 @@ base[p] = sum(element[i].fraction * element[i].property[p])
 
 This is boring and expected. An alloy of 70% A and 30% B has properties somewhere between A and B. No surprises, no discoveries. This is what you get for free.
 
-### Interaction Effects: Where Discovery Lives
+### The Interaction Function: Computational Opacity
 
-Every pair of elements has an interaction coefficient for each property. These coefficients modify the base properties non-linearly:
-
-```
-material[p] = base[p] + sum_pairs(
-    fraction[i] * fraction[j] * interaction[i][j][p] * energy_factor
-)
-```
-
-The interaction table is the heart of the system. It's a matrix of element-pair coefficients, one per property. Most entries are small (boring combinations). Some are large positive (synergistic combinations — the alloy is stronger than either component). Some are large negative (antagonistic — the combination is worse than expected).
-
-The key insight: **interaction effects are non-obvious.** The interaction table is part of the standard physics script — deterministic, public, verifiable. But with 20 elements, there are 190 pairs, each with 6 property coefficients. That's 1,140 interaction terms. Add three-element combinations and the space explodes. Nobody can map this analytically. You have to experiment.
-
-### Energy Factor: The Process Matters
-
-The `energy_factor` in the interaction formula scales with energy invested per unit mass of output:
+The interaction function takes the full input state — element identities, mass fractions, energy level — and the galaxy seed, and produces a property modification vector:
 
 ```
-energy_factor = min(energy_per_mass / activation_threshold, max_factor)
+modification = interact(element_ids, fractions, energy, galaxy_seed)
+material[p] = base[p] + modification[p]
 ```
 
-Every interaction has an **activation threshold** — the minimum energy density needed for the interaction to manifest. Below threshold, energy_factor is zero and you get the boring weighted average. Above threshold, the interaction effect kicks in and scales up to a maximum.
+The critical design choice: **this function is forward-cheap but backward-hard.** Computing the output from known inputs is fast (one Raido evaluation). Finding inputs that produce a desired output requires searching the input space — there's no analytical shortcut.
 
-This is physically intuitive. Room-temperature mixing gives you one thing. Arc-furnace processing gives you another. Plasma sintering gives you something else. The energy level determines which interaction effects are active.
+The galaxy seed parameterizes the function. Each galaxy has different chemistry. Reading the Raido source code tells you the algorithm, but the seed makes the specific landscape unique. Like knowing SHA-256's algorithm doesn't help you find a preimage.
 
-Low-energy processes are cheap but produce baseline materials. High-energy processes are expensive but unlock interaction effects. Some interactions activate at low energy (easy alloys). Others require extreme energy (exotic materials). The activation thresholds are part of the interaction table.
+### Local Smoothness, Global Chaos
+
+Pure pseudorandomness would make experimentation a lottery. Real chemistry has structure — small changes in composition usually produce small changes in properties. The interaction function preserves this:
+
+**Within a phase region**, the function is smooth. Nearby inputs produce nearby outputs. A researcher can hill-climb — try a ratio, adjust slightly, observe improvement, adjust again. Standard gradient-following works. Experiments are informative. Progress is incremental.
+
+**At phase boundaries**, the function is discontinuous. A small change in ratio or energy crosses a boundary and the output jumps to a completely different regime. What was improving suddenly collapses, or something unexpected appears.
+
+The phase regions are a tessellation of the input space — their boundaries are determined by the seed. Within each region, the interaction function is a smooth mapping with region-specific characteristics (also seed-derived). Across boundaries, unrelated.
+
+This creates the right research dynamics:
+- **Hill-climbing works locally.** A researcher exploring a phase region can optimize systematically. "More element B improves hardness" — true within this region. Each experiment narrows the search.
+- **Boundaries are unpredictable.** You don't know where the next boundary is until you cross it. A ratio change from 0.31 to 0.32 might be smooth. From 0.32 to 0.33 might cross a boundary and produce something completely different.
+- **Breakthroughs come from boundary crossings.** The best materials aren't at the peaks of known regions — they're in undiscovered regions on the other side of boundaries nobody has crossed yet.
+- **You can't extrapolate across boundaries.** Knowledge of one region tells you nothing about adjacent regions. Each boundary crossing is a fresh discovery.
+
+### Energy as a Dimension
+
+Energy isn't just a scaling factor — it's a full dimension of the input space. The phase tessellation spans the energy axis too. This means increasing energy doesn't just "turn up" existing effects. At certain energy levels, you cross phase boundaries in the energy dimension and enter entirely new regions.
+
+Low energy → one set of phase regions (conventional chemistry).
+Medium energy → different regions (advanced metallurgy).
+High energy → yet another landscape (exotic physics).
+
+The boundaries in the energy dimension are the natural activation thresholds. You don't need a separate threshold parameter — the phase structure handles it. At low energy, you're in regions where the interaction function produces conventional material properties. Push energy high enough and you cross into regions where the function produces non-zero values for properties that were zero in every low-energy region.
+
+This is how latent physics emerges from the same mechanism. No special case needed.
 
 ### Ratio Sensitivity
 
-The interaction effect depends on `fraction[i] * fraction[j]` — it peaks when both elements are present in significant quantities and vanishes when one is trace. But the peak isn't always at 50/50. The interaction table includes an optimal ratio for each pair:
+Within a phase region, the interaction function is smooth but not necessarily gentle. Some regions have steep gradients — a 1% ratio change produces a 20% property change. Others are flat — large ratio changes barely matter. The gradient structure is seed-determined and varies by region.
 
-```
-ratio_modifier = exp(-((ratio - optimal_ratio) / width)^2)
-```
-
-A Gaussian centered on the optimal ratio. Some interactions are broad (work across a range of ratios). Others are sharp (need precise ratios). Finding the optimal ratio for a powerful interaction is part of the discovery.
-
-This means a researcher might know that elements A and B interact well (positive coefficient for hardness) but not know the optimal ratio. Experiments at different ratios map out the peak. Each experiment costs materials.
+A researcher mapping a steep region needs precise ratio control (better lab equipment). A researcher in a flat region can be sloppy. The physics doesn't prescribe which regions are steep — the seed determines it. Some galactic chemistries reward precision. Others reward breadth of exploration.
 
 ## Multi-Element Combinations
 
-Two-element interactions are the foundation. Three-element interactions add another layer.
+More elements means higher-dimensional input space. The phase tessellation extends naturally — it's defined over the full space of (element fractions × energy). With two elements, the input space is 2D (ratio + energy). With three, it's 3D. With five, it's 5D.
 
-Ternary interaction terms exist but are weaker and rarer than binary ones. The formula extends naturally:
+Higher-dimensional spaces have exponentially more phase regions. This is why multi-element research is harder and more rewarding — the landscape is richer but the search cost grows exponentially with the number of input elements. A binary search (2 elements) might find good materials in dozens of experiments. A ternary search (3 elements) might take hundreds. A quinary search (5 elements) could take thousands.
 
-```
-material[p] = base[p]
-    + sum_binary(f[i] * f[j] * binary[i][j][p] * energy_factor)
-    + sum_ternary(f[i] * f[j] * f[k] * ternary[i][j][k][p] * energy_factor)
-```
-
-Most ternary terms are zero. A few are significant — these are the "breakthrough" combinations where three specific elements together produce effects that no pair achieves alone. Finding these requires systematic exploration and a lot of material.
-
-Four-element and higher interactions exist in principle but can be negligible for the initial system. The founding cluster can add higher-order terms in later standard physics script updates if the gameplay warrants it.
+The founding cluster tunes the phase density (how many regions per unit of input space) to control discovery pace. Dense tessellation = lots of boundaries = lots of surprises but hard to optimize within any single region. Sparse tessellation = large smooth regions = easier optimization but fewer breakthrough opportunities.
 
 ## Mass Budget
 
@@ -139,19 +138,17 @@ The theoretical maximums are constants — part of the standard physics script, 
 
 ## Catalysts
 
-Some elements, when present in small quantities during a transformation, modify the interaction effects without being consumed. These are catalysts.
+Some elements, when present in small quantities during a transformation, modify the interaction function's behavior without being consumed. These are catalysts.
 
-Mechanically: a catalyst element contributes to interaction effects but is excluded from the mass budget. It appears in the inputs and the outputs (not consumed). Its presence modifies activation thresholds — lowering the energy required for specific interactions.
+Mechanically: a catalyst element is an input to the interaction function but is excluded from the mass budget. It appears in the inputs and the outputs (not consumed). Its presence shifts the effective input coordinates — potentially moving the evaluation point across a phase boundary that would otherwise be unreachable at the current energy level.
 
 ```
-effective_threshold = base_threshold * catalyst_modifier(catalyst_element, interaction_pair)
+effective_input = shift(base_input, catalyst_element, catalyst_fraction)
 ```
 
-Most elements are bad catalysts for most interactions (modifier ≈ 1.0, no effect). A few elements are excellent catalysts for specific interactions (modifier << 1.0, dramatically reducing energy requirements). Finding these is high-value research.
+A catalyst effectively lets you access neighboring phase regions without the energy to reach them directly. The shift function is part of the interaction algorithm — deterministic, seed-dependent, computationally opaque like everything else. Most element-as-catalyst combinations produce negligible shifts. A few produce large shifts that cross boundaries into productive regions.
 
-Rare elements from the seed often function as catalysts for exotic interactions. This is why geographic scarcity matters for research: a system with rare element deposits enables transformations that are energetically impossible elsewhere. Not because the rare element IS the material — it enables the PROCESS.
-
-A faction controlling rare catalyst deposits has a genuine research advantage. Not from a multiplier. From physics.
+This is why geographic scarcity matters for research. A rare catalyst element doesn't just make existing processes cheaper — it makes the interaction function evaluate at points that are otherwise inaccessible. A faction controlling rare catalyst deposits can explore regions of the landscape that nobody else can reach. Not from a multiplier. From geometry — the catalyst shifts their position in input space.
 
 ## Process Parameters
 
@@ -176,95 +173,73 @@ These aren't arbitrary categories. They correspond to physically distinct operat
 
 ## The Discovery Landscape
 
-Here's what this system actually creates for players:
+The phase model creates specific research dynamics:
 
-The combination physics defines a landscape over material space. Every possible input combination (elements, ratios, energy, catalysts) maps to a specific output. The landscape is deterministic — everyone has the same physics. But it's high-dimensional and non-linear. Nobody can map it by staring at the formulas.
+**Easy discoveries — hill-climbing in gentle regions.** Two common elements, low energy. The founding cluster publishes starter recipes that land in wide, smooth phase regions. Researchers hill-climb from there — adjust ratios, observe incremental improvements, converge on local optima. This is day-one accessible research. Reliable, low-risk, modest rewards.
 
-**Easy discoveries:** Two common elements with a significant binary interaction. Moderate energy. Broad ratio peak. These are the early-game alloys — better than raw elements, accessible with basic infrastructure. The founding cluster publishes starter recipes that exploit a few obvious interactions. Player communities find more through systematic experimentation.
+**Medium discoveries — finding better regions.** The starter recipes aren't in the best phase regions — they're in the ones the founding cluster chose to publish. Adjacent regions might be significantly better. Finding them means pushing ratios or energy past a phase boundary. The researcher doesn't know where the boundary is. They push incrementally, observing smooth improvement, until suddenly the output jumps — they've crossed a boundary. Now they're in new territory. Maybe better, maybe worse. If better, they hill-climb in the new region.
 
-**Hard discoveries:** Three elements, one rare, with a ternary interaction that activates at high energy. Sharp ratio sensitivity. Needs a catalyst from a different star system. These are breakthrough materials — dramatically better constants for specific properties. Finding them requires: access to rare elements (exploration/trade), high-energy labs (infrastructure investment), many experiments (material cost), and sometimes luck.
+**Hard discoveries — high-dimensional exploration.** Three or more elements, rare inputs, high energy. The input space is 4D+. Phase regions are plentiful but each experiment costs more (rare materials consumed). A researcher might spend dozens of experiments mapping a single region, only to find its optimum is mediocre. Then stumble across a boundary into a region where hardness values exceed anything previously known. This is where breakthroughs happen — and they can't be predicted or accelerated by reading the source code.
 
-**The search game:** A researcher has a goal — "I want a material with higher structural efficiency than anything known." The landscape says such materials exist (the theoretical limit is higher than anything discovered). But where? Which elements? What ratios? What energy? Which catalyst? The researcher designs experiments, consumes materials, maps a small region of the landscape, adjusts hypotheses, tries again. This is genuine research gameplay — not "click research button, wait timer."
+**The search game:** A researcher has a goal — "I want a material with higher structural efficiency than anything known." The theoretical maximum says such materials exist. But in which phase region? With which elements? At what energy? The researcher designs experiments, consumes materials, maps local gradients, crosses boundaries, evaluates new regions. Each experiment is informative locally but says nothing about unexplored regions. This is genuine research gameplay — not "click research button, wait timer."
 
-**Information asymmetry:** A faction that discovers a breakthrough material knows the recipe (crafting script). They can produce the material. They can sell finished goods (trading partners see the output, not the process). They can sell the recipe (valuable but creates competitors). Or they can keep it secret — but the component tree is visible on transfer, so sophisticated rivals can reverse-engineer the composition and narrow down the search space.
+**Information asymmetry:** A faction that discovers a breakthrough knows the recipe (crafting script — specific inputs, ratios, energy). They can produce the material. They can sell finished goods (trading partners see the output but not the input coordinates). They can sell the recipe (valuable but creates competitors). Reverse-engineering from the component tree narrows the element space but doesn't reveal the ratios or energy — those must be rediscovered experimentally. With the phase model, even knowing the exact composition of the output material doesn't tell you which phase region produced it or how to get there from different starting materials.
 
 ## Latent Physics
 
-The interaction table contains terms that evaluate to zero or negligible at normal conditions. They're not hidden — anyone can read the standard physics script. But under extreme conditions — very high energy, specific rare element combinations, unusual catalyst configurations — these dormant terms activate and produce effects that aren't just "better structural efficiency" but qualitatively new capabilities.
+The element property vector has more dimensions than day-one chemistry can reach. Properties like spatial distortion, field coherence, phase stability exist in the physics script from launch. The performance functions reference them. But at low energy with common elements, the interaction function maps to phase regions where these properties are zero.
 
-This is how real physics works. Relativistic effects are always in the equations. They're negligible at walking speed. At 0.9c they dominate. Nobody unlocked relativity. The math was always there. The conditions to observe it are just extreme.
-
-### How It Works
-
-The interaction formulas already have the mechanism: energy_factor scales interaction effects, and activation thresholds gate when effects manifest. Latent physics extends this with **threshold cascades** — certain interaction terms have activation thresholds so high that they require materials produced by *prior* discoveries to reach.
-
-```
-// A normal interaction: activates at energy_per_mass > 100
-binary[iron][carbon][hardness] = 2.4, threshold = 100
-
-// A latent interaction: activates at energy_per_mass > 50000
-// (unreachable without advanced reactor tech providing the energy)
-binary[exotic_A][exotic_B][spatial_compression] = 8.1, threshold = 50000
-```
-
-The `spatial_compression` property does nothing at the system design level until a performance function reads it. The founding cluster can publish performance functions that reference properties nobody can produce yet — the function exists, the property evaluates to zero with all known materials, and the system produces no novel effect. When someone eventually produces a material with non-zero spatial_compression, the performance function activates and a new class of system becomes possible.
-
-### New Properties, Not New Rules
-
-The element property vector has a fixed set of dimensions. But nothing requires all dimensions to be useful from day one. The founding cluster can define property dimensions that no known element combination produces in significant quantities:
+This falls out naturally from the phase model — no special mechanism needed. The energy dimension of the input space has its own phase boundaries. Low-energy regions produce conventional properties. Cross an energy boundary and you enter regions where the function produces non-zero values for properties that were zero in every low-energy region.
 
 | Property | Status at launch | What it enables when non-zero |
 |----------|-----------------|-------------------------------|
-| Hardness | Active — common materials produce it | Structural components, armor, tools |
-| Conductivity | Active — common materials produce it | Power routing, sensors, communications |
-| Spatial distortion | Latent — no known combination produces it above noise | Jump drives, gravity manipulation, spatial compression |
-| Field coherence | Latent — requires exotic catalysts at extreme energy | Force fields, containment, directed energy |
-| Phase stability | Latent — requires ternary exotic combinations | Metamaterials, cloaking, sensor dampening |
+| Hardness | Active — accessible in low-energy phase regions | Structural components, armor, tools |
+| Conductivity | Active — accessible in low-energy phase regions | Power routing, sensors, communications |
+| Spatial distortion | Latent — only non-zero in high-energy phase regions | Jump drives, gravity manipulation |
+| Field coherence | Latent — only non-zero in extreme-energy regions with rare elements | Force fields, containment, directed energy |
+| Phase stability | Latent — only non-zero in high-dimensional input spaces (3+ elements including exotics) | Metamaterials, cloaking, sensor dampening |
 
-The latent properties are in the physics script from day one. The formulas that produce them require conditions that day-one technology can't reach. As factions push into extreme regimes — higher energy, rarer elements, more complex combinations — the latent properties start appearing in their experimental outputs. First as noise. Then as signal.
+### Threshold Cascades
 
-A faction running high-energy experiments with rare elements notices a tiny non-zero value for "spatial distortion" in their output material. What is that? The physics script has formulas for it. The performance functions reference it. But nobody has ever produced enough of it to matter. The faction runs more experiments. Spends more material. Maps the landscape around that anomalous result. Eventually produces a material with significant spatial distortion. Plugs it into a system design. The performance function evaluates — and the system does something nobody has seen before.
+The energy boundaries that gate latent properties aren't reachable with day-one reactors. Reaching them requires better reactor materials — which require discovering better alloys — which requires reaching intermediate energy boundaries first. Each tier of energy capability unlocks phase regions that contain materials for the next tier.
 
-That's discovery. Not a tech tree unlock. Not a recipe. A physicist pushing into unknown territory and finding that the universe has more to offer than anyone suspected.
+This cascade isn't prescribed. It emerges from the phase structure of the interaction function. The founding cluster designs the seed and the interaction algorithm such that the energy boundaries fall at levels that create a natural progression. But nobody can predict exactly which path through the cascade is fastest — that depends on which phase regions happen to contain the best intermediate materials, which depends on the seed.
 
-### Why Not Just Hide It
+A faction running high-energy experiments with rare elements might notice a tiny non-zero value for "spatial distortion" in their output. What is that? The physics script has performance functions for it. But nobody has ever produced enough to matter. The faction pushes deeper — spends more material, maps the landscape around that anomalous result, finds the local gradient, climbs it. Eventually they produce a material with significant spatial distortion. Plug it into a system. The performance function evaluates — and the system does something nobody has seen before.
 
-I considered making latent physics truly hidden — obfuscated bytecode, encrypted interaction tables, unknown property dimensions. I rejected that because it contradicts the design philosophy. The physics is public. The standard physics script is readable. Transparency is a core value.
+That's discovery. Not a tech tree unlock. Not a recipe. The universe had more to offer than anyone knew.
 
-Instead, latent physics relies on **computational opacity**: the formulas are public but the combinatorial search space is too large to map analytically. You can read the code and see that spatial_distortion has non-zero interaction terms for exotic_A + exotic_B at threshold 50000. But you still need to:
+### Computational Opacity Is the Protection
 
-1. Find or trade for exotic_A and exotic_B (geographic scarcity)
-2. Build a facility capable of energy_per_mass > 50000 (requires prior material breakthroughs for the reactor and containment)
-3. Run actual experiments to find the optimal ratio and catalyst (costs real materials each attempt)
-4. Design a system that exploits the new property (system design research)
+The physics script is public. Anyone can read the algorithm. But the interaction function is seed-parameterized and computationally opaque — knowing the algorithm tells you the *structure* (phases, boundaries, smoothness) but not the *content* (where the boundaries fall, what each region produces). That's determined by the seed, and the only way to learn it is to evaluate the function at specific points. Each evaluation is an experiment that costs materials.
 
-Knowing the math exists doesn't make it free. Theoretical physics and engineering are different disciplines. Both are required.
+You can read the source code and see that spatial distortion is a property dimension. You can see that the interaction function CAN produce non-zero values for it. But you can't compute WHICH inputs produce it without running the experiments. The function is a black box in practice even though it's transparent in principle. Like knowing that SHA-256 has preimages without being able to find them.
 
 ### Progression Tiers
 
-The latent physics creates a natural progression without prescribing it:
+Not prescribed — emergent from the phase landscape. But the founding cluster designs the seed to create natural tiers:
 
-**Tier 0 — Common chemistry.** Standard element interactions at moderate energy. Basic alloys, structural materials, simple conductors. Available from day one with founding cluster starter recipes.
+**Tier 0 — Common chemistry.** Low-energy phase regions with common elements. Basic alloys, structural materials, simple conductors. Founding cluster publishes starter recipes that exploit a few known regions. Wide, gentle regions — easy to explore, small improvements everywhere.
 
-**Tier 1 — Advanced materials.** Strong binary and some ternary interactions. Requires access to uncommon elements and higher-energy facilities. Better structural efficiency, better thermal management, better shielding. What PHYSICS.md calls the "orbital phase" and "interstellar phase."
+**Tier 1 — Advanced materials.** Medium-energy regions. Better property values, some steep gradients rewarding precision. Requires better energy infrastructure (built from tier 0 materials). The "orbital" and "interstellar" phase from PHYSICS.md.
 
-**Tier 2 — Exotic materials.** Ternary interactions with rare elements and catalysts. Extreme energy thresholds. Materials with unusual property combinations — extremely high values in one dimension, or moderate values in dimensions that are normally zero. The first hints of latent properties appearing. Enables the "industrial space phase."
+**Tier 2 — Exotic materials.** High-energy regions, often requiring 3+ elements including rare ones. Dense phase tessellation — many boundaries, frequent surprises. First non-zero values in latent property dimensions. The "industrial space" phase.
 
-**Tier 3 — New physics.** Materials with significant values in latent property dimensions. New system types become viable — force fields, jump drives, gravitational manipulation. Requires cascading breakthroughs: tier 2 materials to build the labs that produce tier 3 materials. The "stellar phase" becomes theoretically accessible.
+**Tier 3 — New physics.** Extreme-energy regions in high-dimensional input spaces (4-5 elements with exotics). Significant latent property values. New system types become viable. Cascading prerequisites — tier 2 materials for the reactors that reach tier 3 energy. The "stellar" phase becomes theoretically accessible.
 
-These tiers aren't prescribed. They emerge from the threshold cascade structure of the interaction table. A faction might reach tier 3 in one property dimension while stuck at tier 1 in others. Progress is multidimensional, like PHYSICS.md describes for the technology arc.
+A faction might reach tier 3 in one property dimension while stuck at tier 1 in others. Progress is multidimensional.
 
 ### Founding Cluster Design Responsibility
 
-The interaction table and latent physics are the founding cluster's most important creative act. They're designing the universe's chemistry and exotic physics — not as lore, but as math. The constants determine:
+The interaction function algorithm and its relationship to the galaxy seed is the founding cluster's most important creative act. They're designing the universe's chemistry — not as lore, but as math. The algorithm determines:
 
-- How many meaningful material tiers exist
-- How long discovery takes at each tier
-- Which rare elements are strategically valuable
-- What new capabilities are theoretically possible
-- How hard each capability is to unlock
+- Phase region density at each energy level (controls discovery pace)
+- Which property dimensions are latent vs. active (controls capability progression)
+- How seed variation affects the landscape (controls inter-galaxy uniqueness)
+- The smoothness-to-chaos ratio within regions (controls how rewarding systematic research is)
+- Where the energy-dimension boundaries fall (controls tier progression)
 
-This is universe design. The founding cluster tunes it through playtesting. Constants can evolve (new script version, voluntary adoption) but the relationships don't change. Once the interaction table is published, the discovery landscape is fixed. Factions explore a continent that already exists — the founding cluster drew the map but nobody has it.
+This is universe design. The founding cluster tunes it through playtesting. The algorithm can evolve (new script version, voluntary adoption) but the seed doesn't change. Factions explore a continent that already exists — the interaction function drew the map but nobody has it.
 
 ## Verification
 
@@ -377,17 +352,15 @@ None of these categories are prescribed by the physics. They emerge because diff
 
 | Constant | Layer | What it controls |
 |----------|-------|-----------------|
-| Element property vectors | Material | Base properties of each element |
-| Binary interaction table | Material | Pairwise interaction coefficients (per property) |
-| Ternary interaction table | Material | Three-element interaction coefficients |
-| Activation thresholds | Material | Energy density required for each interaction |
-| Optimal ratios | Material | Peak ratio for each interaction pair |
-| Ratio widths | Material | How sensitive interactions are to ratio precision |
-| Catalyst modifiers | Material | How much catalysts reduce activation thresholds |
+| Element property vectors | Material | Base properties of each element (the weighted average inputs) |
+| Interaction function algorithm | Material | The core mapping — how inputs combine to produce property modifications |
+| Galaxy seed | Material | Parameterizes the interaction function — determines the specific phase landscape |
+| Phase density parameters | Material | How many phase regions per unit of input space at each energy level |
+| Smoothness parameters | Material | How gentle the gradients are within phase regions |
+| Catalyst efficiency function | Material | How catalysts modify the effective energy level |
 | Base loss fraction | Both | Minimum material loss during crafting |
-| Deviation loss factor | Material | Additional loss scaling with property shift |
-| Theoretical property maximums | Material | Hard ceiling for each material property |
-| Max energy factor | Material | Upper bound on energy scaling |
+| Deviation loss factor | Material | Additional loss scaling with property shift magnitude |
+| Theoretical property maximums | Material | Hard ceiling for each material property (saturation curve) |
 | Performance functions | System | How component properties derive system performance |
 | System interaction coefficients | System | Non-linear bonuses from component combinations |
 | Theoretical performance maximums | System | Hard ceiling for each performance characteristic |
