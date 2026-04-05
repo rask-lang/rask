@@ -1,7 +1,7 @@
 # Constraint Physics
 <!-- id: apeiron.physics --> <!-- status: proposed --> <!-- summary: General physical laws that constrain what can exist in the galaxy -->
 
-The natural laws in the main spec (distance costs, mass, entropy, scarcity) create economic friction. Constraint physics goes deeper — general rules about how matter, energy, and structure work. These aren't game rules. They're the universe's physics. Everything else — ship design, station architecture, weapon systems, construction methods — emerges from their interaction.
+The [natural laws](README.md#physics-and-natural-laws) in the main spec (distance costs, entropy, scarcity) are consequences of constraint physics applied to travel and economy. This spec defines the physics underneath — general rules about how matter, energy, and structure work. These aren't game rules. They're the universe's physics. Everything else — ship design, station architecture, weapon systems, construction methods — emerges from their interaction.
 
 The design goal: simple laws, emergent complexity. No material tables, no predefined ship classes, no recipe books. Those can emerge from player communities and founding cluster conventions. The physics just says what's possible.
 
@@ -15,17 +15,39 @@ The design goal: simple laws, emergent complexity. No material tables, no predef
 
 **Tunable constants, fixed relationships.** The laws define how properties relate. The founding cluster publishes constants (gravity scaling factor, structural efficiency, energy density). Constants can evolve. Relationships don't.
 
+## Object Structure
+
+Objects are compositions. A ship isn't a type with stats — it's a tree of components. Components are built from components or raw materials. The whole inherits properties from its parts.
+
+An object is a tree of components. Properties propagate upward:
+
+- **Mass:** sum of all component masses
+- **Volume:** sum of all component volumes (plus packing overhead)
+- **Power draw:** sum of all system power draws
+- **Power supply:** sum of all source outputs
+- **Structural requirement:** function of total volume (Law 2)
+
+This is the data model the constraint laws evaluate. Change the engine, the thrust-to-weight ratio changes. Add more cargo bays, volume increases, structural needs increase, mass increases, agility decreases. Every modification ripples through the physics.
+
+An assembled object (a ship) is one Allgard Object. Its `content` encodes the component tree — what it's made of. When a ship arrives at a new domain, the receiving domain re-derives mass, structural integrity, energy budget from the component tree. If the numbers don't match the claimed properties, trust flag.
+
+What the components ARE is game content, not physics. "Engine" isn't a law. The physics says "something in this composition provides thrust, and thrust requires energy, and the energy source has mass." What players call that thing, how it looks, what tech tree it belongs to — convention, not physics.
+
+## The Five Laws
+
+Five constraint laws govern what can physically exist. No single law is very restrictive. The constraints emerge from their interactions.
+
 ## Law 1: Conservation of Mass-Energy
 
 Everything is made of something. Every object has mass. Mass comes from composition — the stuff it's built from. You can't have properties without the matter that provides them.
 
-This is the foundation. Not "objects have a mass property that someone fills in." Objects have mass BECAUSE they're made of materials, and materials have mass. The mass is derived, not declared.
+Not "objects have a mass property that someone fills in." Objects have mass BECAUSE they're made of materials, and materials have mass. The mass is derived, not declared.
 
 **The rule:** An object's mass is the sum of its components' mass. No exceptions. No "this ship weighs 10 tons because I said so." It weighs what its materials weigh.
 
 **What this creates:** A natural floor on how light anything useful can be. Want more cargo capacity? Need more hull. More hull means more mass. More mass means more fuel. You can't cheat this loop — you can only find better materials (lighter, stronger) or accept the tradeoff.
 
-**Interaction with existing laws:** Mass already affects fuel cost (Natural Law 2). This law says mass isn't arbitrary — it's derived from physical composition. The fuel cost formula now has teeth because mass can't be gamed.
+**Interaction with natural laws:** Mass drives fuel cost (distance costs) and trade economics (the trader's dilemma). This law says mass isn't arbitrary — it's derived from physical composition. The fuel cost formula has teeth because mass can't be gamed.
 
 ## Law 2: Structural Scaling
 
@@ -62,25 +84,7 @@ This is why ships specialize. A ship that's good at everything is too heavy to m
 
 **Interaction with structural scaling:** Energy sources occupy volume. Volume requires structure. Structure has mass. Mass requires more energy to move. The two spirals compound — big ships with big reactors need big structures to hold the reactors, which need more energy to move.
 
-## Law 4: Composition
-
-Objects are built from components. Components are built from components or raw materials. The whole inherits properties from its parts. Mass is additive. Volume is additive. Capabilities come from what's inside.
-
-**The rule:** An object is a tree of components. Properties propagate upward:
-
-- **Mass:** sum of all component masses
-- **Volume:** sum of all component volumes (plus packing overhead)
-- **Power draw:** sum of all system power draws
-- **Power supply:** sum of all source outputs
-- **Structural requirement:** function of total volume (Law 2)
-
-**What this creates:** Modular construction. A ship isn't a type with stats — it's a composition of hull, engines, reactor, cargo bays, weapons, shields, life support. Change the engine, change the ship's thrust-to-weight ratio. Add more cargo bays, increase volume, increase structural needs, increase mass, decrease agility. Every modification ripples through the physics.
-
-**How this relates to Allgard objects:** An assembled object (a ship) is one Allgard Object. Its `content` encodes the component tree — what it's made of. The component tree is what the physics script evaluates. When a ship arrives at a new domain, the receiving domain can re-derive mass, structural integrity, energy budget from the component tree. If the numbers don't match the claimed properties, trust flag.
-
-**What this doesn't prescribe:** What the components ARE. "Engine" isn't a law — it's game content. The physics says "something in this composition provides thrust, and thrust requires energy, and the energy source has mass." What players call that thing, how it looks, what tech tree it belongs to — that's all convention, not physics.
-
-## Law 5: Stress and Failure
+## Law 4: Stress and Failure
 
 Objects under stress degrade. Stress comes from exceeding design parameters — overloading cargo, running systems beyond rated capacity, taking damage, operating in hostile environments.
 
@@ -94,9 +98,9 @@ Where the stress multiplier is 1.0 at normal load, rises gradually as load appro
 
 **What this creates:** Meaningful risk and engineering margin. A captain who overloads their cargo hold can do it — but the hull degrades faster, and if they push too far, structural failure. This isn't a hard wall. It's a pressure gradient. Safe operation is cheap. Risky operation is expensive. Reckless operation is catastrophic.
 
-**Interaction with entropy:** The existing entropy law says things decay. This law says the rate isn't constant — it responds to how hard you push. A well-maintained ship running within limits lasts a long time. An overloaded hauler cutting corners burns through hull integrity. Same ship, different choices, different outcomes.
+**Interaction with entropy:** The natural law says things decay. This law says the rate isn't constant — it responds to how hard you push. A well-maintained ship running within limits lasts a long time. An overloaded hauler cutting corners burns through hull integrity. Same ship, different choices, different outcomes.
 
-## Law 6: Proximity Coupling
+## Law 5: Proximity Coupling
 
 Systems in physical proximity exchange energy whether you want them to or not. Heat radiates. Vibration propagates through structure. Electromagnetic fields leak. This isn't an engineering problem to be solved — it's physics. Managing unwanted coupling requires material (insulation, shielding, damping), and that material has mass and volume.
 
@@ -114,7 +118,7 @@ This means specialization emerges from physics, not from a rule. A ship with thr
 
 **Why this is better than a formula:** There's no single equation. The coupling cost depends on what's next to what. Players who design clever layouts — putting compatible systems adjacent, routing carefully, isolating hostile pairs — build better ships than players who stuff everything in. Ship design becomes spatial problem-solving, not plugging numbers into a formula.
 
-**Interaction with other laws:** Interface material has mass (Law 1). It occupies volume inside the structure (Law 2 — more volume means more structural support). Shielding and active isolation draw power (Law 3). Interface components can fail under stress (Law 5). Every law touches every other. The coupling cost feeds back into the same spirals that constrain everything else.
+**Interaction with other laws:** Interface material has mass (Law 1). It occupies volume inside the structure (Law 2 — more volume means more structural support). Shielding and active isolation draw power (Law 3). Interface components can fail under stress (Law 4). Every law touches every other. The coupling cost feeds back into the same spirals that constrain everything else.
 
 **What the physics script evaluates:** Given a component tree with spatial layout, compute pairwise coupling costs between adjacent systems. Sum the interface material mass and volume. Verify that shielding meets minimum requirements for each pair. A ship that puts a reactor next to unshielded crew quarters is physically invalid — the radiation flux exceeds survivable limits. Not because a rule says "don't do that" but because the physics says "that crew is dead."
 
@@ -122,21 +126,21 @@ This means specialization emerges from physics, not from a rule. A ship with thr
 
 None of these laws is individually very restrictive. Their power comes from interaction:
 
-| Want this | Law 1 says | Law 2 says | Law 3 says | Law 4 says | Law 5 says | Law 6 says |
-|-----------|-----------|-----------|-----------|-----------|-----------|-----------|
-| Bigger ship | More material mass | More structural mass (superlinear) | More energy for systems | More components | More stress on structure | More internal interfaces to manage |
-| More weapons | — | — | More power draw → bigger reactor → more mass | More components → more volume → more structure | Higher operational stress | Weapons generate EM/heat → shielding cost against adjacent systems |
-| Longer range | More fuel mass | — | Fuel has volume → structure cost | — | — | Fuel routing to engines has mass |
-| More cargo | More hull mass | More volume → more structure | — | Bigger bays, more mass | Risk of overload | — |
-| Do everything | All of the above | All of the above | All of the above | All of the above | All of the above | Hundreds of interface pairs, many expensive (reactor↔medical, weapons↔sensors) |
+| Want this | L1: Mass-Energy | L2: Structural Scaling | L3: Energy Budget | L4: Stress | L5: Proximity Coupling |
+|-----------|----------------|----------------------|------------------|-----------|---------------------|
+| Bigger ship | More material mass | Superlinear structural cost | More energy for systems | More stress on structure | More internal interfaces to manage |
+| More weapons | — | — | More power → bigger reactor → more mass | Higher operational stress | EM/heat shielding against adjacent systems |
+| Longer range | More fuel mass | — | Fuel has volume → structure cost | — | Fuel routing to engines has mass |
+| More cargo | More hull mass | More volume → more structure | — | Risk of overload | — |
+| Do everything | All of the above | All of the above | All of the above | All of the above | Hundreds of expensive interface pairs (reactor↔medical, weapons↔sensors) |
 
-The "10 million km ship" fails not because of one law but because all six compound: unimaginable material mass (L1), superlinear structural cost (L2), reactor mass to power it (L3), millions of integrated components (L4), extreme stress tolerances needed (L5), and astronomical shielding/routing mass from millions of system interfaces (L6). Each law alone might be surmountable. Together, they create a wall that scales with ambition.
+The "10 million km ship" fails not because of one law but because all five compound: unimaginable material mass (L1), superlinear structural cost (L2), reactor mass to power it (L3), extreme stress tolerances needed (L4), and astronomical shielding/routing mass from millions of system interfaces (L5). Each law alone might be surmountable. Together, they create a wall that scales with ambition.
 
 ## What About Stations and Structures?
 
 Same laws apply. A space station is a composition of components with mass, volume, structural requirements, and an energy budget. The difference: stations don't need to move. No fuel cost, no thrust-to-weight ratio. This is why stations can be much larger than ships — they only fight the structural scaling law, not the mass-fuel spiral.
 
-But stations still face structural scaling (Law 2), energy budgets (Law 3), and proximity coupling (Law 6). A station the size of a moon is possible — but the structural mass is enormous, the power requirements are vast, and the shielding between thousands of diverse systems is a civilization-level engineering effort. The tiers emerge.
+But stations still face structural scaling (Law 2), energy budgets (Law 3), and proximity coupling (Law 5). A station the size of a moon is possible — but the structural mass is enormous, the power requirements are vast, and the shielding between thousands of diverse systems is a civilization-level engineering effort. The tiers emerge.
 
 Outposts are small with few systems — coupling costs are minimal. Stations are bigger with more diverse systems — reactor shielding, life support isolation, docking bay EM management. Megastructures are theoretically possible but the interface mass alone rivals the structural mass. Nobody prescribes the tiers. The physics creates them.
 
