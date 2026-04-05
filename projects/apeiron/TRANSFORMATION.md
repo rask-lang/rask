@@ -398,7 +398,66 @@ These categories aren't prescribed. They emerge because different performance fu
 
 **Geographic scarcity:** The seed distributes elements and their abundances. Common elements appear everywhere. Rare elements appear in specific systems. Catalyst elements may be extremely scarce. The combination physics makes rare elements valuable not by fiat but because they enable transformations that common elements can't.
 
-**Labs and infrastructure:** Lab quality determines what energy levels and process types are available. A crude workshop can alloy at low energy. A plasma forge operates at high energy, activating interactions that a workshop can't reach. Lab equipment (from PHYSICS.md) has mass, volume, power draw, structural requirements — constrained by the five laws like everything else. Better labs require better materials, which require better labs. The spiral is intentional.
+**Labs and infrastructure:** Lab quality determines what energy levels and process types are available. A crude workshop can alloy at low energy. A plasma forge operates at high energy, activating interactions that a workshop can't reach. Lab equipment (from PHYSICS.md) has mass, volume, power draw, structural requirements — constrained by the five laws like everything else. Better labs require better materials, which require better labs. The spiral is intentional. See also: Batch Economics (below) for how lab throughput changes research strategy.
+
+## Batch Economics
+
+The spec so far assumes sequential experimentation — run one experiment, observe the result, decide the next. Real research doesn't work that way. Researchers commit batches: "run these 50 variations simultaneously." Batch economics changes optimal strategy fundamentally and creates a genuine infrastructure investment axis.
+
+### Lab Throughput
+
+A lab has a **throughput** — how many experiments it can run per time window. Throughput is a physical property of the facility, derived from its component tree like everything else:
+
+- More reaction chambers = more parallel experiments
+- Each chamber has mass, volume, power draw, structural requirements (the five laws constrain it)
+- Chambers share infrastructure (power, cooling, containment) with coupling costs (Law 5)
+- Adding the 10th chamber is cheaper than adding the 50th (coupling scales with count)
+
+A crude workshop: throughput 1. One experiment at a time. Sequential decisions. Hill-climbing is natural.
+
+A research lab: throughput 20-50. Must commit a batch of inputs before seeing any results. Can't use result N to inform experiment N+1 within the same batch.
+
+A planetary research complex: throughput 200-500. Massive parallel exploration. Can map entire regions of the landscape in a single batch.
+
+### How Batches Change Strategy
+
+**Sequential (throughput 1):** Each experiment informs the next. Hill-climbing is optimal — observe the gradient, follow it. Slow but efficient. Every experiment is maximally informed. Good for exploitation of a known region.
+
+**Small batch (throughput 20-50):** Must decide 20 inputs up front. Can't hill-climb within the batch. Optimal strategy: **cluster and spread.** Allocate half the batch to exploiting the best known region (cluster around the current best, mapping the local gradient). Allocate the other half to exploring (spread across unknown territory, hoping to cross a phase boundary). Information from the batch informs the next batch.
+
+**Large batch (throughput 200+):** Can afford systematic grid search of a region. Or broad exploration across many element combinations. Or both simultaneously. The faction running 500 experiments per batch maps landscape 500x faster than the workshop running one at a time. This is a genuine advantage — not from better physics knowledge, but from better infrastructure.
+
+### The Infrastructure Investment
+
+Lab throughput creates a research investment decision:
+
+Building a bigger lab requires materials (which could be used for experiments instead), energy infrastructure, structural support, and coupling management. The five laws make each additional chamber progressively more expensive (coupling scales, structural needs grow, power draw increases). There's a natural lab size ceiling per technology tier — same principle as ship size ceilings from PHYSICS.md.
+
+A faction must choose: spend materials on experiments (more data, slower) or spend materials on lab infrastructure (less data now, faster later). Early game, a small lab running many sequential experiments is more efficient. Late game, large labs with massive throughput dominate because the search space is too large for sequential exploration.
+
+This also creates economic specialization. A faction with a planetary research complex can sell research services — "bring us your rare elements, we'll run 200 experiments and give you the results." Research-as-a-service, gated by infrastructure investment rather than knowledge.
+
+### Batch Costs
+
+Each experiment in a batch consumes its inputs independently. A batch of 50 experiments consumes 50 sets of inputs. The mass budget applies per experiment. No economies of scale on material consumption — the physics doesn't care that you're running experiments in parallel.
+
+But there IS an economy of scale on overhead. The lab's base operating cost (power, cooling, maintenance) is amortized across the batch. Running 50 experiments costs less total energy than running 50 experiments sequentially, because the lab's fixed infrastructure cost is paid once per batch window rather than once per experiment.
+
+```
+total_batch_cost = sum(per_experiment_material_cost) + lab_operating_cost_per_window
+```
+
+This means larger batches have lower per-experiment overhead, incentivizing full utilization of lab capacity. A half-empty lab is wasteful. This creates demand for research collaboration — multiple researchers sharing a facility to fill its throughput.
+
+### Implications for the Simulation
+
+The playtest simulation should model batch economics explicitly:
+
+- Run researchers at different throughput levels (1, 20, 50, 200)
+- Compare discovery curves: when does throughput advantage become decisive?
+- Test whether batch hill-climbing (cluster + spread) outperforms sequential hill-climbing
+- Find the crossover point where infrastructure investment pays off
+- Model collaborative research (multiple researchers sharing throughput)
 
 ## Constants and Tuning
 
