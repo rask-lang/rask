@@ -37,9 +37,25 @@ The founding cluster publishes the element table: names, property vectors, abund
 
 Real chemistry is beautiful but computationally unbounded. Protein folding, quantum orbital interactions, reaction kinetics — simulating real chemistry in a Raido script is impossible and unnecessary. What we need is the *character* of chemistry: simple atomic rules producing complex emergent materials. The element system captures that without pretending to be physics.
 
+## Grounding: Everything Is Objects
+
+A domain is a server running scripts. There's no physical lab, no physical reactor, no physical anything. The only things that are real — externally verifiable, auditable, unfakeable — are **Allgard objects** and the **transforms that consume and produce them**.
+
+A transformation consumes input objects and produces output objects. The physics script verifies that the claimed outputs are consistent with the claimed inputs. Conservation laws verify that the inputs existed and were destroyed. That's the entire enforcement surface.
+
+This means **every parameter to the interaction function must come from consumed objects.** You can't declare a free parameter — everything costs something real.
+
+**Element inputs** are Allgard objects (minted from extraction, traded, or crafted). Consumed in the transform. Verified via proof chain.
+
+**Energy** is NOT a free parameter. Energy comes from **fuel objects** consumed in the transform. Fuel has an energy density (a material property, derived from its element composition via the same interaction function). The energy available for the transformation is `fuel.energy_density × fuel.mass_consumed`. You can't claim high energy without burning fuel objects that contain that energy. Better fuel requires better material science — the spiral.
+
+**Catalysts** are Allgard objects. Present but not consumed (or minimally consumed — a small fraction lost per use, tunable constant). Their continued existence is verifiable.
+
+No reactors, no labs, no infrastructure enters the verification. A domain could run the crafting script on a phone or a supercomputer — doesn't matter. What matters: real objects went in, the physics script confirms the output is valid for those inputs, real objects came out. Everything else is flavor.
+
 ## Combination Physics
 
-When elements combine, the output material's properties are determined by three things: the input ratios, the energy invested, and the **interaction function** — a deterministic but computationally opaque mapping from inputs to property modifications.
+When elements combine, the output material's properties are determined by three things: the input ratios, the energy invested (from consumed fuel), and the **interaction function** — a deterministic but computationally opaque mapping from inputs to property modifications.
 
 ### Base Properties: The Weighted Average
 
@@ -53,10 +69,11 @@ This is boring and expected. An alloy of 70% A and 30% B has properties somewher
 
 ### The Interaction Function: Computational Opacity
 
-The interaction function takes the full input state — element identities, mass fractions, energy level — and the galaxy seed, and produces a property modification vector:
+The interaction function takes the full input state — element identities, mass fractions, energy (derived from consumed fuel) — and the galaxy seed, and produces a property modification vector:
 
 ```
-modification = interact(element_ids, fractions, energy, galaxy_seed)
+energy = fuel.energy_density * fuel.mass_consumed
+modification = interact(element_ids, fractions, energy / output_mass, galaxy_seed)
 material[p] = base[p] + modification[p]
 ```
 
@@ -215,7 +232,7 @@ This falls out naturally from the phase model — no special mechanism needed. T
 
 ### Threshold Cascades
 
-The energy boundaries that gate latent properties aren't reachable with day-one reactors. Reaching them requires better reactor materials — which require discovering better alloys — which requires reaching intermediate energy boundaries first. Each tier of energy capability unlocks phase regions that contain materials for the next tier.
+The energy boundaries that gate latent properties aren't reachable with day-one fuel. Reaching them requires higher energy density fuel — which requires discovering better materials — which requires reaching intermediate energy boundaries first. Each tier of fuel quality unlocks phase regions that contain materials for the next tier of fuel.
 
 This cascade isn't prescribed. It emerges from the phase structure of the interaction function. The founding cluster designs the seed and the interaction algorithm such that the energy boundaries fall at levels that create a natural progression. But nobody can predict exactly which path through the cascade is fastest — that depends on which phase regions happen to contain the best intermediate materials, which depends on the seed.
 
@@ -235,11 +252,11 @@ Not prescribed — emergent from the phase landscape. But the founding cluster d
 
 **Tier 0 — Common chemistry.** Low-energy phase regions with common elements. Basic alloys, structural materials, simple conductors. Founding cluster publishes starter recipes that exploit a few known regions. Wide, gentle regions — easy to explore, small improvements everywhere.
 
-**Tier 1 — Advanced materials.** Medium-energy regions. Better property values, some steep gradients rewarding precision. Requires better energy infrastructure (built from tier 0 materials). The "orbital" and "interstellar" phase from PHYSICS.md.
+**Tier 1 — Advanced materials.** Medium-energy regions. Better property values, some steep gradients rewarding precision. Requires better fuel (crafted from tier 0 discoveries). The "orbital" and "interstellar" phase from PHYSICS.md.
 
 **Tier 2 — Exotic materials.** High-energy regions, often requiring 3+ elements including rare ones. Dense phase tessellation — many boundaries, frequent surprises. First non-zero values in latent property dimensions. The "industrial space" phase.
 
-**Tier 3 — New physics.** Extreme-energy regions in high-dimensional input spaces (4-5 elements with exotics). Significant latent property values. New system types become viable. Cascading prerequisites — tier 2 materials for the reactors that reach tier 3 energy. The "stellar" phase becomes theoretically accessible.
+**Tier 3 — New physics.** Extreme-energy regions in high-dimensional input spaces (4-5 elements with exotics). Significant latent property values. New system types become viable. Cascading prerequisites — tier 2 fuel to reach tier 3 energy levels. The "stellar" phase becomes theoretically accessible.
 
 A faction might reach tier 3 in one property dimension while stuck at tier 1 in others. Progress is multidimensional.
 
@@ -396,7 +413,7 @@ These categories aren't prescribed. They emerge because different performance fu
 
 **Geographic scarcity:** The seed distributes elements and their abundances. Common elements appear everywhere. Rare elements appear in specific systems. Catalyst elements may be extremely scarce. The combination physics makes rare elements valuable not by fiat but because they enable transformations that common elements can't.
 
-**Energy infrastructure:** The energy you can invest in a transformation depends on the energy infrastructure you've built — reactors, containment, power routing. A faction with crude reactors can only explore low-energy phase regions. A faction with advanced reactors accesses high-energy regions where latent properties live. The energy infrastructure is constrained by the five laws (reactors have mass, coupling, structural needs) and is itself built from discovered materials. Better materials → better reactors → higher energy → access to more of the phase landscape → better materials. The spiral is intentional.
+**Fuel as energy gate:** The energy available for transformation comes from consumed fuel objects. Fuel quality (energy density) is itself a product of material synthesis. Better fuel → higher energy per experiment → access to more of the phase landscape → better materials → better fuel. The spiral is intentional. A faction's research frontier is bounded by the best fuel they can produce or trade for.
 
 ## Research Economics
 
@@ -414,7 +431,7 @@ That's it. How many experiments you run per hour, what equipment you use, whethe
 
 Material supply is the binding constraint. Every experiment burns inputs. A faction with 10,000 units of iron can run more experiments than a faction with 100. Rich factions research faster because they can afford to burn more material on exploration.
 
-Energy capacity determines what you can *attempt*. Your reactor's output limits the energy_per_mass you can invest, which determines which phase regions you can access. A faction with a crude reactor can run experiments all day — but only in low-energy regions. A faction with an advanced reactor can probe high-energy regions where latent properties live. Energy capacity is verified indirectly: if you claim an output from a high-energy process, the physics script checks whether that output matches the interaction function at that energy level. Lying about energy doesn't work — the math won't produce the claimed output at lower energy.
+Fuel quality determines what you can *attempt*. Energy comes from consumed fuel objects. Crude fuel (low energy density) means low energy per experiment. Advanced fuel (high energy density, itself a product of material research) means high energy — access to high-energy phase regions where latent properties live. A faction can't claim high-energy transformations without burning fuel that actually contains that energy. The fuel objects are consumed, verified by conservation laws. The energy derived from them feeds the interaction function. Lying about energy doesn't work — you'd need to produce fuel objects with the claimed energy density, which requires the material science to make them.
 
 ### Batch Strategy Still Matters
 
