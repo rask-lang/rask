@@ -136,6 +136,39 @@ None of these laws is individually very restrictive. Their power comes from inte
 
 The "10 million km ship" fails not because of one law but because all five compound: unimaginable material mass (L1), superlinear structural cost (L2), reactor mass to power it (L3), extreme stress tolerances needed (L4), and astronomical shielding/routing mass from millions of system interfaces (L5). Each law alone might be surmountable. Together, they create a wall that scales with ambition.
 
+## Deterministic Noise
+
+Apeiron is deterministic. Every computation is re-executable, every proof is verifiable. There's no "real" randomness. But outcomes aren't perfectly predictable either — they're shaped by the quality of the objects involved.
+
+**The principle:** Every operation that uses equipment adds deterministic noise to its parameters. The noise amplitude is inversely proportional to the equipment's quality (derived from its component tree). The noise seed is the equipment's object ID plus an operation counter — fully deterministic, re-computable by anyone verifying the proof.
+
+```
+actual_value = target_value + noise(equipment.quality, equipment_id, operation_index)
+```
+
+Better equipment = tighter scatter = more predictable results. The noise function is part of the standard physics script — content-addressed, same for everyone.
+
+This applies everywhere an object performs an operation:
+
+| Operation | What scatters | Quality from | Consequence of poor quality |
+|-----------|--------------|-------------|---------------------------|
+| Crafting | Element ratios | Facility precision instruments | Can't reliably target narrow phase regions |
+| Combat | Damage output | Weapon components | Inconsistent hits — sometimes high, sometimes low |
+| Mining | Extraction yield | Extractor components | Variable ore output per cycle |
+| Navigation | Fuel consumption | Engine components | Unpredictable fuel burn per jump |
+| Stress events | Failure threshold | Component materials | Less predictable breaking point under load |
+| Manufacturing | Batch yield | Facility components | Variable output from known recipes |
+
+**What this creates:**
+
+Equipment quality matters for everything, not just peak performance. A crude engine might have the same BASE fuel efficiency as a good engine, but the crude one has ±20% scatter while the good one has ±2%. Over 50 jumps, the crude engine occasionally burns far more than expected — maybe stranding you. The good engine is reliable. Same average, different risk.
+
+This creates demand for better materials at every level of play. Even a faction that isn't pushing the research frontier benefits from upgrading their engines, weapons, extractors, and facilities — not for better peak performance, but for consistency and reliability.
+
+**Verification:** The noise is deterministic. The proof includes the equipment ID and operation index. Any verifier can recompute the noise, derive the actual parameters, and check that the claimed outcome matches. No trust required. No randomness. Just object-quality-shaped noise that makes the universe feel alive without being unpredictable.
+
+**Not rerollable.** The seed is fixed — (equipment_id, operation_index). You can't retry for a better result. The operation counter increments. Each operation gets one roll, determined by the equipment. This prevents exploitation: you can't keep restarting a combat encounter to get a better damage roll. The roll was determined by the weapon and the shot number. Same weapon, same shot, same result. Always.
+
 ## Environment
 
 The five laws are general. But WHERE you build changes which constraints bite hardest. A foundry on a planet and a foundry on a space station face the same laws with different parameters.
