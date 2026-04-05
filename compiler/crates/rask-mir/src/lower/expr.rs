@@ -2657,21 +2657,26 @@ impl<'a> MirLowerer<'a> {
                 }));
                 self.builder.switch_to_block(loop_block);
 
+                let ensure_depth = self.ensure_stack.len();
                 self.loop_stack.push(LoopContext {
                     label: label.as_ref().map(|s| s.to_string()),
                     continue_block: loop_block,
                     exit_block,
                     result_local: Some(result_local),
+                    ensure_depth,
                 });
 
                 for stmt in body {
                     self.lower_stmt(stmt)?;
                 }
+                // EN7: run loop-scoped ensures at iteration end
+                self.emit_loop_cleanup(ensure_depth);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                     target: loop_block,
                 }));
 
                 self.loop_stack.pop();
+                self.ensure_stack.truncate(ensure_depth);
                 self.builder.switch_to_block(exit_block);
 
                 Ok((MirOperand::Local(result_local), MirType::I64))

@@ -1572,6 +1572,48 @@ void rask_result_origin(RaskStr *out, const void *result_ptr) {
     }
 }
 
+// ─── Resource tracking ──────────────────────────────────────────
+// Simple consumed-flag tracker for ensure consumption cancellation (C1/C2).
+// Each resource gets an integer ID via rask_resource_register().
+// rask_resource_consume() marks it consumed.
+// rask_resource_is_consumed() checks the flag (used before ensure cleanup).
+
+#define RASK_MAX_RESOURCES 256
+
+static struct {
+    int8_t consumed;
+    int64_t scope_depth;
+} rask_resources[RASK_MAX_RESOURCES];
+static int64_t rask_resource_next_id = 1;
+
+int64_t rask_resource_register(int64_t scope_depth) {
+    int64_t id = rask_resource_next_id++;
+    if (id > 0 && id < RASK_MAX_RESOURCES) {
+        rask_resources[id].consumed = 0;
+        rask_resources[id].scope_depth = scope_depth;
+    }
+    return id;
+}
+
+void rask_resource_consume(int64_t id) {
+    if (id > 0 && id < RASK_MAX_RESOURCES) {
+        rask_resources[id].consumed = 1;
+    }
+}
+
+int64_t rask_resource_is_consumed(int64_t id) {
+    if (id > 0 && id < RASK_MAX_RESOURCES) {
+        return rask_resources[id].consumed;
+    }
+    return 0;
+}
+
+void rask_resource_scope_check(int64_t scope_depth) {
+    // Check for unconsumed resources at this scope depth.
+    // For now, no-op — the ownership checker catches this statically.
+    (void)scope_depth;
+}
+
 // ─── Runtime checks ──────────────────────────────────────────────
 
 // When RASK_RUNTIME_CHECKS=1 is set, null-pointer and validity checks

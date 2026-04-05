@@ -63,6 +63,13 @@ static inline int64_t rask_safe_add(int64_t a, int64_t b) {
     return a + b;
 }
 
+// ─── Resource tracking ─────────────────────────────────────
+// Consumed-flag tracker for ensure consumption cancellation (C1/C2).
+int64_t rask_resource_register(int64_t scope_depth);
+void    rask_resource_consume(int64_t id);
+int64_t rask_resource_is_consumed(int64_t id);
+void    rask_resource_scope_check(int64_t scope_depth);
+
 // ─── Vec ────────────────────────────────────────────────────
 // Growable array storing elements as raw bytes.
 
