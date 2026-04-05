@@ -206,9 +206,48 @@ Each phase isn't unlocked by a tech tree node. It becomes viable when the materi
 
 A material or technology is a component type with specific physical properties — structural efficiency, energy density, mass per unit, shielding effectiveness, stress tolerance. These properties are what the physics script evaluates. The name, the lore, the crafting recipe, the rarity — that's all game content defined by the founding cluster or player communities.
 
-Discovering or inventing better technology means: someone (founding cluster, faction, player) publishes a new component type with better constants. It requires specific inputs to construct (Raido crafting script, verifiable). The inputs might include rare materials from specific star systems (geographic scarcity drives exploration), or components from multiple existing technologies (composition drives trade), or knowledge shared between allied factions (trust drives diplomacy).
-
 The physics doesn't care how you got the better reactor. It evaluates the reactor's energy density, mass, volume, heat output, and coupling properties. If the numbers check out against the construction proof, it's physically valid.
+
+### How Technology Is Created
+
+Research is experimentation within the physics. A crafting script is a hypothesis: "these inputs, combined this way, produce an output with these properties." The standard physics script is the test — it evaluates whether the claimed output is physically valid given the inputs. Experimentation means writing crafting scripts, running them against real materials, and checking what comes out.
+
+**Experimentation has material cost.** Every attempt consumes real inputs — the materials are transformed (Conservation Law 3). Most experiments produce mediocre results or fail entirely. Breakthroughs are rare because the search space is large and each trial costs resources. This is the natural gate on research — not points or timers, but material economics.
+
+**Laboratories are physical infrastructure.** A lab is a facility — component tree with mass, volume, energy draw, structural requirements. The five laws constrain it like anything else. What a lab actually provides is experimental throughput: the ability to run more experiments per time window, handle more exotic conditions (higher temperatures, stronger fields, more dangerous materials), and process results. A bigger, better-equipped lab runs experiments faster and can attempt things a crude workshop can't.
+
+A materials research lab and a reactor test facility are physically different facilities. The reactor lab has heavy shielding (Law 5 — coupling between test reactor and everything else). The materials lab has precision instruments that need vibration isolation. A biotech lab needs environmental control. The "categories" of research emerge from the physics of what you're testing — the equipment needed, the coupling costs, the safety shielding — not from a declared taxonomy.
+
+**The input space gates progression.** You can't experiment with materials you don't have. Exotic outputs require exotic inputs — rare elements, refined intermediates, components from prior breakthroughs. The seed distributes rare materials geographically. Early experiments use common materials and produce incremental improvements. Access to rare materials requires exploration, trade, or conquest — which requires the tech you're building toward. The progression arc is a spiral, not a ladder.
+
+A faction controlling a system with rare minerals has a research advantage — not from a multiplier, but because they can run experiments nobody else can. That's worth fighting over. A faction with strong bilateral alliances has access to diverse inputs from trading partners. Isolated hermits progress slowly because their input space is narrow.
+
+### How Technology Is Exchanged
+
+Technology exists at three levels, each with different exchange dynamics:
+
+**Finished components** are Allgard objects. They transfer like anything else — bilateral escrow, conservation laws, full fidelity or sealed. Trading a better reactor means trading the physical object. The buyer has the reactor but doesn't necessarily know how to make more. This is the simplest exchange — buying products.
+
+**Crafting scripts** are content-addressed Raido bytecode. They're also Allgard objects — tradeable, transferable. Selling a crafting script means selling the recipe. The buyer can now produce the component themselves, given the right inputs. This is selling knowledge. It's more valuable than a single component but also means creating a competitor.
+
+**Component trees are visible.** When an object transfers to a new domain, its content (the component tree) is readable. A domain that receives an advanced reactor can inspect what it's made of — the composition is right there. They can see the materials used, the structure, the arrangement. Reverse engineering means studying the tree and trying to work backward to a crafting process that reproduces it. This is possible but not free — you know the output, you need to discover the process, and that still costs experimental materials.
+
+This creates a natural knowledge economy:
+
+- **Secrecy is possible** — keep your crafting scripts private, only export finished goods. Your trading partners see the product, not the process.
+- **Secrecy is leaky** — component trees are visible. Sophisticated domains can reverse-engineer. The more advanced the tech, the harder to reverse-engineer (more complex composition, rarer inputs, subtler process).
+- **Knowledge trade is valuable** — selling crafting scripts saves the buyer enormous experimental cost. Factions can trade knowledge bilaterally, forming research alliances.
+- **Independent discovery is possible** — any domain with the right materials and enough experimental budget can discover the same technology independently. Multiple paths to the same output. No monopoly on physics.
+
+### Technology and Trust
+
+A domain that claims to have discovered a new material with amazing properties is making a verifiable claim. The physics script evaluates the component. Other domains can:
+
+1. **Check the physics.** Does the component tree actually produce the claimed properties? The physics script answers this deterministically.
+2. **Check the provenance.** Where did the inputs come from? The proof chain traces back to minting scripts and extraction proofs. Were the raw materials real? Were they available at the claimed source?
+3. **Check the process.** If the crafting script is public, re-execute it. Same inputs, same process, same output? If yes, the technology is real. If the script is private, you only have the component tree to inspect — the physics is verifiable but the process is opaque.
+
+A domain selling "wonder materials" with no credible input chain gets the same response as any other unverifiable claim — trust erosion. The physics prevents impossible outputs. The proof chain prevents fabricated provenance. But genuine innovation with genuine inputs and valid physics is indistinguishable from any other legitimate manufacturing. That's the point.
 
 ### Bounding Exponential Growth
 
