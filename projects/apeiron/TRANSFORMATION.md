@@ -114,13 +114,29 @@ Conservation during transformation:
 output_mass <= input_mass * (1 - loss_fraction)
 ```
 
-Every transformation has material loss. The loss fraction has a floor (you can't achieve 100% yield) and scales with how far the output properties deviate from the base weighted average:
+Every transformation loses material. The loss depends on the **process**, not the **result** — what you put in and how hard you push, not what comes out.
 
 ```
-loss_fraction = base_loss + deviation_loss * property_shift_magnitude
+loss_fraction = base_loss + energy_loss(energy_per_mass) + complexity_loss(num_elements)
 ```
 
-Conservative transformations (close to weighted average) waste less. Aggressive transformations (far from average, exploiting strong interactions) waste more. This is the material cost of pushing boundaries — more exotic outputs burn more inputs.
+**Base loss** — the floor. No process is 100% efficient. Even simple mixing loses material to slag, spillage, incomplete reactions. Tunable constant, probably 3-8%.
+
+**Energy loss** — scales with energy invested per unit mass. Higher energy processes are more violent. More material vaporized, more waste heat carrying away particles, more byproducts. A low-energy alloy might add 2% loss. A plasma-sintered exotic might add 25%.
+
+```
+energy_loss = energy_coefficient * (energy_per_mass / reference_energy)
+```
+
+**Complexity loss** — scales with the number of distinct input elements. More elements means more reaction pathways, more off-spec byproducts, harder to control. Binary combination: small. Quinary: significant.
+
+```
+complexity_loss = complexity_coefficient * (num_elements - 1)
+```
+
+The output properties don't affect loss at all. If you find a phase region that produces amazing material at low energy with two common elements, your production cost is low. That's not a bug — it's the reward for discovery. The cost was the search: all the experiments that consumed materials while exploring dead ends. Once you've found an efficient process, you benefit from it.
+
+This also means manufacturing efficiency is a genuine competitive axis. Two factions might know the same recipe (same inputs, same output), but the one with better lab equipment (lower base loss, more precise energy control reducing energy_loss) produces more output per input. Industrial advantage from infrastructure, not just knowledge.
 
 The lost mass is gone. Destroyed. This feeds into Allgard's Conservation Law 3 — crafting loss is a designed entropy sink.
 
@@ -358,8 +374,10 @@ None of these categories are prescribed by the physics. They emerge because diff
 | Phase density parameters | Material | How many phase regions per unit of input space at each energy level |
 | Smoothness parameters | Material | How gentle the gradients are within phase regions |
 | Catalyst efficiency function | Material | How catalysts modify the effective energy level |
-| Base loss fraction | Both | Minimum material loss during crafting |
-| Deviation loss factor | Material | Additional loss scaling with property shift magnitude |
+| Base loss fraction | Both | Minimum material loss during any transformation |
+| Energy loss coefficient | Material | How fast loss scales with energy invested |
+| Reference energy | Material | Energy level at which energy_loss equals the coefficient |
+| Complexity loss coefficient | Material | Additional loss per input element beyond the first |
 | Theoretical property maximums | Material | Hard ceiling for each material property (saturation curve) |
 | Performance functions | System | How component properties derive system performance |
 | System interaction coefficients | System | Non-linear bonuses from component combinations |
