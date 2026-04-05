@@ -53,7 +53,13 @@ A transformation has four categories of input, all Allgard objects:
 
 - Its **reactor components** determine maximum energy throughput — how much fuel energy per transform it can channel. A facility with a crude reactor can burn fuel, but can't efficiently deliver high energy density to the reaction. The reactor's power output limits the energy_per_mass achievable in a single transform, regardless of fuel quality.
 - Its **containment components** determine what processes are safe — high-energy or high-reactivity transforms require containment rated for those conditions. The containment's stress tolerance (Law 4) and shielding (Law 5) set the bounds.
-- Its **precision instruments** determine ratio control — how finely the facility can target specific element fractions. Crude equipment means noisy ratios (the actual fractions scatter around the target). Precision equipment means tight control (actual fractions match the target closely).
+- Its **precision instruments** determine ratio control — how finely the facility can target specific element fractions. The physics script adds deterministic noise to the target ratios, scaled by the facility's precision rating (derived from its instrument components). Crude equipment: large scatter. Precision equipment: tight scatter. The noise is seeded by (facility_id, transform_index) — deterministic, re-computable by anyone verifying the proof.
+
+```
+actual_ratio[i] = target_ratio[i] + noise(facility.precision, facility_id, transform_index, i)
+```
+
+The interaction function evaluates at `actual_ratio`, not `target_ratio`. This means a crude workshop can't reliably target narrow phase regions — the scatter pushes experiments to random nearby points. A precision lab lands where you aim. Both are verifiable.
 
 The crafting proof includes the facility's object ID. Trading partners can verify:
 1. The facility exists (proof chain — it was built from real materials)
@@ -312,7 +318,7 @@ Any domain can verify by re-executing:
 
 1. **Verify the facility.** Fetch the facility's object proof. Evaluate its component tree against the constraint laws. Derive its capabilities: reactor energy throughput, containment limits, precision rating.
 2. **Verify the inputs.** Check that element inputs and fuel objects existed and were consumed (conservation law proof chain).
-3. **Verify the transform.** Is the claimed energy within the facility's reactor capacity? Is the process within containment limits? Does the claimed output match the interaction function evaluation for those inputs at that energy? Is the mass budget satisfied?
+3. **Verify the transform.** Is the claimed energy within the facility's reactor capacity? Is the process within containment limits? Recompute the precision noise from (facility.precision, facility_id, transform_index) to get actual ratios. Does the claimed output match the interaction function evaluation at those actual ratios and energy? Is the mass budget satisfied?
 4. **Verify the output.** Evaluate the finished material/object against the five constraint laws.
 
 If any step fails — facility can't deliver the claimed energy, containment insufficient for the process, output doesn't match the physics — trust flag.
