@@ -86,19 +86,19 @@ This is why ships specialize. A ship that's good at everything is too heavy to m
 
 ## Law 4: Stress and Failure
 
-Objects under stress degrade. Stress comes from exceeding design parameters — overloading cargo, running systems beyond rated capacity, taking damage, operating in hostile environments.
+Objects under stress can fail. Stress comes from exceeding design parameters — overloading cargo, running systems beyond rated capacity, taking damage, operating in hostile environments.
 
-**The rule:** Every component has a stress tolerance. Exceeding it accelerates decay (amplifies the existing entropy law). Operating at the edge is possible but costly. Operating beyond limits causes component failure.
+**The rule:** Every component has a stress tolerance. Exceeding it risks component failure. Operating at the edge is possible but dangerous. Operating well beyond limits causes immediate failure — structural collapse, reactor breach, containment rupture.
 
 ```
-effective_decay = base_decay * stress_multiplier(load / tolerance)
+failure_probability = f(load / tolerance)
 ```
 
-Where the stress multiplier is 1.0 at normal load, rises gradually as load approaches tolerance, and spikes sharply above it. The exact curve is a tunable — founding cluster publishes a standard one.
+Where `f` is near-zero at normal load, rises gradually as load approaches tolerance, and spikes sharply above it. The exact curve is a tunable — founding cluster publishes a standard one.
 
-**What this creates:** Meaningful risk and engineering margin. A captain who overloads their cargo hold can do it — but the hull degrades faster, and if they push too far, structural failure. This isn't a hard wall. It's a pressure gradient. Safe operation is cheap. Risky operation is expensive. Reckless operation is catastrophic.
+**What this creates:** Meaningful risk and engineering margin. A captain who overloads their cargo hold can do it — but they're gambling. Push too far and structural failure destroys cargo, components, or the ship. This isn't passive decay. It's active risk from active choices. Safe operation is safe. Risky operation is risky. Reckless operation is catastrophic.
 
-**Interaction with entropy:** The natural law says things decay. This law says the rate isn't constant — it responds to how hard you push. A well-maintained ship running within limits lasts a long time. An overloaded hauler cutting corners burns through hull integrity. Same ship, different choices, different outcomes.
+Failure is an event, not a gradient. A component either works or it doesn't. This means stress matters during operation — combat, overloaded jumps, running a reactor above rated capacity, docking in a hostile environment. It doesn't matter when you're offline, docked, or idle. Your ship doesn't rot. It breaks when you push it.
 
 ## Law 5: Proximity Coupling
 
@@ -135,6 +135,39 @@ None of these laws is individually very restrictive. Their power comes from inte
 | Do everything | All of the above | All of the above | All of the above | All of the above | Hundreds of expensive interface pairs (reactor↔medical, weapons↔sensors) |
 
 The "10 million km ship" fails not because of one law but because all five compound: unimaginable material mass (L1), superlinear structural cost (L2), reactor mass to power it (L3), extreme stress tolerances needed (L4), and astronomical shielding/routing mass from millions of system interfaces (L5). Each law alone might be surmountable. Together, they create a wall that scales with ambition.
+
+## Deterministic Noise
+
+Apeiron is deterministic. Every computation is re-executable, every proof is verifiable. There's no "real" randomness. But outcomes aren't perfectly predictable either — they're shaped by the quality of the objects involved.
+
+**The principle:** Every operation that uses equipment adds deterministic noise to its parameters. The noise amplitude is inversely proportional to the equipment's quality (derived from its component tree). The noise seed is the equipment's object ID plus an operation counter — fully deterministic, re-computable by anyone verifying the proof.
+
+```
+actual_value = target_value + noise(equipment.quality, equipment_id, operation_index)
+```
+
+Better equipment = tighter scatter = more predictable results. The noise function is part of the standard physics script — content-addressed, same for everyone.
+
+This applies everywhere an object performs an operation:
+
+| Operation | What scatters | Quality from | Consequence of poor quality |
+|-----------|--------------|-------------|---------------------------|
+| Crafting | Element ratios | Facility precision instruments | Can't reliably target narrow phase regions |
+| Combat | Damage output | Weapon components | Inconsistent hits — sometimes high, sometimes low |
+| Mining | Extraction yield | Extractor components | Variable ore output per cycle |
+| Navigation | Fuel consumption | Engine components | Unpredictable fuel burn per jump |
+| Stress events | Failure threshold | Component materials | Less predictable breaking point under load |
+| Manufacturing | Batch yield | Facility components | Variable output from known recipes |
+
+**What this creates:**
+
+Equipment quality matters for everything, not just peak performance. A crude engine might have the same BASE fuel efficiency as a good engine, but the crude one has ±20% scatter while the good one has ±2%. Over 50 jumps, the crude engine occasionally burns far more than expected — maybe stranding you. The good engine is reliable. Same average, different risk.
+
+This creates demand for better materials at every level of play. Even a faction that isn't pushing the research frontier benefits from upgrading their engines, weapons, extractors, and facilities — not for better peak performance, but for consistency and reliability.
+
+**Verification:** The noise is deterministic. The proof includes the equipment ID and operation index. Any verifier can recompute the noise, derive the actual parameters, and check that the claimed outcome matches. No trust required. No randomness. Just object-quality-shaped noise that makes the universe feel alive without being unpredictable.
+
+**Not rerollable.** The seed is fixed — (equipment_id, operation_index). You can't retry for a better result. The operation counter increments. Each operation gets one roll, determined by the equipment. This prevents exploitation: you can't keep restarting a combat encounter to get a better damage roll. The roll was determined by the weapon and the shot number. Same weapon, same shot, same result. Always.
 
 ## Environment
 
@@ -259,7 +292,7 @@ Better technology enables more extraction, bigger facilities, wider reach. Witho
 
 **Structural scaling is superlinear.** Better materials push the ceiling higher but don't eliminate the exponent. A faction with the best materials in the galaxy still faces `volume^e` at large scales. The exponent wins eventually.
 
-**Maintenance scales with complexity.** More advanced systems have more coupling interfaces, more stress points, more decay. Running a stellar-scale operation means stellar-scale maintenance. Technology makes things possible but not free.
+**Consumption scales with activity.** Fuel, research materials, crafting loss, construction — every active operation consumes resources. A stellar-scale operation burns stellar-scale fuel and materials. Technology makes things possible but not free.
 
 **Geographic scarcity remains.** No amount of technology makes a single system self-sufficient if the seed didn't put all resource types there. Advanced civilizations still need trade networks. The topology of need persists.
 
@@ -285,7 +318,7 @@ What the physics provides is the evaluation function: given a component tree, de
 
 The constraint laws aren't enforced by any authority. They're verified by every trading partner.
 
-One Raido script — the **standard physics script** — evaluates all five constraint laws, environmental modifiers, and natural laws (fuel costs, decay rates) in a single pass. The founding cluster publishes it. It's content-addressed. Any domain can fetch, inspect, and execute it independently.
+One Raido script — the **standard physics script** — evaluates all five constraint laws, environmental modifiers, and natural laws (fuel costs, stress curves) in a single pass. The founding cluster publishes it. It's content-addressed. Any domain can fetch, inspect, and execute it independently.
 
 **On minting:** A domain mints an object (ship, station, component). The physics script evaluates the component tree — derives mass, checks structural requirements, verifies energy budget, evaluates stress tolerances, computes coupling costs. The evaluation result and script hash go into the minting proof.
 
@@ -307,7 +340,7 @@ The laws define relationships. The founding cluster publishes constants:
 | Structural coefficient (`k`) | Base structural cost per volume | Higher = heavier everything. Lower = lighter. |
 | Energy density | Power output per unit mass of reactor | Higher = more capable at same mass. Lower = heavier for same capability. |
 | Coupling intensity table | Base interference between system type pairs | Higher values = more shielding needed. Determines which combinations are expensive. |
-| Stress curve | How fast decay accelerates under load | Steeper = more punishing. Flatter = more forgiving. |
+| Stress curve | How fast failure probability rises under load | Steeper = more punishing. Flatter = more forgiving. |
 
 These are knobs, not laws. The founding cluster sets initial values through playtesting. They can publish updated constants (new script hash, voluntary adoption). The laws — the relationships themselves — don't change.
 
@@ -315,7 +348,7 @@ These are knobs, not laws. The founding cluster sets initial values through play
 
 ## What This Doesn't Cover
 
-**Material transformation physics.** The five constraint laws evaluate whether a finished object is physically consistent. They don't govern what happens DURING crafting — whether specific inputs combined in a specific way should produce an output with specific properties. The research and technology sections above describe the mechanics of experimentation and exchange, but the underlying transformation physics (what constrains what a crafting process can produce from given inputs) is an open problem. Getting this right is critical — too loose and anyone can declare miracle materials, too tight and we've built a tech tree. Needs its own design session.
+**Material transformation physics.** See [TRANSFORMATION.md](TRANSFORMATION.md). Defines how elements combine into materials (interaction effects, catalysts, energy thresholds) and how materials compose into functional systems (performance functions, design parameters). Simple elemental rules, emergent complexity — the same character as the five constraint laws.
 
 **Specific materials and component types.** The physics says components have mass, volume, structural efficiency, and energy properties. It doesn't say what materials exist. Those are game content — the founding cluster publishes starter types, player communities evolve them. The physics just requires consistent, verifiable physical properties.
 
