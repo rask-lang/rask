@@ -157,64 +157,53 @@ New players start at a founding cluster system. They get a ship (an Allgard obje
 
 The founding cluster is the seed of trust. Every domain in the galaxy traces its introduction chain back to the founding cluster. The cluster members start as each other's trusted partners. Everyone else earns trust through introduction.
 
-## Natural Laws
+## Physics and Natural Laws
 
-Allgard's seven conservation laws keep the economy honest. Natural laws keep the game interesting. Conservation laws say "you can't cheat." Natural laws say "the universe has friction."
+Three layers of constraint, each building on the last:
 
-The founding cluster publishes a **standard physics script** — a content-addressed Raido script that encodes these laws as formulas. Domains that run standard physics include the script hash in their departure proofs. Receiving domains verify: standard physics? Trust the proof. Non-standard? Flag it. Not banned — just transparent. A domain running zero-gravity economics is visible to everyone in the proof chain.
+1. **Allgard's conservation laws** keep the economy honest. You can't cheat.
+2. **[Constraint physics](PHYSICS.md)** determines what can physically exist. Five laws — mass-energy conservation, structural scaling, energy budgets, stress/failure, proximity coupling — interact to create natural size tiers, specialization pressure, and engineering tradeoffs. No material tables, no ship classes. Those emerge.
+3. **Natural laws** (below) apply constraint physics to travel and economy. They're consequences, not a separate system.
 
-### Law 1: Distance Costs
+The founding cluster publishes a **standard physics script** — content-addressed Raido bytecode encoding both constraint physics and natural laws. Departure proofs include the script hash. Any domain can re-execute and verify. Non-standard physics isn't banned — it's transparent. A domain running zero-fuel-cost jumps is visible to every trading partner.
 
-Moving between stars consumes fuel proportional to distance. The galaxy seed determines star positions. Both departure and arrival domains know the exact distance. The departure domain deducts fuel and includes the calculation in the departure proof.
+### Distance Costs
 
-Fuel consumed is destroyed — a value sink (Conservation Law 3). Fuel burning IS the economy's metabolism. Without it, resources accumulate forever and trade stalls.
-
-If you don't have enough fuel to reach any star, you're stranded. Call for rescue (another player delivers fuel), deploy an outpost (if you have materials to start extracting), or wait for an AI trader to pass through. Getting stranded in deep space is a real risk. That's the point — exploration has stakes.
-
-### Law 2: Mass Is Real
-
-Things have weight. Ship + cargo = total mass. Fuel cost scales with mass: a full hauler costs more to move than an empty scout.
+Moving between stars consumes fuel proportional to distance. Fuel cost scales with total mass (constraint physics Law 1 — mass is derived, not declared). A full hauler burns more fuel than an empty scout. This is the trader's dilemma: full cargo = expensive trip, empty = wasted trip.
 
 ```
 fuel_cost = base_rate * (distance / unit) * (1 + cargo_mass / ship_capacity)
 ```
 
-This creates the trader's dilemma: full cargo = expensive trip, empty = wasted trip. Optimal load is a real calculation. Heavier cargo means higher margins must justify higher fuel. Lightweight luxury goods might beat bulky raw materials on profit-per-fuel.
+Fuel consumed is destroyed — a value sink (Conservation Law 3). Fuel burning IS the economy's metabolism. Without it, resources accumulate forever and trade stalls.
 
-Standard types have standard mass. A domain that mints "weightless titanium" is visible — other domains compare against standard type definitions. Non-standard mass = non-standard trust.
+If you don't have enough fuel to reach any star, you're stranded. Call for rescue, deploy an outpost, or wait for an AI trader. Getting stranded is a real risk. That's the point.
 
-### Law 3: Entropy
+### Entropy
 
-Things decay. Hull degrades per jump. Equipment degrades per use. The domain applies decay when processing transforms. Object properties track cumulative wear.
+Things decay. Hull degrades per jump. Equipment degrades per use. The domain applies decay when processing transforms. Object properties track cumulative wear. Decay rate isn't constant — constraint physics Law 4 (stress and failure) means overloaded or overstressed objects decay faster.
 
-Decay creates demand. Without it, a ship built once lasts forever and the maintenance economy doesn't exist. With it, every player needs repair materials, creating a constant resource flow.
+Decay creates demand. Without it, a ship built once lasts forever and the maintenance economy dies. With it, every player needs repair materials, creating constant resource flow.
 
 A domain that doesn't apply decay is visible in proof chains — "500 jumps, 100% hull" is obvious. Trust flag.
 
 Tuning matters: decay too fast is tedious, too slow is meaningless. The standard physics script sets rates. Founding cluster stations offer cheap repairs for starter ships — new players shouldn't death-spiral from decay before they learn to trade.
 
-### Law 4: Scarcity Is Geographic
+### Geographic Scarcity
 
 The seed distributes resources unevenly. No single star has everything. This isn't enforced by domains — it's math. The seed is deterministic and public. Everyone can verify what resources exist where.
 
 Geographic scarcity makes trade necessary. A fuel-rich system needs metals. A metal-rich system needs organics. Nobody is self-sufficient. The topology of need IS the trade network.
 
-### What Natural Laws Create
+### What These Create
 
 | Law | Creates | Without it |
 |-----|---------|-----------|
 | Distance costs | Trade routes, logistics, geography matters | Everyone is everywhere, no spatial game |
-| Mass is real | Trader's dilemma, ship specialization, escort missions | Infinite cargo, no tradeoffs |
 | Entropy | Maintenance demand, resource flow, economic heartbeat | Accumulate forever, economy dies |
 | Geographic scarcity | Trade necessity, interdependence, exploration value | Self-sufficient hermits, no network |
 
-Every law forces interaction. Distance creates traders. Mass creates specialists. Entropy creates demand. Scarcity creates partners. A game without friction is a sandbox without purpose.
-
-### Verification, Not Enforcement
-
-Natural laws aren't enforced by a central authority. They're verified bilaterally — the same way conservation laws work. The standard physics script is public. Departure proofs include the script hash. Any domain can re-execute and verify.
-
-A domain that runs non-standard physics isn't banned. It's transparent. Other domains decide whether to trust ships arriving from a zero-fuel-cost domain. Usually they won't — the same way you wouldn't trust someone who claims they walked across the ocean.
+Every law forces interaction. Distance creates traders. Entropy creates demand. Scarcity creates partners. A game without friction is a sandbox without purpose.
 
 ## AI Agents
 
