@@ -276,17 +276,12 @@ fn try_inline_call(
             new_stmts.push(remap_stmt(stmt, &local_map, &block_map));
         }
 
-        // CleanupReturn: inline cleanup chain statements before the Goto.
-        // The cleanup blocks' code must run before returning to merge_block.
-        if let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &callee_block.terminator.kind {
-            for chain_block_id in cleanup_chain {
-                if let Some(chain_block) = callee.blocks.iter().find(|b| b.id == *chain_block_id) {
-                    for stmt in &chain_block.statements {
-                        new_stmts.push(remap_stmt(stmt, &local_map, &block_map));
-                    }
-                }
-            }
-        }
+        // CleanupReturn: jump through the remapped chain blocks.
+        // Don't inline statements — the chain blocks may have sub-CFGs
+        // (branches for else handlers) that require their own blocks.
+        // The chain blocks already exist as remapped copies in the caller.
+        // remap_terminator converts CleanupReturn to Goto(first_chain_block)
+        // or Goto(merge_block) if chain is empty.
 
         // Remap terminator — Return/CleanupReturn become Goto merge_block
         let new_terminator = remap_terminator(
@@ -312,11 +307,19 @@ fn try_inline_call(
     });
 
     // --- Fixup return values ---
-    // For callee blocks that ended with Return { value: Some(op) },
-    // insert an Assign to the caller's destination local before the Goto.
+    // For callee blocks that ended with Return/CleanupReturn { value: Some(op) },
+    // insert an Assign to the caller's destination local.
+    // For Return: assignment goes in the block itself (before the Goto merge).
+    // For CleanupReturn: assignment goes in the block (before the Goto chain).
     if let Some(ret_dst) = ret_local {
         fixup_return_values(caller, callee, &block_map, &local_map, ret_dst);
     }
+
+    // --- Fixup cleanup chain exits ---
+    // CleanupReturn chains jump through remapped cleanup blocks. The exit
+    // sentinels (Unreachable in cleanup sub-CFGs) must be redirected to
+    // the next chain block or merge_block.
+    fixup_cleanup_exits(caller, callee, &block_map, merge_block_id);
 
     // DI5: record inline region so DWARF can emit DW_TAG_inlined_subroutine
     let callee_body_span = compute_body_span(callee);
@@ -641,11 +644,17 @@ fn remap_terminator(
             default: block_map.get(default).copied().unwrap_or(*default),
         },
         MirTerminatorKind::Unreachable => MirTerminatorKind::Unreachable,
-        MirTerminatorKind::CleanupReturn { .. } => {
-            // When inlining, CleanupReturn becomes Goto merge_block.
-            // Cleanup chain statements are inlined by try_inline_call,
-            // and value assignment is handled by fixup_return_values.
-            MirTerminatorKind::Goto { target: merge_block }
+        MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => {
+            // Jump through the remapped chain blocks, which run their
+            // sub-CFGs (including else handler branches). The chain's
+            // exit sentinels (Unreachable) are redirected to merge_block
+            // by fixup_cleanup_exits.
+            if let Some(first) = cleanup_chain.first() {
+                let remapped = block_map.get(first).copied().unwrap_or(*first);
+                MirTerminatorKind::Goto { target: remapped }
+            } else {
+                MirTerminatorKind::Goto { target: merge_block }
+            }
         }
     };
 
@@ -694,6 +703,62 @@ fn fixup_return_values(
                     },
                     callee_block.terminator.span,
                 ));
+            }
+        }
+    }
+}
+
+/// Redirect Unreachable sentinels in cleanup sub-CFGs to the next chain
+/// block or merge_block. For each CleanupReturn in the callee, find the
+/// sub-blocks reachable from its chain and redirect their Unreachable exits.
+fn fixup_cleanup_exits(
+    caller: &mut MirFunction,
+    callee: &MirFunction,
+    block_map: &HashMap<BlockId, BlockId>,
+    merge_block: BlockId,
+) {
+    use std::collections::{HashSet, VecDeque};
+
+    for callee_block in &callee.blocks {
+        let cleanup_chain = match &callee_block.terminator.kind {
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => cleanup_chain,
+            _ => continue,
+        };
+        if cleanup_chain.is_empty() { continue; }
+
+        // For each chain block, find all Unreachable exits in its sub-CFG
+        // and redirect to next chain block or merge.
+        for (i, chain_bid) in cleanup_chain.iter().enumerate() {
+            let next_target = if let Some(next_bid) = cleanup_chain.get(i + 1) {
+                block_map.get(next_bid).copied().unwrap_or(*next_bid)
+            } else {
+                merge_block
+            };
+
+            // BFS from this chain block to find all reachable blocks in cleanup sub-CFG
+            let mut visited = HashSet::new();
+            let mut queue = VecDeque::new();
+            queue.push_back(*chain_bid);
+            while let Some(bid) = queue.pop_front() {
+                if !visited.insert(bid) { continue; }
+                if let Some(cb) = callee.blocks.iter().find(|b| b.id == bid) {
+                    for succ in crate::analysis::cfg::successors(&cb.terminator) {
+                        queue.push_back(succ);
+                    }
+                }
+            }
+
+            // Redirect Unreachable → next chain block or merge
+            for orig_bid in &visited {
+                let remapped = block_map.get(orig_bid).copied().unwrap_or(*orig_bid);
+                if let Some(block) = caller.blocks.iter_mut().find(|b| b.id == remapped) {
+                    if matches!(block.terminator.kind, MirTerminatorKind::Unreachable) {
+                        block.terminator = MirTerminator::new(
+                            MirTerminatorKind::Goto { target: next_target },
+                            block.terminator.span,
+                        );
+                    }
+                }
             }
         }
     }

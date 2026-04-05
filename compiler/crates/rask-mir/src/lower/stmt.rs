@@ -314,18 +314,65 @@ impl<'a> MirLowerer<'a> {
                 for s in body {
                     self.lower_stmt(s)?;
                 }
+
                 if let Some((param_name, handler_body)) = else_handler {
-                    let param_ty = MirType::I64;
-                    let param_local = self.builder.alloc_local(param_name.clone(), param_ty.clone());
-                    self.locals.insert(param_name.clone(), (param_local, param_ty));
-                    for s in handler_body {
-                        self.lower_stmt(s)?;
+                    // ER2: route errors from body to else handler.
+                    // The body's last call may return a Result — check its tag.
+                    let handler_block = self.builder.create_block();
+                    let done_block = self.builder.create_block();
+
+                    if let Some(call_dst) = self.builder.last_call_dst() {
+                        // Check Result tag: 0=Ok, 1=Err
+                        let tag = self.builder.alloc_temp(MirType::U8);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: tag,
+                            rvalue: MirRValue::EnumTag { value: MirOperand::Local(call_dst) },
+                        }));
+                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                            cond: MirOperand::Local(tag),
+                            then_block: handler_block,
+                            else_block: done_block,
+                        }));
+
+                        // Handler block: bind error, run handler body.
+                        // Infer error type from the call's return type.
+                        let err_ty = self.builder.local_type(call_dst)
+                            .and_then(|t| match t {
+                                MirType::Result { err, .. } => Some(*err),
+                                _ => None,
+                            })
+                            .unwrap_or(MirType::I64);
+                        self.builder.switch_to_block(handler_block);
+                        let err_local = self.builder.alloc_local(param_name.clone(), err_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: err_local,
+                            rvalue: MirRValue::Field {
+                                base: MirOperand::Local(call_dst),
+                                field_index: 0,
+                                byte_offset: None,
+                                field_size: None,
+                            },
+                        }));
+                        self.locals.insert(param_name.clone(), (err_local, err_ty));
+                        for s in handler_body {
+                            self.lower_stmt(s)?;
+                        }
+                        if self.builder.current_block_unterminated() {
+                            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+                        }
+                    } else {
+                        // No call in body — handler never fires
+                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
                     }
-                }
-                // Cleanup block is only read for its statements by codegen;
-                // terminate with Unreachable as a sentinel.
-                if self.builder.current_block_unterminated() {
+
+                    // Done block: sentinel for end of cleanup sub-CFG
+                    self.builder.switch_to_block(done_block);
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                } else {
+                    // No handler — terminate with sentinel
+                    if self.builder.current_block_unterminated() {
+                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                    }
                 }
 
                 self.builder.switch_to_block(continue_block);

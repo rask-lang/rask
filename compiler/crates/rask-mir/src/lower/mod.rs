@@ -535,12 +535,53 @@ impl<'a> MirLowerer<'a> {
 
     /// Inline loop-scoped ensure cleanup at break/continue/iteration-end.
     /// Copies statements from ensures registered after `depth` in LIFO order.
+    /// For simple ensures (Unreachable terminator): copies statements inline.
+    /// For branching ensures (else handler): creates block copies at the exit point.
     fn emit_loop_cleanup(&mut self, depth: usize) {
         for i in (depth..self.ensure_stack.len()).rev() {
             let block_id = self.ensure_stack[i];
             let stmts: Vec<_> = self.builder.block_stmts(block_id).to_vec();
-            for stmt in stmts {
-                self.builder.push_stmt(stmt);
+            // Check if this cleanup block has a sub-CFG (Branch terminator)
+            let term_kind = self.builder.block_terminator_kind(block_id);
+            if let Some(MirTerminatorKind::Branch { cond, then_block, else_block }) = term_kind {
+                // Branching ensure (ER2 else handler): create block copies
+                for stmt in stmts {
+                    self.builder.push_stmt(stmt);
+                }
+                // Create local copies of the sub-blocks
+                let then_copy = self.builder.create_block();
+                let else_copy = self.builder.create_block();
+                let merge = self.builder.create_block();
+
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond,
+                    then_block: then_copy,
+                    else_block: else_copy,
+                }));
+
+                // Copy then-block (handler) statements
+                self.builder.switch_to_block(then_copy);
+                let then_stmts: Vec<_> = self.builder.block_stmts(then_block).to_vec();
+                for stmt in then_stmts {
+                    self.builder.push_stmt(stmt);
+                }
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+
+                // Copy else-block (done) — typically empty, just continues
+                self.builder.switch_to_block(else_copy);
+                let else_stmts: Vec<_> = self.builder.block_stmts(else_block).to_vec();
+                for stmt in else_stmts {
+                    self.builder.push_stmt(stmt);
+                }
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+
+                // Continue in merge block
+                self.builder.switch_to_block(merge);
+            } else {
+                // Simple ensure: just copy statements inline
+                for stmt in stmts {
+                    self.builder.push_stmt(stmt);
+                }
             }
         }
     }

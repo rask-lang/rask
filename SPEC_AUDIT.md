@@ -23,9 +23,11 @@ Working:
 - Function inlining preserves cleanup semantics ✓
 - Loop-scoped ensures: `ensure_depth` on LoopContext, inline cleanup at break/continue/iteration-end, stack truncated after loop ✓
 
+- `else` handler error routing (ER2): cleanup blocks form proper sub-CFGs with Branch terminators. Codegen processes full cleanup sub-CFGs. Inliner redirects Unreachable sentinels to merge blocks ✓
+- Error type inferred from body call's Result type for handler binding ✓
+
 Remaining:
 - No explicit consumption cancellation (C1/C2) in codegen — needs C runtime resource tracker (interpreter has it)
-- `else` handler error routing in codegen (ER2) — needs cleanup block branching support (interpreter has it)
 - Linear resource consumption commitment (L1–L3) — ownership checker tracks it, codegen doesn't enforce
 
 ### 2. `@binary` structs — completely unimplemented (type.binary B1–G4)
