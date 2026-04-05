@@ -496,11 +496,17 @@ impl<'a> MirLowerer<'a> {
                                     store_size: None,
                                 }));
                             }
+                            // Set store_size for aggregate payloads (strings are 16 bytes)
+                            let payload_store_size = if payload_ty.size() > 8 {
+                                Some(payload_ty.size())
+                            } else {
+                                None
+                            };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: result_local,
                                 offset: payload_offset,
                                 value: payload.clone(),
-                                store_size: None,
+                                store_size: payload_store_size,
                             }));
                         }
                         return Ok((MirOperand::Local(result_local), result_ty));

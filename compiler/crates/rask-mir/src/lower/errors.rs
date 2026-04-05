@@ -41,6 +41,7 @@ impl<'a> MirLowerer<'a> {
                 _ => None,
             })
             .unwrap_or(MirType::I64);
+        let err_store_size = if err_ty.size() > 8 { Some(err_ty.size()) } else { None };
         let err_val = self.builder.alloc_temp(err_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: err_val,
@@ -79,12 +80,12 @@ impl<'a> MirLowerer<'a> {
             value: MirOperand::Constant(MirConst::Int(span_start)),
             store_size: None,
         }));
-        // Payload
+        // Payload — use store_size for aggregates (strings are 16 bytes)
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: ret_result,
             offset: RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(err_val),
-            store_size: None,
+            store_size: err_store_size,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
             value: Some(MirOperand::Local(ret_result)),
@@ -205,7 +206,7 @@ impl<'a> MirLowerer<'a> {
         let err_binding = &try_else.error_binding;
         self.locals.insert(err_binding.clone(), (err_val, err_ty));
 
-        let (transformed_op, _transformed_ty) = self.lower_expr(&try_else.body)?;
+        let (transformed_op, transformed_ty) = self.lower_expr(&try_else.body)?;
 
         // Only emit return if body didn't already terminate (e.g. bare `return` in body)
         if self.builder.current_block_unterminated() {
@@ -230,11 +231,12 @@ impl<'a> MirLowerer<'a> {
                 value: MirOperand::Constant(MirConst::Int(span_start)),
                 store_size: None,
             }));
+            let transformed_store_size = if transformed_ty.size() > 8 { Some(transformed_ty.size()) } else { None };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: ret_result,
                 offset: RESULT_PAYLOAD_OFFSET,
                 value: transformed_op,
-                store_size: None,
+                store_size: transformed_store_size,
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
                 value: Some(MirOperand::Local(ret_result)),

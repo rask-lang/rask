@@ -455,21 +455,44 @@ impl<'a> FunctionBuilder<'a> {
 
                 if !is_aggregate {
                     let val = Self::lower_operand(builder, value, ctx)?;
-                    let val_ty = builder.func.dfg.value_type(val);
 
-                    // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
-                    // values to fill the full slot — otherwise a 4-byte f32 store
-                    // leaves stale upper bytes that corrupt the f64 read-back.
-                    let val = if val_ty == types::F32 {
-                        builder.ins().fpromote(types::F64, val)
-                    } else if val_ty.is_int() && val_ty.bits() < 64 {
-                        Self::convert_value(builder, val, val_ty, types::I64)
+                    // store_size > 8: the lowered value is a pointer to aggregate data
+                    // (e.g., string constant → 16-byte SSO). Copy word-by-word from
+                    // the source pointer instead of storing the pointer itself.
+                    if store_size.map_or(false, |s| s > 8) {
+                        let size = store_size.unwrap() as i32;
+                        let mut byte_offset = 0i32;
+                        while byte_offset + 8 <= size {
+                            let word = builder.ins().load(types::I64, MemFlags::new(), val, byte_offset);
+                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
+                            byte_offset += 8;
+                        }
+                        if size - byte_offset >= 4 {
+                            let word = builder.ins().load(types::I32, MemFlags::new(), val, byte_offset);
+                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
+                            byte_offset += 4;
+                        }
+                        if size - byte_offset >= 1 {
+                            let word = builder.ins().load(types::I8, MemFlags::new(), val, byte_offset);
+                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
+                        }
                     } else {
-                        val
-                    };
+                        let val_ty = builder.func.dfg.value_type(val);
 
-                    let flags = MemFlags::new();
-                    builder.ins().store(flags, val, addr_val, *offset as i32);
+                        // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
+                        // values to fill the full slot — otherwise a 4-byte f32 store
+                        // leaves stale upper bytes that corrupt the f64 read-back.
+                        let val = if val_ty == types::F32 {
+                            builder.ins().fpromote(types::F64, val)
+                        } else if val_ty.is_int() && val_ty.bits() < 64 {
+                            Self::convert_value(builder, val, val_ty, types::I64)
+                        } else {
+                            val
+                        };
+
+                        let flags = MemFlags::new();
+                        builder.ins().store(flags, val, addr_val, *offset as i32);
+                    }
                 }
             }
 
