@@ -96,7 +96,7 @@ This is how latent physics emerges from the same mechanism. No special case need
 
 Within a phase region, the interaction function is smooth but not necessarily gentle. Some regions have steep gradients — a 1% ratio change produces a 20% property change. Others are flat — large ratio changes barely matter. The gradient structure is seed-determined and varies by region.
 
-A researcher mapping a steep region needs precise ratio control (better lab equipment). A researcher in a flat region can be sloppy. The physics doesn't prescribe which regions are steep — the seed determines it. Some galactic chemistries reward precision. Others reward breadth of exploration.
+A researcher mapping a steep region needs precise ratio control — small changes matter. A researcher in a flat region can be sloppy. The physics doesn't prescribe which regions are steep — the seed determines it. Some galactic chemistries reward precision. Others reward breadth of exploration.
 
 ## Multi-Element Combinations
 
@@ -135,8 +135,6 @@ complexity_loss = complexity_coefficient * (num_elements - 1)
 ```
 
 The output properties don't affect loss at all. If you find a phase region that produces amazing material at low energy with two common elements, your production cost is low. That's not a bug — it's the reward for discovery. The cost was the search: all the experiments that consumed materials while exploring dead ends. Once you've found an efficient process, you benefit from it.
-
-This also means manufacturing efficiency is a genuine competitive axis. Two factions might know the same recipe (same inputs, same output), but the one with better lab equipment (lower base loss, more precise energy control reducing energy_loss) produces more output per input. Industrial advantage from infrastructure, not just knowledge.
 
 The lost mass is gone. Destroyed. This feeds into Allgard's Conservation Law 3 — crafting loss is a designed entropy sink.
 
@@ -374,7 +372,7 @@ Design parameters also affect resonance — the same materials at different oper
 
 Research decomposes naturally along the two layers:
 
-**Materials research** — exploring the phase landscape. Opaque. Requires element inputs, energy, catalysts, materials labs.
+**Materials research** — exploring the phase landscape. Opaque. Requires element inputs, energy, catalysts.
 
 **System research** — optimizing performance functions and finding resonances. Semi-transparent. Requires candidate materials, test facilities, and understanding of the physics.
 
@@ -398,7 +396,7 @@ These categories aren't prescribed. They emerge because different performance fu
 
 **Geographic scarcity:** The seed distributes elements and their abundances. Common elements appear everywhere. Rare elements appear in specific systems. Catalyst elements may be extremely scarce. The combination physics makes rare elements valuable not by fiat but because they enable transformations that common elements can't.
 
-**Labs and infrastructure:** Lab quality determines what energy levels and process types are available. A crude workshop can alloy at low energy. A plasma forge operates at high energy, activating interactions that a workshop can't reach. Lab equipment (from PHYSICS.md) has mass, volume, power draw, structural requirements — constrained by the five laws like everything else. Better labs require better materials, which require better labs. The spiral is intentional. See also: Batch Economics (below) for how lab throughput changes research strategy.
+**Energy infrastructure:** The energy you can invest in a transformation depends on the energy infrastructure you've built — reactors, containment, power routing. A faction with crude reactors can only explore low-energy phase regions. A faction with advanced reactors accesses high-energy regions where latent properties live. The energy infrastructure is constrained by the five laws (reactors have mass, coupling, structural needs) and is itself built from discovered materials. Better materials → better reactors → higher energy → access to more of the phase landscape → better materials. The spiral is intentional.
 
 ## Research Economics
 
@@ -414,11 +412,9 @@ That's it. How many experiments you run per hour, what equipment you use, whethe
 
 ### What Constrains Research Pace in Practice
 
-Material supply is the binding constraint. Every experiment burns inputs. A faction with 10,000 units of iron can run more experiments than a faction with 100 — regardless of lab quality. Rich factions research faster because they can afford to burn more material on exploration.
+Material supply is the binding constraint. Every experiment burns inputs. A faction with 10,000 units of iron can run more experiments than a faction with 100. Rich factions research faster because they can afford to burn more material on exploration.
 
-Energy capacity determines what you can *attempt*, not how fast. Your reactor's output limits the energy_per_mass you can invest, which determines which phase regions you can access. A faction with a crude reactor can run experiments all day — but they're exploring only low-energy regions. A faction with an advanced reactor can probe high-energy regions where latent properties live.
-
-Lab infrastructure is a domain-internal optimization. Better equipment might reduce waste (improving yield), achieve more precise ratios (accessing sharp gradient regions more reliably), or reach higher energy densities (accessing more of the phase landscape). But none of this is externally verified. Your lab quality affects your research *effectiveness*, not your *permission* to research.
+Energy capacity determines what you can *attempt*. Your reactor's output limits the energy_per_mass you can invest, which determines which phase regions you can access. A faction with a crude reactor can run experiments all day — but only in low-energy regions. A faction with an advanced reactor can probe high-energy regions where latent properties live. Energy capacity is verified indirectly: if you claim an output from a high-energy process, the physics script checks whether that output matches the interaction function at that energy level. Lying about energy doesn't work — the math won't produce the claimed output at lower energy.
 
 ### Batch Strategy Still Matters
 
