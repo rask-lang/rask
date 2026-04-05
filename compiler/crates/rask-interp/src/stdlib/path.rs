@@ -49,14 +49,14 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![make_path_value(&parent)],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     _ => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -172,13 +172,13 @@ fn option_string(opt: Option<String>) -> Result<Value, RuntimeError> {
             name: "Option".to_string(),
             variant: "Some".to_string(),
             fields: vec![Value::String(Arc::new(Mutex::new(s)))],
-            variant_index: 0,
+            variant_index: 0, origin: None,
         }),
         None => Ok(Value::Enum {
             name: "Option".to_string(),
             variant: "None".to_string(),
             fields: vec![],
-            variant_index: 0,
+            variant_index: 0, origin: None,
         }),
     }
 }

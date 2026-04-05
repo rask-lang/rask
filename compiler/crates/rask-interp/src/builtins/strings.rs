@@ -147,7 +147,7 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Int(n)],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
@@ -155,7 +155,7 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(
                             "invalid integer".to_string(),
                         )))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -166,13 +166,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::Char(c)],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -183,13 +183,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::Int(b as i64)],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -199,7 +199,7 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Float(n)],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
@@ -207,7 +207,7 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(
                             "invalid float".to_string(),
                         )))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -218,13 +218,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::Int(idx as i64)],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -235,13 +235,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::Int(idx as i64)],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }
@@ -289,7 +289,7 @@ impl Interpreter {
                         std::cmp::Ordering::Greater => "Greater".to_string(),
                     },
                     fields: vec![],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 })
             }
             // C interop: returns raw pointer (simulated as Int in interpreter)

@@ -67,13 +67,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(v)))],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 0,
+                        variant_index: 0, origin: None,
                     }),
                 }
             }

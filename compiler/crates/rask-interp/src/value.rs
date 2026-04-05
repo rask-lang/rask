@@ -286,6 +286,8 @@ pub enum Value {
         fields: Vec<Value>,
         /// Variant index in declaration order (for Comparable ordering).
         variant_index: u32,
+        /// Error origin: `"file.rk:42"` — set by `try` at first propagation (ER15).
+        origin: Option<Arc<str>>,
     },
     /// Function reference
     Function {
@@ -529,12 +531,12 @@ impl Value {
     /// Create an enum value. variant_index defaults to 0 (builtin enums).
     /// User-defined enums should use `enum_with_index` for correct ordering.
     pub fn enum_val(name: String, variant: String, fields: Vec<Value>) -> Self {
-        Value::Enum { name, variant, fields, variant_index: 0 }
+        Value::Enum { name, variant, fields, variant_index: 0, origin: None }
     }
 
     /// Create an enum value with an explicit variant index for ordering.
     pub fn enum_with_index(name: String, variant: String, fields: Vec<Value>, variant_index: u32) -> Self {
-        Value::Enum { name, variant, fields, variant_index }
+        Value::Enum { name, variant, fields, variant_index, origin: None }
     }
 
     /// Get the type name for error messages.
@@ -618,12 +620,13 @@ impl Value {
                     .collect();
                 Value::new_struct(guard.name.clone(), deep_fields, guard.resource_id)
             }
-            Value::Enum { name, variant, fields, variant_index } => {
+            Value::Enum { name, variant, fields, variant_index, origin } => {
                 Value::Enum {
                     name: name.clone(),
                     variant: variant.clone(),
                     fields: fields.iter().map(|f| f.deep_clone()).collect(),
                     variant_index: *variant_index,
+                    origin: origin.clone(),
                 }
             }
             Value::Pool(p) => {

@@ -184,13 +184,13 @@ pub fn call_method(
                     name: "Option".into(),
                     variant: "Some".into(),
                     fields: vec![Value::String(Arc::new(Mutex::new(val)))],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
                 Err(_) => Ok(Value::Enum {
                     name: "Option".into(),
                     variant: "None".into(),
                     fields: vec![],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 }),
             }
         }
@@ -267,7 +267,7 @@ pub fn call_method(
                             name: "Option".into(),
                             variant: "Some".into(),
                             fields: vec![make_path(&candidate)],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         });
                     }
                 }
@@ -276,7 +276,7 @@ pub fn call_method(
                 name: "Option".into(),
                 variant: "None".into(),
                 fields: vec![],
-                variant_index: 0,
+                variant_index: 0, origin: None,
             })
         }
 

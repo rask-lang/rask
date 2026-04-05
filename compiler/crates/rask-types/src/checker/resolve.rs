@@ -219,6 +219,12 @@ impl TypeChecker {
             return self.unify(&ret, &Type::String, span);
         }
 
+        // ER16: .origin() on any type returns the error origin string.
+        // Set by `try` at first propagation (ER15). Returns "<no origin>" if unset.
+        if method == "origin" && args.is_empty() {
+            return self.unify(&ret, &Type::String, span);
+        }
+
         match &ty {
             // Source error already reported — suppress cascading method errors
             Type::Error => Ok(false),

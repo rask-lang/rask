@@ -73,14 +73,14 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![result],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Err(_) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 1,
+                        variant_index: 1, origin: None,
                     }),
                 }
             }
@@ -101,14 +101,14 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![result],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Err(_) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 1,
+                        variant_index: 1, origin: None,
                     }),
                 }
             }
@@ -323,14 +323,14 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![result],
-                            variant_index: 0,
+                            variant_index: 0, origin: None,
                         })
                     }
                     Err(_) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 1,
+                        variant_index: 1, origin: None,
                     }),
                 }
             }

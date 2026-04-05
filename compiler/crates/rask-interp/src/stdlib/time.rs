@@ -27,7 +27,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: vec![Value::Unit],
-                    variant_index: 0,
+                    variant_index: 0, origin: None,
                 })
             }
             _ => Err(RuntimeError::NoSuchMethod {

@@ -33,11 +33,9 @@ Zero parser support, zero codegen, zero stdlib. The entire binary struct feature
 
 **Impact:** Binary protocol parsing (TCP headers, file formats, wire protocols) has no path.
 
-### 3. Error origin tracking — not implemented (ER15, ER16)
+### 3. ~~Error origin tracking — not implemented (ER15, ER16)~~ FIXED
 
-Spec requires all errors to capture `(file, line)` at first propagation via a `.origin` field (~16 bytes per error). No evidence in codebase — no origin capture, no `.origin` field on error types.
-
-**Impact:** Error diagnostics in production have no call-site information.
+`Value::Enum` now carries `origin: Option<Arc<str>>`. When `try` propagates an error, origin is set to `"file.rk:line"` at the first propagation site only (first-wins semantics per ER15). `.origin()` is a universal method in the type checker and interpreter — works on all types (enums return the stored origin, other types return `"<no origin>"`). SourceInfo (file name + LineMap) passed from CLI into interpreter. ER16 `.origin` access works in both debug and release.
 
 ### 4. `Cell<T>` type — doesn't exist (CE1–CE6)
 
@@ -140,9 +138,9 @@ Cycle detection at registration time with clear error showing the cycle path.
 
 Both type checker and interpreter reject `.variants()` on enums with payload fields. Was implemented before audit.
 
-### 20. Iterator trait — not user-visible (type.iterators)
+### 20. ~~Iterator trait — not user-visible (type.iterators)~~ FIXED
 
-The `trait Iterator<Item>` isn't registered in stdlib for user code to write generic bounds like `T: Iterator<Item>`. Custom iterators can't be constrained.
+`Iterator` registered as a builtin trait in `get_builtin_trait_methods` with `next(mutate self) -> Item?`. Parser now supports generic trait bounds (`T: Iterator<i64>`) with `>>` splitting for nested generics. Trait lookup strips generic args so `Iterator<i64>` resolves to the `Iterator` trait definition. Users can write `func consume<T: Iterator<string>>(iter: T)` and have bounds checked.
 
 ### 21. ~~Error auto-delegation for `@message` wrapper variants (ER25)~~ FIXED
 
@@ -247,7 +245,7 @@ For balance — these areas are solid:
 ## Suggested Priority
 
 1. **`ensure` cleanup** — everything else depends on safe resource cleanup
-2. **Error origin tracking** — fundamental to error handling ergonomics
+2. ~~**Error origin tracking** — fundamental to error handling ergonomics~~ DONE (interpreter)
 3. **`comptime for` + reflection** — blocks encoding/serialization patterns
 4. **Pool weak handles + `try_insert`** — needed for real graph/entity patterns
 5. ~~**`for mutate` enforcement** — correctness hole~~ LP14/LP16 DONE (MIR codegen pending)

@@ -15,6 +15,9 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let mut interp = rask_interp::Interpreter::with_args(program_args);
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
+    if let Some(source) = &result.source {
+        interp.set_source_info(path, source);
+    }
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
     }

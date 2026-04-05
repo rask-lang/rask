@@ -201,10 +201,13 @@ impl<'a> TraitChecker<'a> {
 
     /// Get methods required by a trait.
     fn get_trait_methods(&self, trait_name: &str) -> Result<Vec<MethodSig>, TraitError> {
+        // Strip generic args: "Iterator<i64>" → "Iterator"
+        let base_name = trait_name.split('<').next().unwrap_or(trait_name);
         self.trait_methods
             .get(trait_name)
+            .or_else(|| self.trait_methods.get(base_name))
             .cloned()
-            .or_else(|| self.get_builtin_trait_methods(trait_name))
+            .or_else(|| self.get_builtin_trait_methods(base_name))
             .ok_or_else(|| TraitError::UnknownTrait(trait_name.to_string()))
     }
 
@@ -323,6 +326,13 @@ impl<'a> TraitChecker<'a> {
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
+            }]),
+            // Iterator<Item> trait — single method `next(mutate self) -> Item?`
+            "Iterator" => Some(vec![MethodSig {
+                name: "next".to_string(),
+                self_param: SelfParam::Mutate,
+                params: vec![],
+                ret: Type::Option(Box::new(Type::Var(crate::types::TypeVarId(0)))),
             }]),
             _ => None,
         }
