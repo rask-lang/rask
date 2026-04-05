@@ -236,6 +236,18 @@ impl<'a> FunctionBuilder<'a> {
             builder.def_var(var, addr);
         }
 
+        // For main(): emit rask_set_origin_file(source_file) so .origin() includes file name
+        if self.mir_fn.name == "main" {
+            if let Some(file_name) = self.mir_fn.source_file.as_deref() {
+                if let Some(gv) = self.string_globals.get(file_name) {
+                    let file_ptr = builder.ins().global_value(types::I64, *gv);
+                    if let Some(func_ref) = self.func_refs.get("rask_set_origin_file") {
+                        builder.ins().call(*func_ref, &[file_ptr]);
+                    }
+                }
+            }
+        }
+
         let mut ctx = CodegenCtx {
             var_map: &self.var_map,
             locals: &self.mir_fn.locals,

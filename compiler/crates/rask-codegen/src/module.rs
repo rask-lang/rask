@@ -132,6 +132,8 @@ impl CodeGenerator {
     pub fn set_debug_context(&mut self, source_file: &str, line_map: LineMap) {
         self.source_file_name = Some(source_file.to_string());
         self.line_map = Some(line_map);
+        // Register source file name in data section for error origin (ER15)
+        let _ = self.register_string(source_file);
     }
 
     /// Set DI5 inline region metadata from the inlining pass.
@@ -357,6 +359,17 @@ impl CodeGenerator {
                 .declare_function("rask_set_panic_location", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("set_panic_location".to_string(), id);
+        }
+
+        // rask_set_origin_file(file: *const char) -> void
+        // Sets the source file name for error origin formatting (ER15).
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file name C string
+            let id = self.module
+                .declare_function("rask_set_origin_file", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_set_origin_file".to_string(), id);
         }
 
         // ─── I/O functions ──────────────────────────────────────
@@ -816,6 +829,17 @@ impl CodeGenerator {
             if let Some(data_id) = self.string_data.get(s) {
                 let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
                 string_globals.insert(s.clone(), gv);
+            }
+        }
+        // For main: import source file name global for rask_set_origin_file (ER15)
+        if mir_fn.name == "main" {
+            if let Some(file_name) = &self.source_file_name {
+                if let Some(data_id) = self.string_data.get(file_name) {
+                    if !string_globals.contains_key(file_name) {
+                        let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+                        string_globals.insert(file_name.clone(), gv);
+                    }
+                }
             }
         }
 

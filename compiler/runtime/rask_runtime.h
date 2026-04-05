@@ -699,7 +699,9 @@ int64_t rask_channel_send_async_ptr(int64_t tx, int64_t data_ptr);
 int64_t rask_channel_recv_async_ptr(int64_t rx, int64_t out_ptr);
 
 // ── Error origin (ER15/ER16) ────────────────────────────────────
-// Read origin_line from a Result and format as string.
+// Set the source file name for error origin formatting.
+void rask_set_origin_file(const char *file);
+// Read origin from a Result and format as "file.rk:42" string.
 void rask_result_origin(RaskStr *out, const void *result_ptr);
 
 #endif // RASK_RUNTIME_H

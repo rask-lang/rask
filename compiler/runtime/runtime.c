@@ -1551,15 +1551,21 @@ int64_t rask_json_decode(const RaskStr *s) {
 
 // ─── Error origin (ER15/ER16) ────────────────────────────────────
 
+// Source file name for error origin formatting. Set by rask_main at startup.
+static const char *rask_origin_file = "<unknown>";
+
+void rask_set_origin_file(const char *file) {
+    rask_origin_file = file;
+}
+
 // Read the origin_line field from a Result and format as a string.
 // Result layout: [tag:8][origin_file:8][origin_line:8][payload:...]
-// Returns origin as "line N" or "<no origin>" if origin_line is 0.
 void rask_result_origin(RaskStr *out, const void *result_ptr) {
     const int64_t *fields = (const int64_t *)result_ptr;
     int64_t origin_line = fields[2]; // offset 16 = origin_line
     if (origin_line > 0) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "line %lld", (long long)origin_line);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "%s:%lld", rask_origin_file, (long long)origin_line);
         rask_string_from(out, buf);
     } else {
         rask_string_from(out, "<no origin>");
