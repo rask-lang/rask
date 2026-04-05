@@ -179,15 +179,20 @@ Fuel consumed is destroyed — a value sink (Conservation Law 3). Fuel burning I
 
 If you don't have enough fuel to reach any star, you're stranded. Call for rescue, deploy an outpost, or wait for an AI trader. Getting stranded is a real risk. That's the point.
 
-### Entropy
+### Consumption
 
-Things decay. Hull degrades per jump. Equipment degrades per use. The domain applies decay when processing transforms. Object properties track cumulative wear. Decay rate isn't constant — constraint physics Law 4 (stress and failure) means overloaded or overstressed objects decay faster.
+Materials are consumed, not hoarded. The economy has metabolism through active sinks, not passive decay:
 
-Decay creates demand. Without it, a ship built once lasts forever and the maintenance economy dies. With it, every player needs repair materials, creating constant resource flow.
+- **Fuel** — every jump burns fuel proportional to mass and distance. Destroyed permanently. The biggest ongoing sink.
+- **Research** — every experiment burns element inputs and fuel. Discovery requires sustained material investment.
+- **Crafting loss** — every transformation has mandatory mass loss. Manufacturing is inherently lossy.
+- **Construction** — building facilities, stations, ships permanently consumes materials. Expansion eats resources.
+- **Combat** — destroyed objects are gone. War is expensive.
+- **Stress failure** — components that are pushed beyond tolerance break (Law 4). Replacement consumes materials. This isn't gradual decay — it's failure from active choices. Overload your reactor and it breaks. Dock safely and it's fine forever.
 
-A domain that doesn't apply decay is visible in proof chains — "500 jumps, 100% hull" is obvious. Trust flag.
+Objects don't rot. Your ship doesn't decay while you're offline. Nothing degrades passively. Consumption happens because you're DOING things — flying, fighting, building, researching. The economy circulates through activity, not through a decay tax.
 
-Tuning matters: decay too fast is tedious, too slow is meaningless. The standard physics script sets rates. Founding cluster stations offer cheap repairs for starter ships — new players shouldn't death-spiral from decay before they learn to trade.
+**Domain-level wear (optional).** Domains MAY apply environmental wear as domain policy — radiation damage in a harsh system, corrosion on an acidic planet. This is domain governance, not physics. The standard physics script publishes recommended environmental rates. Domains adopt them or don't. Non-standard is visible. Founding cluster stations: no environmental wear. Your starter ship is safe docked at home.
 
 ### Geographic Scarcity
 
@@ -200,10 +205,10 @@ Geographic scarcity makes trade necessary. A fuel-rich system needs metals. A me
 | Law | Creates | Without it |
 |-----|---------|-----------|
 | Distance costs | Trade routes, logistics, geography matters | Everyone is everywhere, no spatial game |
-| Entropy | Maintenance demand, resource flow, economic heartbeat | Accumulate forever, economy dies |
+| Consumption | Ongoing demand from activity — fuel, research, crafting, construction, combat | Accumulate forever, economy dies |
 | Geographic scarcity | Trade necessity, interdependence, exploration value | Self-sufficient hermits, no network |
 
-Every law forces interaction. Distance creates traders. Entropy creates demand. Scarcity creates partners. A game without friction is a sandbox without purpose.
+Every law forces interaction. Distance creates traders. Consumption creates demand. Scarcity creates partners. A game without friction is a sandbox without purpose.
 
 ## AI Agents
 

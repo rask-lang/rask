@@ -86,19 +86,19 @@ This is why ships specialize. A ship that's good at everything is too heavy to m
 
 ## Law 4: Stress and Failure
 
-Objects under stress degrade. Stress comes from exceeding design parameters — overloading cargo, running systems beyond rated capacity, taking damage, operating in hostile environments.
+Objects under stress can fail. Stress comes from exceeding design parameters — overloading cargo, running systems beyond rated capacity, taking damage, operating in hostile environments.
 
-**The rule:** Every component has a stress tolerance. Exceeding it accelerates decay (amplifies the existing entropy law). Operating at the edge is possible but costly. Operating beyond limits causes component failure.
+**The rule:** Every component has a stress tolerance. Exceeding it risks component failure. Operating at the edge is possible but dangerous. Operating well beyond limits causes immediate failure — structural collapse, reactor breach, containment rupture.
 
 ```
-effective_decay = base_decay * stress_multiplier(load / tolerance)
+failure_probability = f(load / tolerance)
 ```
 
-Where the stress multiplier is 1.0 at normal load, rises gradually as load approaches tolerance, and spikes sharply above it. The exact curve is a tunable — founding cluster publishes a standard one.
+Where `f` is near-zero at normal load, rises gradually as load approaches tolerance, and spikes sharply above it. The exact curve is a tunable — founding cluster publishes a standard one.
 
-**What this creates:** Meaningful risk and engineering margin. A captain who overloads their cargo hold can do it — but the hull degrades faster, and if they push too far, structural failure. This isn't a hard wall. It's a pressure gradient. Safe operation is cheap. Risky operation is expensive. Reckless operation is catastrophic.
+**What this creates:** Meaningful risk and engineering margin. A captain who overloads their cargo hold can do it — but they're gambling. Push too far and structural failure destroys cargo, components, or the ship. This isn't passive decay. It's active risk from active choices. Safe operation is safe. Risky operation is risky. Reckless operation is catastrophic.
 
-**Interaction with entropy:** The natural law says things decay. This law says the rate isn't constant — it responds to how hard you push. A well-maintained ship running within limits lasts a long time. An overloaded hauler cutting corners burns through hull integrity. Same ship, different choices, different outcomes.
+Failure is an event, not a gradient. A component either works or it doesn't. This means stress matters during operation — combat, overloaded jumps, running a reactor above rated capacity, docking in a hostile environment. It doesn't matter when you're offline, docked, or idle. Your ship doesn't rot. It breaks when you push it.
 
 ## Law 5: Proximity Coupling
 
@@ -259,7 +259,7 @@ Better technology enables more extraction, bigger facilities, wider reach. Witho
 
 **Structural scaling is superlinear.** Better materials push the ceiling higher but don't eliminate the exponent. A faction with the best materials in the galaxy still faces `volume^e` at large scales. The exponent wins eventually.
 
-**Maintenance scales with complexity.** More advanced systems have more coupling interfaces, more stress points, more decay. Running a stellar-scale operation means stellar-scale maintenance. Technology makes things possible but not free.
+**Consumption scales with activity.** Fuel, research materials, crafting loss, construction — every active operation consumes resources. A stellar-scale operation burns stellar-scale fuel and materials. Technology makes things possible but not free.
 
 **Geographic scarcity remains.** No amount of technology makes a single system self-sufficient if the seed didn't put all resource types there. Advanced civilizations still need trade networks. The topology of need persists.
 
@@ -285,7 +285,7 @@ What the physics provides is the evaluation function: given a component tree, de
 
 The constraint laws aren't enforced by any authority. They're verified by every trading partner.
 
-One Raido script — the **standard physics script** — evaluates all five constraint laws, environmental modifiers, and natural laws (fuel costs, decay rates) in a single pass. The founding cluster publishes it. It's content-addressed. Any domain can fetch, inspect, and execute it independently.
+One Raido script — the **standard physics script** — evaluates all five constraint laws, environmental modifiers, and natural laws (fuel costs, stress curves) in a single pass. The founding cluster publishes it. It's content-addressed. Any domain can fetch, inspect, and execute it independently.
 
 **On minting:** A domain mints an object (ship, station, component). The physics script evaluates the component tree — derives mass, checks structural requirements, verifies energy budget, evaluates stress tolerances, computes coupling costs. The evaluation result and script hash go into the minting proof.
 
@@ -307,7 +307,7 @@ The laws define relationships. The founding cluster publishes constants:
 | Structural coefficient (`k`) | Base structural cost per volume | Higher = heavier everything. Lower = lighter. |
 | Energy density | Power output per unit mass of reactor | Higher = more capable at same mass. Lower = heavier for same capability. |
 | Coupling intensity table | Base interference between system type pairs | Higher values = more shielding needed. Determines which combinations are expensive. |
-| Stress curve | How fast decay accelerates under load | Steeper = more punishing. Flatter = more forgiving. |
+| Stress curve | How fast failure probability rises under load | Steeper = more punishing. Flatter = more forgiving. |
 
 These are knobs, not laws. The founding cluster sets initial values through playtesting. They can publish updated constants (new script hash, voluntary adoption). The laws — the relationships themselves — don't change.
 
