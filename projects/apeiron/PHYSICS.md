@@ -315,6 +315,8 @@ These are knobs, not laws. The founding cluster sets initial values through play
 
 ## What This Doesn't Cover
 
+**Material transformation physics.** The five constraint laws evaluate whether a finished object is physically consistent. They don't govern what happens DURING crafting — whether specific inputs combined in a specific way should produce an output with specific properties. The research and technology sections above describe the mechanics of experimentation and exchange, but the underlying transformation physics (what constrains what a crafting process can produce from given inputs) is an open problem. Getting this right is critical — too loose and anyone can declare miracle materials, too tight and we've built a tech tree. Needs its own design session.
+
 **Specific materials and component types.** The physics says components have mass, volume, structural efficiency, and energy properties. It doesn't say what materials exist. Those are game content — the founding cluster publishes starter types, player communities evolve them. The physics just requires consistent, verifiable physical properties.
 
 **Combat.** The physics ensures ships have physically consistent properties. How combat works — turn-based, real-time, deterministic Raido scripts — is a domain-level system. Weapons have mass and power draw (constraint physics). What they do to targets at a distance is domain logic.
