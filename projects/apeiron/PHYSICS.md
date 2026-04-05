@@ -164,11 +164,19 @@ What the physics provides is the evaluation function: given a component tree, de
 
 ## Verification
 
-Same model as existing natural laws. The standard physics script is content-addressed Raido bytecode. Domains that evaluate objects against it include the script hash in their proofs. Trading partners verify. Non-standard physics is visible.
+The constraint laws aren't enforced by any authority. They're verified by every trading partner.
 
-A domain that mints a ship whose component tree doesn't produce valid physics (negative mass, structure below requirement, energy budget in deficit) is minting physical impossibilities. Any receiving domain can re-run the script and see the violation. Trust collapses.
+One Raido script — the **standard physics script** — evaluates all five constraint laws plus the natural laws (fuel costs, decay rates) in a single pass. The founding cluster publishes it. It's content-addressed. Any domain can fetch, inspect, and execute it independently.
 
-A domain that uses different constants (lower structural scaling exponent, higher energy density) is running non-standard physics. Not broken — but transparent. Other domains decide how much trust to extend. A domain where ships are suspiciously light for their capability will face questions.
+**On minting:** A domain mints an object (ship, station, component). The physics script evaluates the component tree — derives mass, checks structural requirements, verifies energy budget, evaluates stress tolerances, computes coupling costs. The evaluation result and script hash go into the minting proof.
+
+**On transfer:** The receiving domain re-runs the same script against the component tree in the object's content. If derived properties match claimed properties, the object is physically valid. If they don't — trust flag. The script hash in the departure proof tells the receiver exactly which physics were applied. Fetch the script, re-execute, verify independently.
+
+**On mutation:** Any transform that changes an object's component tree triggers re-evaluation. Adding cargo, swapping an engine, installing weapons — the physics script runs again. The domain includes the new evaluation in the mutation proof.
+
+No domain can force another to run the script. But every domain that trades will verify inbound objects, because accepting physically impossible objects means your own proofs become suspect to YOUR trading partners. Verification propagates through self-interest, not authority.
+
+A domain running non-standard physics (different constants, missing laws, no evaluation) isn't banned. It's transparent — other domains see the non-standard script hash and decide how much trust to extend.
 
 ## Constants and Tuning
 
