@@ -283,6 +283,12 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_stmt(s);
                 }
             }
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.visit_expr(iter);
+                for s in body {
+                    self.visit_stmt(s);
+                }
+            }
             StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
                 self.visit_expr(init);
             }

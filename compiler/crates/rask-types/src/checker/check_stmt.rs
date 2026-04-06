@@ -196,6 +196,28 @@ impl TypeChecker {
                     self.check_stmt(s);
                 }
             }
+            StmtKind::ComptimeFor { binding, iter, body, .. } => {
+                // CT48–CT54: comptime for loop type checking
+                let iter_ty = self.infer_expr(iter);
+                self.push_scope();
+                let elem_ty = match &iter_ty {
+                    Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
+                    _ => self.ctx.fresh_var(),
+                };
+                match binding {
+                    ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
+                    ForBinding::Tuple(names) => {
+                        let vars: Vec<_> = names.iter().map(|_| self.ctx.fresh_var()).collect();
+                        for (name, var) in names.iter().zip(vars) {
+                            self.define_local(name.clone(), var);
+                        }
+                    }
+                }
+                for s in body {
+                    self.check_stmt(s);
+                }
+                self.pop_scope();
+            }
             StmtKind::LetTuple { patterns, init } | StmtKind::ConstTuple { patterns, init } => {
                 let is_const = matches!(&stmt.kind, StmtKind::ConstTuple { .. });
                 let init_ty = self.infer_expr(init);

@@ -1449,6 +1449,10 @@ impl<'a> MirLowerer<'a> {
             StmtKind::Comptime(body) => {
                 self.walk_free_vars_block(body, bound, seen, free);
             }
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.walk_free_vars(iter, bound, seen, free);
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
             StmtKind::Discard { .. } => {}
         }
     }

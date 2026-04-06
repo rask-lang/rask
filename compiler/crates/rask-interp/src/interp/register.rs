@@ -6,7 +6,7 @@ use rask_ast::stmt::Stmt;
 use rask_ast::stmt::StmtKind;
 use rask_ast::Span;
 
-use crate::value::{BuiltinKind, ModuleKind, Value};
+use crate::value::{BuiltinKind, ModuleKind, TypeConstructorKind, Value};
 
 use super::{Interpreter, RegisteredProgram, RuntimeError, TestResult, BenchmarkResult};
 
@@ -33,6 +33,21 @@ impl Interpreter {
             // Async module members
             (ModuleKind::Async, "spawn") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawn));
+            }
+            (ModuleKind::Async, "join_all") => {
+                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::JoinAll));
+            }
+            (ModuleKind::Async, "select_first") => {
+                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::SelectFirst));
+            }
+            (ModuleKind::Async, "cancelled") => {
+                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::Cancelled));
+            }
+            (ModuleKind::Async, "TaskGroup") => {
+                self.env.define(alias.to_string(), Value::TypeConstructor {
+                    kind: TypeConstructorKind::TaskGroup,
+                    type_param: None,
+                });
             }
             // Module type exports
             (ModuleKind::Random, "Rng") => {

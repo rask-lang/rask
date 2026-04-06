@@ -224,6 +224,10 @@ impl Interpreter {
                         kind: TypeConstructorKind::Ordering,
                         type_param,
                     }),
+                    "TaskGroup" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::TaskGroup,
+                        type_param,
+                    }),
                     "f32x8" => return Ok(Value::Type("f32x8".to_string())),
                     _ => {}
                 }

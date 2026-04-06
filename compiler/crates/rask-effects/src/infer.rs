@@ -223,6 +223,7 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
             }
         }
         StmtKind::Comptime(body) => classify_body(body, effects, callees),
+        StmtKind::ComptimeFor { body, .. } => classify_body(body, effects, callees),
     }
 }
 

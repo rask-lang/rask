@@ -508,6 +508,10 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Comptime(body) => {
                 self.check_block(body);
             }
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.check_expr(iter);
+                self.check_block(body);
+            }
             StmtKind::Discard { name, .. } => {
                 // D3: resource types cannot be discarded
                 if self.resource_bindings.contains(name) {
@@ -1824,6 +1828,10 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             StmtKind::Comptime(body) => {
+                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+            }
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.collect_free_vars_inner(iter, locals, out, projections);
                 for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }
             StmtKind::Return(None) | StmtKind::Break { value: None, .. }
