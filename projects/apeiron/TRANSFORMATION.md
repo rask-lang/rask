@@ -77,7 +77,7 @@ With facilities, the five constraint laws create physical extent:
 - Facilities have **volume** (reaction chambers, containment vessels, reactor mass). Law 2 — structural scaling means bigger facilities cost superlinearly more structure.
 - Facilities have **coupling costs** (Law 5 — the reactor radiates heat into the instruments, requiring shielding mass between them). More capable facilities have more internal coupling to manage.
 - Facilities have **energy budgets** (Law 3 — the reactor powering the facility is part of the facility, with its own mass and volume).
-- Facilities **degrade** (Law 4 — running high-energy transforms stresses containment and instruments).
+- Facilities can **fail under stress** (Law 4 — running high-energy transforms risks containment failure).
 - Facilities have **mass** (Law 1 — everything is made of something).
 
 A domain that wants to do advanced material research, system design, manufacturing, AND ship maintenance needs facilities for each. Those facilities occupy space, consume energy, require structure, and couple with each other. The five laws prevent cramming infinite capability into a point — same way they prevent the 10-million-km ship.
@@ -100,17 +100,19 @@ This is boring and expected. An alloy of 70% A and 30% B has properties somewher
 
 ### The Interaction Function: Computational Opacity
 
-The interaction function takes the full input state — element identities, mass fractions, energy (derived from consumed fuel) — and the galaxy seed, and produces a property modification vector:
+The interaction function takes the full input state — element identities, mass fractions, energy (derived from consumed fuel) — the galaxy seed, and a **beacon value** from the [Allgard beacon](../allgard/BEACON.md):
 
 ```
 energy = fuel.energy_density * fuel.mass_consumed
-modification = interact(element_ids, fractions, energy / output_mass, galaxy_seed)
+modification = interact(element_ids, fractions, energy / output_mass, galaxy_seed, beacon_value)
 material[p] = base[p] + modification[p]
 ```
 
-The critical design choice: **this function is forward-cheap but backward-hard.** Computing the output from known inputs is fast (one Raido evaluation). Finding inputs that produce a desired output requires searching the input space — there's no analytical shortcut.
+The critical design choice: **the domain commits to transform parameters BEFORE the beacon tick.** The beacon value enters the function but doesn't exist at commit time. This means the domain can't pre-compute which parameters produce the best output — the optimum shifts with every beacon tick. Each evaluation requires committing real resources (locked inputs, published commitment) before learning the result.
 
-The galaxy seed parameterizes the function. Each galaxy has different chemistry. Reading the Raido source code tells you the algorithm, but the seed makes the specific landscape unique. Like knowing SHA-256's algorithm doesn't help you find a preimage.
+The galaxy seed parameterizes the general landscape. The beacon value shifts the specific output within that landscape. General knowledge (which phase regions exist, which element combinations are promising) is derivable from the seed — this commoditizes and becomes textbook knowledge. Specific outputs for any given craft are unpredictable until the beacon ticks — this is what makes research with real materials valuable.
+
+**Verification:** The proof includes the commitment (timestamped before the beacon tick), the beacon value (from the public beacon log), and the output. Any verifier re-executes: check commitment timing, check beacon value against the log, re-evaluate the function, confirm the output matches. Cheap. Local. No federation interaction.
 
 ### Stoichiometric Peaks
 

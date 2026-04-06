@@ -12,7 +12,7 @@ The name is Old Norse: *all* + *garðr*. All the gards, together.
 
 ## What Allgard Is
 
-1. **A federation model** — six [primitives](PRIMITIVES.md) and six [conservation laws](CONSERVATION.md) that make cross-domain interaction trustworthy.
+1. **A federation model** — six [primitives](PRIMITIVES.md), seven [conservation laws](CONSERVATION.md), and a distributed [beacon](BEACON.md) that make cross-domain interaction trustworthy.
 2. **Domain-sovereign** — every gard is authoritative for its own state. No global consensus, no master server.
 3. **Bilateral trust** — domains verify each other's Proofs directly. Reputation is emergent, not administered.
 4. **Protocol-agnostic** — Allgard defines the *model*. [Leden](../leden/) is the wire protocol that carries it.
