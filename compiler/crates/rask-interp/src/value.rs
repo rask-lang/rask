@@ -140,6 +140,7 @@ pub enum TypeConstructorKind {
     Map,
     String,
     Pool,
+    Cell,
     Channel,
     Shared,
     Mutex,
@@ -334,6 +335,8 @@ pub enum Value {
     Instant(std::time::Instant),
     /// Type value (for accessing static methods like Instant.now())
     Type(String),
+    /// Cell<T> (CE1–CE6: single heap-allocated mutable value)
+    Cell(Arc<Mutex<Value>>),
     /// Pool (sparse storage with generation counters)
     Pool(Arc<Mutex<PoolData>>),
     /// Handle (opaque reference into a pool)
@@ -566,6 +569,7 @@ impl Value {
             Value::Duration(_) => "Duration",
             Value::Instant(_) => "Instant",
             Value::Type(_) => "type",
+            Value::Cell(_) => "Cell",
             Value::Pool(_) => "Pool",
             Value::Handle { .. } => "Handle",
             Value::ThreadHandle(_) => "ThreadHandle",
@@ -629,6 +633,10 @@ impl Value {
                     variant_index: *variant_index,
                     origin: origin.clone(),
                 }
+            }
+            Value::Cell(c) => {
+                let inner = c.lock().unwrap().deep_clone();
+                Value::Cell(Arc::new(Mutex::new(inner)))
             }
             Value::Pool(p) => {
                 let pool = p.lock().unwrap();
@@ -775,6 +783,7 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Map => "Map",
                     TypeConstructorKind::String => "string",
                     TypeConstructorKind::Pool => "Pool",
+                    TypeConstructorKind::Cell => "Cell",
                     TypeConstructorKind::Channel => "Channel",
                     TypeConstructorKind::Shared => "Shared",
                     TypeConstructorKind::Mutex => "Mutex",
@@ -836,6 +845,10 @@ impl fmt::Display for Value {
             }
             Value::Instant(_) => write!(f, "<Instant>"),
             Value::Type(name) => write!(f, "<type {}>", name),
+            Value::Cell(c) => {
+                let inner = c.lock().unwrap();
+                write!(f, "Cell({})", inner)
+            }
             Value::Pool(p) => {
                 let pool = p.lock().unwrap();
                 write!(f, "<Pool len={}>", pool.len)

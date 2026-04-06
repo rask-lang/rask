@@ -154,6 +154,7 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match type_name {
             "Instant" | "Duration" => self.call_time_type_method(type_name, method, args),
+            "Timer" => self.call_timer_type_method(method, args),
             "Path" => self.call_path_type_method(method, args),
             "f32x8" => self.call_simd_type_method(method, args),
             "Rng" => self.call_rng_type_method(method, args),
@@ -172,6 +173,18 @@ impl Interpreter {
                 } else {
                     Err(RuntimeError::TypeError(format!(
                         "ThreadPool has no method '{}'", method
+                    )))
+                }
+            }
+            // CE1: Cell.new(value) — heap-allocate a single value
+            "Cell" => {
+                if method == "new" && args.len() == 1 {
+                    Ok(Value::Cell(std::sync::Arc::new(std::sync::Mutex::new(
+                        args.into_iter().next().unwrap(),
+                    ))))
+                } else {
+                    Err(RuntimeError::TypeError(format!(
+                        "Cell has no static method '{}' (expected Cell.new(value))", method
                     )))
                 }
             }

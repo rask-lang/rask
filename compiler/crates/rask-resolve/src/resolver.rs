@@ -94,6 +94,7 @@ impl Resolver {
             ("Error", BuiltinTypeKind::Error),
             ("Channel", BuiltinTypeKind::Channel),
             ("Pool", BuiltinTypeKind::Pool),
+            ("Cell", BuiltinTypeKind::Cell),
             ("Handle", BuiltinTypeKind::Handle),
             ("Atomic", BuiltinTypeKind::Atomic),
             ("AtomicBool", BuiltinTypeKind::Atomic),

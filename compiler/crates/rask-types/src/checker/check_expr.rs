@@ -1638,6 +1638,14 @@ impl TypeChecker {
             if let Some(ty) = Self::primitive_type_constant(name, field) {
                 return ty;
             }
+            // G4: @binary struct SIZE/SIZE_BITS constants
+            if matches!(field, "SIZE" | "SIZE_BITS") {
+                if let Some(type_id) = self.types.get_type_id(name) {
+                    if self.types.is_binary_type_by_id(type_id) {
+                        return Type::U64;
+                    }
+                }
+            }
         }
 
         let obj_ty_raw = self.infer_expr(object);

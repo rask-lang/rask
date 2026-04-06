@@ -280,6 +280,38 @@ impl Interpreter {
                 }
                 self.call_builtin_method(receiver, method, args)
             }
+            // CE6: Cell<T> instance methods
+            Value::Cell(ref c) => match method {
+                "get" => {
+                    let guard = c.lock().unwrap();
+                    Ok(guard.clone())
+                }
+                "set" => {
+                    if args.len() != 1 {
+                        return Err(RuntimeError::TypeError("Cell.set expects 1 argument".into()));
+                    }
+                    let mut guard = c.lock().unwrap();
+                    *guard = args.into_iter().next().unwrap();
+                    Ok(Value::Unit)
+                }
+                "replace" => {
+                    if args.len() != 1 {
+                        return Err(RuntimeError::TypeError("Cell.replace expects 1 argument".into()));
+                    }
+                    let mut guard = c.lock().unwrap();
+                    let old = std::mem::replace(&mut *guard, args.into_iter().next().unwrap());
+                    Ok(old)
+                }
+                "into_inner" => {
+                    // Consume the cell — return inner value
+                    let guard = c.lock().unwrap();
+                    Ok(guard.clone())
+                }
+                _ => Err(RuntimeError::NoSuchMethod {
+                    ty: "Cell".to_string(),
+                    method: method.to_string(),
+                }),
+            },
             _ => self.call_builtin_method(receiver, method, args),
         }
     }

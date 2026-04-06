@@ -71,6 +71,39 @@ impl Interpreter {
                     ))),
                 }
             }
+            "join_all" => {
+                // join_all(handles) — wait for all task handles, return Vec of results
+                if args.is_empty() {
+                    return Ok(Value::Vec(Arc::new(Mutex::new(Vec::new()))));
+                }
+
+                // Accept either a Vec of handles or variadic handles
+                let handles: Vec<Value> = match &args[0] {
+                    Value::Vec(v) => v.lock().unwrap().clone(),
+                    _ => args,
+                };
+
+                let mut results = Vec::with_capacity(handles.len());
+                for handle in handles {
+                    match handle {
+                        Value::TaskHandle(h) => {
+                            let result = self.call_task_handle_method(&h, "join")?;
+                            results.push(result);
+                        }
+                        Value::ThreadHandle(h) => {
+                            let result = self.call_thread_handle_method(&h, "join")?;
+                            results.push(result);
+                        }
+                        _ => {
+                            return Err(RuntimeError::TypeError(format!(
+                                "join_all expects TaskHandle or ThreadHandle, got {}",
+                                handle.type_name()
+                            )));
+                        }
+                    }
+                }
+                Ok(Value::Vec(Arc::new(Mutex::new(results))))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "async".to_string(),
                 method: method.to_string(),
