@@ -193,6 +193,31 @@ impl StubRegistry {
         decls
     }
 
+    /// Return struct and enum declarations from ALL stdlib files (not just those
+    /// with function bodies). Used to register type definitions (fields, variants)
+    /// that the type checker needs for field access and pattern matching.
+    pub fn all_type_decls() -> Vec<Decl> {
+        let mut decls = Vec::new();
+        let mut next_id: u32 = 3_000_000;
+
+        for (_filename, source) in STUB_SOURCES {
+            let lex_result = rask_lexer::Lexer::new(source).tokenize();
+            if !lex_result.is_ok() {
+                continue;
+            }
+            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
+            let parse_result = parser.parse();
+            next_id = parser.next_node_id();
+            for decl in parse_result.decls {
+                if matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Impl(_)) {
+                    decls.push(decl);
+                }
+            }
+        }
+
+        decls
+    }
+
     fn process_decl(&mut self, decl: &rask_ast::decl::Decl, filename: &str, source: &str) {
         let decl_span = decl.span;
         match &decl.kind {

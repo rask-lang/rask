@@ -433,6 +433,52 @@ impl<'a> MirLowerer<'a> {
                     return Ok((MirOperand::Local(result_local), MirType::I64));
                 }
 
+                // assert_eq(got, expected) — compare and panic with diff
+                if func_name == "assert_eq" {
+                    let got_op = arg_operands.get(0).cloned()
+                        .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
+                    let expected_op = arg_operands.get(1).cloned()
+                        .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
+                    let result_local = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(result_local),
+                        func: FunctionRef::internal("rask_assert_eq".to_string()),
+                        args: vec![got_op, expected_op],
+                    }));
+                    return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
+                }
+
+                // skip("reason") — set skip flag then unwind via rask_test_skip
+                if func_name == "skip" {
+                    let msg = if let Some(MirOperand::Constant(MirConst::String(s))) = arg_operands.first() {
+                        s.clone()
+                    } else {
+                        "skipped".to_string()
+                    };
+                    let msg_op = MirOperand::Constant(MirConst::String(msg));
+                    let result_local = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(result_local),
+                        func: FunctionRef::internal("rask_test_skip".to_string()),
+                        args: vec![msg_op],
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                    let cont = self.builder.create_block();
+                    self.builder.switch_to_block(cont);
+                    return Ok((MirOperand::Local(result_local), MirType::I64));
+                }
+
+                // expect_fail() — mark test as expecting failure (returns, not noreturn)
+                if func_name == "expect_fail" {
+                    let result_local = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(result_local),
+                        func: FunctionRef::internal("rask_test_expect_fail".to_string()),
+                        args: vec![],
+                    }));
+                    return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
+                }
+
                 // Built-in variant constructors: Ok(v), Err(v), Some(v)
                 match func_name.as_str() {
                     "Some" if self.is_niche_option_expr(expr) => {

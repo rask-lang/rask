@@ -73,6 +73,9 @@ impl Resolver {
             ("min", BuiltinFunctionKind::Min, None),
             ("max", BuiltinFunctionKind::Max, None),
             ("clamp", BuiltinFunctionKind::Clamp, None),
+            ("assert_eq", BuiltinFunctionKind::AssertEq, None),
+            ("skip", BuiltinFunctionKind::Skip, Some("!")),
+            ("expect_fail", BuiltinFunctionKind::ExpectFail, None),
         ];
 
         for (name, builtin, ret_ty) in builtin_fns {
@@ -214,6 +217,8 @@ impl Resolver {
             BuiltinModuleKind::Random => &["Rng"],
             BuiltinModuleKind::Path => &["Path"],
             BuiltinModuleKind::Cli => &["Args"],
+            BuiltinModuleKind::Os => &["Command", "Process", "Output"],
+            BuiltinModuleKind::Io => &["Stdin", "Stdout", "Stderr", "Buffer"],
             _ => &[],
         };
 
@@ -228,6 +233,16 @@ impl Resolver {
             BuiltinModuleKind::Json => &[
                 ("JsonValue", &["Null", "Bool", "Number", "String", "Array", "Object"]),
                 ("JsonError", &["ParseError", "TypeError", "MissingField"]),
+            ],
+            BuiltinModuleKind::Os => &[
+                ("Stdio", &["Inherit", "Piped", "Null"]),
+                ("Signal", &["Interrupt", "Terminate", "Hangup", "User1", "User2"]),
+            ],
+            BuiltinModuleKind::Io => &[
+                ("IoError", &[
+                    "NotFound", "PermissionDenied", "AlreadyExists", "BrokenPipe",
+                    "ConnectionReset", "TimedOut", "UnexpectedEof", "Other",
+                ]),
             ],
             _ => &[],
         };
@@ -246,6 +261,14 @@ impl Resolver {
             _ => &[],
         };
 
+        // Structs with known public fields
+        let struct_fields: &[(&str, &[&str])] = match module {
+            BuiltinModuleKind::Os => &[
+                ("Output", &["status", "stdout", "stderr"]),
+            ],
+            _ => &[],
+        };
+
         // Register plain struct-like types
         for type_name in types {
             if builtin_types.iter().any(|(n, _)| n == type_name) {
@@ -254,9 +277,25 @@ impl Resolver {
             if self.scopes.lookup(type_name).is_some() {
                 continue;
             }
+            let field_names = struct_fields.iter()
+                .find(|(n, _)| *n == *type_name)
+                .map(|(_, f)| *f)
+                .unwrap_or(&[]);
+            let fields: Vec<(String, crate::symbol::SymbolId)> = field_names.iter()
+                .map(|f| {
+                    let field_sym = self.symbols.insert(
+                        f.to_string(),
+                        SymbolKind::Variable { mutable: false },
+                        None,
+                        span,
+                        false,
+                    );
+                    (f.to_string(), field_sym)
+                })
+                .collect();
             let sym_id = self.symbols.insert(
                 type_name.to_string(),
-                SymbolKind::Struct { fields: vec![] },
+                SymbolKind::Struct { fields },
                 None,
                 span,
                 false,
@@ -929,11 +968,10 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
                     self.errors.push(e);
                 }
-                // IM1: qualified import — access as pkg.Name, no unqualified injection.
-                // For glob imports (IM6), inject all companions unqualified.
-                if import_decl.is_glob {
-                    self.register_module_companions(module_kind, span);
-                }
+                // Stdlib modules always register companion types/enums into scope.
+                // Module functions are accessed qualified (os.env), but types
+                // (Command, File, Signal) are used unqualified per convention.
+                self.register_module_companions(module_kind, span);
             } else if let Some(&pkg_id) = self.package_bindings.get(pkg_name) {
                 // External package import — register as a package namespace
                 if import_decl.is_glob {

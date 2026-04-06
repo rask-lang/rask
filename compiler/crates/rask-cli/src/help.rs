@@ -323,6 +323,9 @@ pub fn print_test_help() {
     println!("{}", output::section_header("Options:"));
     println!("  {}       Output as structured JSON", output::arg("--json"));
     println!("  {} {} Filter tests by name pattern", output::arg("-f"), output::arg("<pattern>"));
+    println!("  {}   Show all test names", output::arg("--verbose"));
+    println!("  {} Force sequential execution", output::arg("--sequential"));
+    println!("  {} {} Seed for random test order", output::arg("--seed"), output::arg("<N>"));
     println!();
     println!("{}", output::section_header("Examples:"));
     println!("  {} {} {}        Run all tests in file",

@@ -47,6 +47,8 @@ pub struct TestResult {
     pub passed: bool,
     pub duration: std::time::Duration,
     pub errors: Vec<String>,
+    /// Test was skipped via skip("reason")
+    pub skipped: Option<String>,
 }
 
 /// Result of running a single benchmark.
@@ -534,6 +536,7 @@ impl Interpreter {
                     passed: false,
                     duration: std::time::Duration::ZERO,
                     errors: vec![format!("{}", e)],
+                    skipped: None,
                 }];
             }
         };
@@ -665,6 +668,14 @@ pub enum RuntimeError {
     /// Check failed (check expr) — test continues, marked failed
     #[error("check failed: {0}")]
     CheckFailed(String),
+
+    /// Test skipped via skip("reason")
+    #[error("skipped: {0}")]
+    TestSkipped(String),
+
+    /// Test expects failure via expect_fail()
+    #[error("expect_fail")]
+    TestExpectFail,
 }
 
 /// Runtime error with source location for diagnostic display.

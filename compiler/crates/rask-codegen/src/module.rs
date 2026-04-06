@@ -470,6 +470,55 @@ impl CodeGenerator {
             self.func_ids.insert("rask_test_run".to_string(), id);
         }
 
+        // rask_assert_eq(got: i64, expected: i64) -> void (panics on mismatch)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_assert_eq", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_assert_eq".to_string(), id);
+        }
+
+        // rask_test_skip(reason: ptr) -> noreturn (unwinds via panic)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_test_skip", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_test_skip".to_string(), id);
+        }
+
+        // rask_test_skip_flag() -> void (sets thread-local skip flag)
+        {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function("rask_test_skip_flag", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_test_skip_flag".to_string(), id);
+        }
+
+        // rask_test_expect_fail() -> void (sets thread-local flag)
+        {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function("rask_test_expect_fail", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_test_expect_fail".to_string(), id);
+        }
+
+        // rask_check_fail(msg: ptr) -> void (records failure, doesn't unwind)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_check_fail", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_check_fail".to_string(), id);
+        }
+
         Ok(())
     }
 

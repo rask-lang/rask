@@ -1144,7 +1144,9 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
             | RuntimeError::Return(_)
             | RuntimeError::Break(_)
             | RuntimeError::Continue
-            | RuntimeError::TryError(_) => {
+            | RuntimeError::TryError(_)
+            | RuntimeError::TestSkipped(_)
+            | RuntimeError::TestExpectFail => {
                 // These are not actual errors, just control flow
                 Diagnostic::error(format!("{}", self.error))
                     .with_primary(self.span, "control flow")
