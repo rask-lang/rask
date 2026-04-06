@@ -92,7 +92,7 @@ impl Desugarer {
             DeclKind::Import(_) => {}
             DeclKind::Export(_) => {}
             DeclKind::Extern(_) => {}
-            DeclKind::Package(_) => {}
+            DeclKind::Package(_) | DeclKind::CImport(_) => {}
             DeclKind::Union(_) => {}
             DeclKind::TypeAlias(_) => {}
         }

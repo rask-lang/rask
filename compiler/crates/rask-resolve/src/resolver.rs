@@ -684,7 +684,7 @@ impl Resolver {
                     }
                 }
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
-                DeclKind::Package(_) => {}
+                DeclKind::Package(_) | DeclKind::CImport(_) => {}
                 DeclKind::Union(union_decl) => {
                     self.declare_union(union_decl, decl.span);
                 }
@@ -1124,7 +1124,7 @@ impl Resolver {
                 DeclKind::Import(_) => {}
                 DeclKind::Export(_) => {}
                 DeclKind::Extern(_) => {}
-                DeclKind::Package(_) => {}
+                DeclKind::Package(_) | DeclKind::CImport(_) => {}
                 DeclKind::Union(_) => {}
                 DeclKind::TypeAlias(_) => {}
             }

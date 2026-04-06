@@ -289,6 +289,28 @@ impl<'a> Printer<'a> {
             DeclKind::Package(p) => self.format_package_decl(p),
             DeclKind::Union(u) => self.format_union_decl(u, decl.span),
             DeclKind::TypeAlias(t) => self.format_type_alias_decl(t),
+            DeclKind::CImport(ci) => {
+                self.emit("import c ");
+                if ci.headers.len() == 1 {
+                    self.emit(&format!("\"{}\"", ci.headers[0]));
+                } else {
+                    self.emit("{ ");
+                    for (i, h) in ci.headers.iter().enumerate() {
+                        if i > 0 { self.emit(", "); }
+                        self.emit(&format!("\"{}\"", h));
+                    }
+                    self.emit(" }");
+                }
+                if ci.alias != "c" {
+                    self.emit(&format!(" as {}", ci.alias));
+                }
+                if !ci.hiding.is_empty() {
+                    self.emit(" hiding { ");
+                    self.emit(&ci.hiding.join(", "));
+                    self.emit(" }");
+                }
+                self.emit_newline();
+            }
         }
     }
 

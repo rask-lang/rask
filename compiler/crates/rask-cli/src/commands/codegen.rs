@@ -14,7 +14,11 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
     let mut result = super::pipeline::run_frontend(path, format);
 
     // Hidden parameter pass — desugar `using` clauses into explicit params
-    rask_hidden_params::desugar_hidden_params(&mut result.decls);
+    // Pass type info for proper CC4 scope resolution
+    rask_hidden_params::desugar_hidden_params_with_types(
+        &mut result.decls,
+        Some(&result.typed.node_types),
+    );
 
     // Generate synthetic function bodies for auto-derived methods (compare, etc.)
     super::derive::generate_derived_methods(&mut result.decls, &result.typed);

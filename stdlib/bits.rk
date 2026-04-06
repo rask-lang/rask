@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Bit manipulation, byte order, binary parsing/building (std.bits).
+
+// ── Bit operations on integer types (B1) ────────────────────────────
+
+// Methods defined via extend on each integer type.
+// popcount, leading_zeros, trailing_zeros, leading_ones, trailing_ones,
+// reverse_bits, rotate_left, rotate_right, swap_bytes
+// are built-in methods on all integer types — registered in builtins.
+
+// ── Byte order conversion (B2, B3) ──────────────────────────────────
+
+// to_be, to_le, from_be, from_le are methods on integer types.
+// to_be_bytes, to_le_bytes, to_ne_bytes produce byte arrays.
+// T.from_be_bytes, T.from_le_bytes, T.from_ne_bytes parse them.
+
+// ── Network byte order aliases (B4) ─────────────────────────────────
+
+struct bits { }
+
+extend bits {
+    /// Host to network byte order (u16).
+    public func hton_u16(x: u16) -> u16 { return x.to_be() }
+
+    /// Host to network byte order (u32).
+    public func hton_u32(x: u32) -> u32 { return x.to_be() }
+
+    /// Network to host byte order (u16).
+    public func ntoh_u16(x: u16) -> u16 { return u16.from_be(x) }
+
+    /// Network to host byte order (u32).
+    public func ntoh_u32(x: u32) -> u32 { return u32.from_be(x) }
+}
+
+// ── Binary parsing (P1-P4) ──────────────────────────────────────────
+
+enum ParseError {
+    UnexpectedEnd { expected: usize, actual: usize }
+    InvalidData { message: string }
+}
+
+// ── Binary building (K1-K2) ─────────────────────────────────────────
+
+struct BinaryBuilder {
+    data: Vec<u8>
+}
+
+extend BinaryBuilder {
+    public func new() -> BinaryBuilder {
+        return BinaryBuilder { data: Vec.new() }
+    }
+
+    public func with_capacity(n: usize) -> BinaryBuilder {
+        return BinaryBuilder { data: Vec.with_capacity(n) }
+    }
+
+    public func write_u8(mutate self, value: u8) -> BinaryBuilder {
+        self.data.push(value)
+        return self
+    }
+
+    public func write_u16be(mutate self, value: u16) -> BinaryBuilder {
+        self.data.push((value >> 8) as u8)
+        self.data.push(value as u8)
+        return self
+    }
+
+    public func write_u16le(mutate self, value: u16) -> BinaryBuilder {
+        self.data.push(value as u8)
+        self.data.push((value >> 8) as u8)
+        return self
+    }
+
+    public func write_u32be(mutate self, value: u32) -> BinaryBuilder {
+        self.data.push((value >> 24) as u8)
+        self.data.push((value >> 16) as u8)
+        self.data.push((value >> 8) as u8)
+        self.data.push(value as u8)
+        return self
+    }
+
+    public func write_u32le(mutate self, value: u32) -> BinaryBuilder {
+        self.data.push(value as u8)
+        self.data.push((value >> 8) as u8)
+        self.data.push((value >> 16) as u8)
+        self.data.push((value >> 24) as u8)
+        return self
+    }
+
+    public func write_bytes(mutate self, bytes: Vec<u8>) -> BinaryBuilder {
+        for b in bytes {
+            self.data.push(b)
+        }
+        return self
+    }
+
+    public func build(self) -> Vec<u8> {
+        return self.data
+    }
+
+    public func len(self) -> usize {
+        return self.data.len()
+    }
+}
