@@ -114,6 +114,7 @@ impl<'a> WarnContext<'a> {
                 }
             }
             StmtKind::Comptime(body) => self.check_stmts(body, warnings),
+            StmtKind::ComptimeFor { body, .. } => self.check_stmts(body, warnings),
             StmtKind::Discard { .. } => {}
         }
     }
@@ -191,6 +192,10 @@ impl<'a> WarnContext<'a> {
             ExprKind::Unary { operand, .. } => self.check_expr(operand, warnings),
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.check_expr(object, warnings);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.check_expr(object, warnings);
+                self.check_expr(field_expr, warnings);
             }
             ExprKind::Index { object, index } => {
                 self.check_expr(object, warnings);

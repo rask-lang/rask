@@ -6,7 +6,7 @@ use rask_ast::stmt::Stmt;
 use rask_ast::stmt::StmtKind;
 use rask_ast::Span;
 
-use crate::value::{BuiltinKind, ModuleKind, Value};
+use crate::value::{BuiltinKind, ModuleKind, TypeConstructorKind, Value};
 
 use super::{Interpreter, RegisteredProgram, RuntimeError, TestResult, BenchmarkResult};
 
@@ -33,6 +33,21 @@ impl Interpreter {
             // Async module members
             (ModuleKind::Async, "spawn") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawn));
+            }
+            (ModuleKind::Async, "join_all") => {
+                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::JoinAll));
+            }
+            (ModuleKind::Async, "select_first") => {
+                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::SelectFirst));
+            }
+            (ModuleKind::Async, "cancelled") => {
+                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::Cancelled));
+            }
+            (ModuleKind::Async, "TaskGroup") => {
+                self.env.define(alias.to_string(), Value::TypeConstructor {
+                    kind: TypeConstructorKind::TaskGroup,
+                    type_param: None,
+                });
             }
             // Module type exports
             (ModuleKind::Random, "Rng") => {
@@ -112,6 +127,16 @@ impl Interpreter {
                 }
                 DeclKind::Import(import) => {
                     if let Some(module_name) = import.path.first() {
+                        // Handle std.reflect as a special two-component module
+                        if module_name == "std"
+                            && import.path.len() >= 2
+                            && import.path[1] == "reflect"
+                        {
+                            let alias = import.alias.clone().unwrap_or_else(|| "reflect".to_string());
+                            imports.push((alias, ModuleKind::Reflect));
+                            continue;
+                        }
+
                         let module_kind = match module_name.as_str() {
                             "fs" => Some(ModuleKind::Fs),
                             "io" => Some(ModuleKind::Io),
@@ -154,6 +179,12 @@ impl Interpreter {
                 }
                 DeclKind::Struct(s) => {
                     let base_name = strip_generics(&s.name).to_string();
+                    // Register @binary struct metadata
+                    if s.attrs.iter().any(|a| a == "binary") {
+                        if let Some(meta) = super::binary::BinaryStructMeta::from_decl(&s.name, &s.fields) {
+                            self.binary_structs.insert(base_name.clone(), meta);
+                        }
+                    }
                     self.struct_decls.insert(base_name.clone(), s.clone());
                     if !s.methods.is_empty() {
                         let type_methods = self.methods.entry(base_name).or_default();

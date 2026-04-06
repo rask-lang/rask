@@ -223,6 +223,7 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
             }
         }
         StmtKind::Comptime(body) => classify_body(body, effects, callees),
+        StmtKind::ComptimeFor { body, .. } => classify_body(body, effects, callees),
     }
 }
 
@@ -283,6 +284,10 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         ExprKind::Unary { operand, .. } => classify_expr(operand, effects, callees),
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
             classify_expr(object, effects, callees);
+        }
+        ExprKind::DynamicField { object, field_expr } => {
+            classify_expr(object, effects, callees);
+            classify_expr(field_expr, effects, callees);
         }
         ExprKind::Index { object, index } => {
             classify_expr(object, effects, callees);

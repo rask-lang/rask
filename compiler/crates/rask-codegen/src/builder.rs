@@ -159,11 +159,11 @@ impl<'a> FunctionBuilder<'a> {
             })
             .collect();
 
-        // Collect cleanup-only blocks (appear in CleanupReturn chains).
-        // A single shared Cranelift block is created per unique cleanup
-        // chain — all CleanupReturn sites with the same chain jump to
-        // the shared block instead of inlining the cleanup statements.
-        let cleanup_only: HashSet<BlockId> = self.mir_fn.blocks.iter()
+        // Collect cleanup-only blocks (appear in CleanupReturn chains)
+        // and their transitive sub-blocks (handler/done blocks reachable
+        // from cleanup blocks). These are excluded from normal codegen
+        // and processed as part of shared cleanup blocks instead.
+        let mut cleanup_only: HashSet<BlockId> = self.mir_fn.blocks.iter()
             .filter_map(|b| {
                 if let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &b.terminator.kind {
                     Some(cleanup_chain.iter().copied())
@@ -173,6 +173,20 @@ impl<'a> FunctionBuilder<'a> {
             })
             .flatten()
             .collect();
+        // Transitively include sub-blocks reachable from cleanup blocks
+        // (e.g. else handler blocks, done blocks in ensure sub-CFGs).
+        {
+            let mut to_visit: Vec<BlockId> = cleanup_only.iter().copied().collect();
+            while let Some(bid) = to_visit.pop() {
+                if let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == bid) {
+                    for target in rask_mir::analysis::cfg::successors(&mir_block.terminator) {
+                        if cleanup_only.insert(target) {
+                            to_visit.push(target);
+                        }
+                    }
+                }
+            }
+        }
 
         // Deduplicate cleanup chains: map each unique chain to a shared block.
         let mut cleanup_chain_blocks: HashMap<Vec<BlockId>, cranelift_codegen::ir::Block> =
@@ -303,7 +317,18 @@ impl<'a> FunctionBuilder<'a> {
         }
 
         // Emit shared cleanup blocks. Each unique cleanup chain gets one
-        // Cranelift block that runs the cleanup statements and returns.
+        // entry Cranelift block. Cleanup blocks may contain sub-CFGs
+        // (e.g. else handler branching for ER2), which get their own
+        // Cranelift blocks.
+        //
+        // Create Cranelift blocks for all cleanup sub-blocks first so
+        // Branch terminators can reference them.
+        let mut cleanup_block_map: HashMap<BlockId, cranelift_codegen::ir::Block> = HashMap::new();
+        for &bid in &cleanup_only {
+            let cl_block = builder.create_block();
+            cleanup_block_map.insert(bid, cl_block);
+        }
+
         for (chain, &shared_block) in &cleanup_chain_blocks {
             builder.switch_to_block(shared_block);
 
@@ -325,20 +350,186 @@ impl<'a> FunctionBuilder<'a> {
                 current_span_start: 0,
                 ..ctx
             };
-            // Emit cleanup statements from each block in the chain
-            for block_id in chain {
-                if let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == *block_id) {
-                    for stmt in &mir_block.statements {
-                        Self::lower_stmt(&mut builder, stmt, &cleanup_ctx)?;
+
+            // Jump from shared entry to the first cleanup block in the chain
+            if let Some(&first_block) = chain.first().and_then(|bid| cleanup_block_map.get(bid)) {
+                builder.ins().jump(first_block, &[]);
+            } else {
+                // Empty chain — just return
+                if let Some(val) = ret_param {
+                    builder.ins().return_(&[val]);
+                } else {
+                    builder.ins().return_(&[]);
+                }
+                continue;
+            }
+
+            // Process each cleanup block in the chain as a real CFG.
+            // Unreachable sentinels → jump to next chain block or return.
+            for (i, block_id) in chain.iter().enumerate() {
+                let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == *block_id) else {
+                    continue;
+                };
+                let Some(&cl_block) = cleanup_block_map.get(block_id) else {
+                    continue;
+                };
+
+                builder.switch_to_block(cl_block);
+
+                // Lower statements
+                for stmt in &mir_block.statements {
+                    Self::lower_stmt(&mut builder, stmt, &cleanup_ctx)?;
+                }
+
+                // Lower terminator — Unreachable means "continue chain or return"
+                match &mir_block.terminator.kind {
+                    MirTerminatorKind::Unreachable => {
+                        // End of this ensure's sub-CFG. Jump to next chain block or return.
+                        if let Some(next_bid) = chain.get(i + 1) {
+                            if let Some(&next_cl) = cleanup_block_map.get(next_bid) {
+                                builder.ins().jump(next_cl, &[]);
+                            } else if let Some(val) = ret_param {
+                                builder.ins().return_(&[val]);
+                            } else {
+                                builder.ins().return_(&[]);
+                            }
+                        } else if let Some(val) = ret_param {
+                            builder.ins().return_(&[val]);
+                        } else {
+                            builder.ins().return_(&[]);
+                        }
+                    }
+                    MirTerminatorKind::Branch { cond, then_block, else_block } => {
+                        let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;
+                        let actual_ty = builder.func.dfg.value_type(cond_val);
+                        let cond_final = if actual_ty != types::I8 {
+                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8)
+                        } else {
+                            cond_val
+                        };
+                        let then_cl = cleanup_block_map.get(then_block).copied()
+                            .unwrap_or_else(|| builder.create_block());
+                        let else_cl = cleanup_block_map.get(else_block).copied()
+                            .unwrap_or_else(|| builder.create_block());
+                        builder.ins().brif(cond_final, then_cl, &[], else_cl, &[]);
+                    }
+                    MirTerminatorKind::Goto { target } => {
+                        if let Some(&tgt) = cleanup_block_map.get(target) {
+                            builder.ins().jump(tgt, &[]);
+                        }
+                    }
+                    _ => {
+                        // Other terminators in cleanup blocks: treat as return
+                        if let Some(val) = ret_param {
+                            builder.ins().return_(&[val]);
+                        } else {
+                            builder.ins().return_(&[]);
+                        }
                     }
                 }
             }
 
-            // Return
-            if let Some(val) = ret_param {
-                builder.ins().return_(&[val]);
-            } else {
-                builder.ins().return_(&[]);
+            // Process sub-blocks (handler blocks, done blocks) that aren't
+            // in the chain but are reachable from chain blocks.
+            let chain_set: HashSet<BlockId> = chain.iter().copied().collect();
+            for &bid in &cleanup_only {
+                if chain_set.contains(&bid) {
+                    continue; // Already processed above
+                }
+                // Only process sub-blocks reachable from THIS chain's blocks
+                let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == bid) else {
+                    continue;
+                };
+                let Some(&cl_block) = cleanup_block_map.get(&bid) else {
+                    continue;
+                };
+
+                // Check if this sub-block is reachable from any block in THIS chain
+                let reachable = chain.iter().any(|chain_bid| {
+                    let mut visited = HashSet::new();
+                    let mut queue = vec![*chain_bid];
+                    while let Some(qid) = queue.pop() {
+                        if qid == bid { return true; }
+                        if !visited.insert(qid) { continue; }
+                        if let Some(qb) = self.mir_fn.blocks.iter().find(|b| b.id == qid) {
+                            for succ in rask_mir::analysis::cfg::successors(&qb.terminator) {
+                                if cleanup_only.contains(&succ) {
+                                    queue.push(succ);
+                                }
+                            }
+                        }
+                    }
+                    false
+                });
+                if !reachable { continue; }
+
+                builder.switch_to_block(cl_block);
+                for stmt in &mir_block.statements {
+                    Self::lower_stmt(&mut builder, stmt, &cleanup_ctx)?;
+                }
+
+                match &mir_block.terminator.kind {
+                    MirTerminatorKind::Unreachable => {
+                        // End of sub-CFG — jump to next chain block or return.
+                        // Find which chain block this sub-block belongs to.
+                        let chain_idx = chain.iter().position(|cid| {
+                            let mut visited = HashSet::new();
+                            let mut queue = vec![*cid];
+                            while let Some(qid) = queue.pop() {
+                                if qid == bid { return true; }
+                                if !visited.insert(qid) { continue; }
+                                if let Some(qb) = self.mir_fn.blocks.iter().find(|b| b.id == qid) {
+                                    for succ in rask_mir::analysis::cfg::successors(&qb.terminator) {
+                                        if cleanup_only.contains(&succ) {
+                                            queue.push(succ);
+                                        }
+                                    }
+                                }
+                            }
+                            false
+                        });
+                        let next_chain_idx = chain_idx.map(|i| i + 1);
+                        if let Some(next_bid) = next_chain_idx.and_then(|i| chain.get(i)) {
+                            if let Some(&next_cl) = cleanup_block_map.get(next_bid) {
+                                builder.ins().jump(next_cl, &[]);
+                            } else if let Some(val) = ret_param {
+                                builder.ins().return_(&[val]);
+                            } else {
+                                builder.ins().return_(&[]);
+                            }
+                        } else if let Some(val) = ret_param {
+                            builder.ins().return_(&[val]);
+                        } else {
+                            builder.ins().return_(&[]);
+                        }
+                    }
+                    MirTerminatorKind::Goto { target } => {
+                        if let Some(&tgt) = cleanup_block_map.get(target) {
+                            builder.ins().jump(tgt, &[]);
+                        }
+                    }
+                    MirTerminatorKind::Branch { cond, then_block, else_block } => {
+                        let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;
+                        let actual_ty = builder.func.dfg.value_type(cond_val);
+                        let cond_final = if actual_ty != types::I8 {
+                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8)
+                        } else {
+                            cond_val
+                        };
+                        let then_cl = cleanup_block_map.get(then_block).copied()
+                            .unwrap_or_else(|| builder.create_block());
+                        let else_cl = cleanup_block_map.get(else_block).copied()
+                            .unwrap_or_else(|| builder.create_block());
+                        builder.ins().brif(cond_final, then_cl, &[], else_cl, &[]);
+                    }
+                    _ => {
+                        if let Some(val) = ret_param {
+                            builder.ins().return_(&[val]);
+                        } else {
+                            builder.ins().return_(&[]);
+                        }
+                    }
+                }
             }
         }
 
@@ -350,6 +541,9 @@ impl<'a> FunctionBuilder<'a> {
         }
         for &shared_block in cleanup_chain_blocks.values() {
             builder.seal_block(shared_block);
+        }
+        for &cl_block in cleanup_block_map.values() {
+            builder.seal_block(cl_block);
         }
 
         builder.finalize();

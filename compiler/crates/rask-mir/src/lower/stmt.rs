@@ -20,6 +20,9 @@ impl<'a> MirLowerer<'a> {
         match &stmt.kind {
             StmtKind::Expr(e) => {
                 self.lower_expr(e)?;
+                // C1/C2: if this is a consuming method call on an ensure receiver,
+                // emit ResourceConsume so the ensure is cancelled at cleanup time.
+                self.check_resource_consume(e);
                 Ok(())
             }
 
@@ -92,8 +95,13 @@ impl<'a> MirLowerer<'a> {
                         }));
                     }
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
-                } else {
+                } else if self.ensure_stack.is_empty() {
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value }));
+                } else {
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
+                        value,
+                        cleanup_chain: self.cleanup_chain(),
+                    }));
                 }
                 Ok(())
             }
@@ -269,49 +277,153 @@ impl<'a> MirLowerer<'a> {
                 let payload_ty = self.extract_payload_type(expr)
                     .unwrap_or(MirType::I64);
                 self.bind_pattern_payload(pattern, val, payload_ty);
+                let ensure_depth = self.ensure_stack.len();
                 self.loop_stack.push(LoopContext {
                     label: None,
                     continue_block: check_block,
                     exit_block,
                     result_local: None,
+                    ensure_depth,
                 });
                 for s in body {
                     self.lower_stmt(s)?;
                 }
+                // EN7: run loop-scoped ensures at iteration end
+                self.emit_loop_cleanup(ensure_depth);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
                 self.loop_stack.pop();
+                self.ensure_stack.truncate(ensure_depth);
 
                 self.builder.switch_to_block(exit_block);
                 Ok(())
             }
 
-            // Ensure (spec L4)
+            // Ensure (EN1–EN7): schedule cleanup to run at scope exit.
+            // Body is lowered into a cleanup block; CleanupReturn terminators
+            // at return/try sites chain through these blocks.
             StmtKind::Ensure { body, else_handler } => {
                 let cleanup_block = self.builder.create_block();
                 let continue_block = self.builder.create_block();
 
+                // Marker for MIRI/analysis
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block }));
+
+                // C1/C2: extract receiver variable from body (e.g. `ensure tx.rollback()` → "tx").
+                // Register a resource_id so consumption can be tracked at runtime.
+                let receiver_name = Self::extract_ensure_receiver(body);
+                if let Some(ref name) = receiver_name {
+                    if let Some((local_id, _)) = self.locals.get(name) {
+                        let resource_id = self.builder.alloc_local(
+                            format!("__ensure_res_{}", cleanup_block.0),
+                            MirType::I64,
+                        );
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceRegister {
+                            dst: resource_id,
+                            type_name: name.clone(),
+                            scope_depth: 0,
+                        }));
+                        self.ensure_receivers.insert(cleanup_block, (name.clone(), resource_id));
+                        // Store resource_id in local_meta so method calls on this
+                        // receiver can find it for ResourceConsume.
+                        self.meta_mut(name).resource_id = Some(resource_id);
+                    }
+                }
+                self.ensure_stack.push(cleanup_block);
+
+                // Main flow skips to continue block (body runs at scope exit)
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
+
+                // Lower ensure body into cleanup block.
+                // C1/C2: if receiver has a resource_id, check consumption first.
+                self.builder.switch_to_block(cleanup_block);
+                if let Some((_, resource_id)) = receiver_name
+                    .as_ref()
+                    .and_then(|name| self.ensure_receivers.get(&cleanup_block).cloned())
+                {
+                    // Check if resource was consumed → skip cleanup
+                    let consumed = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(consumed),
+                        func: crate::FunctionRef::internal("rask_resource_is_consumed".to_string()),
+                        args: vec![MirOperand::Local(resource_id)],
+                    }));
+                    let body_block = self.builder.create_block();
+                    let skip_block = self.builder.create_block();
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: MirOperand::Local(consumed),
+                        then_block: skip_block,
+                        else_block: body_block,
+                    }));
+                    // skip_block: sentinel (consumed → skip cleanup)
+                    self.builder.switch_to_block(skip_block);
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                    // body_block: run the actual cleanup
+                    self.builder.switch_to_block(body_block);
+                }
 
                 for s in body {
                     self.lower_stmt(s)?;
                 }
 
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
-
-                self.builder.switch_to_block(cleanup_block);
                 if let Some((param_name, handler_body)) = else_handler {
-                    // Needs full type inference to determine exact error type from
-                    // try expressions in the body. I64 matches runtime error representation.
-                    let param_ty = MirType::I64;
-                    let param_local = self.builder.alloc_local(param_name.clone(), param_ty.clone());
-                    self.locals.insert(param_name.clone(), (param_local, param_ty));
-                    for s in handler_body {
-                        self.lower_stmt(s)?;
+                    // ER2: route errors from body to else handler.
+                    // The body's last call may return a Result — check its tag.
+                    let handler_block = self.builder.create_block();
+                    let done_block = self.builder.create_block();
+
+                    if let Some(call_dst) = self.builder.last_call_dst() {
+                        // Check Result tag: 0=Ok, 1=Err
+                        let tag = self.builder.alloc_temp(MirType::U8);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: tag,
+                            rvalue: MirRValue::EnumTag { value: MirOperand::Local(call_dst) },
+                        }));
+                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                            cond: MirOperand::Local(tag),
+                            then_block: handler_block,
+                            else_block: done_block,
+                        }));
+
+                        // Handler block: bind error, run handler body.
+                        // Infer error type from the call's return type.
+                        let err_ty = self.builder.local_type(call_dst)
+                            .and_then(|t| match t {
+                                MirType::Result { err, .. } => Some(*err),
+                                _ => None,
+                            })
+                            .unwrap_or(MirType::I64);
+                        self.builder.switch_to_block(handler_block);
+                        let err_local = self.builder.alloc_local(param_name.clone(), err_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: err_local,
+                            rvalue: MirRValue::Field {
+                                base: MirOperand::Local(call_dst),
+                                field_index: 0,
+                                byte_offset: None,
+                                field_size: None,
+                            },
+                        }));
+                        self.locals.insert(param_name.clone(), (err_local, err_ty));
+                        for s in handler_body {
+                            self.lower_stmt(s)?;
+                        }
+                        if self.builder.current_block_unterminated() {
+                            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+                        }
+                    } else {
+                        // No call in body — handler never fires
+                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+                    }
+
+                    // Done block: sentinel for end of cleanup sub-CFG
+                    self.builder.switch_to_block(done_block);
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                } else {
+                    // No handler — terminate with sentinel
+                    if self.builder.current_block_unterminated() {
+                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
                     }
                 }
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
 
                 self.builder.switch_to_block(continue_block);
                 Ok(())
@@ -344,6 +456,13 @@ impl<'a> MirLowerer<'a> {
                     self.lower_stmt(s)?;
                 }
                 Ok(())
+            }
+
+            // CT48: comptime for — must be unrolled before MIR lowering
+            StmtKind::ComptimeFor { .. } => {
+                Err(LoweringError::InvalidConstruct(
+                    "comptime for must be unrolled at monomorphization time before MIR lowering".into()
+                ))
             }
         }
     }
@@ -767,21 +886,26 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(body_block);
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: None,
             continue_block: check_block,
             exit_block,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: check_block,
         }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
@@ -822,7 +946,7 @@ impl<'a> MirLowerer<'a> {
                             || matches!(ty, rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool")
                     });
                     if obj_is_pool {
-                        return self.lower_for_pool_entries(label, names, object, body);
+                        return self.lower_for_pool_entries(label, names, object, body, mutate);
                     }
                 }
             }
@@ -837,6 +961,17 @@ impl<'a> MirLowerer<'a> {
             ) || matches!(
                 ty,
                 rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool"
+            )
+        });
+
+        // LP13: Detect Map iteration for correct writeback target.
+        let is_map = self.ctx.lookup_raw_type(iter_expr.id).map_or(false, |ty| {
+            matches!(
+                ty,
+                rask_types::Type::UnresolvedNamed(n) if n == "Map"
+            ) || matches!(
+                ty,
+                rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map"
             )
         });
 
@@ -979,6 +1114,8 @@ impl<'a> MirLowerer<'a> {
 
         // Tuple destructuring: for (a, b) in collection { ... }
         // Extract fields from the loaded element into each binding.
+        // LP13: Track value local for Map writeback (key=field0, value=field1).
+        let mut map_value_local = None;
         if let ForBinding::Tuple(names) = binding {
             for (i, name) in names.iter().enumerate() {
                 if i == 0 { continue; }
@@ -993,6 +1130,10 @@ impl<'a> MirLowerer<'a> {
                         field_size: None,
                     },
                 }));
+                // Track value local (field 1) for Map writeback
+                if i == 1 && is_map {
+                    map_value_local = Some(field_local);
+                }
             }
             // Re-extract field 0 into the first binding (was whole tuple)
             let first_field = self.builder.alloc_temp(MirType::I64);
@@ -1011,45 +1152,74 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
             continue_block: continue_target,
             exit_block: break_target,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_target }));
 
-        // Writeback blocks for `for mutate`: Vec_set(collection, idx, binding_local)
+        // Writeback blocks for `for mutate`
+        // LP13: Vec uses Vec_set(vec, idx, elem), Map uses Map_set(map, key, value)
         if let Some(wb) = wb_block {
-            // Normal/continue writeback → inc
             self.builder.switch_to_block(wb);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Vec_set".to_string()),
-                args: vec![
-                    MirOperand::Local(collection),
-                    MirOperand::Local(idx),
-                    MirOperand::Local(binding_local),
-                ],
-            }));
+            if let Some(val_local) = map_value_local {
+                // Map writeback: Map_set(collection, key, value)
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Map_set".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(binding_local), // key (field 0)
+                        MirOperand::Local(val_local),     // value (field 1)
+                    ],
+                }));
+            } else {
+                // Vec writeback: Vec_set(collection, idx, elem)
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Vec_set".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(idx),
+                        MirOperand::Local(binding_local),
+                    ],
+                }));
+            }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
         }
         if let Some(break_wb) = break_wb_block {
-            // Break writeback → exit
             self.builder.switch_to_block(break_wb);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Vec_set".to_string()),
-                args: vec![
-                    MirOperand::Local(collection),
-                    MirOperand::Local(idx),
-                    MirOperand::Local(binding_local),
-                ],
-            }));
+            if let Some(val_local) = map_value_local {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Map_set".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(binding_local),
+                        MirOperand::Local(val_local),
+                    ],
+                }));
+            } else {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Vec_set".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(idx),
+                        MirOperand::Local(binding_local),
+                    ],
+                }));
+            }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
         }
 
@@ -1071,18 +1241,21 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
 
     /// Pool entries iteration: `for (h, val) in pool.entries()`
     /// Desugars to snapshot handle iteration with Pool_get for each handle.
+    /// LP11-LP13: `for mutate` adds Pool_set writeback.
     fn lower_for_pool_entries(
         &mut self,
         label: Option<&str>,
         names: &[String],
         pool_expr: &Expr,
         body: &[Stmt],
+        mutate: bool,
     ) -> Result<(), LoweringError> {
         let (pool_op, _) = self.lower_expr(pool_expr)?;
         let pool_local = self.builder.alloc_temp(MirType::I64);
@@ -1119,6 +1292,17 @@ impl<'a> MirLowerer<'a> {
         let inc_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
+        // LP11-LP13: for mutate writeback blocks for Pool_set
+        let (wb_block, break_wb_block) = if mutate && names.len() > 1 {
+            let wb = self.builder.create_block();
+            let break_wb = self.builder.create_block();
+            (Some(wb), Some(break_wb))
+        } else {
+            (None, None)
+        };
+        let continue_target = wb_block.unwrap_or(inc_block);
+        let break_target = break_wb_block.unwrap_or(exit_block);
+
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         // check: _i < _len
@@ -1152,7 +1336,7 @@ impl<'a> MirLowerer<'a> {
         }));
 
         // Bind value (second name) via Pool_get
-        if names.len() > 1 {
+        let val_local = if names.len() > 1 {
             let val_name = &names[1];
             let val_local = self.builder.alloc_local(val_name.clone(), MirType::I64);
             self.locals.insert(val_name.clone(), (val_local, MirType::I64));
@@ -1161,19 +1345,54 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal("Pool_get".to_string()),
                 args: vec![MirOperand::Local(pool_local), MirOperand::Local(handle_local)],
             }));
-        }
+            Some(val_local)
+        } else {
+            None
+        };
 
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
-            continue_block: inc_block,
-            exit_block,
+            continue_block: continue_target,
+            exit_block: break_target,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_target }));
+
+        // LP13: Pool_set writeback blocks for `for mutate`
+        if let (Some(wb), Some(vl)) = (wb_block, val_local) {
+            self.builder.switch_to_block(wb);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Pool_set".to_string()),
+                args: vec![
+                    MirOperand::Local(pool_local),
+                    MirOperand::Local(handle_local),
+                    MirOperand::Local(vl),
+                ],
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
+        }
+        if let (Some(break_wb), Some(vl)) = (break_wb_block, val_local) {
+            self.builder.switch_to_block(break_wb);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Pool_set".to_string()),
+                args: vec![
+                    MirOperand::Local(pool_local),
+                    MirOperand::Local(handle_local),
+                    MirOperand::Local(vl),
+                ],
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
+        }
 
         // inc: _i = _i + 1
         self.builder.switch_to_block(inc_block);
@@ -1193,6 +1412,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
@@ -1259,16 +1479,20 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(body_block);
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
             continue_block: inc_block,
             exit_block,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
 
         // counter = counter + 1
@@ -1289,6 +1513,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
@@ -1310,26 +1535,32 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(loop_block);
 
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
             continue_block: loop_block,
             exit_block,
             result_local: Some(result_local),
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: loop_block,
         }));
 
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
 
     /// Break statement - jump to enclosing loop's exit block.
+    /// EX4: runs loop-scoped ensures before exiting.
     fn lower_break(
         &mut self,
         label: Option<&str>,
@@ -1338,6 +1569,7 @@ impl<'a> MirLowerer<'a> {
         let ctx = self.find_loop(label)?;
         let exit_block = ctx.exit_block;
         let result_local = ctx.result_local;
+        let ensure_depth = ctx.ensure_depth;
 
         if let Some(val_expr) = value {
             let (val_op, _) = self.lower_expr(val_expr)?;
@@ -1349,6 +1581,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: exit_block,
         }));
@@ -1360,10 +1593,13 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Continue statement - jump to enclosing loop's check block.
+    /// EX4: runs loop-scoped ensures before continuing.
     fn lower_continue(&mut self, label: Option<&str>) -> Result<(), LoweringError> {
         let ctx = self.find_loop(label)?;
         let continue_block = ctx.continue_block;
+        let ensure_depth = ctx.ensure_depth;
 
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: continue_block,
         }));
@@ -1450,19 +1686,24 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(super::LoopContext {
             label: label.map(|s| s.to_string()),
             continue_block: setup.inc_block,
             exit_block: setup.exit_block,
             result_local: None,
+            ensure_depth,
         });
 
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
 
+        // EN7: run loop-scoped ensures at iteration end
+        self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
         self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);

@@ -125,7 +125,10 @@ pub enum BuiltinKind {
     Println,
     Panic,
     Format,
-    AsyncSpawn, // spawn(|| {}) from async module
+    AsyncSpawn,     // spawn(|| {}) from async module
+    JoinAll,        // join_all(handles) — wait for all tasks
+    SelectFirst,    // select_first(handles) — first completed wins
+    Cancelled,      // cancelled() — cooperative cancellation check
     Todo,
     Unreachable,
     Min,   // generic min(a, b) — prelude
@@ -140,11 +143,13 @@ pub enum TypeConstructorKind {
     Map,
     String,
     Pool,
+    Cell,
     Channel,
     Shared,
     Mutex,
     Atomic,
     Ordering,
+    TaskGroup,
 }
 
 /// Module kinds for stdlib modules.
@@ -164,7 +169,8 @@ pub enum ModuleKind {
     Net,    // net.tcp_listen, net.tcp_connect
     Async,  // async.spawn (green task spawner)
     Thread, // thread.Thread, thread.ThreadPool
-    Http,   // http.listen_and_serve, http.get, etc.
+    Http,    // http.listen_and_serve, http.get, etc.
+    Reflect, // std.reflect — compile-time type introspection
 }
 
 /// Inner state for a spawned thread/task handle.
@@ -333,10 +339,18 @@ pub enum Value {
     Instant(std::time::Instant),
     /// Type value (for accessing static methods like Instant.now())
     Type(String),
+    /// Cell<T> (CE1–CE6: single heap-allocated mutable value)
+    Cell(Arc<Mutex<Value>>),
     /// Pool (sparse storage with generation counters)
     Pool(Arc<Mutex<PoolData>>),
     /// Handle (opaque reference into a pool)
     Handle {
+        pool_id: u32,
+        index: u32,
+        generation: u32,
+    },
+    /// WeakHandle (non-owning reference into a pool — may become invalid)
+    WeakHandle {
         pool_id: u32,
         index: u32,
         generation: u32,
@@ -351,6 +365,8 @@ pub enum Value {
     ThreadPool(Arc<ThreadPoolInner>),
     /// Async task handle (from spawn() in using Multitasking)
     TaskHandle(Arc<ThreadHandleInner>),
+    /// TaskGroup for dynamic task spawning (M3)
+    TaskGroup(Arc<Mutex<Vec<Value>>>),
     /// Multitasking runtime (from `using Multitasking { }`)
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
@@ -565,10 +581,13 @@ impl Value {
             Value::Duration(_) => "Duration",
             Value::Instant(_) => "Instant",
             Value::Type(_) => "type",
+            Value::Cell(_) => "Cell",
             Value::Pool(_) => "Pool",
             Value::Handle { .. } => "Handle",
+            Value::WeakHandle { .. } => "WeakHandle",
             Value::ThreadHandle(_) => "ThreadHandle",
             Value::TaskHandle(_) => "TaskHandle",
+            Value::TaskGroup(_) => "TaskGroup",
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
@@ -628,6 +647,10 @@ impl Value {
                     variant_index: *variant_index,
                     origin: origin.clone(),
                 }
+            }
+            Value::Cell(c) => {
+                let inner = c.lock().unwrap().deep_clone();
+                Value::Cell(Arc::new(Mutex::new(inner)))
             }
             Value::Pool(p) => {
                 let pool = p.lock().unwrap();
@@ -774,11 +797,13 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Map => "Map",
                     TypeConstructorKind::String => "string",
                     TypeConstructorKind::Pool => "Pool",
+                    TypeConstructorKind::Cell => "Cell",
                     TypeConstructorKind::Channel => "Channel",
                     TypeConstructorKind::Shared => "Shared",
                     TypeConstructorKind::Mutex => "Mutex",
                     TypeConstructorKind::Atomic => "Atomic",
                     TypeConstructorKind::Ordering => "Ordering",
+                    TypeConstructorKind::TaskGroup => "TaskGroup",
                 };
                 if let Some(param) = type_param {
                     write!(f, "{}<{}>", base_name, param)
@@ -809,6 +834,7 @@ impl fmt::Display for Value {
                 ModuleKind::Async => write!(f, "<module async>"),
                 ModuleKind::Thread => write!(f, "<module thread>"),
                 ModuleKind::Http => write!(f, "<module http>"),
+                ModuleKind::Reflect => write!(f, "<module reflect>"),
             },
             Value::Package(name) => write!(f, "<package {}>", name),
             Value::File(file) => {
@@ -834,6 +860,10 @@ impl fmt::Display for Value {
             }
             Value::Instant(_) => write!(f, "<Instant>"),
             Value::Type(name) => write!(f, "<type {}>", name),
+            Value::Cell(c) => {
+                let inner = c.lock().unwrap();
+                write!(f, "Cell({})", inner)
+            }
             Value::Pool(p) => {
                 let pool = p.lock().unwrap();
                 write!(f, "<Pool len={}>", pool.len)
@@ -843,8 +873,14 @@ impl fmt::Display for Value {
                 index,
                 generation,
             } => write!(f, "Handle({}, {}, {})", pool_id, index, generation),
+            Value::WeakHandle {
+                pool_id,
+                index,
+                generation,
+            } => write!(f, "WeakHandle({}, {}, {})", pool_id, index, generation),
             Value::ThreadHandle(_) => write!(f, "<ThreadHandle>"),
             Value::TaskHandle(_) => write!(f, "<TaskHandle>"),
+            Value::TaskGroup(tasks) => write!(f, "<TaskGroup len={}>", tasks.lock().unwrap().len()),
             Value::MultitaskingRuntime(r) => write!(f, "<Multitasking runtime workers={}>", r.workers),
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),

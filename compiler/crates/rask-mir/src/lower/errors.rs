@@ -132,9 +132,16 @@ impl<'a> MirLowerer<'a> {
             value: MirOperand::Local(err_val),
             store_size: err_store_size,
         }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-            value: Some(MirOperand::Local(ret_result)),
-        }));
+        if self.ensure_stack.is_empty() {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+                value: Some(MirOperand::Local(ret_result)),
+            }));
+        } else {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
+                value: Some(MirOperand::Local(ret_result)),
+                cleanup_chain: self.cleanup_chain(),
+            }));
+        }
 
         // Ok path
         self.builder.switch_to_block(ok_block);
@@ -320,9 +327,16 @@ impl<'a> MirLowerer<'a> {
                 value: transformed_op,
                 store_size: transformed_store_size,
             }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-                value: Some(MirOperand::Local(ret_result)),
-            }));
+            if self.ensure_stack.is_empty() {
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+                    value: Some(MirOperand::Local(ret_result)),
+                }));
+            } else {
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
+                    value: Some(MirOperand::Local(ret_result)),
+                    cleanup_chain: self.cleanup_chain(),
+                }));
+            }
         }
 
         // Ok path — extract payload

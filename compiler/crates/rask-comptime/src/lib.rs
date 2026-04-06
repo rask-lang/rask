@@ -190,6 +190,10 @@ fn eliminate_in_stmt(stmt: &mut Stmt, cfg_values: &HashMap<String, String>) {
             }
         }
         StmtKind::Comptime(body) => eliminate_in_stmts(body, cfg_values),
+        StmtKind::ComptimeFor { iter, body, .. } => {
+            eliminate_in_expr(iter, cfg_values);
+            eliminate_in_stmts(body, cfg_values);
+        }
         _ => {}
     }
 }
@@ -1276,6 +1280,44 @@ impl ComptimeInterpreter {
             StmtKind::Comptime(body) => {
                 // Already at comptime, just evaluate the block
                 self.eval_block(body)
+            }
+
+            StmtKind::ComptimeFor { binding, iter, body } => {
+                // CT48: Evaluate the iterable and unroll
+                let iter_val = self.eval_expr(iter)?;
+                match iter_val {
+                    ComptimeValue::Array(items) => {
+                        for item in items {
+                            self.env.push_scope();
+                            match binding {
+                                rask_ast::stmt::ForBinding::Single(name) => {
+                                    self.env.define(name.clone(), item);
+                                }
+                                rask_ast::stmt::ForBinding::Tuple(names) => {
+                                    if let ComptimeValue::Array(elems) = item {
+                                        for (i, name) in names.iter().enumerate() {
+                                            let v = elems.get(i).cloned()
+                                                .unwrap_or(ComptimeValue::Unit);
+                                            self.env.define(name.clone(), v);
+                                        }
+                                    }
+                                }
+                            }
+                            match self.eval_block(body)? {
+                                ControlFlow::Normal(_) => {}
+                                cf => {
+                                    self.env.pop_scope();
+                                    return Ok(cf);
+                                }
+                            }
+                            self.env.pop_scope();
+                        }
+                        Ok(ControlFlow::Normal(ComptimeValue::Unit))
+                    }
+                    _ => Err(ComptimeError::NotSupported(
+                        "comptime for requires a comptime-known iterable".to_string()
+                    )),
+                }
             }
 
             StmtKind::Ensure { .. } => {

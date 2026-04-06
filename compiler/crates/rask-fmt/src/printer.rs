@@ -1283,6 +1283,29 @@ impl<'a> Printer<'a> {
                 self.emit_indent();
                 self.emit("}");
             }
+            StmtKind::ComptimeFor { binding, iter, body } => {
+                self.emit("comptime for ");
+                match binding {
+                    ForBinding::Single(name) => self.emit(name),
+                    ForBinding::Tuple(names) => {
+                        self.emit("(");
+                        for (i, name) in names.iter().enumerate() {
+                            if i > 0 { self.emit(", "); }
+                            self.emit(name);
+                        }
+                        self.emit(")");
+                    }
+                }
+                self.emit(" in ");
+                self.format_expr(iter);
+                self.emit(" {");
+                self.emit_newline();
+                self.indent += 1;
+                self.format_stmts(body);
+                self.indent -= 1;
+                self.emit_indent();
+                self.emit("}");
+            }
             StmtKind::Discard { name, .. } => {
                 self.emit("discard ");
                 self.emit(name);
@@ -1410,6 +1433,12 @@ impl<'a> Printer<'a> {
                 self.format_expr(object);
                 self.emit("?.");
                 self.emit(field);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.format_expr(object);
+                self.emit(".(");
+                self.format_expr(field_expr);
+                self.emit(")");
             }
             ExprKind::Index { object, index } => {
                 self.format_expr(object);

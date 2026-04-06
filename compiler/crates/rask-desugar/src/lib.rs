@@ -325,6 +325,12 @@ impl Desugarer {
                     self.desugar_stmt(s);
                 }
             }
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.desugar_expr(iter);
+                for s in body {
+                    self.desugar_stmt(s);
+                }
+            }
             StmtKind::Discard { .. } => {}
         }
     }
@@ -353,6 +359,10 @@ impl Desugarer {
             }
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.desugar_expr(object);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.desugar_expr(object);
+                self.desugar_expr(field_expr);
             }
             ExprKind::Index { object, index } => {
                 self.desugar_expr(object);

@@ -51,6 +51,9 @@ pub fn is_valid_default_expr(expr: &Expr) -> bool {
             matches!(&object.kind, ExprKind::Ident(_))
         }
 
+        // Dynamic field — not valid as a default
+        ExprKind::DynamicField { .. } => false,
+
         // Array of valid defaults: [1, 2, 3]
         ExprKind::Array(elems) => elems.iter().all(is_valid_default_expr),
 
@@ -384,6 +387,10 @@ impl DefaultDesugarer {
             StmtKind::Comptime(body) => {
                 for s in body { self.desugar_stmt(s); }
             }
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.desugar_expr(iter);
+                for s in body { self.desugar_stmt(s); }
+            }
             StmtKind::Discard { .. } => {}
         }
     }
@@ -406,6 +413,10 @@ impl DefaultDesugarer {
             ExprKind::Unary { operand, .. } => self.desugar_expr(operand),
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.desugar_expr(object);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.desugar_expr(object);
+                self.desugar_expr(field_expr);
             }
             ExprKind::Index { object, index } => {
                 self.desugar_expr(object);

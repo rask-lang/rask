@@ -954,6 +954,17 @@ impl Parser {
                 return Ok(format!("[]{}", elem_ty));
             }
 
+            // [N]T — fixed-count type (used by @binary byte arrays)
+            if let TokenKind::Int(n, _) = self.current_kind().clone() {
+                if matches!(self.peek(1), TokenKind::RBracket) {
+                    let count = n;
+                    self.advance(); // consume N
+                    self.advance(); // consume ]
+                    let elem_ty = self.parse_base_type()?;
+                    return Ok(format!("[{}]{}", count, elem_ty));
+                }
+            }
+
             let elem_ty = self.parse_type_name()?;
             self.expect(&TokenKind::Semi)?;
             let size = match self.current_kind().clone() {
@@ -2600,6 +2611,32 @@ impl Parser {
 
     fn parse_comptime_stmt(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Comptime)?;
+
+        // CT48: `comptime for` — compile-time loop unrolling
+        if self.check(&TokenKind::For) {
+            self.advance();
+            let binding = if self.match_token(&TokenKind::LParen) {
+                let mut names = Vec::new();
+                loop {
+                    names.push(self.expect_ident()?);
+                    if !self.match_token(&TokenKind::Comma) { break; }
+                }
+                self.expect(&TokenKind::RParen)?;
+                ForBinding::Tuple(names)
+            } else {
+                ForBinding::Single(self.expect_ident()?)
+            };
+            self.expect(&TokenKind::In)?;
+            let iter = self.parse_expr_no_braces()?;
+            let body = if self.match_token(&TokenKind::Colon) {
+                vec![self.parse_stmt()?]
+            } else {
+                self.skip_newlines();
+                self.parse_block_body()?
+            };
+            return Ok(StmtKind::ComptimeFor { binding, iter, body });
+        }
+
         let body = if self.check(&TokenKind::LBrace) {
             self.parse_block_body()?
         } else {
@@ -3238,6 +3275,19 @@ impl Parser {
 
             TokenKind::Dot => {
                 self.advance();
+
+                // Dynamic field access: value.(expr) — comptime field name
+                if self.check(&TokenKind::LParen) {
+                    self.advance();
+                    let field_expr = self.parse_expr()?;
+                    self.expect(&TokenKind::RParen)?;
+                    let end = self.tokens[self.pos - 1].span.end;
+                    return Ok(Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::DynamicField { object: Box::new(lhs), field_expr: Box::new(field_expr) },
+                        span: Span::new(start, end),
+                    });
+                }
 
                 // Tuple field access: expr.0, expr.1, ...
                 if let TokenKind::Int(n, None) = self.current_kind().clone() {

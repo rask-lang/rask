@@ -143,6 +143,29 @@ impl BlockBuilder {
         false
     }
 
+    /// Read statements from a block (for inlining cleanup at exit points).
+    pub fn block_stmts(&self, block: BlockId) -> &[MirStmt] {
+        &self.function.blocks[block.0 as usize].statements
+    }
+
+    /// Read terminator kind from a block (to check if cleanup has sub-CFG).
+    pub fn block_terminator_kind(&self, block: BlockId) -> Option<MirTerminatorKind> {
+        self.function.blocks.get(block.0 as usize)
+            .map(|b| b.terminator.kind.clone())
+    }
+
+    /// Get the destination local of the last Call statement in the current block.
+    /// Used to check the result of an ensure body's cleanup call.
+    pub fn last_call_dst(&self) -> Option<LocalId> {
+        let block = &self.function.blocks[self.current_block.0 as usize];
+        for stmt in block.statements.iter().rev() {
+            if let MirStmtKind::Call { dst, .. } = &stmt.kind {
+                return *dst;
+            }
+        }
+        None
+    }
+
     /// Check if the current block still has the default Unreachable terminator.
     pub fn current_block_unterminated(&self) -> bool {
         matches!(

@@ -500,6 +500,17 @@ impl Hasher {
                 self.feed_tag(34);
                 self.hash_stmts(body);
             }
+            StmtKind::ComptimeFor { binding, iter, body } => {
+                self.feed_tag(36);
+                match binding {
+                    rask_ast::stmt::ForBinding::Single(n) => self.feed_str(n),
+                    rask_ast::stmt::ForBinding::Tuple(ns) => {
+                        for n in ns { self.feed_str(n); }
+                    }
+                }
+                self.hash_expr(iter);
+                self.hash_stmts(body);
+            }
             StmtKind::Discard { name, .. } => {
                 self.feed_tag(35);
                 self.feed_str(name);
@@ -577,6 +588,11 @@ impl Hasher {
                 self.feed_tag(51);
                 self.hash_expr(object);
                 self.feed_str(field);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.feed_tag(96);
+                self.hash_expr(object);
+                self.hash_expr(field_expr);
             }
             ExprKind::OptionalField { object, field } => {
                 self.feed_tag(52);

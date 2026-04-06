@@ -78,6 +78,9 @@ struct LoopContext {
     exit_block: BlockId,
     /// For `break value` - local to assign the value to
     result_local: Option<LocalId>,
+    /// ensure_stack depth when loop started — loop-scoped ensures
+    /// are stack[ensure_depth..] and must run on break/continue/iteration-end.
+    ensure_depth: usize,
 }
 
 /// Metadata for a comptime-evaluated global constant.
@@ -124,6 +127,8 @@ pub struct MirContext<'a> {
     pub trait_coercions: &'a HashMap<NodeId, String>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: &'a HashMap<NodeId, String>,
+    /// Type names marked with `@resource` — used for resource tracking ops (C1/C2).
+    pub resource_types: &'a std::collections::HashSet<String>,
 }
 
 impl<'a> MirContext<'a> {
@@ -141,6 +146,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_RESOURCE_TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
+            std::sync::LazyLock::new(std::collections::HashSet::new);
         MirContext {
             struct_layouts: &[],
             enum_layouts: &[],
@@ -156,6 +163,7 @@ impl<'a> MirContext<'a> {
             trait_methods: HashMap::new(),
             trait_coercions: &EMPTY_COERCIONS,
             call_rewrites: &EMPTY_REWRITES,
+            resource_types: &EMPTY_RESOURCE_TYPES,
         }
     }
 
@@ -476,6 +484,9 @@ pub(crate) struct LocalMeta {
     /// Channel/Shared element size in bytes.
     /// Used by Receiver_recv to allocate correctly-sized output buffers.
     pub channel_elem_size: Option<i64>,
+    /// C1/C2: resource_id local for consumption cancellation.
+    /// Set when an ensure registers this variable as its receiver.
+    pub resource_id: Option<LocalId>,
 }
 
 pub struct MirLowerer<'a> {
@@ -506,6 +517,17 @@ pub struct MirLowerer<'a> {
     /// target local and jumps to the continuation block instead of emitting
     /// MirTerminator::Return.  Used by fold/reduce/etc.
     inline_return_target: Option<(LocalId, BlockId)>,
+    /// Stack of active ensure cleanup blocks (innermost last).
+    /// At function exit points (return, try error, implicit return),
+    /// this becomes the cleanup_chain on CleanupReturn terminators.
+    ensure_stack: Vec<BlockId>,
+    /// Qualified method names that have `take self` (consume the receiver).
+    /// Used for consumption cancellation (C1/C2).
+    take_self_methods: std::collections::HashSet<String>,
+    /// For each ensure cleanup block, the receiver variable name and its
+    /// resource_id local. Used for consumption cancellation (C1/C2):
+    /// if the receiver was consumed before scope exit, skip the ensure.
+    ensure_receivers: HashMap<BlockId, (String, LocalId)>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -519,6 +541,106 @@ impl<'a> MirLowerer<'a> {
     /// Get the metadata entry for a variable (read-only).
     pub(crate) fn meta(&self, name: &str) -> Option<&LocalMeta> {
         self.local_meta.get(name)
+    }
+
+    /// Current cleanup chain in LIFO order (last-registered ensure runs first).
+    fn cleanup_chain(&self) -> Vec<BlockId> {
+        self.ensure_stack.iter().rev().copied().collect()
+    }
+
+    /// Inline loop-scoped ensure cleanup at break/continue/iteration-end.
+    /// Copies statements from ensures registered after `depth` in LIFO order.
+    /// For simple ensures (Unreachable terminator): copies statements inline.
+    /// For branching ensures (else handler): creates block copies at the exit point.
+    /// C1/C2: check if an expression is a consuming method call on an ensure
+    /// receiver. If so, emit ResourceConsume to cancel the ensure at cleanup time.
+    fn check_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
+            if let ExprKind::Ident(receiver_name) = &object.kind {
+                // Check if this receiver has a resource_id (registered by an ensure)
+                let resource_id = self.meta(receiver_name)
+                    .and_then(|m| m.resource_id);
+                let prefix = self.meta(receiver_name)
+                    .and_then(|m| m.type_prefix.clone());
+                if let Some(res_id) = resource_id {
+                    if let Some(ref prefix) = prefix {
+                        let qualified = format!("{}_{}", prefix, method);
+                        if self.take_self_methods.contains(&qualified) {
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
+                                resource_id: res_id,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Extract the receiver variable name from an ensure body.
+    /// For `ensure X.method()`, returns Some("X").
+    fn extract_ensure_receiver(body: &[rask_ast::stmt::Stmt]) -> Option<String> {
+        use rask_ast::expr::ExprKind;
+        use rask_ast::stmt::StmtKind;
+        if let Some(first) = body.first() {
+            if let StmtKind::Expr(expr) = &first.kind {
+                if let ExprKind::MethodCall { object, .. } = &expr.kind {
+                    if let ExprKind::Ident(name) = &object.kind {
+                        return Some(name.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn emit_loop_cleanup(&mut self, depth: usize) {
+        for i in (depth..self.ensure_stack.len()).rev() {
+            let block_id = self.ensure_stack[i];
+            let stmts: Vec<_> = self.builder.block_stmts(block_id).to_vec();
+            // Check if this cleanup block has a sub-CFG (Branch terminator)
+            let term_kind = self.builder.block_terminator_kind(block_id);
+            if let Some(MirTerminatorKind::Branch { cond, then_block, else_block }) = term_kind {
+                // Branching ensure (ER2 else handler): create block copies
+                for stmt in stmts {
+                    self.builder.push_stmt(stmt);
+                }
+                // Create local copies of the sub-blocks
+                let then_copy = self.builder.create_block();
+                let else_copy = self.builder.create_block();
+                let merge = self.builder.create_block();
+
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond,
+                    then_block: then_copy,
+                    else_block: else_copy,
+                }));
+
+                // Copy then-block (handler) statements
+                self.builder.switch_to_block(then_copy);
+                let then_stmts: Vec<_> = self.builder.block_stmts(then_block).to_vec();
+                for stmt in then_stmts {
+                    self.builder.push_stmt(stmt);
+                }
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+
+                // Copy else-block (done) — typically empty, just continues
+                self.builder.switch_to_block(else_copy);
+                let else_stmts: Vec<_> = self.builder.block_stmts(else_block).to_vec();
+                for stmt in else_stmts {
+                    self.builder.push_stmt(stmt);
+                }
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+
+                // Continue in merge block
+                self.builder.switch_to_block(merge);
+            } else {
+                // Simple ensure: just copy statements inline
+                for stmt in stmts {
+                    self.builder.push_stmt(stmt);
+                }
+            }
+        }
     }
 
     /// `all_decls` provides function signatures for resolving call return types.
@@ -602,6 +724,31 @@ impl<'a> MirLowerer<'a> {
             });
         }
 
+        // C1/C2: collect qualified method names with `take self` for
+        // consumption cancellation. When such a method is called on an
+        // ensure receiver, the ensure is cancelled.
+        let mut take_self_methods = std::collections::HashSet::new();
+        for d in all_decls {
+            match &d.kind {
+                DeclKind::Impl(impl_decl) => {
+                    for m in &impl_decl.methods {
+                        if m.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
+                            let qualified = format!("{}_{}", impl_decl.target_ty, m.name);
+                            take_self_methods.insert(qualified);
+                        }
+                    }
+                }
+                DeclKind::Fn(f) => {
+                    // After monomorphization, impl methods become standalone functions
+                    // named "Type_method" with a `take self` first parameter.
+                    if f.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
+                        take_self_methods.insert(f.name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
         let func_name = qualified_name
             .map(|s| s.to_string())
             .unwrap_or_else(|| fn_decl.name.clone());
@@ -619,6 +766,9 @@ impl<'a> MirLowerer<'a> {
             local_meta: HashMap::new(),
             with_pool_bindings: HashMap::new(),
             inline_return_target: None,
+            ensure_stack: Vec::new(),
+            take_self_methods,
+            ensure_receivers: HashMap::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -730,7 +880,14 @@ impl<'a> MirLowerer<'a> {
             let implicit_ok = matches!(ret_ty, MirType::Void)
                 || matches!(&ret_ty, MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void));
             if implicit_ok {
-                lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+                if lowerer.ensure_stack.is_empty() {
+                    lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+                } else {
+                    lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
+                        value: None,
+                        cleanup_chain: lowerer.cleanup_chain(),
+                    }));
+                }
             } else {
                 lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
             }
@@ -1097,6 +1254,10 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Field { object, .. } => {
                 self.walk_free_vars(object, bound, seen, free);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.walk_free_vars(object, bound, seen, free);
+                self.walk_free_vars(field_expr, bound, seen, free);
+            }
             ExprKind::Index { object, index } => {
                 self.walk_free_vars(object, bound, seen, free);
                 self.walk_free_vars(index, bound, seen, free);
@@ -1286,6 +1447,10 @@ impl<'a> MirLowerer<'a> {
                 }
             }
             StmtKind::Comptime(body) => {
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.walk_free_vars(iter, bound, seen, free);
                 self.walk_free_vars_block(body, bound, seen, free);
             }
             StmtKind::Discard { .. } => {}
@@ -1919,6 +2084,10 @@ mod tests {
         })
     }
 
+    fn find_cleanup_return(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| matches!(b.terminator.kind, MirTerminatorKind::CleanupReturn { .. }))
+    }
+
     fn find_enum_tag(f: &MirFunction) -> bool {
         f.blocks.iter().any(|b| {
             b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::Assign { rvalue: MirRValue::EnumTag { .. }, .. }))
@@ -2285,7 +2454,7 @@ mod tests {
     }
 
     #[test]
-    fn lower_ensure_push_pop() {
+    fn lower_ensure_push_cleanup_return() {
         let decl = make_fn("f", vec![], None, vec![
             ensure_stmt(
                 vec![expr_stmt(call_expr("do_work", vec![]))],
@@ -2295,7 +2464,8 @@ mod tests {
         ]);
         let f = lower_one(&decl);
         assert!(find_ensure_push(&f));
-        assert!(find_ensure_pop(&f));
+        // Body goes in cleanup block, exit uses CleanupReturn
+        assert!(find_cleanup_return(&f));
     }
 
     #[test]
@@ -2309,7 +2479,7 @@ mod tests {
         ]);
         let f = lower_one(&decl);
         assert!(find_ensure_push(&f));
-        assert!(find_ensure_pop(&f));
+        assert!(find_cleanup_return(&f));
         assert!(f.locals.iter().any(|l| l.name.as_deref() == Some("err")));
     }
 
@@ -2482,6 +2652,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
+        let empty_resource_types = std::collections::HashSet::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -2497,6 +2668,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
+            resource_types: &empty_resource_types,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2536,6 +2708,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
+        let empty_resource_types = std::collections::HashSet::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -2551,6 +2724,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
+            resource_types: &empty_resource_types,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2596,6 +2770,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
+        let empty_resource_types = std::collections::HashSet::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -2611,6 +2786,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
+            resource_types: &empty_resource_types,
         };
 
         let decl = make_fn("f", vec![], None, vec![

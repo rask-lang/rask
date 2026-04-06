@@ -7,6 +7,19 @@ public struct Pool<T> { }
 /// where they were created, but accessing the element requires `using Pool<T>`.
 public struct Handle<T> { }
 
+/// Non-owning reference into a Pool. May become invalid if the element is removed.
+/// Use `upgrade()` to convert back to a Handle (returns None if invalidated).
+public struct WeakHandle<T> { }
+
+extend WeakHandle<T> {
+    /// Check if the weak handle is still valid (element hasn't been removed).
+    public func valid(self) -> bool { }
+
+    /// Attempt to convert back to a strong Handle. Returns None if the element
+    /// was removed since the weak handle was created.
+    public func upgrade(self) -> Handle<T>? { }
+}
+
 extend Pool<T> {
     /// Create a new empty pool.
     public func new() -> Pool<T> { }
@@ -52,4 +65,37 @@ extend Pool<T> {
 
     /// Iterate over elements only.
     public func values(self) -> Iterator<T> { }
+
+    /// Try to insert, returning None if at capacity.
+    public func try_insert(mutate self, value: T) -> Handle<T>? { }
+
+    /// Remove all elements, returning them as a Vec.
+    public func drain(mutate self) -> Vec<T> { }
+
+    /// Get (handle, element) pairs as a Vec snapshot.
+    public func entries(self) -> Vec<(Handle<T>, T)> { }
+
+    /// Get element without Option wrapping — panics on invalid handle.
+    public func get_unchecked(self, handle: Handle<T>) -> T { }
+
+    /// Get mutable element without Option wrapping — panics on invalid handle.
+    public func get_mut_unchecked(mutate self, handle: Handle<T>) -> T { }
+
+    /// Apply closure only if handle is valid (read-only).
+    public func with_valid(self, handle: Handle<T>, f: func(T) -> R) -> Option<R> { }
+
+    /// Apply closure only if handle is valid (mutable).
+    public func with_valid_mut(mutate self, handle: Handle<T>, f: func(T) -> R) -> Option<R> { }
+
+    /// Total slot capacity (allocated slots, including free).
+    public func capacity(self) -> usize { }
+
+    /// Remaining free slots before a new allocation is needed.
+    public func remaining(self) -> usize { }
+
+    /// Create a WeakHandle from a Handle.
+    public func weak(self, handle: Handle<T>) -> WeakHandle<T> { }
+
+    /// Create a snapshot: returns (read_copy, write_copy) for concurrent access.
+    public func snapshot(self) -> (Pool<T>, Pool<T>) { }
 }

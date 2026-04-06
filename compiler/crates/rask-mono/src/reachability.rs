@@ -283,6 +283,12 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_stmt(s);
                 }
             }
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.visit_expr(iter);
+                for s in body {
+                    self.visit_stmt(s);
+                }
+            }
             StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
                 self.visit_expr(init);
             }
@@ -408,6 +414,10 @@ impl<'a> Monomorphizer<'a> {
             }
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.visit_expr(object);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.visit_expr(object);
+                self.visit_expr(field_expr);
             }
             ExprKind::Index { object, index } => {
                 self.visit_expr(object);

@@ -412,6 +412,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
         },
+        // LP13: for mutate writeback — insert/replace value by key (same as Map_insert)
+        StdlibEntry {
+            mir_name: "Map_set", c_name: "rask_map_insert",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Map_contains_key", c_name: "rask_map_contains",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -457,6 +463,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Pool_is_empty", "rask_pool_is_empty", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_cursor", "rask_pool_handles_packed", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_contains", "rask_pool_is_valid_packed", &[types::I64, types::I64], Some(types::I64), false),
+        // LP13: for mutate writeback — write value to existing pool slot
+        StdlibEntry {
+            mir_name: "Pool_set", c_name: "rask_pool_set_packed",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::WrapArg2, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Pool_insert", c_name: "rask_pool_insert_packed_sized",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -688,6 +700,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Ensure hooks ──────────────────────────────────────────
         StdlibEntry::simple("rask_ensure_push", "rask_ensure_push", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("rask_ensure_pop", "rask_ensure_pop", &[], None, false),
+
+        // ── Resource tracking (C1/C2 consumption cancellation) ───
+        StdlibEntry::simple("rask_resource_register", "rask_resource_register", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_resource_consume", "rask_resource_consume", &[types::I64], None, false),
+        StdlibEntry::simple("rask_resource_is_consumed", "rask_resource_is_consumed", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_resource_scope_check", "rask_resource_scope_check", &[types::I64], None, false),
 
         // ── Memory allocation ─────────────────────────────────────
         StdlibEntry::simple("rask_alloc", "rask_alloc", &[types::I64], Some(types::I64), false),

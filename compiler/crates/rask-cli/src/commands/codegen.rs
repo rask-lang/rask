@@ -232,6 +232,7 @@ fn try_eval_comptime_mir(
     let empty_packages = std::collections::HashSet::new();
     let empty_coercions = std::collections::HashMap::new();
     let empty_rewrites = std::collections::HashMap::new();
+    let empty_resource_types = std::collections::HashSet::new();
     let type_names: std::collections::HashMap<rask_types::TypeId, String> = ctx.typed.types.iter()
         .enumerate()
         .map(|(i, def)| {
@@ -261,6 +262,7 @@ fn try_eval_comptime_mir(
         comptime_interp: None,
         trait_coercions: &empty_coercions,
         call_rewrites: &empty_rewrites,
+        resource_types: &empty_resource_types,
     };
 
     // Lower the synthetic function to MIR
@@ -468,6 +470,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }));
     let extern_funcs = collect_extern_func_names(&decls);
+    let empty_resource_types = std::collections::HashSet::new();
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let type_names: std::collections::HashMap<rask_types::TypeId, String> = typed.types.iter()
         .enumerate()
@@ -510,6 +513,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         comptime_interp: Some(std::cell::RefCell::new(mir_interp)),
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
+        resource_types: &empty_resource_types,
     };
 
     let mut mir_errors = 0;
@@ -563,6 +567,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let type_names = super::compile::build_type_names(&typed);
     let trait_methods = super::compile::build_trait_methods(&typed);
     let extern_funcs = collect_extern_func_names(&decls);
+    let empty_resource_types = std::collections::HashSet::new();
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
 
@@ -581,6 +586,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         comptime_interp: None,
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
+        resource_types: &empty_resource_types,
     };
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);

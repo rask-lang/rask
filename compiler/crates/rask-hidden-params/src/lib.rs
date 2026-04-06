@@ -377,6 +377,7 @@ impl HiddenParamPass {
                 }
             }
             StmtKind::Comptime(body) => self.rewrite_stmts(body),
+            StmtKind::ComptimeFor { body, .. } => self.rewrite_stmts(body),
             StmtKind::Discard { .. } => {}
         }
     }
@@ -467,6 +468,10 @@ impl HiddenParamPass {
             ExprKind::Unary { operand, .. } => self.rewrite_expr(operand),
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.rewrite_expr(object);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.rewrite_expr(object);
+                self.rewrite_expr(field_expr);
             }
             ExprKind::Index { object, index } => {
                 self.rewrite_expr(object);
@@ -722,6 +727,11 @@ fn collect_callees_from_stmt(stmt: &Stmt, callees: &mut HashSet<String>) {
                 collect_callees_from_stmt(s, callees);
             }
         }
+        StmtKind::ComptimeFor { body, .. } => {
+            for s in body {
+                collect_callees_from_stmt(s, callees);
+            }
+        }
         StmtKind::Discard { .. } => {}
     }
 }
@@ -754,6 +764,10 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
         ExprKind::Unary { operand, .. } => collect_callees_from_expr(operand, callees),
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
             collect_callees_from_expr(object, callees);
+        }
+        ExprKind::DynamicField { object, field_expr } => {
+            collect_callees_from_expr(object, callees);
+            collect_callees_from_expr(field_expr, callees);
         }
         ExprKind::Index { object, index } => {
             collect_callees_from_expr(object, callees);

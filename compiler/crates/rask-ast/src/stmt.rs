@@ -134,6 +134,12 @@ pub enum StmtKind {
     },
     /// Comptime block (compile-time evaluated)
     Comptime(Vec<Stmt>),
+    /// Comptime for loop — unrolled at compile/monomorphization time (CT48–CT54)
+    ComptimeFor {
+        binding: ForBinding,
+        iter: Expr,
+        body: Vec<Stmt>,
+    },
     /// Discard statement — explicitly drop a value and invalidate its binding (D1–D3)
     Discard {
         name: String,
