@@ -1,41 +1,75 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+// String types: immutable string, string_builder for construction,
+// string_view for stored indices, StringPool/StringSlice for handle-based
+// access, cstring for C interop.
+
+// ─── string ─────────────────────────────────────────────────────
+//
+// Immutable, refcounted, UTF-8, Copy (S1). 16 bytes — tagged union with
+// small string optimization for <=15 bytes (S8). No mutation methods (S7).
+
 extend string {
     /// Create a new empty string.
     public func new() -> string { }
 
-    /// Create a string with pre-allocated capacity.
-    public func with_capacity(n: usize) -> string { }
+    /// From validated UTF-8 bytes. Returns error on invalid UTF-8 (S4).
+    public func from_utf8(bytes: Vec<u8>) -> string or utf8_error { }
 
-    /// Length in bytes.
+    /// From UTF-8 bytes without validation. Unsafe — caller guarantees valid UTF-8.
+    public unsafe func from_utf8_unchecked(bytes: Vec<u8>) -> string { }
+
+    /// Single-character string.
+    public func from_char(c: char) -> string { }
+
+    /// String repeated n times.
+    public func repeat(s: string, n: usize) -> string { }
+
+    /// Concatenate two strings. Allocates.
+    public func concat(a: string, b: string) -> string { }
+
+    // ── Length and properties ────────────────────────────────
+
+    /// Byte length. O(1).
     public func len(self) -> usize { }
 
-    /// True if the string is empty.
+    /// Number of Unicode scalars. O(n).
+    public func char_count(self) -> usize { }
+
+    /// True if the string is empty. O(1).
     public func is_empty(self) -> bool { }
 
-    /// Byte value at the given position. Returns 0 if out of bounds.
-    public func byte_at(self, pos: usize) -> u8 { }
+    /// True if all bytes are ASCII. O(n) first call, cached.
+    public func is_ascii(self) -> bool { }
+
+    // ── Character and byte access ───────────────────────────
+
+    /// Byte at byte index. Returns None if out of bounds.
+    public func byte_at(self, idx: usize) -> u8? { }
+
+    /// Unicode scalar at char index (not byte index). Returns None if out of bounds.
+    public func char_at(self, idx: usize) -> char? { }
+
+    // ── Searching ───────────────────────────────────────────
+
+    /// Byte index of first occurrence. None if not found.
+    public func find(self, pat: string) -> usize? { }
+
+    /// Byte index of last occurrence. None if not found.
+    public func rfind(self, pat: string) -> usize? { }
 
     /// True if the string contains the substring.
-    public func contains(self, s: string) -> bool { }
+    public func contains(self, pat: string) -> bool { }
 
     /// True if the string starts with the given prefix.
-    public func starts_with(self, s: string) -> bool { }
+    public func starts_with(self, pat: string) -> bool { }
 
     /// True if the string ends with the given suffix.
-    public func ends_with(self, s: string) -> bool { }
+    public func ends_with(self, pat: string) -> bool { }
 
-    /// Find the first occurrence of a substring. Returns byte offset.
-    public func find(self, s: string) -> Option<usize> { }
-
-    /// Find the last occurrence of a substring. Returns byte offset.
-    public func rfind(self, s: string) -> Option<usize> { }
-
-    /// Convert to uppercase.
-    public func to_uppercase(self) -> string { }
-
-    /// Convert to lowercase.
-    public func to_lowercase(self) -> string { }
+    // ── Trimming ────────────────────────────────────────────
+    // Spec: these return expression-scoped slices (zero-copy).
+    // Current interpreter returns owned strings (see implementation notes).
 
     /// Remove leading and trailing whitespace.
     public func trim(self) -> string { }
@@ -49,55 +83,194 @@ extend string {
     /// Byte indices of trimmed content: (start, end).
     public func trim_bounds(self) -> (usize, usize) { }
 
-    /// Append a character.
-    public func push(mutate self, c: char) { }
+    // ── Case conversion ─────────────────────────────────────
 
-    /// Append a string.
-    public func push_str(mutate self, s: string) { }
+    /// Convert to uppercase. Allocates.
+    public func to_uppercase(self) -> string { }
 
-    /// Remove all content.
-    public func clear(mutate self) { }
+    /// Convert to lowercase. Allocates.
+    public func to_lowercase(self) -> string { }
 
-    /// Split by separator.
-    public func split(self, sep: string) -> Iterator<string> { }
+    // ── Substring extraction ────────────────────────────────
 
-    /// Split into lines.
-    public func lines(self) -> Iterator<string> { }
+    /// Extract chars from start (inclusive) to end (exclusive). Allocates.
+    public func substring(self, start: usize, end: usize) -> string { }
 
-    /// Iterate over characters.
+    // ── Iteration ───────────────────────────────────────────
+    // Iterators borrow for expression scope only. Cannot be stored.
+
+    /// Iterate over Unicode scalars.
     public func chars(self) -> Iterator<char> { }
+
+    /// Iterate over raw bytes.
+    public func bytes(self) -> Iterator<u8> { }
 
     /// Iterate over (byte_index, char) pairs.
     public func char_indices(self) -> Iterator<(usize, char)> { }
 
-    /// Iterate over bytes.
-    public func bytes(self) -> Iterator<u8> { }
+    /// Split by separator.
+    public func split(self, sep: string) -> Iterator<string> { }
 
-    /// Replace all occurrences of `from` with `to`.
+    /// Split on Unicode whitespace, skip empty.
+    public func split_whitespace(self) -> Iterator<string> { }
+
+    /// Split into lines.
+    public func lines(self) -> Iterator<string> { }
+
+    // ── Manipulation ────────────────────────────────────────
+
+    /// Replace all occurrences. Allocates.
     public func replace(self, from: string, to: string) -> string { }
 
-    /// Replace the first n occurrences of `from` with `to`.
+    /// Replace first n occurrences. Allocates.
     public func replacen(self, from: string, to: string, n: usize) -> string { }
 
-    /// Parse into a typed value.
-    public func parse(self) -> T or ParseError { }
+    /// Reverse by Unicode scalars. Allocates.
+    public func reverse(self) -> string { }
 
-    /// Iterate over characters (same as chars).
-    public func iter(self) -> Iterator<char> { }
+    /// Repeat this string n times. Allocates.
+    public func repeat(self, n: usize) -> string { }
 
-    // ── C interop ────────────────────────────────────────────
+    // ── Join ────────────────────────────────────────────────
 
-    /// Null-terminated pointer for C APIs. Zero-cost (strings are always null-terminated).
-    /// Pointer is valid as long as the string is alive.
+    // join() lives on Vec<string>: names.join(", ")
+
+    // ── Parsing ─────────────────────────────────────────────
+
+    /// Parse to integer. Trims whitespace.
+    public func parse_int(self) -> i64 or string { }
+
+    /// Parse to floating point. Trims whitespace.
+    public func parse_float(self) -> f64 or string { }
+
+    /// Parse to typed value.
+    public func parse<T>(self) -> T or ParseError { }
+
+    // ── Equality / Comparison ───────────────────────────────
+    // == is O(1) or O(n): SSO byte comparison, heap pointer+length fast path.
+    // < is O(n) lexicographic. hash() is O(n), not cached.
+
+    /// Hash the string contents.
+    public func hash(self) -> u64 { }
+
+    // ── C interop ───────────────────────────────────────────
+
+    /// Null-terminated pointer for C APIs. Valid while string is alive.
     public unsafe func as_c_str(self) -> *u8 { }
 
-    /// Raw data pointer + .len() for pointer+length C APIs.
+    /// Raw data pointer. Use with .len() for pointer+length C APIs.
     public unsafe func as_ptr(self) -> *u8 { }
 
     /// Copy from a null-terminated C string. Caller must ensure ptr is valid.
     public unsafe func from_c(ptr: *u8) -> string { }
 
-    /// Build a string from a raw pointer and byte length. No UTF-8 validation.
-    /// Caller must ensure ptr is valid for len bytes.
+    /// Build from raw pointer and byte length. No UTF-8 validation.
     public unsafe func from_raw(ptr: *u8, len: usize) -> string { }
+}
+
+// ─── string_builder ─────────────────────────────────────────────
+//
+// Growable mutable buffer. Sole owner — mutation is always O(1) amortized.
+// Move on assignment (not Copy).
+
+public struct string_builder { }
+
+extend string_builder {
+    /// Create an empty builder.
+    public func new() -> string_builder { }
+
+    /// Create a builder with pre-allocated capacity.
+    public func with_capacity(n: usize) -> string_builder { }
+
+    /// Append a string or expression-scoped slice.
+    public func append(mutate self, s: string) { }
+
+    /// Append a single character.
+    public func append_char(mutate self, c: char) { }
+
+    /// Consume the builder, return the built string.
+    public func build(take self) -> string { }
+
+    /// Return built string and reset to empty. Zero-copy buffer handoff.
+    public func build_and_reset(mutate self) -> string { }
+
+    /// Clear contents, keep capacity.
+    public func clear(mutate self) { }
+
+    /// Current byte length.
+    public func len(self) -> usize { }
+}
+
+// ─── string_view ────────────────────────────────────────────────
+//
+// Plain indices into a string — the span type for parsers, tokenizers,
+// and diagnostics. No validation — user ensures source string validity.
+// 16 bytes, Copy.
+
+public struct string_view {
+    public start: usize
+    public end: usize
+}
+
+extend string_view {
+    /// Create a view from start and end byte indices.
+    public func new(start: usize, end: usize) -> string_view {
+        return string_view { start: start, end: end }
+    }
+
+    /// Byte length of the view.
+    public func len(self) -> usize {
+        return self.end - self.start
+    }
+
+    /// Copy to owned string. Panics if out of bounds.
+    public func to_string(self, source: string) -> string { }
+}
+
+// ─── StringPool / StringSlice ───────────────────────────────────
+//
+// Validated stored references using handles. Follows Pool<T> pattern.
+// StringSlice is handle + indices — Copy (4 words).
+
+public struct StringSlice { }
+
+public struct StringPool { }
+
+extend StringPool {
+    /// Create an empty pool.
+    public func new() -> StringPool { }
+
+    /// Add a string, get a handle.
+    public func insert(mutate self, s: string) -> Handle<string> or InsertError { }
+
+    /// Create a validated slice from a handle and byte indices.
+    public func slice(self, h: Handle<string>, start: usize, end: usize) -> StringSlice or Error { }
+
+    /// Safe access — returns None on invalid handle/slice.
+    public func get(self, slice: StringSlice) -> string? { }
+
+    /// Remove string by handle, returning ownership.
+    public func remove(mutate self, h: Handle<string>) -> string? { }
+}
+
+// ─── cstring ────────────────────────────────────────────────────
+//
+// Owned null-terminated string for C FFI. Move on assignment (not Copy).
+
+public struct cstring { }
+
+extend cstring {
+    /// Raw pointer. Unsafe context only.
+    public unsafe func as_ptr(self) -> *u8 { }
+
+    /// Take ownership from a C pointer. Unsafe — caller must ensure validity.
+    public unsafe func from_ptr(ptr: *u8) -> cstring { }
+
+    /// Convert to Rask string. Fails if not valid UTF-8.
+    public func to_string(self) -> string or utf8_error { }
+}
+
+extend string {
+    /// Convert to null-terminated cstring. Fails if string contains \0.
+    public func to_cstring(self) -> cstring or null_byte_error { }
 }

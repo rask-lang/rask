@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Encoding: marker traits for format-agnostic serialization.
+//
+// Encode and Decode are marker traits with no methods (E11). They signal
+// that a type's structure is serialization-compatible. Format libraries
+// (JSON, TOML, MessagePack) use comptime for + reflect to serialize any
+// compatible struct with zero user ceremony.
+//
+// Auto-derive (E12): the compiler derives Encode for any struct where all
+// public fields have Encode types, unless @no_encode. Same for Decode.
+// Public fields only (E13). Enums auto-derive when all variant payloads
+// are compatible (E17).
+//
+// Base types (E14): bool, i8–i64, u8–u64, f32, f64, string.
+// Collection types (E15): Vec<T: Encode>, Map<string, T: Encode>, T?.
+//
+// Field annotations:
+//   @rename("name")      — override serialized key name (E18)
+//   @skip                — exclude from serialization (E19)
+//   @default(expr)       — comptime fallback for missing fields on decode (E20)
+//   @no_encode           — opt out of auto-derive for Encode (E16)
+//   @no_decode           — opt out of auto-derive for Decode (E16)
+
+// ─── Marker Traits ──────────────────────────────────────────────
+
+/// Type is serialization-compatible. Auto-derived for structs with all
+/// public fields Encode, unless @no_encode.
+public trait Encode {
+}
+
+/// Type can be deserialized. Auto-derived for structs with all public
+/// fields Decode, unless @no_decode.
+public trait Decode {
+}

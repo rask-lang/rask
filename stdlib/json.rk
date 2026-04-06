@@ -31,34 +31,43 @@ extend JsonValue {
     }
 
     public func as_bool(self) -> bool? {
-        if self is Bool(b) { return Some(b) }
+        if self is Bool(b) {
+            return Some(b)
+        }
         return None
     }
 
     public func as_number(self) -> f64? {
-        if self is Number(n) { return Some(n) }
+        if self is Number(n) {
+            return Some(n)
+        }
         return None
     }
 
     public func as_string(self) -> string? {
-        if self is String(s) { return Some(s) }
+        if self is String(s) {
+            return Some(s)
+        }
         return None
     }
 
     public func as_array(self) -> Vec<JsonValue>? {
-        if self is Array(a) { return Some(a) }
+        if self is Array(a) {
+            return Some(a)
+        }
         return None
     }
 
     public func as_object(self) -> Map<string, JsonValue>? {
-        if self is Object(m) { return Some(m) }
+        if self is Object(m) {
+            return Some(m)
+        }
         return None
     }
 }
 
 // ─── Parser internals ────────────────────────────────────────────
 
-// Parser state: input string + current byte position.
 struct JsonParser {
     input: string
     pos: usize
@@ -74,32 +83,32 @@ extend JsonParser {
         }
     }
 
-    // Peek at the current byte without advancing.
     func peek(self) -> u8 {
-        if self.pos >= self.len { return 0 }
+        if self.pos >= self.len {
+            return 0
+        }
         return self.input.byte_at(self.pos)
     }
 
-    // Advance one byte and return it.
     func advance(mutate self) -> u8 {
-        if self.pos >= self.len { return 0 }
+        if self.pos >= self.len {
+            return 0
+        }
         const b = self.input.byte_at(self.pos)
-        self.pos += 1
+        self.pos = self.pos + 1
         return b
     }
 
-    // Skip past ASCII whitespace (space, tab, newline, carriage return).
     func skip_ws(mutate self) {
         while self.pos < self.len {
             const b = self.input.byte_at(self.pos)
             if b != 32 && b != 9 && b != 10 && b != 13 {
                 return
             }
-            self.pos += 1
+            self.pos = self.pos + 1
         }
     }
 
-    // Expect a specific byte, returning error if not found.
     func expect(mutate self, expected: u8) -> () or JsonError {
         self.skip_ws()
         if self.pos >= self.len {
@@ -112,7 +121,6 @@ extend JsonParser {
         return Ok(())
     }
 
-    // Parse a complete JSON value.
     func parse_value(mutate self) -> JsonValue or JsonError {
         self.skip_ws()
         if self.pos >= self.len {
@@ -121,81 +129,77 @@ extend JsonParser {
 
         const b = self.peek()
 
-        // Object
-        if b == 123 { return self.parse_object() }
-        // Array
-        if b == 91 { return self.parse_array() }
-        // String
-        if b == 34 { return self.parse_string_value() }
-        // true
-        if b == 116 { return self.parse_true() }
-        // false
-        if b == 102 { return self.parse_false() }
-        // null
-        if b == 110 { return self.parse_null() }
-        // Number: digit or minus sign
-        if b == 45 || (b >= 48 && b <= 57) {
+        if b == 123 {
+            return self.parse_object()
+        }
+        if b == 91 {
+            return self.parse_array()
+        }
+        if b == 34 {
+            return self.parse_string_value()
+        }
+        if b == 116 {
+            return self.parse_true()
+        }
+        if b == 102 {
+            return self.parse_false()
+        }
+        if b == 110 {
+            return self.parse_null()
+        }
+        if b == 45 || b >= 48 && b <= 57 {
             return self.parse_number()
         }
 
         return Err(JsonError.ParseError("unexpected character at position {self.pos}"))
     }
 
-    // Parse a JSON object: { "key": value, ... }
     func parse_object(mutate self) -> JsonValue or JsonError {
-        self.pos += 1  // skip '{'
+        self.pos = self.pos + 1
         self.skip_ws()
 
         let map = Map<string, JsonValue>.new()
 
-        // Empty object
         if self.peek() == 125 {
-            self.pos += 1
+            self.pos = self.pos + 1
             return Ok(JsonValue.Object(map))
         }
 
         loop {
             self.skip_ws()
-
-            // Parse key (must be a string)
             if self.peek() != 34 {
                 return Err(JsonError.ParseError("expected string key in object"))
             }
             const key = try self.parse_raw_string()
-
-            // Expect colon
             self.skip_ws()
             if self.advance() != 58 {
                 return Err(JsonError.ParseError("expected ':' after object key"))
             }
-
-            // Parse value
             const value = try self.parse_value()
-
             // Last value wins for duplicate keys (J5)
             map.insert(key, value)
 
             self.skip_ws()
             const next = self.advance()
-            // comma — continue
-            if next == 44 { continue }
-            // closing brace — done
-            if next == 125 { return Ok(JsonValue.Object(map)) }
+            if next == 44 {
+                continue
+            }
+            if next == 125 {
+                return Ok(JsonValue.Object(map))
+            }
 
             return Err(JsonError.ParseError("expected ',' or '}' in object"))
         }
     }
 
-    // Parse a JSON array: [ value, ... ]
     func parse_array(mutate self) -> JsonValue or JsonError {
-        self.pos += 1  // skip '['
+        self.pos = self.pos + 1
         self.skip_ws()
 
         let arr = Vec<JsonValue>.new()
 
-        // Empty array
         if self.peek() == 93 {
-            self.pos += 1
+            self.pos = self.pos + 1
             return Ok(JsonValue.Array(arr))
         }
 
@@ -205,63 +209,64 @@ extend JsonParser {
 
             self.skip_ws()
             const next = self.advance()
-            // comma — continue
-            if next == 44 { continue }
-            // closing bracket — done
-            if next == 93 { return Ok(JsonValue.Array(arr)) }
+            if next == 44 {
+                continue
+            }
+            if next == 93 {
+                return Ok(JsonValue.Array(arr))
+            }
 
             return Err(JsonError.ParseError("expected ',' or ']' in array"))
         }
     }
 
-    // Parse a JSON string, returning the raw string content.
     func parse_raw_string(mutate self) -> string or JsonError {
         if self.advance() != 34 {
             return Err(JsonError.ParseError("expected '\"'"))
         }
 
-        let result = string.new()
+        let b = string_builder.new()
 
         while self.pos < self.len {
-            const b = self.advance()
-
-            // End of string
-            if b == 34 {
-                return Ok(result)
+            const byte = self.advance()
+            if byte == 34 {
+                return Ok(b.build())
             }
-
-            // Escape sequence
-            if b == 92 {
+            if byte == 92 {
                 if self.pos >= self.len {
                     return Err(JsonError.ParseError("unterminated escape sequence"))
                 }
                 const esc = self.advance()
-                if esc == 34 { result.push('"') }
-                else if esc == 92 { result.push('\\') }
-                else if esc == 47 { result.push('/') }
-                else if esc == 110 { result.push('\n') }
-                else if esc == 114 { result.push('\r') }
-                else if esc == 116 { result.push('\t') }
-                else if esc == 98 { result.push(8 as char) }
-                else if esc == 102 { result.push(12 as char) }
-                else if esc == 117 {
-                    // \uXXXX unicode escape — parse 4 hex digits
+                if esc == 34 {
+                    b.append_char('"')
+                } else if esc == 92 {
+                    b.append_char('\\')
+                } else if esc == 47 {
+                    b.append_char('/')
+                } else if esc == 110 {
+                    b.append_char('\n')
+                } else if esc == 114 {
+                    b.append_char('\r')
+                } else if esc == 116 {
+                    b.append_char('\t')
+                } else if esc == 98 {
+                    b.append_char(8 as char)
+                } else if esc == 102 {
+                    b.append_char(12 as char)
+                } else if esc == 117 {
                     const cp = try self.parse_unicode_escape()
-                    result.push(cp)
+                    b.append_char(cp)
                 } else {
                     return Err(JsonError.ParseError("invalid escape character"))
                 }
                 continue
             }
-
-            // Regular byte
-            result.push(b as char)
+            b.append_char(byte as char)
         }
 
         return Err(JsonError.ParseError("unterminated string"))
     }
 
-    // Parse 4 hex digits after \u, return the codepoint as a char.
     func parse_unicode_escape(mutate self) -> char or JsonError {
         if self.pos + 4 > self.len {
             return Err(JsonError.ParseError("incomplete unicode escape"))
@@ -275,70 +280,65 @@ extend JsonParser {
                 return Err(JsonError.ParseError("invalid hex digit in unicode escape"))
             }
             cp = cp * 16 + digit as u32
-            i += 1
+            i = i + 1
         }
         return Ok(cp as char)
     }
 
-    // Parse a JSON string as a JsonValue.
     func parse_string_value(mutate self) -> JsonValue or JsonError {
         const s = try self.parse_raw_string()
         return Ok(JsonValue.String(s))
     }
 
-    // Parse "true".
     func parse_true(mutate self) -> JsonValue or JsonError {
         if self.pos + 4 > self.len {
             return Err(JsonError.ParseError("unexpected end of input"))
         }
         if self.input[self.pos..self.pos + 4] == "true" {
-            self.pos += 4
+            self.pos = self.pos + 4
             return Ok(JsonValue.Bool(true))
         }
         return Err(JsonError.ParseError("invalid token"))
     }
 
-    // Parse "false".
     func parse_false(mutate self) -> JsonValue or JsonError {
         if self.pos + 5 > self.len {
             return Err(JsonError.ParseError("unexpected end of input"))
         }
         if self.input[self.pos..self.pos + 5] == "false" {
-            self.pos += 5
+            self.pos = self.pos + 5
             return Ok(JsonValue.Bool(false))
         }
         return Err(JsonError.ParseError("invalid token"))
     }
 
-    // Parse "null".
     func parse_null(mutate self) -> JsonValue or JsonError {
         if self.pos + 4 > self.len {
             return Err(JsonError.ParseError("unexpected end of input"))
         }
         if self.input[self.pos..self.pos + 4] == "null" {
-            self.pos += 4
+            self.pos = self.pos + 4
             return Ok(JsonValue.Null)
         }
         return Err(JsonError.ParseError("invalid token"))
     }
 
-    // Parse a JSON number (integer or float).
     func parse_number(mutate self) -> JsonValue or JsonError {
         const start = self.pos
 
-        // Optional minus
-        if self.peek() == 45 { self.pos += 1 }
+        if self.peek() == 45 {
+            self.pos = self.pos + 1
+        }
 
-        // Integer part
         if self.pos >= self.len {
             return Err(JsonError.ParseError("unexpected end in number"))
         }
+        // Leading zero — only valid as "0" or "0.xxx"
         if self.peek() == 48 {
-            // Leading zero — only valid as "0" or "0.xxx"
-            self.pos += 1
+            self.pos = self.pos + 1
         } else if self.peek() >= 49 && self.peek() <= 57 {
             while self.pos < self.len && self.peek() >= 48 && self.peek() <= 57 {
-                self.pos += 1
+                self.pos = self.pos + 1
             }
         } else {
             return Err(JsonError.ParseError("invalid number"))
@@ -346,26 +346,26 @@ extend JsonParser {
 
         // Fractional part
         if self.pos < self.len && self.peek() == 46 {
-            self.pos += 1
+            self.pos = self.pos + 1
             if self.pos >= self.len || self.peek() < 48 || self.peek() > 57 {
                 return Err(JsonError.ParseError("expected digit after decimal point"))
             }
             while self.pos < self.len && self.peek() >= 48 && self.peek() <= 57 {
-                self.pos += 1
+                self.pos = self.pos + 1
             }
         }
 
         // Exponent part
         if self.pos < self.len && (self.peek() == 101 || self.peek() == 69) {
-            self.pos += 1
+            self.pos = self.pos + 1
             if self.pos < self.len && (self.peek() == 43 || self.peek() == 45) {
-                self.pos += 1
+                self.pos = self.pos + 1
             }
             if self.pos >= self.len || self.peek() < 48 || self.peek() > 57 {
                 return Err(JsonError.ParseError("expected digit in exponent"))
             }
             while self.pos < self.len && self.peek() >= 48 && self.peek() <= 57 {
-                self.pos += 1
+                self.pos = self.pos + 1
             }
         }
 
@@ -375,30 +375,32 @@ extend JsonParser {
     }
 }
 
-// Convert a hex ASCII byte to its numeric value, or -1 if invalid.
 func hex_digit(b: u8) -> i32 {
-    if b >= 48 && b <= 57 { return (b - 48) as i32 }
-    if b >= 65 && b <= 70 { return (b - 55) as i32 }
-    if b >= 97 && b <= 102 { return (b - 87) as i32 }
+    if b >= 48 && b <= 57 {
+        return b - 48 as i32
+    }
+    if b >= 65 && b <= 70 {
+        return b - 55 as i32
+    }
+    if b >= 97 && b <= 102 {
+        return b - 87 as i32
+    }
     return -1
 }
 
 // ─── Public API: parsing ─────────────────────────────────────────
 
-struct json { }
+struct json {  }
 
 extend json {
     /// Parse a JSON string into a JsonValue tree. RFC 8259 compliant.
     public func parse(input: string) -> JsonValue or JsonError {
         let parser = JsonParser.new(input)
         const value = try parser.parse_value()
-
-        // Verify no trailing content (except whitespace)
         parser.skip_ws()
         if parser.pos < parser.len {
             return Err(JsonError.ParseError("trailing content after JSON value"))
         }
-
         return Ok(value)
     }
 
@@ -409,108 +411,119 @@ extend json {
 
     /// Serialize a JsonValue to a pretty-printed JSON string.
     public func stringify_pretty(value: JsonValue) -> string {
-        let result = string.new()
-        stringify_pretty_inner(value, mutate result, 0)
-        return result
+        let b = string_builder.new()
+        stringify_pretty_inner(value, mutate b, 0)
+        return b.build()
     }
 
     /// Encode a value as a JSON string.
     /// Compiler-expanded at MIR level for structs via comptime for + reflect.
-    public func encode(value: T) -> string { }
+    public func encode<T: Encode>(value: T) -> string {}
 
     /// Decode a JSON string into a typed value.
     /// Compiler-expanded at MIR level for structs via comptime for + reflect.
-    public func decode(str: string) -> T or JsonError { }
+    public func decode<T: Decode>(str: string) -> T or JsonError {}
 
     /// Convert a typed value to a JsonValue tree.
-    public func to_value(value: T) -> JsonValue { }
+    public func to_value<T: Encode>(value: T) -> JsonValue {}
 
     /// Convert a JsonValue tree to a typed value.
-    public func from_value(value: JsonValue) -> T or JsonError { }
+    public func from_value<T: Decode>(value: JsonValue) -> T or JsonError {}
 }
 
 // ─── Stringify internals ─────────────────────────────────────────
 
 func stringify_value(value: JsonValue) -> string {
     match value {
-        JsonValue.Null => return "null",
+        JsonValue.Null => return "null"
         JsonValue.Bool(b) => {
-            if b { return "true" }
+            if b {
+                return "true"
+            }
             return "false"
         }
-        JsonValue.Number(n) => return format_number(n),
-        JsonValue.String(s) => return escape_string(s),
-        JsonValue.Array(arr) => return stringify_array(arr),
-        JsonValue.Object(map) => return stringify_object(map),
+        JsonValue.Number(n) => return format_number(n)
+        JsonValue.String(s) => return escape_string(s)
+        JsonValue.Array(arr) => return stringify_array(arr)
+        JsonValue.Object(map) => return stringify_object(map)
     }
 }
 
 func stringify_array(arr: Vec<JsonValue>) -> string {
-    let result = string.new()
-    result.push_str("[")
+    let b = string_builder.new()
+    b.append("[")
     let first = true
     for item in arr {
-        if !first { result.push_str(",") }
-        result.push_str(stringify_value(item))
+        if !first {
+            b.append(",")
+        }
+        b.append(stringify_value(item))
         first = false
     }
-    result.push_str("]")
-    return result
+    b.append("]")
+    return b.build()
 }
 
 func stringify_object(map: Map<string, JsonValue>) -> string {
-    let result = string.new()
-    result.push_str("{")
+    let b = string_builder.new()
+    b.append("{")
     let first = true
     for (key, value) in map {
-        if !first { result.push_str(",") }
-        result.push_str(escape_string(key))
-        result.push_str(":")
-        result.push_str(stringify_value(value))
+        if !first {
+            b.append(",")
+        }
+        b.append(escape_string(key))
+        b.append(":")
+        b.append(stringify_value(value))
         first = false
     }
-    result.push_str("}")
-    return result
+    b.append("}")
+    return b.build()
 }
 
-// Escape a string for JSON output: wrap in quotes, escape special chars.
 func escape_string(s: string) -> string {
-    let result = string.new()
-    result.push('"')
+    let b = string_builder.new()
+    b.append_char('"')
     let i: usize = 0
     while i < s.len() {
-        const b = s.byte_at(i)
-        if b == 34 { result.push_str("\\\"") }
-        else if b == 92 { result.push_str("\\\\") }
-        else if b == 10 { result.push_str("\\n") }
-        else if b == 13 { result.push_str("\\r") }
-        else if b == 9 { result.push_str("\\t") }
-        else if b == 8 { result.push_str("\\b") }
-        else if b == 12 { result.push_str("\\f") }
-        else if b < 32 {
-            // Control characters: \u00XX
-            result.push_str("\\u00")
-            result.push(hex_char(b / 16))
-            result.push(hex_char(b % 16))
+        const byte = s.byte_at(i)
+        if byte == 34 {
+            b.append("\\\"")
+        } else if byte == 92 {
+            b.append("\\\\")
+        } else if byte == 10 {
+            b.append("\\n")
+        } else if byte == 13 {
+            b.append("\\r")
+        } else if byte == 9 {
+            b.append("\\t")
+        } else if byte == 8 {
+            b.append("\\b")
+        } else if byte == 12 {
+            b.append("\\f")
+        } else if byte < 32 {
+            b.append("\\u00")
+            b.append_char(hex_char(byte / 16))
+            b.append_char(hex_char(byte % 16))
         } else {
-            result.push(b as char)
+            b.append_char(byte as char)
         }
-        i += 1
+        i = i + 1
     }
-    result.push('"')
-    return result
+    b.append_char('"')
+    return b.build()
 }
 
 func hex_char(n: u8) -> char {
-    if n < 10 { return (48 + n) as char }
-    return (87 + n) as char
+    if n < 10 {
+        return 48 + n as char
+    }
+    return 87 + n as char
 }
 
-// Format a number for JSON output.
-// Integers (no fractional part) render without decimal point.
 func format_number(n: f64) -> string {
     const i = n as i64
-    if (i as f64) == n && n >= -9007199254740992.0 && n <= 9007199254740992.0 {
+    if i as f64 == n && n >= -9007199254740992.0 && n <= 9007199254740992.0 {
         return "{i}"
     }
     return "{n}"
@@ -518,58 +531,63 @@ func format_number(n: f64) -> string {
 
 // ─── Pretty-print internals ─────────────────────────────────────
 
-func stringify_pretty_inner(value: JsonValue, mutate out: string, indent: usize) {
+func stringify_pretty_inner(value: JsonValue, mutate out: string_builder, indent: usize) {
     match value {
-        JsonValue.Null => out.push_str("null"),
-        JsonValue.Bool(b) => {
-            if b { out.push_str("true") }
-            else { out.push_str("false") }
+        JsonValue.Null => out.append("null")
+        JsonValue.Bool(b) => if b {
+            out.append("true")
+        } else {
+            out.append("false")
         }
-        JsonValue.Number(n) => out.push_str(format_number(n)),
-        JsonValue.String(s) => out.push_str(escape_string(s)),
+        JsonValue.Number(n) => out.append(format_number(n))
+        JsonValue.String(s) => out.append(escape_string(s))
         JsonValue.Array(arr) => {
             if arr.is_empty() {
-                out.push_str("[]")
+                out.append("[]")
                 return
             }
-            out.push_str("[\n")
+            out.append("[\n")
             let first = true
             for item in arr {
-                if !first { out.push_str(",\n") }
+                if !first {
+                    out.append(",\n")
+                }
                 write_indent(mutate out, indent + 1)
                 stringify_pretty_inner(item, mutate out, indent + 1)
                 first = false
             }
-            out.push('\n')
+            out.append_char('\n')
             write_indent(mutate out, indent)
-            out.push(']')
+            out.append_char(']')
         }
         JsonValue.Object(map) => {
             if map.is_empty() {
-                out.push_str("{}")
+                out.append("{}")
                 return
             }
-            out.push_str("{\n")
+            out.append("{\n")
             let first = true
             for (key, val) in map {
-                if !first { out.push_str(",\n") }
+                if !first {
+                    out.append(",\n")
+                }
                 write_indent(mutate out, indent + 1)
-                out.push_str(escape_string(key))
-                out.push_str(": ")
+                out.append(escape_string(key))
+                out.append(": ")
                 stringify_pretty_inner(val, mutate out, indent + 1)
                 first = false
             }
-            out.push('\n')
+            out.append_char('\n')
             write_indent(mutate out, indent)
-            out.push('}')
+            out.append_char('}')
         }
     }
 }
 
-func write_indent(mutate out: string, level: usize) {
+func write_indent(mutate out: string_builder, level: usize) {
     let i: usize = 0
     while i < level {
-        out.push_str("  ")
-        i += 1
+        out.append("  ")
+        i = i + 1
     }
 }

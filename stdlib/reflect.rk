@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Compile-time type introspection. All functions resolve at compile time
+// with zero runtime cost (R1). Used by encoding libraries via comptime for
+// + field access.
+
+// ─── Info Types ─────────────────────────────────────────────────
+
+/// Metadata for a single struct field. Returned by reflect.fields<T>().
+public struct FieldInfo {
+    public name: string
+    public type_name: string
+    public offset: usize
+    public size: usize
+    public is_public: bool
+    public serial_name: string
+    public is_skipped: bool
+    public has_default: bool
+}
+
+/// Metadata for a method on a type. Returned by reflect.methods<T>().
+public struct MethodInfo {
+    public name: string
+    public is_public: bool
+    public param_count: usize
+    public return_type_name: string
+}
+
+/// Metadata for an enum variant. Returned by reflect.variants<T>().
+public struct VariantInfo {
+    public name: string
+    public has_fields: bool
+    public field_count: usize
+    public fields: Vec<FieldInfo>
+    public serial_name: string
+}
+
+// ─── Reflect Namespace ──────────────────────────────────────────
+
+struct reflect {  }
+
+extend reflect {
+    public func size_of<T>() -> usize {}
+
+    public func align_of<T>() -> usize {}
+
+    public func name_of<T>() -> string {}
+
+    public func is_copy<T>() -> bool {}
+
+    public func is_resource<T>() -> bool {}
+
+    public func is_struct<T>() -> bool {}
+
+    public func is_enum<T>() -> bool {}
+
+    public func is_optional<T>() -> bool {}
+
+    public func is_vec<T>() -> bool {}
+
+    public func is_map<T>() -> bool {}
+
+    public func is_integer<T>() -> bool {}
+
+    public func is_float<T>() -> bool {}
+
+    public func is_flat<T>() -> bool {}
+
+    public func fields<T>() -> Vec<FieldInfo> {}
+
+    public func has_field<T>(name: string) -> bool {}
+
+    public func methods<T>() -> Vec<MethodInfo> {}
+
+    public func has_method<T>(name: string) -> bool {}
+
+    public func implements<T, Trait>() -> bool {}
+
+    public func traits<T>() -> Vec<string> {}
+
+    public func variants<T>() -> Vec<VariantInfo> {}
+}

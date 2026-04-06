@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// String formatting: Displayable and Debug traits, format() function.
+//
+// format(template, args...) is compiler-known (CM1) — it accepts variadic
+// arguments through compiler support, not a general variadic mechanism.
+// The compiler parses the template at compile time (CM2), type-checks each
+// argument against its placeholder (CM3), and generates specialized
+// string-building code per call site (CM5).
+
+// ─── Displayable ────────────────────────────────────────────────
+
+/// User-facing string representation. Structs must opt in via
+/// `extend Type with Displayable`. Primitives implement it by default (D2).
+///
+/// format("{}", x) calls to_string() — compile error if not implemented (D4).
+///
+/// Error bridge (D5): types with message(self) -> string auto-satisfy
+/// Displayable — to_string() delegates to message(). No boilerplate for
+/// error types in format("{}", err).
+public trait Displayable {
+    func to_string(self) -> string
+}
+
+// ─── Debug ──────────────────────────────────────────────────────
+
+/// Developer-facing representation. Auto-derived for all types (G2).
+/// Override via `extend Type with Debug` (G3).
+///
+/// format("{:?}", x) calls debug_string() (G4).
+/// Auto-derived output shows struct fields and enum variants.
+public trait Debug {
+    func debug_string(self) -> string
+}
