@@ -159,6 +159,55 @@ class Galaxy:
         self._peaks[num_elements] = peaks
         return peaks
 
+    def get_beacon_peaks(self, num_elements, beacon_value):
+        """Beacon-perturbed peaks. Same structure as base peaks but with
+        shifted positions and modulated heights. The beacon value is a
+        required input — without it, the landscape is undefined.
+
+        Peaks stay near their base stoichiometric ratios (same general
+        chemistry) but the exact optimum shifts each tick. Knowledge of
+        the right neighborhood transfers across ticks; exact parameters
+        don't.
+        """
+        cache_key = (num_elements, beacon_value)
+        if hasattr(self, '_beacon_peaks') and cache_key in self._beacon_peaks:
+            return self._beacon_peaks[cache_key]
+        if not hasattr(self, '_beacon_peaks'):
+            self._beacon_peaks = {}
+
+        base_peaks = self._get_peaks(num_elements)
+
+        # Beacon-specific perturbations — deterministic from beacon value
+        bp_raw = _sf(f"{self.seed}:beacon:{beacon_value}", len(base_peaks) * 4)
+
+        perturbed = []
+        for i, pk in enumerate(base_peaks):
+            ri = i * 4
+            # Shift ratio: ±100% of peak width (exact position unpredictable,
+            # but still in the same neighborhood)
+            ratio_shift = (bp_raw[ri] - 0.5) * pk["width"] * 2.0
+            # Height modulation: 30%-170% (which peak is strongest changes)
+            height_mod = 0.3 + bp_raw[ri + 1] * 1.4
+            # Width modulation: 60%-140% (peak sharpness varies)
+            width_mod = 0.6 + bp_raw[ri + 2] * 0.8
+            # Energy window shift: ±10% of range
+            e_shift = (bp_raw[ri + 3] - 0.5) * 0.2
+
+            perturbed.append({
+                "ei": pk["ei"], "ej": pk["ej"],
+                "ratio": pk["ratio"] + ratio_shift,
+                "heights": [h * height_mod for h in pk["heights"]],
+                "width": pk["width"] * width_mod,
+                "shape": pk["shape"],
+                "e_lo": max(0, pk["e_lo"] + e_shift),
+                "e_hi": min(1, pk["e_hi"] + e_shift),
+                "interference": pk["interference"],
+                "cat_effects": pk["cat_effects"],
+            })
+
+        self._beacon_peaks[cache_key] = perturbed
+        return perturbed
+
 
 
 def _desert_noise(point, seed, prop_idx):
@@ -178,19 +227,31 @@ def _desert_noise(point, seed, prop_idx):
     return n + spike
 
 
-def interact(fracs, energy, galaxy, catalyst=None, precision=None):
+def interact(fracs, energy, galaxy, catalyst=None, precision=None,
+             beacon=None):
     """Core interaction function.
 
-    Evaluates the sum of all stoichiometric peak contributions at the
-    given composition + energy point. Peaks can interfere. Desert areas
-    have low-amplitude noise with rare micro-spikes.
+    fracs: element fractions summing to ~1.0
+    energy: energy per mass
+    galaxy: Galaxy instance
+    catalyst: optional (element_index, fraction)
+    precision: optional scatter magnitude (facility quality)
+    beacon: optional int — beacon tick value. When provided, the function
+            evaluates against beacon-perturbed peaks. Without it, uses
+            base peaks (simulation/offline mode only — in-game, beacon
+            is always required).
     """
     fracs = list(fracs)
     ne = len(fracs)
 
-    # Precision noise: scatter fractions before evaluation
+    # Precision noise (facility quality — separate from beacon)
     if precision and precision > 0:
-        fracs = [max(0.001, f + random.gauss(0, precision)) for f in fracs]
+        if beacon is not None:
+            # Deterministic from beacon — verifiable
+            noise_rng = random.Random(f"precision:{beacon}:{id(fracs)}")
+            fracs = [max(0.001, f + noise_rng.gauss(0, precision)) for f in fracs]
+        else:
+            fracs = [max(0.001, f + random.gauss(0, precision)) for f in fracs]
         t = sum(fracs)
         fracs = [f / t for f in fracs]
 
@@ -205,8 +266,11 @@ def interact(fracs, energy, galaxy, catalyst=None, precision=None):
 
     active_catalyst = catalyst[0] if catalyst else None
 
-    # Sum peak contributions
-    peaks = galaxy._get_peaks(ne)
+    # Sum peak contributions — beacon-perturbed if beacon provided
+    if beacon is not None:
+        peaks = galaxy.get_beacon_peaks(ne, beacon)
+    else:
+        peaks = galaxy._get_peaks(ne)
     modification = [0.0] * NUM_PROPS
 
     for pk in peaks:
@@ -858,6 +922,262 @@ def viz_property_scatter(seed, p1=1, p2=2, n_samples=500):
 
 
 # ---------------------------------------------------------------------------
+# Beacon tests
+# ---------------------------------------------------------------------------
+
+def test_beacon_batches():
+    """Blind batches within tick windows.
+
+    Each tick window: researcher commits N experiments (batch), then beacon
+    reveals. All N experiments in the batch use the same beacon value.
+    Between windows, the researcher can adapt (hill-climb across windows).
+
+    Question: how does batch size affect discovery? Large batches = more
+    coverage per tick but no learning within the batch.
+    """
+    print("\n" + "=" * 70)
+    print("BEACON BATCHES: Batch size vs discovery rate")
+    print("=" * 70)
+    print("\n  Each tick: commit batch of N experiments, beacon reveals,")
+    print("  evaluate all N with beacon scatter, learn, repeat.")
+    print("  Total budget = 500 experiments across all ticks.\n")
+
+    g = Galaxy(42)
+    nr = 20
+    total_budget = 500
+    facility_precision = 0.05  # moderate facility
+
+    for batch_size in [1, 5, 10, 25, 50, 100]:
+        n_ticks = total_budget // batch_size
+        finals = []
+
+        for run in range(nr):
+            random.seed(run * 1000)
+            best_val = -float('inf')
+            best_point = None
+            current = None  # hill-climb starting point
+            op_counter = 0
+
+            for tick in range(n_ticks):
+                # Beacon value for this tick (unpredictable at commit time)
+                beacon_val = hash(f"beacon:{g.seed}:{tick}:{run}")
+
+                # Commit batch: researcher chooses N points BEFORE beacon
+                batch_points = []
+                if current is None:
+                    for _ in range(batch_size):
+                        raw = [random.random() for _ in range(3)]
+                        t = sum(raw)
+                        f = [r / t for r in raw]
+                        e = random.uniform(0, 50)
+                        batch_points.append((f, e))
+                else:
+                    for _ in range(batch_size):
+                        f, e = current
+                        nf = [max(0.001, fi + random.gauss(0, 0.03))
+                              for fi in f]
+                        t = sum(nf)
+                        nf = [fi / t for fi in nf]
+                        ne = max(0, min(50, e + random.gauss(0, 3.0)))
+                        batch_points.append((nf, ne))
+
+                # Beacon reveals — evaluate all committed experiments
+                # against this tick's beacon-shifted landscape
+                for f, e in batch_points:
+                    props = interact(f, e, g,
+                                     precision=facility_precision,
+                                     beacon=beacon_val)
+                    v = props[1]
+                    if v > best_val:
+                        best_val = v
+                        best_point = (f, e)
+
+                # Learn: update current for next tick's hill-climbing
+                current = best_point
+
+            finals.append(best_val)
+
+        mean = sum(finals) / nr
+        std = (sum((v - mean)**2 for v in finals) / nr) ** 0.5
+        print(f"  batch={batch_size:>3}, ticks={n_ticks:>3}: "
+              f"mean={mean:.3f} ± {std:.3f}")
+
+
+def test_beacon_hillclimb():
+    """Hill-climbing across tick windows.
+
+    The landscape shifts each tick (new beacon = new peak positions).
+    Can a researcher still make progress across ticks by knowing the
+    right neighborhood, even though the exact optimum moves?
+
+    Compare: 1 experiment per tick (pure sequential hill-climbing across
+    shifting landscape) vs base landscape (no beacon, stable peaks).
+    """
+    print("\n" + "=" * 70)
+    print("BEACON HILL-CLIMBING: Can researchers climb across shifting ticks?")
+    print("=" * 70)
+
+    g = Galaxy(42)
+    nr = 20
+    budget = 300
+
+    # Without beacon: stable landscape, smart strategy
+    no_beacon = []
+    for run in range(nr):
+        random.seed(run * 1000)
+        r = Researcher(g, 3, budget, "smart")
+        r.run()
+        no_beacon.append(r.best_val)
+
+    # With beacon: landscape shifts each tick, 1 experiment per tick
+    with_beacon = []
+    for run in range(nr):
+        random.seed(run * 1000)
+        best_val = -float('inf')
+        best_point = None
+        current = None
+        stall = 0
+
+        for tick in range(budget):
+            beacon_val = hash(f"tick:{tick}:{run}")
+
+            if current is None:
+                raw = [random.random() for _ in range(3)]
+                t = sum(raw)
+                pt = ([r / t for r in raw], random.uniform(0, 50))
+            else:
+                f, e = current
+                nf = [max(0.001, fi + random.gauss(0, 0.03)) for fi in f]
+                t = sum(nf)
+                nf = [fi / t for fi in nf]
+                ne = max(0, min(50, e + random.gauss(0, 3.0)))
+                pt = (nf, ne)
+
+            props = interact(pt[0], pt[1], g, beacon=beacon_val)
+            v = props[1]
+
+            if v > best_val:
+                best_val = v
+                best_point = pt
+                current = pt
+                stall = 0
+            else:
+                stall += 1
+
+            if stall > 30:
+                current = None
+                stall = 0
+
+        with_beacon.append(best_val)
+
+    mean_nb = sum(no_beacon) / nr
+    mean_wb = sum(with_beacon) / nr
+    ratio = mean_wb / mean_nb if mean_nb > 0.01 else 0
+    print(f"\n  No beacon (stable landscape): {mean_nb:.3f}")
+    print(f"  With beacon (shifting ticks):  {mean_wb:.3f}  (ratio: {ratio:.2f})")
+    print(f"\n  If ratio > 0.7: hill-climbing across ticks works")
+    print(f"  If ratio < 0.3: beacon shifts destroy all learned knowledge")
+
+
+def test_beacon_bruteforce():
+    """The brute-force attack.
+
+    Attacker: pre-computes optimal parameters using the BASE landscape
+    (no beacon). Then submits those parameters on a tick where the
+    beacon has shifted all the peaks.
+
+    The beacon IS the landscape — without it, you're optimizing a
+    different function. Pre-computed peaks are in the wrong place.
+    """
+    print("\n" + "=" * 70)
+    print("BEACON BRUTE-FORCE: Does pre-computation help?")
+    print("=" * 70)
+    print("\n  Attacker optimizes base landscape (no beacon), submits on")
+    print("  a tick where peaks have shifted. Honest researcher searches")
+    print("  within the tick using the actual beacon landscape.\n")
+
+    g = Galaxy(42)
+
+    # Attacker: brute-force the BASE landscape (no beacon)
+    random.seed(42)
+    best_attack_val = -float('inf')
+    best_attack_point = None
+    for _ in range(10000):
+        raw = [random.random() for _ in range(3)]
+        t = sum(raw)
+        f = [r / t for r in raw]
+        e = random.uniform(0, 50)
+        props = interact(f, e, g)  # no beacon — base peaks
+        v = props[1]
+        if v > best_attack_val:
+            best_attack_val = v
+            best_attack_point = (f, e)
+
+    print(f"  Attacker's base-landscape best: {best_attack_val:.3f}")
+
+    # Test across 50 beacon ticks
+    attack_results = []
+    honest_results = []
+    for tick in range(50):
+        beacon_val = hash(f"tick:{tick}")
+
+        # Attacker: submits pre-computed point on this tick's landscape
+        af, ae = best_attack_point
+        props = interact(af, ae, g, beacon=beacon_val)
+        attack_results.append(props[1])
+
+        # Honest: 200 random experiments on this tick's landscape
+        best_honest = -float('inf')
+        random.seed(tick * 777)
+        for exp in range(200):
+            raw = [random.random() for _ in range(3)]
+            t = sum(raw)
+            f = [r / t for r in raw]
+            e = random.uniform(0, 50)
+            props = interact(f, e, g, beacon=beacon_val)
+            if props[1] > best_honest:
+                best_honest = props[1]
+        honest_results.append(best_honest)
+
+    mean_a = sum(attack_results) / len(attack_results)
+    mean_h = sum(honest_results) / len(honest_results)
+    std_a = (sum((v - mean_a)**2 for v in attack_results) / len(attack_results)) ** 0.5
+    std_h = (sum((v - mean_h)**2 for v in honest_results) / len(honest_results)) ** 0.5
+
+    print(f"\n  Attacker (pre-computed, 10k free evals): {mean_a:.3f} ± {std_a:.3f}")
+    print(f"  Honest (200 real evals per tick):         {mean_h:.3f} ± {std_h:.3f}")
+    adv = (mean_a - mean_h) / abs(mean_h) * 100 if abs(mean_h) > 0.01 else 0
+    print(f"  Attacker advantage: {adv:+.1f}%")
+    print()
+
+    # Also test: attacker who knows the NEIGHBORHOOD but not the exact
+    # beacon-shifted peak. They pre-compute the right region, then do
+    # a small focused search within the tick.
+    focused_results = []
+    for tick in range(50):
+        beacon_val = hash(f"tick:{tick}")
+        best_focused = -float('inf')
+        random.seed(tick * 888)
+        # 50 experiments focused near the pre-computed peak
+        af, ae = best_attack_point
+        for exp in range(50):
+            nf = [max(0.001, fi + random.gauss(0, 0.02)) for fi in af]
+            t = sum(nf)
+            nf = [fi / t for fi in nf]
+            ne = max(0, min(50, ae + random.gauss(0, 2.0)))
+            props = interact(nf, ne, g, beacon=beacon_val)
+            if props[1] > best_focused:
+                best_focused = props[1]
+        focused_results.append(best_focused)
+
+    mean_f = sum(focused_results) / len(focused_results)
+    print(f"  Focused (50 evals near pre-computed peak): {mean_f:.3f}")
+    adv_f = (mean_f - mean_h) / abs(mean_h) * 100 if abs(mean_h) > 0.01 else 0
+    print(f"  Focused advantage over honest: {adv_f:+.1f}%")
+    print(f"  (This is the value of knowing the right neighborhood)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -871,6 +1191,10 @@ if __name__ == "__main__":
         "precision": test_precision, "sharing": test_sharing,
         "reverse": test_reverse, "seeds": test_seeds,
         "elements": test_elements, "density": test_density,
+        # Beacon tests
+        "beacon-batches": test_beacon_batches,
+        "beacon-climb": test_beacon_hillclimb,
+        "beacon-bruteforce": test_beacon_bruteforce,
         # Visualization
         "landscape":  lambda: viz_landscape(_seed()),
         "properties": lambda: viz_all_properties(_seed()),

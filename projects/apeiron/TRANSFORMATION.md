@@ -110,7 +110,7 @@ material[p] = base[p] + modification[p]
 
 The critical design choice: **the domain commits to transform parameters BEFORE the beacon tick.** The beacon value enters the function but doesn't exist at commit time. This means the domain can't pre-compute which parameters produce the best output — the optimum shifts with every beacon tick. Each evaluation requires committing real resources (locked inputs, published commitment) before learning the result.
 
-The galaxy seed parameterizes the general landscape. The beacon value shifts the specific output within that landscape. General knowledge (which phase regions exist, which element combinations are promising) is derivable from the seed — this commoditizes and becomes textbook knowledge. Specific outputs for any given craft are unpredictable until the beacon ticks — this is what makes research with real materials valuable.
+The galaxy seed parameterizes the general landscape. The beacon value perturbs it: peak positions shift by up to ±100% of their width, peak heights modulate 30-170%, peak widths vary 60-140%, and energy windows shift ±10%. The general structure is stable (which element pairs work, which energy ranges, which peak shapes) but the exact optimum moves every tick. General knowledge commoditizes. Exact coordinates don't transfer.
 
 **Verification:** The proof includes the commitment (timestamped before the beacon tick), the beacon value (from the public beacon log), and the output. Any verifier re-executes: check commitment timing, check beacon value against the log, re-evaluate the function, confirm the output matches. Cheap. Local. No federation interaction.
 
