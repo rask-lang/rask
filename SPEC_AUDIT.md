@@ -159,21 +159,13 @@ No ARM, no WASM codegen paths. Cranelift supports them, but the compiler doesn't
 
 ## Stdlib Gaps (interp has more coverage than codegen)
 
-### Significantly incomplete (20–50% implemented)
-
-**I/O (std.io ~20%)** — No `Reader`/`Writer` traits. No `BufReader`/`BufWriter`. No `Stdin`/`Stdout`/`Stderr` as linear resources. No `Buffer` type. No `io.copy()`. File has `read_all()` but doesn't formally implement traits.
-
-**Strings (std.strings ~40%)** — Core string type works, but missing: `string_builder` type, `string_view` type (lightweight indices), `StringPool` type, `cstring` type and `c"literal"` syntax, `from_utf8()` validation, `char_count()`, `is_ascii()` with caching.
-
-**OS (std.os ~50%)** — Env/args/exit/platform work. Missing: `Command` builder for subprocess spawning, `Process` as `@resource` with `wait()`/`kill_and_wait()`, `Signal` enum, `os.on_signal()` handler, `os.set_env()`/`os.remove_env()`.
-
 ### Mostly complete with notable gaps (60–85%)
 
 **Collections (std.collections ~90%)** — Core Vec/Map/Pool work. `try_push()`/`try_insert()` error variants implemented. Missing: `AllocError` enum, `vec.with()` block syntax, `SliceDescriptor<T>` type.
 
 **Time (std.time ~85%)** — `Duration` and `Instant` work, including `from_secs_f64()`. Missing: `SystemTime` type (only `Instant` exists), arithmetic operators on Duration.
 
-**FS (std.fs ~80%)** — Read/write/append/list/copy/rename/remove/mkdir/metadata work. Missing: `OpenOptions` builder pattern, `DirEntry` struct, `File` doesn't implement Reader/Writer traits.
+**FS (std.fs ~90%)** — Read/write/append/list/copy/rename/remove/mkdir/metadata work. File implements Reader/Writer traits. Missing: `OpenOptions` builder pattern, `DirEntry` struct.
 
 **Net (std.net ~70%)** — TCP listener/connection work. Missing: `UdpSocket` entirely, `net.resolve()` DNS resolution.
 
@@ -187,7 +179,7 @@ No ARM, no WASM codegen paths. Cranelift supports them, but the compiler doesn't
 
 **Formatting (std.fmt ~40%)** — Stub file exists. Basic format specifiers specified. Full compile-time template checking not yet implemented.
 
-**Testing (std.testing ~30%)** — `test` and `benchmark` blocks execute via `rask test`. Missing: `check` (soft assert), `skip()`/`expect_fail()`, subtests, parallel execution, doc test extraction.
+**Testing (std.testing ~85%)** — `test` and `benchmark` blocks execute via `rask test`. `check` (soft assert), `skip()`/`expect_fail()`, subtests, parallel execution implemented. Missing: doc test extraction.
 
 **Bits (std.bits ~40%)** — `bits.rk` stub with network byte order aliases, `BinaryBuilder`, `ParseError`. Per-integer bit methods (`popcount`, `leading_zeros`, etc.) not yet registered as type methods.
 
@@ -217,6 +209,10 @@ For balance — these areas are solid:
 - **`@binary` structs**: Parse/build, bit-width fields, endianness
 - **`Cell<T>`**: Heap-allocated mutable container
 - **`@unique` types**: Move-only enforcement with transitive propagation
+- **I/O traits**: Reader/Writer abstraction, BufReader/BufWriter, Stdin/Stdout/Stderr, io.copy()
+- **Strings**: string_builder, string_view, cstring, from_utf8(), char_count(), is_ascii()
+- **OS**: Command builder, Process @resource, Signal enum, on_signal(), set_env/remove_env
+- **Testing**: test/benchmark blocks, check (soft assert), skip/expect_fail, subtests, parallel
 - **JSON**: Full parse/stringify/encode/decode
 - **HTTP/TCP**: Server + client both work, request parsing, response formatting
 - **File I/O**: Read, write, append, directory listing, copy, rename, metadata
@@ -226,10 +222,8 @@ For balance — these areas are solid:
 ## Remaining Priority
 
 1. **C header parser backend** — AST plumbing done, need actual C declaration parser
-2. **Stdlib I/O traits** — Reader/Writer abstraction layer
-3. **Stdlib strings** — string_builder, string_view, cstring
-4. **Stdlib OS** — Command/Process/Signal
-5. **Stdlib testing** — check, skip, subtests, parallel execution
-6. **Codegen SIMD** — actual vector instructions instead of scalar fallback
-7. **Codegen multi-target** — ARM, WASM
-8. **Linear resource commitment** (L1–L3) — codegen enforcement
+2. **Codegen SIMD** — actual vector instructions instead of scalar fallback
+3. **Codegen multi-target** — ARM, WASM
+4. **Linear resource commitment** (L1–L3) — codegen enforcement
+5. **Stdlib doc test extraction** — T14–T15
+6. **Stdlib net** — UdpSocket, DNS resolution
