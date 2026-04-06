@@ -31,15 +31,9 @@ Working:
 Remaining:
 - Linear resource consumption commitment (L1–L3) — ownership checker tracks it, codegen doesn't enforce
 
-### 2. `@binary` structs — completely unimplemented (type.binary B1–G4)
+### 2. ~~`@binary` structs (type.binary B1–G4)~~ FIXED
 
-Zero parser support, zero codegen, zero stdlib. The entire binary struct feature:
-- No `@binary` attribute recognition
-- No bit-width field specifiers (`version: 4`, `u16be`, `u16le`)
-- No generated `.parse()` / `.build()` methods
-- No compile-time validation of layouts
-
-**Impact:** Binary protocol parsing (TCP headers, file formats, wire protocols) has no path.
+Parser recognizes `@binary` attribute, bit-width field specifiers, and endianness annotations. Generated `.parse()` / `.build()` methods. Compile-time layout validation.
 
 ### 3. ~~Error origin tracking — not implemented (ER15, ER16)~~ FIXED
 
@@ -47,66 +41,39 @@ Zero parser support, zero codegen, zero stdlib. The entire binary struct feature
 
 **Codegen:** Result layout changed to `[tag:8][origin_file:8][origin_line:8][payload]` (+16 bytes per Result). MIR `lower_try` constructs full Result.Err with origin line from LineMap on err path; conditional branch preserves source origin if already set (first-propagation semantics). `.origin()` calls `rask_result_origin` C runtime helper. `rask_set_origin_file()` called at start of `rask_main` to register the source file name — codegen now returns `"file.rk:line"` matching interpreter output.
 
-### 4. `Cell<T>` type — doesn't exist (CE1–CE6)
+### 4. ~~`Cell<T>` type (CE1–CE6)~~ FIXED
 
-Spec defines `Cell<T>` as a heap-allocated single-value container with `with`-based access. Not in stdlib stubs, not in builtins, not in runtime.
-
-**Impact:** No way to share a mutable value across closures without Pool+Handle ceremony.
+`Cell<T>` implemented as a heap-allocated single-value container with `with`-based access. Stdlib stubs, builtins, and runtime support.
 
 ### 5. ~~`discard` statement — not implemented (D1–D3)~~ FIXED
 
 Full pipeline: lexer → parser → AST → type checker → ownership checker → interpreter → MIR → formatter. D1 (use-after-discard error), D2 (Copy type warning), D3 (@resource compile error) all enforced.
 
-### 6. `comptime for` + field reflection — not implemented (CT48–CT54)
+### 6. ~~`comptime for` + field reflection (CT48–CT54)~~ FIXED
 
-- `comptime for` not recognized as distinct from regular `for`
-- No loop unrolling at compile time
-- No `value.(comptime_expr)` dynamic field access syntax
-- No `reflect.fields<T>()` or `reflect.variants<T>()` API
+`comptime for` with loop unrolling, `value.(comptime_expr)` dynamic field access, `reflect.fields<T>()` / `reflect.variants<T>()` API. Encoding/serialization patterns unblocked.
 
-**Impact:** Encoding/decoding spec (which relies on `comptime for` over struct fields) is blocked. Serialization patterns don't work.
+### 7. ~~C header auto-parsing (CI1)~~ PARTIALLY FIXED
 
-### 7. C header auto-parsing — not implemented (CI1)
+`import c "header.h"` syntax now parses. AST node (`CImportDecl`), parser, formatter all support the full syntax including `as` aliases, multi-header `{ }` blocks, and `hiding { }` clauses. Match arm coverage across all compiler passes.
 
-`import c "header.h"` syntax doesn't parse. Only manual `extern "C"` bindings work.
-
-**Impact:** C interop requires manual binding declarations for every function.
+Remaining: actual C header parser backend (translating C declarations to Rask AST). Manual `extern "C"` bindings still work as before.
 
 ---
 
 ## Major Gaps (partially implemented, key behaviors missing)
 
-### 8. `for mutate` iteration — partially enforced (LP11–LP16)
+### 8. ~~`for mutate` iteration (LP11–LP16)~~ FIXED
 
-Parser accepts `for mutate item in vec { ... }`. Ownership checker now enforces:
-- ~~No structural mutation check inside body (LP14 — `vec.push()` during `for mutate` not rejected)~~ FIXED — push/pop/insert/remove/clear/drain rejected on iterated collection
-- ~~No enforcement that `item` can't be passed to `take` parameters (LP16)~~ FIXED — `own item` to take params rejected with clear error
-- MIR doesn't generate different access patterns for mutable vs immutable iteration (LP11–LP13 in-place mutation codegen still pending)
+Parser accepts `for mutate item in vec { ... }`. Ownership checker enforces LP14 (structural mutation rejected) and LP16 (`own item` rejected). MIR in-place mutation codegen implemented.
 
-### 9. Pool API — missing several spec-required features
+### 9. ~~Pool API~~ FIXED
 
-Missing from both interp and codegen:
-- `pool.try_insert(x)` returning `Result<Handle<T>, InsertError<T>>` (PL8)
-- `WeakHandle<T>` with `.valid()` and `.upgrade()` (weak handles spec)
-- `pool.snapshot()` for concurrent read/write (PL9)
-- `pool.drain()` and `pool.entries()` iterators
-- Performance escape hatches: `pool.with_valid()`, `pool.get_unchecked()`
-- `Pool<@resource>` runtime panic when non-empty at scope exit (R5)
+`try_insert`, `WeakHandle<T>` with `.valid()` and `.upgrade()`, `pool.snapshot()`, `pool.drain()`, `pool.entries()`, performance escape hatches, `Pool<@resource>` panic on non-empty drop.
 
-### 10. Concurrency — missing Phase A surface area (PARTIALLY FIXED)
+### 10. ~~Concurrency Phase A~~ FIXED
 
-~~`try_send()` on channels~~ FIXED — non-blocking send returns "channel full" or "channel closed" error. ~~`close()` on Sender/Receiver~~ FIXED — replaces internal handle to disconnect the channel. ~~`Shared<T>.try_read()` / `.try_write()`~~ FIXED — non-blocking closure-based access returns `Option<R>`, `try_write` writes back like regular write. All three implemented in interpreter with type checker and registry support.
-
-Remaining Phase A gaps:
-
-| Missing | Spec rule |
-|---------|-----------|
-| `join_all(handles)` | M1 |
-| `select_first(handles)` | M2 |
-| `TaskGroup<T>` struct + methods | M3 |
-| `cancelled()` runtime check | CN1 |
-| `Timer.after(duration)` | Channels |
-| `ensure` cleanup on cancellation | CN2 |
+`try_send()`, `close()`, `Shared<T>.try_read()/.try_write()`, `join_all(handles)`, `select_first(handles)`, `TaskGroup<T>`, `cancelled()`, `Timer.after(duration)`, `ensure` cleanup on cancellation.
 
 ### 11. ~~Disjoint field borrowing — unclear enforcement (F1–F4)~~ PARTIALLY FIXED
 
@@ -164,13 +131,13 @@ SP3 (zero step) produces a compile error. SP1/SP2 (direction mismatch) now produ
 
 Default backwards branch quota set to 1,000 (CT35, was incorrectly 10,000). Call depth tracking added with 256-frame limit (CT29) — stack overflow detected separately from branch quota with clear error. `@comptime_quota(N)` attribute override not yet implemented.
 
-### 24. Context clause auto-resolution — opaque (CC1–CC10)
+### 24. ~~Context clause auto-resolution (CC1–CC10)~~ FIXED
 
-`using` clauses parsed, but the hidden parameter threading mechanism for auto-resolution isn't clearly wired through all passes.
+Hidden parameter pass restructured into modules. CC4 scope resolution (local > param > self.field > using clause), CC7 private inference from handle field access, CC8 ambiguity detection, CC9/CC10 closure context rules. TypedProgram.node_types passed for type-aware resolution.
 
-### 25. Inline expression access for sync primitives (E5)
+### 25. ~~Inline expression access for sync primitives (E5)~~ FIXED
 
-`Shared<T>.read()` and `.lock()` chains should be expression-scoped. Borrow checker doesn't enforce this boundary.
+Bare `.read()/.write()/.lock()` without field chain is a compile error. Cannot store sync access result in variable. DL4 deadlock detection for multiple sync accesses in one expression. Expression tree walk finds nested sync accesses.
 
 ---
 
@@ -192,41 +159,29 @@ No ARM, no WASM codegen paths. Cranelift supports them, but the compiler doesn't
 
 ## Stdlib Gaps (interp has more coverage than codegen)
 
-### Completely missing subsystems (0% implemented)
-
-**Encoding (std.encoding)** — No stub file. No `Encode`/`Decode` traits, no auto-derive, no field annotations (`@rename`, `@skip`, `@default`, `@tag`). Blocked on `comptime for` + reflection (gap #6 above).
-
-**Formatting (std.fmt)** — No stub file. No `format(template, ...args)` with compile-time checking, no format specifiers (`{:?}`, `{:x}`, `{:>10}`, `{:.3}`), no `Displayable`/`Debug` traits, no named interpolation in `println()`. Current state: basic `print()`/`println()` with string args only.
-
-**Testing (std.testing)** — No stub file. No `test` block execution infrastructure, no `check` (soft assert, A2), no `skip()`/`expect_fail()` (T12–T13), no `benchmark` blocks (B1–B2), no doc test extraction (T14–T15), no subtests (T10), no parallel execution (T7), no seeded random (T8).
-
-### Significantly incomplete (20–50% implemented)
-
-**I/O (std.io ~20%)** — No `Reader`/`Writer` traits. No `BufReader`/`BufWriter`. No `Stdin`/`Stdout`/`Stderr` as linear resources. No `Buffer` type. No `io.copy()`. File has `read_all()` but doesn't formally implement traits.
-
-**Strings (std.strings ~40%)** — Core string type works, but missing: `string_builder` type, `string_view` type (lightweight indices), `StringPool` type, `cstring` type and `c"literal"` syntax, `from_utf8()` validation, `char_count()`, `is_ascii()` with caching.
-
-**OS (std.os ~50%)** — Env/args/exit/platform work. Missing: `Command` builder for subprocess spawning, `Process` as `@resource` with `wait()`/`kill_and_wait()`, `Signal` enum, `os.on_signal()` handler, `os.set_env()`/`os.remove_env()`.
-
 ### Mostly complete with notable gaps (60–85%)
 
-**Collections (std.collections ~85%)** — Core Vec/Map/Pool work. Missing: `try_push()`/`try_insert()` error variants, `AllocError` enum, `vec.with()` block syntax, `vec.modify_many()`, `SliceDescriptor<T>` type, `vec.shrink_to_fit()`.
+**Collections (std.collections ~90%)** — Core Vec/Map/Pool work. `try_push()`/`try_insert()` error variants implemented. Missing: `AllocError` enum, `vec.with()` block syntax, `SliceDescriptor<T>` type.
 
-**Time (std.time ~75%)** — `Duration` and `Instant` work. Missing: `SystemTime` type entirely (only `Instant` exists), `Duration.from_secs_f64()`, arithmetic operators on Duration.
+**Time (std.time ~85%)** — `Duration` and `Instant` work, including `from_secs_f64()`. Missing: `SystemTime` type (only `Instant` exists), arithmetic operators on Duration.
 
-**FS (std.fs ~75%)** — Read/write/append/list work. Missing: `OpenOptions` builder pattern, `Metadata` struct (`is_file`, `is_dir`, `size`, `modified`), `DirEntry` struct, `File` doesn't implement Reader/Writer traits.
+**FS (std.fs ~90%)** — Read/write/append/list/copy/rename/remove/mkdir/metadata work. File implements Reader/Writer traits. Missing: `OpenOptions` builder pattern, `DirEntry` struct.
 
 **Net (std.net ~70%)** — TCP listener/connection work. Missing: `UdpSocket` entirely, `net.resolve()` DNS resolution.
 
-**HTTP (std.http ~65%)** — Basic server/client work. Missing: `Request.query_param()`/`query_params()`, `HttpClient` builder, `Responder` as `@resource` linear handle, `http.listen_and_serve()`.
+**HTTP (std.http ~85%)** — Server + client work. `Request.query_param()`/`query_params()`, `HttpClient` builder, `Responder` as `@resource`, `http.listen_and_serve()` all implemented.
 
-**JSON (std.json ~70%)** — Parse/stringify work. Missing: typed `encode()`/`decode()` depends on missing Encode/Decode traits, field annotations depend on encoding spec.
+**JSON (std.json ~70%)** — Parse/stringify work. Missing: typed `encode()`/`decode()` depends on Encode/Decode traits, field annotations depend on encoding spec.
 
 **CLI (std.cli ~60%)** — Quick API works. Missing: `cli.Parser` builder pattern, auto-generated `--help`/`--version`, `CliError` enum.
 
-### Bits (std.bits)
+**Encoding (std.encoding ~40%)** — Stub file exists with trait definitions. Auto-derive and field annotations depend on comptime for.
 
-Binary parsing utilities specified but not implemented (tied to `@binary` gap above).
+**Formatting (std.fmt ~40%)** — Stub file exists. Basic format specifiers specified. Full compile-time template checking not yet implemented.
+
+**Testing (std.testing ~85%)** — `test` and `benchmark` blocks execute via `rask test`. `check` (soft assert), `skip()`/`expect_fail()`, subtests, parallel execution implemented. Missing: doc test extraction.
+
+**Bits (std.bits ~40%)** — `bits.rk` stub with network byte order aliases, `BinaryBuilder`, `ParseError`. Per-integer bit methods (`popcount`, `leading_zeros`, etc.) not yet registered as type methods.
 
 ---
 
@@ -236,31 +191,39 @@ For balance — these areas are solid:
 
 - **Ownership/move semantics** (O1–O4): Use-after-move detection works
 - **Basic borrowing** (A1–A3): Read/exclusive conflicts caught
+- **Disjoint field borrowing** (F1–F4): Field-level projections, closure captures
 - **Parameter modes** (PM1–PM3): borrow/mutate/take all work
 - **Traits + trait objects** (TR1–TR16): Full vtable dispatch, implicit coercion
 - **Enums + pattern matching** (E1–E8, PM1–PM6): Exhaustiveness, guards, destructuring
 - **Optionals** (`T?`): Full OPT1–OPT13 compliance
-- **Error types** (`T or E`): ER1–ER14 mostly working, `try`/`try...else`, `@message`
+- **Error types** (`T or E`): ER1–ER16 working, `try`/`try...else`, `@message`, origin tracking
 - **Generics + monomorphization**: G1–G7, full specialization pipeline
-- **Closures**: Stack/heap allocation, captures, nested closures
+- **Closures**: Stack/heap allocation, captures, nested closures, scope-limited escape detection
 - **String SSO + RC**: Runtime is sophisticated (16-byte SSO, refcount elision for statics)
-- **Collections**: Vec, Map, Pool core operations all work
-- **Concurrency basics**: spawn/join/detach, channels, Shared<T>, Mutex, atomics
+- **Collections**: Vec, Map, Pool core operations all work, including try variants and weak handles
+- **Concurrency**: spawn/join/detach, channels, Shared<T>, Mutex, atomics, TaskGroup, select, cancellation
+- **Context clauses** (CC1–CC10): Full auto-resolution, propagation, inference, ambiguity detection
+- **Sync inline access** (E5): Expression-scoped locks with bare-access and DL4 deadlock detection
+- **Comptime**: Conditional compilation, `comptime for`, field reflection, safety limits
+- **`ensure` cleanup**: LIFO ordering, all exit paths, consumption cancellation, inlining
+- **`@binary` structs**: Parse/build, bit-width fields, endianness
+- **`Cell<T>`**: Heap-allocated mutable container
+- **`@unique` types**: Move-only enforcement with transitive propagation
+- **I/O traits**: Reader/Writer abstraction, BufReader/BufWriter, Stdin/Stdout/Stderr, io.copy()
+- **Strings**: string_builder, string_view, cstring, from_utf8(), char_count(), is_ascii()
+- **OS**: Command builder, Process @resource, Signal enum, on_signal(), set_env/remove_env
+- **Testing**: test/benchmark blocks, check (soft assert), skip/expect_fail, subtests, parallel
 - **JSON**: Full parse/stringify/encode/decode
-- **HTTP/TCP**: Server + client both work
-- **File I/O**: Read, write, append, directory listing
+- **HTTP/TCP**: Server + client both work, request parsing, response formatting
+- **File I/O**: Read, write, append, directory listing, copy, rename, metadata
 
 ---
 
-## Suggested Priority
+## Remaining Priority
 
-1. ~~**`ensure` cleanup** — everything else depends on safe resource cleanup~~ PARTIALLY DONE (function-level return/try; loop-scoped break/continue pending)
-2. ~~**Error origin tracking** — fundamental to error handling ergonomics~~ DONE (interpreter)
-3. **`comptime for` + reflection** — blocks encoding/serialization patterns
-4. **Pool weak handles + `try_insert`** — needed for real graph/entity patterns
-5. ~~**`for mutate` enforcement** — correctness hole~~ LP14/LP16 DONE (MIR codegen pending)
-6. **Concurrency Phase A surface** — `try_send`, `close`, `try_read`/`try_write` DONE; `join_all`, `select_first`, `TaskGroup`, `cancelled` still pending
-7. **`@binary` structs** — blocks a whole use case category
-8. **`Cell<T>`** — ergonomic gap for closure patterns
-9. ~~**`discard`** — small but affects intent communication~~ DONE
-10. ~~**Private field enforcement** — correctness hole~~ DONE
+1. **C header parser backend** — AST plumbing done, need actual C declaration parser
+2. **Codegen SIMD** — actual vector instructions instead of scalar fallback
+3. **Codegen multi-target** — ARM, WASM
+4. **Linear resource commitment** (L1–L3) — codegen enforcement
+5. **Stdlib doc test extraction** — T14–T15
+6. **Stdlib net** — UdpSocket, DNS resolution

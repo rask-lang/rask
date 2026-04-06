@@ -167,7 +167,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                     let mut dep_decls_desugared = dep_decls;
                     rask_desugar::desugar(&mut dep_decls_desugared);
                     all_decls.extend(dep_decls_desugared);
-                    rask_hidden_params::desugar_hidden_params(&mut all_decls);
+                    rask_hidden_params::desugar_hidden_params_with_types(&mut all_decls, Some(&typed.node_types));
 
                     // Extract tests (replaces main, adds test body functions)
                     let tests = super::compile::extract_tests(&mut all_decls, filter.as_deref());
@@ -275,7 +275,7 @@ pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
         }
     };
 
-    rask_hidden_params::desugar_hidden_params(&mut result.decls);
+    rask_hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed.node_types));
     let tests = super::compile::extract_tests(&mut result.decls, filter.as_deref());
 
     if tests.is_empty() {
@@ -895,7 +895,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         }
     };
 
-    rask_hidden_params::desugar_hidden_params(&mut result.decls);
+    rask_hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed.node_types));
     let benchmarks = super::compile::extract_benchmarks(&mut result.decls, filter);
     if benchmarks.is_empty() {
         return Vec::new();

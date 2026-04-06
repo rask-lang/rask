@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Statement type checking.
 
+use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 
 use super::errors::TypeError;
@@ -19,6 +20,8 @@ impl TypeChecker {
         match &stmt.kind {
             StmtKind::Expr(expr) => {
                 self.infer_expr(expr);
+                // E5: Bare sync access without chaining is a compile error
+                self.check_bare_sync_access(expr);
                 // ESAD Phase 1: Clear borrows at statement end (semicolon)
                 self.clear_expression_borrows();
             }
@@ -45,6 +48,8 @@ impl TypeChecker {
                 self.span_types.insert((name_span.start, name_span.end), binding_ty);
                 // ESAD Phase 2: Track view creation
                 self.check_view_at_binding(name, init, stmt.span);
+                // E5: Cannot store sync access result in a variable
+                self.check_sync_access_in_binding(init);
                 self.clear_expression_borrows();
             }
             StmtKind::Const { name, name_span, ty, init } => {
@@ -70,6 +75,8 @@ impl TypeChecker {
                 self.span_types.insert((name_span.start, name_span.end), binding_ty);
                 // ESAD Phase 2: Track view creation
                 self.check_view_at_binding(name, init, stmt.span);
+                // E5: Cannot store sync access result in a variable
+                self.check_sync_access_in_binding(init);
                 self.clear_expression_borrows();
             }
             StmtKind::Assign { target, value } => {
@@ -339,6 +346,154 @@ impl TypeChecker {
             Type::Named(id) => self.types.is_resource_type_by_id(*id),
             Type::UnresolvedNamed(name) => self.types.is_resource_type(name),
             _ => false,
+        }
+    }
+
+    // ── E5: Sync inline access validation ──────────────────────────────
+    //
+    // E5/R5/MX3: `.read()/.write()/.lock()` on Shared<T>/Mutex<T> produce
+    // expression-scoped locks. Validation rules:
+    //
+    // 1. Must be chained: `shared.read().field` or `shared.read().method()`.
+    //    Bare `shared.read()` is a compile error.
+    // 2. Cannot be stored: `const x = shared.read()` is a compile error.
+    //    Only Copy-out or inline mutation allowed.
+    // 3. DL4: Multiple sync accesses in one expression is a compile error
+    //    (deadlock risk).
+
+    /// Validate E5 rules for a top-level expression statement.
+    /// Called from check_stmt after type inference.
+    fn check_bare_sync_access(&mut self, expr: &Expr) {
+        // Rule 1: Bare sync access at statement level
+        if let Some((ty_name, method, span)) = self.is_sync_access(expr) {
+            self.errors.push(TypeError::BareSyncAccess {
+                ty: ty_name,
+                method,
+                span,
+            });
+            return;
+        }
+
+        // Rule 3 (DL4): Count sync accesses within this expression tree.
+        // Multiple locks in one expression risks deadlock.
+        let accesses = self.collect_sync_accesses(expr);
+        if accesses.len() > 1 {
+            // Report on the second access
+            let (ty_name, method, span) = &accesses[1];
+            self.errors.push(TypeError::BareSyncAccess {
+                ty: ty_name.clone(),
+                method: format!("{} (multiple sync accesses in one expression — deadlock risk [conc.sync/DL4])", method),
+                span: *span,
+            });
+        }
+    }
+
+    /// Validate E5 for let/const bindings: `const x = shared.read()` is an error.
+    /// Only `const x = shared.read().field` (Copy out) is allowed.
+    fn check_sync_access_in_binding(&mut self, init: &Expr) {
+        if let Some((ty_name, method, span)) = self.is_sync_access(init) {
+            self.errors.push(TypeError::BareSyncAccess {
+                ty: ty_name,
+                method,
+                span,
+            });
+        }
+    }
+
+    /// Check if an expression is a sync access call (not chained).
+    /// Returns Some if this is a bare `.read()/.write()/.lock()`.
+    fn is_sync_access(&self, expr: &Expr) -> Option<(String, String, rask_ast::Span)> {
+        match &expr.kind {
+            ExprKind::MethodCall { object, method, args, .. } => {
+                if args.is_empty() && matches!(method.as_str(), "read" | "write" | "lock") {
+                    if let Some(ty_name) = self.sync_type_of(object) {
+                        return Some((ty_name, method.clone(), expr.span));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Recursively collect all sync access nodes within an expression tree.
+    /// Each access is (type_name, method, span).
+    fn collect_sync_accesses(&self, expr: &Expr) -> Vec<(String, String, rask_ast::Span)> {
+        let mut accesses = Vec::new();
+        self.walk_sync_accesses(expr, &mut accesses);
+        accesses
+    }
+
+    fn walk_sync_accesses(&self, expr: &Expr, out: &mut Vec<(String, String, rask_ast::Span)>) {
+        match &expr.kind {
+            ExprKind::MethodCall { object, method, args, .. } => {
+                // Check if this node itself is a sync access
+                if args.is_empty() && matches!(method.as_str(), "read" | "write" | "lock") {
+                    if let Some(ty_name) = self.sync_type_of(object) {
+                        out.push((ty_name, method.clone(), expr.span));
+                    }
+                }
+                // Recurse into object and args
+                self.walk_sync_accesses(object, out);
+                for arg in args {
+                    self.walk_sync_accesses(&arg.expr, out);
+                }
+            }
+            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
+                self.walk_sync_accesses(object, out);
+            }
+            ExprKind::Call { func, args } => {
+                self.walk_sync_accesses(func, out);
+                for arg in args {
+                    self.walk_sync_accesses(&arg.expr, out);
+                }
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.walk_sync_accesses(left, out);
+                self.walk_sync_accesses(right, out);
+            }
+            ExprKind::Unary { operand, .. } => {
+                self.walk_sync_accesses(operand, out);
+            }
+            ExprKind::Index { object, index } => {
+                self.walk_sync_accesses(object, out);
+                self.walk_sync_accesses(index, out);
+            }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                self.walk_sync_accesses(cond, out);
+                self.walk_sync_accesses(then_branch, out);
+                if let Some(e) = else_branch {
+                    self.walk_sync_accesses(e, out);
+                }
+            }
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.walk_sync_accesses(e, out);
+                }
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields {
+                    self.walk_sync_accesses(&f.value, out);
+                }
+                if let Some(s) = spread {
+                    self.walk_sync_accesses(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check if an expression's inferred type is Shared<T> or Mutex<T>.
+    fn sync_type_of(&self, expr: &Expr) -> Option<String> {
+        let ty = self.node_types.get(&expr.id)?;
+        let resolved = self.ctx.apply(ty);
+        match &resolved {
+            Type::UnresolvedGeneric { name, .. }
+                if matches!(name.as_str(), "Shared" | "Mutex") =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
         }
     }
 }

@@ -627,6 +627,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("add @message(\"template\") to this variant, or change the payload to an error type")
                     .with_why("every variant in a @message enum must have an explicit template or a single Error payload that auto-delegates [type.errors/ER26]")
             }
+
+            BareSyncAccess { ty, method, span } => {
+                Diagnostic::error(format!(
+                    "standalone `.{}()` on `{}` must be chained with field access",
+                    method, ty,
+                ))
+                    .with_code("E0339")
+                    .with_primary(*span, format!("`.{}()` without field chain", method))
+                    .with_help(format!("use `{}.{}().field` for inline access, or `with {}.{}() as v {{ }}` for multi-statement access", ty.to_lowercase(), method, ty.to_lowercase(), method))
+                    .with_why(format!("sync inline access is expression-scoped — the lock is held only for the chain [mem.borrowing/E5]"))
+            }
         }
     }
 }

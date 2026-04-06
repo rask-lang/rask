@@ -44,6 +44,8 @@ pub enum DeclKind {
     Package(PackageDecl),
     /// Type alias declaration
     TypeAlias(TypeAliasDecl),
+    /// C header import: `import c "header.h"`
+    CImport(CImportDecl),
 }
 
 /// A type declaration: nominal by default, transparent with `type alias`.
@@ -273,6 +275,23 @@ pub struct ImportDecl {
     pub is_glob: bool,
     /// Whether this is a lazy import: `import lazy pkg`
     pub is_lazy: bool,
+}
+
+/// A C header import declaration.
+///
+/// Syntax:
+/// - `import c "header.h"` - auto-parse, access as `c.symbol`
+/// - `import c "header.h" as name` - auto-parse, access as `name.symbol`
+/// - `import c { "a.h", "b.h" }` - multiple headers, unified namespace
+/// - `import c "header.h" hiding { symbol }` - suppress specific symbols
+#[derive(Debug, Clone)]
+pub struct CImportDecl {
+    /// Header file paths (one or more).
+    pub headers: Vec<String>,
+    /// Namespace alias (default: "c").
+    pub alias: String,
+    /// Symbols to hide from auto-parsing.
+    pub hiding: Vec<String>,
 }
 
 /// An export declaration (re-exports for library facades).

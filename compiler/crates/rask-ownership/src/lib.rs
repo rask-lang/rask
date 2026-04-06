@@ -174,7 +174,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.borrows.clear();
                 self.check_block(&bench_decl.body);
             }
-            DeclKind::Package(_) => {}
+            DeclKind::Package(_) | DeclKind::CImport(_) => {}
             DeclKind::Union(_) => {}
             DeclKind::TypeAlias(_) => {}
         }

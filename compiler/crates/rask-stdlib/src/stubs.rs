@@ -34,6 +34,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("math.rk", include_str!("../../../../stdlib/math.rk")),
     ("char.rk", include_str!("../../../../stdlib/char.rk")),
     ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
+    ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
 ];
 
 /// A method extracted from a stub file.

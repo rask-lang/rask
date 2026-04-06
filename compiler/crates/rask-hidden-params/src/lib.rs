@@ -4,51 +4,77 @@
 //! Desugars `using` clauses into explicit hidden function parameters.
 //! Runs after type checking, before monomorphization.
 //!
-//! Three operations:
-//! 1. Rewrite function signatures — add hidden params for each `using` clause
-//! 2. Rewrite call sites — insert hidden arguments resolved from scope
-//! 3. Rewrite `using` blocks — context construction + body + teardown
+//! Operations:
+//! 1. Collect context requirements from explicit `using` clauses
+//! 2. Build call graph and propagate requirements (CC5)
+//! 3. Infer contexts for private functions from handle field access (CC7)
+//! 4. Resolve contexts at call sites using scope search (CC4)
+//! 5. Detect ambiguity errors (CC8)
+//! 6. Rewrite signatures + call sites + using blocks
+
+mod callgraph;
+mod collect;
+mod resolve;
+mod rewrite;
 
 use std::collections::{HashMap, HashSet};
 
-use rask_ast::decl::{ContextClause, Decl, DeclKind, FnDecl, Param};
-use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
-use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::decl::{ContextClause, Decl, DeclKind};
+use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::{NodeId, Span};
 
 // ── Types ───────────────────────────────────────────────────────────────
 
 /// A context requirement derived from a `using` clause.
 #[derive(Debug, Clone)]
-struct ContextReq {
+pub(crate) struct ContextReq {
     /// Hidden parameter name: `__ctx_pool_Player`, `__ctx_runtime`, etc.
-    param_name: String,
+    pub param_name: String,
     /// Type string for the parameter: `&Pool<Player>`, `RuntimeContext`
-    param_type: String,
+    pub param_type: String,
     /// Original clause type string: `Pool<Player>`, `Multitasking`
-    clause_type: String,
+    pub clause_type: String,
     /// Is this a runtime context (optional `?` param) vs pool (required)?
-    #[allow(dead_code)]
-    is_runtime: bool,
+    pub is_runtime: bool,
     /// Named alias from `using players: Pool<Player>`
-    #[allow(dead_code)]
-    alias: Option<String>,
+    pub alias: Option<String>,
+}
+
+/// A pool found in scope during CC4 resolution.
+#[derive(Debug, Clone)]
+pub(crate) struct ScopePool {
+    /// Variable name in user code: `players`, `self.players`, etc.
+    pub var_name: String,
+    /// Pool type string: `Pool<Player>`
+    pub pool_type: String,
+    /// Where it came from (for error messages).
+    pub source: PoolSource,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PoolSource {
+    Local,
+    Parameter,
+    SelfField,
+    UsingClause,
 }
 
 /// Qualified function name for call graph: "damage" or "Player.take_damage".
-type FuncName = String;
+pub(crate) type FuncName = String;
 
-// ── Public API ──────────────────────────────────────────────────────────
-
-/// Run the hidden parameter pass on a set of declarations.
-///
-/// Mutates the AST in place:
-/// - Functions with `using` clauses gain hidden `__ctx_*` parameters
-/// - Call sites to those functions gain hidden arguments
-/// - `using Multitasking { }` blocks become context construction + teardown
-pub fn desugar_hidden_params(decls: &mut [Decl]) {
-    let mut pass = HiddenParamPass::new();
-    pass.run(decls);
+/// Information about a function for context resolution.
+#[derive(Debug, Clone)]
+pub(crate) struct FuncInfo {
+    /// Explicit context requirements (from `using` clauses or propagation).
+    pub reqs: Vec<ContextReq>,
+    /// Is this function public?
+    pub is_public: bool,
+    /// Parameter names and type strings.
+    pub params: Vec<(String, String)>,
+    /// Fields of `self` type (if method): (field_name, field_type_string).
+    pub self_fields: Vec<(String, String)>,
+    /// Local variable declarations: (var_name, type_string).
+    pub locals: Vec<(String, String)>,
 }
 
 /// Errors from the hidden parameter pass.
@@ -58,558 +84,112 @@ pub struct HiddenParamError {
     pub span: Span,
 }
 
-// ── Pass Implementation ─────────────────────────────────────────────────
+// ── Public API ──────────────────────────────────────────────────────────
 
-struct HiddenParamPass {
-    /// Function name → context requirements (from explicit using clauses).
-    func_contexts: HashMap<FuncName, Vec<ContextReq>>,
-    /// Call graph: caller → callees (by function name).
-    call_graph: HashMap<FuncName, HashSet<FuncName>>,
-    /// Functions that are public (context propagation stops here).
-    public_funcs: HashSet<FuncName>,
-    /// Fresh NodeId counter (high range to avoid parser collisions).
-    next_id: u32,
+/// Run the hidden parameter pass on a set of declarations.
+///
+/// Mutates the AST in place:
+/// - Functions with `using` clauses gain hidden `__ctx_*` parameters
+/// - Call sites to those functions gain hidden arguments
+/// - `using Multitasking { }` blocks become context construction + teardown
+///
+/// Accepts optional TypedProgram for proper CC4 scope resolution.
+/// Without it, falls back to hidden-param-name matching (still correct
+/// for the propagation case).
+pub fn desugar_hidden_params(decls: &mut [Decl]) {
+    desugar_hidden_params_with_types(decls, None);
 }
 
-impl HiddenParamPass {
-    fn new() -> Self {
+/// Run the hidden parameter pass with type information for full CC4 resolution.
+pub fn desugar_hidden_params_with_types(
+    decls: &mut [Decl],
+    node_types: Option<&HashMap<NodeId, rask_types::Type>>,
+) {
+    let mut pass = HiddenParamPass::new(node_types);
+    pass.run(decls);
+}
+
+// ── Pass Implementation ─────────────────────────────────────────────────
+
+pub(crate) struct HiddenParamPass<'a> {
+    /// Function name → context requirements (from explicit using clauses).
+    pub func_contexts: HashMap<FuncName, Vec<ContextReq>>,
+    /// Function name → full info (params, locals, self fields).
+    pub func_info: HashMap<FuncName, FuncInfo>,
+    /// Call graph: caller → callees (by function name).
+    pub call_graph: HashMap<FuncName, HashSet<FuncName>>,
+    /// Functions that are public (context propagation stops here).
+    pub public_funcs: HashSet<FuncName>,
+    /// Struct name → field list (name, type string).
+    pub struct_fields: HashMap<String, Vec<(String, String)>>,
+    /// Type information from the type checker (CC4 resolution).
+    pub node_types: Option<&'a HashMap<NodeId, rask_types::Type>>,
+    /// Fresh NodeId counter (high range to avoid parser collisions).
+    pub next_id: u32,
+    /// Errors collected during the pass.
+    pub errors: Vec<HiddenParamError>,
+}
+
+impl<'a> HiddenParamPass<'a> {
+    pub fn new(node_types: Option<&'a HashMap<NodeId, rask_types::Type>>) -> Self {
         Self {
             func_contexts: HashMap::new(),
+            func_info: HashMap::new(),
             call_graph: HashMap::new(),
             public_funcs: HashSet::new(),
+            struct_fields: HashMap::new(),
+            node_types,
             next_id: 2_000_000,
+            errors: Vec::new(),
         }
     }
 
-    fn fresh_id(&mut self) -> NodeId {
+    pub fn fresh_id(&mut self) -> NodeId {
         let id = NodeId(self.next_id);
         self.next_id += 1;
         id
     }
 
     fn run(&mut self, decls: &mut [Decl]) {
+        // Phase 0: Collect struct field info (for self.field resolution)
+        self.collect_struct_fields(decls);
+
         // Phase 1: Collect context requirements from explicit `using` clauses
         self.collect_contexts(decls);
 
         // Phase 2: Build call graph from function bodies
-        self.build_call_graph(decls);
+        callgraph::build_call_graph(self, decls);
 
         // Phase 3: Propagate — functions calling context-needing functions
-        // also need the context if they can't resolve it locally (HP3, PUB2)
-        self.propagate();
+        // also need the context if they can't resolve it locally (CC5, PUB2)
+        callgraph::propagate(self);
+
+        // Phase 3b: CC7 — infer unnamed contexts for private functions
+        // that access handle fields without a `using` clause
+        resolve::infer_private_contexts(self, decls);
 
         // Phase 4-6: Rewrite signatures, call sites, using blocks
-        self.rewrite_decls(decls);
+        rewrite::rewrite_decls(self, decls);
     }
 
-    // ── Phase 1: Collect ────────────────────────────────────────────────
-
-    fn collect_contexts(&mut self, decls: &[Decl]) {
+    fn collect_struct_fields(&mut self, decls: &[Decl]) {
         for decl in decls {
-            match &decl.kind {
-                DeclKind::Fn(f) => {
-                    self.collect_fn_context(&f.name, f);
-                }
-                DeclKind::Struct(s) => {
-                    for method in &s.methods {
-                        let qname = format!("{}.{}", s.name, method.name);
-                        self.collect_fn_context(&qname, method);
-                    }
-                }
-                DeclKind::Enum(e) => {
-                    for method in &e.methods {
-                        let qname = format!("{}.{}", e.name, method.name);
-                        self.collect_fn_context(&qname, method);
-                    }
-                }
-                DeclKind::Impl(i) => {
-                    for method in &i.methods {
-                        let qname = format!("{}.{}", i.target_ty, method.name);
-                        self.collect_fn_context(&qname, method);
-                    }
-                }
-                DeclKind::Trait(t) => {
-                    for method in &t.methods {
-                        let qname = format!("{}.{}", t.name, method.name);
-                        self.collect_fn_context(&qname, method);
-                    }
-                }
-                _ => {}
+            if let DeclKind::Struct(s) = &decl.kind {
+                let fields: Vec<(String, String)> = s
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect();
+                self.struct_fields.insert(s.name.clone(), fields);
             }
         }
     }
-
-    fn collect_fn_context(&mut self, qname: &str, f: &FnDecl) {
-        if f.is_pub {
-            self.public_funcs.insert(qname.to_string());
-        }
-
-        if f.context_clauses.is_empty() {
-            return;
-        }
-
-        let reqs: Vec<ContextReq> = f
-            .context_clauses
-            .iter()
-            .map(|cc| context_clause_to_req(cc))
-            .collect();
-
-        self.func_contexts.insert(qname.to_string(), reqs);
-    }
-
-    // ── Phase 2: Build Call Graph ───────────────────────────────────────
-
-    fn build_call_graph(&mut self, decls: &[Decl]) {
-        for decl in decls {
-            match &decl.kind {
-                DeclKind::Fn(f) => {
-                    let callees = collect_callees_from_body(&f.body);
-                    if !callees.is_empty() {
-                        self.call_graph.insert(f.name.clone(), callees);
-                    }
-                }
-                DeclKind::Struct(s) => {
-                    for method in &s.methods {
-                        let qname = format!("{}.{}", s.name, method.name);
-                        let callees = collect_callees_from_body(&method.body);
-                        if !callees.is_empty() {
-                            self.call_graph.insert(qname, callees);
-                        }
-                    }
-                }
-                DeclKind::Enum(e) => {
-                    for method in &e.methods {
-                        let qname = format!("{}.{}", e.name, method.name);
-                        let callees = collect_callees_from_body(&method.body);
-                        if !callees.is_empty() {
-                            self.call_graph.insert(qname, callees);
-                        }
-                    }
-                }
-                DeclKind::Impl(i) => {
-                    for method in &i.methods {
-                        let qname = format!("{}.{}", i.target_ty, method.name);
-                        let callees = collect_callees_from_body(&method.body);
-                        if !callees.is_empty() {
-                            self.call_graph.insert(qname, callees);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // ── Phase 3: Propagate ──────────────────────────────────────────────
-
-    fn propagate(&mut self) {
-        // Fixed-point iteration: if a function calls a context-needing function
-        // and can't resolve the context from its own params/using clauses,
-        // it also needs the context.
-        loop {
-            let mut changed = false;
-
-            // Snapshot current state to avoid borrow conflicts
-            let graph_snapshot: Vec<(FuncName, HashSet<FuncName>)> =
-                self.call_graph.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-
-            for (caller, callees) in &graph_snapshot {
-                for callee in callees {
-                    // Check if callee needs contexts
-                    let callee_reqs = match self.func_contexts.get(callee) {
-                        Some(r) => r.clone(),
-                        None => continue,
-                    };
-
-                    for req in &callee_reqs {
-                        // Does caller already have this context?
-                        let caller_has = self
-                            .func_contexts
-                            .get(caller)
-                            .map(|reqs| reqs.iter().any(|r| r.clause_type == req.clause_type))
-                            .unwrap_or(false);
-
-                        if caller_has {
-                            continue;
-                        }
-
-                        // Public functions must declare contexts explicitly (PUB1)
-                        if self.public_funcs.contains(caller) {
-                            continue;
-                        }
-
-                        // Private function: propagate context requirement (PUB2)
-                        let new_req = req.clone();
-                        self.func_contexts
-                            .entry(caller.clone())
-                            .or_default()
-                            .push(new_req);
-                        changed = true;
-                    }
-                }
-            }
-
-            if !changed {
-                break;
-            }
-        }
-    }
-
-    // ── Phase 4-6: Rewrite ──────────────────────────────────────────────
-
-    fn rewrite_decls(&mut self, decls: &mut [Decl]) {
-        for decl in decls.iter_mut() {
-            match &mut decl.kind {
-                DeclKind::Fn(f) => {
-                    self.rewrite_fn(&f.name.clone(), f);
-                }
-                DeclKind::Struct(s) => {
-                    let type_name = s.name.clone();
-                    for method in &mut s.methods {
-                        let qname = format!("{}.{}", type_name, method.name);
-                        self.rewrite_fn(&qname, method);
-                    }
-                }
-                DeclKind::Enum(e) => {
-                    let type_name = e.name.clone();
-                    for method in &mut e.methods {
-                        let qname = format!("{}.{}", type_name, method.name);
-                        self.rewrite_fn(&qname, method);
-                    }
-                }
-                DeclKind::Impl(i) => {
-                    let type_name = i.target_ty.clone();
-                    for method in &mut i.methods {
-                        let qname = format!("{}.{}", type_name, method.name);
-                        self.rewrite_fn(&qname, method);
-                    }
-                }
-                DeclKind::Trait(t) => {
-                    let type_name = t.name.clone();
-                    for method in &mut t.methods {
-                        let qname = format!("{}.{}", type_name, method.name);
-                        self.rewrite_fn(&qname, method);
-                    }
-                }
-                DeclKind::Test(t) => {
-                    self.rewrite_stmts(&mut t.body);
-                }
-                DeclKind::Benchmark(b) => {
-                    self.rewrite_stmts(&mut b.body);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn rewrite_fn(&mut self, qname: &str, f: &mut FnDecl) {
-        // Phase 4 (SIG1-SIG6): Add hidden params to signature
-        if let Some(reqs) = self.func_contexts.get(qname) {
-            for req in reqs.clone() {
-                // Check idempotency (HP4): skip if param already exists
-                if f.params.iter().any(|p| p.name == req.param_name) {
-                    continue;
-                }
-
-                f.params.push(Param {
-                    name: req.param_name.clone(),
-                    name_span: Span::new(0, 0),
-                    ty: req.param_type.clone(),
-                    is_take: false,
-                    is_mutate: false,
-                    default: None,
-                });
-            }
-
-            // Clear context clauses — they're now expressed as params
-            f.context_clauses.clear();
-        }
-
-        // Phase 5-6: Rewrite body (call sites and using blocks)
-        self.rewrite_stmts(&mut f.body);
-    }
-
-    fn rewrite_stmts(&mut self, stmts: &mut [Stmt]) {
-        for stmt in stmts.iter_mut() {
-            self.rewrite_stmt(stmt);
-        }
-    }
-
-    fn rewrite_stmt(&mut self, stmt: &mut Stmt) {
-        match &mut stmt.kind {
-            StmtKind::Expr(e) => self.rewrite_expr(e),
-            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
-                self.rewrite_expr(init);
-            }
-            StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
-                self.rewrite_expr(init);
-            }
-            StmtKind::Assign { target, value } => {
-                self.rewrite_expr(target);
-                self.rewrite_expr(value);
-            }
-            StmtKind::Return(Some(e)) => self.rewrite_expr(e),
-            StmtKind::Return(None) => {}
-            StmtKind::Break {
-                value: Some(v), ..
-            } => self.rewrite_expr(v),
-            StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
-            StmtKind::While { cond, body } => {
-                self.rewrite_expr(cond);
-                self.rewrite_stmts(body);
-            }
-            StmtKind::WhileLet { expr, body, .. } => {
-                self.rewrite_expr(expr);
-                self.rewrite_stmts(body);
-            }
-            StmtKind::Loop { body, .. } => self.rewrite_stmts(body),
-            StmtKind::For { iter, body, .. } => {
-                self.rewrite_expr(iter);
-                self.rewrite_stmts(body);
-            }
-            StmtKind::Ensure {
-                body,
-                else_handler,
-            } => {
-                self.rewrite_stmts(body);
-                if let Some((_, handler)) = else_handler {
-                    self.rewrite_stmts(handler);
-                }
-            }
-            StmtKind::Comptime(body) => self.rewrite_stmts(body),
-            StmtKind::ComptimeFor { body, .. } => self.rewrite_stmts(body),
-            StmtKind::Discard { .. } => {}
-        }
-    }
-
-    fn rewrite_expr(&mut self, expr: &mut Expr) {
-        match &mut expr.kind {
-            // Phase 5 (CALL1-CALL6): Insert hidden args at call sites
-            ExprKind::Call { func, args } => {
-                self.rewrite_expr(func);
-                for arg in args.iter_mut() {
-                    self.rewrite_expr(&mut arg.expr);
-                }
-
-                // Check if callee needs hidden params
-                if let Some(callee_name) = extract_callee_name(func) {
-                    if let Some(reqs) = self.func_contexts.get(&callee_name).cloned() {
-                        for req in &reqs {
-                            // Don't add duplicate hidden args
-                            let already_has = args.iter().any(|a| {
-                                matches!(&a.expr.kind, ExprKind::Ident(name) if name == &req.param_name)
-                            });
-                            if already_has {
-                                continue;
-                            }
-
-                            // Resolve: use the hidden param from current scope
-                            args.push(CallArg {
-                                name: None,
-                                mode: ArgMode::Default,
-                                expr: Expr {
-                                    id: self.fresh_id(),
-                                    kind: ExprKind::Ident(req.param_name.clone()),
-                                    span: expr.span,
-                                },
-                            });
-                        }
-                    }
-                }
-            }
-
-            ExprKind::MethodCall {
-                object, args, ..
-            } => {
-                self.rewrite_expr(object);
-                for arg in args.iter_mut() {
-                    self.rewrite_expr(&mut arg.expr);
-                }
-                // Method call context resolution requires type info for the
-                // receiver. Deferred — method dispatch doesn't commonly carry
-                // context in Phase A patterns.
-            }
-
-            // Phase 6 (BLK1-BLK4): Desugar `using` blocks
-            ExprKind::UsingBlock { name, args, body } => {
-                if name == "Multitasking" || name == "multitasking" {
-                    // Keep UsingBlock intact — MIR lowering emits
-                    // rask_runtime_init/rask_runtime_shutdown directly.
-                    self.rewrite_stmts(
-                        match &mut expr.kind {
-                            ExprKind::UsingBlock { body, .. } => body,
-                            _ => unreachable!(),
-                        }
-                    );
-                } else if name == "ThreadPool" {
-                    // ThreadPool blocks keep their structure for now — the
-                    // interpreter handles them directly and the compiled path
-                    // will use the C runtime's thread pool API.
-                    self.rewrite_stmts(
-                        match &mut expr.kind {
-                            ExprKind::UsingBlock { body, .. } => body,
-                            _ => unreachable!(),
-                        }
-                    );
-                } else {
-                    // Unknown using block — just recurse
-                    for arg in args.iter_mut() {
-                        self.rewrite_expr(&mut arg.expr);
-                    }
-                    self.rewrite_stmts(body);
-                }
-            }
-
-            // Recurse into all other expression kinds
-            ExprKind::Binary { left, right, .. } => {
-                self.rewrite_expr(left);
-                self.rewrite_expr(right);
-            }
-            ExprKind::Unary { operand, .. } => self.rewrite_expr(operand),
-            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
-                self.rewrite_expr(object);
-            }
-            ExprKind::DynamicField { object, field_expr } => {
-                self.rewrite_expr(object);
-                self.rewrite_expr(field_expr);
-            }
-            ExprKind::Index { object, index } => {
-                self.rewrite_expr(object);
-                self.rewrite_expr(index);
-            }
-            ExprKind::Block(stmts) => self.rewrite_stmts(stmts),
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                self.rewrite_expr(cond);
-                self.rewrite_expr(then_branch);
-                if let Some(e) = else_branch {
-                    self.rewrite_expr(e);
-                }
-            }
-            ExprKind::IfLet {
-                expr,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                self.rewrite_expr(expr);
-                self.rewrite_expr(then_branch);
-                if let Some(e) = else_branch {
-                    self.rewrite_expr(e);
-                }
-            }
-            ExprKind::Match { scrutinee, arms } => {
-                self.rewrite_expr(scrutinee);
-                for arm in arms {
-                    if let Some(g) = &mut arm.guard {
-                        self.rewrite_expr(g);
-                    }
-                    self.rewrite_expr(&mut arm.body);
-                }
-            }
-            ExprKind::Try { expr: e, ref mut else_clause } => {
-                self.rewrite_expr(e);
-                if let Some(ec) = else_clause {
-                    self.rewrite_expr(&mut ec.body);
-                }
-            }
-            ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
-                self.rewrite_expr(e);
-            }
-            ExprKind::GuardPattern {
-                expr, else_branch, ..
-            } => {
-                self.rewrite_expr(expr);
-                self.rewrite_expr(else_branch);
-            }
-            ExprKind::IsPattern { expr, .. } => self.rewrite_expr(expr),
-            ExprKind::NullCoalesce { value, default } => {
-                self.rewrite_expr(value);
-                self.rewrite_expr(default);
-            }
-            ExprKind::Range { start, end, .. } => {
-                if let Some(s) = start {
-                    self.rewrite_expr(s);
-                }
-                if let Some(e) = end {
-                    self.rewrite_expr(e);
-                }
-            }
-            ExprKind::StructLit { fields, spread, .. } => {
-                for f in fields {
-                    self.rewrite_expr(&mut f.value);
-                }
-                if let Some(s) = spread {
-                    self.rewrite_expr(s);
-                }
-            }
-            ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
-                for e in elems {
-                    self.rewrite_expr(e);
-                }
-            }
-            ExprKind::ArrayRepeat { value, count } => {
-                self.rewrite_expr(value);
-                self.rewrite_expr(count);
-            }
-            ExprKind::WithAs { bindings, body } => {
-                for binding in bindings {
-                    self.rewrite_expr(&mut binding.source);
-                }
-                self.rewrite_stmts(body);
-            }
-            ExprKind::Closure { body, .. } => self.rewrite_expr(body),
-            ExprKind::Spawn { body }
-            | ExprKind::Unsafe { body }
-            | ExprKind::Comptime { body }
-            | ExprKind::BlockCall { body, .. }
-            | ExprKind::Loop { body, .. } => {
-                self.rewrite_stmts(body);
-            }
-            ExprKind::Assert { condition, message }
-            | ExprKind::Check { condition, message } => {
-                self.rewrite_expr(condition);
-                if let Some(m) = message {
-                    self.rewrite_expr(m);
-                }
-            }
-            ExprKind::Select { arms, .. } => {
-                for arm in arms {
-                    match &mut arm.kind {
-                        rask_ast::expr::SelectArmKind::Recv { channel, .. } => {
-                            self.rewrite_expr(channel);
-                        }
-                        rask_ast::expr::SelectArmKind::Send { channel, value } => {
-                            self.rewrite_expr(channel);
-                            self.rewrite_expr(value);
-                        }
-                        rask_ast::expr::SelectArmKind::Default => {}
-                    }
-                    self.rewrite_expr(&mut arm.body);
-                }
-            }
-            // Leaves
-            ExprKind::Int(_, _)
-            | ExprKind::Float(_, _)
-            | ExprKind::String(_)
-            | ExprKind::Char(_)
-            | ExprKind::Bool(_)
-            | ExprKind::Null
-            | ExprKind::Ident(_) => {}
-        }
-    }
-
-    // desugar_multitasking_block removed — MIR lowering now emits
-    // rask_runtime_init/rask_runtime_shutdown directly.
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Convert a ContextClause into a ContextReq.
-fn context_clause_to_req(cc: &ContextClause) -> ContextReq {
+pub(crate) fn context_clause_to_req(cc: &ContextClause) -> ContextReq {
     let is_runtime = cc.ty == "Multitasking" || cc.ty == "multitasking";
 
     let (param_name, param_type) = if is_runtime {
@@ -636,14 +216,14 @@ fn context_clause_to_req(cc: &ContextClause) -> ContextReq {
 }
 
 /// Extract T from "Pool<T>" → "T".
-fn extract_generic_arg(ty: &str) -> Option<String> {
+pub(crate) fn extract_generic_arg(ty: &str) -> Option<String> {
     let start = ty.find('<')?;
     let end = ty.rfind('>')?;
     Some(ty[start + 1..end].to_string())
 }
 
 /// Extract the function name from a Call expression's func field.
-fn extract_callee_name(func: &Expr) -> Option<String> {
+pub(crate) fn extract_callee_name(func: &Expr) -> Option<String> {
     match &func.kind {
         ExprKind::Ident(name) => Some(name.clone()),
         ExprKind::Field { object, field } => {
@@ -658,260 +238,25 @@ fn extract_callee_name(func: &Expr) -> Option<String> {
     }
 }
 
-/// Collect all callee names from a function body (for call graph).
-fn collect_callees_from_body(stmts: &[Stmt]) -> HashSet<String> {
-    let mut callees = HashSet::new();
-    for stmt in stmts {
-        collect_callees_from_stmt(stmt, &mut callees);
-    }
-    callees
+/// Check if a type string looks like `Pool<...>`.
+pub(crate) fn is_pool_type(ty: &str) -> bool {
+    ty.starts_with("Pool<") && ty.ends_with('>')
 }
 
-fn collect_callees_from_stmt(stmt: &Stmt, callees: &mut HashSet<String>) {
-    match &stmt.kind {
-        StmtKind::Expr(e) => collect_callees_from_expr(e, callees),
-        StmtKind::Let { init, .. }
-        | StmtKind::Const { init, .. }
-        | StmtKind::LetTuple { init, .. }
-        | StmtKind::ConstTuple { init, .. } => {
-            collect_callees_from_expr(init, callees);
-        }
-        StmtKind::Assign { target, value } => {
-            collect_callees_from_expr(target, callees);
-            collect_callees_from_expr(value, callees);
-        }
-        StmtKind::Return(Some(e)) => collect_callees_from_expr(e, callees),
-        StmtKind::Return(None) => {}
-        StmtKind::Break {
-            value: Some(v), ..
-        } => collect_callees_from_expr(v, callees),
-        StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
-        StmtKind::While { cond, body } => {
-            collect_callees_from_expr(cond, callees);
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        StmtKind::WhileLet { expr, body, .. } => {
-            collect_callees_from_expr(expr, callees);
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        StmtKind::Loop { body, .. } => {
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        StmtKind::For { iter, body, .. } => {
-            collect_callees_from_expr(iter, callees);
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        StmtKind::Ensure {
-            body,
-            else_handler,
-        } => {
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-            if let Some((_, handler)) = else_handler {
-                for s in handler {
-                    collect_callees_from_stmt(s, callees);
-                }
-            }
-        }
-        StmtKind::Comptime(body) => {
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        StmtKind::ComptimeFor { body, .. } => {
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        StmtKind::Discard { .. } => {}
-    }
+/// Check if a type string looks like `Handle<...>`.
+pub(crate) fn is_handle_type(ty: &str) -> bool {
+    ty.starts_with("Handle<") && ty.ends_with('>')
 }
 
-fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
-    match &expr.kind {
-        ExprKind::Call { func, args } => {
-            if let Some(name) = extract_callee_name(func) {
-                callees.insert(name);
-            }
-            collect_callees_from_expr(func, callees);
-            for arg in args {
-                collect_callees_from_expr(&arg.expr, callees);
-            }
-        }
-        ExprKind::MethodCall {
-            object, args, method, ..
-        } => {
-            // Record as "?.method" — without type info we can't fully qualify
-            callees.insert(method.clone());
-            collect_callees_from_expr(object, callees);
-            for arg in args {
-                collect_callees_from_expr(&arg.expr, callees);
-            }
-        }
-        ExprKind::Binary { left, right, .. } => {
-            collect_callees_from_expr(left, callees);
-            collect_callees_from_expr(right, callees);
-        }
-        ExprKind::Unary { operand, .. } => collect_callees_from_expr(operand, callees),
-        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
-            collect_callees_from_expr(object, callees);
-        }
-        ExprKind::DynamicField { object, field_expr } => {
-            collect_callees_from_expr(object, callees);
-            collect_callees_from_expr(field_expr, callees);
-        }
-        ExprKind::Index { object, index } => {
-            collect_callees_from_expr(object, callees);
-            collect_callees_from_expr(index, callees);
-        }
-        ExprKind::Block(stmts) => {
-            for s in stmts {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        ExprKind::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            collect_callees_from_expr(cond, callees);
-            collect_callees_from_expr(then_branch, callees);
-            if let Some(e) = else_branch {
-                collect_callees_from_expr(e, callees);
-            }
-        }
-        ExprKind::IfLet {
-            expr,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            collect_callees_from_expr(expr, callees);
-            collect_callees_from_expr(then_branch, callees);
-            if let Some(e) = else_branch {
-                collect_callees_from_expr(e, callees);
-            }
-        }
-        ExprKind::Match { scrutinee, arms } => {
-            collect_callees_from_expr(scrutinee, callees);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    collect_callees_from_expr(g, callees);
-                }
-                collect_callees_from_expr(&arm.body, callees);
-            }
-        }
-        ExprKind::Try { expr: e, ref else_clause } => {
-            collect_callees_from_expr(e, callees);
-            if let Some(ec) = else_clause {
-                collect_callees_from_expr(&ec.body, callees);
-            }
-        }
-        ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
-            collect_callees_from_expr(e, callees);
-        }
-        ExprKind::GuardPattern {
-            expr, else_branch, ..
-        } => {
-            collect_callees_from_expr(expr, callees);
-            collect_callees_from_expr(else_branch, callees);
-        }
-        ExprKind::IsPattern { expr, .. } => collect_callees_from_expr(expr, callees),
-        ExprKind::NullCoalesce { value, default } => {
-            collect_callees_from_expr(value, callees);
-            collect_callees_from_expr(default, callees);
-        }
-        ExprKind::Range { start, end, .. } => {
-            if let Some(s) = start {
-                collect_callees_from_expr(s, callees);
-            }
-            if let Some(e) = end {
-                collect_callees_from_expr(e, callees);
-            }
-        }
-        ExprKind::StructLit { fields, spread, .. } => {
-            for f in fields {
-                collect_callees_from_expr(&f.value, callees);
-            }
-            if let Some(s) = spread {
-                collect_callees_from_expr(s, callees);
-            }
-        }
-        ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
-            for e in elems {
-                collect_callees_from_expr(e, callees);
-            }
-        }
-        ExprKind::ArrayRepeat { value, count } => {
-            collect_callees_from_expr(value, callees);
-            collect_callees_from_expr(count, callees);
-        }
-        ExprKind::WithAs { bindings, body } => {
-            for binding in bindings {
-                collect_callees_from_expr(&binding.source, callees);
-            }
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        ExprKind::Closure { body, .. } => collect_callees_from_expr(body, callees),
-        ExprKind::Spawn { body }
-        | ExprKind::Unsafe { body }
-        | ExprKind::Comptime { body }
-        | ExprKind::BlockCall { body, .. }
-        | ExprKind::Loop { body, .. } => {
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        ExprKind::Assert { condition, message }
-        | ExprKind::Check { condition, message } => {
-            collect_callees_from_expr(condition, callees);
-            if let Some(m) = message {
-                collect_callees_from_expr(m, callees);
-            }
-        }
-        ExprKind::Select { arms, .. } => {
-            for arm in arms {
-                match &arm.kind {
-                    rask_ast::expr::SelectArmKind::Recv { channel, .. } => {
-                        collect_callees_from_expr(channel, callees);
-                    }
-                    rask_ast::expr::SelectArmKind::Send { channel, value } => {
-                        collect_callees_from_expr(channel, callees);
-                        collect_callees_from_expr(value, callees);
-                    }
-                    rask_ast::expr::SelectArmKind::Default => {}
-                }
-                collect_callees_from_expr(&arm.body, callees);
-            }
-        }
-        ExprKind::UsingBlock { args, body, .. } => {
-            for arg in args {
-                collect_callees_from_expr(&arg.expr, callees);
-            }
-            for s in body {
-                collect_callees_from_stmt(s, callees);
-            }
-        }
-        // Leaves
-        ExprKind::Int(_, _)
-        | ExprKind::Float(_, _)
-        | ExprKind::String(_)
-        | ExprKind::Char(_)
-        | ExprKind::Bool(_)
-        | ExprKind::Null
-        | ExprKind::Ident(_) => {}
-    }
+/// Convert a Handle<T> type to the Pool<T> it requires.
+pub(crate) fn handle_to_pool_type(handle_ty: &str) -> Option<String> {
+    let inner = extract_generic_arg(handle_ty)?;
+    Some(format!("Pool<{}>", inner))
+}
+
+/// Format a rask_types::Type into a string for matching.
+pub(crate) fn format_type(ty: &rask_types::Type) -> String {
+    format!("{}", ty)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -919,6 +264,7 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rask_ast::decl::ContextClause;
 
     #[test]
     fn test_extract_generic_arg() {
@@ -963,5 +309,19 @@ mod tests {
         assert_eq!(req.param_name, "__ctx_runtime");
         assert_eq!(req.param_type, "RuntimeContext");
         assert!(req.is_runtime);
+    }
+
+    #[test]
+    fn test_is_pool_type() {
+        assert!(is_pool_type("Pool<Player>"));
+        assert!(!is_pool_type("Vec<Player>"));
+        assert!(!is_pool_type("Pool"));
+    }
+
+    #[test]
+    fn test_handle_to_pool_type() {
+        assert_eq!(handle_to_pool_type("Handle<Player>"), Some("Pool<Player>".to_string()));
+        assert_eq!(handle_to_pool_type("Handle<Vec<i32>>"), Some("Pool<Vec<i32>>".to_string()));
+        assert_eq!(handle_to_pool_type("i32"), None);
     }
 }

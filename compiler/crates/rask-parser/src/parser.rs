@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
@@ -1554,6 +1554,11 @@ impl Parser {
     fn parse_import_decl(&mut self) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Import)?;
 
+        // CI1: Check for `import c "header.h"` syntax
+        if matches!(self.current_kind(), TokenKind::Ident(s) if s == "c") {
+            return self.parse_c_import();
+        }
+
         let is_lazy = self.match_token(&TokenKind::Lazy);
 
         let mut path = Vec::new();
@@ -1580,6 +1585,57 @@ impl Parser {
 
         self.expect_terminator()?;
         Ok(DeclKind::Import(ImportDecl { path, alias, is_glob, is_lazy }))
+    }
+
+    /// Parse `import c "header.h"` (CI1).
+    /// Variants:
+    /// - `import c "header.h"` — single header, `c` namespace
+    /// - `import c "header.h" as name` — aliased namespace
+    /// - `import c { "a.h", "b.h" }` — multiple headers
+    /// - `import c "header.h" hiding { symbol1, symbol2 }` — suppress symbols
+    fn parse_c_import(&mut self) -> Result<DeclKind, ParseError> {
+        self.expect_ident()?; // consume "c"
+
+        let mut headers = Vec::new();
+
+        if self.match_token(&TokenKind::LBrace) {
+            // Multiple headers: import c { "a.h", "b.h" }
+            self.skip_newlines();
+            loop {
+                if self.check(&TokenKind::RBrace) { break; }
+                headers.push(self.expect_string()?);
+                if !self.match_token(&TokenKind::Comma) { break; }
+                self.skip_newlines();
+            }
+            self.expect(&TokenKind::RBrace)?;
+        } else {
+            headers.push(self.expect_string()?);
+        }
+
+        // Optional alias: `as name`
+        let alias = if self.match_token(&TokenKind::As) {
+            self.expect_ident()?
+        } else {
+            "c".to_string()
+        };
+
+        // Optional hiding: `hiding { symbol1, symbol2 }`
+        let mut hiding = Vec::new();
+        if matches!(self.current_kind(), TokenKind::Ident(s) if s == "hiding") {
+            self.advance();
+            self.expect(&TokenKind::LBrace)?;
+            self.skip_newlines();
+            loop {
+                if self.check(&TokenKind::RBrace) { break; }
+                hiding.push(self.expect_ident()?);
+                if !self.match_token(&TokenKind::Comma) { break; }
+                self.skip_newlines();
+            }
+            self.expect(&TokenKind::RBrace)?;
+        }
+
+        self.expect_terminator()?;
+        Ok(DeclKind::CImport(CImportDecl { headers, alias, hiding }))
     }
 
     /// Expand grouped imports into individual decls.

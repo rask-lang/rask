@@ -734,7 +734,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                                 let mut dep_decls_desugared = dep_decls.clone();
                                 rask_desugar::desugar(&mut dep_decls_desugared);
                                 all_decls.extend(dep_decls_desugared);
-                                rask_hidden_params::desugar_hidden_params(&mut all_decls);
+                                rask_hidden_params::desugar_hidden_params_with_types(&mut all_decls, Some(&typed.node_types));
 
                                 match rask_mono::monomorphize_with_packages(&typed, &all_decls, package_modules.clone()) {
                                     Ok(mono) => {

@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 rask-ast = { path = "../rask-ast" }
+rask-types = { path = "../rask-types" }

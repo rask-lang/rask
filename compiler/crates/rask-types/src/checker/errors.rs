@@ -246,4 +246,12 @@ pub enum TypeError {
         enum_name: String,
         span: Span,
     },
+
+    /// E5/R5/MX3: standalone sync access without chaining
+    #[error("standalone `.{method}()` on `{ty}` must be chained — use `.{method}().field` or `with` block")]
+    BareSyncAccess {
+        ty: String,
+        method: String,
+        span: Span,
+    },
 }
