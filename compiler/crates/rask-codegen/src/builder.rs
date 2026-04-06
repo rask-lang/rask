@@ -1334,6 +1334,51 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                 }
+            } else if func.name == "check_fail" {
+                // check failed — record failure, don't unwind
+                let msg = if !args.is_empty() {
+                    Self::lower_operand_as_cstr(builder, &args[0], ctx)?
+                } else {
+                    // Create a default "check failed" message
+                    if let Some(gv) = ctx.string_globals.get("check failed") {
+                        builder.ins().global_value(types::I64, *gv)
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    }
+                };
+                let func_ref = ctx.func_refs.get("rask_check_fail")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_check_fail".into()))?;
+                builder.ins().call(*func_ref, &[msg]);
+            } else if func.name == "rask_test_skip" {
+                // skip("reason") — pass reason as C string, calls rask_test_skip
+                let reason = if !args.is_empty() {
+                    Self::lower_operand_as_cstr(builder, &args[0], ctx)?
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                };
+                let func_ref = ctx.func_refs.get("rask_test_skip")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_test_skip".into()))?;
+                builder.ins().call(*func_ref, &[reason]);
+            } else if func.name == "rask_test_expect_fail" {
+                // expect_fail() — set thread-local flag
+                let func_ref = ctx.func_refs.get("rask_test_expect_fail")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_test_expect_fail".into()))?;
+                builder.ins().call(*func_ref, &[]);
+                if let Some(dst_id) = dst {
+                    if let Some(var) = ctx.var_map.get(dst_id) {
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        builder.def_var(*var, zero);
+                    }
+                }
+            } else if func.name == "rask_assert_eq" {
+                // assert_eq(got, expected) — compare as i64
+                if args.len() >= 2 {
+                    let got_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
+                    let expected_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
+                    let func_ref = ctx.func_refs.get("rask_assert_eq")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("rask_assert_eq".into()))?;
+                    builder.ins().call(*func_ref, &[got_val, expected_val]);
+                }
             } else if func.name == "panic_unwrap" {
                 // MIR already handled branching; this is the panic path.
                 if let Some(file_str) = ctx.source_file {

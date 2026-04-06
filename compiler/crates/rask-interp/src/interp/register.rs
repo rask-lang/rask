@@ -75,6 +75,8 @@ impl Interpreter {
             ModuleKind::Time => &["Instant", "Duration"],
             ModuleKind::Path => &["Path"],
             ModuleKind::Fs => &["File", "Metadata"],
+            ModuleKind::Io => &["Stdin", "Stdout", "Stderr", "Buffer", "IoError"],
+            ModuleKind::Os => &["Command", "Process", "Output", "Stdio", "Signal"],
             ModuleKind::Cli => &["Args"],
             ModuleKind::Net => &["TcpListener", "TcpConnection"],
             ModuleKind::Random => &["Rng"],
@@ -162,6 +164,8 @@ impl Interpreter {
                                 imports.push((module_name.clone(), kind));
                                 Self::register_glob_companions(&mut self.env, kind);
                             } else if import.path.len() == 1 {
+                                // All stdlib imports register companion types (Command, File, etc.)
+                                Self::register_glob_companions(&mut self.env, kind);
                                 // Qualified import: `import module`
                                 let alias = import.alias.clone().unwrap_or_else(|| module_name.clone());
                                 imports.push((alias, kind));
@@ -233,6 +237,12 @@ impl Interpreter {
             .define("max".to_string(), Value::Builtin(BuiltinKind::Max));
         self.env
             .define("clamp".to_string(), Value::Builtin(BuiltinKind::Clamp));
+        self.env
+            .define("assert_eq".to_string(), Value::Builtin(BuiltinKind::AssertEq));
+        self.env
+            .define("skip".to_string(), Value::Builtin(BuiltinKind::Skip));
+        self.env
+            .define("expect_fail".to_string(), Value::Builtin(BuiltinKind::ExpectFail));
 
         // Builtin types (always in scope, matching resolver builtins)
         self.env
@@ -241,6 +251,14 @@ impl Interpreter {
             .define("File".to_string(), Value::Type("File".to_string()));
         self.env
             .define("f32x8".to_string(), Value::Type("f32x8".to_string()));
+        self.env
+            .define("Stdin".to_string(), Value::Type("Stdin".to_string()));
+        self.env
+            .define("Stdout".to_string(), Value::Type("Stdout".to_string()));
+        self.env
+            .define("Stderr".to_string(), Value::Type("Stderr".to_string()));
+        self.env
+            .define("Buffer".to_string(), Value::Type("Buffer".to_string()));
 
         self.env.define(
             "Some".to_string(),
@@ -388,6 +406,8 @@ impl Interpreter {
         let start = std::time::Instant::now();
         let mut errors: Vec<String> = Vec::new();
         let mut ensures: Vec<&Stmt> = Vec::new();
+        let mut skipped: Option<String> = None;
+        let mut expect_fail = false;
 
         self.env.push_scope();
 
@@ -408,6 +428,15 @@ impl Interpreter {
                         }
                         break;
                     }
+                    Err(diag) if matches!(&diag.error, RuntimeError::TestSkipped(_)) => {
+                        if let RuntimeError::TestSkipped(reason) = diag.error {
+                            skipped = Some(reason);
+                        }
+                        break;
+                    }
+                    Err(diag) if matches!(&diag.error, RuntimeError::TestExpectFail) => {
+                        expect_fail = true;
+                    }
                     Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {
                         break;
                     }
@@ -422,11 +451,22 @@ impl Interpreter {
         self.run_ensures(&ensures);
         self.env.pop_scope();
 
+        // T13: expect_fail inverts pass/fail
+        let passed = if expect_fail {
+            !errors.is_empty()
+        } else {
+            errors.is_empty()
+        };
+        if expect_fail && errors.is_empty() {
+            errors.push("expected failure but test passed".to_string());
+        }
+
         TestResult {
             name: name.to_string(),
-            passed: errors.is_empty(),
+            passed,
             duration: start.elapsed(),
             errors,
+            skipped,
         }
     }
 
@@ -434,6 +474,8 @@ impl Interpreter {
     pub(super) fn run_test_function(&mut self, func: &FnDecl) -> TestResult {
         let start = std::time::Instant::now();
         let mut errors: Vec<String> = Vec::new();
+        let mut skipped: Option<String> = None;
+        let mut expect_fail = false;
 
         match self.call_function(func, vec![]) {
             Ok(_) => {}
@@ -445,16 +487,34 @@ impl Interpreter {
                 };
                 errors.push(msg);
             }
+            Err(diag) if matches!(&diag.error, RuntimeError::TestSkipped(_)) => {
+                if let RuntimeError::TestSkipped(reason) = diag.error {
+                    skipped = Some(reason);
+                }
+            }
+            Err(diag) if matches!(&diag.error, RuntimeError::TestExpectFail) => {
+                expect_fail = true;
+            }
             Err(e) => {
                 errors.push(format!("{}", e));
             }
         }
 
+        let passed = if expect_fail {
+            !errors.is_empty()
+        } else {
+            errors.is_empty()
+        };
+        if expect_fail && errors.is_empty() {
+            errors.push("expected failure but test passed".to_string());
+        }
+
         TestResult {
             name: func.name.clone(),
-            passed: errors.is_empty(),
+            passed,
             duration: start.elapsed(),
             errors,
+            skipped,
         }
     }
 

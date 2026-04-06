@@ -9,6 +9,13 @@ use rask_diagnostics::formatter::DiagnosticFormatter;
 
 use crate::{output, show_diagnostics, Format};
 
+/// Options for test execution (T7, T8 from std.testing spec).
+pub struct TestOptions {
+    pub verbose: bool,
+    pub sequential: bool,
+    pub seed: Option<String>,
+}
+
 pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let result = super::pipeline::run_frontend(path, format);
 
@@ -247,6 +254,16 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 }
 
 /// Compile a .rk file's tests natively and run them.
+/// Compile and run tests with options (verbose, sequential, seed).
+pub fn cmd_test_native_with_opts(path: &str, filter: Option<String>, format: Format, opts: &TestOptions) {
+    // --seed is accepted for forward-compatibility (T8) but not yet functional
+    if opts.seed.is_some() && format == Format::Human {
+        eprintln!("{}: --seed accepted but random ordering not yet implemented", "note".dimmed());
+    }
+    // --sequential is accepted for forward-compatibility (T7); tests already run sequentially
+    cmd_test_native(path, filter, format);
+}
+
 pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
     let mut result = match std::panic::catch_unwind(|| {
         super::pipeline::run_frontend(path, format)
@@ -346,6 +363,7 @@ fn display_test_results(stdout: &str, path: &str, format: Format) {
 
     let mut passed = 0;
     let mut failed = 0;
+    let mut skipped = 0;
     let mut total_duration = std::time::Duration::ZERO;
 
     for line in stdout.lines() {
@@ -357,6 +375,17 @@ fn display_test_results(stdout: &str, path: &str, format: Format) {
         let duration_ns = parse_json_i64(line, "duration_ns").unwrap_or(0);
         let duration = std::time::Duration::from_nanos(duration_ns as u64);
         total_duration += duration;
+
+        // Check for skipped tests
+        if let Some(reason) = parse_json_str(line, "skipped") {
+            skipped += 1;
+            println!("  {} {} {}",
+                "SKIP".yellow(),
+                name,
+                format!("({})", reason).dimmed(),
+            );
+            continue;
+        }
 
         if passed_val {
             passed += 1;
@@ -379,13 +408,17 @@ fn display_test_results(stdout: &str, path: &str, format: Format) {
 
     println!();
     println!("{}", output::separator(50));
-    println!(
-        "{} tests, {}, {} ({}ms)",
-        passed + failed,
+    let mut summary = format!(
+        "{} tests, {}, {}",
+        passed + failed + skipped,
         output::passed_count(passed),
         output::failed_count(failed),
-        total_duration.as_millis(),
     );
+    if skipped > 0 {
+        summary.push_str(&format!(", {} skipped", skipped));
+    }
+    summary.push_str(&format!(" ({}ms)", total_duration.as_millis()));
+    println!("{}", summary);
 }
 
 fn parse_json_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {

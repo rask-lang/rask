@@ -33,4 +33,94 @@ extend os {
 
     /// Get the CPU architecture.
     public func arch() -> string { }
+
+    /// Register a signal handler. Returns a channel receiver for signals.
+    public func on_signal(signals: Vec<Signal>) -> Receiver<Signal> or IoError { }
+}
+
+/// I/O configuration for subprocess stdin/stdout/stderr.
+public enum Stdio {
+    Inherit
+    Piped
+    Null
+}
+
+/// Command builder for subprocess execution.
+public struct Command { }
+
+extend Command {
+    /// Create a new command for the given program.
+    public func new(program: string) -> Command { }
+
+    /// Add a single argument.
+    public func arg(self, arg: string) -> Command { }
+
+    /// Add multiple arguments.
+    public func args(self, args: Vec<string>) -> Command { }
+
+    /// Set an environment variable for the child process.
+    public func env(self, key: string, value: string) -> Command { }
+
+    /// Set the working directory.
+    public func cwd(self, dir: string) -> Command { }
+
+    /// Configure stdin.
+    public func stdin(self, cfg: Stdio) -> Command { }
+
+    /// Configure stdout.
+    public func stdout(self, cfg: Stdio) -> Command { }
+
+    /// Configure stderr.
+    public func stderr(self, cfg: Stdio) -> Command { }
+
+    /// Run command to completion and capture output.
+    public func run(self) -> Output or IoError { }
+
+    /// Spawn command as a background process.
+    public func spawn(self) -> Process or IoError { }
+}
+
+/// Output from a completed subprocess.
+public struct Output {
+    public status: i32
+    public stdout: string
+    public stderr: string
+}
+
+extend Output {
+    /// Check if the process exited successfully (status == 0).
+    public func success(self) -> bool { }
+}
+
+/// A running subprocess handle. Must be consumed via wait() or kill_and_wait().
+@resource
+public struct Process { }
+
+extend Process {
+    /// Wait for the process to finish and return its output.
+    public func wait(self) -> Output or IoError { }
+
+    /// Kill the process and wait for it to finish.
+    public func kill_and_wait(self) -> Output or IoError { }
+
+    /// Check if the process has exited without blocking.
+    public func try_wait(self) -> Option<Output> or IoError { }
+
+    /// Get the process ID.
+    public func id(self) -> i64 { }
+
+    /// Write data to the process stdin (requires Stdio.Piped).
+    public func write_stdin(self, data: string) -> () or IoError { }
+
+    /// Read from the process stdout (requires Stdio.Piped).
+    public func read_stdout(self) -> string or IoError { }
+}
+
+/// Portable signal types.
+public enum Signal {
+    Interrupt
+    Terminate
+    Hangup
+    User1
+    User2
 }

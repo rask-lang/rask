@@ -64,6 +64,30 @@ trait Writer {
 }
 ```
 
+## Seek Trait
+
+| Rule | Description |
+|------|-------------|
+| **K1: Seek** | `seek(pos)` repositions the stream. Returns the new absolute position |
+| **K2: SeekFrom** | Position specified as `SeekFrom.Start(n)`, `SeekFrom.End(n)`, or `SeekFrom.Current(n)` |
+| **K3: Position** | `position()` returns the current stream position without seeking |
+
+<!-- test: skip -->
+```rask
+enum SeekFrom {
+    Start(i64)
+    End(i64)
+    Current(i64)
+}
+
+trait Seeker {
+    func seek(self, pos: SeekFrom) -> i64 or IoError
+    func position(self) -> i64 or IoError
+}
+```
+
+`File` and `Buffer` implement `Seeker`. Standard streams do not — they are sequential.
+
 ## Buffered Wrappers
 
 | Rule | Description |
@@ -152,15 +176,15 @@ const result = string.from_utf8(buf.as_bytes())  // "hello world"
 
 ## Trait Implementations Summary
 
-| Type | Reader | Writer | Linear |
-|------|--------|--------|--------|
-| `Stdin` | Yes | -- | Yes |
-| `Stdout` | -- | Yes | Yes |
-| `Stderr` | -- | Yes | Yes |
-| `File` (from `fs`) | Yes | Yes | Yes |
-| `Buffer` | Yes | Yes | No |
-| `BufReader<R>` | Yes | -- | Inherits from R |
-| `BufWriter<W>` | -- | Yes | Inherits from W |
+| Type | Reader | Writer | Seeker | Linear |
+|------|--------|--------|--------|--------|
+| `Stdin` | Yes | -- | -- | Yes |
+| `Stdout` | -- | Yes | -- | Yes |
+| `Stderr` | -- | Yes | -- | Yes |
+| `File` (from `fs`) | Yes | Yes | Yes | Yes |
+| `Buffer` | Yes | Yes | Yes | No |
+| `BufReader<R>` | Yes | -- | -- | Inherits from R |
+| `BufWriter<W>` | -- | Yes | -- | Inherits from W |
 
 ## Error Messages
 

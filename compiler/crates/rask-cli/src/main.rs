@@ -324,7 +324,10 @@ fn main() {
                 process::exit(1);
             }
             let filter = extract_filter(&cmd_args);
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-f"]);
+            let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
+            let sequential = cmd_args.contains(&"--sequential");
+            let seed = extract_flag_value(&cmd_args, "--seed");
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
@@ -332,10 +335,11 @@ fn main() {
                     process::exit(1);
                 }
             };
+            let test_opts = commands::run::TestOptions { verbose, sequential, seed };
             if Path::new(file).is_dir() {
                 commands::run::cmd_test_project(file, filter, format);
             } else {
-                commands::run::cmd_test_native(file, filter, format);
+                commands::run::cmd_test_native_with_opts(file, filter, format, &test_opts);
             }
         }
         "benchmark" | "bench" => {

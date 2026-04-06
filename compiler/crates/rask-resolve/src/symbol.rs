@@ -160,6 +160,12 @@ pub enum BuiltinFunctionKind {
     Max,
     /// clamp - constrain value between lo and hi
     Clamp,
+    /// assert_eq - compare got/expected with pretty-print diff
+    AssertEq,
+    /// skip - skip rest of test with reason
+    Skip,
+    /// expect_fail - invert pass/fail for test
+    ExpectFail,
 }
 
 /// Built-in module kinds (stdlib modules).

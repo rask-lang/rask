@@ -353,7 +353,7 @@ impl TypeChecker {
             }
             ExprKind::Call { func, .. } => {
                 if let ExprKind::Ident(name) = &func.kind {
-                    matches!(name.as_str(), "panic" | "todo" | "unreachable")
+                    matches!(name.as_str(), "panic" | "todo" | "unreachable" | "skip")
                 } else {
                     false
                 }

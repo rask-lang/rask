@@ -1,11 +1,133 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+/// I/O error type — all I/O operations return T or IoError.
+public enum IoError {
+    NotFound(string)
+    PermissionDenied(string)
+    AlreadyExists(string)
+    BrokenPipe
+    ConnectionReset
+    TimedOut
+    UnexpectedEof
+    Other(string)
+}
+
 /// Input/output module functions.
 struct io { }
 
 extend io {
     /// Read a line of text from standard input.
     public func read_line() -> string or IoError { }
+
+    /// Acquire a handle to standard input.
+    public func stdin() -> Stdin { }
+
+    /// Acquire a handle to standard output.
+    public func stdout() -> Stdout { }
+
+    /// Acquire a handle to standard error.
+    public func stderr() -> Stderr { }
+
+    /// Copy all bytes from reader to writer. Returns total bytes copied.
+    public func copy(reader: Reader, writer: Writer) -> i64 or IoError { }
+}
+
+/// Standard input handle. Implements Reader. Must be consumed via close().
+@resource
+public struct Stdin { }
+
+extend Stdin {
+    /// Read bytes into buffer. Returns number of bytes read (0 = EOF).
+    public func read(self, buf: Vec<u8>) -> i64 or IoError { }
+
+    /// Read all remaining bytes.
+    public func read_all(self) -> Vec<u8> or IoError { }
+
+    /// Read all remaining bytes as UTF-8 string.
+    public func read_text(self) -> string or IoError { }
+
+    /// Read a single line from stdin.
+    public func read_line(self) -> string or IoError { }
+
+    /// Close the handle.
+    public func close(mutate self) { }
+}
+
+/// Standard output handle. Implements Writer. Must be consumed via close().
+@resource
+public struct Stdout { }
+
+extend Stdout {
+    /// Write bytes. Returns number of bytes written.
+    public func write(self, data: Vec<u8>) -> i64 or IoError { }
+
+    /// Write all bytes, retrying partial writes.
+    public func write_all(self, data: Vec<u8>) -> () or IoError { }
+
+    /// Write a string.
+    public func write_str(self, s: string) -> () or IoError { }
+
+    /// Flush buffered output.
+    public func flush(self) -> () or IoError { }
+
+    /// Close the handle.
+    public func close(mutate self) { }
+}
+
+/// Standard error handle. Implements Writer. Must be consumed via close().
+@resource
+public struct Stderr { }
+
+extend Stderr {
+    /// Write bytes. Returns number of bytes written.
+    public func write(self, data: Vec<u8>) -> i64 or IoError { }
+
+    /// Write all bytes, retrying partial writes.
+    public func write_all(self, data: Vec<u8>) -> () or IoError { }
+
+    /// Write a string.
+    public func write_str(self, s: string) -> () or IoError { }
+
+    /// Flush buffered output.
+    public func flush(self) -> () or IoError { }
+
+    /// Close the handle.
+    public func close(mutate self) { }
+}
+
+/// In-memory buffer implementing both Reader and Writer. Not linear.
+public struct Buffer { }
+
+extend Buffer {
+    /// Create an empty buffer.
+    public func new() -> Buffer { }
+
+    /// Create a buffer initialized with data.
+    public func from(data: Vec<u8>) -> Buffer { }
+
+    /// Read bytes from the buffer.
+    public func read(self, buf: Vec<u8>) -> i64 or IoError { }
+
+    /// Read all remaining bytes.
+    public func read_all(self) -> Vec<u8> or IoError { }
+
+    /// Read all as UTF-8 string.
+    public func read_text(self) -> string or IoError { }
+
+    /// Write bytes to the buffer.
+    public func write(mutate self, data: Vec<u8>) -> i64 or IoError { }
+
+    /// Write all bytes.
+    public func write_all(mutate self, data: Vec<u8>) -> () or IoError { }
+
+    /// View all written bytes.
+    public func as_bytes(self) -> Vec<u8> { }
+
+    /// Total bytes written.
+    public func len(self) -> i64 { }
+
+    /// Reset read position to 0.
+    public func reset(mutate self) { }
 }
 
 /// A file handle for reading and writing.
