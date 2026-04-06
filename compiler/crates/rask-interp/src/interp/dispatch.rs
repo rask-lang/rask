@@ -266,6 +266,52 @@ impl Interpreter {
                     "f32x8 has no method '{}'", method
                 ))),
             },
+            // @binary struct instance methods (build, build_into)
+            Value::Struct(ref s) => {
+                let name = s.lock().unwrap().name.clone();
+                if self.binary_structs.contains_key(&name)
+                    && matches!(method, "build" | "build_into")
+                {
+                    let span = rask_ast::Span::new(0, 0);
+                    if let Some(result) = self.try_binary_instance_method(&receiver, &name, method, args, span) {
+                        return result.map_err(|d| d.error);
+                    }
+                    unreachable!();
+                }
+                self.call_builtin_method(receiver, method, args)
+            }
+            // CE6: Cell<T> instance methods
+            Value::Cell(ref c) => match method {
+                "get" => {
+                    let guard = c.lock().unwrap();
+                    Ok(guard.clone())
+                }
+                "set" => {
+                    if args.len() != 1 {
+                        return Err(RuntimeError::TypeError("Cell.set expects 1 argument".into()));
+                    }
+                    let mut guard = c.lock().unwrap();
+                    *guard = args.into_iter().next().unwrap();
+                    Ok(Value::Unit)
+                }
+                "replace" => {
+                    if args.len() != 1 {
+                        return Err(RuntimeError::TypeError("Cell.replace expects 1 argument".into()));
+                    }
+                    let mut guard = c.lock().unwrap();
+                    let old = std::mem::replace(&mut *guard, args.into_iter().next().unwrap());
+                    Ok(old)
+                }
+                "into_inner" => {
+                    // Consume the cell — return inner value
+                    let guard = c.lock().unwrap();
+                    Ok(guard.clone())
+                }
+                _ => Err(RuntimeError::NoSuchMethod {
+                    ty: "Cell".to_string(),
+                    method: method.to_string(),
+                }),
+            },
             _ => self.call_builtin_method(receiver, method, args),
         }
     }

@@ -284,6 +284,10 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
             classify_expr(object, effects, callees);
         }
+        ExprKind::DynamicField { object, field_expr } => {
+            classify_expr(object, effects, callees);
+            classify_expr(field_expr, effects, callees);
+        }
         ExprKind::Index { object, index } => {
             classify_expr(object, effects, callees);
             classify_expr(index, effects, callees);

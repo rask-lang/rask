@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::builtins::BuiltinModules;
-use super::type_defs::TypeDef;
+use super::type_defs::{BinaryStructInfo, TypeDef};
 use super::errors::TypeError;
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
@@ -26,6 +26,8 @@ pub struct TypeTable {
     pub(super) result_type_id: Option<TypeId>,
     /// Builtin modules registry.
     pub(super) builtin_modules: BuiltinModules,
+    /// B1–G4: binary struct metadata indexed by TypeId
+    pub binary_structs: HashMap<TypeId, BinaryStructInfo>,
 }
 
 impl TypeTable {
@@ -38,6 +40,7 @@ impl TypeTable {
             option_type_id: None,
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
+            binary_structs: HashMap::new(),
         };
         table.register_builtins();
         table
@@ -223,6 +226,24 @@ impl TypeTable {
             return *is_unique;
         }
         false
+    }
+
+    /// Check if a TypeId refers to a `@binary` struct.
+    pub fn is_binary_type_by_id(&self, id: TypeId) -> bool {
+        if let Some(TypeDef::Struct { is_binary, .. }) = self.types.get(id.0 as usize) {
+            return *is_binary;
+        }
+        false
+    }
+
+    /// Store binary struct metadata.
+    pub fn register_binary_info(&mut self, id: TypeId, info: BinaryStructInfo) {
+        self.binary_structs.insert(id, info);
+    }
+
+    /// Get binary struct metadata.
+    pub fn get_binary_info(&self, id: TypeId) -> Option<&BinaryStructInfo> {
+        self.binary_structs.get(&id)
     }
 
     /// Get TypeId for the builtin Option<T> enum.

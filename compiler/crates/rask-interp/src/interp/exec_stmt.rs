@@ -256,6 +256,187 @@ impl Interpreter {
                         }
                         Ok(Value::Unit)
                     }
+                    // LP13: for mutate on Map — write back values by key
+                    Value::Map(ref m) if *mutate => {
+                        let map_arc = std::sync::Arc::clone(m);
+                        let pairs: Vec<(Value, Value)> = map_arc.lock().unwrap().clone();
+                        for (key, val) in pairs {
+                            self.env.push_scope();
+                            // Bind as tuple (k, v) or single pair
+                            if let ForBinding::Tuple(names) = binding {
+                                if names.len() >= 2 {
+                                    self.env.define(names[0].clone(), key.clone());
+                                    self.env.define(names[1].clone(), val);
+                                }
+                            } else {
+                                let pair = Value::Vec(std::sync::Arc::new(std::sync::Mutex::new(vec![key.clone(), val])));
+                                self.define_for_binding(binding, pair);
+                            }
+                            match self.exec_stmts(body) {
+                                Ok(_) => {}
+                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                    // Write back before breaking
+                                    if let ForBinding::Tuple(names) = binding {
+                                        if names.len() >= 2 {
+                                            if let Some(v) = self.env.get(&names[1]).cloned() {
+                                                let mut guard = map_arc.lock().unwrap();
+                                                if let Some(pair) = guard.iter_mut().find(|(k, _)| Self::value_eq(k, &key)) {
+                                                    pair.1 = v;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    self.env.pop_scope();
+                                    break;
+                                }
+                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                    if let ForBinding::Tuple(names) = binding {
+                                        if names.len() >= 2 {
+                                            if let Some(v) = self.env.get(&names[1]).cloned() {
+                                                let mut guard = map_arc.lock().unwrap();
+                                                if let Some(pair) = guard.iter_mut().find(|(k, _)| Self::value_eq(k, &key)) {
+                                                    pair.1 = v;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    self.env.pop_scope();
+                                    continue;
+                                }
+                                Err(e) => {
+                                    self.env.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                            // Write back value
+                            if let ForBinding::Tuple(names) = binding {
+                                if names.len() >= 2 {
+                                    if let Some(v) = self.env.get(&names[1]).cloned() {
+                                        let mut guard = m.lock().unwrap();
+                                        if let Some(pair) = guard.iter_mut().find(|(k, _)| Self::value_eq(k, &key)) {
+                                            pair.1 = v;
+                                        }
+                                    }
+                                }
+                            }
+                            self.env.pop_scope();
+                        }
+                        Ok(Value::Unit)
+                    }
+                    // LP13: for mutate on Pool entries — write back values by handle
+                    Value::Pool(ref p) if *mutate => {
+                        let pool_arc = std::sync::Arc::clone(p);
+                        let pool = pool_arc.lock().unwrap();
+                        let pool_id = pool.pool_id;
+                        let entries: Vec<(Value, Value)> = pool
+                            .slots
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, (gen, slot))| {
+                                slot.as_ref().map(|val| (
+                                    Value::Handle { pool_id, index: i as u32, generation: *gen },
+                                    val.clone(),
+                                ))
+                            })
+                            .collect();
+                        drop(pool);
+
+                        for (handle, val) in entries {
+                            self.env.push_scope();
+                            if let ForBinding::Tuple(names) = binding {
+                                if names.len() >= 2 {
+                                    self.env.define(names[0].clone(), handle.clone());
+                                    self.env.define(names[1].clone(), val);
+                                }
+                            } else {
+                                self.define_for_binding(binding, handle.clone());
+                            }
+                            match self.exec_stmts(body) {
+                                Ok(_) => {}
+                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                    if let ForBinding::Tuple(names) = binding {
+                                        if names.len() >= 2 {
+                                            if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]).cloned(), &handle) {
+                                                let mut pool = pool_arc.lock().unwrap();
+                                                if let Some((_, slot)) = pool.slots.get_mut(*index as usize) {
+                                                    *slot = Some(v);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    self.env.pop_scope();
+                                    break;
+                                }
+                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                    if let ForBinding::Tuple(names) = binding {
+                                        if names.len() >= 2 {
+                                            if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]).cloned(), &handle) {
+                                                let mut pool = pool_arc.lock().unwrap();
+                                                if let Some((_, slot)) = pool.slots.get_mut(*index as usize) {
+                                                    *slot = Some(v);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    self.env.pop_scope();
+                                    continue;
+                                }
+                                Err(e) => {
+                                    self.env.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                            // Write back
+                            if let ForBinding::Tuple(names) = binding {
+                                if names.len() >= 2 {
+                                    if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]).cloned(), &handle) {
+                                        let mut pool = p.lock().unwrap();
+                                        if let Some((_, slot)) = pool.slots.get_mut(*index as usize) {
+                                            *slot = Some(v);
+                                        }
+                                    }
+                                }
+                            }
+                            self.env.pop_scope();
+                        }
+                        Ok(Value::Unit)
+                    }
+                    // Map iteration (non-mutating): yield (key, value) tuples
+                    Value::Map(m) => {
+                        let pairs: Vec<(Value, Value)> = m.lock().unwrap().clone();
+                        for (key, val) in pairs {
+                            self.env.push_scope();
+                            if let ForBinding::Tuple(names) = binding {
+                                if names.len() >= 2 {
+                                    self.env.define(names[0].clone(), key);
+                                    self.env.define(names[1].clone(), val);
+                                } else if names.len() == 1 {
+                                    let pair = Value::Vec(std::sync::Arc::new(std::sync::Mutex::new(vec![key, val])));
+                                    self.define_for_binding(binding, pair);
+                                }
+                            } else {
+                                let pair = Value::Vec(std::sync::Arc::new(std::sync::Mutex::new(vec![key, val])));
+                                self.define_for_binding(binding, pair);
+                            }
+                            match self.exec_stmts(body) {
+                                Ok(_) => {}
+                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                    self.env.pop_scope();
+                                    break;
+                                }
+                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                    self.env.pop_scope();
+                                    continue;
+                                }
+                                Err(e) => {
+                                    self.env.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                            self.env.pop_scope();
+                        }
+                        Ok(Value::Unit)
+                    }
                     Value::Vec(v) => {
                         let items: Vec<Value> = v.lock().unwrap().clone();
                         for item in items {

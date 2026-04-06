@@ -1411,6 +1411,12 @@ impl<'a> Printer<'a> {
                 self.emit("?.");
                 self.emit(field);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.format_expr(object);
+                self.emit(".(");
+                self.format_expr(field_expr);
+                self.emit(")");
+            }
             ExprKind::Index { object, index } => {
                 self.format_expr(object);
                 self.emit("[");

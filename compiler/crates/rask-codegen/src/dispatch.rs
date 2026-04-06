@@ -412,6 +412,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
         },
+        // LP13: for mutate writeback — insert/replace value by key (same as Map_insert)
+        StdlibEntry {
+            mir_name: "Map_set", c_name: "rask_map_insert",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Map_contains_key", c_name: "rask_map_contains",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -457,6 +463,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Pool_is_empty", "rask_pool_is_empty", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_cursor", "rask_pool_handles_packed", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_contains", "rask_pool_is_valid_packed", &[types::I64, types::I64], Some(types::I64), false),
+        // LP13: for mutate writeback — write value to existing pool slot
+        StdlibEntry {
+            mir_name: "Pool_set", c_name: "rask_pool_set_packed",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::WrapArg2, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Pool_insert", c_name: "rask_pool_insert_packed_sized",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,

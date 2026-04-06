@@ -17,6 +17,7 @@ mod net;
 mod os;
 mod path;
 mod random;
+mod reflect;
 mod thread;
 mod time;
 #[cfg(not(target_arch = "wasm32"))]
@@ -69,6 +70,8 @@ impl Interpreter {
             ModuleKind::Http => Err(RuntimeError::Generic(
                 "http module not available in browser playground".to_string()
             )),
+
+            ModuleKind::Reflect => self.call_reflect_method(method, args),
 
             // Legacy aliases — forward to new modules
             ModuleKind::Env => self.call_env_method(method, args),
@@ -151,6 +154,7 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match type_name {
             "Instant" | "Duration" => self.call_time_type_method(type_name, method, args),
+            "Timer" => self.call_timer_type_method(method, args),
             "Path" => self.call_path_type_method(method, args),
             "f32x8" => self.call_simd_type_method(method, args),
             "Rng" => self.call_rng_type_method(method, args),
@@ -169,6 +173,18 @@ impl Interpreter {
                 } else {
                     Err(RuntimeError::TypeError(format!(
                         "ThreadPool has no method '{}'", method
+                    )))
+                }
+            }
+            // CE1: Cell.new(value) — heap-allocate a single value
+            "Cell" => {
+                if method == "new" && args.len() == 1 {
+                    Ok(Value::Cell(std::sync::Arc::new(std::sync::Mutex::new(
+                        args.into_iter().next().unwrap(),
+                    ))))
+                } else {
+                    Err(RuntimeError::TypeError(format!(
+                        "Cell has no static method '{}' (expected Cell.new(value))", method
                     )))
                 }
             }

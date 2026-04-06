@@ -354,6 +354,10 @@ impl Desugarer {
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.desugar_expr(object);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.desugar_expr(object);
+                self.desugar_expr(field_expr);
+            }
             ExprKind::Index { object, index } => {
                 self.desugar_expr(object);
                 self.desugar_expr(index);

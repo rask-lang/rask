@@ -468,6 +468,10 @@ impl HiddenParamPass {
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.rewrite_expr(object);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.rewrite_expr(object);
+                self.rewrite_expr(field_expr);
+            }
             ExprKind::Index { object, index } => {
                 self.rewrite_expr(object);
                 self.rewrite_expr(index);
@@ -754,6 +758,10 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
         ExprKind::Unary { operand, .. } => collect_callees_from_expr(operand, callees),
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
             collect_callees_from_expr(object, callees);
+        }
+        ExprKind::DynamicField { object, field_expr } => {
+            collect_callees_from_expr(object, callees);
+            collect_callees_from_expr(field_expr, callees);
         }
         ExprKind::Index { object, index } => {
             collect_callees_from_expr(object, callees);

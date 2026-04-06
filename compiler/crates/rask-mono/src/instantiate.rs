@@ -382,6 +382,10 @@ impl TypeSubstitutor {
                     object: Box::new(self.clone_expr(object)),
                     field: field.clone(),
                 },
+                ExprKind::DynamicField { object, field_expr } => ExprKind::DynamicField {
+                    object: Box::new(self.clone_expr(object)),
+                    field_expr: Box::new(self.clone_expr(field_expr)),
+                },
                 ExprKind::OptionalField { object, field } => ExprKind::OptionalField {
                     object: Box::new(self.clone_expr(object)),
                     field: field.clone(),

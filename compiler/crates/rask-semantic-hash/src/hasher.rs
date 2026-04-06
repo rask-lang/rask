@@ -578,6 +578,11 @@ impl Hasher {
                 self.hash_expr(object);
                 self.feed_str(field);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.feed_tag(96);
+                self.hash_expr(object);
+                self.hash_expr(field_expr);
+            }
             ExprKind::OptionalField { object, field } => {
                 self.feed_tag(52);
                 self.hash_expr(object);

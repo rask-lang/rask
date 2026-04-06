@@ -409,6 +409,10 @@ impl<'a> Monomorphizer<'a> {
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.visit_expr(object);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.visit_expr(object);
+                self.visit_expr(field_expr);
+            }
             ExprKind::Index { object, index } => {
                 self.visit_expr(object);
                 self.visit_expr(index);

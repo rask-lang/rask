@@ -115,6 +115,8 @@ pub enum BuiltinTypeKind {
     Channel,
     /// Pool<T> - arena allocator for graph structures
     Pool,
+    /// Cell<T> - single heap-allocated mutable value (CE1-CE6)
+    Cell,
     /// Handle<T> - typed reference into a Pool<T>
     Handle,
     /// Atomic<T> - atomic operations

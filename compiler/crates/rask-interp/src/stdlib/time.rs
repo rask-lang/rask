@@ -5,6 +5,7 @@
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
+use std::sync::{Arc, Mutex, mpsc};
 
 impl Interpreter {
     // === RUNTIME: module-level functions (sleep) ===
@@ -273,6 +274,60 @@ impl Interpreter {
             _ => Err(RuntimeError::TypeError(format!(
                 "type {} has no method '{}'",
                 type_name, method
+            ))),
+        }
+    }
+
+    // === RUNTIME: Timer static methods (TM2–TM3) ===
+
+    /// Handle Timer static methods: after(duration), interval(duration).
+    pub(crate) fn call_timer_type_method(
+        &self,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "after" => {
+                // Timer.after(duration) -> Receiver<()>
+                // Spawn a thread that sleeps then sends Unit on a channel.
+                // The returned Receiver acts like a one-shot timer.
+                let duration_nanos = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                let duration = std::time::Duration::from_nanos(duration_nanos);
+
+                let (tx, rx) = mpsc::sync_channel(1);
+                std::thread::spawn(move || {
+                    std::thread::sleep(duration);
+                    let _ = tx.send(Value::Unit);
+                });
+
+                Ok(Value::Receiver(Arc::new(Mutex::new(rx))))
+            }
+            "interval" => {
+                // Timer.interval(duration) -> Receiver<()>
+                // Spawn a thread that sends Unit repeatedly at fixed intervals.
+                let duration_nanos = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                let duration = std::time::Duration::from_nanos(duration_nanos);
+
+                let (tx, rx) = mpsc::sync_channel(1);
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(duration);
+                        if tx.send(Value::Unit).is_err() {
+                            break; // Receiver dropped
+                        }
+                    }
+                });
+
+                Ok(Value::Receiver(Arc::new(Mutex::new(rx))))
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "Timer has no method '{}'", method
             ))),
         }
     }

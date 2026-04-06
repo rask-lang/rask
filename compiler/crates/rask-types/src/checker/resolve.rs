@@ -420,7 +420,7 @@ impl TypeChecker {
                 self.resolve_simd_method(name, &method, &args, &ret, span)
             }
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
-            Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel") => {
+            Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
             }
             // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
@@ -966,6 +966,15 @@ impl TypeChecker {
                 };
                 self.unify(ret, &shared_ty, span)
             }
+            // Cell static constructor: Cell.new(value) -> Cell<T>
+            ("Cell", "new") if args.len() == 1 => {
+                let inner = args[0].clone();
+                let cell_ty = Type::UnresolvedGeneric {
+                    name: "Cell".to_string(),
+                    args: vec![GenericArg::Type(Box::new(inner))],
+                };
+                self.unify(ret, &cell_ty, span)
+            }
             // Mutex static constructor: Mutex.new(value) -> Mutex<T>
             ("Mutex", "new") if args.len() == 1 => {
                 let inner = args[0].clone();
@@ -1057,6 +1066,24 @@ impl TypeChecker {
                     args: type_args.to_vec(),
                 };
                 self.unify(ret, &shared_ty, span)
+            }
+            // Cell<T>.get() -> T (CE6: Copy types only, not enforced in type checker)
+            ("Cell", "get") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
+            // Cell<T>.set(value: T) -> ()
+            ("Cell", "set") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+            // Cell<T>.replace(value: T) -> T
+            ("Cell", "replace") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                self.unify(ret, &inner_type, span)
+            }
+            // Cell<T>.into_inner() -> T (consumes cell)
+            ("Cell", "into_inner") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
             }
             // Mutex<T>.lock() -> T  (inline access, E5/MX3)
             ("Mutex", "lock") if args.is_empty() => {

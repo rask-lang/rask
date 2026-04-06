@@ -30,6 +30,8 @@ use crate::env::Environment;
 use crate::resource::ResourceTracker;
 use crate::value::Value;
 
+pub(crate) mod binary;
+
 /// Declarations collected during registration.
 struct RegisteredProgram {
     entry_fn: Option<FnDecl>,
@@ -66,7 +68,7 @@ pub struct Interpreter {
     /// Function declarations by name.
     functions: HashMap<String, FnDecl>,
     /// Enum declarations by name.
-    enums: HashMap<String, EnumDecl>,
+    pub(crate) enums: HashMap<String, EnumDecl>,
     /// Struct declarations by name (for @resource checking).
     pub(crate) struct_decls: HashMap<String, StructDecl>,
     /// Monomorphized struct declarations (e.g., "Buffer<i32, 256>" -> concrete struct).
@@ -83,6 +85,8 @@ pub struct Interpreter {
     pub(crate) build_state: Option<crate::build_context::BuildState>,
     /// Source info for error origin tracking (ER15): file name + line map.
     pub(crate) source_info: Option<SourceInfo>,
+    /// B1–G4: binary struct metadata for @binary parse/build.
+    pub(crate) binary_structs: HashMap<String, binary::BinaryStructMeta>,
 }
 
 /// Source location info for computing error origins (ER15).
@@ -106,6 +110,7 @@ impl Interpreter {
             cli_args: vec![],
             build_state: None,
             source_info: None,
+            binary_structs: HashMap::new(),
         }
     }
 
@@ -120,6 +125,7 @@ impl Interpreter {
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: args,
+            binary_structs: HashMap::new(),
             build_state: None,
             source_info: None,
         }
@@ -140,6 +146,7 @@ impl Interpreter {
             cli_args: vec![],
             build_state: None,
             source_info: None,
+            binary_structs: HashMap::new(),
         };
         (interp, buffer)
     }

@@ -729,6 +729,66 @@ impl Interpreter {
                 new_pool.type_param = pool.type_param.clone();
                 Ok(Value::Pool(Arc::new(Mutex::new(new_pool))))
             }
+            "try_insert" => {
+                // Pools don't have capacity limits yet, so try_insert always succeeds
+                let item = args.into_iter().next().unwrap_or(Value::Unit);
+                let mut pool = p.lock().unwrap();
+                let pool_id = pool.pool_id;
+                let (index, generation) = pool.insert(item);
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "Some".to_string(),
+                    fields: vec![Value::Handle { pool_id, index, generation }],
+                    variant_index: 0, origin: None,
+                })
+            }
+            "drain" => {
+                let mut pool = p.lock().unwrap();
+                let mut items = Vec::new();
+                for (gen, slot) in pool.slots.iter_mut() {
+                    if let Some(value) = slot.take() {
+                        items.push(value);
+                        *gen = gen.saturating_add(1);
+                    }
+                }
+                pool.free_list = (0..pool.slots.len() as u32).collect();
+                pool.len = 0;
+                Ok(Value::Vec(Arc::new(Mutex::new(items))))
+            }
+            "entries" => {
+                let pool = p.lock().unwrap();
+                let pool_id = pool.pool_id;
+                let pairs: Vec<Value> = pool.slots.iter().enumerate()
+                    .filter_map(|(i, (gen, slot))| {
+                        slot.as_ref().map(|val| {
+                            // Pair as a 2-element Vec (tuple representation)
+                            Value::Vec(Arc::new(Mutex::new(vec![
+                                Value::Handle { pool_id, index: i as u32, generation: *gen },
+                                val.clone(),
+                            ])))
+                        })
+                    })
+                    .collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(pairs))))
+            }
+            "get_unchecked" => {
+                if let Some(Value::Handle { pool_id, index, generation }) = args.first() {
+                    let pool = p.lock().unwrap();
+                    match pool.validate(*pool_id, *index, *generation) {
+                        Ok(idx) => {
+                            let val = pool.slots[idx].1.as_ref().unwrap().clone();
+                            Ok(val)
+                        }
+                        Err(msg) => Err(RuntimeError::Panic(format!(
+                            "get_unchecked: invalid handle — {}", msg
+                        ))),
+                    }
+                } else {
+                    Err(RuntimeError::TypeError(
+                        "pool.get_unchecked() expects a Handle".to_string(),
+                    ))
+                }
+            }
             "take_all" => {
                 let mut pool = p.lock().unwrap();
                 let mut items = Vec::new();
@@ -1206,6 +1266,14 @@ impl Interpreter {
                     got: 0,
                 })?;
                 Ok(Value::Shared(Arc::new(RwLock::new(value))))
+            }
+            // CE1: Cell.new(value) — heap-allocate a single mutable value
+            (TypeConstructorKind::Cell, "new") => {
+                let value = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0,
+                })?;
+                Ok(Value::Cell(Arc::new(Mutex::new(value))))
             }
             (TypeConstructorKind::Mutex, "new") => {
                 let value = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {

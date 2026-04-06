@@ -94,6 +94,7 @@ impl Resolver {
             ("Error", BuiltinTypeKind::Error),
             ("Channel", BuiltinTypeKind::Channel),
             ("Pool", BuiltinTypeKind::Pool),
+            ("Cell", BuiltinTypeKind::Cell),
             ("Handle", BuiltinTypeKind::Handle),
             ("Atomic", BuiltinTypeKind::Atomic),
             ("AtomicBool", BuiltinTypeKind::Atomic),
@@ -1643,6 +1644,10 @@ impl Resolver {
             }
             ExprKind::OptionalField { object, .. } => {
                 self.resolve_expr(object);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.resolve_expr(object);
+                self.resolve_expr(field_expr);
             }
             ExprKind::Index { object, index } => {
                 self.resolve_expr(object);

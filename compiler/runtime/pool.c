@@ -255,6 +255,14 @@ void *rask_pool_get_checked(const RaskPool *p, int64_t packed,
     return result;
 }
 
+// LP13: Write value back to an existing pool slot (for mutate writeback).
+void rask_pool_set_packed(RaskPool *p, int64_t packed, const void *value) {
+    RaskHandle h = handle_unpack(p, packed);
+    if (!pool_validate(p, h)) return;
+    void *dst = slot_data(slot_at(p, h.index));
+    memcpy(dst, value, (size_t)p->elem_size);
+}
+
 int64_t rask_pool_remove_packed(RaskPool *p, int64_t packed) {
     return rask_pool_remove(p, handle_unpack(p, packed), NULL);
 }

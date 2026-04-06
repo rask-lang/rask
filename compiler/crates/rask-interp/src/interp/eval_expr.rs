@@ -200,6 +200,10 @@ impl Interpreter {
                         kind: TypeConstructorKind::Pool,
                         type_param,
                     }),
+                    "Cell" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Cell,
+                        type_param,
+                    }),
                     "Channel" => return Ok(Value::TypeConstructor {
                         kind: TypeConstructorKind::Channel,
                         type_param,
@@ -353,6 +357,17 @@ impl Interpreter {
                         }
                     }
 
+                    // @binary static methods (e.g. IpHeader.parse(data))
+                    if self.binary_structs.contains_key(name) {
+                        let arg_vals: Vec<Value> = args
+                            .iter()
+                            .map(|a| self.eval_expr(&a.expr))
+                            .collect::<Result<_, _>>()?;
+                        if let Some(result) = self.try_binary_static_method(name, method, arg_vals, expr.span) {
+                            return result;
+                        }
+                    }
+
                     if let Some(type_methods) = self.methods.get(name).cloned() {
                         if let Some(method_fn) = type_methods.get(method) {
                             // Skip empty-body stubs (e.g. fs.write_bytes) —
@@ -381,7 +396,7 @@ impl Interpreter {
                     .map(|a| self.eval_expr(&a.expr))
                     .collect::<Result<_, _>>()?;
 
-                // Inject type_args for generic methods (e.g. json.decode<T>)
+                // Inject type_args for generic methods (e.g. json.decode<T>, reflect.fields<T>)
                 if let Some(ta) = type_args {
                     if let Some(first_type) = ta.first() {
                         if let Value::Module(ModuleKind::Json) = &receiver {
@@ -391,6 +406,12 @@ impl Interpreter {
                                     Value::String(Arc::new(Mutex::new(first_type.clone()))),
                                 );
                             }
+                        }
+                        if let Value::Module(ModuleKind::Reflect) = &receiver {
+                            arg_vals.insert(
+                                0,
+                                Value::String(Arc::new(Mutex::new(first_type.clone()))),
+                            );
                         }
                     }
                 }
@@ -751,6 +772,14 @@ impl Interpreter {
                                 }
                             }
                         }
+                        // G4: @binary SIZE and SIZE_BITS constants
+                        if let Some(meta) = self.binary_structs.get(&type_name) {
+                            match field.as_str() {
+                                "SIZE" => return Ok(Value::Int(meta.size_bytes as i64)),
+                                "SIZE_BITS" => return Ok(Value::Int(meta.total_bits as i64)),
+                                _ => {}
+                            }
+                        }
                         Err(RuntimeDiagnostic::new(
                             RuntimeError::TypeError(format!(
                                 "type '{}' has no field '{}'",
@@ -765,6 +794,45 @@ impl Interpreter {
                             obj.type_name()
                         )),
                         expr.span
+                    )),
+                }
+            }
+
+            // CT49: Dynamic field access — value.(expr) resolves to field access by string
+            ExprKind::DynamicField { object, field_expr } => {
+                let field_name_val = self.eval_expr(field_expr)?;
+                let field_name = match &field_name_val {
+                    Value::String(s) => s.lock().unwrap().clone(),
+                    _ => {
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(
+                                "dynamic field access requires a string expression".into(),
+                            ),
+                            expr.span,
+                        ));
+                    }
+                };
+                let obj = self.eval_expr(object)?;
+                match obj {
+                    Value::Struct(ref s) => {
+                        let guard = s.lock().unwrap();
+                        match guard.fields.get(&field_name) {
+                            Some(val) => Ok(val.clone()),
+                            None => Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "struct '{}' has no field '{}'",
+                                    guard.name, field_name
+                                )),
+                                expr.span,
+                            )),
+                        }
+                    }
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "cannot access dynamic field on {}",
+                            obj.type_name()
+                        )),
+                        expr.span,
                     )),
                 }
             }
@@ -1485,6 +1553,8 @@ impl Interpreter {
                     Index { collection: Value, key: Value },
                     /// Mutex — exclusive lock
                     Mutex(Arc<Mutex<Value>>),
+                    /// Cell<T> — exclusive access (CE4/CE5)
+                    Cell(Arc<Mutex<Value>>),
                     /// Shared.read() — shared read lock
                     SharedRead(Arc<RwLock<Value>>),
                     /// Shared.write() — exclusive write lock
@@ -1526,10 +1596,11 @@ impl Interpreter {
                         let val = self.eval_expr(&binding.source)?;
                         match val {
                             Value::RaskMutex(m) => WithSource::Mutex(m),
+                            Value::Cell(c) => WithSource::Cell(c),
                             _ => {
                                 return Err(RuntimeDiagnostic::new(
                                     RuntimeError::TypeError(format!(
-                                        "with...as: expected Mutex, Shared, or collection index, got {}",
+                                        "with...as: expected Cell, Mutex, Shared, or collection index, got {}",
                                         val.type_name()
                                     )),
                                     expr.span,
@@ -1587,6 +1658,16 @@ impl Interpreter {
                             self.env.define(info.name.clone(), guard.clone());
                             mutex_guards.push((info.name.clone(), guard));
                         }
+                        WithSource::Cell(c) => {
+                            let guard = c.lock().map_err(|_| RuntimeDiagnostic::new(
+                                RuntimeError::Panic(
+                                    "Cell is exclusively borrowed — recursive access in with block".to_string(),
+                                ),
+                                expr.span,
+                            ))?;
+                            self.env.define(info.name.clone(), guard.clone());
+                            mutex_guards.push((info.name.clone(), guard));
+                        }
                         WithSource::SharedRead(s) => {
                             let guard = s.read().map_err(|e| RuntimeDiagnostic::new(
                                 RuntimeError::Panic(format!("Shared.read: poisoned: {}", e)),
@@ -1621,7 +1702,7 @@ impl Interpreter {
                                     self.write_back_index(collection, key, updated)
                                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
                                 }
-                                WithSource::Mutex(_) | WithSource::SharedWrite(_) => {
+                                WithSource::Mutex(_) | WithSource::Cell(_) | WithSource::SharedWrite(_) => {
                                     // Writeback handled via guards below
                                 }
                                 WithSource::SharedRead(_) => {

@@ -192,6 +192,10 @@ impl<'a> WarnContext<'a> {
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.check_expr(object, warnings);
             }
+            ExprKind::DynamicField { object, field_expr } => {
+                self.check_expr(object, warnings);
+                self.check_expr(field_expr, warnings);
+            }
             ExprKind::Index { object, index } => {
                 self.check_expr(object, warnings);
                 self.check_expr(index, warnings);

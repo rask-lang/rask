@@ -176,6 +176,10 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
             walk_expr_for_unwrap(object, source, diags);
         }
+        ExprKind::DynamicField { object, field_expr } => {
+            walk_expr_for_unwrap(object, source, diags);
+            walk_expr_for_unwrap(field_expr, source, diags);
+        }
         ExprKind::Index { object, index } => {
             walk_expr_for_unwrap(object, source, diags);
             walk_expr_for_unwrap(index, source, diags);

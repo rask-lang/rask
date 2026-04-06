@@ -141,6 +141,14 @@ impl TypeChecker {
 
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
+            ExprKind::DynamicField { object, field_expr } => {
+                // Infer both sub-expressions; actual comptime field resolution
+                // happens in the comptime pass — here we just type-check children.
+                let _obj_ty = self.infer_expr(object);
+                let _field_ty = self.infer_expr(field_expr);
+                Type::Error
+            }
+
             ExprKind::Index { object, index } => {
                 let raw_obj_ty = self.infer_expr(object);
                 let _idx_ty = self.infer_expr(index);
@@ -1629,6 +1637,14 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &object.kind {
             if let Some(ty) = Self::primitive_type_constant(name, field) {
                 return ty;
+            }
+            // G4: @binary struct SIZE/SIZE_BITS constants
+            if matches!(field, "SIZE" | "SIZE_BITS") {
+                if let Some(type_id) = self.types.get_type_id(name) {
+                    if self.types.is_binary_type_by_id(type_id) {
+                        return Type::U64;
+                    }
+                }
             }
         }
 
