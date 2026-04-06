@@ -939,7 +939,7 @@ impl<'a> MirLowerer<'a> {
                             || matches!(ty, rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool")
                     });
                     if obj_is_pool {
-                        return self.lower_for_pool_entries(label, names, object, body);
+                        return self.lower_for_pool_entries(label, names, object, body, mutate);
                     }
                 }
             }
@@ -954,6 +954,17 @@ impl<'a> MirLowerer<'a> {
             ) || matches!(
                 ty,
                 rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool"
+            )
+        });
+
+        // LP13: Detect Map iteration for correct writeback target.
+        let is_map = self.ctx.lookup_raw_type(iter_expr.id).map_or(false, |ty| {
+            matches!(
+                ty,
+                rask_types::Type::UnresolvedNamed(n) if n == "Map"
+            ) || matches!(
+                ty,
+                rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map"
             )
         });
 
@@ -1096,6 +1107,8 @@ impl<'a> MirLowerer<'a> {
 
         // Tuple destructuring: for (a, b) in collection { ... }
         // Extract fields from the loaded element into each binding.
+        // LP13: Track value local for Map writeback (key=field0, value=field1).
+        let mut map_value_local = None;
         if let ForBinding::Tuple(names) = binding {
             for (i, name) in names.iter().enumerate() {
                 if i == 0 { continue; }
@@ -1110,6 +1123,10 @@ impl<'a> MirLowerer<'a> {
                         field_size: None,
                     },
                 }));
+                // Track value local (field 1) for Map writeback
+                if i == 1 && is_map {
+                    map_value_local = Some(field_local);
+                }
             }
             // Re-extract field 0 into the first binding (was whole tuple)
             let first_field = self.builder.alloc_temp(MirType::I64);
@@ -1144,33 +1161,58 @@ impl<'a> MirLowerer<'a> {
         self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_target }));
 
-        // Writeback blocks for `for mutate`: Vec_set(collection, idx, binding_local)
+        // Writeback blocks for `for mutate`
+        // LP13: Vec uses Vec_set(vec, idx, elem), Map uses Map_set(map, key, value)
         if let Some(wb) = wb_block {
-            // Normal/continue writeback → inc
             self.builder.switch_to_block(wb);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Vec_set".to_string()),
-                args: vec![
-                    MirOperand::Local(collection),
-                    MirOperand::Local(idx),
-                    MirOperand::Local(binding_local),
-                ],
-            }));
+            if let Some(val_local) = map_value_local {
+                // Map writeback: Map_set(collection, key, value)
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Map_set".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(binding_local), // key (field 0)
+                        MirOperand::Local(val_local),     // value (field 1)
+                    ],
+                }));
+            } else {
+                // Vec writeback: Vec_set(collection, idx, elem)
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Vec_set".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(idx),
+                        MirOperand::Local(binding_local),
+                    ],
+                }));
+            }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
         }
         if let Some(break_wb) = break_wb_block {
-            // Break writeback → exit
             self.builder.switch_to_block(break_wb);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Vec_set".to_string()),
-                args: vec![
-                    MirOperand::Local(collection),
-                    MirOperand::Local(idx),
-                    MirOperand::Local(binding_local),
-                ],
-            }));
+            if let Some(val_local) = map_value_local {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Map_set".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(binding_local),
+                        MirOperand::Local(val_local),
+                    ],
+                }));
+            } else {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Vec_set".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(idx),
+                        MirOperand::Local(binding_local),
+                    ],
+                }));
+            }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
         }
 
@@ -1199,12 +1241,14 @@ impl<'a> MirLowerer<'a> {
 
     /// Pool entries iteration: `for (h, val) in pool.entries()`
     /// Desugars to snapshot handle iteration with Pool_get for each handle.
+    /// LP11-LP13: `for mutate` adds Pool_set writeback.
     fn lower_for_pool_entries(
         &mut self,
         label: Option<&str>,
         names: &[String],
         pool_expr: &Expr,
         body: &[Stmt],
+        mutate: bool,
     ) -> Result<(), LoweringError> {
         let (pool_op, _) = self.lower_expr(pool_expr)?;
         let pool_local = self.builder.alloc_temp(MirType::I64);
@@ -1241,6 +1285,17 @@ impl<'a> MirLowerer<'a> {
         let inc_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
+        // LP11-LP13: for mutate writeback blocks for Pool_set
+        let (wb_block, break_wb_block) = if mutate && names.len() > 1 {
+            let wb = self.builder.create_block();
+            let break_wb = self.builder.create_block();
+            (Some(wb), Some(break_wb))
+        } else {
+            (None, None)
+        };
+        let continue_target = wb_block.unwrap_or(inc_block);
+        let break_target = break_wb_block.unwrap_or(exit_block);
+
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         // check: _i < _len
@@ -1274,7 +1329,7 @@ impl<'a> MirLowerer<'a> {
         }));
 
         // Bind value (second name) via Pool_get
-        if names.len() > 1 {
+        let val_local = if names.len() > 1 {
             let val_name = &names[1];
             let val_local = self.builder.alloc_local(val_name.clone(), MirType::I64);
             self.locals.insert(val_name.clone(), (val_local, MirType::I64));
@@ -1283,13 +1338,16 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal("Pool_get".to_string()),
                 args: vec![MirOperand::Local(pool_local), MirOperand::Local(handle_local)],
             }));
-        }
+            Some(val_local)
+        } else {
+            None
+        };
 
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
-            continue_block: inc_block,
-            exit_block,
+            continue_block: continue_target,
+            exit_block: break_target,
             result_local: None,
             ensure_depth,
         });
@@ -1299,7 +1357,35 @@ impl<'a> MirLowerer<'a> {
         }
         // EN7: run loop-scoped ensures at iteration end
         self.emit_loop_cleanup(ensure_depth);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_target }));
+
+        // LP13: Pool_set writeback blocks for `for mutate`
+        if let (Some(wb), Some(vl)) = (wb_block, val_local) {
+            self.builder.switch_to_block(wb);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Pool_set".to_string()),
+                args: vec![
+                    MirOperand::Local(pool_local),
+                    MirOperand::Local(handle_local),
+                    MirOperand::Local(vl),
+                ],
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
+        }
+        if let (Some(break_wb), Some(vl)) = (break_wb_block, val_local) {
+            self.builder.switch_to_block(break_wb);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Pool_set".to_string()),
+                args: vec![
+                    MirOperand::Local(pool_local),
+                    MirOperand::Local(handle_local),
+                    MirOperand::Local(vl),
+                ],
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
+        }
 
         // inc: _i = _i + 1
         self.builder.switch_to_block(inc_block);
