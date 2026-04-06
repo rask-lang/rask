@@ -387,6 +387,10 @@ impl DefaultDesugarer {
             StmtKind::Comptime(body) => {
                 for s in body { self.desugar_stmt(s); }
             }
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.desugar_expr(iter);
+                for s in body { self.desugar_stmt(s); }
+            }
             StmtKind::Discard { .. } => {}
         }
     }

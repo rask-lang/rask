@@ -18,9 +18,18 @@ impl Interpreter {
                 }
             }
             Value::Builtin(kind) => {
-                // Handle AsyncSpawn separately as it needs mutable access
+                // Handle async builtins separately as they need mutable access
                 if kind == BuiltinKind::AsyncSpawn {
                     return self.spawn_async_task(args);
+                }
+                if kind == BuiltinKind::JoinAll {
+                    return self.call_async_method("join_all", args);
+                }
+                if kind == BuiltinKind::SelectFirst {
+                    return self.call_async_method("select_first", args);
+                }
+                if kind == BuiltinKind::Cancelled {
+                    return self.call_async_method("cancelled", args);
                 }
                 self.call_builtin(kind, args)
             }
@@ -112,9 +121,10 @@ impl Interpreter {
                     .unwrap_or_else(|| "panic".to_string());
                 Err(RuntimeError::Panic(msg))
             }
-            BuiltinKind::AsyncSpawn => {
-                // This should have been handled in call_value
-                unreachable!("AsyncSpawn should be handled in call_value")
+            BuiltinKind::AsyncSpawn | BuiltinKind::JoinAll
+            | BuiltinKind::SelectFirst | BuiltinKind::Cancelled => {
+                // These should have been handled in call_value
+                unreachable!("Async builtins should be handled in call_value")
             }
             BuiltinKind::Todo => {
                 let msg = if let Some(Value::String(s)) = args.first() {

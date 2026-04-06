@@ -555,6 +555,44 @@ impl Interpreter {
                 result
             }
 
+            // CT48: comptime for — in the interpreter, runs like a regular for loop
+            StmtKind::ComptimeFor { binding, iter, body, .. } => {
+                let iter_val = self.eval_expr(iter)?;
+                match iter_val {
+                    Value::Vec(v) => {
+                        let items: Vec<Value> = v.lock().unwrap().clone();
+                        for item in items {
+                            self.env.push_scope();
+                            self.define_for_binding(binding, item);
+                            match self.exec_stmts(body) {
+                                Ok(_) => {}
+                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                    self.env.pop_scope();
+                                    break;
+                                }
+                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                    self.env.pop_scope();
+                                    continue;
+                                }
+                                Err(e) => {
+                                    self.env.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                            self.env.pop_scope();
+                        }
+                        Ok(Value::Unit)
+                    }
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "comptime for requires a Vec iterable, got {}",
+                            iter_val.type_name()
+                        )),
+                        stmt.span,
+                    )),
+                }
+            }
+
         }
     }
 

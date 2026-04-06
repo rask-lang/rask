@@ -1428,6 +1428,30 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
+            StmtKind::ComptimeFor { binding, iter, body } => {
+                self.resolve_expr(iter);
+                self.scopes.push(ScopeKind::Block);
+                let names = match binding {
+                    ForBinding::Single(name) => vec![name.clone()],
+                    ForBinding::Tuple(names) => names.clone(),
+                };
+                for name in &names {
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        None,
+                        stmt.span,
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
+                        self.errors.push(e);
+                    }
+                }
+                for s in body {
+                    self.resolve_stmt(s);
+                }
+                self.scopes.pop();
+            }
             StmtKind::Discard { .. } => {
                 // Name is resolved during type checking — nothing to do here
             }

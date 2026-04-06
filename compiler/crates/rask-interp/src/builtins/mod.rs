@@ -50,6 +50,9 @@ impl Interpreter {
             Value::Handle { pool_id, index, generation, .. } => {
                 return self.call_handle_method(&receiver, *pool_id, *index, *generation, method, args);
             }
+            Value::WeakHandle { pool_id, index, generation } => {
+                return self.call_weak_handle_method(*pool_id, *index, *generation, method, args);
+            }
             Value::TypeConstructor { kind, type_param } => {
                 return self.call_type_constructor_method(kind, type_param.clone(), method, args);
             }
@@ -61,6 +64,7 @@ impl Interpreter {
             }
             Value::ThreadHandle(handle) => return self.call_thread_handle_method(handle, method),
             Value::TaskHandle(handle) => return self.call_task_handle_method(handle, method),
+            Value::TaskGroup(tasks) => return self.call_task_group_method(tasks, method, args),
             Value::Sender(tx) => return self.call_sender_method(tx, method, args),
             Value::Receiver(rx) => return self.call_receiver_method(rx, method),
             Value::AtomicBool(atomic) => return self.call_atomic_bool_method(atomic, method, args),

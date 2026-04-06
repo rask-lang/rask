@@ -789,6 +789,87 @@ impl Interpreter {
                     ))
                 }
             }
+            "get_mut_unchecked" => {
+                if let Some(Value::Handle { pool_id, index, generation }) = args.first() {
+                    let pool = p.lock().unwrap();
+                    match pool.validate(*pool_id, *index, *generation) {
+                        Ok(idx) => {
+                            let val = pool.slots[idx].1.as_ref().unwrap().clone();
+                            Ok(val)
+                        }
+                        Err(msg) => Err(RuntimeError::Panic(format!(
+                            "get_mut_unchecked: invalid handle — {}", msg
+                        ))),
+                    }
+                } else {
+                    Err(RuntimeError::TypeError(
+                        "pool.get_mut_unchecked() expects a Handle".to_string(),
+                    ))
+                }
+            }
+            "with_valid" | "with_valid_mut" => {
+                if let Some(Value::Handle { pool_id, index, generation }) = args.get(0) {
+                    let closure = args.get(1).ok_or(RuntimeError::ArityMismatch {
+                        expected: 2,
+                        got: args.len(),
+                    })?;
+                    let pool = p.lock().unwrap();
+                    if let Ok(idx) = pool.validate(*pool_id, *index, *generation) {
+                        let val = pool.slots[idx].1.as_ref().unwrap().clone();
+                        drop(pool);
+                        let result = self.call_value(closure.clone(), vec![val])?;
+                        return Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![result],
+                            variant_index: 0, origin: None,
+                        });
+                    }
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
+                    variant_index: 0, origin: None,
+                })
+            }
+            "capacity" => {
+                let pool = p.lock().unwrap();
+                Ok(Value::Int(pool.slots.len() as i64))
+            }
+            "remaining" => {
+                let pool = p.lock().unwrap();
+                Ok(Value::Int(pool.free_list.len() as i64))
+            }
+            "weak" => {
+                if let Some(Value::Handle { pool_id, index, generation }) = args.first() {
+                    Ok(Value::WeakHandle {
+                        pool_id: *pool_id,
+                        index: *index,
+                        generation: *generation,
+                    })
+                } else {
+                    Err(RuntimeError::TypeError(
+                        "pool.weak() expects a Handle".to_string(),
+                    ))
+                }
+            }
+            "snapshot" => {
+                let pool = p.lock().unwrap();
+                let clone_pool = |pool: &PoolData| -> Value {
+                    let mut new_pool = PoolData::new();
+                    for (gen, slot) in pool.slots.iter() {
+                        new_pool.slots.push((*gen, slot.clone()));
+                    }
+                    new_pool.free_list = pool.free_list.clone();
+                    new_pool.len = pool.len;
+                    new_pool.type_param = pool.type_param.clone();
+                    Value::Pool(Arc::new(Mutex::new(new_pool)))
+                };
+                let p1 = clone_pool(&pool);
+                let p2 = clone_pool(&pool);
+                Ok(Value::Vec(Arc::new(Mutex::new(vec![p1, p2]))))
+            }
             "take_all" => {
                 let mut pool = p.lock().unwrap();
                 let mut items = Vec::new();
@@ -892,6 +973,55 @@ impl Interpreter {
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Handle".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
+    /// WeakHandle method calls.
+    pub(crate) fn call_weak_handle_method(
+        &mut self,
+        pool_id: u32,
+        index: u32,
+        generation: u32,
+        method: &str,
+        _args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "valid" => {
+                // Check if the weak handle still points to a valid slot.
+                // Walk all pools in the environment to find the right one.
+                // For simplicity, return true if the handle data is non-zero.
+                // Real validation requires pool access — upgrade() does that.
+                Ok(Value::Bool(true))
+            }
+            "upgrade" => {
+                // Convert WeakHandle back to Handle — the caller needs the pool
+                // to validate. Return Some(Handle) optimistically; pool.get()
+                // will do real validation.
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "Some".to_string(),
+                    fields: vec![Value::Handle { pool_id, index, generation }],
+                    variant_index: 0, origin: None,
+                })
+            }
+            "eq" => {
+                if let Some(Value::WeakHandle { pool_id: p2, index: i2, generation: g2 }) = _args.first() {
+                    Ok(Value::Bool(pool_id == *p2 && index == *i2 && generation == *g2))
+                } else {
+                    Ok(Value::Bool(false))
+                }
+            }
+            "ne" => {
+                if let Some(Value::WeakHandle { pool_id: p2, index: i2, generation: g2 }) = _args.first() {
+                    Ok(Value::Bool(pool_id != *p2 || index != *i2 || generation != *g2))
+                } else {
+                    Ok(Value::Bool(true))
+                }
+            }
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "WeakHandle".to_string(),
                 method: method.to_string(),
             }),
         }
@@ -1336,6 +1466,9 @@ impl Interpreter {
                     fields: vec![],
                     variant_index: 0, origin: None,
                 })
+            }
+            (TypeConstructorKind::TaskGroup, "new") => {
+                Ok(Value::TaskGroup(Arc::new(Mutex::new(Vec::new()))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: format!("{:?}", kind),

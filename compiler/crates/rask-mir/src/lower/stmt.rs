@@ -457,6 +457,13 @@ impl<'a> MirLowerer<'a> {
                 }
                 Ok(())
             }
+
+            // CT48: comptime for — must be unrolled before MIR lowering
+            StmtKind::ComptimeFor { .. } => {
+                Err(LoweringError::InvalidConstruct(
+                    "comptime for must be unrolled at monomorphization time before MIR lowering".into()
+                ))
+            }
         }
     }
 

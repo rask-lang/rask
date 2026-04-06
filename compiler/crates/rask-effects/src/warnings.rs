@@ -114,6 +114,7 @@ impl<'a> WarnContext<'a> {
                 }
             }
             StmtKind::Comptime(body) => self.check_stmts(body, warnings),
+            StmtKind::ComptimeFor { body, .. } => self.check_stmts(body, warnings),
             StmtKind::Discard { .. } => {}
         }
     }

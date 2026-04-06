@@ -125,7 +125,10 @@ pub enum BuiltinKind {
     Println,
     Panic,
     Format,
-    AsyncSpawn, // spawn(|| {}) from async module
+    AsyncSpawn,     // spawn(|| {}) from async module
+    JoinAll,        // join_all(handles) — wait for all tasks
+    SelectFirst,    // select_first(handles) — first completed wins
+    Cancelled,      // cancelled() — cooperative cancellation check
     Todo,
     Unreachable,
     Min,   // generic min(a, b) — prelude
@@ -146,6 +149,7 @@ pub enum TypeConstructorKind {
     Mutex,
     Atomic,
     Ordering,
+    TaskGroup,
 }
 
 /// Module kinds for stdlib modules.
@@ -345,6 +349,12 @@ pub enum Value {
         index: u32,
         generation: u32,
     },
+    /// WeakHandle (non-owning reference into a pool — may become invalid)
+    WeakHandle {
+        pool_id: u32,
+        index: u32,
+        generation: u32,
+    },
     /// Thread handle (from spawn_raw or spawn_thread)
     ThreadHandle(Arc<ThreadHandleInner>),
     /// Channel sender
@@ -355,6 +365,8 @@ pub enum Value {
     ThreadPool(Arc<ThreadPoolInner>),
     /// Async task handle (from spawn() in using Multitasking)
     TaskHandle(Arc<ThreadHandleInner>),
+    /// TaskGroup for dynamic task spawning (M3)
+    TaskGroup(Arc<Mutex<Vec<Value>>>),
     /// Multitasking runtime (from `using Multitasking { }`)
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
@@ -572,8 +584,10 @@ impl Value {
             Value::Cell(_) => "Cell",
             Value::Pool(_) => "Pool",
             Value::Handle { .. } => "Handle",
+            Value::WeakHandle { .. } => "WeakHandle",
             Value::ThreadHandle(_) => "ThreadHandle",
             Value::TaskHandle(_) => "TaskHandle",
+            Value::TaskGroup(_) => "TaskGroup",
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
@@ -789,6 +803,7 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Mutex => "Mutex",
                     TypeConstructorKind::Atomic => "Atomic",
                     TypeConstructorKind::Ordering => "Ordering",
+                    TypeConstructorKind::TaskGroup => "TaskGroup",
                 };
                 if let Some(param) = type_param {
                     write!(f, "{}<{}>", base_name, param)
@@ -858,8 +873,14 @@ impl fmt::Display for Value {
                 index,
                 generation,
             } => write!(f, "Handle({}, {}, {})", pool_id, index, generation),
+            Value::WeakHandle {
+                pool_id,
+                index,
+                generation,
+            } => write!(f, "WeakHandle({}, {}, {})", pool_id, index, generation),
             Value::ThreadHandle(_) => write!(f, "<ThreadHandle>"),
             Value::TaskHandle(_) => write!(f, "<TaskHandle>"),
+            Value::TaskGroup(tasks) => write!(f, "<TaskGroup len={}>", tasks.lock().unwrap().len()),
             Value::MultitaskingRuntime(r) => write!(f, "<Multitasking runtime workers={}>", r.workers),
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),

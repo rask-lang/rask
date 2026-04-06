@@ -65,3 +65,16 @@ extend Instant {
     /// Duration elapsed since this instant was captured.
     public func elapsed(self) -> Duration { }
 }
+
+/// Timer for delayed and periodic events.
+public struct Timer { }
+
+extend Timer {
+    /// Create a one-shot timer that fires after the given duration.
+    /// Returns a Receiver that will receive () when the timer fires.
+    public func after(duration: Duration) -> Receiver<()> { }
+
+    /// Create a periodic timer that fires at the given interval.
+    /// Returns a Receiver that receives () on each tick.
+    public func interval(duration: Duration) -> Receiver<()> { }
+}
