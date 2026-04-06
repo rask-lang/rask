@@ -100,8 +100,11 @@ class Galaxy:
         peaks = []
         for ei in range(num_elements):
             for ej in range(ei + 1, num_elements):
-                raw = _sf(f"{self.seed}:peaks:{ei}:{ej}", 200)
-                n_peaks = 3 + int(raw[0] * 3)  # 3-5 peaks per pair
+                raw = _sf(f"{self.seed}:peaks:{ei}:{ej}", 800)
+                # num_centers controls peak density: 10→1-2, 30→3-4, 100→10-16
+                base_n = max(1, self.num_centers // 10)
+                extra_n = max(1, self.num_centers // 15)
+                n_peaks = base_n + int(raw[0] * extra_n)
                 idx = 1
                 for pk in range(n_peaks):
                     # Stoichiometric ratio for this pair (where in the
@@ -117,7 +120,7 @@ class Galaxy:
                         heights.append(h)
                         idx += 1
                     # Width (how forgiving the stoichiometry is)
-                    width = 0.03 + raw[idx] * 0.15; idx += 1
+                    width = 0.06 + raw[idx] * 0.15; idx += 1
                     # Shape
                     shape_idx = int(raw[idx] * len(SHAPES)) % len(SHAPES); idx += 1
                     # Energy window: [lo, hi] — peak only active in this range
@@ -425,6 +428,27 @@ class Researcher:
                 if stall > 30:
                     self.current = self._smart_restart()
                     stall = 0
+            elif self.strategy == "phased":
+                # Phase 1: random exploration (first 40% of budget)
+                # Phase 2: hill-climb the best find (remaining 60%)
+                total = self.exp_count + self.budget
+                explore_end = int(total * 0.4)
+                if self.exp_count < explore_end:
+                    self._eval(self._rand())
+                elif self.exp_count == explore_end:
+                    # Transition: start exploiting from best discovery
+                    self.current = self.best_point
+                    pt = self._perturb(self.current)
+                    old = self.best_val
+                    _, v = self._eval(pt)
+                    if v >= old:
+                        self.current = pt
+                else:
+                    pt = self._perturb(self.current)
+                    old = self.best_val
+                    _, v = self._eval(pt)
+                    if v >= old:
+                        self.current = pt
         return self.history
 
 
@@ -453,7 +477,7 @@ def run_sim(galaxy_seed=42, ne=3, budget=500, nr=20, tp=1, nc=30,
             max_e=50, catalyst=None, precision=None):
     g = Galaxy(galaxy_seed, nc)
     data = {}
-    for s in ["random", "hillclimb", "smart"]:
+    for s in ["random", "hillclimb", "smart", "phased"]:
         runs = []
         for run in range(nr):
             random.seed(run * 1000 + hash(s))
@@ -501,6 +525,61 @@ def test_basic():
     data = run_sim()
     print_curves(data)
     print_metrics(data)
+
+
+def test_exploitation():
+    """Within-peak exploitation: once you've found a peak, does
+    hill-climbing within it beat random sampling?
+
+    Seeds a researcher at a known good point (found by random scan),
+    then compares hill-climbing exploitation vs continued random search
+    with the same remaining budget.
+    """
+    print("\n" + "=" * 70)
+    print("EXPLOITATION: Hill-climbing within a peak vs continued random")
+    print("=" * 70)
+    print("\n  Phase 1: 100 random experiments to find a peak.")
+    print("  Phase 2: 400 more experiments — hill-climb from peak vs random.\n")
+
+    g = Galaxy(42)
+    nr = 20
+
+    for ne in [2, 3, 4]:
+        random_finals = []
+        exploit_finals = []
+
+        for run in range(nr):
+            # Phase 1: identical random scan for both
+            random.seed(run * 1000)
+            scout = Researcher(g, ne, 100, "random")
+            scout.run()
+            peak_point = scout.best_point
+            peak_val = scout.best_val
+
+            # Phase 2a: continue random (ignore the peak)
+            random.seed(run * 2000)
+            r_rand = Researcher(g, ne, 400, "random")
+            r_rand.best_val = peak_val
+            r_rand.run()
+            random_finals.append(r_rand.best_val)
+
+            # Phase 2b: hill-climb from the peak
+            random.seed(run * 2000)
+            r_exploit = Researcher(g, ne, 400, "hillclimb")
+            r_exploit.current = peak_point
+            r_exploit.best_val = peak_val
+            r_exploit.best_point = peak_point
+            r_exploit.run()
+            exploit_finals.append(r_exploit.best_val)
+
+        rm = sum(random_finals) / nr
+        em = sum(exploit_finals) / nr
+        ratio = em / rm if rm > 0.01 else 0
+        print(f"  {ne} elements:  random={rm:.3f}  exploit={em:.3f}"
+              f"  ratio={ratio:.2f}")
+
+    print(f"\n  ratio > 1.0 = hill-climbing adds value within a peak")
+    print(f"  ratio < 1.0 = peaks too narrow for local search to help")
 
 
 def test_catalyst():
@@ -647,21 +726,22 @@ def test_seeds():
     print("\n" + "=" * 70)
     print("SEED VARIANCE: Different galaxies, different landscapes?")
     print("=" * 70)
-    print(f"{'Seed':>6} {'random':>10} {'smart':>10}")
-    print("-" * 30)
-    vals = {"random": [], "smart": []}
+    strats = ["random", "smart", "phased"]
+    print(f"{'Seed':>6}" + "".join(f"{s:>10}" for s in strats))
+    print("-" * (6 + 10 * len(strats)))
+    vals = {s: [] for s in strats}
     for seed in range(20):
         d = run_sim(galaxy_seed=seed, nr=10, budget=300)
-        for s in ["random", "smart"]:
+        for s in strats:
             f = sum(r.history[-1][1] for r in d[s]) / 10
             vals[s].append(f)
-        print(f"{seed:>6} {vals['random'][-1]:>10.3f} {vals['smart'][-1]:>10.3f}")
-    print("-" * 30)
+        print(f"{seed:>6}" + "".join(f"{vals[s][-1]:>10.3f}" for s in strats))
+    print("-" * (6 + 10 * len(strats)))
     for label, fn in [("mean", lambda v: sum(v)/len(v)),
                       ("std", lambda v: (sum((x-sum(v)/len(v))**2 for x in v)/len(v))**0.5),
                       ("min", min), ("max", max)]:
         print(f"{label:>6}", end="")
-        for s in ["random", "smart"]:
+        for s in strats:
             print(f"{fn(vals[s]):>10.3f}", end="")
         print()
 
@@ -1004,79 +1084,108 @@ def test_beacon_batches():
 
 
 def test_beacon_hillclimb():
-    """Hill-climbing across tick windows.
+    """Neighborhood knowledge transfer across beacon ticks.
 
-    The landscape shifts each tick (new beacon = new peak positions).
-    Can a researcher still make progress across ticks by knowing the
-    right neighborhood, even though the exact optimum moves?
+    The landscape shifts each tick. Three strategies compared on
+    the SAME beacon ticks, using the same total budget (300 experiments):
 
-    Compare: 1 experiment per tick (pure sequential hill-climbing across
-    shifting landscape) vs base landscape (no beacon, stable peaks).
+    - Random: N random experiments per tick, no learning
+    - Fixed: pre-optimized recipe from base landscape, submitted each tick
+    - Adaptive: N experiments per tick near current best, learns across ticks
+
+    The key question: does knowing the right neighborhood (from prior
+    ticks) help on the next tick, even though the exact peaks shifted?
     """
     print("\n" + "=" * 70)
-    print("BEACON HILL-CLIMBING: Can researchers climb across shifting ticks?")
+    print("BEACON KNOWLEDGE TRANSFER: Does neighborhood knowledge help?")
     print("=" * 70)
 
     g = Galaxy(42)
     nr = 20
-    budget = 300
+    total_budget = 300
 
-    # Without beacon: stable landscape, smart strategy
-    no_beacon = []
-    for run in range(nr):
-        random.seed(run * 1000)
-        r = Researcher(g, 3, budget, "smart")
-        r.run()
-        no_beacon.append(r.best_val)
+    # Fixed baseline: pre-optimize on base landscape
+    random.seed(42)
+    scout = Researcher(g, 3, 1000, "smart")
+    scout.run()
+    fixed_recipe = scout.best_point
 
-    # With beacon: landscape shifts each tick, 1 experiment per tick
-    with_beacon = []
-    for run in range(nr):
-        random.seed(run * 1000)
-        best_val = -float('inf')
-        best_point = None
-        current = None
-        stall = 0
+    for batch_size in [1, 5, 10, 25]:
+        n_ticks = total_budget // batch_size
 
-        for tick in range(budget):
-            beacon_val = hash(f"tick:{tick}:{run}")
+        fixed_scores = []
+        adaptive_scores = []
+        random_scores = []
 
-            if current is None:
-                raw = [random.random() for _ in range(3)]
-                t = sum(raw)
-                pt = ([r / t for r in raw], random.uniform(0, 50))
-            else:
-                f, e = current
-                nf = [max(0.001, fi + random.gauss(0, 0.03)) for fi in f]
-                t = sum(nf)
-                nf = [fi / t for fi in nf]
-                ne = max(0, min(50, e + random.gauss(0, 3.0)))
-                pt = (nf, ne)
+        for run in range(nr):
+            tick_fixed = []
+            tick_adaptive = []
+            tick_random = []
 
-            props = interact(pt[0], pt[1], g, beacon=beacon_val)
-            v = props[1]
+            current = None  # adaptive's current neighborhood
 
-            if v > best_val:
-                best_val = v
-                best_point = pt
-                current = pt
-                stall = 0
-            else:
-                stall += 1
+            for tick in range(n_ticks):
+                beacon_val = hash(f"tick:{tick}:{run}")
 
-            if stall > 30:
-                current = None
-                stall = 0
+                # Fixed: submit pre-optimized recipe
+                ff, fe = fixed_recipe
+                props_f = interact(ff, fe, g, beacon=beacon_val)
+                tick_fixed.append(props_f[1])
 
-        with_beacon.append(best_val)
+                # Random: N random experiments, take best
+                random.seed(run * 1000 + tick)
+                best_rand = -float('inf')
+                for _ in range(batch_size):
+                    raw = [random.random() for _ in range(3)]
+                    t = sum(raw)
+                    rf = [r / t for r in raw]
+                    re = random.uniform(0, 50)
+                    v = interact(rf, re, g, beacon=beacon_val)[1]
+                    best_rand = max(best_rand, v)
+                tick_random.append(best_rand)
 
-    mean_nb = sum(no_beacon) / nr
-    mean_wb = sum(with_beacon) / nr
-    ratio = mean_wb / mean_nb if mean_nb > 0.01 else 0
-    print(f"\n  No beacon (stable landscape): {mean_nb:.3f}")
-    print(f"  With beacon (shifting ticks):  {mean_wb:.3f}  (ratio: {ratio:.2f})")
-    print(f"\n  If ratio > 0.7: hill-climbing across ticks works")
-    print(f"  If ratio < 0.3: beacon shifts destroy all learned knowledge")
+                # Adaptive: N experiments near current best
+                random.seed(run * 2000 + tick)
+                best_adapt = -float('inf')
+                best_adapt_pt = None
+                for _ in range(batch_size):
+                    if current is None:
+                        raw = [random.random() for _ in range(3)]
+                        t = sum(raw)
+                        pt = ([r / t for r in raw], random.uniform(0, 50))
+                    else:
+                        f, e = current
+                        nf = [max(0.001, fi + random.gauss(0, 0.05))
+                              for fi in f]
+                        t = sum(nf)
+                        nf = [fi / t for fi in nf]
+                        ne = max(0, min(50, e + random.gauss(0, 5.0)))
+                        pt = (nf, ne)
+                    v = interact(pt[0], pt[1], g, beacon=beacon_val)[1]
+                    if v > best_adapt:
+                        best_adapt = v
+                        best_adapt_pt = pt
+                tick_adaptive.append(best_adapt)
+                current = best_adapt_pt
+
+            # Score: average over final half of ticks (after warmup)
+            half = max(1, n_ticks // 2)
+            fixed_scores.append(sum(tick_fixed[-half:]) / half)
+            adaptive_scores.append(sum(tick_adaptive[-half:]) / half)
+            random_scores.append(sum(tick_random[-half:]) / half)
+
+        mean_r = sum(random_scores) / nr
+        mean_f = sum(fixed_scores) / nr
+        mean_a = sum(adaptive_scores) / nr
+        print(f"\n  batch={batch_size:>2}, ticks={n_ticks:>3}:"
+              f"  random={mean_r:.3f}  fixed={mean_f:.3f}"
+              f"  adaptive={mean_a:.3f}"
+              f"  (adapt/fixed={mean_a/mean_f:.2f})" if mean_f > 0.01
+              else "")
+
+    print(f"\n  fixed = value of knowing the right neighborhood")
+    print(f"  adapt/fixed > 1 = active search adds value over memorized recipe")
+    print(f"  adapt/fixed < 1 = not enough per-tick budget to beat memorized")
 
 
 def test_beacon_bruteforce():
@@ -1187,7 +1296,8 @@ if __name__ == "__main__":
         return int(sys.argv[2]) if len(sys.argv) > 2 else 42
 
     tests = {
-        "basic": test_basic, "catalyst": test_catalyst, "energy": test_energy,
+        "basic": test_basic, "exploitation": test_exploitation,
+        "catalyst": test_catalyst, "energy": test_energy,
         "precision": test_precision, "sharing": test_sharing,
         "reverse": test_reverse, "seeds": test_seeds,
         "elements": test_elements, "density": test_density,
