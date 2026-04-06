@@ -112,47 +112,57 @@ The critical design choice: **this function is forward-cheap but backward-hard.*
 
 The galaxy seed parameterizes the function. Each galaxy has different chemistry. Reading the Raido source code tells you the algorithm, but the seed makes the specific landscape unique. Like knowing SHA-256's algorithm doesn't help you find a preimage.
 
-### Local Smoothness, Global Chaos
+### Stoichiometric Peaks
 
-Pure pseudorandomness would make experimentation a lottery. Real chemistry has structure — small changes in composition usually produce small changes in properties. The interaction function preserves this:
+Pure pseudorandomness would make experimentation a lottery. Real chemistry has structure — small changes in composition usually produce small changes in properties. The interaction function preserves this through **stoichiometric peaks**: each element pair generates a small set of peaks at seed-determined ratios. These are the stable compounds — specific compositions where the elements combine productively.
 
-**Within a phase region**, the function is smooth. Nearby inputs produce nearby outputs. A researcher can hill-climb — try a ratio, adjust slightly, observe improvement, adjust again. Standard gradient-following works. Experiments are informative. Progress is incremental.
+Each peak has seed-determined characteristics:
+- **Height** per property — a peak that boosts hardness might do nothing for conductivity
+- **Width** — how forgiving the stoichiometry is (broad peaks tolerate sloppy ratios, narrow peaks require precision)
+- **Shape** — some peaks are smooth bells (forgiving), others are flat-topped plateaus that cliff-edge off (stable but brittle), others are needles (demanding exact ratios), others are ridges with a sharp central bonus atop a broad base (rewarding to find, more rewarding to optimize)
+- **Energy window** — the activation energy range where the peak is active
+- **Interference sign** — whether the peak reinforces or cancels when overlapping with other peaks
 
-**At phase boundaries**, the function is discontinuous. A small change in ratio or energy crosses a boundary and the output jumps to a completely different regime. What was improving suddenly collapses, or something unexpected appears.
+**Within a peak's influence**, the function is smooth. A researcher near a stoichiometric ratio can hill-climb toward the peak — adjust ratios slightly, observe improvement, converge on the optimum. The peak's shape determines how rewarding this is.
 
-The phase regions are a tessellation of the input space — their boundaries are determined by the seed. Within each region, the interaction function is a smooth mapping with region-specific characteristics (also seed-derived). Across boundaries, unrelated.
+**Between peaks**, the function produces low-amplitude deterministic noise — rough terrain with occasional micro-spikes. Not zero, but not systematically useful. A researcher exploring desert territory might stumble on a minor anomaly — enough to notice, not enough to be strategic.
+
+**Where peaks overlap**, they can reinforce (both contribute positive modifications) or interfere destructively. This creates the "adding a trace of element C to an A-B alloy completely destroys the hardness" phenomenon — peak C interferes with peak A-B. The interference sign is seed-determined and unpredictable without evaluation.
 
 This creates the right research dynamics:
-- **Hill-climbing works locally.** A researcher exploring a phase region can optimize systematically. "More element B improves hardness" — true within this region. Each experiment narrows the search.
-- **Boundaries are unpredictable.** You don't know where the next boundary is until you cross it. A ratio change from 0.31 to 0.32 might be smooth. From 0.32 to 0.33 might cross a boundary and produce something completely different.
-- **Breakthroughs come from boundary crossings.** The best materials aren't at the peaks of known regions — they're in undiscovered regions on the other side of boundaries nobody has crossed yet.
-- **You can't extrapolate across boundaries.** Knowledge of one region tells you nothing about adjacent regions. Each boundary crossing is a fresh discovery.
+- **Hill-climbing works locally.** Near a stoichiometric peak, systematic optimization converges on the optimum. "More element B improves hardness" — true near this peak.
+- **Boundaries are where peak dominance shifts.** Moving away from one peak's influence toward another's can produce dramatic changes. The researcher doesn't know where the next productive peak is.
+- **Breakthroughs come from finding new peaks** — especially ones that other researchers haven't discovered. The best materials are at peaks nobody has mapped, not at the optimum of known ones.
+- **Interference is unpredictable.** A multi-element combination that should work (good pair affinities) might fail because of destructive interference between overlapping peaks. Or a combination that shouldn't work might succeed because interference is constructive.
+- **You can't extrapolate across peaks.** Knowledge of one peak tells you nothing about others. Each new peak is a fresh discovery.
 
 ### Energy as a Dimension
 
-Energy isn't just a scaling factor — it's a full dimension of the input space. The phase tessellation spans the energy axis too. This means increasing energy doesn't just "turn up" existing effects. At certain energy levels, you cross phase boundaries in the energy dimension and enter entirely new regions.
+Energy isn't just a scaling factor — it's a full dimension of the input space. Each stoichiometric peak has an **energy window** — a range `[e_lo, e_hi]` where the peak is active. Outside the window, the peak contributes nothing. This means increasing energy doesn't just "turn up" existing effects. Different energy levels activate different sets of peaks — the landscape changes character entirely.
 
-Low energy → one set of phase regions (conventional chemistry).
-Medium energy → different regions (advanced metallurgy).
-High energy → yet another landscape (exotic physics).
+Low energy → one set of active peaks (conventional chemistry).
+Medium energy → different peaks activate (advanced metallurgy).
+High energy → yet another set of peaks (exotic physics).
 
-The boundaries in the energy dimension are the natural activation thresholds. You don't need a separate threshold parameter — the phase structure handles it. At low energy, you're in regions where the interaction function produces conventional material properties. Push energy high enough and you cross into regions where the function produces non-zero values for properties that were zero in every low-energy region.
+**The best peaks tend to have high energy thresholds.** This isn't a rule — it emerges from the peak generation. But the effect is critical: the most valuable materials are energy-gated. Low-tech factions with crude fuel can only access mediocre peaks. High-tech factions with advanced fuel access the best peaks. This creates the natural progression arc without prescribing tiers.
 
-This is how latent physics emerges from the same mechanism. No special case needed.
+This is how latent physics emerges from the same mechanism. No special case needed — the peaks that produce non-zero values for exotic properties simply have high energy thresholds.
 
 ### Ratio Sensitivity
 
-Within a phase region, the interaction function is smooth but not necessarily gentle. Some regions have steep gradients — a 1% ratio change produces a 20% property change. Others are flat — large ratio changes barely matter. The gradient structure is seed-determined and varies by region.
+Near a stoichiometric peak, the interaction function is smooth but not necessarily gentle. Different peaks have different shapes — a needle peak has steep gradients where a 1% ratio change produces a 20% property change. A plateau peak is flat across a wide range, then cliff-edges off. The shape is seed-determined per peak.
 
-A researcher mapping a steep region needs precise ratio control — small changes matter. A researcher in a flat region can be sloppy. The physics doesn't prescribe which regions are steep — the seed determines it. Some galactic chemistries reward precision. Others reward breadth of exploration.
+A researcher near a needle peak needs precise ratio control — small changes matter. A researcher near a plateau can be sloppy. The physics doesn't prescribe which peaks are steep — the seed determines it, through the peak shape selection. This is why facility precision matters for **manufacturing**: once you've found a needle peak, reproducing the exact composition consistently requires high-precision instruments. A crude workshop scatters across the peak, producing inconsistent results. A precision facility hits the stoichiometric ratio reliably.
 
 ## Multi-Element Combinations
 
-More elements means higher-dimensional input space. The phase tessellation extends naturally — it's defined over the full space of (element fractions × energy). With two elements, the input space is 2D (ratio + energy). With three, it's 3D. With five, it's 5D.
+More elements means more element pairs, and more pairs means more stoichiometric peaks. The peak count grows as n×(n-1)/2 pairs, each with 3-5 peaks. With two elements: 1 pair, ~4 peaks. With three: 3 pairs, ~12 peaks. With five: 10 pairs, ~40 peaks. And the peaks can interfere where they overlap — with more peaks, more overlaps, more interference.
 
-Higher-dimensional spaces have exponentially more phase regions. This is why multi-element research is harder and more rewarding — the landscape is richer but the search cost grows exponentially with the number of input elements. A binary search (2 elements) might find good materials in dozens of experiments. A ternary search (3 elements) might take hundreds. A quinary search (5 elements) could take thousands.
+The input space dimensionality also grows. With two elements, the input is 2D (ratio + energy). With three, it's 3D. With five, it's 5D. Higher-dimensional spaces are exponentially harder to search — the same number of experiments covers an exponentially smaller fraction of the space.
 
-The founding cluster tunes the phase density (how many regions per unit of input space) to control discovery pace. Dense tessellation = lots of boundaries = lots of surprises but hard to optimize within any single region. Sparse tessellation = large smooth regions = easier optimization but fewer breakthrough opportunities.
+This is why multi-element research is harder and more rewarding — more peaks to find, more interference effects to discover, and exponentially more space to search. A binary search (2 elements) might find good peaks in dozens of experiments. A ternary search (3 elements) might take hundreds. A quinary search (5 elements) could take thousands.
+
+The founding cluster tunes the peak density (how many peaks per pair, how wide they are) to control discovery pace. Dense peaks = lots of interference = lots of surprises but hard to optimize. Sparse peaks = large deserts between productive compositions = harder to find anything but clearer to optimize once found.
 
 ## Mass Budget
 
@@ -202,15 +212,19 @@ The theoretical maximums are constants — part of the standard physics script, 
 
 Some elements, when present in small quantities during a transformation, modify the interaction function's behavior without being consumed. These are catalysts.
 
-Mechanically: a catalyst element is an input to the interaction function but is excluded from the mass budget. It appears in the inputs and the outputs (not consumed). Its presence shifts the effective input coordinates — potentially moving the evaluation point across a phase boundary that would otherwise be unreachable at the current energy level.
+Mechanically: a catalyst element is an input to the interaction function but is excluded from the mass budget. It appears in the inputs and the outputs (not consumed). Its presence **lowers the activation energy threshold** of specific stoichiometric peaks — making them accessible at lower energy levels than they would otherwise require.
 
 ```
-effective_input = shift(base_input, catalyst_element, catalyst_fraction)
+effective_threshold = peak.energy_threshold * (1 - catalyst_reduction)
 ```
 
-A catalyst effectively lets you access neighboring phase regions without the energy to reach them directly. The shift function is part of the interaction algorithm — deterministic, seed-dependent, computationally opaque like everything else. Most element-as-catalyst combinations produce negligible shifts. A few produce large shifts that cross boundaries into productive regions.
+A catalyst doesn't change what's thermodynamically possible — the same peaks exist with or without it. It changes what's **kinetically accessible** at a given energy level. A peak that normally requires energy level 0.5 might only need 0.2 with the right catalyst. The peak value is the same. The access is different.
 
-This is why geographic scarcity matters for research. A rare catalyst element doesn't just make existing processes cheaper — it makes the interaction function evaluate at points that are otherwise inaccessible. A faction controlling rare catalyst deposits can explore regions of the landscape that nobody else can reach. Not from a multiplier. From geometry — the catalyst shifts their position in input space.
+Each peak responds to a small number of specific catalyst elements (1-3, seed-determined). Most element-as-catalyst combinations have no effect on a given peak. A few produce large threshold reductions that make otherwise energy-gated peaks accessible. The mapping from catalyst elements to peak effects is seed-determined and computationally opaque — you discover which catalysts work for which reactions through experimentation, not analysis.
+
+Since the best peaks tend to have high energy thresholds, catalysts are disproportionately valuable for accessing the best materials. A faction with a rare catalyst element doesn't get marginally better results — they access peaks that are completely inaccessible to factions without it at the same energy level. That's worth fighting over.
+
+This is why geographic scarcity matters for research. A rare catalyst element doesn't just make existing processes cheaper — it makes high-energy-gated peaks accessible at low energy. A faction controlling rare catalyst deposits can reach materials that other factions would need vastly more advanced fuel to access. Not from a multiplier. From activation energy — the catalyst lowers the barrier.
 
 ## Process Parameters
 
@@ -295,11 +309,13 @@ A faction might reach tier 3 in one property dimension while stuck at tier 1 in 
 
 The interaction function algorithm and its relationship to the galaxy seed is the founding cluster's most important creative act. They're designing the universe's chemistry — not as lore, but as math. The algorithm determines:
 
-- Phase region density at each energy level (controls discovery pace)
+- Peak density per element pair (controls discovery pace)
+- Peak shape distribution — how many needles vs. plateaus vs. ridges (controls how much precision matters)
 - Which property dimensions are latent vs. active (controls capability progression)
 - How seed variation affects the landscape (controls inter-galaxy uniqueness)
-- The smoothness-to-chaos ratio within regions (controls how rewarding systematic research is)
-- Where the energy-dimension boundaries fall (controls tier progression)
+- Interference patterns — reinforcement vs. cancellation frequency (controls how predictable multi-element combinations are)
+- Energy window distribution — where activation thresholds fall (controls tier progression)
+- Catalyst sensitivity — how many peaks respond to each catalyst element (controls geographic scarcity value)
 
 This is universe design. The founding cluster tunes it through playtesting. The algorithm can evolve (new script version, voluntary adoption) but the seed doesn't change. Factions explore a continent that already exists — the interaction function drew the map but nobody has it.
 
@@ -487,11 +503,29 @@ This creates a natural economic role for **research services.** A faction rich i
 
 ### Implications for the Simulation
 
-The playtest simulation should model research economics:
+### What the Simulation Validates
 
+The playtest simulation (`sim/transform_sim.py`) implements the stoichiometric peak model and validates these claims:
+
+**Validated:**
+- Interaction function structure: stoichiometric peaks with energy windows and interference produce the right discovery dynamics
+- Catalyst mechanism: lowering activation energy thresholds makes specific catalysts dramatically valuable (+100% at low energy for the right catalyst, most catalysts do nothing)
+- Energy gating: low-energy researchers are locked out of the best peaks; progression from energy 5→50 produces 5x improvement
+- Precision matters for manufacturing: a known recipe at ±0.05 precision produces 78% yield at 90% quality; at ±0.2, only 25% yield
+- Element count scales difficulty exponentially: 2 elements is easy, 5 elements is genuinely hard
+- Seed variance: different galaxies produce meaningfully different landscapes (30% coefficient of variation across seeds)
+- Reverse engineering is possible but expensive: matching a known output at tolerance 2.0 takes ~1000 experiments
+
+**Not modeled (game mechanics, not physics):**
+- Mass budget / loss fraction (research economics)
+- Process types: alloying, refinement, decomposition
+- Deterministic noise seeding for verification proofs
+- Latent properties (spatial distortion, field coherence)
+- System design layer (performance functions, resonance)
+
+The simulation also informs tuning:
 - Vary material budgets (scarce, moderate, abundant)
 - Compare sequential vs. parallel exploration at each budget level
-- Find the material-budget crossover where parallel beats sequential
 - Model energy-capacity constraints (low-energy-only vs. full-range access)
 - Test research partnerships (shared inputs, shared discoveries)
 
@@ -502,9 +536,9 @@ The playtest simulation should model research economics:
 | Element property vectors | Material | Base properties of each element (the weighted average inputs) |
 | Interaction function algorithm | Material | The core mapping — how inputs combine to produce property modifications |
 | Galaxy seed | Material | Parameterizes the interaction function — determines the specific phase landscape |
-| Phase density parameters | Material | How many phase regions per unit of input space at each energy level |
-| Smoothness parameters | Material | How gentle the gradients are within phase regions |
-| Catalyst efficiency function | Material | How catalysts modify the effective energy level |
+| Peaks per element pair | Material | How many stoichiometric peaks each pair generates (controls discovery density) |
+| Peak shape distribution | Material | Relative frequency of gaussian, plateau, needle, ridge shapes |
+| Catalyst threshold reduction | Material | How much each catalyst element lowers peak activation energy |
 | Base loss fraction | Both | Minimum material loss during any transformation |
 | Energy loss coefficient | Material | How fast loss scales with energy invested |
 | Reference energy | Material | Energy level at which energy_loss equals the coefficient |
