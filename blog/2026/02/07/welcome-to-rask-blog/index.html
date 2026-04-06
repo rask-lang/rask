@@ -1,0 +1,181 @@
+<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Welcome to the Rask Blog | Rask Blog</title>
+<meta name="generator" content="Jekyll v4.4.1" />
+<meta property="og:title" content="Welcome to the Rask Blog" />
+<meta name="author" content="Rask Contributors" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Hi! I’m having great fun creating a new programming language! It is called Rask, and started out as a small experiment in language design, but now I feel it actually might bring something new!" />
+<meta property="og:description" content="Hi! I’m having great fun creating a new programming language! It is called Rask, and started out as a small experiment in language design, but now I feel it actually might bring something new!" />
+<link rel="canonical" href="https://rask-lang.dev/blog/2026/02/07/welcome-to-rask-blog/" />
+<meta property="og:url" content="https://rask-lang.dev/blog/2026/02/07/welcome-to-rask-blog/" />
+<meta property="og:site_name" content="Rask Blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2026-02-07T23:30:00+01:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Welcome to the Rask Blog" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"Rask Contributors"},"dateModified":"2026-02-07T23:30:00+01:00","datePublished":"2026-02-07T23:30:00+01:00","description":"Hi! I’m having great fun creating a new programming language! It is called Rask, and started out as a small experiment in language design, but now I feel it actually might bring something new!","headline":"Welcome to the Rask Blog","mainEntityOfPage":{"@type":"WebPage","@id":"https://rask-lang.dev/blog/2026/02/07/welcome-to-rask-blog/"},"url":"https://rask-lang.dev/blog/2026/02/07/welcome-to-rask-blog/"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="icon" type="image/png" href="/book/assets/rask32.png">
+    <link rel="stylesheet" href="/blog/assets/css/style.css"><link type="application/atom+xml" rel="alternate" href="https://rask-lang.dev/blog/feed.xml" title="Rask Blog" /><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/nord.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-links">
+                <a href="/">home</a>
+                <a href="/book/index.html">docs</a>
+                <a href="/blog/" class="active">blog</a>
+                <a href="/app/">playground</a>
+                <a href="https://github.com/rask-lang/rask">github ↗</a>
+            </div>
+            <div class="status">early development · working compiler</div>
+        </div>
+    </nav>
+
+    <main class="container">
+        <article class="post">
+    <header class="post-header">
+        <h1>Welcome to the Rask Blog</h1>
+        <time class="post-meta" datetime="2026-02-07T23:30:00+01:00">
+            February 7, 2026
+        </time>
+    </header>
+
+    <div class="post-content">
+        <p>Hi! I’m having great fun creating a new programming language! It is called Rask, and started out as a small experiment in language design, but now I feel it actually might bring something new!</p>
+
+<h2 id="what-is-rask">What is Rask?</h2>
+
+<p>What if I took the best parts of Rust, Zig and Go and created an in-between language?</p>
+
+<p>Can we have memory safety without Rust’s lifetime tracking? Don’t get me wrong, Rust is a perfectly good language for what it’s meant for. But sometimes fighting the borrow checker and waiting for compilation isn’t what you want. Most programs don’t need a mathematical proof to function.</p>
+
+<p>On the other side you have Go—simple to learn, easy to get stuff done with. But it lacks the powerful features Rust users take for granted. Plus it has a garbage collector and hard-wired runtime threading, which you don’t want for high-performance apps.</p>
+
+<p>In 2026 we have multiple contenders for this gap. Off the top of my head: Hylo, Zig, V, and Vale, all awesome in their own right. But Hylo is too academic for my taste, and Vale’s generational references for everything are too performance-taxing. V promises safe memory management without ceremony but has failed to live up to the claims. Zig is probably the closest to what I want, but it leaves safety as an opt-in rather than a default.</p>
+
+<p>This brings us to Rask. The simple premise is this:
+<strong>What if references cannot be stored?</strong></p>
+
+<p>Stored references cause use-after-free bugs, dangling pointers, and all the lifetime complexity Rust needs to track. If we can live without them, memory safety goes from complex lifetime tracking and global borrow checking to simple local analysis.</p>
+
+<p>Here’s the key insight: most code doesn’t store references. You pass them to functions, use them for a bit, then they expire. That’s expression-scoped borrowing—works great, no annotations needed. The problems come when references escape their scope or get stored in structs.</p>
+
+<p>So I made a tradeoff. <strong>References can’t be stored</strong>. If you need indirection for graphs or cycles, use handles—validated indices into a pool. Yes, that’s an extra indirection. But the cost is visible and you only pay it where you actually need it. This isn’t zero-cost abstraction. It’s mathematically impossible to have zero-cost memory safety <strong>and</strong> no lifetime tracking and global analysis. Rask’s design compensates for this using smart compiler optimization and forcing more data-oriented design.</p>
+
+<p>I’ve also made many improvements to Rust’s <strong>noisy</strong> grammar and restrictive, almost parental style of coding. This is fine for a hardcore system language with safety before anything else, but Rask takes a different approach: the common case should be the default, not the opposite. We sacrifice some of the safety the strictness of Rust gives, and get a more ergonomical developer experience. At least on paper, you will be the judge of that ;)</p>
+
+<p>Here’s a sneak peek at some core features:</p>
+
+<ul>
+  <li><strong>Linear resources</strong> - Files and sockets must be explicitly closed. The compiler checks this at compile time, so you can’t leak handles.</li>
+  <li><strong>No async/await</strong> - I/O is just I/O. No more refactoring half your codebase because one function needs to wait for network.</li>
+  <li><strong>Syntax sugar where it matters</strong> - Option and Result show up in 90% of code, so I made them ergonomic with <code>?</code> sugar and <code>try</code> for propagation.</li>
+</ul>
+
+<p>Here’s what it looks like:</p>
+
+<pre><code class="language-rask">func process_config(path: string) -&gt; Config or Error {
+    const file = try fs.open(path)
+    ensure file.close()
+
+    const content = try file.read_to_string()
+    const lines = content.split('\n')
+
+    let settings = Map.new()
+    for line in lines {
+        if line.starts_with('#'): continue
+
+        const parts = line.split('=')
+        if parts.len() != 2: return Error.InvalidFormat
+
+        settings.insert(parts[0].trim(), parts[1].trim())
+    }
+
+    return Config { settings }
+}
+</code></pre>
+
+<p>No lifetimes. No async. No borrow checker fights. Just clean, simple code that can’t leak resources.</p>
+
+<h2 id="what-ill-write-about">What I’ll write about</h2>
+
+<p>Design decisions. Why certain features work the way they do, what tradeoffs I’m making. Sometimes I’ll be wrong—that’s fine, I’ll write about that too.</p>
+
+<p>Implementation progress. Right now there’s a working interpreter but no compiler yet. I’ll document what I’m building and what’s blocking me.</p>
+
+<p>Real code. HTTP servers, text editors, game loops. If Rask makes these harder than Go, the design needs work.</p>
+
+<h2 id="where-we-are">Where we are</h2>
+
+<p>Design phase. Most of the specs are written, the interpreter handles the core features. Threading works, linear resources work, the type checker catches most errors.</p>
+
+<p>Next up: compiler. Probably LLVM backend, maybe cranelift. Haven’t decided yet.</p>
+
+<h2 id="try-it-yourself">Try it yourself</h2>
+
+<p>Want to see more? Try Rask in your browser with the <a href="/app/">playground</a>, read through the <a href="/book/guide/">language guide</a>, or dive into the <a href="https://github.com/rask-lang/rask/tree/main/specs">design specs</a>.</p>
+
+<p>Have thoughts or questions? <a href="https://github.com/rask-lang/rask/issues">Open an issue</a> or start a <a href="https://github.com/rask-lang/rask/discussions">discussion</a> on GitHub.</p>
+
+    </div>
+
+    <footer class="post-footer">
+        <a href="/blog/">← Back to blog</a>
+    </footer>
+</article>
+
+    </main>
+
+    <footer>
+        <div class="container">
+            <a href="/">home</a> ·
+            <a href="/book/index.html">docs</a> ·
+            <a href="/blog/">blog</a> ·
+            <a href="/app/">playground</a> ·
+            <a href="https://github.com/rask-lang/rask">github</a>
+        </div>
+    </footer>
+
+    <script>
+        // Register Rask language then highlight all code blocks
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof hljs === 'undefined') return;
+            hljs.registerLanguage('rask', function(hljs) {
+                return {
+                    name: 'Rask',
+                    aliases: ['rk'],
+                    keywords: {
+                        keyword: 'func struct enum trait extend match if else for while loop return const let try ensure comptime with spawn using import export public take mutate own deliver any unsafe break continue is in as or',
+                        literal: 'true false none',
+                        built_in: 'string i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char Vec Map Pool Option Result Handle println print format panic'
+                    },
+                    contains: [
+                        hljs.COMMENT('//', '$'),
+                        hljs.COMMENT('/\\*', '\\*/'),
+                        { className: 'string', variants: [
+                            {begin: /"/, end: /"/, contains: [hljs.BACKSLASH_ESCAPE]},
+                            {begin: /'/, end: /'/, contains: [hljs.BACKSLASH_ESCAPE]}
+                        ]},
+                        { className: 'number', variants: [
+                            {begin: '\\b0b[01_]+'}, {begin: '\\b0o[0-7_]+'},
+                            {begin: '\\b0x[0-9a-fA-F_]+'}, {begin: '\\b\\d+(_\\d+)*(\\.[0-9]+)?'}
+                        ], relevance: 0},
+                        { className: 'title.function', begin: /\b[a-z_][a-z0-9_]*(?=\s*\()/, relevance: 0},
+                        { className: 'title.class', begin: /\b[A-Z][a-zA-Z0-9_]*/, relevance: 0},
+                        { className: 'meta', begin: /@[a-z_][a-z0-9_]*/ }
+                    ]
+                };
+            });
+            hljs.highlightAll();
+        });
+    </script>
+</body>
+</html>

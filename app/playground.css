@@ -1,0 +1,459 @@
+/* SPDX-License-Identifier: (MIT OR Apache-2.0) */
+/* Rask Playground Styles */
+
+:root {
+    /* Rask brand colors */
+    --rask-primary: #0B5C38;
+    --rask-dark: #004225;
+    --rask-light: #0F7A4A;
+    --rask-very-light: #E8F5F0;
+
+    /* Nord palette (for syntax highlighting compatibility) */
+    --nord0: #2E3440;
+    --nord1: #3B4252;
+    --nord2: #434C5E;
+    --nord3: #4C566A;
+    --nord4: #D8DEE9;
+    --nord5: #E5E9F0;
+    --nord6: #ECEFF4;
+    --nord8: #88C0D0;
+    --nord10: #5E81AC;
+    --nord11: #BF616A;
+    --nord13: #EBCB8B;
+    --nord14: #A3BE8C;
+
+    /* Layout */
+    --header-height: 60px;
+    --footer-height: 60px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: var(--nord1);
+    color: var(--nord4);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* Header */
+header {
+    background: var(--rask-dark);
+    color: white;
+    padding: 0 20px;
+    height: var(--header-height);
+    display: flex;
+    align-items: center;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    z-index: 100;
+}
+
+.header-content {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+}
+
+h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    white-space: nowrap;
+    margin: 0;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.back-link {
+    color: rgba(255, 255, 255, 0.7);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 4px;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.back-link:hover {
+    color: white;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.header-nav {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+}
+
+.header-nav a {
+    color: rgba(255, 255, 255, 0.85);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: color 0.2s;
+}
+
+.header-nav a:hover {
+    color: white;
+    text-decoration: underline;
+}
+
+.header-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+/* Buttons */
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    background: var(--nord3);
+    color: white;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.btn:hover {
+    background: var(--nord2);
+    transform: translateY(-1px);
+}
+
+.btn-primary {
+    background: var(--rask-primary);
+}
+
+.btn-primary:hover {
+    background: var(--rask-light);
+}
+
+.btn-small {
+    padding: 4px 8px;
+    font-size: 0.8rem;
+    background: transparent;
+    color: var(--nord4);
+    border: 1px solid var(--nord3);
+}
+
+.btn-small:hover {
+    background: var(--nord3);
+}
+
+select {
+    padding: 8px 12px;
+    border: 1px solid var(--nord3);
+    border-radius: 4px;
+    background: var(--nord2);
+    color: var(--nord4);
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+/* Main playground */
+.playground-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--nord0);
+    flex: 1;
+    overflow: hidden;
+}
+
+.editor-pane,
+.output-pane {
+    background: var(--nord1);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.pane-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--nord0);
+    border-bottom: 1px solid var(--nord3);
+}
+
+.pane-header h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--nord6);
+}
+
+.hint {
+    font-size: 0.75rem;
+    color: var(--nord3);
+}
+
+/* Editor */
+#editor {
+    flex: 1;
+    overflow: hidden;
+}
+
+.cm-editor {
+    height: 100%;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 14px;
+}
+
+/* Output */
+.output-content {
+    flex: 1;
+    padding: 16px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: var(--nord4);
+}
+
+.output-content.running {
+    color: var(--nord13);
+}
+
+.output-content.success {
+    color: var(--nord14);
+}
+
+.output-content.error {
+    color: var(--nord11);
+}
+
+/* Diagnostic colors (for formatted errors) */
+.output-content .diag-error {
+    color: var(--nord11) !important;
+    font-weight: 600;
+}
+
+.output-content .diag-info {
+    color: var(--nord8) !important;
+}
+
+.output-content .diag-help {
+    color: var(--nord8) !important;
+}
+
+.output-content .diag-warning {
+    color: var(--nord13) !important;
+    font-weight: 600;
+}
+
+.output-content .diag-bold {
+    font-weight: 600;
+}
+
+/* CodeMirror inline diagnostics */
+.cm-diagnostic-error {
+    border-left: 3px solid var(--nord11);
+    background: rgba(191, 97, 106, 0.1);
+    padding: 8px;
+    margin: 5px 0;
+    border-radius: 2px;
+}
+
+.cm-diagnostic-warning {
+    border-left: 3px solid var(--nord13);
+    background: rgba(235, 203, 139, 0.1);
+    padding: 8px;
+    margin: 5px 0;
+    border-radius: 2px;
+}
+
+/* Squiggly underlines in editor */
+.cm-lintRange-error {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 3'%3E%3Cpath d='M0 3 L3 0 L6 3' stroke='%23BF616A' fill='none'/%3E%3C/svg%3E");
+    background-repeat: repeat-x;
+    background-position: bottom;
+}
+
+.cm-lintRange-warning {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 3'%3E%3Cpath d='M0 3 L3 0 L6 3' stroke='%23EBCB8B' fill='none'/%3E%3C/svg%3E");
+    background-repeat: repeat-x;
+    background-position: bottom;
+}
+
+/* Loading overlay */
+.loading {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(46, 52, 64, 0.95);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid var(--nord3);
+    border-top-color: var(--rask-primary);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.loading p {
+    margin-top: 20px;
+    font-size: 1.1rem;
+    color: var(--nord4);
+}
+
+/* Toast notifications */
+.toast {
+    position: fixed;
+    bottom: 80px;
+    right: 20px;
+    padding: 12px 20px;
+    background: var(--nord0);
+    color: var(--nord4);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    transform: translateY(20px);
+    transition: all 0.3s;
+    z-index: 1001;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast.success {
+    background: var(--rask-primary);
+    color: white;
+}
+
+.toast.error {
+    background: var(--nord11);
+    color: white;
+}
+
+/* Footer */
+footer {
+    background: var(--nord0);
+    color: var(--nord4);
+    padding: 12px 20px;
+    text-align: center;
+    font-size: 0.85rem;
+    border-top: 1px solid var(--nord3);
+}
+
+footer a {
+    color: var(--rask-light);
+    text-decoration: none;
+}
+
+footer a:hover {
+    text-decoration: underline;
+}
+
+.version {
+    margin-top: 4px;
+    color: var(--nord4);
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .playground-container {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr 1fr;
+    }
+
+    h1 {
+        font-size: 1.2rem;
+    }
+
+    .header-nav {
+        gap: 12px;
+    }
+
+    .header-nav a {
+        font-size: 0.85rem;
+    }
+
+    .header-controls {
+        gap: 6px;
+    }
+
+    .btn {
+        padding: 6px 12px;
+        font-size: 0.85rem;
+    }
+
+    .hint {
+        display: none;
+    }
+}
+
+@media (max-width: 480px) {
+    header {
+        padding: 0 10px;
+        height: auto;
+    }
+
+    .header-content {
+        flex-direction: column;
+        gap: 10px;
+        padding: 10px 0;
+    }
+
+    h1 {
+        font-size: 1rem;
+    }
+
+    .header-left {
+        gap: 8px;
+    }
+
+    .back-link {
+        font-size: 0.8rem;
+        padding: 4px 8px;
+    }
+
+    .header-nav {
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .header-nav a {
+        font-size: 0.8rem;
+    }
+
+    .btn {
+        padding: 6px 10px;
+        font-size: 0.8rem;
+    }
+}
