@@ -2,7 +2,7 @@
 //! The name resolver implementation.
 
 use std::collections::{HashMap, HashSet};
-use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, ImportDecl, ExportDecl, TypeParam, UnionDecl};
+use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, ImportDecl, ExportDecl, CImportDecl, TypeParam, UnionDecl};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::{NodeId, Span};
@@ -723,7 +723,10 @@ impl Resolver {
                     }
                 }
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
-                DeclKind::Package(_) | DeclKind::CImport(_) => {}
+                DeclKind::Package(_) => {}
+                DeclKind::CImport(c_import) => {
+                    self.resolve_c_import(c_import, decl.span);
+                }
                 DeclKind::Union(union_decl) => {
                     self.declare_union(union_decl, decl.span);
                 }
@@ -1109,6 +1112,215 @@ impl Resolver {
                 .unwrap_or_else(|| path.last().unwrap());
             let _ = export_name;
         }
+    }
+
+    // =========================================================================
+    // C Import Resolution (CI1)
+    // =========================================================================
+
+    fn resolve_c_import(&mut self, c_import: &CImportDecl, span: Span) {
+        use rask_c_parse::translate;
+
+        let mut all_decls = Vec::new();
+
+        for header_path in &c_import.headers {
+            let source = match self.read_c_header(header_path) {
+                Ok(s) => s,
+                Err(msg) => {
+                    self.errors.push(ResolveError::c_header_not_found(
+                        header_path.clone(), msg, span,
+                    ));
+                    continue;
+                }
+            };
+
+            match rask_c_parse::parse_c_header(&source) {
+                Ok(result) => {
+                    for w in &result.warnings {
+                        eprintln!("warning: {}: {}", header_path, w.message);
+                    }
+                    let translated = translate::translate(&result, &c_import.hiding);
+                    all_decls.extend(translated);
+                }
+                Err(e) => {
+                    self.errors.push(ResolveError::c_parse_error(
+                        header_path.clone(),
+                        e.to_string(),
+                        span,
+                    ));
+                }
+            }
+        }
+
+        // Create symbols for each translated declaration
+        let mut members = HashMap::new();
+
+        for decl in &all_decls {
+            match decl {
+                translate::RaskCDecl::ExternFunc { name, params, ret_ty, .. } => {
+                    let param_types: Vec<String> = params.iter()
+                        .map(|p| p.ty.clone())
+                        .collect();
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::ExternFunction {
+                            abi: "C".to_string(),
+                            params: param_types,
+                            ret_ty: if ret_ty == "void" { None } else { Some(ret_ty.clone()) },
+                        },
+                        None,
+                        span,
+                        false,
+                    );
+                    members.insert(name.clone(), sym_id);
+                }
+                translate::RaskCDecl::ExternStruct { name, fields } => {
+                    let mut field_syms = Vec::new();
+                    // Create a struct symbol first (with dummy SymbolId for fields)
+                    let struct_sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Struct { fields: vec![] },
+                        None,
+                        span,
+                        false,
+                    );
+                    for f in fields {
+                        let f_sym = self.symbols.insert(
+                            f.name.clone(),
+                            SymbolKind::Field { parent: struct_sym_id },
+                            Some(f.ty.clone()),
+                            span,
+                            false,
+                        );
+                        field_syms.push((f.name.clone(), f_sym));
+                    }
+                    if let Some(sym) = self.symbols.get_mut(struct_sym_id) {
+                        sym.kind = SymbolKind::Struct { fields: field_syms };
+                    }
+                    members.insert(name.clone(), struct_sym_id);
+                }
+                translate::RaskCDecl::ExternUnion { name, fields } => {
+                    let mut field_syms = Vec::new();
+                    let union_sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Struct { fields: vec![] },
+                        None,
+                        span,
+                        false,
+                    );
+                    for f in fields {
+                        let f_sym = self.symbols.insert(
+                            f.name.clone(),
+                            SymbolKind::Field { parent: union_sym_id },
+                            Some(f.ty.clone()),
+                            span,
+                            false,
+                        );
+                        field_syms.push((f.name.clone(), f_sym));
+                    }
+                    if let Some(sym) = self.symbols.get_mut(union_sym_id) {
+                        sym.kind = SymbolKind::Struct { fields: field_syms };
+                    }
+                    members.insert(name.clone(), union_sym_id);
+                }
+                translate::RaskCDecl::ExternEnum { name, variants } => {
+                    let enum_sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Enum { variants: vec![] },
+                        None,
+                        span,
+                        false,
+                    );
+                    let mut variant_syms = Vec::new();
+                    for (vname, _value) in variants {
+                        let v_sym = self.symbols.insert(
+                            vname.clone(),
+                            SymbolKind::EnumVariant { enum_id: enum_sym_id },
+                            None,
+                            span,
+                            false,
+                        );
+                        variant_syms.push((vname.clone(), v_sym));
+                        // C enum constants are also accessible as top-level names
+                        members.insert(vname.clone(), v_sym);
+                    }
+                    if let Some(sym) = self.symbols.get_mut(enum_sym_id) {
+                        sym.kind = SymbolKind::Enum { variants: variant_syms };
+                    }
+                    members.insert(name.clone(), enum_sym_id);
+                }
+                translate::RaskCDecl::Const { name, ty, .. } => {
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        Some(ty.clone()),
+                        span,
+                        false,
+                    );
+                    members.insert(name.clone(), sym_id);
+                }
+                translate::RaskCDecl::TypeAlias { name, target } => {
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::TypeAlias { target: target.clone() },
+                        None,
+                        span,
+                        false,
+                    );
+                    members.insert(name.clone(), sym_id);
+                }
+                translate::RaskCDecl::OpaqueType { name } => {
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Struct { fields: vec![] },
+                        None,
+                        span,
+                        false,
+                    );
+                    members.insert(name.clone(), sym_id);
+                }
+                translate::RaskCDecl::Warning { message } => {
+                    eprintln!("warning: c-import: {}", message);
+                }
+            }
+        }
+
+        // Register the namespace under the alias
+        let ns_sym = self.symbols.insert(
+            c_import.alias.clone(),
+            SymbolKind::CNamespace { members },
+            None,
+            span,
+            false,
+        );
+        if let Err(e) = self.scopes.define(c_import.alias.clone(), ns_sym, span) {
+            self.errors.push(e);
+        }
+    }
+
+    /// Read a C header file, searching standard include paths.
+    fn read_c_header(&self, path: &str) -> Result<String, String> {
+        // Try relative to current directory first
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            return Ok(contents);
+        }
+
+        // Search standard include paths
+        let search_paths = [
+            "/usr/include",
+            "/usr/local/include",
+            "/usr/include/x86_64-linux-gnu",
+            "/usr/include/aarch64-linux-gnu",
+        ];
+
+        for base in &search_paths {
+            let full = format!("{}/{}", base, path);
+            if let Ok(contents) = std::fs::read_to_string(&full) {
+                return Ok(contents);
+            }
+        }
+
+        Err(format!("header not found in search paths: {}", path))
     }
 
     // =========================================================================
@@ -1662,6 +1874,17 @@ impl Resolver {
                                 }
                                 return;
                             }
+                            if let SymbolKind::CNamespace { members } = &sym.kind {
+                                let members = members.clone();
+                                self.resolutions.insert(object.id, sym_id);
+                                if let Some(&method_sym) = members.get(method) {
+                                    self.resolutions.insert(expr.id, method_sym);
+                                }
+                                for arg in args {
+                                    self.resolve_expr(&arg.expr);
+                                }
+                                return;
+                            }
                         }
                     }
                 }
@@ -1683,6 +1906,14 @@ impl Resolver {
                                         self.resolutions.insert(expr.id, field_sym);
                                     }
                                     // No error for missing field — type checker handles it
+                                }
+                                return;
+                            }
+                            if let SymbolKind::CNamespace { members } = &sym.kind {
+                                let members = members.clone();
+                                self.resolutions.insert(object.id, sym_id);
+                                if let Some(&field_sym) = members.get(field) {
+                                    self.resolutions.insert(expr.id, field_sym);
                                 }
                                 return;
                             }
@@ -1808,6 +2039,10 @@ impl Resolver {
                                     if let Some(&struct_sym) = exports.get(parts[1]) {
                                         self.resolutions.insert(expr.id, struct_sym);
                                     }
+                                }
+                            } else if let SymbolKind::CNamespace { members } = &sym.kind {
+                                if let Some(&member_sym) = members.get(parts[1]) {
+                                    self.resolutions.insert(expr.id, member_sym);
                                 }
                             } else {
                                 self.resolutions.insert(expr.id, sym_id);

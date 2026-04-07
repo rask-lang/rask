@@ -26,6 +26,7 @@ members = [
     "crates/rask-hidden-params",
     "crates/rask-semantic-hash",
     "crates/rask-effects",
+    "crates/rask-c-parse",
 ]
 
 [workspace.package]

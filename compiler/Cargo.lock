@@ -1339,11 +1339,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rask-c-parse"
+version = "0.1.0"
+
+[[package]]
 name = "rask-cli"
 version = "0.1.0"
 dependencies = [
  "colored",
  "rask-ast",
+ "rask-c-parse",
  "rask-codegen",
  "rask-comptime",
  "rask-describe",
@@ -1563,6 +1568,7 @@ dependencies = [
  "flate2",
  "rand",
  "rask-ast",
+ "rask-c-parse",
  "rask-lexer",
  "rask-parser",
  "reqwest",

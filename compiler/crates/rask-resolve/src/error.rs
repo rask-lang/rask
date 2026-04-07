@@ -82,6 +82,20 @@ impl ResolveError {
             span,
         }
     }
+
+    pub fn c_header_not_found(header: String, detail: String, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::CHeaderNotFound { header, detail },
+            span,
+        }
+    }
+
+    pub fn c_parse_error(header: String, detail: String, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::CParseError { header, detail },
+            span,
+        }
+    }
 }
 
 /// The kind of resolution error.
@@ -116,4 +130,10 @@ pub enum ResolveErrorKind {
 
     #[error("cannot define `{name}` because it shadows a built-in; built-in types and functions cannot be redefined")]
     ShadowsBuiltin { name: String },
+
+    #[error("C header not found: `{header}` ({detail})")]
+    CHeaderNotFound { header: String, detail: String },
+
+    #[error("C header parse error in `{header}`: {detail}")]
+    CParseError { header: String, detail: String },
 }

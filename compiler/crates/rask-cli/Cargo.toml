@@ -30,4 +30,5 @@ rask-codegen = { path = "../rask-codegen" }
 rask-stdlib = { path = "../rask-stdlib" }
 rask-hidden-params = { path = "../rask-hidden-params" }
 rask-effects = { path = "../rask-effects" }
+rask-c-parse = { path = "../rask-c-parse" }
 colored = "3"
