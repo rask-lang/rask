@@ -162,8 +162,9 @@ The founding cluster is the seed of trust. Every domain in the galaxy traces its
 Three layers of constraint, each building on the last:
 
 1. **Allgard's conservation laws** keep the economy honest. You can't cheat.
-2. **[Constraint physics](PHYSICS.md)** determines what can physically exist. Five laws — mass-energy conservation, structural scaling, energy budgets, stress/failure, proximity coupling — interact to create natural size tiers, specialization pressure, and engineering tradeoffs. No material tables, no ship classes. Those emerge.
-3. **Natural laws** (below) apply constraint physics to travel and economy. They're consequences, not a separate system.
+2. **[Constraint physics](PHYSICS.md)** determines what can physically exist. Five laws — mass-energy conservation, structural scaling, energy budgets, stress/failure, proximity coupling — interact to create natural size tiers, specialization pressure, and engineering tradeoffs. No ship classes. Those emerge.
+3. **[Element table](ELEMENTS.md)** defines the sixteen elements — property vectors, abundances, starter recipes. Real-world names (iron, copper, lithium) for intuition. Seed-determined interaction physics for depth.
+4. **Natural laws** (below) apply constraint physics to travel and economy. They're consequences, not a separate system.
 
 The founding cluster publishes a **standard physics script** — content-addressed Raido bytecode encoding both constraint physics and natural laws. Departure proofs include the script hash. Any domain can re-execute and verify. Non-standard physics isn't banned — it's transparent. A domain running zero-fuel-cost jumps is visible to every trading partner.
 
