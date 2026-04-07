@@ -8,6 +8,8 @@ use crate::parser::ParseError;
 pub struct CToken {
     pub kind: CTokenKind,
     pub line: usize,
+    /// True if whitespace preceded this token (used for #define disambiguation).
+    pub space_before: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -162,11 +164,19 @@ impl<'a> CLexer<'a> {
     }
 
     fn next_token(&mut self) -> Result<CToken, ParseError> {
-        // Skip whitespace (not newlines — they matter for preprocessor)
+        // Skip whitespace and track whether there was any (for #define disambiguation).
+        let pos_before_ws = self.pos;
         self.skip_whitespace_no_newline();
+        let had_space = self.pos > pos_before_ws;
 
+        let mut tok = self.next_token_raw()?;
+        tok.space_before = had_space;
+        Ok(tok)
+    }
+
+    fn next_token_raw(&mut self) -> Result<CToken, ParseError> {
         if self.pos >= self.source.len() {
-            return Ok(CToken { kind: CTokenKind::Eof, line: self.line });
+            return Ok(CToken { kind: CTokenKind::Eof, line: self.line, space_before: false });
         }
 
         let line = self.line;
@@ -175,7 +185,7 @@ impl<'a> CLexer<'a> {
         // Newline
         if ch == b'\n' {
             self.advance();
-            return Ok(CToken { kind: CTokenKind::Newline, line });
+            return Ok(CToken { kind: CTokenKind::Newline, line, space_before: false });
         }
 
         // Line continuation
@@ -191,7 +201,7 @@ impl<'a> CLexer<'a> {
             // ## ?
             if self.peek() == b'#' {
                 self.advance();
-                return Ok(CToken { kind: CTokenKind::DoubleHash, line });
+                return Ok(CToken { kind: CTokenKind::DoubleHash, line, space_before: false });
             }
             self.skip_whitespace_no_newline();
             let directive = self.read_ident();
@@ -210,7 +220,7 @@ impl<'a> CLexer<'a> {
                 "line" => CTokenKind::PPLine,
                 _ => CTokenKind::Hash, // unknown directive, treat as hash
             };
-            return Ok(CToken { kind, line });
+            return Ok(CToken { kind, line, space_before: false });
         }
 
         // Numbers
@@ -254,8 +264,8 @@ impl<'a> CLexer<'a> {
                 "_Bool" | "bool" => CTokenKind::Bool,
                 "sizeof" => CTokenKind::Sizeof,
                 "_Alignof" | "alignof" => CTokenKind::Alignof,
-                // GCC/Clang attributes — skip
-                "__attribute__" => {
+                // GCC/Clang attributes and glibc macros — skip entirely
+                "__attribute__" | "__attribute" => {
                     self.skip_attribute();
                     return self.next_token();
                 }
@@ -268,9 +278,31 @@ impl<'a> CLexer<'a> {
                     self.skip_attribute();
                     return self.next_token();
                 }
+                // glibc function attributes — skip ident + optional parens
+                "__THROW" | "__THROWNL" | "__nonnull" | "__wur"
+                | "__attribute_pure__" | "__attribute_const__"
+                | "__attribute_malloc__" | "__attribute_format_strfmon__"
+                | "__attribute_warn_unused_result__"
+                | "__attr_access" | "__attr_access_none" | "__attr_dealloc"
+                | "__attr_dealloc_free" | "__fortified_attr_access"
+                | "__nonnull_attribute__" | "__returns_nonnull"
+                | "__glibc_fortify" | "__glibc_fortify_n"
+                | "__REDIRECT" | "__REDIRECT_NTH" | "__REDIRECT_NTHNL"
+                | "__COLD" | "__warnattr" | "__errordecl" => {
+                    self.skip_optional_parens();
+                    return self.next_token();
+                }
+                // glibc scope markers — skip
+                "__BEGIN_DECLS" | "__END_DECLS"
+                | "__BEGIN_NAMESPACE_STD" | "__END_NAMESPACE_STD"
+                | "__USING_NAMESPACE_STD"
+                | "__BEGIN_NAMESPACE_C99" | "__END_NAMESPACE_C99"
+                | "__USING_NAMESPACE_C99" => {
+                    return self.next_token();
+                }
                 _ => CTokenKind::Ident(ident),
             };
-            return Ok(CToken { kind, line });
+            return Ok(CToken { kind, line, space_before: false });
         }
 
         // Punctuation
@@ -356,7 +388,7 @@ impl<'a> CLexer<'a> {
                 ));
             }
         };
-        Ok(CToken { kind, line })
+        Ok(CToken { kind, line, space_before: false })
     }
 
     fn read_ident(&mut self) -> String {
@@ -384,7 +416,7 @@ impl<'a> CLexer<'a> {
             let val = u64::from_str_radix(&hex, 16)
                 .map_err(|e| ParseError::new(format!("bad hex literal: {}", e), line))?;
             self.skip_int_suffix();
-            return Ok(CToken { kind: CTokenKind::UIntLit(val), line });
+            return Ok(CToken { kind: CTokenKind::UIntLit(val), line, space_before: false });
         }
 
         // Octal check
@@ -422,7 +454,7 @@ impl<'a> CLexer<'a> {
             let clean: String = text.chars().filter(|c| !matches!(c, 'f' | 'F' | 'l' | 'L')).collect();
             let val: f64 = clean.parse()
                 .map_err(|e| ParseError::new(format!("bad float literal: {}", e), line))?;
-            return Ok(CToken { kind: CTokenKind::FloatLit(val), line });
+            return Ok(CToken { kind: CTokenKind::FloatLit(val), line, space_before: false });
         }
 
         let text = String::from_utf8_lossy(&self.source[start..self.pos]);
@@ -436,9 +468,9 @@ impl<'a> CLexer<'a> {
 
         let is_unsigned = self.skip_int_suffix();
         if is_unsigned {
-            Ok(CToken { kind: CTokenKind::UIntLit(val as u64), line })
+            Ok(CToken { kind: CTokenKind::UIntLit(val as u64), line, space_before: false })
         } else {
-            Ok(CToken { kind: CTokenKind::IntLit(val), line })
+            Ok(CToken { kind: CTokenKind::IntLit(val), line, space_before: false })
         }
     }
 
@@ -484,7 +516,7 @@ impl<'a> CLexer<'a> {
                 _ => s.push(ch as char),
             }
         }
-        Ok(CToken { kind: CTokenKind::StringLit(s), line })
+        Ok(CToken { kind: CTokenKind::StringLit(s), line, space_before: false })
     }
 
     fn read_char_lit(&mut self, line: usize) -> Result<CToken, ParseError> {
@@ -506,7 +538,7 @@ impl<'a> CLexer<'a> {
         if self.peek() == b'\'' {
             self.advance();
         }
-        Ok(CToken { kind: CTokenKind::CharLit(ch), line })
+        Ok(CToken { kind: CTokenKind::CharLit(ch), line, space_before: false })
     }
 
     /// Skip `__attribute__((...))` or `__declspec(...)` or `asm(...)`.
@@ -515,6 +547,19 @@ impl<'a> CLexer<'a> {
         if self.peek() != b'(' {
             return;
         }
+        self.skip_balanced_parens();
+    }
+
+    /// Skip optional parenthesized arguments (for glibc macros like `__nonnull ((1, 2))`).
+    fn skip_optional_parens(&mut self) {
+        self.skip_whitespace_no_newline();
+        if self.peek() == b'(' {
+            self.skip_balanced_parens();
+        }
+    }
+
+    /// Consume balanced parentheses starting at current `(`.
+    fn skip_balanced_parens(&mut self) {
         let mut depth = 0u32;
         loop {
             if self.pos >= self.source.len() {

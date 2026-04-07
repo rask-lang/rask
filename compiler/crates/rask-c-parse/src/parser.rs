@@ -69,6 +69,10 @@ impl CParser {
                 | CTokenKind::PPLine => {
                     self.skip_to_newline();
                 }
+                // Stray closing brace (from extern "C" { ... })
+                CTokenKind::RBrace => {
+                    self.advance();
+                }
                 // Declarations
                 _ => {
                     match self.try_parse_declaration() {
@@ -76,7 +80,7 @@ impl CParser {
                         Ok(None) => {}
                         Err(e) => {
                             self.warnings.push(CWarning {
-                                message: format!("skipping declaration: {}", e.message),
+                                message: format!("skipping declaration: {} (at {:?})", e.message, self.peek()),
                                 line: e.line,
                             });
                             self.skip_to_semi_or_brace();
@@ -96,6 +100,15 @@ impl CParser {
 
     fn at_eof(&self) -> bool {
         self.pos >= self.tokens.len() || self.peek() == CTokenKind::Eof
+    }
+
+    fn peek_token(&self) -> &CToken {
+        static EOF_TOKEN: CToken = CToken { kind: CTokenKind::Eof, line: 0, space_before: false };
+        if self.pos < self.tokens.len() {
+            &self.tokens[self.pos]
+        } else {
+            &EOF_TOKEN
+        }
     }
 
     fn peek(&self) -> CTokenKind {
@@ -208,8 +221,8 @@ impl CParser {
         let name = self.expect_ident()?;
 
         // Function-like macro: #define FOO(a, b) ...
-        if self.peek() == CTokenKind::LParen {
-            // Check if paren is adjacent (no space) — true function-like macro
+        // Only if `(` immediately follows name (no space). `#define EOF (-1)` has a space.
+        if self.peek() == CTokenKind::LParen && !self.peek_token().space_before {
             let mut params = Vec::new();
             self.advance(); // (
             while self.peek() != CTokenKind::RParen && !self.at_eof()
@@ -351,12 +364,45 @@ impl CParser {
             match self.peek() {
                 CTokenKind::Typedef => { is_typedef = true; self.advance(); }
                 CTokenKind::Static => { is_static = true; self.advance(); }
-                CTokenKind::Extern => { is_extern = true; self.advance(); }
+                CTokenKind::Extern => {
+                    is_extern = true;
+                    self.advance();
+                    self.skip_newlines();
+                    // `extern "C"` or `extern "C++"` — handle ABI blocks
+                    if let CTokenKind::StringLit(ref abi) = self.peek() {
+                        let abi = abi.clone();
+                        if abi == "C++" {
+                            // Skip entire extern "C++" block or declaration
+                            self.advance();
+                            self.skip_newlines();
+                            if self.peek() == CTokenKind::LBrace {
+                                self.skip_brace_block();
+                            } else {
+                                self.skip_to_semi_or_brace();
+                            }
+                            return Ok(None);
+                        } else if abi == "C" {
+                            // extern "C" { ... } — just skip the "C" and braces,
+                            // parse contents normally
+                            self.advance();
+                            self.skip_newlines();
+                            if self.peek() == CTokenKind::LBrace {
+                                self.advance(); // skip {
+                                // Contents will be parsed as top-level declarations
+                                // by the main loop. Just skip the opening brace.
+                                return Ok(None);
+                            }
+                            // extern "C" func_decl — just continue parsing
+                        }
+                    }
+                }
                 CTokenKind::Inline => { is_inline = true; self.advance(); }
                 CTokenKind::Newline => { self.advance(); }
                 _ => break,
             }
         }
+
+        self.skip_newlines();
 
         // struct/union/enum with possible tag
         match self.peek() {
@@ -443,6 +489,7 @@ impl CParser {
 
     /// Parse type specifier: `int`, `unsigned long`, `const char`, `size_t`, etc.
     fn parse_type_specifier(&mut self) -> Result<CType, ParseError> {
+        self.skip_newlines();
         let mut is_const = false;
         let mut is_signed: Option<bool> = None;
         let mut base: Option<CType> = None;
