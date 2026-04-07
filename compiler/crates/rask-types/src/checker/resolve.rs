@@ -575,6 +575,15 @@ impl TypeChecker {
                     })
                 }
             }
+            // Primitive integer types — resolve operator methods directly
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
+                self.resolve_integer_method(&ty, &method, &args, &ret, span)
+            }
+            // Primitive float types
+            Type::F32 | Type::F64 => {
+                self.resolve_float_method(&ty, &method, &args, &ret, span)
+            }
             Type::Option(inner) => {
                 let inner = *inner.clone();
                 self.resolve_option_method(&inner, &method, &args, &ret, span)
@@ -2195,6 +2204,82 @@ impl TypeChecker {
             }
             _ => Err(TypeError::NoSuchMethod {
                 ty: self_ty,
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve methods on primitive integer types (i8..i128, u8..u128).
+    /// Desugared operators (add, bit_and, etc.) resolve here instead of
+    /// bouncing through HasMethod → unsolved constraint suppression.
+    pub(super) fn resolve_integer_method(
+        &mut self,
+        ty: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let is_signed = matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128);
+        match method {
+            // Binary arithmetic → same type
+            "add" | "sub" | "mul" | "div" | "rem"
+            | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr"
+            | "min" | "max" if args.len() == 1 => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, ty, span)
+            }
+            // Unary → same type
+            "neg" if args.is_empty() && is_signed => self.unify(ret, ty, span),
+            "bit_not" | "abs" if args.is_empty() => self.unify(ret, ty, span),
+            // Comparison → bool
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, &Type::Bool, span)
+            }
+            "compare" if args.len() == 1 => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+            }
+            "to_float" if args.is_empty() => self.unify(ret, &Type::F64, span),
+            _ => Err(TypeError::NoSuchMethod {
+                ty: ty.clone(),
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve methods on primitive float types (f32, f64).
+    pub(super) fn resolve_float_method(
+        &mut self,
+        ty: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        match method {
+            "add" | "sub" | "mul" | "div"
+            | "min" | "max" | "pow" if args.len() == 1 => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, ty, span)
+            }
+            "neg" | "abs" | "floor" | "ceil" | "round" | "sqrt" if args.is_empty() => {
+                self.unify(ret, ty, span)
+            }
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, &Type::Bool, span)
+            }
+            "compare" if args.len() == 1 => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+            }
+            "to_int" if args.is_empty() => self.unify(ret, &Type::I64, span),
+            _ => Err(TypeError::NoSuchMethod {
+                ty: ty.clone(),
                 method: method.to_string(),
                 span,
             }),

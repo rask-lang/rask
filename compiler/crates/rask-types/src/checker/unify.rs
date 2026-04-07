@@ -97,7 +97,8 @@ impl TypeChecker {
             "add" | "sub" | "mul" | "div" | "rem"
             | "eq" | "ne" | "lt" | "gt" | "le" | "ge"
             | "neg" | "not" | "and" | "or"
-            | "bitand" | "bitor" | "bitxor" | "shl" | "shr"
+            | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not"
+            | "abs" | "min" | "max" | "to_float" | "compare"
         )
     }
 
