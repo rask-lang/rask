@@ -253,7 +253,7 @@ These are numbers, not rules. Each domain operator adjusts their own parameters.
 
 **Credit inflation beyond mild.** If minting outpaces the economy's absorptive capacity, credits destabilize. Mitigated by activity-tied minting, transparent supply audits, and the fact that players can switch to commodity money if credits lose trust. The exit option IS the discipline.
 
-**Founding cluster dependency.** If founding systems go down, new players can't enter. Mitigated by 5-system redundancy and eventually by player-run systems offering the same onboarding. The founding cluster should become optional, not permanent infrastructure.
+**Early network dependency.** If the first five systems go down, new players can't enter. Mitigated by 5-system redundancy and eventually by player-run systems offering the same onboarding. The founding systems aren't special — they're just the first network. They should become optional, not permanent infrastructure.
 
 **Price manipulation.** A wealthy player corners a resource. Expensive to sustain — you're buying real objects that cost real hosting to store. The frontier always provides alternatives. Cornering a market in a galaxy with infinite frontier is a losing strategy long-term.
 
