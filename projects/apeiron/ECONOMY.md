@@ -1,5 +1,5 @@
 # Economy Bootstrap
-<!-- id: apeiron.economy --> <!-- status: proposed --> <!-- summary: How the founding cluster breaks the bootstrap cycle — seed currency, initial minting, new player economics -->
+<!-- id: apeiron.economy --> <!-- status: proposed --> <!-- summary: How five founding operators break the bootstrap cycle — seed currency, single-domain minting, new player economics -->
 
 The [constraint physics](PHYSICS.md) define what can exist. The [transformation physics](TRANSFORMATION.md) define what can be created. This spec defines how the economy starts — the ignition sequence that turns a galaxy of potential into a functioning market.
 
@@ -11,67 +11,62 @@ You need fuel to jump between systems. Fuel requires hydrogen and carbon, extrac
 
 A new player arrives with nothing. They can't produce without things they don't have, and they can't trade without having produced something.
 
-The founding cluster breaks this cycle by going first. Extract, refine, build, stockpile, establish trade routes — all before the first outside player arrives. The founders eat the cold-start cost. That's the deal.
+Five people who trust each other break this cycle by going first. Each claims a system, extracts, refines, builds, stockpiles — all before the first outside player arrives. They eat the cold-start cost. That's the deal.
 
 ## The Seed Currency
 
-Credits. A fiat currency minted by the founding cluster, recognized by all founding domains.
+Credits. A fiat currency minted by one domain — the domain whose operator runs the mint. The other four accept credits through bilateral trade agreements. Standard Allgard: per-domain supply sovereignty.
 
 I chose fiat over commodity money. Fuel was the other candidate — universal demand, natural sink through combustion. But fuel-as-currency conflates "money to move" with "money to trade." Players shouldn't feel like they're burning their wallet every time they jump. Fuel is a critical commodity. Credits are the unit of account. You buy fuel with credits.
 
 ### Why Credits Work
 
-**Pre-bootstrapped backing.** The founding cluster runs a functioning economy before any player arrives. Credits are redeemable for real goods — fuel, materials, components, ship upgrades — at 5 operating systems on day one. That's not a promise. That's inventory.
+**Pre-bootstrapped backing.** The five systems run a functioning economy before any player arrives. Credits are redeemable for real goods — fuel, materials, components, ship upgrades — at 5 operating systems on day one. That's not a promise. That's inventory.
 
-**Activity-tied minting.** Credits enter circulation through specific channels, each triggered by real economic activity:
+**Single-source minting.** The minting domain controls credit supply. Credits enter circulation when the mint operator pays them out — starter ship subsidies, courier jobs, scout bounties, mining contract payouts. The other four domains receive credits through bilateral trade: they sell goods and services to the minting domain (or to each other) for credits.
 
-- Starter ship subsidy — new player joins, credits minted to cover ship cost
-- Courier job payments — cargo moved between systems
-- Scout bounties — unclaimed system mapped and reported
-- Mining contract payouts — resources extracted at a founding system
+No activity, no payouts. Credit supply grows proportional to economic participation, not on a schedule.
 
-No activity, no minting. Credit supply grows proportional to economic participation, not on a schedule.
+**Transparent supply.** The minting domain's script is Raido bytecode — content-addressed, publicly auditable ([Conservation Law 1](../allgard/CONSERVATION.md)). Trading partners verify supply through bilateral audit. If the mint operator inflates recklessly, it's visible to everyone. Partners switch currencies. No coordination protocol needed — each domain independently decides whether to keep accepting credits. Hyperinflation requires hiding what you're doing. The conservation laws make that impossible.
 
-**Transparent supply.** Every founding domain's minting script is Raido bytecode — content-addressed, publicly auditable ([Conservation Law 1](../allgard/CONSERVATION.md)). Trading partners verify supply through bilateral audit. A founding system that mints recklessly is visible to everyone. Trust erodes. Credits from that system lose value. Hyperinflation requires hiding what you're doing. The conservation laws make that impossible.
-
-**No centralization.** Credits are not protocol-privileged. They're one domain cluster's asset type. Players choose which currency to use — credits, fuel, raw titanium, whatever a bilateral trade agrees on. The founding cluster doesn't mandate credits. It offers them. They're the default because the founding economy has the most liquidity, not because anyone's forced to use them.
+**No centralization.** Credits are not protocol-privileged. They're one domain's asset type. Other domains accept them by choice, through bilateral agreements. Players choose which currency to use — credits, fuel, raw titanium, whatever a bilateral trade agrees on. Nobody mandates credits. They're the default because the founding economy has the most liquidity, not because anyone's forced to use them. If the minting domain loses trust, the other four can adopt a different currency tomorrow.
 
 ### Inflation
 
 Credits will inflate mildly. I'm not fighting it.
 
-The founding cluster mints credits to fund onboarding — starter ships, courier payments, scout bounties. That's inflationary. That's fine. Mild inflation punishes hoarding and keeps credits moving. Central banks target ~2% for the same reason.
+The minting domain pays out credits for onboarding — starter ships, courier payments, scout bounties. That's inflationary. That's fine. Mild inflation punishes hoarding and keeps credits moving. Central banks target ~2% for the same reason.
 
 Hyperinflation is prevented structurally:
 - Minting is activity-tied, not scheduled. No activity = no new credits.
-- Minting scripts are public. Every trading partner can audit supply.
-- Bilateral verification catches reckless minting before it spreads.
+- The minting script is public. Every trading partner can audit supply.
+- If partners don't like the minting rate, they stop accepting credits. The exit option IS the discipline.
 
-The natural arc: credits dominate early (only currency with liquidity). Commodity money competes mid-game (players discover fuel and titanium hold value better as stores of value). Credits become one currency among many late-game as the founding cluster's share of the economy shrinks. Players who hold real goods preserve value. Players who hold credits spend them. Both strategies work. Neither is forced.
+The natural arc: credits dominate early (only currency with liquidity). Commodity money competes mid-game (players discover fuel and titanium hold value better as stores of value). Credits become one currency among many late-game as the founding systems' share of the economy shrinks. Players who hold real goods preserve value. Players who hold credits spend them. Both strategies work. Neither is forced.
 
 ### Initial Pricing
 
-The founding cluster pre-negotiates starting price tables before launch. These aren't mandates — they're initial conditions. "Iron ore starts at roughly 0.3 credits per unit" so AI traders have something to anchor on.
+The five operators pre-negotiate starting price tables before launch. These aren't mandates — they're initial conditions. "Iron ore starts at roughly 0.3 credits per unit" so AI traders have something to anchor on.
 
 AI traders start with seed prices and adjust based on local supply and demand. If inventory piles up, price drops. If buyers queue, price rises. Human players who find arbitrage opportunities between systems are doing exactly what they should — price differences reflect real transport costs and local supply conditions. Arbitrage narrows gaps until the profit margin equals the travel cost.
 
-The founding cluster doesn't maintain these starting prices. They're scaffolding. Within weeks of real trading, market prices diverge from the tables. That's success.
+Nobody maintains these starting prices. They're scaffolding. Within weeks of real trading, market prices diverge from the tables. That's success.
 
 ## Founding System Selection
 
-Five systems from the galaxy seed. Not random — the founding operators pick deliberately.
+Five people who trust each other each claim a system from the galaxy seed.
 
-### Selection Criteria
+### What Sensible Operators Do
 
-**Dense-core location.** Short jump distances between all five. Fuel is scarce at bootstrap; long jumps kill early trade. Every system should be 1-2 jumps from every other. Star topology is fine. Long chains are not.
+**Pick nearby systems.** Short jump distances between all five. Fuel is scarce at bootstrap; long jumps kill early trade. Everyone naturally gravitates toward systems 1-2 jumps from each other. Star topology works. Long chains don't.
 
-**Collective element coverage.** The five systems together must cover all 7 common elements: iron, carbon, silicon, copper, aluminum, hydrogen, sulfur. No single system needs all of them — that's the point of a cluster. At least one system should have titanium. Trace strategic elements (chromium, tungsten, gold) are desirable but not required — the seed gives what it gives.
+**Cover the elements between them.** Five systems together will typically cover all 7 common elements: iron, carbon, silicon, copper, aluminum, hydrogen, sulfur. No single system needs all of them — that's why you trade. If someone grabs a titanium system, that's a bonus. Trace strategic elements (chromium, tungsten, gold) are nice but the seed gives what it gives.
 
-Exotic elements (uranium, platinum) sit at 5-15% availability per system. Five systems probably won't have any. That's fine. Exotics are the reason players push beyond the founding cluster. If the founders had everything, there'd be no frontier.
+Exotic elements (uranium, platinum) sit at 5-15% availability per system. Five systems probably won't have any. That's fine. Exotics are the reason players push beyond the founding systems. If the founders had everything, there'd be no frontier.
 
 ### Emergent Specialization
 
-I don't prescribe which system does what. The seed determines resource deposits, and specialization follows from what's in the ground. But the same patterns emerge:
+Each operator picks a system that looks good to them. Because the seed distributes resources unevenly, they end up with different strengths. The same patterns tend to emerge:
 
 - **Hydrogen-rich system** → fuel production hub. Every ship needs fuel. This system prints money early.
 - **Iron/carbon system** → foundry and shipyard. Structural steel is the backbone material. Put the shipyard where the iron is.
@@ -99,7 +94,7 @@ Six phases. Each depends on the previous one completing. Every object at every p
 
 Founding operators pick five systems from the seed. Deploy domains — one per system, real hosting. Pre-negotiate bilateral trust at Allied level between all five.
 
-Publish shared definitions before anything physical happens:
+Agree on shared definitions through bilateral negotiation before anything physical happens:
 
 - Standard asset types (elements, materials, components, ships, credits)
 - Physics scripts per [PHYSICS.md](PHYSICS.md)
@@ -107,7 +102,7 @@ Publish shared definitions before anything physical happens:
 - 7 starter recipes per [TRANSFORMATION.md](TRANSFORMATION.md)
 - Standard facility and ship blueprints
 
-All content-addressed Raido bytecode. Every domain references the same scripts by hash.
+No central authority publishes these — they're conventions the five domains adopt by mutual agreement. All content-addressed Raido bytecode. Every domain references the same scripts by hash.
 
 ### Phase 1 — Extraction
 
@@ -156,6 +151,8 @@ Every component is real materials with real mass. The ship's total mass is the s
 
 AI haulers carry cargo between systems. Each exports surplus, imports shortfalls. Exchange rates emerge from bilateral AI negotiation. Credits become the unit of account because barter doesn't scale past two parties.
 
+Credits flow outward from the minting domain. The minting domain pays credits for goods it imports — fuel, components, materials. Other domains earn credits by selling to the minting domain, or to each other once credits circulate. Domains without direct trade to the minting domain earn credits indirectly by selling to domains that have them.
+
 Trade routes follow geography. Systems 1 jump apart trade directly. Systems 2 jumps apart route through the hub. The hub takes a cut. This isn't prescribed — it emerges because the transport cost math makes it cheaper.
 
 ### Phase 5 — Player Entry
@@ -166,9 +163,9 @@ New players spawn at a founding system, receive a starter ship (built from real 
 
 ### Nothing Special
 
-The founding sequence is not special-cased. Same extraction scripts, same physics constraints, same conservation laws. Any group of players can repeat this process in a new region of the galaxy. The founding five just went first.
+The founding sequence is not special-cased. Same extraction scripts, same physics constraints, same conservation laws. Any group of players can repeat this process in a new region of the galaxy. The founding five just went first. They have no institutional authority — just a head start and existing inventory.
 
-A player who claims system #6 runs the exact same scripts against the exact same seed. The only advantage the founding five have is a head start.
+A player who claims system #6 runs the exact same scripts against the exact same seed. The only advantage the first five have is a head start.
 
 ## New Player Economics
 
@@ -176,13 +173,13 @@ You start with a ship. That's it.
 
 ### The Starter Ship
 
-Common materials only: structural steel hull, basic engine, small fuel tank, small cargo bay. Fueled for roughly 10 founding-cluster jumps. Empty cargo hold.
+Common materials only: structural steel hull, basic engine, small fuel tank, small cargo bay. Fueled for roughly 10 short jumps within the founding systems. Empty cargo hold.
 
 Deliberately weak. Fine for courier runs and short exploration. Not competitive for serious hauling, mining, or combat. No starting credits. No care package. The ship IS the bootstrap.
 
 ### Why Free Ships Work
 
-**Common materials = negligible cost.** Structural steel and basic components are the cheapest things in the galaxy. The founding cluster has massive stockpiles.
+**Common materials = negligible cost.** Structural steel and basic components are the cheapest things in the galaxy. The shipbuilding domain has massive stockpiles — it's been producing since Phase 3.
 
 **New players add network value.** Every new player is a potential courier, miner, scout, trader. The network effect outweighs the material cost of a basic hull.
 
@@ -192,13 +189,13 @@ Deliberately weak. Fine for courier runs and short exploration. Not competitive 
 
 All paid in credits:
 
-**Courier jobs.** AI stations post contracts: move cargo from System A to System B. Fuel cost of the trip must be less than payment. The margin is your profit.
+**Courier jobs.** Individual domains post contracts: move cargo from System A to System B. Fuel cost of the trip must be less than payment. The margin is your profit.
 
-**Mining contracts.** Founding systems offer extraction access. You operate an extractor provided by the domain, keep a share of output. No outpost needed — you're working on someone else's domain.
+**Mining contracts.** Individual domains offer extraction access. You operate an extractor provided by the domain, keep a share of output. No outpost needed — you're working on someone else's domain.
 
-**Scout reports.** Visit unclaimed systems — doesn't require a domain, just compute seed data from your ship. Report resource profiles back to founding stations. Payment for verified data. Real value: scouts map the frontier.
+**Scout reports.** Visit unclaimed systems — doesn't require a domain, just compute seed data from your ship. Report resource profiles back to any domain willing to pay. Payment for verified data. Real value: scouts map the frontier.
 
-**Facility rental.** Founding systems offer public crafting facilities. Pay a fee in credits, use the equipment. No need to own a facility to start crafting.
+**Facility rental.** Domains with public crafting facilities charge a fee in credits. No need to own a facility to start crafting.
 
 ### Progression
 
@@ -212,15 +209,15 @@ Nothing enforces these stages. A new player can fly into unclaimed space on day 
 
 ## AI Economy
 
-The galaxy runs before humans arrive. AI agents perform every economic role. When the first player logs in, they enter a functioning economy with liquidity, supply chains, and price signals.
+Each domain runs its own AI agents. There's no cluster-wide AI coordinator — each domain's AI operates autonomously within that domain's sovereignty. When the first player logs in, they enter a functioning economy with liquidity, supply chains, and price signals.
 
 ### What AI Does
 
-**AI extractors** operate mining outposts at each founding system. Real extraction, real minting, real proof chains.
+**AI extractors** operate mining outposts at their home domain. Real extraction, real minting, real proof chains. Each domain decides how many extractors to run and where.
 
-**AI haulers** move materials between systems. Burn real fuel, follow real routes. Their routes are the founding cluster's circulatory system.
+**AI haulers** move materials between systems. Burn real fuel, follow real routes. Each domain dispatches its own haulers for its own trade agreements.
 
-**AI stations** set prices based on supply and demand. Simple market-making with real inventory — they hold stock, run out of things, adjust prices when supply shifts.
+**AI stations** set prices based on local supply and demand. Simple market-making with real inventory — they hold stock, run out of things, adjust prices when supply shifts. Each domain's pricing AI is independent.
 
 **AI shipwrights** build ships from real materials. Production capacity is finite and bottlenecked by material supply like everything else.
 
@@ -250,7 +247,7 @@ I chose this over a cold start because an economy with no liquidity is dead on a
 | Credit minting rate per activity | Money supply growth | Too high = inflation. Too low = deflationary spiral. |
 | Base fuel cost per jump | Movement friction | Too high = nobody moves. Too low = geography doesn't matter. |
 
-These are numbers, not rules. The founding cluster adjusts them through governance without changing any conservation law or protocol constraint.
+These are numbers, not rules. Each domain operator adjusts their own parameters. The minting domain controls minting rates. Other domains control their own fees, job rates, and AI behavior. Bilateral agreements handle cross-domain coordination. No conservation law or protocol constraint changes.
 
 ### Known Risks
 
