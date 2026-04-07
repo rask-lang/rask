@@ -213,6 +213,54 @@ pub fn cmd_lint(path: &str, format: Format, rules: Vec<String>, excludes: Vec<St
     }
 }
 
+pub fn cmd_c_header(path: &str) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
+            process::exit(1);
+        }
+    };
+
+    match rask_c_parse::parse_c_header(&source) {
+        Ok(result) => {
+            for w in &result.warnings {
+                eprintln!("{}: line {}: {}", "warning".yellow().bold(), w.line, w.message);
+            }
+            let translated = rask_c_parse::translate::translate(&result, &[]);
+            let rask_src = rask_c_parse::translate::render_rask(&translated);
+            print!("{}", rask_src);
+
+            for w in &translated.warnings {
+                eprintln!("{}: {}", "warning".yellow().bold(), w);
+            }
+
+            let func_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Function(_))).count();
+            let struct_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Struct(_) | rask_c_parse::translate::RaskCDecl::Union(_))).count();
+            let enum_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Enum(_))).count();
+            let const_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Const(_))).count();
+            let typedef_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::TypeAlias(_))).count();
+            let warning_count = translated.warnings.len();
+
+            eprintln!();
+            eprintln!(
+                "{} {} functions, {} structs, {} enums, {} constants, {} typedefs{}",
+                output::status_pass(),
+                func_count,
+                struct_count,
+                enum_count,
+                const_count,
+                typedef_count,
+                if warning_count > 0 { format!(", {} warnings", warning_count) } else { String::new() },
+            );
+        }
+        Err(e) => {
+            eprintln!("{}: parsing {}: {}", output::error_label(), output::file_path(path), e);
+            process::exit(1);
+        }
+    }
+}
+
 pub fn cmd_explain(code: &str) {
     use rask_diagnostics::codes::ErrorCodeRegistry;
 

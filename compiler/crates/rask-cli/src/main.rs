@@ -623,6 +623,14 @@ fn main() {
             }
             commands::tools::cmd_explain(cmd_args[2]);
         }
+        "c-header" => {
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing header file argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("c-header"), output::arg("<file.h>"));
+                process::exit(1);
+            }
+            commands::tools::cmd_c_header(cmd_args[2]);
+        }
         "keys" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
                 println!("Manage Ed25519 signing keys.\n");
