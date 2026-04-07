@@ -347,7 +347,7 @@ Each stage is playable and fun on its own.
 
 **Combat model.** Combat happens within domain jurisdiction (systems, route domains). Domain runs Raido combat scripts, both sides verify. Looting works through consent-on-entry — entering a PvP domain grants the domain limited authority over combat consequences. Needs detailed design.
 
-**Faction mechanics.** Alliances of star systems. Probably just bundles of bilateral grants (Midgard's "unions" pattern). But do we need more structure? Shared defense, territory claims, faction wars?
+**Faction mechanics.** See [FACTIONS.md](FACTIONS.md). Group Owners with membership Grants, territory as social convention, governance internal to faction domain. War mechanics deferred to combat spec.
 
 **Economy bootstrapping.** See [ECONOMY.md](ECONOMY.md). Credits as seed currency, activity-tied minting, pre-bootstrapped founding cluster. Open tuning: minting rates, courier pay, facility fees.
 
