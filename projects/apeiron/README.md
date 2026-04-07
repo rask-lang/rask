@@ -329,15 +329,15 @@ Everything below is infrastructure. Apeiron doesn't build these — it uses them
 
 ## Roadmap
 
-Each stage is playable and fun on its own.
+See [ROADMAP.md](ROADMAP.md) for the full build order from specs to playable game.
 
-**Stage 1: A space trading game.** 5 founding cluster systems, hand-designed. AI economy. Fly, trade, mine. Text or simple 2D client. One operator runs everything. This is Elite (1984) — and that was a great game.
+**Stage 1: A space trading game.** Raido VM → galaxy gen → monolith server. 5 founding systems, AI economy, text client. No federation needed. Elite (1984) — and that was a great game.
 
-**Stage 2: Player stations.** Players deploy stations in founding cluster systems via managed hosting. Set prices, sell goods, attract visitors. First taste of sovereignty.
+**Stage 2-3: Federation.** Leden + Allgard. Player stations, player star systems. The monolith splits into sovereign domains.
 
-**Stage 3: Player star systems.** Players claim stars beyond the founding cluster. Federation activates — bilateral trust, introductions, the Allgard model. The galaxy expands.
+**Stage 4: The full vision.** GDL, rich clients, route domains, full AI ecosystem, player-created content.
 
-**Stage 4: The full vision.** Self-hosting. Route domains. Factions. The 10,000-star galaxy. Player-created content. Full AI agent ecosystem.
+**Combat:** Parallel track. Standalone prototype, integrate when solid.
 
 ## Open Questions
 
