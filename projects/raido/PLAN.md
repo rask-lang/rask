@@ -1,7 +1,10 @@
 # Raido in Rask — Implementation Plan
 
-Reference implementation. Proves the spec works, dogfoods Rask. Not the
-production VM (that'll be Rust).
+The real implementation, not a throwaway reference. If Rask can't express a
+bytecode VM cleanly, that's a language bug to fix.
+
+Single-pass compiler (Lua-style): lexer feeds parser, parser emits bytecode
+directly. No AST. Memory is O(scope depth), not O(program size).
 
 ## Prerequisites
 
@@ -19,11 +22,9 @@ raido/
   bytes.rk         # Byte encoding helpers (read/write u8, u16, u32, i64)
   arena.rk         # Byte-buffer arena with bump allocation
   opcodes.rk       # 37 opcodes, encode/decode 32-bit instructions
-  chunk.rk         # Bytecode chunk: constants, prototypes, code
+  chunk.rk         # Prototype and Chunk types
   lexer.rk         # Tokenizer
-  ast.rk           # AST node types (expressions, statements)
-  parser.rk        # Recursive descent + Pratt precedence
-  codegen.rk       # AST → bytecode
+  compiler.rk      # Single-pass: recursive descent parser + bytecode emitter
   vm.rk            # Dispatch loop, registers, call stack
   stdlib.rk        # Core + opt-in module functions
   coroutine.rk     # Coroutine state, resume/yield
@@ -163,8 +164,7 @@ struct Prototype {
     num_upvalues: i64,
     arity: i64,
     name: string,
-    // debug info (optional)
-    lines: Vec<i64>,      // source line per instruction
+    lines: Vec<i64>,      // source line per instruction (debug)
 }
 
 struct Chunk {
@@ -184,82 +184,95 @@ Tokens: keywords (`const let func return if else for while loop break continue
 match global try nil true false in yield`), operators, literals (int, number,
 string with interpolation), identifiers.
 
-String interpolation: `"hello {name}"` emits `StringStart("hello ")`,
-`Identifier("name")`, `StringEnd("")` (or similar token sequence the parser
-can handle).
+String interpolation: `"hello {name}"` emits token sequence the compiler
+can handle (e.g., `StringPart("hello ")`, expression tokens, `StringEnd("")`).
 
 **Test:** Lex snippets, verify token streams.
 
-### Phase 5: AST and parser
+### Phase 5: Single-pass compiler
 
-**ast.rk** — node types. Use index pools if Rask doesn't support recursive
-enums:
+Recursive descent parser that emits bytecode directly. No AST. Same
+architecture as Lua's lparser.c / lcode.c.
+
+The compiler holds:
+- Current and previous token (from lexer)
+- Scope stack: `Vec<Scope>` where each Scope holds local names + register
+  indices
+- Current prototype being built
+- Prototype stack (for nested functions)
 
 ```rask
-struct ExprId { idx: i64 }
-struct StmtId { idx: i64 }
-
-struct Ast {
-    exprs: Vec<Expr>,
-    stmts: Vec<Stmt>,
+struct Compiler {
+    lexer: Lexer,
+    current: Token,
+    previous: Token,
+    scopes: Vec<Scope>,
+    proto: Prototype,        // prototype being compiled
+    proto_stack: Vec<Prototype>,  // saved when entering nested func
+    next_reg: i64,           // next free register in current frame
+    imports: Vec<string>,
+    exports: Vec<string>,
 }
 
-enum Expr {
-    Nil,
-    Bool(bool),
-    Int(i64),
-    Num(Number),
-    Str(string),
-    Ident(string),
-    Binary(BinOp, ExprId, ExprId),
-    Unary(UnOp, ExprId),
-    Call(ExprId, Vec<ExprId>),
-    Index(ExprId, ExprId),
-    Field(ExprId, string),
-    Lambda(Vec<string>, Vec<StmtId>),
-    Array(Vec<ExprId>),
-    MapLit(Vec<(ExprId, ExprId)>),
-    If(ExprId, Vec<StmtId>, Vec<StmtId>),
-    Match(ExprId, Vec<MatchArm>),
-    Try(ExprId, Option<TryElse>),
+struct Scope {
+    locals: Vec<Local>,
+    depth: i64,
 }
 
-enum Stmt {
-    Expr(ExprId),
-    Const(string, ExprId),
-    Let(string, ExprId),
-    Assign(ExprId, ExprId),
-    Return(ExprId),
-    For(string, ExprId, Vec<StmtId>),
-    While(ExprId, Vec<StmtId>),
-    Break,
-    Continue,
-    Func(string, Vec<string>, Vec<StmtId>),
-    Global(string, ExprId),
+struct Local {
+    name: string,
+    reg: i64,
+    depth: i64,
+    is_captured: bool,
 }
 ```
 
-**parser.rk** — recursive descent. Pratt parsing for expressions.
+**Parsing functions emit bytecode as they go:**
 
-Precedence (low to high): `||`, `&&`, `== != < > <= >=`, `+ -`, `* / %`,
-unary `! -`, call/index/field.
+```rask
+func compile_expression(self, min_prec: i64) -> i64  // returns register
+func compile_statement(self)
+func compile_block(self)
+func compile_function(self, name: string)
+```
 
-**Test:** Parse snippets, verify AST structure via pretty-print or manual
-inspection.
+`compile_expression` returns the register holding the result. Pratt
+precedence: each `parse_*` method checks the next token's precedence and
+recurses.
 
-### Phase 6: Code generation
+**Register allocation:** Locals get sequential registers. Temporaries
+bump `next_reg`, freed after the expression completes (set `next_reg`
+back). Same pattern as Lua — no graph coloring, no liveness analysis.
 
-Walk the AST, emit instructions into a `Prototype`.
+**Backpatching:** `if`/`while`/`for` emit a jump with placeholder offset,
+save the instruction index, compile the body, then patch the offset:
 
-Register allocation: locals get sequential registers. Temporaries bump above
-locals, freed after each expression.
+```rask
+func emit_jump(self, op: i64) -> i64 {
+    const idx = self.proto.code.len()
+    self.emit(encode_asbx(op, 0, 0))  // placeholder
+    return idx
+}
 
-**Scope tracking:** compile-time stack of scopes, each holding local names
-and their register indices. Upvalue resolution walks the scope chain —
-if a variable is found in an enclosing function, record it as an upvalue.
+func patch_jump(self, idx: i64) {
+    const offset = self.proto.code.len() - idx - 1
+    const instr = self.proto.code.get(idx)
+    const op = decode_op(instr)
+    const a = decode_a(instr)
+    self.proto.code.set(idx, encode_asbx(op, a, offset))
+}
+```
 
-**Backpatching:** `if`/`while`/`for` emit placeholder jump offsets, patched
-after the body is compiled.
+**Upvalue resolution:** When a variable isn't in the current function's
+scope, walk up the scope stack. If found in an enclosing function, mark
+it as captured in that scope and add an upvalue entry to the current
+prototype. Uses the same logic as Lua's upvalue chain — each intermediate
+function also gets an upvalue entry if needed.
+
+**Constant folding:** When both operands of an arithmetic expression are
+literals, emit the folded result as `LOAD_INT` or `LOAD_CONST` instead
+of the arithmetic instruction. Only for literal-on-literal — no symbolic
+analysis.
 
 **Implement in order:**
 1. Literals → LOAD_NIL, LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST
@@ -275,16 +288,23 @@ after the body is compiled.
 11. Host refs → GET_FIELD, SET_FIELD
 
 **Test at each step:** compile snippets, disassemble bytecode, verify
-instruction sequences.
+instruction sequences. A `disassemble(proto)` function is useful here —
+print each instruction in human-readable form.
 
-### Phase 7: VM
+**If single-pass is painful in Rask, document why.** The point is to find
+out. Possible friction points: no pointer-based scope chains (use Vec
+indices), no goto (use loop+break for error recovery), no union types for
+the token-to-register return convention. If any of these require ugly
+workarounds, that's a Rask design signal worth recording.
+
+### Phase 6: VM
 
 The dispatch loop.
 
 ```rask
 struct Vm {
     arena: Arena,
-    registers: Vec<Value>,   // flat: frame_base indexes into it
+    registers: Vec<Value>,   // flat: base_reg indexes into it
     call_stack: Vec<CallFrame>,
     globals: Vec<Value>,
     global_names: Map<string, i64>,
@@ -299,11 +319,10 @@ struct CallFrame {
     proto_idx: i64,
     pc: i64,
     base_reg: i64,    // offset into registers vec
-    // upvalue tracking for closures
 }
 ```
 
-**Implement opcode handlers in the same order as Phase 6.** After each
+**Implement opcode handlers in the same order as Phase 5.** After each
 sub-step, you can compile + run Raido scripts that use those features.
 
 **Milestones:**
@@ -313,7 +332,7 @@ sub-step, you can compile + run Raido scripts that use those features.
 - After step 7: arrays and maps work
 - After step 8: closures with shared upvalues work
 
-### Phase 8: Standard library
+### Phase 7: Standard library
 
 Host functions registered before script execution.
 
@@ -333,7 +352,7 @@ Host functions registered before script execution.
 
 **Test:** Each function. Then Raido scripts that combine them.
 
-### Phase 9: Coroutines
+### Phase 8: Coroutines
 
 ```rask
 struct Coroutine {
@@ -349,7 +368,7 @@ swaps back. One runs at a time.
 
 **Test:** Producer/consumer. AI patrol from spec. Nested resume/yield.
 
-### Phase 10: Host interop
+### Phase 9: Host interop
 
 ```rask
 vm.register("send_message", |ctx: CallContext| -> Value or VmError {
@@ -368,7 +387,7 @@ by slot index.
 **Test:** Rask program creates VM, registers host functions, runs script,
 reads results back.
 
-### Phase 11: Serialization
+### Phase 10: Serialization
 
 Arena is already a byte buffer — `buf[0..top]` serializes in place.
 
@@ -387,7 +406,7 @@ No pointer fixup — all references are integer arena offsets.
 **Test:** Serialize mid-execution, deserialize, resume, verify identical
 result.
 
-### Phase 12: Content identity
+### Phase 11: Content identity
 
 SHA-256 of bytecode + constants + prototypes. Pure integer math + bitwise
 ops — implementable in Rask (~200 lines). Start with FNV-1a if SHA-256
@@ -402,34 +421,48 @@ Phase 1 (values + bytes)
     |
 Phase 2 (arena)          Phase 4 (lexer)
     |                        |
-Phase 3 (opcodes + chunk) Phase 5 (AST + parser)
+Phase 3 (opcodes + chunk)   |
     |                        |
     +----------+-------------+
                |
-         Phase 6 (codegen)
+         Phase 5 (compiler)
                |
-         Phase 7 (VM)            ← fibonacci works
+         Phase 6 (VM)            ← fibonacci works
                |
     +----------+----------+
     |          |          |
-Phase 8    Phase 9    Phase 10
+Phase 7    Phase 8    Phase 9
 (stdlib)   (coroutines) (host)
     |          |          |
     +----------+----------+
                |
-         Phase 11 (serialization) ← save/restore works
+         Phase 10 (serialization) ← save/restore works
                |
-         Phase 12 (content hash)  ← verifiable chunks
+         Phase 11 (content hash)  ← verifiable chunks
 ```
 
-Phases 1-3 and 4-5 are parallel tracks.
-Phases 8, 9, 10 are parallel after Phase 7.
+Phases 1-3 and Phase 4 are parallel tracks.
+Phases 7, 8, 9 are parallel after Phase 6.
 
 ## Risks
 
-**Recursive enum / index pools (Phase 5):** Test early whether Rask handles
-recursive enums. If not, the `ExprId`/`StmtId` index pool pattern works but
-is more verbose.
-
 **i128 for fixed-point mul/div (Phase 1):** If Rask lacks i128, split into
-32-bit halves. Test early.
+32-bit halves. Test first.
+
+**Recursive struct in Prototype (Phase 3):** `Prototype` contains
+`Vec<Prototype>`. If Rask doesn't handle this, flatten into a
+`Vec<Prototype>` pool with index references.
+
+## Rask friction log
+
+Track any point where the language gets in the way. This is the whole
+reason to write it in Rask. Examples to watch for:
+
+- Scope chain walking without pointers — is Vec indexing awkward?
+- Backpatching — does mutating a Vec<i64> by index feel natural?
+- Token matching — does `match` on enums with payloads work well?
+- Error propagation in the compiler — does `try` compose cleanly?
+- Closures as host functions — do they capture context correctly?
+
+If something is painful, don't work around it — file it. The fix might be
+in Rask, not in the Raido code.
