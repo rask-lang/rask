@@ -329,15 +329,15 @@ Everything below is infrastructure. Apeiron doesn't build these — it uses them
 
 ## Roadmap
 
-Each stage is playable and fun on its own.
+See [ROADMAP.md](ROADMAP.md) for the full build order from specs to playable game.
 
-**Stage 1: A space trading game.** 5 founding cluster systems, hand-designed. AI economy. Fly, trade, mine. Text or simple 2D client. One operator runs everything. This is Elite (1984) — and that was a great game.
+**Stage 1: A space trading game.** Raido VM → galaxy gen → monolith server. 5 founding systems, AI economy, text client. No federation needed. Elite (1984) — and that was a great game.
 
-**Stage 2: Player stations.** Players deploy stations in founding cluster systems via managed hosting. Set prices, sell goods, attract visitors. First taste of sovereignty.
+**Stage 2-3: Federation.** Leden + Allgard. Player stations, player star systems. The monolith splits into sovereign domains.
 
-**Stage 3: Player star systems.** Players claim stars beyond the founding cluster. Federation activates — bilateral trust, introductions, the Allgard model. The galaxy expands.
+**Stage 4: The full vision.** GDL, rich clients, route domains, full AI ecosystem, player-created content.
 
-**Stage 4: The full vision.** Self-hosting. Route domains. Factions. The 10,000-star galaxy. Player-created content. Full AI agent ecosystem.
+**Combat:** Parallel track. Standalone prototype, integrate when solid.
 
 ## Open Questions
 
@@ -347,9 +347,9 @@ Each stage is playable and fun on its own.
 
 **Combat model.** Combat happens within domain jurisdiction (systems, route domains). Domain runs Raido combat scripts, both sides verify. Looting works through consent-on-entry — entering a PvP domain grants the domain limited authority over combat consequences. Needs detailed design.
 
-**Faction mechanics.** Alliances of star systems. Probably just bundles of bilateral grants (Midgard's "unions" pattern). But do we need more structure? Shared defense, territory claims, faction wars?
+**Faction mechanics.** See [FACTIONS.md](FACTIONS.md). Group Owners with membership Grants, territory as social convention, governance internal to faction domain. War mechanics deferred to combat spec.
 
-**Economy bootstrapping.** What do founding cluster systems mint? How does the initial currency get distributed? What's the first thing a new player can trade?
+**Economy bootstrapping.** See [ECONOMY.md](ECONOMY.md). Credits as seed currency, activity-tied minting, pre-bootstrapped founding cluster. Open tuning: minting rates, courier pay, facility fees.
 
 **Client experience.** What does the minimum viable client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? GDL supports all of these — which is the Stage 1 target?
 
