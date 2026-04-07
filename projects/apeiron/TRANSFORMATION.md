@@ -18,7 +18,7 @@ Too loose and anyone declares wonder materials. Too tight and we've built a reci
 
 ## Elements
 
-Sixteen elements, six properties each. Named after real-world elements — not to simulate real chemistry, but because the names carry intuition. Iron is dense and hard. Copper conducts. When "iron + carbon" produces something steel-like, that's immersion. The interaction function is still seed-determined and opaque. The names are handles, not constraints.
+Thirteen elements — twelve natural, one synthetic — six properties each. Named after real-world elements — not to simulate real chemistry, but because the names carry intuition. Iron is dense and hard. Copper conducts. When "iron + carbon" produces something steel-like, that's immersion. The interaction function is still seed-determined and opaque. The names are handles, not constraints.
 
 | Property | What it governs |
 |----------|----------------|
@@ -37,7 +37,7 @@ The founding cluster publishes the element table: names, property vectors, abund
 
 Real chemistry is beautiful but computationally unbounded. Protein folding, quantum orbital interactions, reaction kinetics — simulating real chemistry in a Raido script is impossible and unnecessary. What we need is the *character* of chemistry: simple atomic rules producing complex emergent materials. The element system captures that without pretending to be physics.
 
-The real names help with the on-ramp. Players guess that iron + carbon might make something strong (it does — the founding cluster's "structural steel" recipe). They guess lithium might be good for fuel (it is — highest radiance). These intuitions are roughly correct for simple, low-energy combinations. They're completely wrong for exotic multi-element, high-energy phases where Apeiron's seed-determined physics diverges from reality. The familiar entry makes the alien depth more rewarding to discover.
+The real names help with the on-ramp. Players guess that iron + carbon might make something strong (it does — the founding cluster's "structural steel" recipe). They guess hydrogen might be good for fuel (it is — highest radiance among common elements). These intuitions are roughly correct for simple, low-energy combinations. They're completely wrong for exotic multi-element, high-energy phases where Apeiron's seed-determined physics diverges from reality. The familiar entry makes the alien depth more rewarding to discover.
 
 ## Grounding: Everything Is Objects
 
@@ -554,7 +554,7 @@ The simulation also informs tuning:
 
 All constants are part of the standard physics script. Content-addressed, published, verifiable. The founding cluster tunes through playtesting and publishes updates (new script hash, voluntary adoption).
 
-The element count and interaction table size determine the game's discovery depth. More elements = larger search space = longer discovery timeline. The founding cluster starts with 16 elements and can expand the table in future updates — adding new elements that the seed already placed in the galaxy but that prior scripts didn't know how to evaluate. "The elements were always there. We built better instruments." See [ELEMENTS.md](ELEMENTS.md) for expansion candidates.
+The element count and interaction table size determine the game's discovery depth. More elements = larger search space = longer discovery timeline. The founding cluster starts with 13 elements (12 natural + 1 synthetic) and can expand the table in future updates — adding new elements that the seed already placed in the galaxy but that prior scripts didn't know how to evaluate. "The elements were always there. We built better instruments." See [ELEMENTS.md](ELEMENTS.md) for expansion candidates.
 
 ## What This Creates
 
