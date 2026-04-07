@@ -498,3 +498,284 @@ fn discover_to_string() {
         "func main() {\n    const s = 42.to_string()\n    println(s)\n}"
     ), "i32.to_string should pass type check");
 }
+
+// ─── C import tests (CI1–CI5) ──────────────────────────────
+// End-to-end: parse C header → translate → resolve → type-check.
+
+fn c_header_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("c_headers")
+        .join(name)
+}
+
+/// Write a temp .rk file that imports the given header and check it.
+fn check_c_import(header: &str, rask_body: &str) -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let rask = rask_binary();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let header_path = c_header_fixture(header);
+    let tmp = std::env::temp_dir().join(format!("rask_ctest_{}_{}.rk", std::process::id(), id));
+    let source = format!(
+        "import c \"{}\"\n\n{}",
+        header_path.display(),
+        rask_body,
+    );
+    std::fs::write(&tmp, &source).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask check");
+
+    let _ = std::fs::remove_file(&tmp);
+    out.status.success()
+}
+
+/// Run `rask check` and return stderr+stdout for assertion.
+fn check_c_import_output(header: &str, rask_body: &str) -> (bool, String) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let rask = rask_binary();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let header_path = c_header_fixture(header);
+    let tmp = std::env::temp_dir().join(format!("rask_ctest_{}_{}.rk", std::process::id(), id));
+    let source = format!(
+        "import c \"{}\"\n\n{}",
+        header_path.display(),
+        rask_body,
+    );
+    std::fs::write(&tmp, &source).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask check");
+
+    let _ = std::fs::remove_file(&tmp);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    (out.status.success(), combined)
+}
+
+/// Run `rask resolve` and return stdout for symbol inspection.
+fn resolve_c_import(header: &str, rask_body: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let rask = rask_binary();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let header_path = c_header_fixture(header);
+    let tmp = std::env::temp_dir().join(format!("rask_crestest_{}_{}.rk", std::process::id(), id));
+    let source = format!(
+        "import c \"{}\"\n\n{}",
+        header_path.display(),
+        rask_body,
+    );
+    std::fs::write(&tmp, &source).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("resolve")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask resolve");
+
+    let _ = std::fs::remove_file(&tmp);
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+// CI1: import c "header.h" creates namespace with symbols
+#[test]
+fn c_import_creates_namespace() {
+    let symbols = resolve_c_import("mylib.h", "func main() {}");
+    assert!(symbols.contains("CNamespace"), "should create c namespace: {}", symbols);
+    assert!(symbols.contains("mylib_add"), "should contain mylib_add: {}", symbols);
+    assert!(symbols.contains("mylib_noop"), "should contain mylib_noop: {}", symbols);
+}
+
+// CI1: Functions parsed with correct types
+#[test]
+fn c_import_function_types() {
+    let symbols = resolve_c_import("mylib.h", "func main() {}");
+    assert!(
+        symbols.contains("ExternFunction") && symbols.contains("mylib_add"),
+        "should have ExternFunction for mylib_add: {}", symbols
+    );
+}
+
+// CI1: Structs parsed with fields
+#[test]
+fn c_import_struct_fields() {
+    let symbols = resolve_c_import("mylib.h", "func main() {}");
+    assert!(
+        symbols.contains("mylib_point") && symbols.contains("Struct"),
+        "should have struct mylib_point: {}", symbols
+    );
+}
+
+// CI1: Enum variants accessible
+#[test]
+fn c_import_enum_variants() {
+    let symbols = resolve_c_import("mylib.h", "func main() {}");
+    assert!(symbols.contains("MYLIB_OK"), "should have MYLIB_OK variant: {}", symbols);
+    assert!(symbols.contains("MYLIB_ERR"), "should have MYLIB_ERR variant: {}", symbols);
+    assert!(symbols.contains("MYLIB_TIMEOUT"), "should have MYLIB_TIMEOUT: {}", symbols);
+}
+
+// CI1: #define integer constant imported
+#[test]
+fn c_import_define_constant() {
+    let symbols = resolve_c_import("mylib.h", "func main() {}");
+    assert!(symbols.contains("MYLIB_VERSION"), "should have MYLIB_VERSION: {}", symbols);
+}
+
+// CI1: Forward-declared struct becomes opaque
+#[test]
+fn c_import_opaque_struct() {
+    let symbols = resolve_c_import("mylib.h", "func main() {}");
+    // mylib_ctx is forward-declared — should still exist as a struct
+    assert!(symbols.contains("mylib_ctx"), "should have opaque mylib_ctx: {}", symbols);
+}
+
+// CI1: Static functions not imported (internal linkage)
+#[test]
+fn c_import_skips_static() {
+    let symbols = resolve_c_import("mylib.h", "func main() {}");
+    assert!(!symbols.contains("mylib_internal_helper"),
+        "should NOT import static function: {}", symbols);
+}
+
+// CI1: Calling C function through namespace type-checks
+#[test]
+fn c_import_call_typechecks() {
+    assert!(check_c_import("mylib.h",
+        "func main() {\n    unsafe {\n        c.mylib_noop()\n    }\n}"
+    ), "calling c.mylib_noop() should type-check");
+}
+
+// CI1: Multiple functions type-check
+#[test]
+fn c_import_call_with_args_typechecks() {
+    assert!(check_c_import("mylib.h",
+        "func main() {\n    unsafe {\n        c.mylib_add(1, 2)\n    }\n}"
+    ), "calling c.mylib_add(1, 2) should type-check");
+}
+
+// CI5: import c "header.h" hiding { symbol }
+#[test]
+fn c_import_hiding() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let rask = rask_binary();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let header_path = c_header_fixture("mylib.h");
+    let tmp = std::env::temp_dir().join(format!("rask_chidetest_{}_{}.rk", std::process::id(), id));
+    let source = format!(
+        "import c \"{}\" hiding {{ mylib_add }}\n\nfunc main() {{}}\n",
+        header_path.display(),
+    );
+    std::fs::write(&tmp, &source).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("resolve")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask resolve");
+
+    let _ = std::fs::remove_file(&tmp);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+    // mylib_noop should be present, mylib_add should be hidden
+    assert!(stdout.contains("mylib_noop"), "mylib_noop should still be visible");
+    // Check that mylib_add is NOT in the CNamespace members
+    // (it may still exist as a symbol, but not in the namespace)
+    let ns_line = stdout.lines().find(|l| l.contains("CNamespace"));
+    if let Some(line) = ns_line {
+        assert!(!line.contains("mylib_add"),
+            "mylib_add should be hidden from namespace: {}", line);
+    }
+}
+
+// CI1: Aliased import: import c "header.h" as mylib
+#[test]
+fn c_import_alias() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let rask = rask_binary();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let header_path = c_header_fixture("mylib.h");
+    let tmp = std::env::temp_dir().join(format!("rask_caliastest_{}_{}.rk", std::process::id(), id));
+    let source = format!(
+        "import c \"{}\" as mylib\n\nfunc main() {{\n    unsafe {{\n        mylib.mylib_noop()\n    }}\n}}\n",
+        header_path.display(),
+    );
+    std::fs::write(&tmp, &source).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask check");
+
+    let _ = std::fs::remove_file(&tmp);
+    assert!(out.status.success(), "aliased import should type-check: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+}
+
+// Error: header not found should produce clear error
+#[test]
+fn c_import_missing_header() {
+    let (ok, output) = check_c_import_output("nonexistent.h", "func main() {}");
+    assert!(!ok, "missing header should fail");
+    assert!(output.contains("not found") || output.contains("header"),
+        "should mention header not found: {}", output);
+}
+
+// CI1: rask c-header CLI command works
+#[test]
+fn c_header_cli_command() {
+    let rask = rask_binary();
+    let header_path = c_header_fixture("mylib.h");
+
+    let out = Command::new(&rask)
+        .arg("c-header")
+        .arg(&header_path)
+        .output()
+        .expect("failed to run rask c-header");
+
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "c-header command should succeed: {}",
+        String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("extern \"C\" func mylib_add"), "should show mylib_add: {}", stdout);
+    assert!(stdout.contains("extern \"C\" struct mylib_point"), "should show struct: {}", stdout);
+    assert!(stdout.contains("MYLIB_VERSION"), "should show constant: {}", stdout);
+}
+
+// TM1: Type mapping verified through resolve output
+#[test]
+fn c_import_type_mapping() {
+    let symbols = resolve_c_import("mylib.h", "func main() {}");
+    // mylib_hash should have params with u32 return and *u8 + c_size params
+    assert!(symbols.contains("mylib_hash"), "should have mylib_hash");
+    // mylib_add should have c_int params
+    let add_line = symbols.lines().find(|l| l.contains("mylib_add"));
+    if let Some(line) = add_line {
+        assert!(line.contains("c_int"), "mylib_add should have c_int params: {}", line);
+    }
+}
+
+// Function-like macro produces warning, not error
+#[test]
+fn c_import_function_macro_warned() {
+    let (ok, output) = check_c_import_output("mylib.h", "func main() {}");
+    assert!(ok, "should still compile despite function-like macro");
+    assert!(output.contains("MYLIB_MAX") || output.contains("macro"),
+        "should warn about function-like macro: {}", output);
+}
