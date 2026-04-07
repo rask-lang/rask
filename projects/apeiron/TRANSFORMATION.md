@@ -18,7 +18,7 @@ Too loose and anyone declares wonder materials. Too tight and we've built a reci
 
 ## Elements
 
-The galaxy has a fixed set of elements — the fundamental building blocks of all materials. Not 118 like the periodic table. More like 12-20, tuned through playtesting. Each element is defined by a small property vector:
+Fourteen elements — thirteen natural, one synthetic — six properties each. Named after real-world elements — not to simulate real chemistry, but because the names carry intuition. Iron is dense and hard. Copper conducts. When "iron + carbon" produces something steel-like, that's immersion. The interaction function is still seed-determined and opaque. The names are handles, not constraints.
 
 | Property | What it governs |
 |----------|----------------|
@@ -31,11 +31,13 @@ The galaxy has a fixed set of elements — the fundamental building blocks of al
 
 Six properties. That's the atomic fingerprint. Everything else — structural efficiency, shielding effectiveness, energy density — derives from these when elements combine into materials.
 
-The founding cluster publishes the element table: names, property vectors, abundances. It's part of the standard physics script. Content-addressed, deterministic, same for everyone.
+The founding cluster publishes the element table: names, property vectors, abundances, and seven starter recipes. It's part of the standard physics script. Content-addressed, deterministic, same for everyone. See [ELEMENTS.md](ELEMENTS.md) for the full table, abundance distribution, starter recipes, and design rationale.
 
-### Why Not Real Chemistry
+### Why Real Names, Not Real Chemistry
 
 Real chemistry is beautiful but computationally unbounded. Protein folding, quantum orbital interactions, reaction kinetics — simulating real chemistry in a Raido script is impossible and unnecessary. What we need is the *character* of chemistry: simple atomic rules producing complex emergent materials. The element system captures that without pretending to be physics.
+
+The real names help with the on-ramp. Players guess that iron + carbon might make something strong (it does — the founding cluster's "structural steel" recipe). They guess hydrogen might be good for fuel (it is — highest radiance among common elements). These intuitions are roughly correct for simple, low-energy combinations. They're completely wrong for exotic multi-element, high-energy phases where Apeiron's seed-determined physics diverges from reality. The familiar entry makes the alien depth more rewarding to discover.
 
 ## Grounding: Everything Is Objects
 
@@ -321,27 +323,97 @@ The interaction function algorithm and its relationship to the galaxy seed is th
 
 This is universe design. The founding cluster tunes it through playtesting. The algorithm can evolve (new script version, voluntary adoption) but the seed doesn't change. Factions explore a continent that already exists — the interaction function drew the map but nobody has it.
 
-## Verification
+## Verification and Proof Chains
 
-When a domain mints a crafted material, the proof includes:
+### The Problem: Verification vs. Secrecy
 
-1. **Input proof** — what elements went in (references to prior object proofs)
-2. **Fuel proof** — what fuel was consumed (references to fuel object proofs, derives energy)
-3. **Facility proof** — which facility performed the transform (reference to facility object proof)
-4. **Process proof** — the crafting script hash (content-addressed Raido bytecode)
-5. **Output claim** — the resulting material's property vector
-6. **Physics evaluation** — standard physics script applied to all of the above
+Transforms must be verifiable — a domain can't just claim "I put in iron and got a miracle alloy." But full transparency leaks the recipe. If every proof chain reveals exact ratios, energy level, and catalyst, buying one sample gives you the complete recipe for free.
 
-Any domain can verify by re-executing:
+The solution: **layered proof chains.** Public verification establishes trust. Private details protect trade secrets.
 
-1. **Verify the facility.** Fetch the facility's object proof. Evaluate its component tree against the constraint laws. Derive its capabilities: reactor energy throughput, containment limits, precision rating.
-2. **Verify the inputs.** Check that element inputs and fuel objects existed and were consumed (conservation law proof chain).
-3. **Verify the transform.** Is the claimed energy within the facility's reactor capacity? Is the process within containment limits? Recompute the precision noise from (facility.precision, facility_id, transform_index) to get actual ratios. Does the claimed output match the interaction function evaluation at those actual ratios and energy? Is the mass budget satisfied?
-4. **Verify the output.** Evaluate the finished material/object against the five constraint laws.
+### Public Proof (visible to anyone inspecting the material)
 
-If any step fails — facility can't deliver the claimed energy, containment insufficient for the process, output doesn't match the physics — trust flag.
+1. **Output properties** — the material's property vector (the 6 values). This IS the material's identity.
+2. **Mass** — total output mass.
+3. **Domain attestation** — the producing domain's signed statement: "I verified this transform against standard physics script v{hash}."
+4. **Physics script hash** — which version of the standard physics script was used.
+5. **Input consumption hashes** — cryptographic hashes proving real objects were consumed. Verifies mass conservation without revealing what those objects were.
+6. **Transform index** — monotonic counter preventing replay.
 
-This is the same verification pattern as constraint physics: re-executable, deterministic, independent. The transformation physics extends the standard physics script with `verify_transformation(facility, inputs, fuel, process, output) -> bool` alongside the existing `verify_object(component_tree) -> bool`.
+### Private Proof (held by the producing domain, never shared in trade)
+
+1. **Element identities and exact ratios** — what went in and how much of each.
+2. **Energy level** — the exact energy per output mass.
+3. **Catalyst identity** — which catalyst element was present (if any).
+4. **Facility details** — reactor, containment, precision specifics.
+5. **Full input object references** — the complete proof chain of every consumed input.
+
+### How Verification Works
+
+**Within the producing domain:** Full verification. The domain re-runs the physics script with all private inputs, confirms the output matches. This is the deterministic re-execution that TRANSFORMATION.md has always described. The domain stakes its reputation on this attestation.
+
+**Between domains (trade):** The buyer sees the public proof. They verify:
+- The producing domain is running the standard physics script (hash check).
+- Real objects were consumed (input hashes link to valid object IDs in the producing domain's published consumption log).
+- The attestation is signed by the producing domain.
+- Mass conservation holds (output mass ≤ declared input mass).
+
+They do NOT re-run the physics script themselves — they don't have the private inputs. They trust the producing domain's attestation. This is the same bilateral trust model Allgard already uses for everything else.
+
+**If you don't trust the producing domain:** Don't buy their materials. Or demand full disclosure as a condition of trade (some sellers will accept this for commodity materials). Trust is bilateral, not universal.
+
+### Reverse Engineering
+
+Buying a material tells you the output properties. Not the inputs. Reverse engineering requires work:
+
+**Step 1 — Decomposition.** Break the material back into constituent elements. Now you know WHAT's in it. But: you destroyed the material, decomposition is lossy (30-50% mass loss), and you still don't know the ratios, energy level, or catalyst. Cost: one sample destroyed.
+
+**Step 2 — Experimental sweep.** With known elements, sweep ratios and energy to find the stoichiometric peak. For a 2-element alloy: ~200-500 experiments (ratio × energy grid). For 3-element: thousands. Each experiment consumes real materials.
+
+**Step 3 — Catalyst guessing.** Decomposition doesn't reveal the catalyst — it wasn't consumed and doesn't appear in the output. If the material was catalyst-assisted, you also need to sweep catalyst candidates. You don't even know IF a catalyst was involved.
+
+| Material complexity | Reverse engineering cost |
+|--------------------|-----------------------|
+| 2-element, no catalyst | ~500 experiments |
+| 2-element, with catalyst | ~1,500 experiments (3 catalyst candidates) |
+| 3-element, no catalyst | ~5,000+ experiments |
+| 3-element, with catalyst | ~15,000+ experiments |
+| 4-element | Effectively prohibitive without clues |
+
+This creates a natural economy: **simple recipes commoditize fast, complex recipes stay proprietary.** Binary alloys are reverse-engineered in days. Ternary alloys take weeks of sustained investment. Quaternary alloys are durable trade secrets.
+
+### Recipe Trading
+
+Because reverse engineering is expensive, recipes have independent trade value. A crafter can sell:
+- **Materials** — the output. Buyer gets the material, not the recipe. Safe.
+- **Recipes** — the full private proof (or a crafting script that encodes it). Buyer pays a premium but skips reverse engineering entirely.
+- **Hints** — partial information. "It's iron-based, needs medium energy." Worth something, not everything.
+
+This creates a knowledge economy layered on top of the material economy. A researcher who discovers a good ternary peak can profit from it three ways: produce and sell materials, license the recipe to other producers, or sell hints to competing researchers.
+
+## Material Naming
+
+### Social Names Are Primary
+
+Nobody reads `Fe82-Cr18 @E45` in their inventory. Materials have names. The name is the primary identifier everywhere — inventory, trade, conversation. Composition is metadata you inspect when you need it.
+
+**How naming works:**
+
+- The producing crafter names their material when first registering it.
+- Founding cluster pre-registers starter recipe names: "Steel", "Hull Plate", "Hydrocarbon Fuel."
+- Players register discoveries: "Kovac's Alloy", "Void Glass", "Sunfire" — whatever they choose.
+- Names are tied to a **property range**, not exact composition. Steel is steel whether it's Fe97-C3 or Fe96.5-C3.5. Small ratio variations that land on the same stoichiometric peak produce the same named material.
+- Composition notation (`Fe82-Cr18`) exists as a detail view for research and precision work. Not the label.
+
+### Naming Governance
+
+**Founding cluster** maintains the standard registry. Starter recipe names are reserved. Basic profanity filter on new registrations. Light touch — reject the obvious, let everything else through.
+
+**Domains are sovereign.** A domain can display any names they want locally. If the founding cluster rejects a name, the crafter's home domain can still use it internally.
+
+**Standard names are opt-in but sticky.** When a material gets widely adopted, its name becomes a de facto standard. The founding cluster can promote community names to "standard" status — recognition of what players already call it, not a vote.
+
+**No voting system.** Voting creates politics around naming instead of around the game. First-to-register at the founding cluster, domain sovereignty everywhere else.
 
 ## Level 2: System Design
 
@@ -477,7 +549,7 @@ Domains are sovereign. Nobody polices how fast you run experiments. But every ex
 
 2. **Facility capability.** Each experiment happens in a real facility. The facility's reactor limits energy throughput. Its containment limits process intensity. Its precision limits ratio control. The facility is an Allgard object — its capabilities derive from its component tree, verifiable by anyone.
 
-3. **Output validity.** The claimed output must match the interaction function evaluation for those inputs, at the energy the facility can deliver, with the precision the facility achieves. Trading partners re-execute the physics script against the full proof (inputs + fuel + facility + output).
+3. **Output validity.** The claimed output must match the interaction function evaluation for those inputs, at the energy the facility can deliver, with the precision the facility achieves. The producing domain verifies this via full re-execution. Trading partners verify via domain attestation (see Verification and Proof Chains).
 
 ### What Constrains Research
 
@@ -552,7 +624,7 @@ The simulation also informs tuning:
 
 All constants are part of the standard physics script. Content-addressed, published, verifiable. The founding cluster tunes through playtesting and publishes updates (new script hash, voluntary adoption).
 
-The element count and interaction table size determine the game's discovery depth. More elements = larger search space = longer discovery timeline. The founding cluster starts small (12-16 elements) and can expand the table in future updates — adding new elements that the seed already placed in the galaxy but that prior scripts didn't know how to evaluate. "The elements were always there. We built better instruments."
+The element count and interaction table size determine the game's discovery depth. More elements = larger search space = longer discovery timeline. The founding cluster starts with 14 elements (13 natural + 1 synthetic) and can expand the table in future updates — adding new elements that the seed already placed in the galaxy but that prior scripts didn't know how to evaluate. "The elements were always there. We built better instruments." See [ELEMENTS.md](ELEMENTS.md) for expansion candidates.
 
 ## What This Creates
 
