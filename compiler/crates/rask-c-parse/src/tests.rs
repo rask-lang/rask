@@ -248,60 +248,66 @@ int unix_only(void);
     #[test]
     fn translate_function() {
         let r = parse("int open(const char *path, int flags);");
-        let decls = translate::translate(&r, &[]);
-        match &decls[0] {
-            translate::RaskCDecl::ExternFunc { name, params, ret_ty, .. } => {
-                assert_eq!(name, "open");
-                assert_eq!(ret_ty, "c_int");
-                assert_eq!(params[0].ty, "*u8");
-                assert_eq!(params[1].ty, "c_int");
+        let result = translate::translate(&r, &[]);
+        match &result.decls[0] {
+            translate::RaskCDecl::Function(f) => {
+                assert_eq!(f.name, "open");
+                assert_eq!(f.ret_ty, "c_int");
+                assert_eq!(f.params[0].ty, "*u8");
+                assert_eq!(f.params[1].ty, "c_int");
             }
-            other => panic!("expected ExternFunc, got {:?}", other),
+            other => panic!("expected Function, got {:?}", other),
         }
     }
 
     #[test]
     fn translate_struct() {
         let r = parse("struct Point { int x; float y; };");
-        let decls = translate::translate(&r, &[]);
-        let found = decls.iter().find(|d| matches!(d, translate::RaskCDecl::ExternStruct { .. }));
+        let result = translate::translate(&r, &[]);
+        let found = result.decls.iter().find(|d| matches!(d, translate::RaskCDecl::Struct(_)));
         match found {
-            Some(translate::RaskCDecl::ExternStruct { name, fields }) => {
-                assert_eq!(name, "Point");
-                assert_eq!(fields[0].ty, "c_int");
-                assert_eq!(fields[1].ty, "f32");
+            Some(translate::RaskCDecl::Struct(s)) => {
+                assert_eq!(s.name, "Point");
+                assert_eq!(s.fields[0].ty, "c_int");
+                assert_eq!(s.fields[1].ty, "f32");
             }
-            other => panic!("expected ExternStruct, got {:?}", other),
+            other => panic!("expected Struct, got {:?}", other),
         }
     }
 
     #[test]
     fn translate_opaque() {
         let r = parse("struct sqlite3;");
-        let decls = translate::translate(&r, &[]);
-        assert!(matches!(&decls[0], translate::RaskCDecl::OpaqueType { name } if name == "sqlite3"));
+        let result = translate::translate(&r, &[]);
+        match &result.decls[0] {
+            translate::RaskCDecl::Struct(s) => {
+                assert_eq!(s.name, "sqlite3");
+                assert!(s.is_opaque);
+            }
+            other => panic!("expected opaque Struct, got {:?}", other),
+        }
     }
 
     #[test]
     fn translate_hiding() {
         let r = parse("int keep(void);\nint hide(void);");
-        let decls = translate::translate(&r, &["hide".to_string()]);
-        assert_eq!(decls.len(), 1);
-        match &decls[0] {
-            translate::RaskCDecl::ExternFunc { name, .. } => assert_eq!(name, "keep"),
-            other => panic!("expected ExternFunc, got {:?}", other),
+        let result = translate::translate(&r, &["hide".to_string()]);
+        assert_eq!(result.decls.len(), 1);
+        match &result.decls[0] {
+            translate::RaskCDecl::Function(f) => assert_eq!(f.name, "keep"),
+            other => panic!("expected Function, got {:?}", other),
         }
     }
 
     #[test]
     fn translate_define_to_const() {
         let r = parse("#define SQLITE_OK 0\n");
-        let decls = translate::translate(&r, &[]);
-        match &decls[0] {
-            translate::RaskCDecl::Const { name, ty, value } => {
-                assert_eq!(name, "SQLITE_OK");
-                assert_eq!(ty, "c_int");
-                assert_eq!(value, "0");
+        let result = translate::translate(&r, &[]);
+        match &result.decls[0] {
+            translate::RaskCDecl::Const(c) => {
+                assert_eq!(c.name, "SQLITE_OK");
+                assert_eq!(c.ty, "c_int");
+                assert_eq!(c.value_repr, "0");
             }
             other => panic!("expected Const, got {:?}", other),
         }
@@ -310,33 +316,33 @@ int unix_only(void);
     #[test]
     fn translate_size_t() {
         let r = parse("size_t strlen(const char *s);");
-        let decls = translate::translate(&r, &[]);
-        match &decls[0] {
-            translate::RaskCDecl::ExternFunc { ret_ty, .. } => {
-                assert_eq!(ret_ty, "c_size");
+        let result = translate::translate(&r, &[]);
+        match &result.decls[0] {
+            translate::RaskCDecl::Function(f) => {
+                assert_eq!(f.ret_ty, "c_size");
             }
-            other => panic!("expected ExternFunc, got {:?}", other),
+            other => panic!("expected Function, got {:?}", other),
         }
     }
 
     #[test]
     fn translate_void_return() {
         let r = parse("void free(void *ptr);");
-        let decls = translate::translate(&r, &[]);
-        match &decls[0] {
-            translate::RaskCDecl::ExternFunc { ret_ty, params, .. } => {
-                assert_eq!(ret_ty, "void");
-                assert_eq!(params[0].ty, "*void");
+        let result = translate::translate(&r, &[]);
+        match &result.decls[0] {
+            translate::RaskCDecl::Function(f) => {
+                assert_eq!(f.ret_ty, "");
+                assert_eq!(f.params[0].ty, "*void");
             }
-            other => panic!("expected ExternFunc, got {:?}", other),
+            other => panic!("expected Function, got {:?}", other),
         }
     }
 
     #[test]
     fn render_rask_output() {
         let r = parse("int add(int a, int b);");
-        let decls = translate::translate(&r, &[]);
-        let output = translate::render_rask(&decls);
+        let result = translate::translate(&r, &[]);
+        let output = translate::render_rask(&result);
         assert!(output.contains("extern \"C\" func add("));
         assert!(output.contains("c_int"));
     }
@@ -404,20 +410,20 @@ mylib_status mylib_send(mylib_ctx *ctx, const uint8_t *data, size_t len);
 #endif
 "#;
         let r = parse(src);
-        let decls = translate::translate(&r, &[]);
+        let result = translate::translate(&r, &[]);
 
         // Should have: opaque type, struct, enum, 3 functions, 2 constants, typedef
-        let funcs: Vec<_> = decls.iter()
-            .filter(|d| matches!(d, translate::RaskCDecl::ExternFunc { .. }))
+        let funcs: Vec<_> = result.decls.iter()
+            .filter(|d| matches!(d, translate::RaskCDecl::Function(_)))
             .collect();
-        let structs: Vec<_> = decls.iter()
-            .filter(|d| matches!(d, translate::RaskCDecl::ExternStruct { .. }))
+        let structs: Vec<_> = result.decls.iter()
+            .filter(|d| matches!(d, translate::RaskCDecl::Struct(_)))
             .collect();
-        let enums: Vec<_> = decls.iter()
-            .filter(|d| matches!(d, translate::RaskCDecl::ExternEnum { .. }))
+        let enums: Vec<_> = result.decls.iter()
+            .filter(|d| matches!(d, translate::RaskCDecl::Enum(_)))
             .collect();
-        let consts: Vec<_> = decls.iter()
-            .filter(|d| matches!(d, translate::RaskCDecl::Const { .. }))
+        let consts: Vec<_> = result.decls.iter()
+            .filter(|d| matches!(d, translate::RaskCDecl::Const(_)))
             .collect();
 
         assert!(funcs.len() >= 3, "should have at least 3 functions, got {}", funcs.len());
@@ -427,7 +433,7 @@ mylib_status mylib_send(mylib_ctx *ctx, const uint8_t *data, size_t len);
 
         // Verify specific translation
         let init_fn = funcs.iter().find(|d| {
-            matches!(d, translate::RaskCDecl::ExternFunc { name, .. } if name == "mylib_init")
+            matches!(d, translate::RaskCDecl::Function(f) if f.name == "mylib_init")
         });
         assert!(init_fn.is_some(), "should have mylib_init");
     }

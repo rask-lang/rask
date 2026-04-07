@@ -1140,7 +1140,10 @@ impl Resolver {
                         eprintln!("warning: {}: {}", header_path, w.message);
                     }
                     let translated = translate::translate(&result, &c_import.hiding);
-                    all_decls.extend(translated);
+                    for w in &translated.warnings {
+                        eprintln!("warning: c-import: {}", w);
+                    }
+                    all_decls.extend(translated.decls);
                 }
                 Err(e) => {
                     self.errors.push(ResolveError::c_parse_error(
@@ -1157,58 +1160,68 @@ impl Resolver {
 
         for decl in &all_decls {
             match decl {
-                translate::RaskCDecl::ExternFunc { name, params, ret_ty, .. } => {
-                    let param_types: Vec<String> = params.iter()
+                translate::RaskCDecl::Function(f) => {
+                    let param_types: Vec<String> = f.params.iter()
                         .map(|p| p.ty.clone())
                         .collect();
                     let sym_id = self.symbols.insert(
-                        name.clone(),
+                        f.name.clone(),
                         SymbolKind::ExternFunction {
                             abi: "C".to_string(),
                             params: param_types,
-                            ret_ty: if ret_ty == "void" { None } else { Some(ret_ty.clone()) },
+                            ret_ty: if f.ret_ty.is_empty() { None } else { Some(f.ret_ty.clone()) },
                         },
                         None,
                         span,
                         false,
                     );
-                    members.insert(name.clone(), sym_id);
+                    members.insert(f.name.clone(), sym_id);
                 }
-                translate::RaskCDecl::ExternStruct { name, fields } => {
-                    let mut field_syms = Vec::new();
-                    // Create a struct symbol first (with dummy SymbolId for fields)
-                    let struct_sym_id = self.symbols.insert(
-                        name.clone(),
-                        SymbolKind::Struct { fields: vec![] },
-                        None,
-                        span,
-                        false,
-                    );
-                    for f in fields {
-                        let f_sym = self.symbols.insert(
-                            f.name.clone(),
-                            SymbolKind::Field { parent: struct_sym_id },
-                            Some(f.ty.clone()),
+                translate::RaskCDecl::Struct(s) => {
+                    if s.is_opaque {
+                        let sym_id = self.symbols.insert(
+                            s.name.clone(),
+                            SymbolKind::Struct { fields: vec![] },
+                            None,
                             span,
                             false,
                         );
-                        field_syms.push((f.name.clone(), f_sym));
+                        members.insert(s.name.clone(), sym_id);
+                    } else {
+                        let mut field_syms = Vec::new();
+                        let struct_sym_id = self.symbols.insert(
+                            s.name.clone(),
+                            SymbolKind::Struct { fields: vec![] },
+                            None,
+                            span,
+                            false,
+                        );
+                        for f in &s.fields {
+                            let f_sym = self.symbols.insert(
+                                f.name.clone(),
+                                SymbolKind::Field { parent: struct_sym_id },
+                                Some(f.ty.clone()),
+                                span,
+                                false,
+                            );
+                            field_syms.push((f.name.clone(), f_sym));
+                        }
+                        if let Some(sym) = self.symbols.get_mut(struct_sym_id) {
+                            sym.kind = SymbolKind::Struct { fields: field_syms };
+                        }
+                        members.insert(s.name.clone(), struct_sym_id);
                     }
-                    if let Some(sym) = self.symbols.get_mut(struct_sym_id) {
-                        sym.kind = SymbolKind::Struct { fields: field_syms };
-                    }
-                    members.insert(name.clone(), struct_sym_id);
                 }
-                translate::RaskCDecl::ExternUnion { name, fields } => {
+                translate::RaskCDecl::Union(s) => {
                     let mut field_syms = Vec::new();
                     let union_sym_id = self.symbols.insert(
-                        name.clone(),
+                        s.name.clone(),
                         SymbolKind::Struct { fields: vec![] },
                         None,
                         span,
                         false,
                     );
-                    for f in fields {
+                    for f in &s.fields {
                         let f_sym = self.symbols.insert(
                             f.name.clone(),
                             SymbolKind::Field { parent: union_sym_id },
@@ -1221,18 +1234,18 @@ impl Resolver {
                     if let Some(sym) = self.symbols.get_mut(union_sym_id) {
                         sym.kind = SymbolKind::Struct { fields: field_syms };
                     }
-                    members.insert(name.clone(), union_sym_id);
+                    members.insert(s.name.clone(), union_sym_id);
                 }
-                translate::RaskCDecl::ExternEnum { name, variants } => {
+                translate::RaskCDecl::Enum(e) => {
                     let enum_sym_id = self.symbols.insert(
-                        name.clone(),
+                        e.name.clone(),
                         SymbolKind::Enum { variants: vec![] },
                         None,
                         span,
                         false,
                     );
                     let mut variant_syms = Vec::new();
-                    for (vname, _value) in variants {
+                    for (vname, _value) in &e.variants {
                         let v_sym = self.symbols.insert(
                             vname.clone(),
                             SymbolKind::EnumVariant { enum_id: enum_sym_id },
@@ -1247,40 +1260,27 @@ impl Resolver {
                     if let Some(sym) = self.symbols.get_mut(enum_sym_id) {
                         sym.kind = SymbolKind::Enum { variants: variant_syms };
                     }
-                    members.insert(name.clone(), enum_sym_id);
+                    members.insert(e.name.clone(), enum_sym_id);
                 }
-                translate::RaskCDecl::Const { name, ty, .. } => {
+                translate::RaskCDecl::Const(c) => {
                     let sym_id = self.symbols.insert(
-                        name.clone(),
+                        c.name.clone(),
                         SymbolKind::Variable { mutable: false },
-                        Some(ty.clone()),
+                        Some(c.ty.clone()),
                         span,
                         false,
                     );
-                    members.insert(name.clone(), sym_id);
+                    members.insert(c.name.clone(), sym_id);
                 }
-                translate::RaskCDecl::TypeAlias { name, target } => {
+                translate::RaskCDecl::TypeAlias(a) => {
                     let sym_id = self.symbols.insert(
-                        name.clone(),
-                        SymbolKind::TypeAlias { target: target.clone() },
+                        a.name.clone(),
+                        SymbolKind::TypeAlias { target: a.target.clone() },
                         None,
                         span,
                         false,
                     );
-                    members.insert(name.clone(), sym_id);
-                }
-                translate::RaskCDecl::OpaqueType { name } => {
-                    let sym_id = self.symbols.insert(
-                        name.clone(),
-                        SymbolKind::Struct { fields: vec![] },
-                        None,
-                        span,
-                        false,
-                    );
-                    members.insert(name.clone(), sym_id);
-                }
-                translate::RaskCDecl::Warning { message } => {
-                    eprintln!("warning: c-import: {}", message);
+                    members.insert(a.name.clone(), sym_id);
                 }
             }
         }
