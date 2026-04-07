@@ -18,7 +18,7 @@ Too loose and anyone declares wonder materials. Too tight and we've built a reci
 
 ## Elements
 
-Thirteen elements — twelve natural, one synthetic — six properties each. Named after real-world elements — not to simulate real chemistry, but because the names carry intuition. Iron is dense and hard. Copper conducts. When "iron + carbon" produces something steel-like, that's immersion. The interaction function is still seed-determined and opaque. The names are handles, not constraints.
+Fourteen elements — thirteen natural, one synthetic — six properties each. Named after real-world elements — not to simulate real chemistry, but because the names carry intuition. Iron is dense and hard. Copper conducts. When "iron + carbon" produces something steel-like, that's immersion. The interaction function is still seed-determined and opaque. The names are handles, not constraints.
 
 | Property | What it governs |
 |----------|----------------|
@@ -554,7 +554,7 @@ The simulation also informs tuning:
 
 All constants are part of the standard physics script. Content-addressed, published, verifiable. The founding cluster tunes through playtesting and publishes updates (new script hash, voluntary adoption).
 
-The element count and interaction table size determine the game's discovery depth. More elements = larger search space = longer discovery timeline. The founding cluster starts with 13 elements (12 natural + 1 synthetic) and can expand the table in future updates — adding new elements that the seed already placed in the galaxy but that prior scripts didn't know how to evaluate. "The elements were always there. We built better instruments." See [ELEMENTS.md](ELEMENTS.md) for expansion candidates.
+The element count and interaction table size determine the game's discovery depth. More elements = larger search space = longer discovery timeline. The founding cluster starts with 14 elements (13 natural + 1 synthetic) and can expand the table in future updates — adding new elements that the seed already placed in the galaxy but that prior scripts didn't know how to evaluate. "The elements were always there. We built better instruments." See [ELEMENTS.md](ELEMENTS.md) for expansion candidates.
 
 ## What This Creates
 

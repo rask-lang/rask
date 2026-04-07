@@ -1,7 +1,7 @@
 # Element Table
 <!-- id: apeiron.elements --> <!-- status: proposed --> <!-- summary: The founding cluster's element definitions — property vectors, abundances, and starter recipes -->
 
-Thirteen elements. Twelve natural, one synthetic. Three tiers plus manufactured. This is the founding cluster's standard physics table — content-addressed, deterministic, published to every domain.
+Fourteen elements. Thirteen natural, one synthetic. Three tiers plus manufactured. This is the founding cluster's standard physics table — content-addressed, deterministic, published to every domain.
 
 ## Why Real Names
 
@@ -9,9 +9,9 @@ I named these after real-world elements because it gives players an on-ramp. "Ir
 
 What this buys: known alloys (steel, titanium alloys, tungsten carbide) work as natural starter recipes. Players bring real-world intuitions. Most of those intuitions are roughly correct for simple combinations — and completely wrong for exotic multi-element, high-energy phases where the physics diverges from reality entirely.
 
-## Why Thirteen
+## Why Fourteen
 
-Other games land on 8-12 base resources (EVE: 8 minerals, Factorio: 6, Space Engineers: 11, Minecraft: 11). The sweet spot is enough variety for meaningful choices without inventory tedium. Our complexity comes from the interaction function's combinatorial space — 78 element pairs, each with 3-5 stoichiometric peaks — not from a long element list.
+Other games land on 8-12 base resources (EVE: 8 minerals, Factorio: 6, Space Engineers: 11, Minecraft: 11). The sweet spot is enough variety for meaningful choices without inventory tedium. Our complexity comes from the interaction function's combinatorial space — 91 element pairs, each with 3-5 stoichiometric peaks — not from a long element list.
 
 Every element earns its slot by occupying a unique region in the 6-property space. No two are interchangeable. I conflated similar elements aggressively: nickel, cobalt, and chromium are similar enough that chromium alone covers the "trace hardening modifier" role. Tin and zinc are both "soft alloying metal" — cut both. If playtesting reveals a gap, the expansion mechanism is built in.
 
@@ -29,6 +29,7 @@ Properties on a 0.00–1.00 scale. These are *base element properties* — the w
 | 3 | **Copper** | 0.56 | 0.22 | 0.88 | 0.28 | 0.48 | 0.04 | The conductor. Soft and heavy, but nothing else comes close in conductivity until gold. |
 | 4 | **Aluminum** | 0.20 | 0.28 | 0.62 | 0.55 | 0.45 | 0.03 | Lightweight. Low density, decent conductor, reactive. The strength-to-weight enabler in alloys. |
 | 5 | **Hydrogen** | 0.01 | 0.00 | 0.05 | 0.95 | 0.08 | 0.70 | Fuel base. Nearly zero everything except reactivity and radiance. The energy element — hydrogen compounds are the natural starting point for fuel. Dangerous in concentration. |
+| 6 | **Sulfur** | 0.16 | 0.10 | 0.04 | 0.72 | 0.30 | 0.35 | Reactive non-metal. Light, soft, poor conductor, highly reactive, moderate radiance. The chemical processing element — propellants, acids, vulcanization. Enables the entire "chemical industry" branch: flexible materials (seals, gaskets, insulation), energetic compounds, and at high energy levels, path to metamaterials with unusual electromagnetic properties. |
 
 ### Strategic — Variable distribution, two consumption patterns
 
@@ -36,17 +37,17 @@ Strategic elements split into two gameplay roles. **Bulk strategic** (titanium) 
 
 | # | Element | Den | Hard | Cond | React | Stab | Rad | Role |
 |---|---------|-----|------|------|-------|------|-----|------|
-| 6 | **Titanium** | 0.35 | 0.82 | 0.14 | 0.15 | 0.88 | 0.04 | Aerospace structural. Hard, stable, light, poor conductor. Where you need strength without weight. Bulk strategic — you build hulls from this. |
-| 7 | **Chromium** | 0.55 | 0.80 | 0.30 | 0.25 | 0.85 | 0.18 | Trace hardener. Very hard, very stable. Small additions to other elements dramatically boost hardness and corrosion resistance. The 18% that makes steel stainless. |
-| 8 | **Tungsten** | 0.92 | 0.92 | 0.28 | 0.06 | 0.94 | 0.22 | Extreme metal. Hardest, densest, most stable natural element. Poor conductor, nearly inert. Armor, weapons, reactor containment, heat shields. |
-| 9 | **Gold** | 0.82 | 0.15 | 0.85 | 0.04 | 0.78 | 0.15 | Inert conductor. Dense, soft, excellent conductor, nearly zero reactivity. The only element combining high conductivity with high stability and chemical inertness. Space electronics, connectors, radiation shielding. |
+| 7 | **Titanium** | 0.35 | 0.82 | 0.14 | 0.15 | 0.88 | 0.04 | Aerospace structural. Hard, stable, light, poor conductor. Where you need strength without weight. Bulk strategic — you build hulls from this. |
+| 8 | **Chromium** | 0.55 | 0.80 | 0.30 | 0.25 | 0.85 | 0.18 | Trace hardener. Very hard, very stable. Small additions to other elements dramatically boost hardness and corrosion resistance. The 18% that makes steel stainless. |
+| 9 | **Tungsten** | 0.92 | 0.92 | 0.28 | 0.06 | 0.94 | 0.22 | Extreme metal. Hardest, densest, most stable natural element. Poor conductor, nearly inert. Armor, weapons, reactor containment, heat shields. |
+| 10 | **Gold** | 0.82 | 0.15 | 0.85 | 0.04 | 0.78 | 0.15 | Inert conductor. Dense, soft, excellent conductor, nearly zero reactivity. The only element combining high conductivity with high stability and chemical inertness. Space electronics, connectors, radiation shielding. |
 
 ### Exotic — Few systems, high strategic value
 
 | # | Element | Den | Hard | Cond | React | Stab | Rad | Role |
 |---|---------|-----|------|------|-------|------|-----|------|
-| 10 | **Uranium** | 0.88 | 0.38 | 0.10 | 0.38 | 0.22 | 0.92 | Nuclear fuel source. Dense, radioactive, unstable. Extreme radiance but low stability — the energy wants to escape. Valuable as fuel feedstock and as parent material for plutonium synthesis. |
-| 11 | **Platinum** | 0.82 | 0.42 | 0.52 | 0.05 | 0.90 | 0.08 | The catalyst. Nearly inert, extremely stable, good conductor. Worth more as a catalyst than as material input — its presence during transforms lowers activation energy for stoichiometric peaks that would otherwise require vastly more fuel. Controlling platinum deposits is the single largest strategic advantage in the galaxy. |
+| 11 | **Uranium** | 0.88 | 0.38 | 0.10 | 0.38 | 0.22 | 0.92 | Nuclear fuel source. Dense, radioactive, unstable. Extreme radiance but low stability — the energy wants to escape. Valuable as fuel feedstock and as parent material for plutonium synthesis. |
+| 12 | **Platinum** | 0.82 | 0.42 | 0.52 | 0.05 | 0.90 | 0.08 | The catalyst. Nearly inert, extremely stable, good conductor. Worth more as a catalyst than as material input — its presence during transforms lowers activation energy for stoichiometric peaks that would otherwise require vastly more fuel. Controlling platinum deposits is the single largest strategic advantage in the galaxy. |
 
 ### Synthetic — Not found naturally
 
@@ -60,7 +61,7 @@ Plutonium fits cleanly into the existing transformation system. It's just a tran
 
 | Tier | Elements | Galaxy mass share | System availability | Deposit scale |
 |------|----------|-------------------|--------------------|----|
-| Common | Fe, C, Si, Cu, Al, H | ~85% | 90-100% of systems | 100K–1M units |
+| Common | Fe, C, Si, Cu, Al, H, S | ~84% | 90-100% of systems | 100K–1M units |
 | Strategic (bulk) | Ti | ~8% | 60-80% of systems | 10K–100K units |
 | Strategic (trace) | Cr, W, Au | ~5% | 30-50% of systems | 1K–10K units |
 | Exotic | U, Pt | ~2% | 5-15% of systems | 100–1K units |
@@ -96,7 +97,7 @@ Seven recipes. All recognizable real-world analogues. The founding cluster doesn
 
 ### What's Not Published
 
-Everything else. 78 element pairs minus 7 published = 71 unmapped pairs. Plus all ternary, quaternary, and quinary combinations. Plus high-energy phases. Plus catalyst effects. Plus plutonium chemistry (nobody has any yet).
+Everything else. 91 element pairs minus 7 published = 84 unmapped pairs. Plus all ternary, quaternary, and quinary combinations. Plus high-energy phases. Plus catalyst effects. Plus plutonium chemistry (nobody has any yet).
 
 Specific unknowns that define the research game:
 
@@ -104,7 +105,8 @@ Specific unknowns that define the research game:
 - **Advanced fuel.** Hydrogen + something unexpected at high energy. The published hydrocarbon fuel is intentionally mediocre. Better fuel recipes are the first major research prize.
 - **Tungsten carbide.** Tungsten + Carbon at a narrow peak ratio. Extreme hardness, extreme density. The weapons/armor material — but tungsten is scarce, so production is limited.
 - **Gold electronics.** Gold + Silicon at specific ratios. What happens to conductivity when you combine the inert conductor with the semiconductor? The interaction function knows. Nobody's tested it.
-- **Plutonium compounds.** Everything. When someone finally synthesizes plutonium and starts combining it with other elements, they're exploring 12 new element pairs that nobody in the galaxy has data on. Extreme radiance + other properties = unknown territory.
+- **Sulfur compounds.** Sulfur + metals at medium-to-high energy. In reality, metal sulfides have unusual electromagnetic and thermoelectric properties. In Apeiron, the sulfur interaction peaks are largely unexplored — the founding cluster published no sulfur recipes. The "chemical industry" is wide open.
+- **Plutonium compounds.** Everything. When someone finally synthesizes plutonium and starts combining it with other elements, they're exploring 13 new element pairs that nobody in the galaxy has data on. Extreme radiance + other properties = unknown territory.
 - **Platinum-catalyzed reactions.** What peaks unlock when platinum is present as a catalyst during high-energy transforms? The physics script includes these peaks. They're waiting for someone with platinum access and enough fuel to test systematically.
 
 ## Property Space Analysis
@@ -115,6 +117,7 @@ Each element occupies a unique region. No two are interchangeable:
 |------------------|---------|----------------------------------|
 | Extreme reactivity + radiance, zero mass | Hydrogen | Only element that's pure energy potential |
 | High hardness + high reactivity + high stability | Carbon | The only element that bonds with everything yet remains stable |
+| High reactivity + low hardness + non-metal | Sulfur | The only solid reactive non-metal — chemical processing, propellants, flexible materials |
 | High hardness + high stability + low density | Titanium | The aerospace sweet spot — nothing else is this strong and this light |
 | Max density + max hardness + max stability | Tungsten | Every structural extreme simultaneously |
 | High conductivity + near-zero reactivity | Gold | The only inert conductor — copper conducts but corrodes |
@@ -147,7 +150,7 @@ Catalyst effects are seed-determined. In one galaxy, platinum might dramatically
 
 ## Future Expansion
 
-The table starts at 13. The physics script supports expansion. Future updates add elements that "were always there" — the seed placed them, the physics script evaluates them, but earlier scripts didn't include them in the published table.
+The table starts at 14. The physics script supports expansion. Future updates add elements that "were always there" — the seed placed them, the physics script evaluates them, but earlier scripts didn't include them in the published table.
 
 Expansion candidates (not committed):
 
@@ -157,4 +160,4 @@ Expansion candidates (not committed):
 - **Cobalt** — magnetic catalyst. Selective catalyst for iron-family peaks.
 - **Helium-3** — fusion fuel. Near-zero everything except extreme radiance.
 
-Each expansion adds new element pairs to the interaction landscape without breaking existing recipes. "Element 14 was always in those asteroids. We finally know what to do with it."
+Each expansion adds new element pairs to the interaction landscape without breaking existing recipes. "Element 15 was always in those asteroids. We finally know what to do with it."
