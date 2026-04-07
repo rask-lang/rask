@@ -473,7 +473,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }));
-    let extern_funcs = collect_extern_func_names(&decls);
+    let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
     let empty_resource_types = std::collections::HashSet::new();
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let type_names: std::collections::HashMap<rask_types::TypeId, String> = typed.types.iter()
@@ -570,7 +570,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }));
     let type_names = super::compile::build_type_names(&typed);
     let trait_methods = super::compile::build_trait_methods(&typed);
-    let extern_funcs = collect_extern_func_names(&decls);
+    let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
     let empty_resource_types = std::collections::HashSet::new();
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
@@ -683,13 +683,59 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     }
 }
 
-/// Extract the names of all `extern "C"` functions from parsed declarations.
-pub fn collect_extern_func_names(decls: &[rask_ast::decl::Decl]) -> std::collections::HashSet<String> {
-    decls.iter().filter_map(|d| {
+/// Extract the names of all `extern "C"` functions from parsed declarations
+/// and C import namespaces.
+pub fn collect_extern_func_names(
+    decls: &[rask_ast::decl::Decl],
+    symbols: &rask_resolve::SymbolTable,
+) -> std::collections::HashSet<String> {
+    let mut names: std::collections::HashSet<String> = decls.iter().filter_map(|d| {
         if let rask_ast::decl::DeclKind::Extern(e) = &d.kind {
             Some(e.name.clone())
         } else {
             None
         }
-    }).collect()
+    }).collect();
+
+    // Add functions from C import namespaces
+    for sym in symbols.iter() {
+        if let rask_resolve::SymbolKind::CNamespace { members } = &sym.kind {
+            for (_, &member_id) in members {
+                if let Some(member) = symbols.get(member_id) {
+                    if let rask_resolve::SymbolKind::ExternFunction { abi, .. } = &member.kind {
+                        if abi == "C" {
+                            names.insert(member.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    names
+}
+
+/// Extract extern function signatures from C import namespaces in the symbol table.
+pub fn collect_c_import_extern_sigs(
+    symbols: &rask_resolve::SymbolTable,
+) -> Vec<rask_codegen::ExternFuncSig> {
+    let mut sigs = Vec::new();
+    for sym in symbols.iter() {
+        if let rask_resolve::SymbolKind::CNamespace { members } = &sym.kind {
+            for (_, &member_id) in members {
+                if let Some(member) = symbols.get(member_id) {
+                    if let rask_resolve::SymbolKind::ExternFunction { abi, params, ret_ty } = &member.kind {
+                        if abi == "C" {
+                            sigs.push(rask_codegen::ExternFuncSig {
+                                name: member.name.clone(),
+                                param_types: params.clone(),
+                                ret_ty: ret_ty.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    sigs
 }

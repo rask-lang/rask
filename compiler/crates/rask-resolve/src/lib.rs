@@ -55,6 +55,40 @@ pub struct ResolvedProgram {
     pub external_decls: HashMap<String, Vec<Decl>>,
 }
 
+/// Extern function signature extracted from C imports or explicit `extern "C"` decls.
+#[derive(Debug, Clone)]
+pub struct CImportExternFunc {
+    pub name: String,
+    pub params: Vec<String>,
+    pub ret_ty: Option<String>,
+}
+
+impl ResolvedProgram {
+    /// Extract all extern "C" function names and signatures from C import namespaces.
+    /// Used by MIR lowering (extern_funcs set) and codegen (extern function declarations).
+    pub fn c_import_extern_funcs(&self) -> Vec<CImportExternFunc> {
+        let mut result = Vec::new();
+        for sym in self.symbols.iter() {
+            if let SymbolKind::CNamespace { members } = &sym.kind {
+                for (_, &member_id) in members {
+                    if let Some(member) = self.symbols.get(member_id) {
+                        if let SymbolKind::ExternFunction { abi, params, ret_ty } = &member.kind {
+                            if abi == "C" {
+                                result.push(CImportExternFunc {
+                                    name: member.name.clone(),
+                                    params: params.clone(),
+                                    ret_ty: ret_ty.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+}
+
 /// Resolve all names in a list of declarations (single-file mode).
 pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve(decls)

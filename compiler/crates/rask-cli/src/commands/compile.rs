@@ -138,6 +138,7 @@ fn report_mir_diagnostics(
 /// Initialize codegen and declare all runtime/stdlib/extern functions.
 fn setup_codegen(
     decls: &[Decl],
+    symbols: &rask_resolve::SymbolTable,
     mono: &MonoProgram,
     mir_functions: &[rask_mir::MirFunction],
     comptime_globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
@@ -154,7 +155,7 @@ fn setup_codegen(
     codegen.declare_stdlib_functions()
         .map_err(|e| vec![e.to_string()])?;
 
-    let extern_sigs: Vec<_> = decls.iter().filter_map(|d| {
+    let mut extern_sigs: Vec<_> = decls.iter().filter_map(|d| {
         if let DeclKind::Extern(e) = &d.kind {
             Some(rask_codegen::ExternFuncSig {
                 name: e.name.clone(),
@@ -165,6 +166,8 @@ fn setup_codegen(
             None
         }
     }).collect();
+    // Add signatures from C header imports
+    extern_sigs.extend(super::codegen::collect_c_import_extern_sigs(symbols));
     codegen.declare_extern_functions(&extern_sigs)
         .map_err(|e| vec![e.to_string()])?;
 
@@ -216,7 +219,7 @@ pub fn compile_to_object(
     let line_map = source_text.map(rask_ast::LineMap::new);
     let type_names = build_type_names(typed);
     let trait_methods = build_trait_methods(typed);
-    let extern_funcs = super::codegen::collect_extern_func_names(decls);
+    let extern_funcs = super::codegen::collect_extern_func_names(decls, &typed.symbols);
     let empty_resource_types = std::collections::HashSet::new();
 
     let comptime_interp = cfg.map(|c| {
@@ -258,7 +261,7 @@ pub fn compile_to_object(
         return Err(vec!["no functions to compile".to_string()]);
     }
 
-    let mut codegen = setup_codegen(decls, mono, &mir_functions, comptime_globals, target, build_mode)?;
+    let mut codegen = setup_codegen(decls, &typed.symbols, mono, &mir_functions, comptime_globals, target, build_mode)?;
 
     // Set debug context for DWARF emission (DI1)
     if build_mode == rask_codegen::BuildMode::Debug {
@@ -467,7 +470,7 @@ pub fn compile_tests_to_object(
     let line_map = source_text.map(rask_ast::LineMap::new);
     let type_names = build_type_names(typed);
     let trait_methods = build_trait_methods(typed);
-    let extern_funcs = super::codegen::collect_extern_func_names(decls);
+    let extern_funcs = super::codegen::collect_extern_func_names(decls, &typed.symbols);
     let empty_resource_types = std::collections::HashSet::new();
 
     let comptime_interp = cfg.map(|c| {
@@ -511,7 +514,7 @@ pub fn compile_tests_to_object(
 
     // Tests use debug mode for better error messages
     let mut codegen = setup_codegen(
-        decls, mono, &mir_functions, comptime_globals,
+        decls, &typed.symbols, mono, &mir_functions, comptime_globals,
         None, rask_codegen::BuildMode::Debug,
     )?;
 
@@ -651,7 +654,7 @@ pub fn compile_benchmarks_to_object(
     let line_map = source_text.map(rask_ast::LineMap::new);
     let type_names = build_type_names(typed);
     let trait_methods = build_trait_methods(typed);
-    let extern_funcs = super::codegen::collect_extern_func_names(decls);
+    let extern_funcs = super::codegen::collect_extern_func_names(decls, &typed.symbols);
     let empty_resource_types = std::collections::HashSet::new();
 
     let comptime_interp = cfg.map(|c| {
@@ -703,7 +706,7 @@ pub fn compile_benchmarks_to_object(
 
     // Benchmarks always use release mode
     let mut codegen = setup_codegen(
-        decls, mono, &mir_functions, comptime_globals,
+        decls, &typed.symbols, mono, &mir_functions, comptime_globals,
         None, rask_codegen::BuildMode::Release,
     )?;
 
