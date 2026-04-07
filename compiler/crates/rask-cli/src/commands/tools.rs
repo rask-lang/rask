@@ -231,12 +231,16 @@ pub fn cmd_c_header(path: &str) {
             let rask_src = rask_c_parse::translate::render_rask(&translated);
             print!("{}", rask_src);
 
-            let func_count = translated.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::ExternFunc { .. })).count();
-            let struct_count = translated.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::ExternStruct { .. })).count();
-            let enum_count = translated.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::ExternEnum { .. })).count();
-            let const_count = translated.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Const { .. })).count();
-            let typedef_count = translated.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::TypeAlias { .. })).count();
-            let warning_count = translated.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Warning { .. })).count();
+            for w in &translated.warnings {
+                eprintln!("{}: {}", "warning".yellow().bold(), w);
+            }
+
+            let func_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Function(_))).count();
+            let struct_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Struct(_) | rask_c_parse::translate::RaskCDecl::Union(_))).count();
+            let enum_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Enum(_))).count();
+            let const_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Const(_))).count();
+            let typedef_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::TypeAlias(_))).count();
+            let warning_count = translated.warnings.len();
 
             eprintln!();
             eprintln!(
