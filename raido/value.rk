@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Raido value types — the things that live in registers and the arena
+//
+// Every register in the VM holds one Value. Values are dynamically typed:
+// you don't know what's in a register until you check the tag at runtime.
+
+// --- Fixed-point 32.32 number ---
+// Stored as i64: upper 32 bits are the integer part (signed),
+// lower 32 bits are the fractional part.
+//
+// Examples:
+//   1.0   → raw = 0x0000_0001_0000_0000 (1 << 32)
+//   0.5   → raw = 0x0000_0000_8000_0000 (1 << 31)
+//  -1.0   → raw = 0xFFFF_FFFF_0000_0000
+//   3.14  → raw = 3 << 32 + (0.14 * 2^32) ≈ 0x0000_0003_23D7_0A3E
+
+struct Number {
+    raw: i64
+}
+
+const FRAC_BITS: i64 = 32
+const FRAC_SCALE: i64 = 4294967296  // 1 << 32, but written as literal to avoid shift issues
+
+extend Number {
+    // Create a Number from an integer (e.g., 42 → 42.0 in fixed-point)
+    func from_int(n: i64) -> Number {
+        return Number { raw: n << FRAC_BITS }
+    }
+
+    // Truncate to integer (drops fractional part)
+    func to_int(self) -> i64 {
+        return self.raw >> FRAC_BITS
+    }
+
+    // Addition: just add the raw values
+    func add(self, other: Number) -> Number {
+        return Number { raw: self.raw + other.raw }
+    }
+
+    // Subtraction: just subtract
+    func sub(self, other: Number) -> Number {
+        return Number { raw: self.raw - other.raw }
+    }
+
+    // Negation
+    func neg(self) -> Number {
+        return Number { raw: -self.raw }
+    }
+
+    // Multiplication: multiply raw values, shift right by 32
+    // Needs 128-bit intermediate to avoid overflow.
+    // If i128 isn't available, use the split method below.
+    func mul(self, other: Number) -> Number {
+        // Split each value into upper and lower 32-bit halves
+        // a = a_hi * 2^32 + a_lo
+        // b = b_hi * 2^32 + b_lo
+        // a * b = a_hi*b_hi*2^64 + (a_hi*b_lo + a_lo*b_hi)*2^32 + a_lo*b_lo
+        // We then shift right by 32 (divide by FRAC_SCALE)
+        const a = self.raw
+        const b = other.raw
+
+        // Handle signs manually to avoid issues with unsigned splits
+        const sign = if (a < 0) != (b < 0) { -1 } else { 1 }
+        const abs_a = if a < 0 { -a } else { a }
+        const abs_b = if b < 0 { -b } else { b }
+
+        const a_hi = abs_a >> 32
+        const a_lo = abs_a & 0xFFFFFFFF
+        const b_hi = abs_b >> 32
+        const b_lo = abs_b & 0xFFFFFFFF
+
+        // The full product shifted right by 32:
+        // result = a_hi*b_hi*2^32 + a_hi*b_lo + a_lo*b_hi + (a_lo*b_lo >> 32)
+        const mid1 = a_hi * b_lo
+        const mid2 = a_lo * b_hi
+        const lo_part = (a_lo * b_lo) >> 32
+        const hi_part = a_hi * b_hi << 32
+
+        const result = hi_part + mid1 + mid2 + lo_part
+        return Number { raw: if sign < 0 { -result } else { result } }
+    }
+
+    // Division: shift left by 32, then divide
+    // Same split trick as multiplication
+    func div(self, other: Number) -> Number {
+        if other.raw == 0 {
+            // Caller should check for this — but saturate rather than crash
+            return Number { raw: if self.raw >= 0 { 0x7FFFFFFFFFFFFFFF } else { -0x7FFFFFFFFFFFFFFF } }
+        }
+
+        const a = self.raw
+        const b = other.raw
+        const sign = if (a < 0) != (b < 0) { -1 } else { 1 }
+        const abs_a = if a < 0 { -a } else { a }
+        const abs_b = if b < 0 { -b } else { b }
+
+        // (abs_a << 32) / abs_b — but abs_a << 32 can overflow i64
+        // Split: abs_a = hi * 2^32 + lo
+        // (hi * 2^32 + lo) << 32 = hi * 2^64 + lo * 2^32
+        // We compute hi * 2^64 / abs_b + lo * 2^32 / abs_b
+        const hi = abs_a >> 32
+        const lo = abs_a & 0xFFFFFFFF
+
+        const hi_div = if hi > 0 {
+            // hi * 2^64 / abs_b — may still overflow, but handles common cases
+            const hi_shifted = hi << 32  // This is hi * 2^32
+            (hi_shifted / abs_b) << 32
+        } else { 0 }
+
+        const lo_div = (lo << 32) / abs_b
+
+        const result = hi_div + lo_div
+        return Number { raw: if sign < 0 { -result } else { result } }
+    }
+
+    // Modulo
+    func modulo(self, other: Number) -> Number {
+        if other.raw == 0 {
+            return Number { raw: 0 }
+        }
+        return Number { raw: self.raw % other.raw }
+    }
+
+    // Comparison
+    func eq(self, other: Number) -> bool {
+        return self.raw == other.raw
+    }
+
+    func lt(self, other: Number) -> bool {
+        return self.raw < other.raw
+    }
+
+    func le(self, other: Number) -> bool {
+        return self.raw <= other.raw
+    }
+
+    func to_string(self) -> string {
+        const int_part = self.raw >> FRAC_BITS
+        const frac_raw = if self.raw < 0 { -(self.raw & 0xFFFFFFFF) } else { self.raw & 0xFFFFFFFF }
+        const abs_frac = if frac_raw < 0 { -frac_raw } else { frac_raw }
+
+        // Convert fractional part to decimal (4 digits)
+        const scaled = (abs_frac * 10000) >> FRAC_BITS
+        const frac_str = "{scaled}"
+
+        // Pad to 4 digits
+        const padded = if scaled < 10 { "000{frac_str}" }
+            else if scaled < 100 { "00{frac_str}" }
+            else if scaled < 1000 { "0{frac_str}" }
+            else { frac_str }
+
+        const sign = if self.raw < 0 && int_part == 0 { "-" } else { "" }
+        return "{sign}{int_part}.{padded}"
+    }
+}
+
+// --- Value enum ---
+// This is what lives in every register, global slot, and arena value slot.
+
+enum Value {
+    Nil
+    Bool(bool)
+    Int(i64)
+    Num(Number)
+    Str(i64)            // Arena offset pointing to a string object
+    Array(i64)          // Arena offset pointing to an array object
+    MapVal(i64)         // Arena offset pointing to a map object
+    Closure(i64)        // Arena offset pointing to a closure object
+    HostRef(i64, i64)   // (type_id, ref_id) — opaque reference to host data
+}
+
+extend Value {
+    // Check if a value is "truthy" — everything except nil and false
+    func is_truthy(self) -> bool {
+        match self {
+            Value.Nil => return false,
+            Value.Bool(b) => return b,
+            _ => return true,
+        }
+    }
+
+    func type_name(self) -> string {
+        match self {
+            Value.Nil => return "nil",
+            Value.Bool(_) => return "bool",
+            Value.Int(_) => return "int",
+            Value.Num(_) => return "number",
+            Value.Str(_) => return "string",
+            Value.Array(_) => return "array",
+            Value.MapVal(_) => return "map",
+            Value.Closure(_) => return "function",
+            Value.HostRef(_, _) => return "host_ref",
+        }
+    }
+
+    func to_display(self) -> string {
+        match self {
+            Value.Nil => return "nil",
+            Value.Bool(b) => return if b { "true" } else { "false" },
+            Value.Int(n) => return "{n}",
+            Value.Num(n) => return n.to_string(),
+            Value.Str(_) => return "<string>",  // Needs arena to read actual content
+            Value.Array(_) => return "<array>",
+            Value.MapVal(_) => return "<map>",
+            Value.Closure(_) => return "<function>",
+            Value.HostRef(t, r) => return "<host_ref:{t}:{r}>",
+        }
+    }
+}

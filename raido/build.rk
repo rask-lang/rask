@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+package "raido" "0.1.0" {
+    description: "Raido deterministic scripting VM"
+    license: "MIT OR Apache-2.0"
+}

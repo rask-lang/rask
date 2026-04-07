@@ -1,0 +1,330 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Raido compiler — single-pass, recursive descent
+//
+// HOW IT WORKS (read this before writing code)
+// =============================================
+//
+// A traditional compiler has two phases:
+//   1. Parser: source → AST (tree of nodes)
+//   2. Codegen: AST → bytecode
+//
+// This compiler combines them into one pass. Instead of building a tree
+// and then walking it, we emit bytecode *while parsing*. When we see
+// "1 + 2", we don't create an AddExpr node — we immediately emit:
+//   LOAD_INT r0 1
+//   LOAD_INT r1 2
+//   ADD r2 r0 r1
+//
+// This is how Lua's compiler works (lparser.c + lcode.c).
+//
+// THE KEY IDEA: each compile_* function returns the register number
+// where its result ended up. So the caller knows where to find the value.
+//
+//   func compile_expression(self) -> i64
+//     "I compiled an expression and put the result in register N"
+//     Returns N.
+//
+// REGISTER ALLOCATION
+// ===================
+// Very simple — no graph coloring, no liveness analysis.
+//
+// Each function has up to 256 registers (0-255). They're split into:
+//   [param0] [param1] ... [local0] [local1] ... [temp0] [temp1] ...
+//    ← parameters →       ← locals →            ← temporaries →
+//
+// - Parameters get the first registers (r0, r1, ...).
+// - Local variables (const/let) get the next ones.
+// - Temporaries are used during expression evaluation and freed afterward.
+//
+// The compiler tracks `next_reg` — the next free register. To allocate:
+//   const reg = self.alloc_reg()  // returns next_reg, increments it
+// To free temporaries after an expression:
+//   self.free_reg_to(saved_next_reg)  // reset next_reg back
+//
+// BACKPATCHING
+// ============
+// When compiling `if x { ... } else { ... }`, we need to emit a jump
+// *before* we know how far to jump (we haven't compiled the body yet).
+//
+// Solution: emit a placeholder jump with offset 0, remember its position,
+// compile the body, then go back and patch the real offset.
+//
+//   const jump_idx = self.emit_jump(OP_JMP_IF_NOT)  // placeholder
+//   self.compile_block()                              // compile the body
+//   self.patch_jump(jump_idx)                         // now we know the offset
+//
+// SCOPE TRACKING
+// ==============
+// The compiler maintains a stack of scopes. Each scope knows what local
+// variables exist and which registers they're in.
+//
+// When you write `const x = 42`:
+//   1. Compiler emits LOAD_INT to put 42 in the next free register
+//   2. Records in the current scope: "x" → register N
+//
+// When you later write `x + 1`:
+//   1. Compiler looks up "x" in scopes (innermost first)
+//   2. Finds it in register N
+//   3. Emits LOAD_INT for 1 in register M
+//   4. Emits ADD into register K
+//
+// UPVALUES (closures — do this last)
+// ==================================
+// When a closure references a variable from an outer function, that's an
+// "upvalue." The compiler needs to track these so the VM can capture them.
+//
+// Skip this until step 8. Functions without closures work fine without it.
+
+enum CompileError {
+    LexError(LexError)
+    UnexpectedToken(string, i64)    // (message, line)
+    TooManyLocals(i64)              // line
+    TooManyConstants(i64)           // line
+}
+
+extend CompileError {
+    func message(self) -> string {
+        match self {
+            CompileError.LexError(e) => return e.message(),
+            CompileError.UnexpectedToken(msg, line) =>
+                return "line {line}: {msg}",
+            CompileError.TooManyLocals(line) =>
+                return "line {line}: too many local variables (max 256)",
+            CompileError.TooManyConstants(line) =>
+                return "line {line}: too many constants (max 65536)",
+        }
+    }
+}
+
+// --- Local variable tracking ---
+
+struct Local {
+    name: string
+    reg: i64            // Which register holds this variable
+    depth: i64          // Scope depth (0 = top-level of function)
+    is_captured: bool   // Has a closure captured this? (for upvalue handling)
+}
+
+struct Scope {
+    locals: Vec<Local>
+    depth: i64
+}
+
+// --- The compiler ---
+
+struct Compiler {
+    lexer: Lexer
+    current: Token          // The token we're about to consume
+    previous: Token         // The token we just consumed
+    current_line: i64       // Line number of current token
+
+    proto: Prototype        // The function prototype we're building
+    scope: Scope            // Current scope (locals and depth)
+
+    next_reg: i64           // Next free register
+
+    had_error: bool
+    // TODO: proto_stack for nested functions (Phase 5 step 6)
+}
+
+extend Compiler {
+    func new(source: string) -> Compiler {
+        return Compiler {
+            lexer: Lexer.new(source),
+            current: Token.Eof,
+            previous: Token.Eof,
+            current_line: 1,
+            proto: Prototype.new("<main>", 0),
+            scope: Scope { locals: Vec.new(), depth: 0 },
+            next_reg: 0,
+            had_error: false,
+        }
+    }
+
+    // --- Token consumption ---
+
+    // Move to the next token. Previous = what was current.
+    func advance(self) -> () or CompileError {
+        self.previous = self.current
+        const tok = try self.lexer.next_token()
+            else |e| return Err(CompileError.LexError(e))
+        self.current = tok
+        self.current_line = self.lexer.line
+        return Ok(())
+    }
+
+    // Consume the current token if it matches. Error if it doesn't.
+    func expect(self, expected: string) -> () or CompileError {
+        // TODO: match self.current against the expected token type
+        // For now, just advance
+        return self.advance()
+    }
+
+    // Skip newlines (they're statement terminators, but sometimes optional)
+    func skip_newlines(self) {
+        while self.current is Token.Newline {
+            self.advance()
+        }
+    }
+
+    // --- Register management ---
+
+    func alloc_reg(self) -> i64 {
+        const reg = self.next_reg
+        self.next_reg = self.next_reg + 1
+        if self.next_reg > self.proto.num_registers {
+            self.proto.num_registers = self.next_reg
+        }
+        return reg
+    }
+
+    func free_reg_to(self, reg: i64) {
+        self.next_reg = reg
+    }
+
+    // --- Bytecode emission ---
+
+    func emit(self, instr: i64) {
+        self.proto.code.push(instr)
+        self.proto.lines.push(self.current_line)
+    }
+
+    func emit_abc(self, op: i64, a: i64, b: i64, c: i64) {
+        self.emit(encode_abc(op, a, b, c))
+    }
+
+    func emit_abx(self, op: i64, a: i64, bx: i64) {
+        self.emit(encode_abx(op, a, bx))
+    }
+
+    // Emit a jump instruction with placeholder offset. Returns the index
+    // of the instruction so you can patch it later.
+    func emit_jump(self, op: i64, a: i64) -> i64 {
+        const idx = self.proto.code.len()
+        self.emit(encode_asbx(op, a, 0))  // offset 0 = placeholder
+        return idx
+    }
+
+    // Patch a previously-emitted jump to land at the current position.
+    func patch_jump(self, idx: i64) {
+        const offset = self.proto.code.len() - idx - 1
+        const instr = self.proto.code.get(idx)
+        const op = decode_op(instr)
+        const a = decode_a(instr)
+        self.proto.code.set(idx, encode_asbx(op, a, offset))
+    }
+
+    // --- Scope management ---
+
+    // Add a local variable in the current scope. Returns its register.
+    func declare_local(self, name: string) -> i64 {
+        const reg = self.alloc_reg()
+        self.scope.locals.push(Local {
+            name: name,
+            reg: reg,
+            depth: self.scope.depth,
+            is_captured: false,
+        })
+        return reg
+    }
+
+    // Look up a variable by name. Returns the register, or -1 if not found.
+    func resolve_local(self, name: string) -> i64 {
+        // Search backwards (innermost scope first)
+        let i = self.scope.locals.len() - 1
+        while i >= 0 {
+            const local = self.scope.locals.get(i)
+            if local.name == name {
+                return local.reg
+            }
+            i = i - 1
+        }
+        return -1  // Not found — might be a global or upvalue
+    }
+
+    func begin_scope(self) {
+        self.scope.depth = self.scope.depth + 1
+    }
+
+    func end_scope(self) {
+        // Remove locals that belong to the scope we're leaving
+        while self.scope.locals.len() > 0 {
+            const last = self.scope.locals.last()
+            if last.depth < self.scope.depth { break }
+            self.scope.locals.pop()
+            self.next_reg = self.next_reg - 1
+        }
+        self.scope.depth = self.scope.depth - 1
+    }
+
+    // --- Add a constant to the pool ---
+    func make_constant(self, val: Value) -> i64 {
+        return self.proto.add_constant(val)
+    }
+
+    // =====================================================
+    // YOUR JOB: Implement these methods, one at a time
+    // =====================================================
+
+    // --- Entry point ---
+    // Compile a full script. Returns the chunk.
+    func compile(self) -> Chunk or CompileError {
+        try self.advance()  // Load first token
+
+        // TODO: loop calling compile_statement() until Eof
+        // Skip newlines between statements
+
+        // Emit implicit return nil at end
+        self.emit_abx(OP_RETURN, 255, 0)
+
+        return Ok(Chunk.new(self.proto))
+    }
+
+    // --- Statements ---
+    // A statement is one "line" of code:
+    //   const x = 42
+    //   let y = x + 1
+    //   return x
+    //   if x > 0 { ... }
+    //   func foo() { ... }
+    //   expression (as a statement, like a function call)
+    //
+    func compile_statement(self) -> () or CompileError {
+        // TODO: match self.current to decide which kind of statement
+        // Start with just: expression statements (compile_expression + discard result)
+        return Ok(())
+    }
+
+    // --- Expressions ---
+    // An expression produces a value: 42, x, x + 1, foo(x), [1,2,3]
+    //
+    // Uses Pratt parsing for operator precedence. The idea:
+    // - Each operator has a "binding power" (precedence number)
+    // - compile_expression(min_bp) parses everything with binding power >= min_bp
+    // - Higher number = binds tighter (* is higher than +)
+    //
+    // Call compile_expression(0) to parse any expression.
+    //
+    // Returns the register number where the result ended up.
+    //
+    func compile_expression(self, min_bp: i64) -> i64 or CompileError {
+        // Step 1: Parse the "prefix" part (a literal, variable, unary op, etc.)
+        // Step 2: While the next token is an infix operator with bp >= min_bp,
+        //         parse the operator and the right-hand side.
+
+        // TODO: implement this
+        // Start with just literals and variables:
+        //   IntLit(n) → emit LOAD_INT, return register
+        //   Ident(name) → resolve_local(name), return register
+        //   True/False/Nil → emit LOAD_TRUE/FALSE/NIL, return register
+
+        return Err(CompileError.UnexpectedToken("not implemented", self.current_line))
+    }
+}
+
+// --- Public API ---
+
+func compile(source: string) -> Chunk or CompileError {
+    let compiler = Compiler.new(source)
+    return compiler.compile()
+}

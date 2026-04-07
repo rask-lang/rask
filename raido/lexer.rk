@@ -1,0 +1,256 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Raido lexer — turns source text into tokens
+//
+// The lexer is the first stage. It reads characters one at a time and groups
+// them into meaningful chunks called "tokens":
+//
+//   "const x = 42 + 3"
+//     → [Const, Ident("x"), Eq, IntLit(42), Plus, IntLit(3), Newline, Eof]
+//
+// The compiler (Phase 5) will consume these tokens one at a time.
+// It never needs to look more than one token ahead.
+//
+// YOUR JOB: Implement the next_token() method. Everything else is done.
+
+// --- Token types ---
+
+enum Token {
+    // Literals
+    IntLit(i64)
+    NumLit(i64)         // Fixed-point raw value (already converted)
+    StringLit(string)
+
+    // Identifier
+    Ident(string)
+
+    // Keywords
+    Const
+    Let
+    Func
+    Return
+    If
+    Else
+    For
+    While
+    Loop
+    Break
+    Continue
+    Match
+    Global
+    Try
+    Nil
+    True
+    False
+    In
+    Yield
+
+    // Operators
+    Plus            // +
+    Minus           // -
+    Star            // *
+    Slash           // /
+    Percent         // %
+    Eq              // =
+    EqEq            // ==
+    BangEq          // !=
+    Lt              // <
+    Gt              // >
+    LtEq            // <=
+    GtEq            // >=
+    Bang            // !
+    AmpAmp          // &&
+    PipePipe        // ||
+
+    // Delimiters
+    LParen          // (
+    RParen          // )
+    LBrace          // {
+    RBrace          // }
+    LBracket        // [
+    RBracket        // ]
+    Comma           // ,
+    Dot             // .
+    Colon           // :
+    FatArrow        // =>
+    DotDot          // ..
+    DotDotEq        // ..=
+    Pipe            // |
+
+    // Structure
+    Newline         // Statement terminator
+    Eof             // End of source
+}
+
+// --- Lexer state ---
+
+struct Lexer {
+    source: string      // The full source text
+    pos: i64            // Current byte position in source
+    line: i64           // Current line number (for error messages)
+}
+
+extend Lexer {
+    func new(source: string) -> Lexer {
+        return Lexer {
+            source: source,
+            pos: 0,
+            line: 1,
+        }
+    }
+
+    // Look at the current character without consuming it.
+    // Returns None if we're at the end of source.
+    func peek(self) -> char? {
+        if self.pos >= self.source.len(): return None
+        return self.source.char_at(self.pos)
+    }
+
+    // Consume the current character and advance.
+    func advance(self) -> char? {
+        if self.pos >= self.source.len(): return None
+        const c = self.source.char_at(self.pos)
+        self.pos = self.pos + 1
+        if c == '\n' { self.line = self.line + 1 }
+        return Some(c)
+    }
+
+    // Check if current char matches expected, and consume it if so.
+    func match_char(self, expected: char) -> bool {
+        match self.peek() {
+            Some(c) => {
+                if c == expected {
+                    self.advance()
+                    return true
+                }
+                return false
+            }
+            None => return false,
+        }
+    }
+
+    // Skip whitespace (spaces and tabs, NOT newlines — those are tokens)
+    func skip_whitespace(self) {
+        while self.peek() is Some(c) {
+            if c == ' ' || c == '\t' || c == '\r' {
+                self.advance()
+            } else if c == '/' {
+                // Check for comments
+                if self.pos + 1 < self.source.len() {
+                    const next = self.source.char_at(self.pos + 1)
+                    if next == '/' {
+                        // Line comment — skip to end of line
+                        while self.peek() is Some(ch) {
+                            if ch == '\n': break
+                            self.advance()
+                        }
+                    } else if next == '*' {
+                        // Block comment — skip to */
+                        self.advance()  // skip /
+                        self.advance()  // skip *
+                        while self.peek() is Some(ch) {
+                            if ch == '*' {
+                                self.advance()
+                                if self.match_char('/') { break }
+                            } else {
+                                self.advance()
+                            }
+                        }
+                    } else {
+                        break
+                    }
+                } else {
+                    break
+                }
+            } else {
+                break
+            }
+        }
+    }
+
+    // Check if a word is a keyword and return the corresponding token.
+    // If not a keyword, it's an identifier.
+    func keyword_or_ident(self, word: string) -> Token {
+        match word {
+            "const" => return Token.Const,
+            "let" => return Token.Let,
+            "func" => return Token.Func,
+            "return" => return Token.Return,
+            "if" => return Token.If,
+            "else" => return Token.Else,
+            "for" => return Token.For,
+            "while" => return Token.While,
+            "loop" => return Token.Loop,
+            "break" => return Token.Break,
+            "continue" => return Token.Continue,
+            "match" => return Token.Match,
+            "global" => return Token.Global,
+            "try" => return Token.Try,
+            "nil" => return Token.Nil,
+            "true" => return Token.True,
+            "false" => return Token.False,
+            "in" => return Token.In,
+            "yield" => return Token.Yield,
+            _ => return Token.Ident(word),
+        }
+    }
+
+    // =====================================================
+    // YOUR JOB: Implement this method
+    // =====================================================
+    //
+    // Read the next token from the source.
+    //
+    // Call self.skip_whitespace() first.
+    // Then look at self.peek() to decide what kind of token you're looking at:
+    //
+    //   - None → return Token.Eof
+    //   - '\n' → consume it, return Token.Newline
+    //   - digit → read a number (integer or decimal)
+    //   - letter or _ → read an identifier/keyword
+    //   - '"' → read a string literal
+    //   - '+' → return Token.Plus
+    //   - '-' → return Token.Minus
+    //   - etc. for all operators and delimiters
+    //   - '=' → could be '=' or '==', check with match_char('=')
+    //   - '<' → could be '<' or '<=', check with match_char('=')
+    //   - '!' → could be '!' or '!=', check with match_char('=')
+    //   - '&' → must be '&&' (Raido has no single &)
+    //   - '|' → could be '||' or '|' (for closures)
+    //
+    // For numbers:
+    //   Read digits. If you hit a '.', read more digits → it's a NumLit.
+    //   Convert integer literals to i64.
+    //   Convert decimal literals to fixed-point: parse int and frac parts,
+    //   compute raw = int_part << 32 + frac_part * 2^32 / 10^frac_digits.
+    //
+    // For strings:
+    //   Read characters between quotes. Handle \n, \t, \\, \".
+    //   String interpolation is a stretch goal — skip it for now,
+    //   just read plain strings.
+    //
+    // For identifiers:
+    //   Read letters, digits, underscores. Then call keyword_or_ident().
+    //
+    func next_token(self) -> Token or LexError {
+        // TODO: implement this
+        return Ok(Token.Eof)
+    }
+}
+
+// --- Errors ---
+
+enum LexError {
+    UnexpectedChar(char, i64)    // (character, line number)
+    UnterminatedString(i64)      // line number
+}
+
+extend LexError {
+    func message(self) -> string {
+        match self {
+            LexError.UnexpectedChar(c, line) =>
+                return "line {line}: unexpected character '{c}'",
+            LexError.UnterminatedString(line) =>
+                return "line {line}: unterminated string",
+        }
+    }
+}
