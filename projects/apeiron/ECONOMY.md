@@ -207,6 +207,60 @@ All paid in credits:
 
 Nothing enforces these stages. A new player can fly into unclaimed space on day one. They'll run out of fuel and be stranded, but they can try. The progression is emergent from the economics, not from gates.
 
+## Job Mechanics
+
+All four starter jobs map directly to Allgard primitives. No new mechanisms needed — just composition.
+
+### Courier Jobs
+
+A domain posts a `courier_contract` Object containing cargo ID, destination domain, destination owner, deadline, and payment amount. The domain locks credits into escrow when creating the contract — a conditional Transfer that releases on delivery proof.
+
+Player accepts by signing the contract (Transform: mutate contract state to accepted, referencing the player's Owner). The domain transfers cargo to the player via conditional Transfer Intent: `forward_to` = destination, `forward_deadline` = contract deadline, `on_failure` = `return_to_sender`.
+
+Player jumps to the destination and delivers the cargo, completing the conditional forward. When the destination sends `TransferComplete` for the cargo, the escrowed credits release to the player. Two conditional transfers, linked: one for cargo, one for payment.
+
+If the player fails to deliver by deadline: cargo returns automatically, escrowed credits return to the posting domain. Clean rollback, no intervention needed.
+
+This composes entirely from conditional transfers. No courier-specific protocol.
+
+### Mining Contracts
+
+The domain issues a Grant to the player: `scope` = `operate_extractor`, `target` = a specific extractor Object, `expiry` = contract duration.
+
+The player submits extraction Transforms through the Grant. The extractor runs a minting script that references the seed deposit. The script's output is split — say 70% to domain, 30% to player. Both receive Objects directly from the Transform. The split ratio is encoded in the minting script, content-addressed, publicly auditable.
+
+Grant expires when the contract ends. Player loses extractor access.
+
+Different domains offer different splits — that's competition for labor. The player inspects the minting script before accepting. If a domain's split is bad, don't take the contract.
+
+### Facility Rental
+
+Player transfers credits to the domain (standard bilateral transfer). Domain issues a time-limited Grant: `scope` = `submit_transforms`, `target` = a specific facility Object, `expiry` = rental period.
+
+Player submits crafting Transforms through the Grant. The facility's Transform logic validates inputs (does the player have the materials?), runs the interaction function, produces output Objects owned by the player. Crafting loss from the mass budget applies as normal.
+
+Grant expires when the rental period ends. Renew by paying again.
+
+Domains compete on price, equipment quality (precision instruments affect craft outcomes), and location.
+
+### Scout Reports
+
+Simplest job. No Grants, no conditional transfers.
+
+Player visits an unclaimed system and computes seed data locally — no domain authority needed. Player creates a `scout_report` Object containing star ID, resource profile, and system properties. Player transfers the report to a domain that buys scout data.
+
+The domain verifies by re-computing seed data for that star ID. Match → credits to the player. No match → rejected. Simple bilateral exchange with verification.
+
+The report is data, not a scarce resource. The player can sell it to multiple buyers — the Object can be copied because it's information, not a physical good.
+
+### No New Primitives
+
+All four job types compose from Grants, conditional Transfers, Transforms, and Objects. Domains post jobs by creating contract Objects and locking escrow. Players accept by signing contracts and receiving Grants. Payment flows through conditional transfers tied to delivery proofs.
+
+No job-specific protocol. No quest system. No special-cased mechanics. A domain that invents a new job type — escort missions, construction contracts, research commissions — uses the same primitives. I don't want a game engine that knows what a "job" is. I want primitives that let jobs emerge.
+
+See: [../allgard/PRIMITIVES.md](../allgard/PRIMITIVES.md), [../allgard/TRANSFER.md](../allgard/TRANSFER.md)
+
 ## AI Economy
 
 Each domain runs its own AI agents. There's no cluster-wide AI coordinator — each domain's AI operates autonomously within that domain's sovereignty. When the first player logs in, they enter a functioning economy with liquidity, supply chains, and price signals.
