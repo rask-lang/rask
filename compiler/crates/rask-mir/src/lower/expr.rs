@@ -603,6 +603,27 @@ impl<'a> MirLowerer<'a> {
                 args,
                 type_args,
             } => {
+                // C namespace call: c.func_name(args...) → extern "C" call
+                if self.ctx.extern_funcs.contains(method) {
+                    if let ExprKind::Ident(ns) = &object.kind {
+                        if !self.locals.contains_key(ns) {
+                            let mut arg_operands = Vec::new();
+                            for arg in args {
+                                let (op, _) = self.lower_expr(&arg.expr)?;
+                                arg_operands.push(op);
+                            }
+                            let ret_ty = self.lookup_expr_type(expr).unwrap_or(MirType::I64);
+                            let result_local = self.builder.alloc_temp(ret_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: Some(result_local),
+                                func: crate::FunctionRef::extern_c(method.clone()),
+                                args: arg_operands,
+                            }));
+                            return Ok((MirOperand::Local(result_local), ret_ty));
+                        }
+                    }
+                }
+
                 // Iterator terminal methods: .collect(), .fold(), .any(), .all(), etc.
                 // Try to recognize an iterator chain on the receiver and fuse it inline.
                 if let Some(result) = self.try_lower_iter_terminal(expr, object, method, args)? {
