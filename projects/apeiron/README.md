@@ -349,7 +349,7 @@ Each stage is playable and fun on its own.
 
 **Faction mechanics.** Alliances of star systems. Probably just bundles of bilateral grants (Midgard's "unions" pattern). But do we need more structure? Shared defense, territory claims, faction wars?
 
-**Economy bootstrapping.** What do founding cluster systems mint? How does the initial currency get distributed? What's the first thing a new player can trade?
+**Economy bootstrapping.** See [ECONOMY.md](ECONOMY.md). Credits as seed currency, activity-tied minting, pre-bootstrapped founding cluster. Open tuning: minting rates, courier pay, facility fees.
 
 **Client experience.** What does the minimum viable client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? GDL supports all of these — which is the Stage 1 target?
 
