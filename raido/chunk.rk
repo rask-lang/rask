@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Chunk and Prototype — the compiled output of the Raido compiler
+//
+// A Prototype is one function's compiled bytecode. It contains:
+//   - code: the instruction stream (Vec of 32-bit instructions stored as i64)
+//   - constants: literal values used by LOAD_CONST (strings, large numbers)
+//   - prototypes: nested function definitions (inner functions, closures)
+//   - metadata: how many registers it needs, how many parameters, etc.
+//
+// A Chunk is the top-level output: the "main" prototype plus import/export info.
+//
+// When you compile a Raido script, you get one Chunk. The main prototype is
+// the script body. Any `func` declarations inside it become nested prototypes.
+//
+// Example:
+//   func add(a, b) { return a + b }
+//   print(add(1, 2))
+//
+// Compiles to:
+//   Chunk {
+//     main: Prototype {
+//       code: [CLOSURE r0 #0, LOAD_INT r1 1, LOAD_INT r2 2, CALL r0 2, ...]
+//       prototypes: [
+//         Prototype {  // the "add" function
+//           code: [ADD r2 r0 r1, RETURN r2]
+//           arity: 2
+//         }
+//       ]
+//     }
+//   }
+
+struct Prototype {
+    code: Vec<i64>
+    constants: Vec<Value>
+    // NOTE: If Rask doesn't support Vec<Prototype> (recursive struct),
+    // change this to Vec<i64> (indices into a flat prototype pool).
+    // Test this early!
+    prototypes: Vec<Prototype>
+    num_registers: i64      // Max registers this function uses
+    num_upvalues: i64       // Number of captured variables from outer scopes
+    arity: i64              // Number of parameters
+    name: string            // Function name (or "<main>" for top-level)
+    lines: Vec<i64>         // Source line number per instruction (debug info)
+}
+
+extend Prototype {
+    func new(name: string, arity: i64) -> Prototype {
+        return Prototype {
+            code: Vec.new(),
+            constants: Vec.new(),
+            prototypes: Vec.new(),
+            num_registers: 0,
+            num_upvalues: 0,
+            arity: arity,
+            name: name,
+            lines: Vec.new(),
+        }
+    }
+
+    // Add a constant and return its index in the constant pool.
+    // If the same constant already exists, return the existing index.
+    func add_constant(self, val: Value) -> i64 {
+        // For now, always add (deduplication is an optimization)
+        const idx = self.constants.len()
+        self.constants.push(val)
+        return idx
+    }
+
+    // Disassemble the whole prototype to a string
+    func disassemble(self) -> string {
+        let out = "== {self.name} (regs={self.num_registers}, args={self.arity}) ==\n"
+        let i = 0
+        while i < self.code.len() {
+            const instr = self.code.get(i)
+            out = out + disassemble_instr(instr, i) + "\n"
+            i = i + 1
+        }
+        return out
+    }
+}
+
+struct Chunk {
+    main: Prototype
+    imports: Vec<string>    // Host functions the script calls
+    exports: Vec<string>    // Top-level functions the host can call
+}
+
+extend Chunk {
+    func new(main: Prototype) -> Chunk {
+        return Chunk {
+            main: main,
+            imports: Vec.new(),
+            exports: Vec.new(),
+        }
+    }
+}

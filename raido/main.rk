@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Raido VM — minimal working test
+// Run with: rask run --interp /tmp/raido_test.rk
+
+// Opcodes
+const OP_LOAD_INT = 3
+const OP_ADD = 11
+const OP_SUB = 12
+const OP_LT = 18
+const OP_JMP = 29
+const OP_JMP_IF_NOT = 31
+const OP_RETURN = 34
+
+// Encoding
+func encode_abc(op, a, b, c) {
+    return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | ((b & 0xFF) << 8) | (c & 0xFF)
+}
+
+func encode_abx(op, a, bx) {
+    return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | (bx & 0xFFFF)
+}
+
+func encode_asbx(op, a, sbx) {
+    const biased = (sbx + 32768) & 0xFFFF
+    return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | biased
+}
+
+// Decoding
+func decode_op(instr) { return (instr >> 24) & 0xFF }
+func decode_a(instr) { return (instr >> 16) & 0xFF }
+func decode_b(instr) { return (instr >> 8) & 0xFF }
+func decode_c(instr) { return instr & 0xFF }
+func decode_bx(instr) { return instr & 0xFFFF }
+func decode_sbx(instr) { return (instr & 0xFFFF) - 32768 }
+
+// Value type — no explicit i64 annotations to avoid type inference issues
+enum Value {
+    Nil
+    Bool(bool)
+    Int(i64)
+}
+
+extend Value {
+    func is_truthy(self) -> bool {
+        match self {
+            Value.Nil => return false,
+            Value.Bool(b) => return b,
+            _ => return true,
+        }
+    }
+}
+
+// VM
+func vm_run(code: Vec<i64>, fuel: i64) -> Value {
+    // Init registers
+    const regs = Vec.new()
+    let i = 0
+    while i < 256 {
+        regs.push(Value.Nil)
+        i = i + 1
+    }
+
+    let pc = 0
+    let remaining = fuel
+
+    while pc < code.len() {
+        if remaining <= 0 {
+            print("FUEL EXHAUSTED\n")
+            return Value.Nil
+        }
+        remaining = remaining - 1
+
+        const raw = code.get(pc)
+        pc = pc + 1
+
+        // Convert from i64 to inferred int for bitwise ops
+        const instr = raw + 0
+
+        const op = decode_op(instr)
+        const a = decode_a(instr)
+
+        if op == OP_LOAD_INT {
+            const bx = decode_bx(instr)
+            const val = if bx >= 32768 { bx - 65536 } else { bx }
+            regs.set(a, Value.Int(val))
+        } else if op == OP_ADD {
+            const b = decode_b(instr)
+            const c = decode_c(instr)
+            const lhs = regs.get(b)
+            const rhs = regs.get(c)
+            match (lhs, rhs) {
+                (Value.Int(x), Value.Int(y)) => regs.set(a, Value.Int(x + y)),
+                _ => print("TypeError: cannot add\n"),
+            }
+        } else if op == OP_SUB {
+            const b = decode_b(instr)
+            const c = decode_c(instr)
+            const lhs = regs.get(b)
+            const rhs = regs.get(c)
+            match (lhs, rhs) {
+                (Value.Int(x), Value.Int(y)) => regs.set(a, Value.Int(x - y)),
+                _ => print("TypeError: cannot sub\n"),
+            }
+        } else if op == OP_LT {
+            const b = decode_b(instr)
+            const c = decode_c(instr)
+            const lhs = regs.get(b)
+            const rhs = regs.get(c)
+            match (lhs, rhs) {
+                (Value.Int(x), Value.Int(y)) => regs.set(a, Value.Bool(x < y)),
+                _ => regs.set(a, Value.Bool(false)),
+            }
+        } else if op == OP_JMP {
+            pc = pc + decode_sbx(instr)
+        } else if op == OP_JMP_IF_NOT {
+            const val = regs.get(a)
+            if !val.is_truthy() {
+                pc = pc + decode_sbx(instr)
+            }
+        } else if op == OP_RETURN {
+            return regs.get(a)
+        }
+    }
+    return Value.Nil
+}
+
+// Tests
+func main() {
+    print("=== Raido VM ===\n\n")
+    test_encoding()
+    test_42()
+    test_countdown()
+}
+
+func test_encoding() {
+    print("--- Encoding ---\n")
+
+    const instr = encode_abc(OP_ADD, 3, 1, 2)
+    const ok = decode_op(instr) == OP_ADD && decode_a(instr) == 3 && decode_b(instr) == 1 && decode_c(instr) == 2
+    if ok { print("ABC round-trip: pass\n") } else { print("ABC round-trip: FAIL\n") }
+
+    if decode_sbx(encode_asbx(OP_JMP, 0, -5)) == -5 { print("AsBx negative:  pass\n") } else { print("AsBx negative:  FAIL\n") }
+
+    if decode_sbx(encode_asbx(OP_JMP, 0, 10)) == 10 { print("AsBx positive:  pass\n") } else { print("AsBx positive:  FAIL\n") }
+    print("\n")
+}
+
+func test_42() {
+    print("--- 40 + 2 ---\n")
+    const code: Vec<i64> = Vec.new()
+    code.push(encode_abx(OP_LOAD_INT, 0, 40))
+    code.push(encode_abx(OP_LOAD_INT, 1, 2))
+    code.push(encode_abc(OP_ADD, 2, 0, 1))
+    code.push(encode_abx(OP_RETURN, 2, 0))
+
+    const result = vm_run(code, 100)
+    match result {
+        Value.Int(n) => {
+            if n == 42 { print("Result: 42 pass\n") } else { print("Result: "); print(n); print(" FAIL\n") }
+        }
+        _ => print("FAIL: not an int\n"),
+    }
+    print("\n")
+}
+
+func test_countdown() {
+    print("--- Sum 10 to 1 ---\n")
+    const code: Vec<i64> = Vec.new()
+    code.push(encode_abx(OP_LOAD_INT, 0, 10))    // 0: r0 = 10
+    code.push(encode_abx(OP_LOAD_INT, 1, 0))     // 1: r1 = 0
+    code.push(encode_abx(OP_LOAD_INT, 2, 1))     // 2: r2 = 1
+    code.push(encode_abx(OP_LOAD_INT, 3, 0))     // 3: r3 = 0
+    code.push(encode_abc(OP_LT, 4, 3, 0))        // 4: r4 = 0 < counter
+    code.push(encode_asbx(OP_JMP_IF_NOT, 4, 3))  // 5: if !(0<counter) jump +3 -> pc=9
+    code.push(encode_abc(OP_ADD, 1, 1, 0))        // 6: sum += counter
+    code.push(encode_abc(OP_SUB, 0, 0, 2))        // 7: counter -= 1
+    code.push(encode_asbx(OP_JMP, 0, -5))         // 8: jump -5 -> pc=4
+    code.push(encode_abx(OP_RETURN, 1, 0))        // 9: return sum
+
+    const result = vm_run(code, 1000)
+    match result {
+        Value.Int(n) => {
+            if n == 55 { print("Result: 55 pass\n") } else { print("Result: "); print(n); print(" FAIL\n") }
+        }
+        _ => print("FAIL: not an int\n"),
+    }
+}
