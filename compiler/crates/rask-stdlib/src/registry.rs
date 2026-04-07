@@ -26,7 +26,9 @@ pub enum StdlibLayer {
 /// Classify a builtin type by its runtime requirements.
 pub fn type_layer(type_name: &str) -> StdlibLayer {
     match type_name {
-        "i64" | "i128" | "u128" | "f64" | "bool" | "char" | "string"
+        "i8" | "i16" | "i32" | "i64" | "i128"
+        | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "f64" | "bool" | "char" | "string"
         | "Vec" | "Map" | "Pool" | "Handle"
         | "Result" | "Option"
         | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
@@ -58,12 +60,21 @@ pub fn module_layer(module: &str) -> StdlibLayer {
 // Instance methods by type
 // ---------------------------------------------------------------------------
 
-const I64_METHODS: &[&str] = &[
+const SIGNED_INT_METHODS: &[&str] = &[
     "add", "sub", "mul", "div", "rem", "neg",
     "eq", "lt", "le", "gt", "ge",
     "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
     "abs", "min", "max", "to_string", "to_float",
 ];
+
+const UNSIGNED_INT_METHODS: &[&str] = &[
+    "add", "sub", "mul", "div", "rem",
+    "eq", "lt", "le", "gt", "ge",
+    "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
+    "min", "max", "to_string", "to_float",
+];
+
+const I64_METHODS: &[&str] = SIGNED_INT_METHODS;
 
 const I128_METHODS: &[&str] = &[
     "add", "sub", "mul", "div", "rem", "neg",
@@ -242,7 +253,9 @@ const CLI_METHODS: &[&str] = &["args", "parse"];
 
 /// All types with registered instance methods.
 pub const REGISTERED_TYPES: &[&str] = &[
-    "i64", "i128", "u128", "f64", "bool", "char", "string",
+    "i8", "i16", "i32", "i64", "i128",
+    "u8", "u16", "u32", "u64", "u128",
+    "f64", "bool", "char", "string",
     "Vec", "Map", "Pool", "Handle",
     "Result", "Option",
     "File", "Metadata",
@@ -265,7 +278,8 @@ pub const REGISTERED_MODULES: &[&str] = &[
 /// Get implemented method names for a type.
 pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
     match type_name {
-        "i64" => I64_METHODS,
+        "i8" | "i16" | "i32" | "i64" => SIGNED_INT_METHODS,
+        "u8" | "u16" | "u32" | "u64" => UNSIGNED_INT_METHODS,
         "i128" => I128_METHODS,
         "u128" => U128_METHODS,
         "f64" => F64_METHODS,

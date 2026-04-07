@@ -148,4 +148,41 @@ test "underscore separators" {
     assert 0b1111_0000 == 0xF0
 }
 
+// --- explicit integer types (BW1) ---
+// Bitwise ops must work on all integer types, not just i64.
+
+test "bitwise on i32" {
+    const a: i32 = 0xFF
+    const b: i32 = 0x0F
+    assert (a & b) == 0x0F
+    assert (a | b) == 0xFF
+    assert (a ^ b) == 0xF0
+    assert (b << 4) == 0xF0
+    assert (a >> 4) == 0x0F
+    assert ~b == -16
+}
+
+test "bitwise on u8" {
+    const a: u8 = 0xAA
+    const b: u8 = 0x55
+    assert (a & b) == 0
+    assert (a | b) == 0xFF
+    assert (a ^ b) == 0xFF
+}
+
+test "bitwise on u64" {
+    const a: u64 = 0xFF00FF00
+    const b: u64 = 0x0F0F0F0F
+    assert (a & b) == 0x0F000F00
+    assert (a | b) == 0xFF0FFF0F
+}
+
+test "bitwise on i128" {
+    const a: i128 = 0xFF
+    const b: i128 = 0x0F
+    assert (a & b) == 0x0F
+    assert (a | b) == 0xFF
+    assert ~b == -16
+}
+
 func main() {}
