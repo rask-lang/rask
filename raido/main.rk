@@ -52,18 +52,18 @@ extend Value {
 
 // Vec helpers — Vec.get() returns T?, these unwrap with defaults
 func reg_get(regs: Vec<Value>, idx: i64) -> Value {
-    match regs.get(idx as usize) {
+    match regs.get(idx) {
         Some(v) => return v,
         None => return Value.Nil,
     }
 }
 
 func reg_set(regs: Vec<Value>, idx: i64, val: Value) {
-    regs.set(idx as usize, val)
+    regs.set(idx, val)
 }
 
 func code_get(code: Vec<i64>, idx: i64) -> i64 {
-    match code.get(idx as usize) {
+    match code.get(idx) {
         Some(v) => return v,
         None => return 0,
     }

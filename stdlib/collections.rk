@@ -44,10 +44,10 @@ extend Vec<T> {
     public func clear(mutate self) { }
 
     /// Insert a value at the given index, shifting later elements right.
-    public func insert(mutate self, index: usize, value: T) { }
+    public func insert(mutate self, index: i64, value: T) { }
 
     /// Remove and return the element at the given index.
-    public func remove(mutate self, index: usize) -> T { }
+    public func remove(mutate self, index: i64) -> T { }
 
     /// Reserve space for at least `additional` more elements. Panics on OOM.
     public func reserve(mutate self, additional: usize) { }
@@ -56,10 +56,10 @@ extend Vec<T> {
     public func try_reserve(mutate self, additional: usize) -> () or AllocError { }
 
     /// Get element at index (borrows).
-    public func get(self, index: usize) -> Option<T> { }
+    public func get(self, index: i64) -> Option<T> { }
 
     /// Get a clone of element at index.
-    public func get_clone(self, index: usize) -> Option<T> { }
+    public func get_clone(self, index: i64) -> Option<T> { }
 
     /// Get the first element.
     public func first(self) -> Option<T> { }
@@ -68,13 +68,13 @@ extend Vec<T> {
     public func last(self) -> Option<T> { }
 
     /// Read element at index through a closure.
-    public func read(self, index: usize, f: func(T) -> R) -> Option<R> { }
+    public func read(self, index: i64, f: func(T) -> R) -> Option<R> { }
 
     /// Modify element at index through a closure.
-    public func modify(mutate self, index: usize, f: func(T) -> R) -> Option<R> { }
+    public func modify(mutate self, index: i64, f: func(T) -> R) -> Option<R> { }
 
     /// Swap elements at two indices.
-    public func swap(mutate self, i: usize, j: usize) { }
+    public func swap(mutate self, i: i64, j: i64) { }
 
     /// Iterate over elements by reference.
     public func iter(self) -> Iterator<T> { }
@@ -170,7 +170,7 @@ extend Vec<T> {
     public func clone(self) -> Vec<T> { }
 
     /// Set element at index. Panics if out of bounds.
-    public func set(mutate self, index: usize, value: T) { }
+    public func set(mutate self, index: i64, value: T) { }
 
     /// Shrink allocation to fit current length.
     public func shrink_to_fit(mutate self) { }

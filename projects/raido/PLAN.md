@@ -8,21 +8,17 @@ directly. No AST. Memory is O(scope depth), not O(program size).
 
 ## Prerequisites
 
-1. **Bitwise ops on explicit integer types** — `&`, `|`, `^`, `<<`, `>>` work
-   on inferred integer literals but not on `i64` (or `i32` etc.) variables.
-   `no method bit_and found for type i64`. This blocks ALL instruction
-   encoding/decoding — the entire VM core. Must be fixed in the type checker
-   before any real Raido work can happen. See `raido/main.rk` for the failing
-   test case.
-2. **`fs.read_bytes` / `fs.write_bytes`** — binary file I/O in the stdlib.
-3. **Vec<u8> codegen load width** — `ArrayIndex` in `builder.rs` defaults to
+1. ~~Bitwise ops on explicit integer types~~ — **Fixed.** Typo in
+   `unify.rs:100`: `"bitand"` should be `"bit_and"`.
+2. ~~`string.concat` arity mismatch~~ — **Fixed.** Stub was static
+   `concat(a, b)`, changed to method `concat(self, other)`.
+3. ~~Vec index type mismatch~~ — **Fixed.** Stubs used `usize`, type
+   checker enforces `i64`. Changed stubs to `i64`.
+4. **`fs.read_bytes` / `fs.write_bytes`** — binary file I/O in the stdlib.
+5. **Vec<u8> codegen load width** — `ArrayIndex` in `builder.rs` defaults to
    i64 loads when `expected_ty` is None. Fix: use the tracked `elem_type`
    (already in `LocalMeta`) as the load width. The 1-byte stride is already
    correct.
-4. **Codegen for bitwise ops in functions** — even with inferred types,
-   `encode_abc` compiled via Cranelift crashes with `arguments of return must
-   match function signature`. The interpreter handles it fine. Until codegen
-   is fixed, development uses `rask run --interp`.
 
 ## File Structure
 
@@ -479,31 +475,12 @@ in Rask, not in the Raido code.
 
 ### Findings (from skeleton setup)
 
-1. **BLOCKER: Bitwise ops don't work on i64.** `x & 0xFF` where `x: i64`
-   gives `no method bit_and found for type i64`. Works on inferred integer
-   types (literals, untyped params). But once a value flows through `Vec<i64>`
-   or a function with explicit `i64` params, bitwise ops break. This affects
-   every instruction encode/decode function. Fix needed in the type checker —
-   `bit_and`, `bit_or`, `bit_xor`, `shl`, `shr` must be defined for all
-   integer types.
-
-2. **Codegen crash on bitwise ops.** Even with inferred types, Cranelift
-   codegen fails: `arguments of return must match function signature`. The
-   interpreter works. Development blocked on native compilation for now.
-
+1. ~~Bitwise ops on i64~~ — **Fixed.** Typo in unify.rs.
+2. ~~Codegen crash on bitwise~~ — likely cascading from #1, needs retest.
 3. **Vec.get() returns T? (optional).** Every register/code access needs
-   unwrapping. Workable but verbose — a wrapper struct or unsafe-get would
-   help.
-
-4. **Multi-file packages.** Files in the same directory with a `build.rk`
-   didn't auto-resolve each other's symbols. Needs investigation — may be a
-   config issue or a real limitation. For now, single-file is the path of
-   least resistance.
-
-5. **println with interpolation.** `println("x = {val}")` sometimes errors
-   with `expected 2 arguments, found 1`. Inconsistent — works in some
-   examples, fails in others. Used `print()` + `print("\n")` as workaround.
-
+   unwrapping. Workable — helper functions `reg_get`/`code_get` wrap it.
+4. ~~Multi-file packages~~ — **Works fine.** Was a red herring from #1.
+5. ~~println with interpolation~~ — **Fixed.** concat stub was wrong.
 6. **Newlines as statement terminators.** Multi-line `&&` chains like
    `a == 1 \n && b == 2` fail because the newline terminates the statement.
-   Must keep `&&` chains on one line.
+   Must keep `&&` chains on one line. Not a bug — by design.

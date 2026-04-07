@@ -26,7 +26,7 @@ extend string {
     public func repeat(s: string, n: usize) -> string { }
 
     /// Concatenate two strings. Allocates.
-    public func concat(a: string, b: string) -> string { }
+    public func concat(self, other: string) -> string { }
 
     // ── Length and properties ────────────────────────────────
 
