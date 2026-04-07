@@ -1,57 +1,57 @@
 # Raido in Rask — Implementation Plan
 
-Raido VM implemented in Rask, for correctness and dogfooding. Not the eventual
-production implementation (that should be Rust for the 1 KB base target), but
-the reference that proves the spec works and stress-tests Rask's type system,
-enums, generics, and collections.
+Reference implementation. Proves the spec works, dogfoods Rask. Not the
+production VM (that'll be Rust).
 
 ## Prerequisites
 
-**Two compiler changes needed before starting:**
-
-1. **`fs.read_bytes` / `fs.write_bytes`** — Add binary file I/O to the stdlib.
-   Without this, serialization and chunk loading are impossible.
-
-2. **Vec<u8> codegen: propagate element type through all access paths** — The
-   MIR already tracks `elem_type` in `LocalMeta` and computes 1-byte stride
-   for u8. But the `ArrayIndex` codegen falls back to `i64` loads when
-   `expected_ty` is `None`, which reads 8 bytes from a 1-byte slot. Fix: use
-   the tracked `elem_type` as the load width in all Vec access paths, not just
-   when the destination has an explicit type. The machinery exists
-   (`elem_size_for_type`, `LocalMeta::elem_type`, `shared_elem_types`) — it
-   just needs consistent use in the codegen `ArrayIndex` handler.
-
-**Known constraints (work around, don't block on):**
-
-- No FFI. Host functions are Rask closures. This is fine — Raido-in-Rask is
-  Rask-hosted by definition.
+1. **`fs.read_bytes` / `fs.write_bytes`** — binary file I/O in the stdlib.
+2. **Vec<u8> codegen load width** — `ArrayIndex` in `builder.rs` defaults to
+   i64 loads when `expected_ty` is None. Fix: use the tracked `elem_type`
+   (already in `LocalMeta`) as the load width. The 1-byte stride is already
+   correct.
 
 ## File Structure
 
 ```
 raido/
-  value.rk        # Value enum, fixed-point Number type
-  arena.rk        # Typed arena allocator
-  chunk.rk        # Bytecode chunk representation
-  opcodes.rk      # Instruction encoding/decoding
-  lexer.rk        # Tokenizer
-  ast.rk          # AST node types
-  parser.rk       # Recursive descent parser
-  compiler.rk     # AST → bytecode
-  vm.rk           # Execution engine
-  stdlib.rk       # Built-in functions
-  main.rk         # CLI entry point
+  value.rk         # Value enum, 32.32 fixed-point Number
+  bytes.rk         # Byte encoding helpers (read/write u8, u16, u32, i64)
+  arena.rk         # Byte-buffer arena with bump allocation
+  opcodes.rk       # 37 opcodes, encode/decode 32-bit instructions
+  chunk.rk         # Bytecode chunk: constants, prototypes, code
+  lexer.rk         # Tokenizer
+  ast.rk           # AST node types (expressions, statements)
+  parser.rk        # Recursive descent + Pratt precedence
+  codegen.rk       # AST → bytecode
+  vm.rk            # Dispatch loop, registers, call stack
+  stdlib.rk        # Core + opt-in module functions
+  coroutine.rk     # Coroutine state, resume/yield
+  host.rk          # Host function registry, host references
+  serialize.rk     # VM state serialization
+  main.rk          # CLI entry point
 ```
 
 ## Phases
 
-### Phase 0: Skeleton
+### Phase 1: Byte helpers and value types
 
-Create all files with stub types. Verify `rask check` passes on everything.
+**bytes.rk** — encode/decode integers as bytes in a `Vec<u8>`:
 
-### Phase 1: Values and fixed-point arithmetic
+```rask
+func write_u8(buf: Vec<u8>, offset: i64, val: u8)
+func read_u8(buf: Vec<u8>, offset: i64) -> u8
+func write_u16le(buf: Vec<u8>, offset: i64, val: i64)
+func read_u16le(buf: Vec<u8>, offset: i64) -> i64
+func write_u32le(buf: Vec<u8>, offset: i64, val: i64)
+func read_u32le(buf: Vec<u8>, offset: i64) -> i64
+func write_i64le(buf: Vec<u8>, offset: i64, val: i64)
+func read_i64le(buf: Vec<u8>, offset: i64) -> i64
+```
 
-Value enum and 32.32 fixed-point Number type.
+All implemented with bitwise ops and shifts.
+
+**value.rk** — 32.32 fixed-point `Number` and the `Value` enum:
 
 ```rask
 struct Number { raw: i64 }
@@ -61,51 +61,31 @@ enum Value {
     Bool(bool),
     Int(i64),
     Num(Number),
-    Str(string),
-    Array(i64),     // arena index
-    Map(i64),       // arena index
-    Func(i64),      // prototype index
-    HostRef(i64),   // opaque ID
+    Str(i64),       // arena offset
+    Array(i64),     // arena offset
+    Map(i64),       // arena offset
+    Closure(i64),   // arena offset
+    HostRef(i64, i64),  // type_id, ref_id
 }
 ```
 
-Fixed-point operations — all integer math + bit shifts:
-- Add/sub: just add/sub the raw i64
-- Mul: `((a as i128) * (b as i128)) >> 32` (need i128 or split into hi/lo)
-- Div: `((a as i128) << 32) / (b as i128)`
-- Comparisons: direct i64 comparison
-- Conversions: `int_to_num(n)` = `n << 32`, `num_to_int(n)` = `n >> 32`
+Fixed-point arithmetic: add, sub, mul, div, comparisons, int↔number
+conversions. Mul/div need 128-bit intermediates — if Rask lacks i128, split
+into 32-bit halves with bitwise ops.
 
-**Test:** Fixed-point math round-trips, overflow saturation, division by zero
-raises error.
-
-**Risk:** i128 arithmetic. If Rask doesn't support it, split mul/div into 32-bit
-halves using bitwise ops. Verify early.
-
-### Phase 2: Instruction encoding
-
-37 opcodes encoded as i64, decoded with bitwise ops.
-
-Three formats (32-bit instructions stored in i64):
-- **ABC**: `opcode(6) | A(8) | B(9) | C(9)`
-- **ABx**: `opcode(6) | A(8) | Bx(18)`
-- **AsBx**: `opcode(6) | A(8) | sBx(18, signed)`
+Value encoding to/from 16 bytes in a `Vec<u8>`:
 
 ```rask
-func encode_abc(op: i64, a: i64, b: i64, c: i64) -> i64 {
-    return (op << 26) | (a << 18) | (b << 9) | c
-}
+func write_value(buf: Vec<u8>, offset: i64, val: Value)
+func read_value(buf: Vec<u8>, offset: i64) -> Value
 ```
 
-Define all 37 opcodes as constants (or an enum if Rask supports integer-backed
-enums, otherwise `const OP_LOAD_NIL: i64 = 0` etc).
+**Test:** Fixed-point round-trips. Overflow saturates. Division by zero errors.
+Value encode/decode round-trips for every variant.
 
-**Test:** Round-trip encode/decode for every format.
+### Phase 2: Arena
 
-### Phase 3: Arena
-
-Flat byte buffer — `Vec<u8>` with bump allocation, integer offsets, and
-byte-level encode/decode. This matches the spec's design directly.
+Flat `Vec<u8>` with bump allocation. Matches the spec's byte-level layout.
 
 ```rask
 struct Arena {
@@ -116,219 +96,244 @@ struct Arena {
 }
 ```
 
-Arena offsets are integers — same relationship to the byte buffer as Handles to
-a Pool. Bounds-checked on access. Type tags in object headers catch mismatches
-at runtime.
+4-byte object headers: `type_tag(u8) | pad(u8) | body_size(u16)`.
+4-byte aligned. Max 64 KB per object.
 
-**Byte encoding helpers** (small set, used everywhere):
-
-```rask
-func write_u8(buf: Vec<u8>, offset: i64, val: u8)
-func read_u8(buf: Vec<u8>, offset: i64) -> u8
-func write_u32le(buf: Vec<u8>, offset: i64, val: i64)
-func read_u32le(buf: Vec<u8>, offset: i64) -> i64
-func write_i64le(buf: Vec<u8>, offset: i64, val: i64)
-func read_i64le(buf: Vec<u8>, offset: i64) -> i64
-```
-
-**Object layout** (matches spec):
-
-Each object starts with a 4-byte header: `type_tag(u8) | padding(u8) | size(u16)`.
-
-- **String**: `header(4) | len(4) | utf8_bytes[len]`
-- **Array**: `header(4) | len(4) | cap(4) | values[cap]` (16 bytes per value)
-- **Map**: `header(4) | len(4) | cap(4) | entries[cap]` (open addressing)
-- **Closure**: `header(4) | proto_idx(2) | upvalue_count(2) | upvalue_offsets[](4)`
-- **Upvalue**: `header(4) | value(16)`
-
-**Arena methods** — one alloc/read pair per object type:
+One alloc/read pair per object type:
 
 ```rask
-func alloc_string(self, s: string) -> i64    // returns offset
+func alloc_string(self, s: string) -> i64 or ArenaError
 func read_string(self, offset: i64) -> string
-func alloc_array(self, cap: i64) -> i64
+func alloc_array(self, cap: i64) -> i64 or ArenaError
 func array_get(self, offset: i64, idx: i64) -> Value
 func array_set(self, offset: i64, idx: i64, val: Value)
 func array_len(self, offset: i64) -> i64
-// ~6 object types, ~6 method pairs
+func array_cap(self, offset: i64) -> i64
+func array_push(self, offset: i64, val: Value) -> i64 or ArenaError
+func alloc_map(self, cap: i64) -> i64 or ArenaError
+func map_get(self, offset: i64, key: Value) -> Value
+func map_set(self, offset: i64, key: Value, val: Value) -> i64 or ArenaError
+func map_len(self, offset: i64) -> i64
+func alloc_closure(self, proto_idx: i64, upvalue_offsets: Vec<i64>) -> i64 or ArenaError
+func alloc_upvalue(self, val: Value) -> i64 or ArenaError
 ```
 
-The rest of the VM calls `arena.alloc_string()` / `arena.read_value()` and
-doesn't touch bytes directly.
+`frame_begin()` saves `top`. `frame_end()` resets `top = frame_base`.
+`reset()` sets `top = 0`.
 
-**Memory accounting is exact**: `top` tracks bytes used. `capacity` is the hard
-limit. `alloc_*` checks `top + size <= capacity` and returns ArenaExhausted on
-overflow. No hidden heap allocations — arena strings are byte sequences in the
-buffer, not Rask `string` values.
+`alloc_*` checks `top + size <= capacity`, returns `ArenaExhausted` on
+overflow. Memory accounting is exact — `top` is the byte count.
 
-**Frame management**: `frame_begin()` saves `top` as `frame_base`.
-`frame_end()` resets `top = frame_base`, reclaiming all frame-local allocations.
+**Test:** Alloc each object type, read back, verify byte layout. Frame
+begin/end reclaims correctly. ArenaExhausted at capacity. Array push
+beyond cap reallocates.
 
-**Test:** Allocate strings/arrays/maps, read back, verify byte-level layout.
-Frame begin/end clears correctly. ArenaExhausted triggers at capacity.
+### Phase 3: Opcodes and chunks
 
-**Serialization consequence**: `buf[0..top]` is close to the serialized form
-already. Offsets are integers, not pointers — no relocation needed.
+**opcodes.rk** — 37 opcodes as constants. Three 32-bit instruction formats:
+
+```
+ABC:  op(8) | A(8) | B(8) | C(8)
+ABx:  op(8) | A(8) | Bx(16)
+AsBx: op(8) | A(8) | sBx(16, signed)
+```
+
+Encode/decode with bitwise ops:
+
+```rask
+func encode_abc(op: i64, a: i64, b: i64, c: i64) -> i64
+func encode_abx(op: i64, a: i64, bx: i64) -> i64
+func encode_asbx(op: i64, a: i64, sbx: i64) -> i64
+func decode_op(instr: i64) -> i64
+func decode_a(instr: i64) -> i64
+func decode_b(instr: i64) -> i64
+func decode_c(instr: i64) -> i64
+func decode_bx(instr: i64) -> i64
+func decode_sbx(instr: i64) -> i64   // sign-extended
+```
+
+**chunk.rk** — compiled output:
+
+```rask
+struct Prototype {
+    code: Vec<i64>,       // instructions
+    constants: Vec<Value>,
+    prototypes: Vec<Prototype>,  // nested functions
+    num_registers: i64,
+    num_upvalues: i64,
+    arity: i64,
+    name: string,
+    // debug info (optional)
+    lines: Vec<i64>,      // source line per instruction
+}
+
+struct Chunk {
+    main: Prototype,
+    imports: Vec<string>,
+    exports: Vec<string>,
+}
+```
+
+**Test:** Instruction encode/decode round-trips for all three formats.
 
 ### Phase 4: Lexer
 
-Tokenize Raido source. Keywords: `const let func return if else for while loop
-break continue match global coroutine yield try nil true false in`.
+Tokenize Raido source. Newline-sensitive (statement terminator).
 
-String interpolation: `"hello {name}"` desugars to concat during compilation
-(lexer emits the string parts and expressions separately).
+Tokens: keywords (`const let func return if else for while loop break continue
+match global try nil true false in yield`), operators, literals (int, number,
+string with interpolation), identifiers.
 
-**Test:** Lex several snippets, dump token streams, spot-check.
+String interpolation: `"hello {name}"` emits `StringStart("hello ")`,
+`Identifier("name")`, `StringEnd("")` (or similar token sequence the parser
+can handle).
 
-### Phase 5: Parser
+**Test:** Lex snippets, verify token streams.
 
-**First: verify recursive types work.** Try a self-referential enum or struct
-in Rask. If `Box<T>` doesn't work, use an index pool:
+### Phase 5: AST and parser
+
+**ast.rk** — node types. Use index pools if Rask doesn't support recursive
+enums:
 
 ```rask
-struct ExprPool {
-    nodes: Vec<Expr>,
+struct ExprId { idx: i64 }
+struct StmtId { idx: i64 }
+
+struct Ast {
+    exprs: Vec<Expr>,
+    stmts: Vec<Stmt>,
 }
 
-// ExprRef is an index, not a pointer
-struct ExprRef { idx: i64 }
-```
+enum Expr {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Num(Number),
+    Str(string),
+    Ident(string),
+    Binary(BinOp, ExprId, ExprId),
+    Unary(UnOp, ExprId),
+    Call(ExprId, Vec<ExprId>),
+    Index(ExprId, ExprId),
+    Field(ExprId, string),
+    Lambda(Vec<string>, Vec<StmtId>),
+    Array(Vec<ExprId>),
+    MapLit(Vec<(ExprId, ExprId)>),
+    If(ExprId, Vec<StmtId>, Vec<StmtId>),
+    Match(ExprId, Vec<MatchArm>),
+    Try(ExprId, Option<TryElse>),
+}
 
-Recursive descent with Pratt parsing for expression precedence. Standard
-precedence table (assignment < or < and < equality < comparison < addition <
-multiplication < unary < call < primary).
-
-AST node types: Expr enum, Stmt enum, Decl enum, Block = Vec<Stmt>.
-
-**Test:** Parse snippets → pretty-print → verify structure.
-
-### Phase 6: Compiler (AST → bytecode)
-
-Single-pass walk over AST. Emits instructions into a chunk's `Vec<i64>`.
-
-Register allocation: locals get sequential register slots. Compiler tracks
-`next_reg` counter. Temporaries are allocated and freed per-expression.
-
-**Implement in this order:**
-1. Literals and constants → LOAD_CONST, LOAD_NIL, LOAD_TRUE
-2. Local variables → MOVE between registers
-3. Arithmetic → ADD, SUB, MUL, DIV, MOD, NEG
-4. Globals → GET_GLOBAL, SET_GLOBAL
-5. Comparisons → EQ, LT, LE
-6. Control flow → JMP, JMP_IF, JMP_IF_NOT (with backpatching)
-7. Functions → CLOSURE, CALL, RETURN
-8. Strings → LOAD_CONST with string pool, CONCAT
-
-Upvalue resolution: when a closure references an outer variable, record it.
-Emit CLOSE_UPVALUE before the outer function returns.
-
-**Test:** Compile simple expressions, disassemble, verify bytecode.
-
-### Phase 7: VM execution loop
-
-The core dispatch loop with fuel counting.
-
-```rask
-func execute(self) -> Value or VmError {
-    loop {
-        if self.fuel <= 0 { return Err(VmError.FuelExhausted) }
-        self.fuel = self.fuel - 1
-        const instr = self.code.get(self.pc)
-        self.pc = self.pc + 1
-        const op = decode_op(instr)
-        match op {
-            OP_LOAD_NIL => { ... }
-            OP_ADD => { ... }
-            // ...
-        }
-    }
+enum Stmt {
+    Expr(ExprId),
+    Const(string, ExprId),
+    Let(string, ExprId),
+    Assign(ExprId, ExprId),
+    Return(ExprId),
+    For(string, ExprId, Vec<StmtId>),
+    While(ExprId, Vec<StmtId>),
+    Break,
+    Continue,
+    Func(string, Vec<string>, Vec<StmtId>),
+    Global(string, ExprId),
 }
 ```
 
-Registers: `Vec<Value>` sized to 256 per frame. Call stack: `Vec<CallFrame>`.
+**parser.rk** — recursive descent. Pratt parsing for expressions.
+
+Precedence (low to high): `||`, `&&`, `== != < > <= >=`, `+ -`, `* / %`,
+unary `! -`, call/index/field.
+
+**Test:** Parse snippets, verify AST structure via pretty-print or manual
+inspection.
+
+### Phase 6: Code generation
+
+Walk the AST, emit instructions into a `Prototype`.
+
+Register allocation: locals get sequential registers. Temporaries bump above
+locals, freed after each expression.
+
+**Scope tracking:** compile-time stack of scopes, each holding local names
+and their register indices. Upvalue resolution walks the scope chain —
+if a variable is found in an enclosing function, record it as an upvalue.
+
+**Backpatching:** `if`/`while`/`for` emit placeholder jump offsets, patched
+after the body is compiled.
 
 **Implement in order:**
-1. Load/move/arithmetic → evaluate `1 + 2 * 3`
-2. Globals → store/retrieve named values
-3. Comparisons + jumps → `if`/`else`
-4. CALL/RETURN → function calls
-5. Loops → `for`/`while`
+1. Literals → LOAD_NIL, LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST
+2. Local variables → register assignment, MOVE
+3. Arithmetic/comparison/logic → ADD..NEG, EQ/LT/LE, NOT
+4. Globals → GET_GLOBAL, SET_GLOBAL
+5. Control flow → JMP, JMP_IF, JMP_IF_NOT (with backpatching)
+6. Functions → CLOSURE, CALL, RETURN, TAIL_CALL
+7. Collections → NEW_ARRAY, NEW_MAP, GET_INDEX, SET_INDEX, LEN, CONCAT
+8. Closures → upvalue tracking, CLOSE_UPVALUE, GET_UPVALUE, SET_UPVALUE
+9. Error handling → TRY
+10. Coroutines → COROUTINE, YIELD, RESUME
+11. Host refs → GET_FIELD, SET_FIELD
 
-**Test at each sub-step** with Raido scripts compiled and executed.
+**Test at each step:** compile snippets, disassemble bytecode, verify
+instruction sequences.
 
-**Milestone:** After this phase, Raido can run `fibonacci(10)`.
+### Phase 7: VM
 
-### Phase 8: Collections
+The dispatch loop.
 
-- NEW_ARRAY / NEW_MAP → `arena.alloc_array(cap)` / `arena.alloc_map(cap)`
-- GET_INDEX / SET_INDEX → `arena.array_get()` / `arena.map_get()` etc.
-- LEN → `arena.array_len()` / `arena.map_len()` / string byte length
+```rask
+struct Vm {
+    arena: Arena,
+    registers: Vec<Value>,   // flat: frame_base indexes into it
+    call_stack: Vec<CallFrame>,
+    globals: Vec<Value>,
+    global_names: Map<string, i64>,
+    fuel: i64,
+    max_call_depth: i64,
+    prng: PrngState,          // xoshiro128++: 4 × u32
+    host_functions: Vec<HostFunc>,
+    chunk: Chunk,
+}
 
-Arrays and maps live in the byte arena as contiguous byte sequences. Array
-elements are 16-byte value slots. Maps use open addressing with linear probing,
-entries are `key_offset(4) | key_len(4) | value(16)` — string keys stored
-elsewhere in the arena.
+struct CallFrame {
+    proto_idx: i64,
+    pc: i64,
+    base_reg: i64,    // offset into registers vec
+    // upvalue tracking for closures
+}
+```
 
-Array growth: when `push` exceeds capacity, allocate a new larger array at
-`top`, copy elements, update the Value's offset. The old space is wasted (bump
-allocator doesn't free). This is fine — `frame_end()` or `reset()` reclaims it.
+**Implement opcode handlers in the same order as Phase 6.** After each
+sub-step, you can compile + run Raido scripts that use those features.
 
-**Test:** Array/map creation, mutation, nested structures, growth, iteration.
-Verify byte-level layout matches spec.
+**Milestones:**
+- After step 3: `1 + 2 * 3` evaluates correctly
+- After step 5: `if`/`while`/`for` work
+- After step 6: `fibonacci(10)` runs
+- After step 7: arrays and maps work
+- After step 8: closures with shared upvalues work
 
-### Phase 9: Closures and upvalues
+### Phase 8: Standard library
 
-Closures are arena objects: `header(4) | proto_idx(2) | upvalue_count(2) |
-upvalue_offsets[](4)`. Each upvalue offset points to an arena upvalue slot
-(bare 16-byte value).
+Host functions registered before script execution.
 
-**Before close**: upvalue slot doesn't exist yet. The upvalue offset in the
-closure is a sentinel meaning "read from register X in frame Y." The VM checks
-this during GET_UPVALUE.
+**Core (always present):** `type()`, `tostring()`, `int()`, `number()`,
+`len()`, `error()`, `assert()`, `print()`.
 
-**CLOSE_UPVALUE**: Allocates an upvalue slot in the arena, copies the register
-value into it, patches all closures that reference this variable to point at
-the new arena slot. Multiple closures sharing a variable all get the same
-arena offset — writes through one are visible to all.
-
-**After close**: GET_UPVALUE/SET_UPVALUE read/write the arena slot directly.
-
-**Test:** Shared mutation between closures, closures surviving enclosing scope,
-counter factory pattern.
-
-### Phase 10: Error handling
-
-- `error(msg)` raises ScriptError
-- TRY instruction: sets catch PC on call frame; on error, jump there with error
-  in a register
-- `try expr else |e| { ... }` compiles to TRY + conditional jump
-- Non-catchable errors: FuelExhausted, ArenaExhausted, CallOverflow (propagate
-  to host)
-
-**Test:** try/else, error propagation through call chains, assert().
-
-### Phase 11: Standard library
-
-**Core (always loaded):**
-`type()`, `tostring()`, `int()`, `number()`, `len()`, `error()`, `assert()`,
-`print()`
-
-**Opt-in modules** (host enables per-VM):
-- **math**: abs, floor, ceil, round, sqrt (Newton's method on fixed-point),
-  min, max, clamp, lerp, sin/cos/atan2 (CORDIC), random (xoshiro128++)
-- **string**: sub, find, upper, lower, split, trim, starts_with, ends_with,
+**Opt-in modules:**
+- **math:** abs, floor, ceil, round, sqrt (Newton's method), min, max, clamp,
+  lerp, sin/cos/atan2 (CORDIC — ~15 iterations of shifts and adds), random
+  (xoshiro128++), pi
+- **string:** sub, find, upper, lower, split, trim, starts_with, ends_with,
   rep, byte, char
-- **array**: push, pop, insert, remove, sort (insertion sort), contains, join,
+- **array:** push, pop, insert, remove, sort (insertion sort), contains, join,
   reverse
-- **map**: keys, values, contains, remove
-- **bit**: and, or, xor, not, lshift, rshift
+- **map:** keys, values, contains, remove
+- **bit:** and, or, xor, not, lshift, rshift
 
-CORDIC for trig: loop of shifts and adds on fixed-point. ~15 iterations for
-10-bit accuracy. Pure integer math — works fine in Rask.
+**Test:** Each function. Then Raido scripts that combine them.
 
-**Test:** Each function individually, then Raido scripts that combine them.
-
-### Phase 12: Coroutines
+### Phase 9: Coroutines
 
 ```rask
 struct Coroutine {
@@ -339,136 +344,92 @@ struct Coroutine {
 }
 ```
 
-- COROUTINE: create with function ref, status = Suspended
-- RESUME: save current VM state, load coroutine state, run
-- YIELD: save coroutine state, restore caller state, pass value back
+COROUTINE creates one. RESUME swaps VM state with coroutine state. YIELD
+swaps back. One runs at a time.
 
-Main VM holds a stack of active coroutines (only one runs at a time).
+**Test:** Producer/consumer. AI patrol from spec. Nested resume/yield.
 
-**Test:** Producer/consumer, AI patrol pattern from spec, nested resume/yield.
-
-### Phase 13: Host interop API
-
-The Rask-facing API for embedding Raido:
+### Phase 10: Host interop
 
 ```rask
-const vm = Vm.new(VmConfig {
-    arena_size: 4096,
-    initial_fuel: 100_000,
-    max_call_depth: 256,
-})
-
 vm.register("send_message", |ctx: CallContext| -> Value or VmError {
     const target = try ctx.arg_string(0)
     // host logic
     return Value.Nil
 })
-
-const chunk = try vm.compile(source)
-try vm.exec(chunk)
-const result = try vm.call("on_update", [Value.Int(42)])
 ```
 
-Host functions stored as closures in a Vec. VM dispatch calls them when CALL
-targets a host function index.
+Host functions: closures stored in a Vec, invoked when CALL targets one.
 
-Host references: `Map<string, RefType>` with field getters/setters as closures.
+Host references: `register_ref_type(name, fields)` where fields have
+getter/setter closures. GET_FIELD/SET_FIELD dispatch through the vtable
+by slot index.
 
-**Test:** Rask program creates VM, registers functions, runs Raido script,
+**Test:** Rask program creates VM, registers host functions, runs script,
 reads results back.
 
-### Phase 14: Serialization
+### Phase 11: Serialization
 
-**Requires `fs.read_bytes` / `fs.write_bytes` prerequisite.**
+Arena is already a byte buffer — `buf[0..top]` serializes in place.
 
-The arena is already a byte buffer — `buf[0..top]` is most of the serialized
-state. What remains is the VM execution state layered on top:
+Remaining state layered on top:
+- Version header
+- Arena bytes verbatim
+- Registers (16 bytes each via write_value)
+- Globals (name table + values)
+- Call stack (return PC, base register, prototype index per frame)
+- Coroutine states
+- PRNG state (4 × u32)
+- Fuel remaining
 
-- Version header (4 bytes)
-- Arena: `buf[0..top]` verbatim
-- Registers: 16 bytes × register count (same encoding as arena values)
-- Globals: name table + value slots
-- Call stack: return PC, base register, prototype index per frame
-- Coroutine states: each coroutine's registers + call stack + PC + status
-- PRNG state: 4 × u32 (xoshiro128++)
-- Fuel remaining: i64
+No pointer fixup — all references are integer arena offsets.
 
-No pointer fixup needed — all references are integer offsets into the arena,
-which is serialized in place. Host function bindings and bytecode are NOT
-serialized (re-registered/re-loaded on restore, matched by name).
+**Test:** Serialize mid-execution, deserialize, resume, verify identical
+result.
 
-**Test:** Serialize mid-execution, deserialize, resume, verify same result as
-uninterrupted execution. Round-trip through file with `fs.write_bytes` /
-`fs.read_bytes`.
+### Phase 12: Content identity
 
-### Phase 15: Content identity
+SHA-256 of bytecode + constants + prototypes. Pure integer math + bitwise
+ops — implementable in Rask (~200 lines). Start with FNV-1a if SHA-256
+is too tedious, swap later.
 
-SHA-256 of chunk bytecode + constants + prototypes.
-
-SHA-256 is pure integer math + bitwise ops. Tedious but straightforward to
-implement in Rask (~200 lines). Alternatively, use a simpler hash initially
-(FNV-1a — 10 lines) and swap to SHA-256 later.
-
-**Test:** Same source → same hash. Different source → different hash. Hash
-matches a known test vector.
+**Test:** Same source → same hash. Known test vectors.
 
 ## Dependency Graph
 
 ```
-         Phase 0 (skeleton)
-              |
-    +---------+---------+
-    |                   |
-Phase 1 (values)    Phase 4 (lexer)
-    |                   |
-Phase 2 (opcodes)   Phase 5 (parser)
-    |                   |
-Phase 3 (arena)         |
-    |                   |
-    +---------+---------+
-              |
-        Phase 6 (compiler)
-              |
-        Phase 7 (VM core)        ← milestone: fibonacci works
-              |
-    +---------+---------+------- Phase 13 (host API)
-    |         |         |
-Phase 8   Phase 9   Phase 10
-(colls)   (closures) (errors)
-    |         |         |
-    +---------+---------+
-              |
-        Phase 11 (stdlib)        ← milestone: full language works
-              |
-        Phase 12 (coroutines)    ← milestone: cooperative multitasking
-              |
-        Phase 14 (serialization) ← milestone: save/restore
-              |
-        Phase 15 (content hash)  ← milestone: verifiable chunks
+Phase 1 (values + bytes)
+    |
+Phase 2 (arena)          Phase 4 (lexer)
+    |                        |
+Phase 3 (opcodes + chunk) Phase 5 (AST + parser)
+    |                        |
+    +----------+-------------+
+               |
+         Phase 6 (codegen)
+               |
+         Phase 7 (VM)            ← fibonacci works
+               |
+    +----------+----------+
+    |          |          |
+Phase 8    Phase 9    Phase 10
+(stdlib)   (coroutines) (host)
+    |          |          |
+    +----------+----------+
+               |
+         Phase 11 (serialization) ← save/restore works
+               |
+         Phase 12 (content hash)  ← verifiable chunks
 ```
 
-Phases 1-3 and Phase 4-5 can be done in parallel.
-Phases 8, 9, 10 can be done in parallel after Phase 7.
-Phase 13 can start after Phase 7 (independent of 8-12).
+Phases 1-3 and 4-5 are parallel tracks.
+Phases 8, 9, 10 are parallel after Phase 7.
 
-## Key Risks
+## Risks
 
-**Recursive AST types (Phase 5):** If Rask can't do recursive enums or Box<T>,
-the entire parser/compiler must use index-based node pools. Test this at the
-very start of Phase 5 — it changes the design of Phases 5 and 6.
+**Recursive enum / index pools (Phase 5):** Test early whether Rask handles
+recursive enums. If not, the `ExprId`/`StmtId` index pool pattern works but
+is more verbose.
 
-**i128 for fixed-point mul/div (Phase 1):** 32.32 multiplication needs 64-bit
-intermediate results. If Rask doesn't support i128, split into 32-bit halves.
-Test early.
-
-**Performance:** Compiled Raido-in-Rask will be slower than a native Rust
-implementation — dispatch overhead from an enum-based Value type, bounds-checked
-byte buffer access, no JIT. Acceptable for a reference implementation.
-
-## What This Proves
-
-After all phases:
-- Raido spec is implementable and consistent
-- Rask can express a non-trivial VM (good dogfooding signal)
-- Reference implementation for testing the eventual Rust version against
-- Working host interop for Rask applications that want embedded scripting
+**i128 for fixed-point mul/div (Phase 1):** If Rask lacks i128, split into
+32-bit halves. Test early.
