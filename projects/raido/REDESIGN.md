@@ -84,7 +84,7 @@ What they share: determinism, bounded resources, host interop, structured data (
 | `enum` | Tagged union with optional payloads. Exhaustive `match`. |
 | `array<T>` | Homogeneous growable sequence. 0-indexed. |
 | `map<K, V>` | Key-value store. `K` restricted to `string` or `int`. Insertion-ordered. |
-| `T?` | Optional. Either a value of type `T` or `none`. |
+| `T?` | Optional. Either `Some(value)` or `None`. Same as Rask. |
 | `(T, U, ...)` | Tuple. Lightweight grouping for multi-return. |
 
 ### Function Types
@@ -132,18 +132,18 @@ enum Stance {
 }
 
 enum Order {
-    Attack(target: int)
+    Attack(int)                              // positional payload
     Retreat
     HoldPosition
-    Allocate(system: int, power: number)
+    Allocate { system: int, power: number }  // named payload
 }
 
-// Usage
+// Usage — dot access for variants, same as Rask
 match order {
     Order.Attack(target) => engage(fleet, target),
     Order.Retreat => disengage(fleet),
     Order.HoldPosition => hold(fleet),
-    Order.Allocate(system, power) => reallocate(fleet, system, power),
+    Order.Allocate { system, power } => reallocate(fleet, system, power),
 }
 ```
 
@@ -207,7 +207,21 @@ The import graph is part of the chunk's content hash. Verifying a script means v
 
 ### Unchanged
 
-`if`/`else`, `for`/`while`, `match`, `const`/`let`, arithmetic/comparison/logic operators, `try`/`error()`, `assert()`, double-quoted strings with interpolation, single-quoted raw strings, `0..10` and `0..=10` ranges, `//` and `/* */` comments, `break`, `return`, `yield`.
+`if`/`else`, `for`/`while`, `match`, `const`/`let`, arithmetic/comparison/logic operators, `try`/`error()`, `assert()`, double-quoted strings with interpolation, `0..10` and `0..=10` ranges, `//` and `/* */` comments, `break`, `return`, `yield`.
+
+**Adopted from Rask (new to Raido):**
+
+- **Colon inline syntax:** `if x > 0: return x` — single expression after colon, braces for multi-statement
+- **`is` pattern matching:** `if opt is Some(v): use(v)` — match a single pattern in conditions
+- **`Some`/`None` for optionals** — capitalized variants, same as Rask's `Option` enum
+
+**Deliberate divergences from Rask:**
+
+- **Single-quoted strings** — Rask uses `'a'` for character literals. Raido has no character type; single quotes are raw strings (`'no {interpolation}'`). Different use case, intentional.
+- **No `public`/package visibility** — Raido scripts are single-file. All declarations are visible within the script and importable by other chunks.
+- **No `extend` blocks (deferred)** — Methods on user-defined structs are deferred. Built-in methods on `array`, `map`, `string` are compiler-known.
+- **No parameter modes** — No `mutate`/`take`. Raido values are arena-managed, not ownership-tracked. Structs pass by reference (arena offset), primitives by value.
+- **No `using` context clauses** — Host data access is through `extern struct`, not context parameters.
 
 ### Changed
 
@@ -237,17 +251,26 @@ const (lo, hi) = minmax(values)
 // Module imports (new)
 import "physics" as phys
 
-// Optional handling (changed — no nil)
+// Optional handling (changed — no nil, capitalized variants like Rask)
 const shield: Shield? = entity.shield
 const defense = shield ?? default_shield
+
+// Match on optionals — Some/None capitalized, same as Rask
 match shield {
-    some(s) => apply_to(s),
-    none => take_full_damage(),
+    Some(s) => apply_to(s),
+    None => take_full_damage(),
 }
+
+// `is` pattern matching — same as Rask
+if entity.shield is Some(s): apply_damage(s)
 
 // Safe access (new)
 const item = inventory.get(3)      // returns T?
 const entry = lookup.get("iron")   // returns V?
+
+// Inline syntax — colon for single expression, same as Rask
+if health < 30: return Animation.Hurt
+for star in stars: generate_planets(star)
 
 // bind() for partial application (new)
 const hit10 = bind(apply_damage, 10)
@@ -257,7 +280,7 @@ const hit10 = bind(apply_damage, 10)
 
 - `|x| x * 2` — closure syntax gone
 - `global config = {:}` — mutable globals gone
-- `nil` — use `none` for optionals
+- `nil` — use `None` for optionals (capitalized, like Rask)
 - `"""triple-quoted"""` and `'''raw triple'''` — use regular strings
 - `func sum(nums...)` — rest parameters gone
 - `type(v)` — types known at compile time
@@ -398,8 +421,8 @@ With static types, serialization is simpler — no type tags to encode per value
 ### Core (always available)
 
 - `tostring(v: T) -> string` — convert any value to string representation
-- `int(s: string) -> int?` — parse string to int, `none` on failure
-- `number(s: string) -> number?` — parse string to number, `none` on failure
+- `int(s: string) -> int?` — parse string to int, `None` on failure
+- `number(s: string) -> number?` — parse string to number, `None` on failure
 - `len(v: T) -> int` — string byte length, array length, map entry count (T must be string, array, or map)
 - `error(msg: string)` — raise a ScriptError
 - `assert(v: bool, msg: string?)` — raise if false
@@ -419,14 +442,14 @@ Unchanged: `sub`, `find`, `upper`, `lower`, `split`, `trim`, `starts_with`, `end
 - `push(v: T)`, `pop() -> T?`, `insert(i: int, v: T)`, `remove(i: int) -> T`
 - `sort(cmp: func(T, T) -> bool)` — takes a function reference as comparator
 - `contains(v: T) -> bool`, `join(sep: string) -> string`, `reverse()`
-- `get(i: int) -> T?` — safe access, returns `none` on out-of-bounds
+- `get(i: int) -> T?` — safe access, returns `None` on out-of-bounds
 - `each(f: func(T))`, `map(f: func(T) -> U) -> array<U>` — takes function references
 
 ### map (opt-in)
 
 - `keys() -> array<K>`, `values() -> array<V>`
 - `contains(k: K) -> bool`, `remove(k: K)`
-- `get(k: K) -> V?` — safe access, returns `none` on missing key
+- `get(k: K) -> V?` — safe access, returns `None` on missing key
 
 ### bit (opt-in)
 
