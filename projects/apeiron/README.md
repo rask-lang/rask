@@ -343,7 +343,7 @@ See [ROADMAP.md](ROADMAP.md) for the full build order from specs to playable gam
 
 **Galaxy size.** 10,000 is the working number. Big enough for exploration, small enough for every star to potentially matter. Needs playtesting. Could be 5,000 or 50,000.
 
-**Star system scale.** How detailed is the procedural generation per system? Just planet count and resources? Or full orbital mechanics, atmospheric composition, terrain seeds? More detail = richer gameplay but heavier seed script.
+**Star system scale.** How detailed is the procedural generation per system? Coarse data (planet count, spectral class, rough composition) is public from the seed. Detailed geology collapses at claim time via beacon — see [EXPLORATION.md](EXPLORATION.md). Open: orbital mechanics, atmospheric composition, terrain seeds.
 
 **Combat model.** Combat happens within domain jurisdiction (systems, route domains). Domain runs Raido combat scripts, both sides verify. Looting works through consent-on-entry — entering a PvP domain grants the domain limited authority over combat consequences. Needs detailed design.
 
