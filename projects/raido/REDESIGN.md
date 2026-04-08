@@ -52,6 +52,11 @@ What they share: determinism, bounded resources, host interop, structured data (
 | **Struct update `..`** | `Ship { health: new_hp, ..ship }` — copy all fields except the ones you override. Every combat tick, physics eval, and crafting transform produces "same state but with X changed." Without this, you list every field manually. Rask already has it. |
 | **Pattern guards** | `Order.Attack(t) if t.health > 0 => engage(t)` — condition after a match pattern. Natural for combat ("attack if in range"), physics ("fail if over tolerance"), crafting ("activate if energy sufficient"). Without guards, you nest if/else inside match arms. Rask has them. |
 | **Named arguments** | `transfer(source: a, target: b, amount: 100)` — compiler-checked documentation. Getting source/target backwards in a combat script has economic consequences. Order-fixed, same as Rask. |
+| **`!` force unwrap** | `value!` panics on `None`. Used constantly after `.get()` calls when you know the key exists. Rask has it with optional lint warning. |
+| **`is ... else` guard** | `let item = queue.pop() is Some else { break }` — bind-and-unwrap with early exit. Cleanest unwrap pattern. The `else` block must diverge. Same as Rask. |
+| **Chained l-value mutation** | `ships[i].health -= damage` — mutate a struct field through an array index. Every combat tick needs this. Without it, you rebuild the entire struct to change one field. Same as Rask. |
+| **Compound assignment** | `+=`, `-=`, `*=`, `/=`, `%=`. Used constantly in accumulation (crafting) and state updates (combat). Same as Rask. |
+| **Struct field shorthand** | `Star { id: index, x, y, z }` — when variable name matches field name, omit the value. Reduces noise in struct construction. Same as Rask. |
 | **Module imports** | `import "combat_utils"` — content-addressed composition. Import graph is part of chunk identity. Essential for non-trivial scripts. |
 
 ## What Stays
@@ -105,6 +110,10 @@ What they share: determinism, bounded resources, host interop, structured data (
 - `int` and `number` are separate types — no implicit coercion. Use `number(x)` or `int(x)` for explicit conversion
 - `??` unwraps optionals with a default: `value ?? fallback` where both sides must be the same type
 - Named arguments: `transfer(source: a, target: b, amount: 100)` — order-fixed, same as Rask. Optional (positional calls still work). Compiler checks names match declaration.
+- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on any l-value including chained access (`ships[i].health -= damage`).
+- Force unwrap: `value!` — panics if `None`. Use when you've already checked or know the value exists.
+- Struct field shorthand: `Star { id: index, x, y, z }` — omit value when variable name matches field name.
+- Integer overflow: **panic by default** (same as Rask). Use `wrapping_mul()`, `wrapping_add()` for explicit wrapping arithmetic (galaxy seed hashing, PRNGs). This is part of the determinism contract — overflow behavior is specified, not implementation-defined.
 
 ### Struct Declaration
 
@@ -304,6 +313,27 @@ for ship in fleet.ships {
     if ship.health <= 0: continue
     apply_orders(ship, orders)
 }
+
+// Force unwrap — panics on None (same as Rask)
+const order = orders.get(ship.id)!
+
+// Guard pattern — bind + early exit (same as Rask)
+let target = find_ship(ships, target_id) is Some else { continue }
+
+// Chained l-value mutation (same as Rask)
+ships[i].health -= int(damage)
+ships[i].shield = None
+fleet.ships[idx].engine.fuel -= cost
+
+// Compound assignment (same as Rask)
+result.density += element.density * fraction
+count *= 2
+
+// Struct field shorthand (same as Rask)
+return Star { id: index, x, y, z, spectral, planet_count, luminosity }
+
+// Wrapping arithmetic for seed hashing (same as Rask)
+const h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 ```
 
 ### Removed
@@ -514,6 +544,7 @@ The determinism contract — what "same execution" means across implementations:
 - **Arena exhaustion** is deterministic — same allocation sequence → same failure point.
 - **PRNG state evolution** is part of the contract — xoshiro128++, specified seed expansion via SplitMix64.
 - **Fixed-point arithmetic** is integer math — bitwise identical on all platforms by construction.
+- **Integer overflow** panics by default. `wrapping_add()`, `wrapping_mul()`, etc. wrap. Both behaviors are deterministic and part of the contract. An overflow panic in one implementation must panic in all implementations at the same instruction.
 - **Sort stability** is required — `array.sort()` uses a stable sort algorithm.
 
 ## What This Enables
