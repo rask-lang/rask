@@ -49,6 +49,9 @@ What they share: determinism, bounded resources, host interop, structured data (
 | **Function references** | References to named top-level functions. No captures, no arena allocation. Enables `coroutine(patrol)`, `sort(by_distance)`, behavior composition. |
 | **`??` null coalescing** | `value ?? default` — sugar for the common optional-with-default pattern. |
 | **Tuples** | Lightweight multi-return without defining a struct. `func bounds(arr: array<number>) -> (number, number)`. Without tuples, every multi-return needs a single-use struct definition — real friction for utility functions. |
+| **Struct update `..`** | `Ship { health: new_hp, ..ship }` — copy all fields except the ones you override. Every combat tick, physics eval, and crafting transform produces "same state but with X changed." Without this, you list every field manually. Rask already has it. |
+| **Pattern guards** | `Order.Attack(t) if t.health > 0 => engage(t)` — condition after a match pattern. Natural for combat ("attack if in range"), physics ("fail if over tolerance"), crafting ("activate if energy sufficient"). Without guards, you nest if/else inside match arms. Rask has them. |
+| **Named arguments** | `transfer(source: a, target: b, amount: 100)` — compiler-checked documentation. Getting source/target backwards in a combat script has economic consequences. Order-fixed, same as Rask. |
 | **Module imports** | `import "combat_utils"` — content-addressed composition. Import graph is part of chunk identity. Essential for non-trivial scripts. |
 
 ## What Stays
@@ -60,6 +63,8 @@ What they share: determinism, bounded resources, host interop, structured data (
 | **Maps** (restricted keys: `string`, `int`) | Asset-by-name lookup, entity-by-tag lookup. Structs cover structured data; maps cover ad-hoc association. |
 | **`match`** | Exhaustive enum matching (compiler error if variant missing). Nice-to-have for literals. |
 | **`try`/`error()`** | Error propagation for host function failures. Errors are exceptional, not normal control flow. |
+| **`continue`** | Skip to next loop iteration. Basic control flow — every non-trivial loop needs it. |
+| **`loop`** | Infinite loop with `break value`. Clearer intent than `while true`. Natural for coroutine patterns (patrol loops, dialogue loops). |
 | **Arena + bump allocator** | Deterministic allocation. No GC. Frame-based lifetime management. |
 | **Fuel metering** | Bounded execution. Non-catchable on exhaustion. |
 | **PRNG** (xoshiro128++) | Seeded, deterministic, serializable. Part of VM state. |
@@ -99,6 +104,7 @@ What they share: determinism, bounded resources, host interop, structured data (
 - Exhaustive `match` on enums — compiler error if a variant is missing
 - `int` and `number` are separate types — no implicit coercion. Use `number(x)` or `int(x)` for explicit conversion
 - `??` unwraps optionals with a default: `value ?? fallback` where both sides must be the same type
+- Named arguments: `transfer(source: a, target: b, amount: 100)` — order-fixed, same as Rask. Optional (positional calls still work). Compiler checks names match declaration.
 
 ### Struct Declaration
 
@@ -201,7 +207,7 @@ The import graph is part of the chunk's content hash. Verifying a script means v
 
 ### Unchanged
 
-`if`/`else`, `for`/`while`, `match`, `const`/`let`, arithmetic/comparison/logic operators, `try`/`error()`, `assert()`, double-quoted strings with interpolation, `0..10` and `0..=10` ranges, `//` and `/* */` comments, `break`, `return`, `yield`.
+`if`/`else`, `for`/`while`, `loop`, `match`, `const`/`let`, arithmetic/comparison/logic operators, `try`/`error()`, `assert()`, double-quoted strings with interpolation, `0..10` and `0..=10` ranges, `//` and `/* */` comments, `break`, `continue`, `return`, `yield`.
 
 **Adopted from Rask (new to Raido):**
 
@@ -266,6 +272,38 @@ const entry = lookup.get("iron")   // returns V?
 if health < 30: return Animation.Hurt
 for star in stars: generate_planets(star)
 
+// Struct update syntax — copy all fields, override some (new, same as Rask)
+const damaged = Ship { health: ship.health - dmg, ..ship }
+const next_state = FleetState { ships: new_ships, tick: state.tick + 1, ..state }
+
+// Pattern guards in match (new, same as Rask)
+match order {
+    Order.Attack(target) if target.health > 0 => engage(target),
+    Order.Attack(_) => find_new_target(),
+    Order.Retreat if fleet.can_retreat() => disengage(),
+    Order.Retreat => last_stand(),
+    _ => hold(),
+}
+
+// Named arguments — order-fixed, same as Rask
+func transfer(source: Ship, target: Ship, amount: int) { ... }
+transfer(source: attacker, target: cargo, amount: 50)
+
+// loop — infinite loop with break value (same as Rask)
+func patrol(npc: Entity, route: array<Vec2>) {
+    loop {
+        for point in route {
+            move_to(npc, point)
+            yield
+        }
+    }
+}
+
+// continue — skip to next iteration (same as Rask)
+for ship in fleet.ships {
+    if ship.health <= 0: continue
+    apply_orders(ship, orders)
+}
 ```
 
 ### Removed
