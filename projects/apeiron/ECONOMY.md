@@ -193,7 +193,7 @@ All paid in credits:
 
 **Mining contracts.** Individual domains offer extraction access. You operate an extractor provided by the domain, keep a share of output. No outpost needed — you're working on someone else's domain.
 
-**Scout reports.** Visit unclaimed systems — doesn't require a domain, just compute seed data from your ship. Report resource profiles back to any domain willing to pay. Payment for verified data. Real value: scouts map the frontier.
+**Scout reports.** Run beacon-gated prospect Transforms on unclaimed systems from a nearby domain. Produces probability ranges for element deposits — not ground truth, but enough to inform claiming decisions. Payment in credits for verified prospect data. See [EXPLORATION.md](EXPLORATION.md).
 
 **Facility rental.** Domains with public crafting facilities charge a fee in credits. No need to own a facility to start crafting.
 
@@ -245,13 +245,13 @@ Domains compete on price, equipment quality (precision instruments affect craft 
 
 ### Scout Reports
 
-Simplest job. No Grants, no conditional transfers.
+Scouts run beacon-gated prospect Transforms from a nearby domain, producing probability ranges for unclaimed systems. Each prospect costs committed fuel + one beacon tick. See [EXPLORATION.md](EXPLORATION.md) for the full model.
 
-Player visits an unclaimed system and computes seed data locally — no domain authority needed. Player creates a `scout_report` Object containing star ID, resource profile, and system properties. Player transfers the report to a domain that buys scout data.
+A scout report is an Object containing prospect data — star ID, body IDs, probability ranges, confidence levels (how many epochs of data). The scout transfers the report to a domain that buys prospect data.
 
-The domain verifies by re-computing seed data for that star ID. Match → credits to the player. No match → rejected. Simple bilateral exchange with verification.
+The domain verifies each prospect result: re-run `prospect(seed, star_id, body_id, beacon_value)` for each claimed epoch. Match → credits to the player. No match → rejected.
 
-The report is data, not a scarce resource. The player can sell it to multiple buyers — the Object can be copied because it's information, not a physical good.
+The report is data, not a scarce resource. The player can sell it to multiple buyers. But unlike free seed data, prospect results required real fuel and real beacon commitments to produce — that's the value.
 
 ### No New Primitives
 

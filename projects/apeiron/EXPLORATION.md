@@ -3,32 +3,42 @@
 
 The galaxy is a seed. The seed determines what's POSSIBLE. What's ACTUAL is determined by who shows up.
 
-## Two Layers of Knowledge
+## Three Layers of Knowledge
 
-### Coarse Layer — Public, From the Seed
+### Sky — Free, From the Seed
 
-Star positions, spectral classes, planet counts, rough composition. Computable by anyone from the public seed. This is your sky map — the same for everyone, always.
-
-The coarse layer tells you probabilities. "This G-type star with 4 rocky planets is likely iron-rich." "That red dwarf with a single gas giant probably has hydrogen." Enough to make informed decisions about where to explore. Not enough to plan extraction.
+Star positions, spectral classes, planet counts. Computable by anyone from the public seed. This is your sky map — the same for everyone, always.
 
 ```
-coarse = generate_star(seed, star_id)
-// → position, spectral class, planet count, probable composition
+sky = generate_star(seed, star_id)
+// → position, spectral class, planet count
 // Public. Permanent. No beacon required.
 ```
 
-The coarse generation function IS public. Anyone can read it, run it, map all 10,000 stars. That's fine — you're looking at the sky. The sky is free.
+The sky generation function IS public. Anyone can read it, run it, map all 10,000 stars. That's fine — you're looking at the sky through a telescope. The sky is free. But it doesn't tell you what's on the ground.
 
-### Detailed Layer — Beacon-Gated, Created at Claim Time
+### Prospect — Beacon-Gated, Scout's Work
 
-Specific deposit data — element types, quantities, qualities, locations on each body. This doesn't exist until someone claims the system.
+Probability ranges for element types and quantities per body. Beacon-gated, costs committed fuel. This is what scouts do.
 
-Claiming a star means deploying a domain. The claim includes a comprehensive geological survey — a scan Transform that takes the seed, the star ID, and the current beacon value. The beacon is half the key. Without it, the function produces garbage. With it, the true geology manifests.
+```
+estimate = prospect(seed, star_id, body_id, beacon_value)
+// → probability ranges: "likely 30K-70K iron", "trace heavy-element signatures"
+// Requires beacon. Costs fuel. Not ground truth.
+```
+
+Without the beacon, the prospect function produces garbage — same cryptographic construction as everything else. With it, you get a useful narrowing of the probability distribution. Not specific values — ranges. Enough to decide whether a system is worth claiming.
+
+Multiple prospects across different beacon epochs narrow the ranges further. Each gives a different window on the same underlying truth (which only manifests at claim time). A thorough scout with 5 epochs of prospect data has significantly tighter estimates than a single-pass visit.
+
+### Survey — Claim Time Only
+
+Specific deposit data. Element types, quantities, qualities, extraction sites per body. Created once at claim time. Permanent.
 
 ```
 geology = survey(seed, star_id, body_id, beacon_value)
 // → specific deposits, quantities, quality, extraction sites
-// Requires beacon. Created once at claim time. Permanent.
+// Requires beacon. Created at claim time. Permanent.
 ```
 
 The geology is permanent once created. It's published as part of the domain's metadata. Verifiable by anyone: re-run the function with (seed, star_id, body_id, beacon_value_at_claim), get the same result. The beacon value is in the public beacon log. The claim Transform proof timestamps when it happened.
@@ -60,25 +70,37 @@ Collapse on claim avoids it entirely. Claiming is a heavyweight operation — yo
 
 ## Scouts
 
-Scouts don't discover ground truth — they narrow probabilities.
+Scouts run prospects. That's the job.
 
-A scout visits unclaimed systems and analyzes coarse data in detail. They can't run the detailed survey (no domain = no beacon-gated Transform). But they can compute the coarse generation function for every body in the system, cross-reference spectral analysis with known element correlations, and produce an estimate.
+A scout travels to unclaimed systems and runs beacon-gated prospect Transforms from a nearby domain. Each prospect costs committed fuel and one beacon tick. The result is probability ranges — not ground truth, but enough to decide whether a system is worth claiming.
 
-A scout report says: "Star 4822 has 4 rocky planets. Body 2 and 4 show iron-class spectral signatures. Based on planet mass and composition model, estimated 30K-70K iron across the system. Body 3 is an asteroid belt with trace heavy-element signatures — possible tungsten or chromium. Recommend claiming."
+A scout report says: "Star 4822, 5 epochs of prospect data. Body 2: iron 30K-70K (high confidence). Body 4: iron 15K-40K, trace tungsten (moderate confidence). Body 3 asteroid belt: heavy-element signatures consistent with chromium or gold (low confidence, needs more epochs). Recommend claiming if you need iron. Tungsten is a bonus gamble."
 
-This is real value. The probability narrowing saves other players from wasting claim costs on bad systems. But it's not ground truth — the actual geology depends on a beacon value that won't exist until someone claims.
+This has real value. The prospect data is beacon-gated — you can't compute it from the script. Each epoch of data cost real fuel. The tighter the ranges, the more epochs the scout invested. Buying a report is cheaper than prospecting yourself.
 
-Scout reports are cheaper to produce (just fuel for travel + local computation) and useful for decision-making. They're honest about what they are: informed estimates, not surveys.
+### Why Not Just Claim Blind?
 
-## What the Script Reveals vs. What Requires Commitment
+Claiming costs hosting — real money, real infrastructure. A system that prospects as "probably iron-rich" might survey as mediocre. Prospect data doesn't eliminate risk, but it narrows it. A scout who says "5 epochs of data, high confidence iron, moderate confidence tungsten" gives you better odds than rolling the dice on sky data alone.
 
-| Layer | Source | Cost | What you learn |
-|---|---|---|---|
-| Sky map | `generate_star(seed, star_id)` | Free | Position, type, planets |
-| Scout estimate | Coarse data + analysis | Travel fuel | Probability ranges for elements |
-| Geological survey | `survey(seed, star_id, body, beacon)` | Claim (hosting + fuel) | Exact deposits, permanent |
+## What Each Layer Costs
+
+| Layer | Function | Cost | What you learn | Beacon? |
+|---|---|---|---|---|
+| Sky | `sky(seed, star_id)` | Free | Position, type, planet count | No |
+| Prospect | `prospect(seed, star_id, body, beacon)` | Fuel per tick | Probability ranges | Yes |
+| Survey | `survey(seed, star_id, body, beacon)` | Claim (hosting) | Ground truth, permanent | Yes |
 
 Each layer is strictly more informative and strictly more expensive. No shortcuts.
+
+## Beacon Overhead
+
+Every prospect and survey requires the beacon: commit parameters + fuel, wait for tick, execute. This has latency cost.
+
+**Batching amortizes it.** A scout commits 20 prospects in one tick — different bodies, different systems. One fuel commitment, one beacon tick, 20 evaluations. The cost is one tick of latency, not twenty. Most gameplay batches naturally: a scout visiting a sector prospects everything in one pass.
+
+**Tick interval is a tuning knob.** Short ticks (seconds) for fast gameplay. Longer ticks (minutes) for strategic weight. Stage 1 (monolith) has a local beacon — near-zero overhead. Federation adds one network round trip per tick, not per operation.
+
+**Verification is cheap.** Re-running a Raido function to verify a prospect or survey result: microseconds to milliseconds. Fetch beacon value from the public log, re-execute locally, compare output. No network call needed beyond the initial log fetch.
 
 ## Verification
 
