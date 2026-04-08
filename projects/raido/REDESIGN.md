@@ -26,7 +26,7 @@ What they share: determinism, bounded resources, host interop, structured data (
 | Feature | Rationale |
 |---------|-----------|
 | **Dynamic typing** | Runtime type errors are a divergence vector between implementations. Structured inputs have known shapes. Static types catch bugs before deployment — critical when scripts are tradeable economic assets. |
-| **Closures** | Shared mutable upvalues are a verification hazard. NPC state lives in host entities, not captured variables. Function references and `bind()` cover the composition need without the complexity. |
+| **Closures** | Shared mutable upvalues are a verification hazard. NPC state lives in host entities, not captured variables. Function references cover the composition need without the complexity. |
 | **`nil` as a general value** | Replaced by `T?` optionals. Eliminates null-related runtime errors by construction. |
 | **`global` keyword** | Mutable global state undermines statelessness between host calls. Script state should live in coroutine locals or host entities. |
 | **`host_ref` as distinct concept** | Replaced by `extern struct` — same capability, compile-time type checking. |
@@ -244,7 +244,7 @@ func damage(weapon: Weapon, target: Ship, beacon: int) -> number {
 
 // struct and enum declarations (new)
 struct Vec2 { x: number, y: number }
-enum State { Idle, Patrol, Combat(target: int) }
+enum State { Idle, Patrol, Combat(int) }
 
 // extern declarations replace host_ref (new)
 extern struct Entity { health: int, x: number, y: number }
@@ -390,7 +390,7 @@ All arithmetic, comparison, logic, jump, call, collection, and host field ops. `
 | `GET_STRUCT_FIELD A B C` | `R[A] = R[B].fields[C]`. Field index known at compile time. |
 | `SET_STRUCT_FIELD A B C` | `R[A].fields[B] = R[C]`. |
 | `ENUM_TAG A B` | `R[A] = discriminant(R[B])`. For `match` dispatch. |
-| `FUNC_REF A Bx` | `R[A] = reference to prototype Bx`. For function references and `bind()`. |
+| `FUNC_REF A Bx` | `R[A] = reference to prototype Bx`. For function references. |
 
 **Net: ~35 opcodes** (down from 37). The count reduction is modest. The real win is each opcode being simpler — no runtime type dispatch on arithmetic, no upvalue open/close logic, no type tag checking.
 
