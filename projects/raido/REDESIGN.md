@@ -47,9 +47,8 @@ What they share: determinism, bounded resources, host interop, structured data (
 | **`extern struct`** | Script declares the shape it expects from the host. Type mismatch = load error, not runtime error. |
 | **`extern func`** | Host functions with typed signatures. Same load-time checking. |
 | **Function references** | References to named top-level functions. No captures, no arena allocation. Enables `coroutine(patrol)`, `sort(by_distance)`, behavior composition. |
-| **`bind()`** | Partial application. Freezes arguments — returns a function reference with fewer params. 80% of closure utility, zero verification cost. Deterministic, serializable. |
 | **`??` null coalescing** | `value ?? default` — sugar for the common optional-with-default pattern. |
-| **Tuples** | Lightweight multi-return without defining a struct. `func bounds(arr: array<number>) -> (number, number)`. |
+| **Tuples** | Lightweight multi-return without defining a struct. `func bounds(arr: array<number>) -> (number, number)`. Without tuples, every multi-return needs a single-use struct definition — real friction for utility functions. |
 | **Module imports** | `import "combat_utils"` — content-addressed composition. Import graph is part of chunk identity. Essential for non-trivial scripts. |
 
 ## What Stays
@@ -89,7 +88,7 @@ What they share: determinism, bounded resources, host interop, structured data (
 
 ### Function Types
 
-`func(int, int) -> bool` — describes the signature of a function reference. No closures. The value is a pointer to a named top-level function (or a `bind()` result with frozen arguments).
+`func(int, int) -> bool` — describes the signature of a function reference. No closures. The value is a pointer to a named top-level function.
 
 ### Rules
 
@@ -164,28 +163,23 @@ extern func noise(quality: number, id: int, index: int) -> number
 extern func move_to(entity: Enemy, target: Vec2)
 ```
 
-### Function References and bind()
+### Function References
 
-Function references point to named top-level functions. No captured state. `bind()` freezes leading arguments — returns a new reference with fewer parameters.
+Function references point to named top-level functions. No captured state, no arena allocation. A function reference is a prototype index — the simplest possible callable value.
 
 ```raido
-func apply_damage(amount: int, target: Ship) { ... }
 func by_health(a: Ship, b: Ship) -> bool { return a.health < b.health }
 
-// Function reference
+// Function reference — just a named function used as a value
 const comparator = by_health
 ships.sort(comparator)
 
-// Partial application
-const hit_hard = bind(apply_damage, 50)
-hit_hard(enemy)    // same as apply_damage(50, enemy)
-
-// Coroutine creation
+// Coroutine creation — function reference + initial arguments
 func patrol(npc: Entity, route: array<Vec2>) { ... }
 const co = coroutine(patrol, guard, waypoints)
 ```
 
-`bind()` is deterministic and serializable — the frozen arguments are immutable values stored with the reference.
+No closures, no partial application, no frozen arguments. If you need to pass context, pass it as an argument.
 
 ### Module Imports
 
@@ -272,8 +266,6 @@ const entry = lookup.get("iron")   // returns V?
 if health < 30: return Animation.Hurt
 for star in stars: generate_planets(star)
 
-// bind() for partial application (new)
-const hit10 = bind(apply_damage, 10)
 ```
 
 ### Removed
@@ -304,7 +296,7 @@ High-level changes. Not a full opcode redesign — that belongs in a revised `vm
 | `struct` | u32 arena offset |
 | `enum` | u32 discriminant + u32 arena offset (or inline for simple enums) |
 | `T?` | u8 tag (0=none, 1=some) + 7 bytes payload |
-| `func ref` | u32 prototype index (+ u32 bind offset if bound) |
+| `func ref` | u32 prototype index |
 
 256 registers × 8 bytes = 2 KB per call frame. Half the current 4 KB.
 
@@ -339,7 +331,6 @@ All arithmetic, comparison, logic, jump, call, collection, and host field ops. `
 - **No per-element type tags** in arrays. An `array<int>` stores raw i64 values. Element type is known from bytecode metadata.
 - **Closure and upvalue objects gone.** Coroutines reference prototypes directly.
 - **Struct layout is fixed-size**, determined at compile time from the struct declaration.
-- **Bind objects** store a prototype index + frozen argument values. Small, fixed layout.
 - **Map entries** simpler — keys and values have known types, no tag bytes.
 
 ### Compiler Changes
@@ -427,7 +418,6 @@ With static types, serialization is simpler — no type tags to encode per value
 - `error(msg: string)` — raise a ScriptError
 - `assert(v: bool, msg: string?)` — raise if false
 - `print(v: string)` — host-provided print handler
-- `bind(f: func, args...) -> func` — partial application, freeze leading arguments
 
 ### math (opt-in)
 
@@ -443,7 +433,6 @@ Unchanged: `sub`, `find`, `upper`, `lower`, `split`, `trim`, `starts_with`, `end
 - `sort(cmp: func(T, T) -> bool)` — takes a function reference as comparator
 - `contains(v: T) -> bool`, `join(sep: string) -> string`, `reverse()`
 - `get(i: int) -> T?` — safe access, returns `None` on out-of-bounds
-- `each(f: func(T))`, `map(f: func(T) -> U) -> array<U>` — takes function references
 
 ### map (opt-in)
 
@@ -523,7 +512,7 @@ What you lose:
 
 | Lua feature | Raido equivalent | Gap |
 |-------------|-----------------|-----|
-| Closures | Function references + `bind()` | Can't create functions at runtime. Can't capture mutable state. |
+| Closures | Function references | Can't create functions at runtime. Can't capture state. Pass context as arguments. |
 | Tables (universal) | `struct` + `array<T>` + `map<K,V>` | No heterogeneous collections. More types to learn. |
 | Metatables | Nothing | No operator overloading, no prototype OOP, no metaprogramming. |
 | `loadstring()` | Nothing | No dynamic code loading. |
@@ -541,7 +530,6 @@ What you gain:
 | `T?` optionals | nil | Null safety by construction. |
 | Content-addressed chunks | None | Verifiable identity. Audit trails. |
 | Formal determinism spec | Approximate | Multiple conforming implementations possible. |
-| `bind()` | Closures | Partial application without shared mutable state. |
 | Module imports | `require()` | Content-addressed dependencies. Import graph is part of chunk identity. |
 
-The trade: Raido is a narrower language than Lua. It can't do everything Lua does. The things it loses are exactly what makes Lua unsuitable for deterministic verification. Function references + coroutines + structs/enums + `bind()` cover ~90% of game scripting. The missing 10% (metaprogramming, inline closures, prototype OOP) is what verification can't tolerate.
+The trade: Raido is a narrower language than Lua. It can't do everything Lua does. The things it loses are exactly what makes Lua unsuitable for deterministic verification. Function references + coroutines + structs/enums cover ~90% of game scripting. The missing 10% (metaprogramming, inline closures, prototype OOP) is what verification can't tolerate.
