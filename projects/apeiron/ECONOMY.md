@@ -193,13 +193,11 @@ All paid in credits:
 
 **Mining contracts.** Individual domains offer extraction access. You operate an extractor provided by the domain, keep a share of output. No outpost needed — you're working on someone else's domain.
 
-**Scout reports.** Run beacon-gated prospect Transforms on unclaimed systems from a nearby domain. Produces probability ranges for element deposits — not ground truth, but enough to inform claiming decisions. Payment in credits for verified prospect data. See [EXPLORATION.md](EXPLORATION.md).
-
 **Facility rental.** Domains with public crafting facilities charge a fee in credits. No need to own a facility to start crafting.
 
 ### Progression
 
-1. **Labor.** Courier, mine, scout. Earn credits and small amounts of materials. Learn the cluster's geography and economy.
+1. **Labor.** Courier, mine. Earn credits and small amounts of materials. Learn the cluster's geography and economy.
 2. **Crafting.** Use public facilities to upgrade ship components. Better engine = cheaper jumps. Bigger cargo bay = more profit per courier run. Each upgrade compounds.
 3. **Trade.** Buy low, sell high between systems. Better ship = more cargo = more profit. You're competing with AI haulers now, and you can win because you're smarter about route selection.
 4. **Expansion.** Accumulated enough to deploy an outpost in an unclaimed system. Now you're a domain operator. You mint your own resources, set your own prices.
@@ -243,19 +241,9 @@ Grant expires when the rental period ends. Renew by paying again.
 
 Domains compete on price, equipment quality (precision instruments affect craft outcomes), and location.
 
-### Scout Reports
-
-Scouts run beacon-gated prospect Transforms from a nearby domain, producing probability ranges for unclaimed systems. Each prospect costs committed fuel + one beacon tick. See [EXPLORATION.md](EXPLORATION.md) for the full model.
-
-A scout report is an Object containing prospect data — star ID, body IDs, probability ranges, confidence levels (how many epochs of data). The scout transfers the report to a domain that buys prospect data.
-
-The domain verifies each prospect result: re-run `prospect(seed, star_id, body_id, beacon_value)` for each claimed epoch. Match → credits to the player. No match → rejected.
-
-The report is data, not a scarce resource. The player can sell it to multiple buyers. But unlike free seed data, prospect results required real fuel and real beacon commitments to produce — that's the value.
-
 ### No New Primitives
 
-All four job types compose from Grants, conditional Transfers, Transforms, and Objects. Domains post jobs by creating contract Objects and locking escrow. Players accept by signing contracts and receiving Grants. Payment flows through conditional transfers tied to delivery proofs.
+All three job types compose from Grants, conditional Transfers, Transforms, and Objects. Domains post jobs by creating contract Objects and locking escrow. Players accept by signing contracts and receiving Grants. Payment flows through conditional transfers tied to delivery proofs.
 
 No job-specific protocol. No quest system. No special-cased mechanics. A domain that invents a new job type — escort missions, construction contracts, research commissions — uses the same primitives. I don't want a game engine that knows what a "job" is. I want primitives that let jobs emerge.
 

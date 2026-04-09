@@ -1,9 +1,9 @@
 # Exploration
-<!-- id: apeiron.exploration --> <!-- status: proposed --> <!-- summary: How galaxy knowledge works — coarse data from the seed, detailed geology from beacon-gated claim surveys -->
+<!-- id: apeiron.exploration --> <!-- status: proposed --> <!-- summary: How galaxy knowledge works — sky data from the seed, geology from beacon-gated claim surveys -->
 
 The galaxy is a seed. The seed determines what's POSSIBLE. What's ACTUAL is determined by who shows up.
 
-## Three Layers of Knowledge
+## Two Layers of Knowledge
 
 ### Sky — Free, From the Seed
 
@@ -17,19 +17,7 @@ sky = generate_star(seed, star_id)
 
 The sky generation function IS public. Anyone can read it, run it, map all 10,000 stars. That's fine — you're looking at the sky through a telescope. The sky is free. But it doesn't tell you what's on the ground.
 
-### Prospect — Beacon-Gated, Scout's Work
-
-Probability ranges for element types and quantities per body. Beacon-gated, costs committed fuel. This is what scouts do.
-
-```
-estimate = prospect(seed, star_id, body_id, beacon_value)
-// → probability ranges: "likely 30K-70K iron", "trace heavy-element signatures"
-// Requires beacon. Costs fuel. Not ground truth.
-```
-
-Without the beacon, the prospect function produces garbage — same cryptographic construction as everything else. With it, you get a useful narrowing of the probability distribution. Not specific values — ranges. Enough to decide whether a system is worth claiming.
-
-Multiple prospects across different beacon epochs narrow the ranges further. Each gives a different window on the same underlying truth (which only manifests at claim time). A thorough scout with 5 epochs of prospect data has significantly tighter estimates than a single-pass visit.
+Sky data carries rough implications. A G-type star with rocky planets is more likely to have iron. A system near the dense core probably has common elements in quantity. A red dwarf with a single gas giant might be hydrogen-rich. These are informed guesses from spectral analysis, not measurements. Enough to pick a direction. Not enough to commit hosting costs.
 
 ### Survey — Claim Time Only
 
@@ -43,6 +31,14 @@ geology = survey(seed, star_id, body_id, beacon_value)
 
 The geology is permanent once created. It's published as part of the domain's metadata. Verifiable by anyone: re-run the function with (seed, star_id, body_id, beacon_value_at_claim), get the same result. The beacon value is in the public beacon log. The claim Transform proof timestamps when it happened.
 
+### Why No Middle Layer
+
+I considered a prospect layer — beacon-gated scanning that produces probability ranges, costing fuel. Scouts would sell prospect data. But the beacon value is public after the tick. Anyone can run the prospect function offline with a known beacon value, for free, no fuel. The beacon prevents pre-computation but not post-computation. For any function where the output has value AS INFORMATION, post-computation makes it free.
+
+Crafting is protected because you still need real materials. Surveying is protected because you've already committed to a claim. A prospect layer would have neither protection — the information IS the product, and it's free to compute.
+
+Two layers. Sky and survey. No middle ground that holds up.
+
 ## Why the Beacon Is the Key, Not Noise
 
 The beacon value isn't a perturbation on readable data. It's a required input to a cryptographic construction. The function mixes seed and beacon such that neither alone produces meaningful output.
@@ -50,57 +46,37 @@ The beacon value isn't a perturbation on readable data. It's a required input to
 The seed constrains the distribution — what elements are POSSIBLE, their probability ranges. The beacon collapses the distribution into specific values. Like a keyed hash: the message (seed) and the key (beacon) are both required. Remove either and the output is garbage.
 
 This means:
-- **Reading the script gives you nothing.** The function is public Raido bytecode. Understanding every line doesn't help because the output depends on a beacon value that doesn't exist until someone commits fuel and waits for the tick.
+- **Reading the script gives you nothing.** The function is public Raido bytecode. Understanding every line doesn't help because the output depends on a beacon value that doesn't exist until someone claims.
 - **Running the script without a beacon gives garbage.** Not "slightly wrong" — meaningless. The beacon is load-bearing, not decorative.
-- **After the beacon, the result is the truth.** Not an approximation, not a noisy sample. The actual, permanent, verifiable geology.
+- **After the claim, the result is the truth.** Not an approximation, not a noisy sample. The actual, permanent, verifiable geology.
+- **Post-computation is fine for surveys.** The beacon value is public. Anyone can verify a domain's geology. That's the point — geology is published, verifiable, permanent. There's nothing to game because the claimer committed before the beacon.
 
 ## Collapse on Claim
 
-I chose to tie geological collapse to claiming (deploying a domain) rather than to individual scans. 
+Geological collapse is tied to claiming (deploying a domain).
 
-**Why not collapse on first scan?** Race conditions. In a federated system with no global state, "who scanned first" is a distributed consensus problem. Two scanners at different domains, different epochs, same location — who wins? This is the same class of problem as double-spend detection. Solvable, but unnecessary complexity.
+**Why not collapse on first scan?** Race conditions. In a federated system with no global state, "who scanned first" is a distributed consensus problem. Two scanners at different domains, different epochs, same location — who wins? Solvable, but unnecessary complexity.
 
 Collapse on claim avoids it entirely. Claiming is a heavyweight operation — you're deploying real hosting infrastructure. There's no race because domain deployment is visible in the network (Leden gossip). Two domains can't claim the same star because the network resolves competing claims through bilateral trust (who has more relationships, who got introduced first — see [README.md](README.md#no-central-map-authority)).
 
 **What this means:**
-- Before anyone claims a star: only coarse data exists. Probabilities, not facts.
+- Before anyone claims a star: only sky data exists. Rough probabilities, not facts.
 - The moment someone claims: geology manifests. Specific, permanent, verifiable.
 - The claimer doesn't choose their geology. They committed to the claim before the beacon tick. The beacon (unpredictable) determines what manifests.
-- Good coarse data (probable titanium) might collapse into great geology or mediocre geology. Risk and reward from the same mechanism.
+- Good sky data ("probably titanium") might collapse into great geology or mediocre geology. Risk and reward from the same mechanism.
 
-## Scouts
+## The Claiming Decision
 
-Scouts run prospects. That's the job.
+Without a prospect layer, claiming is a bet. You have sky data — spectral analysis, planet types, rough composition models. You pick a star that looks promising and commit real hosting costs. The beacon determines what you get.
 
-A scout travels to unclaimed systems and runs beacon-gated prospect Transforms from a nearby domain. Each prospect costs committed fuel and one beacon tick. The result is probability ranges — not ground truth, but enough to decide whether a system is worth claiming.
+This is honest. Real prospectors spend money on claims based on geological models, not ground truth. Sometimes the model is right and you hit a rich deposit. Sometimes it's wrong and you eat the cost. The sky data makes it an informed gamble, not a blind one.
 
-A scout report says: "Star 4822, 5 epochs of prospect data. Body 2: iron 30K-70K (high confidence). Body 4: iron 15K-40K, trace tungsten (moderate confidence). Body 3 asteroid belt: heavy-element signatures consistent with chromium or gold (low confidence, needs more epochs). Recommend claiming if you need iron. Tungsten is a bonus gamble."
+The information that narrows risk is SOCIAL, not computational:
+- **Domain owners who've claimed nearby systems** know their own geology. A neighbor with rich iron might share that the region is generally iron-rich — or might not (competitive advantage).
+- **Trade data** reveals what resources are abundant or scarce in a region. If every system in sector 7 exports titanium, the sector probably has more.
+- **Faction intelligence** pools members' survey data. A faction with 20 claimed systems has a much better model of regional geology than a solo player.
 
-This has real value. The prospect data is beacon-gated — you can't compute it from the script. Each epoch of data cost real fuel. The tighter the ranges, the more epochs the scout invested. Buying a report is cheaper than prospecting yourself.
-
-### Why Not Just Claim Blind?
-
-Claiming costs hosting — real money, real infrastructure. A system that prospects as "probably iron-rich" might survey as mediocre. Prospect data doesn't eliminate risk, but it narrows it. A scout who says "5 epochs of data, high confidence iron, moderate confidence tungsten" gives you better odds than rolling the dice on sky data alone.
-
-## What Each Layer Costs
-
-| Layer | Function | Cost | What you learn | Beacon? |
-|---|---|---|---|---|
-| Sky | `sky(seed, star_id)` | Free | Position, type, planet count | No |
-| Prospect | `prospect(seed, star_id, body, beacon)` | Fuel per tick | Probability ranges | Yes |
-| Survey | `survey(seed, star_id, body, beacon)` | Claim (hosting) | Ground truth, permanent | Yes |
-
-Each layer is strictly more informative and strictly more expensive. No shortcuts.
-
-## Beacon Overhead
-
-Every prospect and survey requires the beacon: commit parameters + fuel, wait for tick, execute. This has latency cost.
-
-**Batching amortizes it.** A scout commits 20 prospects in one tick — different bodies, different systems. One fuel commitment, one beacon tick, 20 evaluations. The cost is one tick of latency, not twenty. Most gameplay batches naturally: a scout visiting a sector prospects everything in one pass.
-
-**Tick interval is a tuning knob.** Short ticks (seconds) for fast gameplay. Longer ticks (minutes) for strategic weight. Stage 1 (monolith) has a local beacon — near-zero overhead. Federation adds one network round trip per tick, not per operation.
-
-**Verification is cheap.** Re-running a Raido function to verify a prospect or survey result: microseconds to milliseconds. Fetch beacon value from the public log, re-execute locally, compare output. No network call needed beyond the initial log fetch.
+None of this is beacon-gated. It's human knowledge, traded bilaterally, valued by trust. The kind of information advantage that can't be computed on a laptop.
 
 ## Verification
 
