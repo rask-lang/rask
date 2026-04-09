@@ -193,13 +193,11 @@ All paid in credits:
 
 **Mining contracts.** Individual domains offer extraction access. You operate an extractor provided by the domain, keep a share of output. No outpost needed — you're working on someone else's domain.
 
-**Scout reports.** Visit unclaimed systems — doesn't require a domain, just compute seed data from your ship. Report resource profiles back to any domain willing to pay. Payment for verified data. Real value: scouts map the frontier.
-
 **Facility rental.** Domains with public crafting facilities charge a fee in credits. No need to own a facility to start crafting.
 
 ### Progression
 
-1. **Labor.** Courier, mine, scout. Earn credits and small amounts of materials. Learn the cluster's geography and economy.
+1. **Labor.** Courier, mine. Earn credits and small amounts of materials. Learn the cluster's geography and economy.
 2. **Crafting.** Use public facilities to upgrade ship components. Better engine = cheaper jumps. Bigger cargo bay = more profit per courier run. Each upgrade compounds.
 3. **Trade.** Buy low, sell high between systems. Better ship = more cargo = more profit. You're competing with AI haulers now, and you can win because you're smarter about route selection.
 4. **Expansion.** Accumulated enough to deploy an outpost in an unclaimed system. Now you're a domain operator. You mint your own resources, set your own prices.
@@ -243,19 +241,9 @@ Grant expires when the rental period ends. Renew by paying again.
 
 Domains compete on price, equipment quality (precision instruments affect craft outcomes), and location.
 
-### Scout Reports
-
-Simplest job. No Grants, no conditional transfers.
-
-Player visits an unclaimed system and computes seed data locally — no domain authority needed. Player creates a `scout_report` Object containing star ID, resource profile, and system properties. Player transfers the report to a domain that buys scout data.
-
-The domain verifies by re-computing seed data for that star ID. Match → credits to the player. No match → rejected. Simple bilateral exchange with verification.
-
-The report is data, not a scarce resource. The player can sell it to multiple buyers — the Object can be copied because it's information, not a physical good.
-
 ### No New Primitives
 
-All four job types compose from Grants, conditional Transfers, Transforms, and Objects. Domains post jobs by creating contract Objects and locking escrow. Players accept by signing contracts and receiving Grants. Payment flows through conditional transfers tied to delivery proofs.
+All three job types compose from Grants, conditional Transfers, Transforms, and Objects. Domains post jobs by creating contract Objects and locking escrow. Players accept by signing contracts and receiving Grants. Payment flows through conditional transfers tied to delivery proofs.
 
 No job-specific protocol. No quest system. No special-cased mechanics. A domain that invents a new job type — escort missions, construction contracts, research commissions — uses the same primitives. I don't want a game engine that knows what a "job" is. I want primitives that let jobs emerge.
 

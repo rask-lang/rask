@@ -110,9 +110,11 @@ modification = interact(element_ids, fractions, energy / output_mass, galaxy_see
 material[p] = base[p] + modification[p]
 ```
 
-The critical design choice: **the domain commits to transform parameters BEFORE the beacon tick.** The beacon value enters the function but doesn't exist at commit time. This means the domain can't pre-compute which parameters produce the best output — the optimum shifts with every beacon tick. Each evaluation requires committing real resources (locked inputs, published commitment) before learning the result.
+The galaxy seed and beacon value are both required inputs — neither alone produces meaningful output. The function mixes them cryptographically: the seed constrains the landscape (which element pairs have peaks, probability ranges for properties), the beacon collapses it into specific values. Without the beacon, the function produces garbage. With it, the true material properties manifest.
 
-The galaxy seed parameterizes the general landscape. The beacon value perturbs it: peak positions shift by up to ±100% of their width, peak heights modulate 30-170%, peak widths vary 60-140%, and energy windows shift ±10%. The general structure is stable (which element pairs work, which energy ranges, which peak shapes) but the exact optimum moves every tick. General knowledge commoditizes. Exact coordinates don't transfer.
+The commitment pattern prevents gaming: **the domain commits to transform parameters BEFORE the beacon tick.** The beacon value enters the function but doesn't exist at commit time. You can't pre-compute which parameters produce the best output because the beacon is unpredictable. Each evaluation requires committing real resources (locked inputs, published commitment) before learning the result.
+
+Once a specific (element combination, ratio, energy, beacon_value) has been evaluated, the result is permanent and verifiable. The same inputs always produce the same output. Knowledge of good recipes transfers — "iron + carbon near 97:3 produces structural steel" is true regardless of beacon epoch. But the specific properties (exact hardness, exact stability) depend on the beacon value at the time of crafting.
 
 **Verification:** The proof includes the commitment (timestamped before the beacon tick), the beacon value (from the public beacon log), and the output. Any verifier re-executes: check commitment timing, check beacon value against the log, re-evaluate the function, confirm the output matches. Cheap. Local. No federation interaction.
 
