@@ -129,26 +129,7 @@ This IS the real-world commodity market model. London and New York gold prices d
 
 ## Market Data
 
-Domains publish market data in navigation metadata (see [NAVIGATION.md](NAVIGATION.md)):
-
-```
-market:
-  updated_epoch: <beacon_epoch>
-  commodities:
-    - type: "structural_steel"
-      buy_price: 3.2                   # Best buy order
-      sell_price: 3.5                  # Best sell order
-      volume_24h: 5000                 # Units traded in last 24 epoch-hours
-      supply: 12000                    # Units in local inventory
-    - type: "hydrocarbon_fuel"
-      buy_price: 2.4
-      sell_price: 2.6
-      volume_24h: 20000
-      supply: 50000
-  order_count: 47                      # Total open orders
-```
-
-This is summary data — not the full order book. Enough for navigation planning ("this system sells fuel at 2.5") but not enough for trading strategies. The full order book requires docking at the market domain or subscribing to its observation feed.
+Domains publish market summaries in the `market` section of their peer metadata (see [NAVIGATION.md](NAVIGATION.md#layer-2-domain-metadata-from-network) for the canonical schema). Summary data — best prices, volume, supply — is enough for route planning. The full order book requires docking at the market domain or subscribing to its Leden observation feed.
 
 **Price history.** Domains that maintain price history (rolling averages, trends, peaks) provide a premium data product. A trade hub with 100 epochs of price history for 50 commodities is an information goldmine. This data is a knowledge product (see [KNOWLEDGE.md](KNOWLEDGE.md)).
 

@@ -3,7 +3,7 @@
 
 The [combat model](COMBAT.md) says "destroyed objects are gone." That's true for the object — it stops being a ship, a station, a component. But the mass doesn't vanish. Conservation Law 1 (can't create value from nothing) has a corollary: can't destroy value into nothing. Destruction is transformation, not annihilation.
 
-This spec defines what remains after destruction and how it re-enters the economy.
+This spec defines what remains after destruction and how it re-enters the economy. The destruction model here extends the combat script ([COMBAT.md](COMBAT.md)) — the combat script determines WHEN objects are destroyed and the total energy of the destruction event. This spec determines WHAT survives. Both run as deterministic Raido bytecode, verifiable by any party.
 
 ## The Problem
 

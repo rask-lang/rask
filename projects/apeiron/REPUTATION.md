@@ -11,6 +11,20 @@ The founding cluster starts with pre-established bilateral trust. The five opera
 
 Without reputation, every interaction starts from zero. New players face a cold start. Established players have no way to evaluate strangers. Factions can't assess potential recruits. The network has trust (cryptographic) but not reputation (behavioral).
 
+## Three Layers
+
+Apeiron has three related but distinct trust mechanisms. Understanding which is which prevents confusion:
+
+| Layer | What it is | Who controls it | Visible to |
+|-------|-----------|-----------------|------------|
+| **Trust weight** | How much you trust another domain's claims | Each domain privately | Nobody (private) |
+| **Reputation score** | Computed assessment of an entity from weighted attestations | Each domain computes its own view | The computing domain only |
+| **Standing** | Policy declaration: how you treat an entity | Domain or faction, set explicitly | Everyone (published in peer metadata) |
+
+Trust weight is private math. Reputation is a derived score. Standing is a public stance. A domain might compute a high reputation for entity X (many completed trades) and still set them to hostile standing (political reasons). A domain might set friendly standing toward a low-reputation entity (strategic alliance). Reputation informs standing but doesn't determine it.
+
+This spec covers trust weights and reputation scoring. Standings are defined in [SOCIAL.md](SOCIAL.md). Access gating (which mechanism gates which interaction) is domain policy — a domain can gate facility access on reputation score, on standing, on both, or on neither. The founding cluster publishes recommended policies.
+
 ## Design Principles
 
 **Bilateral, not global.** There is no galaxy-wide reputation score. Each domain tracks its own experience with each entity. Reputation is a collection of bilateral records, not a ranking.

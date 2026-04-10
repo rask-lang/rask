@@ -117,25 +117,26 @@ bookmark:
 
 Factions need to know how to treat outsiders. Who's friendly, who's hostile, who's neutral. Standings are the convention.
 
-### Standing Levels
+**Standings are not reputation.** Reputation ([REPUTATION.md](REPUTATION.md)) is a computed assessment — how trustworthy an entity has been, based on attestation history. Standings are a policy declaration — how a domain chooses to treat an entity, regardless of history. A domain might set a faction to hostile for political reasons despite clean reputation. A domain might set standing friendly toward an entity with poor reputation because they're an ally. Reputation informs standings but doesn't determine them.
+
+Standings are published in the `standings` section of domain peer metadata (see [NAVIGATION.md](NAVIGATION.md#layer-2-domain-metadata-from-network) for the canonical schema). Individual per-entity standings are Allgard objects:
 
 ```
-standings:
-  owner: <faction_id or domain_id>     # Who sets these standings
-  entries:
-    - subject: <owner_id or faction_id>
-      level: allied | friendly | neutral | unfriendly | hostile
-      set_epoch: <beacon_epoch>
-      notes: "Trade partner since epoch 1200"
+standing_entry:
+  owner: <faction_id or domain_id>     # Who sets this standing
+  subject: <owner_id or faction_id>
+  level: allied | friendly | neutral | unfriendly | hostile
+  set_epoch: <beacon_epoch>
+  notes: "Trade partner since epoch 1200"
 ```
 
 **Allied.** Full cooperation. Shared intelligence, mutual defense, fleet access. Usually between faction members or close partners.
 
-**Friendly.** Preferred treatment. Better trade terms, access to restricted facilities, priority docking. Built through positive reputation history.
+**Friendly.** Preferred treatment. Better trade terms, access to restricted facilities, priority docking.
 
 **Neutral.** Default. Standard trade terms, standard access, standard rules.
 
-**Unfriendly.** Restricted access. Higher prices, reduced facility access, increased scrutiny. Result of negative reputation or political tension.
+**Unfriendly.** Restricted access. Higher prices, reduced facility access, increased scrutiny.
 
 **Hostile.** Active opposition. Combat on sight, no trade, no docking (or docking as a trap). War footing.
 

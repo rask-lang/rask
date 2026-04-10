@@ -152,10 +152,12 @@ This applies everywhere an object performs an operation:
 
 | Operation | What scatters | Quality from | Consequence of poor quality |
 |-----------|--------------|-------------|---------------------------|
-| Crafting | Element ratios | Facility precision instruments | Can't reliably target narrow phase regions |
-| Combat | Damage output | Weapon components | Inconsistent hits — sometimes high, sometimes low |
+| Crafting | Element ratios | Facility precision instruments | Can't reliably target narrow phase regions ([TRANSFORMATION.md](TRANSFORMATION.md)) |
+| Combat | Damage output | Weapon components | Inconsistent hits — sometimes high, sometimes low ([COMBAT.md](COMBAT.md)) |
 | Mining | Extraction yield | Extractor components | Variable ore output per cycle |
 | Navigation | Fuel consumption | Engine components | Unpredictable fuel burn per jump |
+| Salvage | Material recovery | Salvage equipment | Variable yield from debris ([SALVAGE.md](SALVAGE.md)) |
+| Sensor detection | Noise floor | Sensor components | Less consistent readings, false contacts ([SENSORS.md](SENSORS.md)) |
 | Stress events | Failure threshold | Component materials | Less predictable breaking point under load |
 | Manufacturing | Batch yield | Facility components | Variable output from known recipes |
 

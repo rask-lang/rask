@@ -24,44 +24,64 @@ Every client computes the same topology. The seed guarantees it.
 
 Published by claimed domains through Leden peer metadata. Propagates through gossip. Partial — you only see data from domains you know about (through gossip reach or direct connection).
 
-Standard navigation fields in domain metadata:
+This is the **canonical peer metadata schema**. All domain-published information lives here — navigation, market, faction, standings. One metadata object per domain. Other specs ([MARKET.md](MARKET.md), [SOCIAL.md](SOCIAL.md), [FACTIONS.md](FACTIONS.md)) define the semantics for their sections. This spec defines the structure.
 
 ```
-navigation:
+peer_metadata:
+  # Identity
   star_id: 4822
   domain_type: system | station | outpost | route
-  
-  # Travel
-  jump_cost_modifier: 1.0              # Multiplier on standard fuel formula (gravity well, etc.)
-  docking_policy: open | restricted | faction_only | closed
-  docking_fee: 50                      # Credits, 0 = free
-  
+  operator: <owner_id>
+
+  # Navigation
+  navigation:
+    jump_cost_modifier: 1.0            # Multiplier on standard fuel formula
+    docking_policy: open | restricted | faction_only | closed
+    docking_fee: 50                    # Credits, 0 = free
+    connects: [4800, 4850]             # Route domain only: which stars it links
+    route_safety: safe | patrolled | contested | dangerous
+    route_toll: 0                      # Credits per transit
+
   # Safety
-  combat_zone: false                   # Is PvP enabled?
-  combat_script_hash: <hash>           # Which combat script version, if PvP
-  recent_combat_events: 3              # Number of combat events in last N epochs
-  
-  # Economy
-  has_market: true
-  has_shipyard: false
-  has_refinery: true
-  has_public_facilities: true
-  fuel_available: true                 # Can ships refuel here?
-  fuel_price: 2.5                      # Credits per unit, approximate
-  
-  # Standings
-  hostile_to: [<faction_id>, ...]      # Who's unwelcome
-  allied_with: [<faction_id>, ...]     # Who gets preferred treatment
-  
-  # Route domains
-  connects: [<star_id>, <star_id>]     # Which stars this route domain links (if domain_type: route)
-  route_safety: safe | patrolled | contested | dangerous
-  route_toll: 0                        # Credits per transit, 0 = free
+  safety:
+    combat_zone: false
+    combat_script_hash: <hash>
+    recent_combat_events: 3            # In last N epochs
+
+  # Economy (see MARKET.md for semantics)
+  market:
+    has_market: true
+    fuel_available: true
+    fuel_price: 2.5
+    has_shipyard: false
+    has_refinery: true
+    has_public_facilities: true
+    commodities:                       # Summary only — full order book requires docking
+      - type: "structural_steel"
+        buy_price: 3.2
+        sell_price: 3.5
+        volume_24h: 5000
+        supply: 12000
+    order_count: 47
+    updated_epoch: <beacon_epoch>
+
+  # Faction (see FACTIONS.md for semantics)
+  faction:
+    name: "Iron Compact"
+    faction_owner: <owner_id>
+    territory_claim: "core-sector-7"   # Social convention, not enforcement
+
+  # Standings (see SOCIAL.md for semantics)
+  standings:
+    hostile_to: [<faction_id>, ...]
+    allied_with: [<faction_id>, ...]
 ```
+
+One object, published via Leden peer metadata, gossiped through the network. Clients parse whichever sections they need — the route planner reads `navigation` and `safety`, the trade planner reads `market`, the diplomacy view reads `standings` and `faction`.
 
 **All fields are self-reported.** The domain decides what to publish. A pirate haven might lie about combat events. A trade hub might advertise lower fuel prices than it actually charges. The data is informational, not contractual.
 
-**Trust calibration.** Clients weight navigation data by trust in the reporting domain. Data from a founding cluster system is reliable. Data from an unknown frontier outpost is uncertain. The reputation system (see [REPUTATION.md](REPUTATION.md)) informs trust weighting.
+**Trust calibration.** Clients weight metadata by trust in the reporting domain per [REPUTATION.md](REPUTATION.md).
 
 ### Layer 3: Player Knowledge (Local)
 
