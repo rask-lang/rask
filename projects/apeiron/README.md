@@ -164,7 +164,8 @@ Three layers of constraint, each building on the last:
 1. **Allgard's conservation laws** keep the economy honest. You can't cheat.
 2. **[Constraint physics](PHYSICS.md)** determines what can physically exist. Five laws — mass-energy conservation, structural scaling, energy budgets, stress/failure, proximity coupling — interact to create natural size tiers, specialization pressure, and engineering tradeoffs. No ship classes. Those emerge.
 3. **[Element table](ELEMENTS.md)** defines the fourteen elements (13 natural + 1 synthetic) — property vectors, abundances, starter recipes. Real-world names (iron, copper, uranium) for intuition. Seed-determined interaction physics for depth.
-4. **Natural laws** (below) apply constraint physics to travel and economy. They're consequences, not a separate system.
+4. **[Sensors](SENSORS.md)** — domain operators see everything; visiting players have fog of war. Sensors are ship systems under constraint physics, enabling detection, electronic warfare, and the information game.
+5. **Natural laws** (below) apply constraint physics to travel and economy. They're consequences, not a separate system.
 
 The founding cluster publishes a **standard physics script** — content-addressed Raido bytecode encoding both constraint physics and natural laws. Departure proofs include the script hash. Any domain can re-execute and verify. Non-standard physics isn't banned — it's transparent. A domain running zero-fuel-cost jumps is visible to every trading partner.
 
@@ -331,7 +332,7 @@ Everything below is infrastructure. Apeiron doesn't build these — it uses them
 
 See [ROADMAP.md](ROADMAP.md) for the full build order from specs to playable game.
 
-**Stage 1: A space trading game.** Raido VM → galaxy gen → monolith server. 5 founding systems, AI economy, text client. No federation needed. Elite (1984) — and that was a great game.
+**Stage 1: A space trading game.** Raido VM → galaxy gen → monolith server. 5 founding systems, AI economy, text client. No federation needed. Elite (1984) — and that was a great game. Includes: [markets](MARKET.md) with local settlement, [navigation](NAVIGATION.md) planning, [contracts](CONTRACTS.md) beyond courier/mining, [sensors](SENSORS.md) and fog of war, [salvage](SALVAGE.md) from combat, [reputation](REPUTATION.md) tracking, [knowledge](KNOWLEDGE.md) trading, and [social coordination](SOCIAL.md) tools.
 
 **Stage 2-3: Federation.** Leden + Allgard. Player stations, player star systems. The monolith splits into sovereign domains.
 
@@ -351,7 +352,7 @@ See [ROADMAP.md](ROADMAP.md) for the full build order from specs to playable gam
 
 **Economy bootstrapping.** See [ECONOMY.md](ECONOMY.md). Credits as seed currency, activity-tied minting, pre-bootstrapped founding cluster. Contracts beyond courier/mining in [CONTRACTS.md](CONTRACTS.md). Knowledge economy in [KNOWLEDGE.md](KNOWLEDGE.md). Reputation in [REPUTATION.md](REPUTATION.md). Open tuning: minting rates, courier pay, facility fees.
 
-**Client experience.** What does the minimum viable client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? GDL supports all of these — which is the Stage 1 target?
+**Client experience.** What does the minimum viable client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? GDL supports all of these — which is the Stage 1 target? Galaxy map with [navigation](NAVIGATION.md) data and [market](MARKET.md) summaries is the minimum useful interface.
 
 **Managed hosting.** Players who can't self-host need easy domain deployment. Click-button hosting with migration to self-hosted hardware later. Critical for adoption. Contradicts nothing — sovereignty is about control, not where the server physically runs.
 
