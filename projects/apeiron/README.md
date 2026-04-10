@@ -86,6 +86,25 @@ A mining outpost, a sensor array, a fuel depot. Lightweight domains that exist t
 
 Outposts are how you extract resources from unclaimed systems. You can't mine without a domain (no authority = no transforms). An outpost IS the minimum viable domain for resource extraction.
 
+### Domain Shutdown
+
+A domain can go dark — the operator stops hosting. What happens to everything inside?
+
+**Immediate (0-N epochs): Frozen.** Objects persist in their last state. Ships docked at the domain are inaccessible but not destroyed. Facilities, inventory, structures — all frozen. The domain's Leden sessions close. The domain disappears from gossip. The star appears unclaimed on the network layer but anyone who visited remembers it was claimed.
+
+**Evacuation.** Ships with valid retreat escrow (the departure domain claim established during consent-on-entry per [COMBAT.md](COMBAT.md)) can be recalled. The departure domain activates the retreat claim, pulling the ship back. Players who planned ahead keep their ships. Players who didn't are stuck until the domain returns — or doesn't.
+
+**Extended shutdown (N+ epochs): Claim lapses.** After a configurable absence period (probably 50-100 epochs — long enough that temporary outages don't cost you a system), the network treats the star as unclaimed. Other domains stop maintaining bilateral trust with the silent domain. The introduction chain for the domain goes stale.
+
+**New claimant.** Another player can deploy a domain at the same star. The new claim triggers a fresh survey (new beacon value, new geology — the geology CHANGES because the beacon is different). The previous operator's objects are still frozen somewhere. If the previous operator comes back online, they have objects but no claim — they'd need to negotiate with the new claimant, or deploy at a different star.
+
+**What doesn't happen:**
+- Objects don't get destroyed. Conservation law — mass doesn't vanish because a server went offline.
+- Objects don't transfer to the conquerer. No forced seizure. The frozen objects belong to the original operator. A new claimant gets the star's resources (fresh survey), not the previous occupant's stuff.
+- No automatic looting. A domain going dark is not a combat event — no debris, no salvage. The operator shut down their server. That's an infrastructure event, not a destruction event.
+
+**Conquest, then.** You can't take someone's stuff by besieging them into shutdown. You take their POSITION — the star, its resources, its strategic location. Their accumulated objects are frozen, inaccessible to everyone including the conqueror. The conquest incentive is geographic, not material.
+
 ## Resources
 
 ### Seed as Geology
