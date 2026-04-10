@@ -15,23 +15,57 @@ Salvage also closes a physics hole. Law 1 says mass is derived from composition.
 
 When an object is destroyed (combat, stress failure, deliberate scuttling), it becomes a **debris field** — a new Allgard object hosted on the domain where the destruction happened.
 
-### What Debris Contains
+### Destruction Energy Distribution
 
-The debris field's content is derived deterministically from the destroyed object's component tree:
+A destruction event has a total energy — the sum of all damage dealt in the final combat tick, or a fixed energy for scuttling (proportional to scuttling charge mass × energy density). This energy propagates through the component tree from the outside in.
 
-**Intact components.** Some components survive destruction. The standard destruction script evaluates each component's stress tolerance (Law 4) against the destruction event's energy. Components below their failure threshold survive whole. A ship's cargo hold might survive even when the hull doesn't — the cargo was inside, shielded by structure.
-
-**Damaged components.** Components that exceeded stress tolerance but didn't fail catastrophically. Reduced properties — a cracked engine block that produces 60% of rated thrust. Usable but degraded. The damage is encoded in the component's properties, deterministic from the destruction script.
-
-**Raw scrap.** Components that failed catastrophically are reduced to their constituent materials, minus a destruction loss fraction. A structural steel beam becomes scrap steel. The mass is conserved minus what was converted to energy in the destruction event.
+**Propagation model.** The hull absorbs energy first. Energy that exceeds the hull's absorption capacity passes through to child components, distributed proportionally to their cross-section (volume^(2/3)):
 
 ```
-debris.intact_components = [c for c in ship.components if stress(c, event) < c.tolerance]
-debris.damaged_components = [degrade(c, event) for c in ship.components if c.tolerance <= stress(c, event) < c.catastrophic]
-debris.scrap = [reduce_to_materials(c, destruction_loss) for c in ship.components if stress(c, event) >= c.catastrophic]
+hull_absorbed = min(event_energy, hull.tolerance)
+penetrating_energy = event_energy - hull_absorbed
+for child in hull.children:
+    child_share = penetrating_energy * (child.volume^0.67 / total_children_cross_section)
+    // recurse: child absorbs up to its tolerance, remainder passes to its children
 ```
 
-**Destruction loss.** A fraction of total mass is lost in any destruction event — converted to energy (heat, radiation, kinetic fragments too small to recover). This is the real sink. Tunable constant, probably 15-30%. Enough to make combat costly, not enough to make salvage worthless.
+The hull is the outermost component. Deep components (electronics inside a shielded compartment) receive less energy than exposed components (external weapons mounts). Shielding between components (Law 5 coupling mitigation) also absorbs energy before it reaches the shielded component — shielding mass protects during destruction, same as it protects during operation.
+
+### Component Fate
+
+Each component falls into one of three categories based on absorbed energy vs. its stress tolerance (Law 4):
+
+| Condition | Result |
+|-----------|--------|
+| `absorbed < tolerance` | **Intact.** Survives whole with original properties |
+| `tolerance ≤ absorbed < tolerance × catastrophic_factor` | **Damaged.** Survives with degraded properties |
+| `absorbed ≥ tolerance × catastrophic_factor` | **Scrapped.** Reduced to constituent materials |
+
+The `catastrophic_factor` is a constant in the physics script (probably 2.0-3.0 — meaning a component needs 2-3x its stress tolerance to completely disintegrate). Between tolerance and catastrophic, damage scales linearly:
+
+```
+damage_fraction = (absorbed - tolerance) / (tolerance * (catastrophic_factor - 1))
+degraded_property = original_property * (1 - damage_fraction * max_degradation)
+```
+
+Where `max_degradation` (probably 0.6) is the worst a damaged component gets before it would be scrapped instead. A component at the boundary of the damaged range has ~60% reduced properties.
+
+### Destruction Loss
+
+Scrapped components don't convert 1:1 into materials. A fraction of their mass is lost — converted to heat, radiation, and fragments too fine to recover:
+
+```
+recovered_mass = scrapped_component.mass * (1 - destruction_loss_rate)
+```
+
+`destruction_loss_rate` is a constant in the physics script: **0.20** (20%). Not variable — the same rate whether the ship was destroyed by weapons fire or scuttled. This is the real economic sink from combat.
+
+Total mass budget for a destruction event:
+```
+debris.mass = sum(intact.mass) + sum(damaged.mass) + sum(scrapped.mass * 0.80)
+lost.mass = sum(scrapped.mass * 0.20)
+// debris.mass + lost.mass = original.mass  (conservation)
+```
 
 ### Debris Properties
 

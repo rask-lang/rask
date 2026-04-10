@@ -54,6 +54,67 @@ attestation:
 
 The founding cluster publishes a **standard claims vocabulary** — the field names and semantics in the `claims` block above. Domains can extend it with custom claims. Standard vocabulary means attestations are comparable across domains. Custom vocabulary means domains aren't limited to what the founders thought of.
 
+## Trust Evaluation
+
+An attestation is data. Trust evaluation is what makes it useful. When a domain decides whether to trade with entity X, it collects attestations from its network and computes a weighted summary.
+
+### Trust Weight
+
+Each domain maintains a **trust table** — how much it trusts each other domain's attestations. Trust is a value in [0, 1]:
+
+```
+trust_table:
+  domain_A: 0.95   # Long trading history, founding cluster member
+  domain_B: 0.60   # A few good trades, introduced by A
+  domain_C: 0.10   # Unknown, introduced by B recently
+  domain_D: 0.00   # Caught cheating in combat (proof-verified)
+```
+
+Trust is set by the evaluating domain's own policy. The founding cluster publishes a **reference trust algorithm** — domains can use it or write their own:
+
+**Reference algorithm.** Trust in domain X = product of three factors:
+
+```
+trust(X) = direct_factor(X) * chain_factor(X) * age_factor(X)
+
+direct_factor(X) = min(1.0, completed_trades_with_X / 50)
+  // Maxes out at 50 direct trades
+
+chain_factor(X) = 0.8 ^ introduction_depth(X)
+  // Each link in the introduction chain discounts by 20%
+  // Directly introduced by founding domain: 0.8^1 = 0.80
+  // Introduced by someone introduced by founding: 0.8^2 = 0.64
+
+age_factor(X) = min(1.0, epochs_since_first_trade / 100)
+  // Longer relationships are more trustworthy
+```
+
+A founding domain you've traded with 100 times over 200 epochs: trust ≈ 0.80. A stranger introduced two hops away, zero direct trades, just arrived: trust ≈ 0.51. A combat cheater: manually set to 0.00.
+
+### Evaluating an Entity
+
+To evaluate entity E, collect attestations from your trust network and weight them:
+
+```
+score(E) = sum(
+  trust(attester) * recency(attestation) * claims_value(attestation)
+) / sum(trust(attester) * recency(attestation))
+
+recency(attestation) = 0.95 ^ (current_epoch - attestation.epoch)
+  // 5% discount per epoch. 20-epoch-old attestation: 0.36 weight. Recent: ~1.0.
+
+claims_value(attestation) = (completed - failed * 5) / max(1, completed + failed)
+  // Failed contracts penalized 5:1 against completed ones
+```
+
+This produces a score in roughly [-1, 1]. Positive = net reliable. Negative = net unreliable. Zero = unknown or mixed.
+
+**Gating thresholds** are domain policy. A cautious shipyard might require score > 0.5 to serve a customer. A frontier trading post might accept anyone above -0.5. The founding cluster publishes recommended thresholds for common access levels.
+
+### What domains don't do
+
+No domain broadcasts its trust table. Your trust assignments are private — they reveal your relationships and biases. You share attestations (facts about entities). You keep trust weights (how you evaluate those facts) to yourself.
+
 ## Sharing Reputation
 
 Attestations are shared through normal Allgard/Leden mechanisms:

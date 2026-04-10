@@ -90,19 +90,23 @@ No single domain sees all orders. Markets are local by default. But aggregation 
 
 ### Trade Hub Aggregation
 
-A trade hub domain aggregates orders from nearby systems. How:
+A trade hub domain aggregates orders from nearby systems:
 
 1. Hub establishes bilateral trade agreements with surrounding domains.
-2. Each domain shares its market orders with the hub through Leden observation.
-3. Hub maintains a combined order book — orders from all connected domains.
-4. Visitors to the hub see the aggregate book. They can place orders that target goods at any connected domain.
+2. Each connected domain publishes its market orders as a Leden observation feed. The hub subscribes.
+3. Hub maintains a combined order book — a read-only mirror of each connected domain's orders, plus orders placed directly at the hub.
+4. Visitors to the hub see the aggregate book.
 
-The hub is a service provider, not a central authority. It profits by:
+**Order ownership stays local.** The hub mirrors orders, it doesn't take custody. An order at domain A stays at domain A's escrow. The hub displays it and can initiate a match, but settlement goes through domain A. If domain A goes offline, the hub marks those orders as **stale** (unverified since last observation update). Stale orders show in the book with a warning — the hub can't guarantee the escrow still exists.
+
+**Staleness protocol.** Each observation subscription has a heartbeat. If the hub doesn't receive an update from domain A within N epochs (configurable, probably 3-5), domain A's orders are marked stale. If the hub doesn't hear from domain A for 2N epochs, the orders are hidden. When domain A reconnects, the hub re-syncs the full order list.
+
+**Hub profits by:**
 - Charging a listing fee (credits per order posted through the hub)
-- Taking a transaction fee (small percentage of matched trades)
+- Taking a transaction fee (small percentage of matched trades brokered by the hub)
 - Using the information advantage (the hub sees all orders, knows price trends before anyone else)
 
-Multiple hubs can exist. They compete on coverage (how many domains connected), fees, and reliability. A hub that delists orders, manipulates prices, or fails to settle trades loses reputation and traders.
+Multiple hubs can exist. They compete on coverage (how many domains connected), fees, staleness (how fresh the data is), and reliability. A hub that fabricates orders, manipulates matching, or fails to settle trades loses reputation and traders.
 
 ### Faction Markets
 
@@ -158,16 +162,31 @@ Settlement risk: minimal. Both escrows are locked before matching. The only fail
 
 ### For Physical Goods
 
-Two phases:
+Physical settlement is a three-party protocol: seller's domain (holds goods), buyer's domain (holds credits), and a delivery agent (moves goods). The delivery agent can be the buyer, the seller, or a third-party hauler.
 
-**Phase 1: Trade execution.** Credits transfer from buyer to escrow at the market domain (or seller's domain). Goods are locked in seller's escrow. Trade is recorded. Credits are committed but goods haven't moved yet.
+**Step 1: Match.** The market matching script identifies a buy/sell pair. Both escrows are locked (goods at seller's domain, credits at buyer's domain). The match produces a **settlement ticket** — an Allgard object referencing both escrows, the delivery terms, and the deadline.
 
-**Phase 2: Delivery.** Someone physically moves the goods. Options per "Cross-domain matching" above. On delivery, the receiving domain confirms receipt (TransferComplete). Escrow releases goods to buyer. If delivery fails (goods destroyed in transit, hauler disappears), the escrow handles it:
+**Step 2: Claim.** A delivery agent claims the settlement ticket. The agent receives a conditional Grant from the seller's domain: pick up the escrowed goods. The agent also receives a conditional Grant from the buyer's domain: deliver goods and receive credits. Both Grants reference the settlement ticket and expire at the ticket's deadline.
 
-- If goods are destroyed: seller's escrow was goods, already gone. Buyer's credits return from escrow. Both sides lose — but the loss is from the transit risk, not the market mechanism.
-- If hauler disappears: timeout. If goods don't arrive within the order's expiry, credits return to buyer. Seller's goods are still locked in their escrow — they can relist.
+**Step 3: Transport.** The agent picks up the goods (Transfer from seller's escrow to agent). Travels to buyer's domain. Delivers goods (Transfer from agent to buyer's domain).
 
-**Delivery contracts.** Physical good market orders often pair with courier contracts (see [CONTRACTS.md](CONTRACTS.md)). The seller posts a sell order AND a courier contract. A hauler fills both — buys the goods at the sell price, transports them, delivers to the buyer for the buy price + courier fee. The hauler's profit is the spread minus fuel costs. This is how real commodity markets work — traders buy at origin and sell at destination, pocketing the geographic spread.
+**Step 4: Settle.** Buyer's domain confirms receipt (goods match the settlement ticket's item_type, quantity, and quality). Credits release from buyer's escrow to seller. The settlement ticket is marked complete.
+
+**Failure modes — each with a specific resolution:**
+
+| Failure | Who detects | Resolution |
+|---------|-------------|------------|
+| No agent claims ticket | Ticket deadline passes | Both escrows unlock. Seller relists goods. Buyer relists credits. Automatic — no human action. |
+| Agent picks up but doesn't deliver | Buyer's domain sees no delivery by deadline | Buyer's credits return from escrow. Seller's goods are gone (agent has them). Seller's recourse: agent's escrow deposit (agents post a bond when claiming tickets) + negative attestation. |
+| Goods destroyed in transit | Agent arrives without goods (or doesn't arrive) | Same as "doesn't deliver" — bond covers partial loss, attestation covers the rest. |
+| Goods arrive but fail quality check | Buyer's domain rejects delivery | Goods return to agent. Agent can attempt re-delivery or return to seller. Credits stay in escrow until deadline. |
+| Buyer's domain goes offline | Agent can't deliver | Agent holds goods until domain returns or deadline passes. On deadline: agent returns goods to seller's domain, both escrows unlock. |
+
+**Agent bonds.** To claim a settlement ticket, the delivery agent locks a bond (credits or goods) at the seller's domain. The bond covers partial loss if the agent disappears with the goods. Bond size is set by the seller's domain — typically 10-30% of goods value. The bond returns when the settlement ticket completes successfully.
+
+**Self-delivery.** If the buyer or seller IS the delivery agent, they skip the bond (they're already party to the trade). The buyer travels to pick up goods, or the seller travels to deliver. Same settlement steps, just one fewer party.
+
+**Courier contract integration.** The delivery agent role maps directly to courier contracts per [CONTRACTS.md](CONTRACTS.md). A seller can post a sell order AND a linked courier contract. A hauler who fills the courier contract automatically claims the settlement ticket. The hauler's profit is the courier payment minus fuel costs. The market order and the courier contract share the same settlement ticket — they're one economic transaction, composed from two primitives.
 
 ## Commodity Standards
 

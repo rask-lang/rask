@@ -60,29 +60,70 @@ Sensors are ship systems. They obey the five constraint laws like everything els
 
 **Law 5 (Coupling).** Sensors are sensitive instruments. They couple with nearby systems — engine heat blinds thermal sensors, reactor EM noise drowns out weak signatures. Shielding between sensors and noisy systems costs mass. A pure scanner ship (few other systems, minimal coupling) detects more than a warship with sensors bolted on as an afterthought.
 
-### What Sensors Detect
+### Detection Model
 
-Sensor output depends on range, sensor quality, and target properties. The domain computes the result — the player's client receives what their sensors would detect, not what the domain knows.
+Every object in a domain has a **signature** — how detectable it is. Every sensor has a **detection strength** — how well it can pick up signatures. Detection happens when the signal exceeds a threshold at the given distance.
 
-**Passive detection.** Always on, zero power draw. Detects:
-- Large objects (stations, capital ships) at long range
-- Active ships (engines firing, weapons hot) at medium range
-- Mass signatures — approximate total mass of detected objects
-- EM emissions — active scanners, communications, reactor output
+**Signature.** Derived from the target's physical state:
 
-**Active scanning.** Powered, directed, reveals more detail:
-- Component tree outline (what systems a ship has, not exact specs)
-- Cargo volume (how full the hold is, not what's in it)
-- Material composition hints (what the hull is made of — relevant for combat)
-- Damage state (is the target's hull intact? Any failed components?)
+```
+signature = k_mass * mass^0.5 + k_power * power_output + k_emit * active_emissions
+```
 
-**Deep scanning.** High-power, close-range, conspicuous:
-- Full component tree with approximate specifications
-- Cargo manifest (item types and quantities)
-- Fuel state
-- Active Grant/capability list (what the target is authorized to do here)
+- `mass^0.5`: Bigger objects are more detectable. Square root because mass grows faster than cross-section.
+- `power_output`: Running systems emit waste energy. A ship with a hot reactor and firing engines is loud.
+- `active_emissions`: Active scanners, communications, jamming — deliberate EM output. Loudest signal.
 
-Each tier requires better sensors, more power, and closer range. Deep scanning is essentially "I am staring at you with a spotlight" — the target knows they're being scanned.
+A cold, drifting, small ship has low signature. A capital ship burning hard with active scanners has high signature.
+
+**Detection strength.** Derived from sensor properties:
+
+```
+detection_strength = (sensitivity * resolution) / noise_floor
+```
+
+Where sensitivity, resolution, and noise floor come from the sensor component's materials and coupling environment (see Sensor Properties below).
+
+**Detection check.** Signal strength falls off with distance squared:
+
+```
+received_signal = target.signature / distance²
+detected = received_signal > (threshold / detector.detection_strength)
+```
+
+Three thresholds determine what the detector sees, each a constant in the standard physics script:
+
+| Tier | Threshold | What you learn | Sensor cost |
+|------|-----------|----------------|-------------|
+| **Contact** | `T_contact` (lowest) | Exists, approximate bearing, mass estimate | Passive — zero power |
+| **Outline** | `T_outline` | Component categories (has weapons, has cargo), damage state, hull material class | Active — draws power per scan |
+| **Inspection** | `T_inspect` (highest) | Full component tree with specs, cargo manifest, fuel state | Deep — high power, close range, conspicuous |
+
+At a given distance, your sensor can achieve the highest tier whose threshold your received signal exceeds. Beyond maximum detection range, you see nothing.
+
+**Maximum detection range** for a tier:
+
+```
+max_range = sqrt(target.signature * detector.detection_strength / threshold)
+```
+
+A scout ship with detection_strength 500 trying to get a Contact on a hauler with signature 200:
+
+```
+max_range = sqrt(200 * 500 / T_contact)
+```
+
+If `T_contact = 1.0`, that's range ~316. The same scout trying to Inspect the same hauler (T_inspect = 50.0): range ~44. Much closer.
+
+**Active scan power cost.** Outline and Inspection tiers require active scanning. Each scan cycle costs:
+
+```
+scan_power = base_draw / sensor.power_efficiency
+```
+
+Drawn from the ship's energy budget (Law 3). Running continuous active scans competes with weapons, shields, and engines for reactor output.
+
+**The target knows.** Active scans are emissions. The target's sensors detect YOUR scan as `active_emissions` in your signature. Deep scanning a stealthy ship reveals you as much as it reveals them.
 
 ### Detection Is Asymmetric
 
@@ -155,15 +196,36 @@ This creates a sensor arms race alongside the weapons/armor race. A fleet with s
 
 ## Electronic Warfare
 
-Sensor systems enable electronic warfare — using your systems to degrade the opponent's information:
+Sensor equipment has three operating modes: detect, jam, and spoof. Switching modes is a power allocation decision in strategic orders — one sensor array can't do all three simultaneously.
 
-**Jamming.** Emit noise across sensor frequencies. Costs power (Law 3). Degrades opponent passive detection within range. Countered by better sensors (higher signal-to-noise ratio) or directional filtering.
+**Jamming.** The sensor array emits broadband noise, raising the effective noise floor for opponents within range.
 
-**Spoofing.** Emit false signatures. Make one ship look like three, or a warship look like a hauler. Costs power and requires specific equipment (a spoofing array). Countered by deep scanning (the real component tree doesn't match the fake signature).
+```
+jammed_noise_floor = opponent.noise_floor + jam_power / distance²
+```
 
-**EMCON (Emission Control).** Go dark — shut down active emissions. Free (costs nothing, you're just turning things off). Reduces your passive detectability. But also reduces YOUR sensor capability — you can't scan while running silent.
+This directly degrades the opponent's `detection_strength` (since detection_strength = sensitivity * resolution / noise_floor). Jamming at close range can blind an opponent's sensors enough to drop them from Outline to Contact, or from Contact to nothing.
 
-These aren't separate systems from sensors — they're alternative uses of sensor-grade equipment. A sensor array can detect or emit. Switching between modes is a power allocation decision in your strategic orders.
+Costs power proportional to jam effectiveness. Countered by: better sensors (higher base sensitivity overcoming the raised floor), distance (jam power falls off with distance²), or directional filtering (sensor components with high stability resist broadband noise).
+
+**Spoofing.** The sensor array emits false signatures. Adds phantom contacts to the opponent's detection:
+
+```
+ghost.signature = spoof_power * spoofing_array.resolution
+ghost.apparent_mass = declared_value  // attacker chooses what the ghost "looks like"
+```
+
+Opponents detect ghosts as real contacts at Contact tier. At Outline tier, ghosts hold up if the spoofing array's resolution exceeds the opponent sensor's resolution. At Inspection tier, ghosts fail — there's no real component tree behind them. Deep scanning always breaks spoofing.
+
+Costs power and requires a spoofing array (specialized sensor component). A fleet with one spoofer can make itself look like three fleets — until the opponent gets close enough to inspect.
+
+**EMCON (Emission Control).** Shut down active emissions. Sets `power_output` contribution to signature to zero and `active_emissions` to zero. Free — no power cost, you're just turning things off.
+
+```
+emcon_signature = k_mass * mass^0.5  // mass term only, no power/emission terms
+```
+
+Dramatically reduces signature. But also: no active scans (can't power the sensor), no jamming, no spoofing. You're blind AND quiet. Useful for ambushes — go dark, wait, power up weapons at close range.
 
 ## Stage 1 Testing
 
@@ -192,7 +254,7 @@ The monolith simulates fog of war even though it's one process:
 
 ## What This Spec Doesn't Cover
 
-**Specific detection formulas.** The exact relationship between sensor quality, range, and detection detail. Tuning parameters — decided through playtesting. The standard physics script encodes them.
+**Threshold values.** The specific values for `T_contact`, `T_outline`, `T_inspect`, and the signature constants `k_mass`, `k_power`, `k_emit`. These are tuning parameters in the standard physics script — decided through playtesting.
 
 **Sensor types.** Thermal, EM, gravitational, optical — these are flavor categories, not distinct physics. The six material properties (density, hardness, conductivity, reactivity, stability, radiance) determine what a sensor can detect. Whether players call a high-radiance sensor "thermal" or "optical" is convention.
 
