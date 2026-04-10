@@ -86,6 +86,25 @@ A mining outpost, a sensor array, a fuel depot. Lightweight domains that exist t
 
 Outposts are how you extract resources from unclaimed systems. You can't mine without a domain (no authority = no transforms). An outpost IS the minimum viable domain for resource extraction.
 
+### Domain Shutdown
+
+A domain can go dark — the operator stops hosting. What happens to everything inside?
+
+**Immediate (0-N epochs): Frozen.** Objects persist in their last state. Ships docked at the domain are inaccessible but not destroyed. Facilities, inventory, structures — all frozen. The domain's Leden sessions close. The domain disappears from gossip. The star appears unclaimed on the network layer but anyone who visited remembers it was claimed.
+
+**Evacuation.** Ships with valid retreat escrow (the departure domain claim established during consent-on-entry per [COMBAT.md](COMBAT.md)) can be recalled. The departure domain activates the retreat claim, pulling the ship back. Players who planned ahead keep their ships. Players who didn't are stuck until the domain returns — or doesn't.
+
+**Extended shutdown (N+ epochs): Claim lapses.** After a configurable absence period (probably 50-100 epochs — long enough that temporary outages don't cost you a system), the network treats the star as unclaimed. Other domains stop maintaining bilateral trust with the silent domain. The introduction chain for the domain goes stale.
+
+**New claimant.** Another player can deploy a domain at the same star. The new claim triggers a fresh survey (new beacon value, new geology — the geology CHANGES because the beacon is different). The previous operator's objects are still frozen somewhere. If the previous operator comes back online, they have objects but no claim — they'd need to negotiate with the new claimant, or deploy at a different star.
+
+**What doesn't happen:**
+- Objects don't get destroyed. Conservation law — mass doesn't vanish because a server went offline.
+- Objects don't transfer to the conquerer. No forced seizure. The frozen objects belong to the original operator. A new claimant gets the star's resources (fresh survey), not the previous occupant's stuff.
+- No automatic looting. A domain going dark is not a combat event — no debris, no salvage. The operator shut down their server. That's an infrastructure event, not a destruction event.
+
+**Conquest, then.** You can't take someone's stuff by besieging them into shutdown. You take their POSITION — the star, its resources, its strategic location. Their accumulated objects are frozen, inaccessible to everyone including the conqueror. The conquest incentive is geographic, not material.
+
 ## Resources
 
 ### Seed as Geology
@@ -164,7 +183,8 @@ Three layers of constraint, each building on the last:
 1. **Allgard's conservation laws** keep the economy honest. You can't cheat.
 2. **[Constraint physics](PHYSICS.md)** determines what can physically exist. Five laws — mass-energy conservation, structural scaling, energy budgets, stress/failure, proximity coupling — interact to create natural size tiers, specialization pressure, and engineering tradeoffs. No ship classes. Those emerge.
 3. **[Element table](ELEMENTS.md)** defines the fourteen elements (13 natural + 1 synthetic) — property vectors, abundances, starter recipes. Real-world names (iron, copper, uranium) for intuition. Seed-determined interaction physics for depth.
-4. **Natural laws** (below) apply constraint physics to travel and economy. They're consequences, not a separate system.
+4. **[Sensors](SENSORS.md)** — domain operators see everything; visiting players have fog of war. Sensors are ship systems under constraint physics, enabling detection, electronic warfare, and the information game.
+5. **Natural laws** (below) apply constraint physics to travel and economy. They're consequences, not a separate system.
 
 The founding cluster publishes a **standard physics script** — content-addressed Raido bytecode encoding both constraint physics and natural laws. Departure proofs include the script hash. Any domain can re-execute and verify. Non-standard physics isn't banned — it's transparent. A domain running zero-fuel-cost jumps is visible to every trading partner.
 
@@ -331,7 +351,7 @@ Everything below is infrastructure. Apeiron doesn't build these — it uses them
 
 See [ROADMAP.md](ROADMAP.md) for the full build order from specs to playable game.
 
-**Stage 1: A space trading game.** Raido VM → galaxy gen → monolith server. 5 founding systems, AI economy, text client. No federation needed. Elite (1984) — and that was a great game.
+**Stage 1: A space trading game.** Raido VM → galaxy gen → monolith server. 5 founding systems, AI economy, text client. No federation needed. Elite (1984) — and that was a great game. Includes: [markets](MARKET.md) with local settlement, [navigation](NAVIGATION.md) planning, [contracts](CONTRACTS.md) beyond courier/mining, [sensors](SENSORS.md) and fog of war, [salvage](SALVAGE.md) from combat, [reputation](REPUTATION.md) tracking, [knowledge](KNOWLEDGE.md) trading, and [social coordination](SOCIAL.md) tools.
 
 **Stage 2-3: Federation.** Leden + Allgard. Player stations, player star systems. The monolith splits into sovereign domains.
 
@@ -345,13 +365,13 @@ See [ROADMAP.md](ROADMAP.md) for the full build order from specs to playable gam
 
 **Star system scale.** How detailed is the procedural generation per system? Coarse data (planet count, spectral class, rough composition) is public from the seed. Detailed geology collapses at claim time via beacon — see [EXPLORATION.md](EXPLORATION.md). Open: orbital mechanics, atmospheric composition, terrain seeds.
 
-**Combat model.** Combat happens within domain jurisdiction (systems, route domains). Domain runs Raido combat scripts, both sides verify. Looting works through consent-on-entry — entering a PvP domain grants the domain limited authority over combat consequences. Needs detailed design.
+**Combat model.** See [COMBAT.md](COMBAT.md). Authority model, commit-reveal execution, retreat mechanics. Salvage mechanics in [SALVAGE.md](SALVAGE.md). Open: specific damage formulas, spatial model, sub-tick resolution, information/sensor model, multi-party combat.
 
 **Faction mechanics.** See [FACTIONS.md](FACTIONS.md). Group Owners with membership Grants, territory as social convention, governance internal to faction domain. War mechanics deferred to combat spec.
 
-**Economy bootstrapping.** See [ECONOMY.md](ECONOMY.md). Credits as seed currency, activity-tied minting, pre-bootstrapped founding cluster. Open tuning: minting rates, courier pay, facility fees.
+**Economy bootstrapping.** See [ECONOMY.md](ECONOMY.md). Credits as seed currency, activity-tied minting, pre-bootstrapped founding cluster. Contracts beyond courier/mining in [CONTRACTS.md](CONTRACTS.md). Knowledge economy in [KNOWLEDGE.md](KNOWLEDGE.md). Reputation in [REPUTATION.md](REPUTATION.md). Open tuning: minting rates, courier pay, facility fees.
 
-**Client experience.** What does the minimum viable client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? GDL supports all of these — which is the Stage 1 target?
+**Client experience.** What does the minimum viable client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? GDL supports all of these — which is the Stage 1 target? Galaxy map with [navigation](NAVIGATION.md) data and [market](MARKET.md) summaries is the minimum useful interface.
 
 **Managed hosting.** Players who can't self-host need easy domain deployment. Click-button hosting with migration to self-hosted hardware later. Critical for adoption. Contradicts nothing — sovereignty is about control, not where the server physically runs.
 

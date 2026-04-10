@@ -241,6 +241,38 @@ Grant expires when the rental period ends. Renew by paying again.
 
 Domains compete on price, equipment quality (precision instruments affect craft outcomes), and location.
 
+### Queued Facility Jobs
+
+Facility rental as described above is interactive — the player submits Transforms while docked. But facilities can also accept queued jobs: the player submits inputs and a recipe, the domain runs the Transform when capacity is available, and the player collects the output later.
+
+1. Player docks and submits a **job request**: input materials, fuel, recipe (or experiment parameters), and facility rental fee. All transferred to the domain.
+2. Domain validates: does this player have the right Grant? Are the inputs sufficient? Is the recipe compatible with this facility's capabilities?
+3. Domain queues the job. Runs it when facility capacity allows — might be immediate, might be behind other jobs.
+4. Output objects are held in the player's **collection bay** — objects owned by the player, stored at the domain, accessible on next visit.
+5. Player returns, collects outputs. Or transfers them remotely via market order (the outputs are at this domain, sellable per [MARKET.md](MARKET.md)).
+
+This isn't passive income — the player did the work (chose the recipe, provided materials, paid fees). The execution is asynchronous. A player who queues 10 crafting jobs before logging off collects 10 results next session. A researcher who queues 50 experiments at a lab facility gets 50 data points to analyze.
+
+Queued jobs use the beacon value at execution time, not submission time. The player committed inputs before the beacon — same pattern as interactive crafting. The domain runs the Transform after the beacon ticks. Results are deterministic and verifiable.
+
+### Founding Cluster Insurance
+
+The founding cluster operates an AI insurance domain. Basic coverage for starter ships and common haulers. Premiums are low, coverage is limited — enough to de-risk early gameplay, not enough to make combat consequence-free.
+
+Coverage tiers:
+
+| Tier | Covers | Premium | Payout | Notes |
+|------|--------|---------|--------|-------|
+| Starter | Starter ship replacement | 5 credits/epoch | Full replacement ship | Negligible cost, encourages new players to take risks |
+| Basic | Common-material ships up to 5K mass | 20 credits/epoch | 60% of assessed value | Enough for courier haulers |
+| Standard | Ships up to 20K mass | 100 credits/epoch | 50% of assessed value | Deductible applies |
+
+No coverage for exotic-material ships, cargo, or domain structures. Those require player-to-player insurance contracts per [CONTRACTS.md](CONTRACTS.md).
+
+The AI insurer operates like any other domain — bilateral trust, conservation laws, verifiable payouts. It assesses ship value from the component tree (constraint physics evaluation), sets premiums based on actuarial data (combat frequency, route danger), and pays claims against verified destruction proofs per [SALVAGE.md](SALVAGE.md).
+
+Player insurers compete with the founding insurer. They can offer better terms (higher coverage, lower premiums, exotic ship coverage) because they can specialize — a faction insurer that only covers faction members has better risk data than the founding cluster's generic policy. The founding insurer provides the floor. The market provides the ceiling.
+
 ### No New Primitives
 
 All three job types compose from Grants, conditional Transfers, Transforms, and Objects. Domains post jobs by creating contract Objects and locking escrow. Players accept by signing contracts and receiving Grants. Payment flows through conditional transfers tied to delivery proofs.

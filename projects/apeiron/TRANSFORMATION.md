@@ -533,11 +533,15 @@ These categories aren't prescribed. They emerge because different performance fu
 
 ## Interaction With Existing Systems
 
-**Constraint physics (PHYSICS.md):** Material synthesis produces materials. System design produces functional components. Constraint physics governs the finished objects built from them. A crafted alloy with excellent structural efficiency feeds into Law 2 — it lowers `k`, making bigger structures viable. A better engine design feeds into Law 3 — more thrust per watt, extending range at the same mass. Transformation physics creates the parts. Constraint physics judges the whole.
+**Constraint physics ([PHYSICS.md](PHYSICS.md)):** Material synthesis produces materials. System design produces functional components. Constraint physics governs the finished objects built from them. A crafted alloy with excellent structural efficiency feeds into Law 2 — it lowers `k`, making bigger structures viable. A better engine design feeds into Law 3 — more thrust per watt, extending range at the same mass. Transformation physics creates the parts. Constraint physics judges the whole. When an object transfers between domains, the receiving domain re-derives properties from the component tree using the constraint physics script. If the numbers don't match, trust flag.
 
 **Conservation laws (Allgard):** Mass lost during transformation satisfies Conservation Law 3 (exchange conservation — crafting loss is a declared sink). Inputs consumed are destroyed (minting/burning backed by Raido script). Outputs are new objects. The full chain is auditable.
 
-**Geographic scarcity:** The seed distributes elements and their abundances. Common elements appear everywhere. Rare elements appear in specific systems. Catalyst elements may be extremely scarce. The combination physics makes rare elements valuable not by fiat but because they enable transformations that common elements can't.
+**Geographic scarcity ([EXPLORATION.md](EXPLORATION.md)):** The seed distributes elements and their abundances, with specific deposits collapsing at claim time via beacon. Common elements appear everywhere. Rare elements appear in specific systems. Catalyst elements may be extremely scarce. The combination physics makes rare elements valuable not by fiat but because they enable transformations that common elements can't.
+
+**Knowledge economy ([KNOWLEDGE.md](KNOWLEDGE.md)):** Recipes — the discovery outputs of experimentation — are tradeable Allgard objects. A recipe object contains the private proof (element ratios, energy, catalyst) that the Verification section above protects. Trading a recipe means selling the private proof. The knowledge economy gives transformation physics its economic engine.
+
+**Destruction and salvage ([SALVAGE.md](SALVAGE.md)):** Destroyed objects produce debris from which materials can be recovered. The salvage system feeds materials back into transformation — scrapped components become raw elements, recycled into new crafting. The proof chain extends through destruction and recovery.
 
 **Fuel and facilities as energy gate:** The energy available for a transform comes from consumed fuel, channeled through a facility's reactor. Both are Allgard objects, both verifiable. Better fuel → more energy available. Better facility → more energy deliverable per transform. Both require better materials to build, which require research, which requires fuel and facilities. The spiral is intentional.
 
