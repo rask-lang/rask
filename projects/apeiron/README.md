@@ -345,11 +345,11 @@ See [ROADMAP.md](ROADMAP.md) for the full build order from specs to playable gam
 
 **Star system scale.** How detailed is the procedural generation per system? Coarse data (planet count, spectral class, rough composition) is public from the seed. Detailed geology collapses at claim time via beacon — see [EXPLORATION.md](EXPLORATION.md). Open: orbital mechanics, atmospheric composition, terrain seeds.
 
-**Combat model.** Combat happens within domain jurisdiction (systems, route domains). Domain runs Raido combat scripts, both sides verify. Looting works through consent-on-entry — entering a PvP domain grants the domain limited authority over combat consequences. Needs detailed design.
+**Combat model.** See [COMBAT.md](COMBAT.md). Authority model, commit-reveal execution, retreat mechanics. Salvage mechanics in [SALVAGE.md](SALVAGE.md). Open: specific damage formulas, spatial model, sub-tick resolution, information/sensor model, multi-party combat.
 
 **Faction mechanics.** See [FACTIONS.md](FACTIONS.md). Group Owners with membership Grants, territory as social convention, governance internal to faction domain. War mechanics deferred to combat spec.
 
-**Economy bootstrapping.** See [ECONOMY.md](ECONOMY.md). Credits as seed currency, activity-tied minting, pre-bootstrapped founding cluster. Open tuning: minting rates, courier pay, facility fees.
+**Economy bootstrapping.** See [ECONOMY.md](ECONOMY.md). Credits as seed currency, activity-tied minting, pre-bootstrapped founding cluster. Contracts beyond courier/mining in [CONTRACTS.md](CONTRACTS.md). Knowledge economy in [KNOWLEDGE.md](KNOWLEDGE.md). Reputation in [REPUTATION.md](REPUTATION.md). Open tuning: minting rates, courier pay, facility fees.
 
 **Client experience.** What does the minimum viable client look like? A text client showing star names and jump menus? A 2D galaxy map with docking screens? GDL supports all of these — which is the Stage 1 target?
 
