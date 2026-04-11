@@ -58,6 +58,38 @@ Determinism enables: lockstep networking, replay, migration, reproducible evalua
 - **Integer overflow** panics by default. Wrapping ops wrap. Both deterministic, part of the contract.
 - **Sort stability** is required -- `array.sort()` uses a stable sort algorithm.
 
+### ZK Proof Compatibility
+
+The VM is designed for direct execution, but its properties make it compatible with a zero-knowledge proof backend. This section documents which design constraints are load-bearing for ZK and must not be broken by future spec changes.
+
+**ZK-compatible properties:**
+
+| Property | Why it matters for ZK |
+|---|---|
+| Integer arithmetic (i64, 32.32) | Maps to field arithmetic with range checks. No floats (floats require expensive circuit emulation). |
+| Fuel-bounded execution | Circuits need bounded loops. Fuel guarantees a max step count — the circuit size is known before proving. |
+| Fixed arena size | Bounded memory = bounded memory-consistency constraints. |
+| Bump allocator (no GC) | Predictable allocation. No compaction or pointer fixup to prove. |
+| ~38 opcodes | Small instruction set = small selector circuit per step. |
+| Static bytecode | Code is immutable during execution. Circuit encodes it once as a public input. |
+| Deterministic branching | All branches depend on register values. No nondeterminism or external randomness. |
+| No closures/upvalues | Simpler memory model. No open/closed state transitions to track. |
+| Flat register window | Fixed-size, known count. Efficient as circuit wires. |
+
+**Execution trace.** A ZK backend proves execution by operating on a trace — a record of every step the VM takes. Each step records: opcode, PC, register reads, register writes, memory reads, memory writes, fuel consumed. The trace is the interface between the VM semantics and the proof system.
+
+**How it works:**
+
+1. **Executor** runs the script normally, recording the execution trace.
+2. **Prover** takes the trace and produces a STARK proof (~100-200 KB) that the trace is a valid execution of the bytecode with the claimed inputs and outputs.
+3. **Verifier** checks the proof (~1ms) without re-executing. The verifier needs only the proof, the bytecode hash, the inputs, and the claimed output.
+
+The executor bears the proof cost (1,000-10,000x slower than direct execution). Every verifier benefits — proof verification is constant-time regardless of script complexity.
+
+**Design constraint:** future opcodes and VM changes must preserve: bounded execution, integer-only arithmetic, static bytecode, bounded memory, and deterministic control flow. Any change that introduces unbounded computation, floating-point math, self-modifying code, or nondeterminism would break ZK compatibility.
+
+The ZK prover is a separate project that shares the bytecode format and obeys these semantics. It does not affect the VM spec or the direct-execution backend.
+
 ## PRNG
 
 **xoshiro128++.** 128-bit state (four u32s), 32-bit output.

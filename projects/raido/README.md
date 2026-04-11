@@ -180,7 +180,17 @@ Raido is independent -- usable by any host, no dependency on Allgard or Leden. B
 
 This turns Allgard's trust-based Proofs (Conservation Law 4) into independently verifiable ones for any transform backed by a Raido script. Simple transforms (transfer, burn) don't need this -- signature + causal link is sufficient.
 
-**What Raido provides:** deterministic execution, content-addressed identity (chunk format), versioned serialization.
+### Verification Modes
+
+**Phase 1: Bilateral re-execution.** Both parties run the same script. Simple, works today. The cost is that every verifier re-executes — if A trades with 50 domains, the script runs 50 times.
+
+**Phase 2: ZK proof backend.** The executor generates a zero-knowledge proof that the script ran correctly. Verifiers check the proof (~1ms) instead of re-executing. The executor bears the proving cost; verifiers are cheap. A proves once, 50 domains verify for free.
+
+Raido's VM design is ZK-compatible by construction — not because it was designed for ZK, but because the properties chosen for determinism are the same properties ZK circuits need. See [vm/architecture.md](vm/architecture.md#zk-proof-compatibility) for which design properties are load-bearing.
+
+The ZK prover is a separate backend that shares the bytecode format and obeys the same semantics. The VM spec doesn't change — ZK goes underneath the VM, not inside it.
+
+**What Raido provides:** deterministic execution, content-addressed identity (chunk format), versioned serialization, ZK-compatible architecture.
 
 **What Raido doesn't know about:** Allgard primitives, Leden sessions, federation semantics. It's a VM. The protocol integration is Allgard's concern.
 
