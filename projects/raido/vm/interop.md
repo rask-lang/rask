@@ -1,11 +1,11 @@
 <!-- id: raido.interop -->
 <!-- status: proposed -->
-<!-- summary: Rask integration API — VM creation, host functions, host references, serialization -->
+<!-- summary: Rask integration API -- VM creation, extern structs/funcs, scoped bindings, serialization -->
 <!-- depends: raido/vm/architecture.md, raido/language/types.md -->
 
 # Rask Integration
 
-Host API for integrating Raido. All interaction is safe — no `unsafe` required.
+Host API for integrating Raido. All interaction is safe -- no `unsafe` required.
 
 ## VM Lifecycle
 
@@ -17,73 +17,111 @@ const vm = raido.Vm.new(raido.Config {
 })
 ensure vm.close()
 
-// Register host functions before loading
-vm.register("send_message", |ctx| { ... })
+// Register extern bindings before loading
+vm.register_extern_struct("Enemy", raido.ExternStruct {
+    fields: [
+        raido.Field.int("health", get_health, set_health),
+        raido.Field.number("x", get_x, set_x),
+        raido.Field.number("y", get_y, set_y),
+        raido.Field.string("name", get_name, null),  // readonly
+    ],
+})
+vm.register_extern_func("move_to", move_to_handler)
+vm.register_extern_func("noise", noise_handler)
 
-// Compile — validates, derives imports/exports, computes content hash
+// Compile -- validates, derives imports/exports, computes content hash
 const chunk = try vm.compile("script.raido", source)
 
 // Or load pre-compiled bytecode (validates on load)
 const chunk = try vm.load(bytecode_bytes)
 
 // Inspect before running
-chunk.hash()      // content identity (SHA-256)
-chunk.imports()   // host functions the script needs
-chunk.exports()   // functions the host can call
+chunk.hash()             // content identity (SHA-256)
+chunk.imports()          // extern declarations the script needs
+chunk.module_imports()   // content-addressed module dependencies
+chunk.exports()          // functions the host can call (with typed signatures)
 
-// Load — fails fast if imports aren't satisfied
-try vm.exec(chunk)
+// Load -- fails fast if externs don't match declarations
+try vm.load(chunk)
 const result = try vm.call("process", [raido.Value.int(42)])
 ```
 
 See [chunk-format.md](chunk-format.md) for format details.
 
-## Host Functions
+## Extern Structs
 
-```rask
-vm.register("send_message", |ctx| {
-    const target = try ctx.arg_string(0)
-    const body = try ctx.arg_string(1)
-    messenger.send(target, body)
-})
+Scripts declare `extern struct` to describe host-managed data shapes. The compiler type-checks all field access against these declarations. The host binds at `vm.load()`.
+
+**Script side:**
+```raido
+extern struct Enemy {
+    health: int
+    x: number
+    y: number
+    readonly name: string
+}
+
+func chase(attacker: Enemy, target: Enemy) {
+    const dest = Vec2 { x: target.x, y: target.y }
+    move_to(attacker, dest)
+}
 ```
 
-Registered by name. On serialize, only the name is stored — host re-registers after restore. Rask errors in host functions become Raido runtime errors.
-
-## Host References
-
-Opaque references to host-managed data. The VM doesn't know what's behind them. The host registers a vtable per ref type — field names map to slot indices at compile time.
-
+**Host side:**
 ```rask
-// Define a reference type with a vtable
-vm.register_ref_type("enemy", raido.RefType {
+vm.register_extern_struct("Enemy", raido.ExternStruct {
     fields: [
-        raido.HostField.int("health", get_health, set_health),  // slot 0
-        raido.HostField.number("x", get_x, set_x),              // slot 1
-        raido.HostField.number("y", get_y, set_y),              // slot 2
-        raido.HostField.string("name", get_name, null),         // slot 3, read-only
+        raido.Field.int("health", get_health, set_health),
+        raido.Field.number("x", get_x, set_x),
+        raido.Field.number("y", get_y, set_y),
+        raido.Field.string("name", get_name, null),  // null setter = readonly
     ],
 })
-
-// Pass a reference to the script
-vm.set_global("target", vm.create_ref("enemy", enemy_id))
 ```
 
+**Type mismatch = load error.** If the script declares `health: int` but the host binds `health` as `number`, `vm.load()` fails. No runtime surprises.
+
+**Readonly enforcement.** Fields declared `readonly` in the script have no setter in the host binding (`null`). The compiler rejects writes to readonly fields at compile time.
+
+**Runtime dispatch:** `GET_FIELD` / `SET_FIELD` index into the vtable by slot number. No string hashing, no map lookup. One indexed function pointer call per field access.
+
+## Extern Funcs
+
+Scripts declare `extern func` for host-provided functions with typed signatures.
+
+**Script side:**
 ```raido
-// Script sees an object with fields
-// Compiler resolves "health" → slot 0, emits GET_REF_FIELD r1 r0 0
-target.health -= 10
-print("Hit {target.name} at ({target.x}, {target.y})")
+extern func move_to(entity: Enemy, target: Vec2)
+extern func noise(quality: number, id: int, index: int) -> number
+extern func spawn(kind: string, pos: Vec2) -> Enemy
 ```
 
-**Runtime dispatch:** `GET_REF_FIELD` / `SET_REF_FIELD` index into the vtable by slot number. No string hashing, no map lookup. One indexed function pointer call per field access.
+**Host side:**
+```rask
+vm.register_extern_func("move_to", |ctx| {
+    const entity_ref = try ctx.arg_extern(0)  // Enemy reference
+    const target = try ctx.arg_struct(1)       // Vec2 struct
+    // host logic...
+})
 
-**Binding helpers** (`raido.bind`) reduce the boilerplate of mapping host data to refs:
+vm.register_extern_func("noise", |ctx| {
+    const quality = try ctx.arg_number(0)
+    const id = try ctx.arg_int(1)
+    const index = try ctx.arg_int(2)
+    return raido.Value.number(compute_noise(quality, id, index))
+})
+```
+
+Same load-time checking: if a declared `extern func` isn't registered, `vm.load()` fails.
+
+## Binding Helpers
+
+The `raido.bind` helper library reduces boilerplate for mapping host data to extern structs:
 
 ```rask
 import raido.bind
 
-// Bind a pool — each handle becomes a host ref
+// Bind a pool -- each handle becomes an extern struct reference
 raido.bind.pool(vm, "enemies", enemies, [
     bind.Field.int("health"),
     bind.Field.number("x"),
@@ -94,11 +132,11 @@ raido.bind.pool(vm, "enemies", enemies, [
 raido.bind.struct(vm, "config", config)
 ```
 
-`raido.bind` is a convenience library, not VM core. It generates `register_ref_type` calls with vtable entries.
+`raido.bind` is a convenience library, not VM core. It generates `register_extern_struct` calls.
 
 ## Scoped Bindings
 
-Host references need access to host data (pools, DBs, etc). Scoped bindings provide this safely:
+Extern struct field accessors need access to host data (pools, DBs, etc). Scoped bindings provide this safely:
 
 ```rask
 try vm.with_context(|ctx| {
@@ -108,21 +146,23 @@ try vm.with_context(|ctx| {
 // borrow released
 ```
 
-Same scoped borrowing pattern as before, but generalized. The host binds whatever data host functions and ref accessors need — pools, database connections, message queues. The VM doesn't care what it is.
+Same scoped borrowing pattern -- the host binds whatever data extern struct accessors and extern funcs need. The VM doesn't care what it is.
 
 ## Serialization
 
 ```rask
 const bytes = vm.serialize()
 const vm2 = raido.Vm.deserialize(bytes)
-// Re-register host functions and ref types
+// Re-register extern structs and funcs
 // Re-bind contexts before calling
 ```
 
-Format is versioned — version header from day one. Deserialize rejects unknown versions with a clear error.
+Format is versioned -- version header from day one. Deserialize rejects unknown versions with a clear error.
 
-Serializes: register windows, globals, coroutines, arena, PRNG, fuel counter, call depth.
+Serializes: register windows, coroutines, arena, PRNG, fuel counter, call depth.
 Does not serialize: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).
+
+With static types, serialization is simpler -- no type tags per value. The deserializer knows the type of every register from the bytecode metadata.
 
 ## Environment Configuration
 
@@ -141,6 +181,6 @@ No stdlib modules loaded by default. Host opts in to what scripts can access.
 
 ## Error Propagation
 
-- **Script → Host:** `raido.ScriptError` (message, file, line, stack trace).
-- **Host → Script:** Rask errors in host functions become Raido runtime errors.
+- **Script -> Host:** `raido.ScriptError` (kind, message, stack trace).
+- **Host -> Script:** Rask errors in extern funcs become Raido runtime errors (`HostError`).
 - **In-script:** `try expr` propagates errors. `try expr else |e| { ... }` catches them. `error(msg)` raises them. Same syntax as Rask.

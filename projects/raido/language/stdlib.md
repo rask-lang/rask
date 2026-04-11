@@ -1,6 +1,6 @@
 <!-- id: raido.stdlib -->
 <!-- status: proposed -->
-<!-- summary: Configurable stdlib modules — host opts in to what scripts can access -->
+<!-- summary: Configurable stdlib modules -- host opts in to what scripts can access -->
 <!-- depends: raido/language/types.md, raido/language/syntax.md -->
 
 # Standard Library
@@ -17,21 +17,19 @@ const vm = raido.Vm.new(raido.Config {
 
 These are part of the language, not an opt-in module. A Raido VM without these isn't a Raido VM.
 
-`type(v)` — returns type name as string ("nil", "bool", "int", "number", "string", "array", "map", "function", "host_ref").
+`tostring(v: T) -> string` -- convert any value to string representation.
 
-`tostring(v)` — converts any value to string.
+`int(s: string) -> int?` -- parse string to int. Returns `None` on failure.
 
-`int(v)` — string/number → int (truncates). Returns nil on failure.
+`number(s: string) -> number?` -- parse string to number. Returns `None` on failure.
 
-`number(v)` — string/int → number. Returns nil on failure.
+`len(v: T) -> int` -- string byte length, array length, or map entry count. `T` must be `string`, `array`, or `map` (compiler-enforced).
 
-`len(v)` — string byte length, array length, or map entry count. TypeError on other types.
+`error(msg: string)` -- raises a ScriptError. `msg` must be a string.
 
-`error(msg)` — raises a ScriptError. `msg` must be a string.
+`assert(v: bool, msg: string?)` -- if `v` is false, raises ScriptError with `msg` (default: "assertion failed").
 
-`assert(v, msg?)` — if `v` is falsy, raises ScriptError with `msg` (default: "assertion failed").
-
-`print(v...)` — calls the host's print handler. Default: no-op. Host can override via `vm.set_print(handler)`.
+`print(v: string)` -- calls the host's print handler. Default: no-op. Host can override via `vm.set_print(handler)`.
 
 Error catching uses `try`/`else` syntax, not a stdlib function.
 
@@ -39,60 +37,75 @@ Error catching uses `try`/`else` syntax, not a stdlib function.
 
 Opt-in. All deterministic (fixed-point).
 
-`abs`, `floor`, `ceil`, `round`, `sqrt`, `min`, `max`, `clamp`, `lerp`
+`abs(x: number) -> number`, `floor(x: number) -> int`, `ceil(x: number) -> int`, `round(x: number) -> int`
 
-`sin`, `cos`, `atan2` — CORDIC-based fixed-point approximations. ~10-bit accuracy. Not scientific precision — good enough for game math.
+`sqrt(x: number) -> number` -- Newton's method.
 
-`random()` → number in [0, 1). `random(n)` → int in [0, n). Uses VM's xoshiro128++ PRNG.
+`min(a: number, b: number) -> number`, `max(a: number, b: number) -> number`
 
-`pi` — 3.14159265 as 32.32 fixed-point.
+`clamp(x: number, lo: number, hi: number) -> number`, `lerp(a: number, b: number, t: number) -> number`
+
+`sin(x: number) -> number`, `cos(x: number) -> number`, `atan2(y: number, x: number) -> number` -- CORDIC-based fixed-point approximations. ~10-bit accuracy. Not scientific precision -- good enough for game math.
+
+`random() -> number` -- number in [0, 1). `random(n: int) -> int` -- int in [0, n). Uses VM's xoshiro128++ PRNG.
+
+`pi: number` -- 3.14159265 as 32.32 fixed-point.
 
 ## string
 
-Opt-in.
+Opt-in. Methods on string values.
 
-`sub(s, start, end?)` — substring by byte offset (0-indexed). `find(s, pattern)` — returns index or nil. No regex — literal substring search only.
+`sub(s: string, start: int, end: int?) -> string` -- substring by byte offset (0-indexed).
 
-`upper(s)`, `lower(s)` — ASCII only. No Unicode case mapping (keeps implementation tiny).
+`find(s: string, pattern: string) -> int?` -- returns index or `None`. No regex -- literal substring search only.
 
-`split(s, sep)` → array. `trim(s)` — strip ASCII whitespace.
+`upper(s: string) -> string`, `lower(s: string) -> string` -- ASCII only. No Unicode case mapping.
 
-`starts_with(s, prefix)`, `ends_with(s, suffix)` → bool.
+`split(s: string, sep: string) -> array<string>`. `trim(s: string) -> string` -- strip ASCII whitespace.
 
-`rep(s, n)` — repeat string n times. `byte(s, i)` → int (byte value at index). `char(n)` → string (single byte).
+`starts_with(s: string, prefix: string) -> bool`, `ends_with(s: string, suffix: string) -> bool`.
+
+`rep(s: string, n: int) -> string` -- repeat string n times.
+
+`byte(s: string, i: int) -> int` -- byte value at index. `char(n: int) -> string` -- single byte.
 
 ## array
 
 Opt-in. Methods on array values.
 
-`push(v)`, `pop()`, `insert(i, v)`, `remove(i)`
+`push(v: T)`, `pop() -> T?`, `insert(i: int, v: T)`, `remove(i: int) -> T`
 
-`sort(cmp?)` — insertion sort (stable, simple, fast for small arrays typical in scripts). `cmp` is an optional comparison function.
+`sort(cmp: func(T, T) -> bool)` -- stable sort. Takes a function reference as comparator.
 
-`contains(v)` → bool. `join(sep)` → string. `reverse()`.
+`contains(v: T) -> bool`, `join(sep: string) -> string`, `reverse()`
+
+`get(i: int) -> T?` -- safe access, returns `None` on out-of-bounds.
 
 ## map
 
 Opt-in. Methods on map values.
 
-`keys()` → array. `values()` → array. `contains(k)` → bool. `remove(k)`.
+`keys() -> array<K>`, `values() -> array<V>`
+
+`contains(k: K) -> bool`, `remove(k: K)`
+
+`get(k: K) -> V?` -- safe access, returns `None` on missing key.
 
 ## bit
 
 Opt-in. Bitwise operations on `int` values.
 
-`bit.and(a, b)`, `bit.or(a, b)`, `bit.xor(a, b)`, `bit.not(a)`
+`bit.and(a: int, b: int) -> int`, `bit.or(a: int, b: int) -> int`, `bit.xor(a: int, b: int) -> int`, `bit.not(a: int) -> int`
 
-`bit.lshift(a, n)`, `bit.rshift(a, n)` — logical shift (not arithmetic).
+`bit.lshift(a: int, n: int) -> int`, `bit.rshift(a: int, n: int) -> int` -- logical shift (not arithmetic).
 
 ## What Hosts Add
 
-Domain-specific functions via `vm.register()`:
+Domain-specific functions via `extern func` declarations in scripts:
 
-```rask
-vm.register("spawn_enemy", |ctx| { ... })
-vm.register("play_sound", |ctx| { ... })
-vm.register("send_email", |ctx| { ... })
+```raido
+extern func spawn_enemy(kind: string, pos: Vec2) -> Enemy
+extern func play_sound(name: string)
 ```
 
-The VM is a blank slate beyond core. The host shapes the environment.
+The host binds these at load time. See [vm/interop.md](../vm/interop.md) for host-side registration.
