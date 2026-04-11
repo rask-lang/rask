@@ -84,6 +84,51 @@ const damaged = Ship { health: ship.health - dmg, ..ship }
 return Star { id: index, x, y, z, spectral, planet_count, luminosity }
 ```
 
+## Extend
+
+Add methods to any struct or enum. Methods use `self` as the first parameter — always const (no mutation through `self`). The compiler desugars `x.method(args)` into a normal function call with `x` as the first argument. No new opcodes, no vtable, no dynamic dispatch.
+
+```raido
+struct Money {
+    cents: int
+}
+
+extend Money {
+    func from_dollars(dollars: int) -> Money {
+        return Money { cents: dollars * 100 }
+    }
+
+    func add(self, other: Money) -> Money {
+        return Money { cents: self.cents + other.cents }
+    }
+
+    func percent(self, rate: int) -> Money {
+        return Money { cents: self.cents * rate / 100 }
+    }
+
+    func to_number(self) -> number {
+        return number(self.cents) / 100.0
+    }
+
+    func to_string(self) -> string {
+        return "{self.cents / 100}.{self.cents % 100}"
+    }
+}
+
+const price = Money.from_dollars(10)
+const tax = price.percent(8)
+const total = price.add(tax)
+```
+
+**Rules:**
+
+- `self` is always const — methods can read fields but not mutate them. Return a new value instead.
+- Methods without `self` are static: `Money.from_dollars(10)`. Called via `Type.method()`.
+- Methods with `self` are instance: `price.add(tax)`. Called via `value.method()`.
+- Multiple `extend` blocks on the same type are allowed (useful for imported modules adding methods).
+- Extend works on `struct` and `enum` types. Not on primitives — `int`, `number`, `bool`, `string` have compiler-known built-in methods only.
+- Extend blocks are part of the chunk's type table and content hash.
+
 ## Enum
 
 Tagged unions with optional payloads. Exhaustive `match` -- the compiler rejects incomplete matches.
@@ -264,7 +309,7 @@ Promotion is widening (lossless for ints within +/-2.1B). If the int exceeds num
 
 ## Built-in Methods
 
-Compiler-known methods on primitive and collection types. Not user-extensible (no `extend` blocks).
+Compiler-known methods on primitive and collection types. These are not user-extensible — `extend` only works on user-defined structs and enums, not on primitives or built-in collections.
 
 **`int` methods:**
 

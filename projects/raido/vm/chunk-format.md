@@ -37,6 +37,7 @@ Static types require metadata in the chunk so the VM can:
 The type table contains:
 - **Struct definitions.** Name, field names, field types, field count. Layout order matches declaration order.
 - **Enum definitions.** Name, variant names, variant payloads (if any).
+- **Extend methods.** Type name, method name, parameter types, return type, prototype index. Methods are compiled as regular functions — extend is resolved at compile time, not runtime.
 - **Extern struct declarations.** Name, field names, field types, readonly flags.
 - **Extern func declarations.** Name, parameter types, return type.
 

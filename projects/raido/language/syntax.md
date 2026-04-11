@@ -127,6 +127,29 @@ extern func noise(quality: number, id: int, index: int) -> number
 extern func move_to(entity: Enemy, target: Vec2)
 ```
 
+### Extend
+
+Add methods to structs and enums. Same as Rask. `self` is always const.
+
+```raido
+extend Vec2 {
+    func distance(self, other: Vec2) -> number {
+        const dx = self.x - other.x
+        const dy = self.y - other.y
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    func zero() -> Vec2 {
+        return Vec2 { x: 0.0, y: 0.0 }
+    }
+}
+
+const d = pos.distance(target)
+const origin = Vec2.zero()
+```
+
+See [types.md](types.md#extend) for rules.
+
 ### Module Imports
 
 Scripts can import other content-addressed chunks:
@@ -332,7 +355,7 @@ const h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 ## Keywords
 
-`break`, `const`, `continue`, `else`, `enum`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `return`, `struct`, `true`, `try`, `while`, `yield`
+`break`, `const`, `continue`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `return`, `struct`, `true`, `try`, `while`, `yield`
 
 `coroutine()`, `error()`, and `assert()` are built-in functions (core), not keywords.
 
@@ -340,6 +363,6 @@ const h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 - **Single-quoted strings** -- Rask uses `'a'` for character literals. Raido has no character type; single quotes are raw strings (`'no {interpolation}'`).
 - **No `public`/package visibility** -- Raido scripts are single-file. All declarations are visible within the script and importable by other chunks.
-- **No `extend` blocks** -- No user-defined methods on structs. Built-in methods on `int`, `array`, `map`, `string` are compiler-known (see [types.md](types.md#built-in-methods)). Use free functions for behavior on user-defined structs.
+- **`extend` with const self only** -- Methods on user-defined structs/enums, same as Rask. `self` is always const — methods return new values rather than mutating. Built-in methods on `int`, `array`, `map`, `string` are compiler-known (see [types.md](types.md#built-in-methods)).
 - **No parameter modes** -- No `mutate`/`take`. Function parameters are always `const`. Structs pass by reference (arena offset), primitives by value. Return modified copies for pure data flow.
 - **No `using` context clauses** -- Host data access is through `extern struct`, not context parameters.

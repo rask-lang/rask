@@ -35,7 +35,9 @@ Error catching uses `try`/`else` syntax, not a stdlib function.
 
 ## Built-in Methods
 
-Compiler-known methods on primitive and collection types. Always available, not opt-in. Not user-extensible (no `extend` blocks). See [types.md](types.md#built-in-methods) for the complete list.
+Compiler-known methods on primitive and collection types. Always available, not opt-in. See [types.md](types.md#built-in-methods) for the complete list.
+
+User-defined structs get methods via `extend` blocks — same dot syntax, same calling convention. Libraries can provide the same ergonomics as the stdlib.
 
 **`int`:** `wrapping_add`, `wrapping_sub`, `wrapping_mul`, `abs`
 

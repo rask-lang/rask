@@ -214,6 +214,7 @@ tokenize correctly.
 Walk the source collecting:
 - `struct` declarations (name, fields, field types)
 - `enum` declarations (name, variants, payloads)
+- `extend` blocks (type name, method signatures) -- not bodies
 - `extern struct` declarations (name, fields, types, readonly flags)
 - `extern func` declarations (name, param types, return type)
 - `func` signatures (name, param types, return type) -- not bodies
@@ -301,7 +302,7 @@ indices loaded with `FUNC_REF`.
 3. Arithmetic/comparison/logic -> ADD..NEG, EQ/LT/LE, NOT (type-checked)
 4. Control flow -> JMP, JMP_IF, JMP_IF_NOT (with backpatching)
 5. Functions -> FUNC_REF, CALL, RETURN, TAIL_CALL (typed signatures)
-6. Structs -> NEW_STRUCT, GET_STRUCT_FIELD, SET_STRUCT_FIELD
+6. Structs + extend -> NEW_STRUCT, GET_STRUCT_FIELD, SET_STRUCT_FIELD, method calls
 7. Enums -> ENUM_TAG, match dispatch
 8. Collections -> NEW_ARRAY, NEW_MAP, GET_INDEX, SET_INDEX, LEN, CONCAT
 9. Optionals -> LOAD_NONE, IS_SOME, UNWRAP, WRAP_SOME, is/match patterns, ??, !

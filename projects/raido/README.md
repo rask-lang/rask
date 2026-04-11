@@ -206,6 +206,5 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 
 - **Map growth strategy.** Load factor threshold and growth factor need benchmarking. Open addressing with linear probing is decided; the tuning constants are implementation detail.
 - **Serialization migration.** Version header exists. Forward/backward compatibility policy depends on how the format evolves in practice. Premature to specify migration rules before the first format change.
-- **`extend` blocks (methods on structs).** Useful ergonomics but adds complexity. Not needed for v1. Built-in methods on `array`, `map`, `string` are compiler-known.
 - **Generics beyond built-ins.** `array<T>`, `map<K, V>`, `T?`, function types cover the need. No user-defined generics.
 - **Traits / interfaces.** Functions, not methods.

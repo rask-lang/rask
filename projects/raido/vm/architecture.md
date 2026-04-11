@@ -387,7 +387,7 @@ All errors carry: kind, message (string), and a stack trace (array of `{file, li
 
 Two-pass compiler. No full AST. Memory is O(declarations), not O(program size).
 
-1. **Declaration pass.** Scan for `struct`, `enum`, `extern struct`, `extern func`, `func` signatures, and `import` statements. Build a type table mapping names to types. Record function signatures but not bodies.
+1. **Declaration pass.** Scan for `struct`, `enum`, `extend` blocks, `extern struct`, `extern func`, `func` signatures, and `import` statements. Build a type table mapping names to types. Record function and method signatures but not bodies.
 2. **Compile pass.** Recursive descent with type checking. Emit bytecode directly during parsing. Register allocation same as current (linear, locals sequential, temporaries bump). Type inference for locals uses forward flow: `const x = 42` -> x is `int`. No backward inference, no constraint solving.
 3. **Register allocation.** Linear. Locals get sequential registers. Temporaries use a stack-like bump above locals. No optimization passes.
 4. **Constant folding.** Compile-time evaluation of constant expressions (`1 + 2` -> `LOAD_INT 3`). Only for arithmetic on literals.
