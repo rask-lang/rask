@@ -65,7 +65,7 @@ vm.register_extern_struct("Enemy", raido.ExternStruct {
 })
 vm.register_extern_func("move_to", move_to_handler)
 
-const chunk = try vm.compile("script.raido", source)
+const chunk = try vm.compile("script.rd", source)
 try vm.load(chunk)  // fails if extern declarations don't match bindings
 
 const result = try vm.call("process", [raido.Value.int(42)])

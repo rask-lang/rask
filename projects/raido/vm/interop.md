@@ -30,7 +30,7 @@ vm.register_extern_func("move_to", move_to_handler)
 vm.register_extern_func("noise", noise_handler)
 
 // Compile -- validates, derives imports/exports, computes content hash
-const chunk = try vm.compile("script.raido", source)
+const chunk = try vm.compile("script.rd", source)
 
 // Or load pre-compiled bytecode (validates on load)
 const chunk = try vm.load(bytecode_bytes)
