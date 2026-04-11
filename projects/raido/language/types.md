@@ -38,10 +38,9 @@ Stored as i64. 32 integer bits (signed), 32 fractional bits.
 - **Range:** +/-2.1 billion. **Precision:** ~2^-32 (~9.6 decimal digits).
 - **Deterministic.** Integer math. Same result on every platform.
 - **Fast.** Add/sub = single i64 op. Mul/div = 128-bit intermediate.
-- **No NaN/infinity.** Division by zero = runtime error. Overflow saturates.
+- **No NaN/infinity.** Division by zero = runtime error. Number overflow saturates. Integer overflow panics (use `wrapping_*` methods for explicit wrapping).
 - Scripts write `3.14`, compiler converts to fixed-point.
-
-`int` and `number` are separate types -- no implicit coercion. Use `number(x)` or `int(x)` for explicit conversion.
+- **Literal rule:** decimal point means `number`, no decimal means `int`. `42` is int, `42.0` is number, `0xff` is int.
 
 ### Why 32.32 over 48.16
 
@@ -69,7 +68,9 @@ struct Ship {
 }
 ```
 
-Structs are arena-allocated. A struct value in a register is a u32 arena offset. Field access compiles to `GET_STRUCT_FIELD` / `SET_STRUCT_FIELD` with the field index known at compile time.
+Structs are arena-allocated. A struct value in a register is a u32 arena offset. All fields occupy 8 bytes each (i64) regardless of logical type -- bools are stored as i64 0/1, arena offsets are zero-extended. Field access compiles to `GET_STRUCT_FIELD` / `SET_STRUCT_FIELD` with the field index known at compile time.
+
+**Pass by reference.** A struct parameter is an arena offset. Multiple bindings can point to the same struct. Mutation through a `let` binding is visible through all bindings to the same offset. See [Const and Let](#const-and-let) for mutation rules.
 
 **Struct update syntax** copies all fields, overriding specific ones:
 
@@ -105,11 +106,11 @@ enum Order {
 
 Variants are accessed with dot syntax: `Order.Attack(target_id)`, `Stance.Aggressive`.
 
-Simple enums (no payloads) are stored inline as a discriminant. Enums with payloads use a u32 discriminant + u32 arena offset.
+Simple enums (no payloads) are stored inline as a u32 discriminant in the register -- no arena allocation. Enums with payloads use a u32 discriminant + u32 arena offset in the register. The arena body contains only the payload fields (no redundant discriminant -- the register already has it).
 
 ## Optionals
 
-`T?` replaces nil. Either `Some(value)` or `None`. Compiler-enforced -- you can't use an optional without handling the `None` case.
+`T?` is the optional type. Either `Some(value)` or `None`. Compiler-enforced -- you can't use an optional without handling the `None` case.
 
 ```raido
 const shield: Shield? = find_shield(inventory)
@@ -148,6 +149,8 @@ func bounds(arr: array<number>) -> (number, number) {
 const (lo, hi) = bounds(values)
 ```
 
+Tuples are anonymous arena-allocated structs. `(number, number)` is a 2-field struct with 8 bytes per field. The compiler generates internal type entries for tuple types -- no user-visible struct name. Arena allocation is cheap (bump pointer) and frames get reset between evaluations.
+
 ## Function References
 
 References to named top-level functions. No captured state, no arena allocation. A function reference is a prototype index -- the simplest possible callable value.
@@ -183,6 +186,70 @@ extern func noise(quality: number, id: int, index: int) -> number
 
 See [vm/interop.md](../vm/interop.md) for host-side binding.
 
+## Const and Let
+
+`const` and `let` control mutability of the binding **and the data it reaches**:
+
+- `const x = ...` -- cannot reassign `x`, cannot mutate fields through `x`
+- `let x = ...` -- can reassign `x`, can mutate fields through `x`
+
+```raido
+const ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
+ship.health -= 10  // ERROR: ship is const
+ship = other_ship  // ERROR: ship is const
+
+let ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
+ship.health -= 10  // OK: ship is let
+ship = other_ship  // OK: ship is let
+```
+
+**Function parameters are const.** A function cannot mutate a struct passed to it. Return a modified copy instead:
+
+```raido
+func apply_damage(ship: Ship, amount: int) -> Ship {
+    return Ship { health: ship.health - amount, ..ship }
+}
+```
+
+For host entity mutation, use extern struct fields -- the host controls the data:
+
+```raido
+extern struct Enemy { health: int, x: number, y: number }
+func damage_enemy(enemy: Enemy, amount: int) {
+    enemy.health -= amount  // OK: extern struct field write goes through host setter
+}
+```
+
+## Arithmetic Rules
+
+**Same-type arithmetic:**
+
+| Expression | Result | Notes |
+|-----------|--------|-------|
+| `int + int` | `int` | Also `-`, `*`, `%` |
+| `int / int` | `number` | Division always returns number |
+| `number + number` | `number` | All ops |
+
+**Mixed arithmetic -- int promotes to number:**
+
+| Expression | Result | Notes |
+|-----------|--------|-------|
+| `int + number` | `number` | int operand promoted to 32.32 fixed-point |
+| `number + int` | `number` | Same |
+| `int CMP number` | `bool` | Promotion for comparison too |
+
+Promotion is widening (lossless for ints within +/-2.1B). If the int exceeds number's 32-bit integer range, the promotion panics at runtime. In practice, ints mixed with numbers are small (counts, indices, loop variables).
+
+**Narrowing requires explicit conversion:** `number -> int` always requires `int(x)`, which truncates toward zero. No implicit narrowing.
+
+**Integer overflow:** panics by default. Use built-in wrapping methods on `int` for explicit wrapping (see [Built-in Methods](#built-in-methods)).
+
+**Number overflow:** saturates to +/-max value.
+
+**Modulo:** follows the sign of the dividend. `7 % 3 == 1`, `-7 % 3 == -1`.
+
+**String comparison:** lexicographic by bytes (UTF-8 byte order). `"a" < "b"` is `true`.
+
 ## Type Rules
 
 - Function signatures are fully typed (parameters + return type)
@@ -190,12 +257,46 @@ See [vm/interop.md](../vm/interop.md) for host-side binding.
 - No generics beyond built-in `array<T>`, `map<K, V>`, `T?`, tuples, and function types
 - No traits or interfaces
 - Exhaustive `match` on enums -- compiler error if a variant is missing
-- `int` and `number` are separate -- no implicit coercion. `number(x)` or `int(x)` for conversion
 - `??` unwraps optionals with a default: `value ?? fallback` (both sides same type)
-- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on any l-value including chained access (`ships[i].health -= damage`)
+- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on `let` l-values including chained access (`ships[i].health -= damage`)
 - Force unwrap: `value!` panics if `None`
-- Integer overflow: **panic by default**. Use `wrapping_mul()`, `wrapping_add()` for explicit wrapping arithmetic. Part of the determinism contract.
 - Sort stability is required -- `array.sort()` uses a stable sort algorithm
+
+## Built-in Methods
+
+Compiler-known methods on primitive and collection types. Not user-extensible (no `extend` blocks).
+
+**`int` methods:**
+
+- `wrapping_add(other: int) -> int` -- wrapping addition
+- `wrapping_sub(other: int) -> int` -- wrapping subtraction
+- `wrapping_mul(other: int) -> int` -- wrapping multiplication
+- `abs() -> int` -- absolute value (panics on i64 min)
+
+**`array<T>` methods (always available, not opt-in):**
+
+- `len() -> int`
+- `get(i: int) -> T?` -- safe access, returns `None` on out-of-bounds
+- `push(v: T)`, `pop() -> T?`, `insert(i: int, v: T)`, `remove(i: int) -> T`
+- `sort(cmp: func(T, T) -> bool)` -- stable sort
+- `contains(v: T) -> bool`, `join(sep: string) -> string`, `reverse()`
+
+**`map<K, V>` methods (always available, not opt-in):**
+
+- `len() -> int`
+- `get(k: K) -> V?` -- safe access, returns `None` on missing key
+- `keys() -> array<K>`, `values() -> array<V>`
+- `contains(k: K) -> bool`, `remove(k: K)`
+
+**`string` methods (always available, not opt-in):**
+
+- `len() -> int` -- byte length
+- `sub(start: int, end: int?) -> string` -- substring by byte offset
+- `find(pattern: string) -> int?` -- literal substring search
+- `upper() -> string`, `lower() -> string` -- ASCII only
+- `split(sep: string) -> array<string>`, `trim() -> string`
+- `starts_with(prefix: string) -> bool`, `ends_with(suffix: string) -> bool`
+- `rep(n: int) -> string`, `byte(i: int) -> int`, `char(n: int) -> string`
 
 ## Maps
 

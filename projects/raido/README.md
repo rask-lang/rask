@@ -133,7 +133,7 @@ const result = try process(42) else |e| {
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
 | Errors | `try`/`else`, `error()` | Same syntax as Rask. No `pcall`. |
 | Coroutines | `coroutine(f, args...)`, methods | Create/resume/yield. Method-based. Serializable. |
-| Stdlib | `core` always present, modules opt-in by host | `core` is the language. Modules are capabilities. Host controls the surface area. |
+| Stdlib | Core functions + built-in methods always present, `math`/`bit` opt-in | Collection/string methods are always available. Host controls math and bitwise access. |
 
 ## Use Cases
 

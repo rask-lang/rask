@@ -100,9 +100,9 @@ func array_set(self, offset: i64, idx: i64, val: i64)
 func array_len(self, offset: i64) -> i64
 func array_cap(self, offset: i64) -> i64
 func array_push(self, offset: i64, val: i64) -> i64 or ArenaError
-func alloc_map(self, cap: i64) -> i64 or ArenaError
-func map_get(self, offset: i64, key: i64) -> i64     // raw 8-byte value
-func map_set(self, offset: i64, key: i64, val: i64) -> i64 or ArenaError
+func alloc_map(self, cap: i64) -> i64 or ArenaError  // compact dict layout
+func map_get(self, offset: i64, key: i64, hash: i64) -> i64  // raw 8-byte value
+func map_set(self, offset: i64, key: i64, hash: i64, val: i64) -> i64 or ArenaError
 func map_len(self, offset: i64) -> i64
 func alloc_struct(self, field_count: i64) -> i64 or ArenaError
 func struct_get_field(self, offset: i64, field_idx: i64) -> i64
@@ -120,7 +120,7 @@ beyond cap reallocates. Struct field get/set round-trips.
 
 ### Phase 3: Opcodes and chunks
 
-**opcodes.rk** -- ~35 opcodes as constants. Three 32-bit instruction formats:
+**opcodes.rk** -- ~38 opcodes as constants. Three 32-bit instruction formats:
 
 ```
 ABC:  op(8) | A(8) | B(8) | C(8)
@@ -268,7 +268,7 @@ struct Local {
 
 - `const x = 42` -> infer `x: int` from literal
 - `const y = foo(a, b)` -> look up `foo`'s return type from type table
-- Binary ops: check operand types match. `int + int -> int`. `number + number -> number`. `int + number` -> error.
+- Binary ops: check types. `int + int -> int`. `number + number -> number`. `int + number -> number` (promote int). `int / int -> number` (division always returns number).
 - Function calls: check argument types match parameter types
 - Struct construction: check all fields present, types match
 - Match: check exhaustiveness on enums
@@ -304,7 +304,7 @@ indices loaded with `FUNC_REF`.
 6. Structs -> NEW_STRUCT, GET_STRUCT_FIELD, SET_STRUCT_FIELD
 7. Enums -> ENUM_TAG, match dispatch
 8. Collections -> NEW_ARRAY, NEW_MAP, GET_INDEX, SET_INDEX, LEN, CONCAT
-9. Optionals -> LOAD_NONE, is/match patterns, ??, !
+9. Optionals -> LOAD_NONE, IS_SOME, UNWRAP, WRAP_SOME, is/match patterns, ??, !
 10. Extern access -> GET_FIELD, SET_FIELD
 11. Error handling -> TRY
 12. Coroutines -> COROUTINE, YIELD, RESUME
@@ -359,14 +359,17 @@ Host functions registered before script execution.
 
 No `type()` -- types are known at compile time.
 
+**Built-in methods (always present, compiler-known):**
+- **int:** wrapping_add, wrapping_sub, wrapping_mul, abs
+- **string:** len, sub, find, upper, lower, split, trim, starts_with,
+  ends_with, rep, byte, char
+- **array:** len, get (T?), push, pop, insert, remove, sort (stable,
+  function ref comparator), contains, join, reverse
+- **map:** len, get (V?), keys, values, contains, remove
+
 **Opt-in modules:**
 - **math:** abs, floor, ceil, round, sqrt (Newton's method), min, max, clamp,
   lerp, sin/cos/atan2 (CORDIC), random (xoshiro128++), pi
-- **string:** sub, find, upper, lower, split, trim, starts_with, ends_with,
-  rep, byte, char
-- **array:** push, pop, insert, remove, sort (stable), contains, join, reverse,
-  get (returns T?)
-- **map:** keys, values, contains, remove, get (returns V?)
 - **bit:** and, or, xor, not, lshift, rshift
 
 **Test:** Each function with typed arguments. Then Raido scripts that
@@ -376,7 +379,7 @@ combine them.
 
 ```rask
 struct Coroutine {
-    registers: Vec<i64>,       // 8 bytes each
+    registers: Vec<i64>,       // 8 bytes each, initial args in R[0..N-1]
     call_stack: Vec<CallFrame>,
     pc: i64,
     status: CoroutineStatus,   // Suspended, Running, Dead
@@ -384,8 +387,11 @@ struct Coroutine {
 }
 ```
 
-COROUTINE creates one from a function reference. RESUME swaps VM state with
-coroutine state. YIELD swaps back. One runs at a time.
+`COROUTINE A B C` creates one from func ref `R[B]` with `C` args in
+`R[B+1..B+C]`. The args are placed in the coroutine's register window
+at `R[0..C-1]`. First `resume()` starts execution from the function's
+first instruction. RESUME swaps VM state with coroutine state. YIELD
+swaps back. One runs at a time.
 
 **Test:** Producer/consumer. AI patrol from spec. Nested resume/yield.
 Resume-with-value for combat tick inputs.

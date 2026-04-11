@@ -14,8 +14,12 @@ const vm = raido.Vm.new(raido.Config {
     arena_size: 256.kilobytes(),
     initial_fuel: 100_000,
     max_call_depth: 256,
+    stdlib: [raido.Stdlib.math],
 })
 ensure vm.close()
+
+// Seed the PRNG (deterministic -- same seed = same random sequence)
+vm.seed(12345)
 
 // Register extern bindings before loading
 vm.register_extern_struct("Enemy", raido.ExternStruct {
@@ -29,8 +33,21 @@ vm.register_extern_struct("Enemy", raido.ExternStruct {
 vm.register_extern_func("move_to", move_to_handler)
 vm.register_extern_func("noise", noise_handler)
 
+// Register module import resolver
+vm.set_import_resolver(|name: string| -> Vec<u8> or raido.Error {
+    return try load_chunk_bytes(name)
+})
+
+// Override print handler (default: no-op)
+vm.set_print(|msg: string| { log.info("raido: {msg}") })
+
 // Compile -- validates, derives imports/exports, computes content hash
 const chunk = try vm.compile("script.rd", source)
+
+// Or compile with debug info
+const chunk = try vm.compile("script.rd", source, raido.CompileOpts {
+    debug_info: true,
+})
 
 // Or load pre-compiled bytecode (validates on load)
 const chunk = try vm.load(bytecode_bytes)
@@ -42,7 +59,7 @@ chunk.module_imports()   // content-addressed module dependencies
 chunk.exports()          // functions the host can call (with typed signatures)
 
 // Load -- fails fast if externs don't match declarations
-try vm.load(chunk)
+try vm.exec(chunk)
 const result = try vm.call("process", [raido.Value.int(42)])
 ```
 
@@ -134,6 +151,37 @@ raido.bind.struct(vm, "config", config)
 
 `raido.bind` is a convenience library, not VM core. It generates `register_extern_struct` calls.
 
+## Arena Lifecycle
+
+The host manages arena memory between evaluations:
+
+```rask
+// Full reset -- clears arena, coroutines, everything
+vm.reset()
+
+// Frame-based cleanup for game loops
+vm.frame_begin()           // save arena position
+try vm.call("on_update", [raido.Value.number(dt)])
+vm.frame_end()             // reclaim frame-local allocations
+```
+
+See [architecture.md](architecture.md#reset-and-frame_end) for details on what's persistent vs frame-local.
+
+## Module Import Resolution
+
+Scripts use `import "name" as alias`. The host resolves import names to compiled chunks via a resolver callback:
+
+```rask
+vm.set_import_resolver(|name: string| -> Vec<u8> or raido.Error {
+    // Resolve however you want: file lookup, content store, network fetch
+    return try content_store.get(name)
+})
+```
+
+The resolver receives the import name string and returns the raw chunk bytes. The VM validates and loads the imported chunk. Import resolution happens during `vm.exec()` -- all imports must resolve or exec fails.
+
+The import name is opaque to the VM. The host decides what it means: a filename, a content hash, a registry key. The import graph (names + resolved hashes) is part of the chunk's content identity.
+
 ## Scoped Bindings
 
 Extern struct field accessors need access to host data (pools, DBs, etc). Scoped bindings provide this safely:
@@ -159,7 +207,7 @@ const vm2 = raido.Vm.deserialize(bytes)
 
 Format is versioned -- version header from day one. Deserialize rejects unknown versions with a clear error.
 
-Serializes: register windows, coroutines, arena, PRNG, fuel counter, call depth.
+Serializes: registers, call frames, coroutines, arena contents, PRNG state (4 x u32), fuel remaining, frame_base.
 Does not serialize: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).
 
 With static types, serialization is simpler -- no type tags per value. The deserializer knows the type of every register from the bytecode metadata.

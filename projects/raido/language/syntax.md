@@ -11,7 +11,7 @@ Typed subset of Rask. Same `{}` blocks, `match`/`=>`, `if`/`else if`, `for`/`in`
 
 - Newline-terminated statements. Semicolons optional.
 - `//` line comments, `/* */` block comments.
-- Numbers: `42` (int), `3.14` (number), `0xff`, `0b1010`, `1_000_000`.
+- Numbers: `42` (int), `3.14` (number), `0xff` (int), `0b1010` (int), `1_000_000` (int). Decimal point means `number`, no decimal means `int`.
 
 ### Strings
 
@@ -29,10 +29,12 @@ Escape sequences (double-quoted only): `\n`, `\t`, `\\`, `\"`, `\{` (literal bra
 ## Variables
 
 ```raido
-const x = 42           // immutable local (type inferred: int)
-let y = 10             // mutable local (type inferred: int)
+const x = 42           // immutable binding (type inferred: int)
+let y = 10             // mutable binding (type inferred: int)
 const name: string = get_name()  // explicit type annotation (optional)
 ```
+
+`const` prevents reassignment and mutation through the binding (field writes, indexed writes). `let` allows both. See [types.md](types.md#const-and-let) for full semantics.
 
 No `global` keyword. Script state lives in coroutine locals or host entities.
 
@@ -338,6 +340,6 @@ const h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 - **Single-quoted strings** -- Rask uses `'a'` for character literals. Raido has no character type; single quotes are raw strings (`'no {interpolation}'`).
 - **No `public`/package visibility** -- Raido scripts are single-file. All declarations are visible within the script and importable by other chunks.
-- **No `extend` blocks (deferred)** -- Methods on user-defined structs are deferred. Built-in methods on `array`, `map`, `string` are compiler-known.
-- **No parameter modes** -- No `mutate`/`take`. Raido values are arena-managed, not ownership-tracked. Structs pass by reference (arena offset), primitives by value.
+- **No `extend` blocks** -- No user-defined methods on structs. Built-in methods on `int`, `array`, `map`, `string` are compiler-known (see [types.md](types.md#built-in-methods)). Use free functions for behavior on user-defined structs.
+- **No parameter modes** -- No `mutate`/`take`. Function parameters are always `const`. Structs pass by reference (arena offset), primitives by value. Return modified copies for pure data flow.
 - **No `using` context clauses** -- Host data access is through `extern struct`, not context parameters.

@@ -102,11 +102,17 @@ len (u32) | cap (u32) | values[cap] (each 8 bytes)
 ```
 `len` is the logical length. `cap` is the allocated slot count. `push` beyond `cap` allocates a new, larger array and copies -- the old one becomes dead space. No type tags per element -- `array<int>` stores raw i64 values. Element type is known from bytecode metadata.
 
-**Map:**
+**Map (compact dict layout):**
 ```
-len (u32) | cap (u32) | entries[cap]
+live (u32) | cap (u32) | indices[cap] (each i32) | entries[cap]
 ```
-Each entry: `key (8 bytes) | value (8 bytes) | hash (u32) | occupied (u8) | _pad (3 bytes)`. Open addressing, linear probing. Insertion-ordered: iteration walks entries 0..len. Keys and values have known types -- no tag bytes.
+Each entry: `key (8 bytes) | value (8 bytes) | hash (u32) | _pad (4 bytes)` = 24 bytes. `live` is the count of live entries. Entries are stored dense in insertion order, appended at the end.
+
+The `indices` array is the hash table -- open addressing, linear probing. Each slot holds an index into the entries array, or -1 for empty, -2 for deleted (tombstone). Lookup: hash key -> probe indices -> follow index to entry -> compare key. Insert: append entry, store its position in indices. Delete: tombstone the index slot, mark the entry as dead.
+
+Iteration walks entries[0..len], skipping deleted entries. This preserves insertion order.
+
+Map growth: when load factor exceeds ~75%, allocate a new map with larger `cap` in the arena, rehash all live entries, copy them in order. The old map becomes dead space. Same pattern as array growth.
 
 **Struct:**
 ```
@@ -116,9 +122,11 @@ Fixed-size layout determined at compile time from the struct declaration. Field 
 
 **Enum (with payloads):**
 ```
-discriminant (u32) | _pad (u32) | payload fields[N] (each 8 bytes)
+payload fields[N] (each 8 bytes)
 ```
-Simple enums (no payloads) are stored inline as a discriminant -- no arena allocation.
+The discriminant lives in the register (top 32 bits), not in the arena. The arena body contains only the payload fields for the active variant. The compiler knows the field count per variant from the type table.
+
+Simple enums (no payloads) are stored inline as a u32 discriminant in the register -- no arena allocation.
 
 ### Limits
 
@@ -216,7 +224,7 @@ Register operands are 8-bit (0--255). Constant/index operands are 16-bit (0--655
 
 ### Opcodes
 
-~35 instructions. Each described with format, operands, and exact behavior.
+~38 instructions. Each described with format, operands, and exact behavior.
 
 #### Load/Move
 
@@ -231,7 +239,7 @@ Register operands are 8-bit (0--255). Constant/index operands are 16-bit (0--655
 
 #### Arithmetic
 
-All arithmetic is type-specific -- the compiler emits the correct variant based on operand types. No runtime type dispatch.
+All arithmetic is type-specific -- the compiler emits the correct variant based on operand types. No runtime type dispatch. In mixed `int`/`number` expressions, the compiler promotes the `int` operand to `number` before the operation (panics if the int exceeds number's +/-2.1B range).
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
@@ -239,10 +247,10 @@ All arithmetic is type-specific -- the compiler emits the correct variant based 
 | `SUB A B C` | ABC | `R[A] = R[B] - R[C]` |
 | `MUL A B C` | ABC | `R[A] = R[B] * R[C]` |
 | `DIV A B C` | ABC | `R[A] = R[B] / R[C]` (division by zero = `DivisionByZero` error) |
-| `MOD A B C` | ABC | `R[A] = R[B] % R[C]` |
+| `MOD A B C` | ABC | `R[A] = R[B] % R[C]` (sign follows dividend) |
 | `NEG A B` | ABC | `R[A] = -R[B]` |
 
-Integer overflow panics. Division always returns `number`.
+**Result types:** `int OP int -> int` (except `DIV` which always returns `number`). `number OP number -> number`. Mixed ops: compiler promotes int to number, result is `number`. Integer overflow panics. Number overflow saturates.
 
 #### Comparison
 
@@ -315,13 +323,25 @@ Jumps are relative to the *next* instruction (PC after decode, before jump).
 
 **Call convention:** caller places function in `R[A]`, args in `R[A+1..A+B]`. Callee sees args in `R[0..B-1]` of its own window. Single return value placed in caller's `R[A]` after return.
 
+#### Optionals
+
+| Op | Fmt | Semantics |
+|----|-----|-----------|
+| `IS_SOME A B` | ABC | `R[A] = bool(R[B] is Some)`. Check optional tag. |
+| `UNWRAP A B` | ABC | `R[A] = payload(R[B])`. Panics with `UnwrapNone` if None. |
+| `WRAP_SOME A B` | ABC | `R[A] = Some(R[B])`. Construct optional from value. |
+
+`LOAD_NONE` (in Load/Move) constructs `None`. The compiler emits `IS_SOME` + `JMP_IF_NOT` for `is Some` patterns, `??`, and match arms. `UNWRAP` is used for `!` force unwrap and after successful `IS_SOME` checks.
+
 #### Coroutines
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `COROUTINE A B` | ABC | `R[A] = new coroutine` wrapping function reference `R[B]`. State: `suspended`. |
+| `COROUTINE A B C` | ABC | `R[A] = new coroutine` from func ref `R[B]` with `C` args in `R[B+1..B+C]`. State: `suspended`. |
 | `YIELD A` | ABx | Suspend current coroutine. `R[A]` is the yielded value. |
 | `RESUME A B` | ABC | Resume coroutine `R[A]` with value `R[B]`. Result in `R[A]`. Dead coroutine = `CoroutineDead` error. |
+
+Coroutine creation is similar to `CALL`: the function reference is in `R[B]`, arguments follow in `R[B+1..B+C]`. The coroutine's register window receives the arguments in `R[0..C-1]`. First `resume()` starts execution from the top of the function.
 
 #### Error Handling
 
@@ -359,7 +379,7 @@ Every runtime error is a `raido.ScriptError` with a `kind` enum and a message st
 
 All errors carry: kind, message (string), and a stack trace (array of `{file, line, function}` if debug info is present, `{proto_idx, pc_offset}` if not).
 
-`FuelExhausted`, `ArenaExhausted`, and `CallOverflow` are **not catchable** by `TRY`. They propagate directly to the host. Scripts can't mask resource exhaustion.
+`FuelExhausted`, `ArenaExhausted`, and `CallOverflow` are **not catchable** by `TRY`. They propagate directly to the host as a `raido.ScriptError`. Scripts can't mask resource exhaustion. The VM implements this by checking error kind after any trap -- if the kind is a resource error, it bypasses the TRY handler and unwinds the entire call stack to the host.
 
 **Eliminated by static types:** `TypeError` (impossible by construction), `ReadOnlyField` (compiler rejects writes to `readonly` extern fields).
 
