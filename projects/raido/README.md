@@ -182,13 +182,14 @@ This turns Allgard's trust-based Proofs (Conservation Law 4) into independently 
 
 ### Verification Modes
 
-**Phase 1: Bilateral re-execution.** Both parties run the same script. Simple, works today. The cost is that every verifier re-executes — if A trades with 50 domains, the script runs 50 times.
+**Primary: bilateral re-execution.** Both parties run the same script with the same inputs, compare outputs. Simple, fast — typical Raido scripts (combat, crafting, minting) are thousands of instructions, sub-millisecond to re-execute. This is the default verification mode.
 
-**Phase 2: ZK proof backend.** The executor generates a zero-knowledge proof that the script ran correctly. Verifiers check the proof (~1ms) instead of re-executing. The executor bears the proving cost; verifiers are cheap. A proves once, 50 domains verify for free.
+**Future: ZK proofs.** For two cases where re-execution doesn't work:
 
-Raido's VM design is ZK-compatible by construction — not because it was designed for ZK, but because the properties chosen for determinism are the same properties ZK circuits need. See [vm/architecture.md](vm/architecture.md#zk-proof-compatibility) for which design properties are load-bearing.
+- **Privacy.** Re-execution requires sharing inputs. A domain proving it minted an asset correctly might not want to reveal its crafting formula, resource stockpile, or internal pricing. A ZK proof proves "this output came from this script" without revealing the inputs.
+- **Expensive scripts.** Galaxy generation, large physics simulations — scripts where re-execution is costly and many parties need to verify. The executor proves once, verifiers check cheaply.
 
-The ZK prover is a separate backend that shares the bytecode format and obeys the same semantics. The VM spec doesn't change — ZK goes underneath the VM, not inside it.
+Raido's VM design is ZK-compatible by construction — the properties chosen for determinism (integer math, bounded execution, flat memory, static bytecode) are the same properties ZK circuits need. See [vm/architecture.md](vm/architecture.md#zk-proof-compatibility) for details. The ZK prover would be a separate backend sharing the bytecode format — ZK goes underneath the VM, not inside it.
 
 **What Raido provides:** deterministic execution, content-addressed identity (chunk format), versioned serialization, ZK-compatible architecture.
 
