@@ -547,6 +547,21 @@ impl Hasher {
                 self.feed_tag(42);
                 self.feed_str(s);
             }
+            ExprKind::StringInterp(segments) => {
+                self.feed_tag(99);
+                for seg in segments {
+                    match seg {
+                        rask_ast::expr::StringSegment::Literal(s) => {
+                            self.feed_tag(0);
+                            self.feed_str(s);
+                        }
+                        rask_ast::expr::StringSegment::Expr(e) => {
+                            self.feed_tag(1);
+                            self.hash_expr(e);
+                        }
+                    }
+                }
+            }
             ExprKind::Char(c) => {
                 self.feed_tag(43);
                 self.feed_char(*c);
