@@ -34,7 +34,7 @@ func main() -> () or Error {
                         const backend = route.pool.next_healthy() is Ok else {
                             return Response.internal_error("no healthy backends")
                         }
-                        const result = forward(request, backend.url)
+                        const result = forward(request, backend.url, route.path)
                         if result is Ok(response) {
                             return response
                         }
