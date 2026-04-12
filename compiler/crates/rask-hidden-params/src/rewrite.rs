@@ -359,7 +359,7 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
         // Leaves
         ExprKind::Int(_, _)
         | ExprKind::Float(_, _)
-        | ExprKind::String(_)
+        | ExprKind::String(_) | ExprKind::StringInterp(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Null

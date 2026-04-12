@@ -37,6 +37,7 @@ pub fn is_valid_default_expr(expr: &Expr) -> bool {
         ExprKind::Int(_, _)
         | ExprKind::Float(_, _)
         | ExprKind::String(_)
+        | ExprKind::StringInterp(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Null => true,
@@ -509,7 +510,8 @@ impl DefaultDesugarer {
             }
             // Terminals
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
-            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Ident(_) | ExprKind::Null => {}
+            | ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_)
+            | ExprKind::Ident(_) | ExprKind::Null => {}
         }
 
         // After recursing, try to resolve defaults at this call site

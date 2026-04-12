@@ -386,7 +386,7 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
         // Leaves
         ExprKind::Int(_, _)
         | ExprKind::Float(_, _)
-        | ExprKind::String(_)
+        | ExprKind::String(_) | ExprKind::StringInterp(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Null

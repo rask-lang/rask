@@ -1386,6 +1386,10 @@ impl<'a> Printer<'a> {
                 let text = self.source_text(expr.span).to_string();
                 self.emit(&text);
             }
+            ExprKind::StringInterp(_) => {
+                let text = self.source_text(expr.span).to_string();
+                self.emit(&text);
+            }
             ExprKind::Bool(b) => {
                 self.emit(if *b { "true" } else { "false" });
             }

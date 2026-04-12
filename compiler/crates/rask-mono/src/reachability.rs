@@ -499,7 +499,7 @@ impl<'a> Monomorphizer<'a> {
             // Leaves - no sub-expressions
             ExprKind::Int(..)
             | ExprKind::Float(..)
-            | ExprKind::String(_)
+            | ExprKind::String(_) | ExprKind::StringInterp(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
             | ExprKind::Null

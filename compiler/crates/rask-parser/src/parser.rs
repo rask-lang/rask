@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp, WithBinding};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -309,6 +309,27 @@ impl Parser {
             match &self.tokens[pos].kind {
                 TokenKind::Newline => pos += 1,
                 TokenKind::Dot | TokenKind::QuestionDot | TokenKind::Question | TokenKind::LBracket => return true,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Check for unambiguous infix operator after newlines (expression continuation).
+    /// Excludes `+`, `-` (prefix ambiguity), `*` (deref ambiguity), `<`/`>` (generics ambiguity).
+    fn peek_past_newlines_is_infix(&self) -> bool {
+        let mut pos = self.pos + 1;
+        while pos < self.tokens.len() {
+            match &self.tokens[pos].kind {
+                TokenKind::Newline => pos += 1,
+                TokenKind::AmpAmp | TokenKind::PipePipe
+                | TokenKind::EqEq | TokenKind::BangEq
+                | TokenKind::LtEq | TokenKind::GtEq
+                | TokenKind::QuestionQuestion
+                | TokenKind::Pipe | TokenKind::Caret | TokenKind::Amp
+                | TokenKind::LtLt | TokenKind::GtGt
+                | TokenKind::Slash | TokenKind::Percent
+                | TokenKind::DotDot | TokenKind::DotDotEq => return true,
                 _ => return false,
             }
         }
@@ -2735,7 +2756,9 @@ impl Parser {
         let mut lhs = self.parse_prefix()?;
 
         loop {
-            if self.check(&TokenKind::Newline) && self.peek_past_newlines_is_postfix() {
+            if self.check(&TokenKind::Newline)
+                && (self.peek_past_newlines_is_postfix() || self.peek_past_newlines_is_infix())
+            {
                 self.skip_newlines();
             }
 
@@ -2845,7 +2868,15 @@ impl Parser {
             }
             TokenKind::String(s) => {
                 self.advance();
-                Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: self.span(start, self.tokens[self.pos - 1].span.end) })
+                let str_span = self.span(start, self.tokens[self.pos - 1].span.end);
+                if s.contains('{') {
+                    match self.parse_string_interpolation(&s, str_span) {
+                        Some(segments) => Ok(Expr { id: self.next_id(), kind: ExprKind::StringInterp(segments), span: str_span }),
+                        None => Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span }),
+                    }
+                } else {
+                    Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span })
+                }
             }
             TokenKind::Char(c) => {
                 self.advance();
@@ -4024,6 +4055,138 @@ impl Parser {
                 self.current_kind(),
                 self.current().span,
             ))
+        }
+    }
+
+    /// Parse string interpolation segments from a string like "hello {name}, age {age}".
+    /// Returns None if the string has no valid interpolation (e.g., escaped braces only).
+    fn parse_string_interpolation(&mut self, s: &str, str_span: Span) -> Option<Vec<StringSegment>> {
+        let mut segments = Vec::new();
+        let mut literal = String::new();
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            if chars[i] == '{' {
+                if i + 1 < chars.len() && chars[i + 1] == '{' {
+                    // Escaped brace: {{ → {
+                    literal.push('{');
+                    i += 2;
+                    continue;
+                }
+                // Start of interpolation expression
+                if !literal.is_empty() {
+                    segments.push(StringSegment::Literal(std::mem::take(&mut literal)));
+                }
+                i += 1; // skip '{'
+                let expr_start = i;
+                let mut depth = 1;
+                while i < chars.len() && depth > 0 {
+                    match chars[i] {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    if depth > 0 { i += 1; }
+                }
+                if depth != 0 {
+                    return None; // Unclosed brace
+                }
+                let expr_str: String = chars[expr_start..i].iter().collect();
+                i += 1; // skip '}'
+
+                // Calculate byte offset of this expression within the string content
+                let byte_offset = s.char_indices()
+                    .nth(expr_start)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(0);
+
+                // Parse the expression using the lexer/parser with correct context
+                let lex = rask_lexer::Lexer::new(&expr_str).tokenize();
+                if !lex.errors.is_empty() {
+                    return None;
+                }
+                // Reuse this parser's file_id and get sequential NodeIds
+                let saved_tokens = std::mem::replace(&mut self.tokens, lex.tokens);
+                let saved_pos = std::mem::replace(&mut self.pos, 0);
+
+                let result = self.parse_expr();
+
+                self.tokens = saved_tokens;
+                self.pos = saved_pos;
+
+                let mut parsed = match result {
+                    Ok(expr) => expr,
+                    Err(_) => return None,
+                };
+
+                // Remap spans from 0-based (within expr_str) to absolute file position.
+                // str_span.start is the opening quote, +1 for content start, +byte_offset for position.
+                let abs_offset = str_span.start + 1 + byte_offset;
+                Self::offset_spans(&mut parsed, abs_offset);
+
+                segments.push(StringSegment::Expr(Box::new(parsed)));
+            } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
+                // Escaped brace: }} → }
+                literal.push('}');
+                i += 2;
+            } else {
+                literal.push(chars[i]);
+                i += 1;
+            }
+        }
+
+        if !literal.is_empty() {
+            segments.push(StringSegment::Literal(literal));
+        }
+
+        // Only return segments if there was at least one expression
+        if segments.iter().any(|s| matches!(s, StringSegment::Expr(_))) {
+            Some(segments)
+        } else {
+            None
+        }
+    }
+
+    /// Offset all spans in an expression tree by a byte amount.
+    fn offset_spans(expr: &mut Expr, offset: usize) {
+        expr.span.start += offset;
+        expr.span.end += offset;
+        match &mut expr.kind {
+            ExprKind::Binary { left, right, .. } => {
+                Self::offset_spans(left, offset);
+                Self::offset_spans(right, offset);
+            }
+            ExprKind::Unary { operand, .. } => Self::offset_spans(operand, offset),
+            ExprKind::Call { func, args } => {
+                Self::offset_spans(func, offset);
+                for arg in args { Self::offset_spans(&mut arg.expr, offset); }
+            }
+            ExprKind::MethodCall { object, args, .. } => {
+                Self::offset_spans(object, offset);
+                for arg in args { Self::offset_spans(&mut arg.expr, offset); }
+            }
+            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
+                Self::offset_spans(object, offset);
+            }
+            ExprKind::Index { object, index } => {
+                Self::offset_spans(object, offset);
+                Self::offset_spans(index, offset);
+            }
+            ExprKind::Try { expr, else_clause } => {
+                Self::offset_spans(expr, offset);
+                if let Some(tc) = else_clause { Self::offset_spans(&mut tc.body, offset); }
+            }
+            ExprKind::Unwrap { expr, .. } => Self::offset_spans(expr, offset),
+            ExprKind::Cast { expr, .. } => Self::offset_spans(expr, offset),
+            ExprKind::NullCoalesce { value, default } => {
+                Self::offset_spans(value, offset);
+                Self::offset_spans(default, offset);
+            }
+            ExprKind::Array(exprs) | ExprKind::Tuple(exprs) => {
+                for e in exprs { Self::offset_spans(e, offset); }
+            }
+            _ => {}
         }
     }
 

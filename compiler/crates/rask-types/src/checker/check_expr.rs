@@ -117,7 +117,7 @@ impl TypeChecker {
                     None => self.ctx.fresh_literal_var(LiteralKind::Float),
                 }
             }
-            ExprKind::String(_) => Type::String,
+            ExprKind::String(_) | ExprKind::StringInterp(_) => Type::String,
             ExprKind::Char(_) => Type::Char,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),

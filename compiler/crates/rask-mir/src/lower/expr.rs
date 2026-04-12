@@ -213,6 +213,8 @@ impl<'a> MirLowerer<'a> {
             )),
             ExprKind::Char(c) => Ok((MirOperand::Constant(MirConst::Char(*c)), MirType::Char)),
             ExprKind::Bool(b) => Ok((MirOperand::Constant(MirConst::Bool(*b)), MirType::Bool)),
+            // StringInterp is desugared to concat chains before MIR lowering
+            ExprKind::StringInterp(_) => unreachable!("StringInterp should be desugared before MIR"),
             ExprKind::Null => {
                 // Null pointer literal — zero value
                 Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Ptr))

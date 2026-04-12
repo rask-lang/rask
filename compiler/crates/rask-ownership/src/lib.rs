@@ -562,6 +562,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
+            | ExprKind::StringInterp(_)
             | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null => {}
 
             ExprKind::Binary { left, op: _, right } => {

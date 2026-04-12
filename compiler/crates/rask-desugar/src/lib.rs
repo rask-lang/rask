@@ -511,7 +511,7 @@ impl Desugarer {
             | ExprKind::Ident(_)
             | ExprKind::Null
             => {}
-            ExprKind::String(_) => {
+            ExprKind::String(_) | ExprKind::StringInterp(_) => {
                 // String interpolation desugaring handled below
             }
         }
@@ -570,7 +570,15 @@ impl Desugarer {
         }
         // Not and Ref remain as unary
 
-        // Desugar string interpolation: "hello {name}" → "hello ".concat(name.to_string())
+        // Desugar StringInterp: segments → "lit".concat(expr.to_string()).concat("lit")...
+        if let ExprKind::StringInterp(segments) = &expr.kind {
+            let segments = segments.clone();
+            if let Some(desugared) = self.desugar_string_interp(&segments, span) {
+                expr.kind = desugared;
+            }
+        }
+        // Legacy: raw strings with { that weren't parsed as StringInterp (shouldn't happen,
+        // but kept for safety during transition)
         if let ExprKind::String(s) = &expr.kind {
             if s.contains('{') {
                 if let Some(desugared) = self.desugar_string_interpolation(s, span) {
@@ -580,7 +588,65 @@ impl Desugarer {
         }
     }
 
-    /// Parse string interpolation and produce a concat chain.
+    /// Desugar pre-parsed StringInterp segments into a concat chain.
+    fn desugar_string_interp(&mut self, segments: &[rask_ast::expr::StringSegment], span: rask_ast::Span) -> Option<ExprKind> {
+        use rask_ast::expr::StringSegment;
+
+        let mut exprs: Vec<Expr> = Vec::new();
+        for seg in segments {
+            match seg {
+                StringSegment::Literal(text) => {
+                    exprs.push(Expr {
+                        id: self.fresh_id(),
+                        kind: ExprKind::String(text.clone()),
+                        span,
+                    });
+                }
+                StringSegment::Expr(parsed) => {
+                    let expr_span = parsed.span;
+                    // Recursively desugar the interpolation expression
+                    let mut inner = *parsed.clone();
+                    self.desugar_expr(&mut inner);
+                    let to_string_call = Expr {
+                        id: self.fresh_id(),
+                        kind: ExprKind::MethodCall {
+                            object: Box::new(inner),
+                            method: "to_string".to_string(),
+                            type_args: None,
+                            args: vec![],
+                        },
+                        span: expr_span,
+                    };
+                    exprs.push(to_string_call);
+                }
+            }
+        }
+
+        if exprs.is_empty() {
+            return None;
+        }
+        if exprs.len() == 1 {
+            return Some(exprs.remove(0).kind);
+        }
+
+        // Chain with concat: first.concat(second).concat(third)...
+        let mut result = exprs.remove(0);
+        for seg_expr in exprs {
+            result = Expr {
+                id: self.fresh_id(),
+                kind: ExprKind::MethodCall {
+                    object: Box::new(result),
+                    method: "concat".to_string(),
+                    type_args: None,
+                    args: vec![CallArg { name: None, mode: ArgMode::Default, expr: seg_expr }],
+                },
+                span,
+            };
+        }
+        Some(result.kind)
+    }
+
+    /// Legacy: Parse string interpolation and produce a concat chain.
     ///
     /// `"hello {name}, you are {age}"` becomes:
     /// `"hello ".concat(name.to_string()).concat(", you are ").concat(age.to_string())`

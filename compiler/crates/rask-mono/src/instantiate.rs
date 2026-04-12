@@ -346,6 +346,7 @@ impl TypeSubstitutor {
                 ExprKind::Int(val, suffix) => ExprKind::Int(*val, *suffix),
                 ExprKind::Float(val, suffix) => ExprKind::Float(*val, *suffix),
                 ExprKind::String(s) => ExprKind::String(s.clone()),
+                ExprKind::StringInterp(segments) => ExprKind::StringInterp(segments.clone()),
                 ExprKind::Char(c) => ExprKind::Char(*c),
                 ExprKind::Bool(b) => ExprKind::Bool(*b),
                 ExprKind::Null => ExprKind::Null,

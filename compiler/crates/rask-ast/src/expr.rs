@@ -21,6 +21,9 @@ pub enum ExprKind {
     Float(f64, Option<FloatSuffix>),
     /// String literal
     String(String),
+    /// String with interpolation: "hello {name}, age {age}"
+    /// Segments alternate between literal strings and expressions.
+    StringInterp(Vec<StringSegment>),
     /// Character literal
     Char(char),
     /// Boolean literal
@@ -198,6 +201,15 @@ pub enum ExprKind {
         condition: Box<Expr>,
         message: Option<Box<Expr>>,
     },
+}
+
+/// A segment of an interpolated string.
+#[derive(Debug, Clone)]
+pub enum StringSegment {
+    /// Literal text between interpolation braces.
+    Literal(String),
+    /// An expression inside `{...}`.
+    Expr(Box<Expr>),
 }
 
 /// How an argument is passed at a call site.
