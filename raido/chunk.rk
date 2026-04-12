@@ -4,7 +4,7 @@
 // A Prototype is one function's compiled bytecode. It contains:
 //   - code: the instruction stream (Vec of 32-bit instructions stored as i64)
 //   - constants: literal values used by LOAD_CONST (strings, large numbers)
-//   - prototypes: nested function definitions (inner functions, closures)
+//   - prototypes: nested function definitions
 //   - metadata: how many registers it needs, how many parameters, etc.
 //
 // A Chunk is the top-level output: the "main" prototype plus import/export info.
@@ -19,7 +19,7 @@
 // Compiles to:
 //   Chunk {
 //     main: Prototype {
-//       code: [CLOSURE r0 #0, LOAD_INT r1 1, LOAD_INT r2 2, CALL r0 2, ...]
+//       code: [FUNC_REF r0 #0, LOAD_INT r1 1, LOAD_INT r2 2, CALL r0 2, ...]
 //       prototypes: [
 //         Prototype {  // the "add" function
 //           code: [ADD r2 r0 r1, RETURN r2]
@@ -37,8 +37,9 @@ struct Prototype {
     // Test this early!
     prototypes: Vec<Prototype>
     num_registers: i64      // Max registers this function uses
-    num_upvalues: i64       // Number of captured variables from outer scopes
     arity: i64              // Number of parameters
+    param_types: Vec<i64>   // Type IDs for parameters
+    return_type: i64        // Type ID for return value
     name: string            // Function name (or "<main>" for top-level)
     lines: Vec<i64>         // Source line number per instruction (debug info)
 }
@@ -50,8 +51,9 @@ extend Prototype {
             constants: Vec.new(),
             prototypes: Vec.new(),
             num_registers: 0,
-            num_upvalues: 0,
             arity: arity,
+            param_types: Vec.new(),
+            return_type: 0,
             name: name,
             lines: Vec.new(),
         }
@@ -81,8 +83,9 @@ extend Prototype {
 
 struct Chunk {
     main: Prototype
-    imports: Vec<string>    // Host functions the script calls
-    exports: Vec<string>    // Top-level functions the host can call
+    imports: Vec<string>        // Extern declarations the script requires
+    module_imports: Vec<string> // Content-addressed chunk imports
+    exports: Vec<string>        // Top-level functions the host can call
 }
 
 extend Chunk {
@@ -90,6 +93,7 @@ extend Chunk {
         return Chunk {
             main: main,
             imports: Vec.new(),
+            module_imports: Vec.new(),
             exports: Vec.new(),
         }
     }

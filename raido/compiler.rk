@@ -1,28 +1,31 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Raido compiler — single-pass, recursive descent
+// Raido compiler — two-pass, recursive descent
 //
 // HOW IT WORKS (read this before writing code)
 // =============================================
 //
-// A traditional compiler has two phases:
-//   1. Parser: source → AST (tree of nodes)
-//   2. Codegen: AST → bytecode
+// Two passes over the source:
 //
-// This compiler combines them into one pass. Instead of building a tree
-// and then walking it, we emit bytecode *while parsing*. When we see
-// "1 + 2", we don't create an AddExpr node — we immediately emit:
-//   LOAD_INT r0 1
-//   LOAD_INT r1 2
-//   ADD r2 r0 r1
+//   Pass 1 (declaration scan): lex through the source collecting struct,
+//   enum, extend, extern, func signatures, and imports. Builds a type
+//   table. O(declarations), doesn't parse bodies.
 //
-// This is how Lua's compiler works (lparser.c + lcode.c).
+//   Pass 2 (compile): recursive descent that emits bytecode directly
+//   while parsing — no AST. When we see "1 + 2", we immediately emit:
+//     LOAD_INT r0 1
+//     LOAD_INT r1 2
+//     ADD r2 r0 r1
+//   Type information from pass 1 is available for checking.
+//
+// Same approach as Lua's compiler (lparser.c + lcode.c), but with a
+// declaration pre-scan for type checking.
 //
 // THE KEY IDEA: each compile_* function returns the register number
-// where its result ended up. So the caller knows where to find the value.
+// (and type) where its result ended up.
 //
-//   func compile_expression(self) -> i64
-//     "I compiled an expression and put the result in register N"
-//     Returns N.
+//   func compile_expression(self) -> (i64, i64)
+//     "I compiled an expression, put the result in register N, type is T"
+//     Returns (N, T).
 //
 // REGISTER ALLOCATION
 // ===================
@@ -68,12 +71,10 @@
 //   3. Emits LOAD_INT for 1 in register M
 //   4. Emits ADD into register K
 //
-// UPVALUES (closures — do this last)
-// ==================================
-// When a closure references a variable from an outer function, that's an
-// "upvalue." The compiler needs to track these so the VM can capture them.
-//
-// Skip this until step 8. Functions without closures work fine without it.
+// FUNCTION REFERENCES
+// ===================
+// Raido has no closures — only references to named top-level functions.
+// FUNC_REF loads a prototype index into a register. No captured state.
 
 enum CompileError {
     LexError(LexError)
@@ -102,7 +103,7 @@ struct Local {
     name: string
     reg: i64            // Which register holds this variable
     depth: i64          // Scope depth (0 = top-level of function)
-    is_captured: bool   // Has a closure captured this? (for upvalue handling)
+    type_id: i64        // Known type (from inference or annotation)
 }
 
 struct Scope {
@@ -119,12 +120,10 @@ struct Compiler {
     current_line: i64       // Line number of current token
 
     proto: Prototype        // The function prototype we're building
+    proto_stack: Vec<Prototype>  // Stack for nested function compilation
     scope: Scope            // Current scope (locals and depth)
 
     next_reg: i64           // Next free register
-
-    had_error: bool
-    // TODO: proto_stack for nested functions (Phase 5 step 6)
 }
 
 extend Compiler {
@@ -135,9 +134,9 @@ extend Compiler {
             previous: Token.Eof,
             current_line: 1,
             proto: Prototype.new("<main>", 0),
+            proto_stack: Vec.new(),
             scope: Scope { locals: Vec.new(), depth: 0 },
             next_reg: 0,
-            had_error: false,
         }
     }
 
@@ -223,7 +222,7 @@ extend Compiler {
             name: name,
             reg: reg,
             depth: self.scope.depth,
-            is_captured: false,
+            type_id: 0,
         })
         return reg
     }
@@ -239,7 +238,7 @@ extend Compiler {
             }
             i = i - 1
         }
-        return -1  // Not found — might be a global or upvalue
+        return -1  // Not found
     }
 
     func begin_scope(self) {
@@ -274,7 +273,7 @@ extend Compiler {
         // TODO: loop calling compile_statement() until Eof
         // Skip newlines between statements
 
-        // Emit implicit return nil at end
+        // Emit implicit return None at end
         self.emit_abx(OP_RETURN, 255, 0)
 
         return Ok(Chunk.new(self.proto))
@@ -316,7 +315,7 @@ extend Compiler {
         // Start with just literals and variables:
         //   IntLit(n) → emit LOAD_INT, return register
         //   Ident(name) → resolve_local(name), return register
-        //   True/False/Nil → emit LOAD_TRUE/FALSE/NIL, return register
+        //   True/False → emit LOAD_TRUE/FALSE, return register
 
         return Err(CompileError.UnexpectedToken("not implemented", self.current_line))
     }

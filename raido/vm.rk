@@ -12,7 +12,6 @@
 //     R[0] through R[255] for the first frame, R[256]-R[511] for the next, etc.
 //     base_reg tells us where the current frame starts.
 //   - call_stack: tracks where to return to after a function call
-//   - globals: named values visible to the whole script
 //   - fuel: counts down with every instruction. Hits 0 → error.
 //
 // Execution:
@@ -29,6 +28,7 @@ enum VmError {
     DivisionByZero
     IndexOutOfBounds(i64, i64)     // (index, length)
     KeyNotFound(string)
+    UnwrapNone
     ArenaExhausted
     FuelExhausted
     CallOverflow
@@ -46,6 +46,7 @@ extend VmError {
             VmError.IndexOutOfBounds(idx, len) =>
                 return "IndexOutOfBounds: index {idx}, length {len}",
             VmError.KeyNotFound(key) => return "KeyNotFound: {key}",
+            VmError.UnwrapNone => return "UnwrapNone",
             VmError.ArenaExhausted => return "ArenaExhausted",
             VmError.FuelExhausted => return "FuelExhausted",
             VmError.CallOverflow => return "CallOverflow",
@@ -67,19 +68,16 @@ struct Vm {
     chunk: Chunk
     registers: Vec<Value>
     call_stack: Vec<CallFrame>
-    globals: Vec<Value>
-    global_names: Map<string, i64>
     fuel: i64
     max_call_depth: i64
 }
 
 extend Vm {
     func new(chunk: Chunk, fuel: i64) -> Vm {
-        // Pre-allocate registers for the first frame (256 slots)
         const regs = Vec.new()
         let i = 0
         while i < 256 {
-            regs.push(Value.Nil)
+            regs.push(Value.None)
             i = i + 1
         }
 
@@ -87,8 +85,6 @@ extend Vm {
             chunk: chunk,
             registers: regs,
             call_stack: Vec.new(),
-            globals: Vec.new(),
-            global_names: Map.new(),
             fuel: fuel,
             max_call_depth: 256,
         }
@@ -111,84 +107,76 @@ extend Vm {
     }
 
     // =====================================================
-    // YOUR JOB: Implement the dispatch loop
+    // Dispatch loop — implement opcodes incrementally
     // =====================================================
     //
-    // Start with just a few opcodes. You can run scripts as soon as
-    // you have LOAD_INT, ADD, and RETURN working.
-    //
     // Suggested order:
-    //   1. LOAD_NIL, LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST → can load values
+    //   1. LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST, LOAD_NONE → can load values
     //   2. ADD, SUB, MUL, DIV, NEG → arithmetic works
     //   3. RETURN → can get a result back
     //   4. EQ, LT, LE, NOT → comparisons work
-    //   5. JMP, JMP_IF, JMP_IF_NOT → control flow works (if/while)
-    //   6. GET_GLOBAL, SET_GLOBAL → globals work
-    //   7. CALL, CLOSURE → function calls work (fibonacci!)
-    //   8. Everything else
+    //   5. JMP, JMP_IF, JMP_IF_NOT → control flow (if/while)
+    //   6. CALL, FUNC_REF → function calls (fibonacci!)
+    //   7. Everything else
     //
     func execute(self) -> Value or VmError {
         let pc = 0
         const code = self.chunk.main.code
 
         loop {
-            // Check fuel
             if self.fuel <= 0 {
                 return Err(VmError.FuelExhausted)
             }
             self.fuel = self.fuel - 1
 
-            // Are we done?
             if pc >= code.len() {
-                return Ok(Value.Nil)
+                return Ok(Value.None)
             }
 
-            // Fetch and decode
             const instr = code.get(pc)
             pc = pc + 1
             const op = decode_op(instr)
 
             match op {
-                // OP_LOAD_NIL
-                0 => {
-                    const a = decode_a(instr)
-                    self.set_reg(a, Value.Nil)
-                }
-
                 // OP_LOAD_TRUE
-                1 => {
+                0 => {
                     const a = decode_a(instr)
                     self.set_reg(a, Value.Bool(true))
                 }
 
                 // OP_LOAD_FALSE
-                2 => {
+                1 => {
                     const a = decode_a(instr)
                     self.set_reg(a, Value.Bool(false))
                 }
 
                 // OP_LOAD_INT
-                3 => {
+                2 => {
                     const a = decode_a(instr)
                     const bx = decode_bx(instr)
-                    // Sign-extend from 16 bits
                     const val = if bx >= 32768 { bx - 65536 } else { bx }
                     self.set_reg(a, Value.Int(val))
                 }
 
                 // OP_LOAD_CONST
-                4 => {
+                3 => {
                     const a = decode_a(instr)
                     const bx = decode_bx(instr)
                     const val = self.chunk.main.constants.get(bx)
                     self.set_reg(a, val)
                 }
 
+                // OP_LOAD_NONE
+                4 => {
+                    const a = decode_a(instr)
+                    self.set_reg(a, Value.None)
+                }
+
                 // OP_RETURN
-                34 => {
+                33 => {
                     const a = decode_a(instr)
                     if a == 255 {
-                        return Ok(Value.Nil)
+                        return Ok(Value.None)
                     }
                     return Ok(self.get_reg(a))
                 }
@@ -196,7 +184,7 @@ extend Vm {
                 // TODO: Add more opcodes here as you implement them.
                 // Each one is ~5-15 lines of code. Start with ADD:
                 //
-                // 11 => {  // OP_ADD
+                // 6 => {  // OP_ADD
                 //     const a = decode_a(instr)
                 //     const b = decode_b(instr)
                 //     const c = decode_c(instr)

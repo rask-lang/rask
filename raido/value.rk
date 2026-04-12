@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Raido value types — the things that live in registers and the arena
 //
-// Every register in the VM holds one Value. Values are dynamically typed:
-// you don't know what's in a register until you check the tag at runtime.
+// Every register in the VM holds one Value. Raido scripts are statically
+// typed (no runtime type tags), but the Rask host implementation uses a
+// tagged enum to represent register contents generically.
 
 // --- Fixed-point 32.32 number ---
 // Stored as i64: upper 32 bits are the integer part (signed),
@@ -48,8 +49,8 @@ extend Number {
     }
 
     // Multiplication: multiply raw values, shift right by 32
-    // Needs 128-bit intermediate to avoid overflow.
-    // If i128 isn't available, use the split method below.
+    // Uses 32-bit half splitting to avoid i64 overflow.
+    // TODO: simplify with i128 when available.
     func mul(self, other: Number) -> Number {
         // Split each value into upper and lower 32-bit halves
         // a = a_hi * 2^32 + a_lo
@@ -155,25 +156,27 @@ extend Number {
 }
 
 // --- Value enum ---
-// This is what lives in every register, global slot, and arena value slot.
+// This is what lives in every VM register.
 
 enum Value {
-    Nil
+    None
     Bool(bool)
     Int(i64)
     Num(Number)
     Str(i64)            // Arena offset pointing to a string object
     Array(i64)          // Arena offset pointing to an array object
     MapVal(i64)         // Arena offset pointing to a map object
-    Closure(i64)        // Arena offset pointing to a closure object
+    Struct(i64)         // Arena offset pointing to a struct object
+    Enum(i64, i64)      // (discriminant, payload arena offset)
+    FuncRef(i64)        // Prototype index
     HostRef(i64, i64)   // (type_id, ref_id) — opaque reference to host data
 }
 
 extend Value {
-    // Check if a value is "truthy" — everything except nil and false
+    // Check if a value is "truthy" — everything except None and false
     func is_truthy(self) -> bool {
         match self {
-            Value.Nil => return false,
+            Value.None => return false,
             Value.Bool(b) => return b,
             _ => return true,
         }
@@ -181,28 +184,32 @@ extend Value {
 
     func type_name(self) -> string {
         match self {
-            Value.Nil => return "nil",
+            Value.None => return "none",
             Value.Bool(_) => return "bool",
             Value.Int(_) => return "int",
             Value.Num(_) => return "number",
             Value.Str(_) => return "string",
             Value.Array(_) => return "array",
             Value.MapVal(_) => return "map",
-            Value.Closure(_) => return "function",
+            Value.Struct(_) => return "struct",
+            Value.Enum(_, _) => return "enum",
+            Value.FuncRef(_) => return "function",
             Value.HostRef(_, _) => return "host_ref",
         }
     }
 
     func to_display(self) -> string {
         match self {
-            Value.Nil => return "nil",
+            Value.None => return "none",
             Value.Bool(b) => return if b { "true" } else { "false" },
             Value.Int(n) => return "{n}",
             Value.Num(n) => return n.to_string(),
             Value.Str(_) => return "<string>",  // Needs arena to read actual content
             Value.Array(_) => return "<array>",
             Value.MapVal(_) => return "<map>",
-            Value.Closure(_) => return "<function>",
+            Value.Struct(_) => return "<struct>",
+            Value.Enum(tag, _) => return "<enum:{tag}>",
+            Value.FuncRef(idx) => return "<func:{idx}>",
             Value.HostRef(t, r) => return "<host_ref:{t}:{r}>",
         }
     }

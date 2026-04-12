@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Raido instruction set — 37 opcodes, 32-bit instructions
+// Raido instruction set — 42 opcodes, 32-bit instructions
 //
 // Three instruction formats (all packed into a single i64):
 //
@@ -14,115 +14,121 @@
 
 // --- Opcode constants ---
 // Load/Move
-const OP_LOAD_NIL: i64 = 0     // R[A] = nil
-const OP_LOAD_TRUE: i64 = 1    // R[A] = true
-const OP_LOAD_FALSE: i64 = 2   // R[A] = false
-const OP_LOAD_INT: i64 = 3     // R[A] = Bx (16-bit signed, sign-extended to i64)
-const OP_LOAD_CONST: i64 = 4   // R[A] = constants[Bx]
+const OP_LOAD_TRUE: i64 = 0    // R[A] = true
+const OP_LOAD_FALSE: i64 = 1   // R[A] = false
+const OP_LOAD_INT: i64 = 2     // R[A] = sBx (16-bit signed, sign-extended to i64)
+const OP_LOAD_CONST: i64 = 3   // R[A] = constants[Bx]
+const OP_LOAD_NONE: i64 = 4    // R[A] = None
 const OP_MOVE: i64 = 5         // R[A] = R[B]
 
-// Globals
-const OP_GET_GLOBAL: i64 = 6   // R[A] = globals[Bx]
-const OP_SET_GLOBAL: i64 = 7   // globals[Bx] = R[A]
-
-// Upvalues (for closures — Phase 5 step 8)
-const OP_GET_UPVALUE: i64 = 8  // R[A] = current_closure.upvalues[B]
-const OP_SET_UPVALUE: i64 = 9  // current_closure.upvalues[B] = R[A]
-const OP_CLOSE_UPVALUE: i64 = 10 // Move R[A] from register to arena upvalue slot
-
 // Arithmetic — R[A] = R[B] op R[C]
-const OP_ADD: i64 = 11
-const OP_SUB: i64 = 12
-const OP_MUL: i64 = 13
-const OP_DIV: i64 = 14         // Always returns number (even int / int)
-const OP_MOD: i64 = 15
-const OP_NEG: i64 = 16         // R[A] = -R[B]
+const OP_ADD: i64 = 6
+const OP_SUB: i64 = 7
+const OP_MUL: i64 = 8
+const OP_DIV: i64 = 9          // Always returns number (even int / int)
+const OP_MOD: i64 = 10
+const OP_NEG: i64 = 11         // R[A] = -R[B]
 
 // Comparison — R[A] = R[B] op R[C], result is bool
-const OP_EQ: i64 = 17
-const OP_LT: i64 = 18
-const OP_LE: i64 = 19
+const OP_EQ: i64 = 12
+const OP_LT: i64 = 13
+const OP_LE: i64 = 14
 
 // Logic / misc
-const OP_NOT: i64 = 20         // R[A] = !R[B] (nil and false are falsy, all else truthy)
-const OP_LEN: i64 = 21         // R[A] = len(R[B])
-const OP_CONCAT: i64 = 22      // R[A] = tostring(R[B]) ++ tostring(R[C])
+const OP_NOT: i64 = 15         // R[A] = !R[B] (None and false are falsy, all else truthy)
+const OP_LEN: i64 = 16         // R[A] = len(R[B])
+const OP_CONCAT: i64 = 17      // R[A] = tostring(R[B]) ++ tostring(R[C])
 
 // Collections
-const OP_NEW_ARRAY: i64 = 23   // R[A] = new array with B initial elements from R[A+1..A+B]
-const OP_NEW_MAP: i64 = 24     // R[A] = new map with B key-value pairs from R[A+1..A+2B]
-const OP_GET_INDEX: i64 = 25   // R[A] = R[B][R[C]]
-const OP_SET_INDEX: i64 = 26   // R[A][R[B]] = R[C]
+const OP_NEW_ARRAY: i64 = 18   // R[A] = new array with B initial elements from R[A+1..A+B]
+const OP_NEW_MAP: i64 = 19     // R[A] = new map with B key-value pairs from R[A+1..A+2B]
+const OP_GET_INDEX: i64 = 20   // R[A] = R[B][R[C]]
+const OP_SET_INDEX: i64 = 21   // R[A][R[B]] = R[C]
 
-// Host references (for host interop — Phase 9)
-const OP_GET_FIELD: i64 = 27   // R[A] = R[B].vtable[C]  (call host getter)
-const OP_SET_FIELD: i64 = 28   // R[A].vtable[B] = R[C]  (call host setter)
+// Structs
+const OP_NEW_STRUCT: i64 = 22     // R[A] = new struct with B fields from R[A+1..A+B]
+const OP_GET_STRUCT_FIELD: i64 = 23  // R[A] = R[B].field[C]
+const OP_SET_STRUCT_FIELD: i64 = 24  // R[A].field[B] = R[C]
+
+// Enums
+const OP_ENUM_TAG: i64 = 25    // R[A] = discriminant tag of R[B]
+
+// Host references (extern struct interop)
+const OP_GET_FIELD: i64 = 26   // R[A] = R[B].vtable[C]  (call host getter)
+const OP_SET_FIELD: i64 = 27   // R[A].vtable[B] = R[C]  (call host setter)
 
 // Control flow
-const OP_JMP: i64 = 29         // PC += sBx (unconditional jump)
-const OP_JMP_IF: i64 = 30      // if truthy(R[A]): PC += sBx
-const OP_JMP_IF_NOT: i64 = 31  // if falsy(R[A]): PC += sBx
+const OP_JMP: i64 = 28         // PC += sBx (unconditional jump)
+const OP_JMP_IF: i64 = 29      // if truthy(R[A]): PC += sBx
+const OP_JMP_IF_NOT: i64 = 30  // if falsy(R[A]): PC += sBx
 
 // Functions
-const OP_CALL: i64 = 32        // Call R[A] with B args from R[A+1..A+B], result in R[A]
-const OP_TAIL_CALL: i64 = 33   // Same as CALL but reuses frame, no call depth increase
-const OP_RETURN: i64 = 34      // Return R[A] to caller. A=255 means return nil
-const OP_CLOSURE: i64 = 35     // R[A] = new closure from prototype Bx
+const OP_CALL: i64 = 31        // Call R[A] with B args from R[A+1..A+B], result in R[A]
+const OP_TAIL_CALL: i64 = 32   // Same as CALL but reuses frame
+const OP_RETURN: i64 = 33      // Return R[A] to caller. A=255 means return None
+const OP_FUNC_REF: i64 = 34    // R[A] = function reference to prototype Bx
 
-// Coroutines (Phase 8)
-const OP_COROUTINE: i64 = 36   // R[A] = new coroutine wrapping closure R[B]
-const OP_YIELD: i64 = 37       // Suspend current coroutine, yield R[A] to resumer
-const OP_RESUME: i64 = 38      // Resume coroutine R[A] with value R[B], result in R[A]
+// Optionals
+const OP_IS_SOME: i64 = 35     // R[A] = R[B] is Some (bool)
+const OP_UNWRAP: i64 = 36      // R[A] = unwrap R[B] (error if None)
+const OP_WRAP_SOME: i64 = 37   // R[A] = Some(R[B])
+
+// Coroutines
+const OP_COROUTINE: i64 = 38   // R[A] = new coroutine from func ref R[B] with C args
+const OP_YIELD: i64 = 39       // Suspend current coroutine, yield R[A] to resumer
+const OP_RESUME: i64 = 40      // Resume coroutine R[A] with value R[B], result in R[A]
 
 // Error handling
-const OP_TRY: i64 = 39         // If next instruction errors, jump sBx, error in R[A]
+const OP_TRY: i64 = 41         // If next instruction errors, jump sBx, error in R[A]
 
-const OP_COUNT: i64 = 40       // Total opcode count (for validation)
+const OP_COUNT: i64 = 42       // Total opcode count (for validation)
 
 // --- Opcode names (for disassembly) ---
 
 func op_name(op: i64) -> string {
     match op {
-        0 => return "LOAD_NIL",
-        1 => return "LOAD_TRUE",
-        2 => return "LOAD_FALSE",
-        3 => return "LOAD_INT",
-        4 => return "LOAD_CONST",
+        0 => return "LOAD_TRUE",
+        1 => return "LOAD_FALSE",
+        2 => return "LOAD_INT",
+        3 => return "LOAD_CONST",
+        4 => return "LOAD_NONE",
         5 => return "MOVE",
-        6 => return "GET_GLOBAL",
-        7 => return "SET_GLOBAL",
-        8 => return "GET_UPVALUE",
-        9 => return "SET_UPVALUE",
-        10 => return "CLOSE_UPVALUE",
-        11 => return "ADD",
-        12 => return "SUB",
-        13 => return "MUL",
-        14 => return "DIV",
-        15 => return "MOD",
-        16 => return "NEG",
-        17 => return "EQ",
-        18 => return "LT",
-        19 => return "LE",
-        20 => return "NOT",
-        21 => return "LEN",
-        22 => return "CONCAT",
-        23 => return "NEW_ARRAY",
-        24 => return "NEW_MAP",
-        25 => return "GET_INDEX",
-        26 => return "SET_INDEX",
-        27 => return "GET_FIELD",
-        28 => return "SET_FIELD",
-        29 => return "JMP",
-        30 => return "JMP_IF",
-        31 => return "JMP_IF_NOT",
-        32 => return "CALL",
-        33 => return "TAIL_CALL",
-        34 => return "RETURN",
-        35 => return "CLOSURE",
-        36 => return "COROUTINE",
-        37 => return "YIELD",
-        38 => return "RESUME",
-        39 => return "TRY",
+        6 => return "ADD",
+        7 => return "SUB",
+        8 => return "MUL",
+        9 => return "DIV",
+        10 => return "MOD",
+        11 => return "NEG",
+        12 => return "EQ",
+        13 => return "LT",
+        14 => return "LE",
+        15 => return "NOT",
+        16 => return "LEN",
+        17 => return "CONCAT",
+        18 => return "NEW_ARRAY",
+        19 => return "NEW_MAP",
+        20 => return "GET_INDEX",
+        21 => return "SET_INDEX",
+        22 => return "NEW_STRUCT",
+        23 => return "GET_STRUCT_FIELD",
+        24 => return "SET_STRUCT_FIELD",
+        25 => return "ENUM_TAG",
+        26 => return "GET_FIELD",
+        27 => return "SET_FIELD",
+        28 => return "JMP",
+        29 => return "JMP_IF",
+        30 => return "JMP_IF_NOT",
+        31 => return "CALL",
+        32 => return "TAIL_CALL",
+        33 => return "RETURN",
+        34 => return "FUNC_REF",
+        35 => return "IS_SOME",
+        36 => return "UNWRAP",
+        37 => return "WRAP_SOME",
+        38 => return "COROUTINE",
+        39 => return "YIELD",
+        40 => return "RESUME",
+        41 => return "TRY",
         _ => return "UNKNOWN",
     }
 }
@@ -140,7 +146,6 @@ func encode_abx(op: i64, a: i64, bx: i64) -> i64 {
 
 func encode_asbx(op: i64, a: i64, sbx: i64) -> i64 {
     // Store signed offset as unsigned by adding bias (32768)
-    // This way -1 becomes 32767, 0 becomes 32768, 1 becomes 32769
     const biased = (sbx + 32768) & 0xFFFF
     return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | biased
 }
@@ -181,30 +186,27 @@ func disassemble_instr(instr: i64, offset: i64) -> string {
     const name = op_name(op)
 
     match op {
-        // ABx format: loads, globals, return, closure
-        0 | 1 | 2 | 10 | 34 => {
+        // Single register: LOAD_TRUE, LOAD_FALSE, LOAD_NONE, RETURN
+        0 | 1 | 4 | 33 => {
             return "{offset}: {name} r{a}"
         }
-        3 => {
-            // LOAD_INT: Bx is signed (but we store biased for AsBx)
-            // LOAD_INT actually uses ABx — Bx is the raw 16-bit value
+        // LOAD_INT: signed immediate
+        2 => {
             const bx = decode_bx(instr)
-            // Sign-extend from 16 bits
             const val = if bx >= 32768 { bx - 65536 } else { bx }
             return "{offset}: {name} r{a} {val}"
         }
-        4 | 6 | 7 | 35 => {
+        // ABx with index: LOAD_CONST, FUNC_REF
+        3 | 34 => {
             const bx = decode_bx(instr)
             return "{offset}: {name} r{a} #{bx}"
         }
-
-        // AsBx format: jumps, try
-        29 | 30 | 31 | 39 => {
+        // AsBx: jumps, yield, try
+        28 | 29 | 30 | 39 | 41 => {
             const sbx = decode_sbx(instr)
             return "{offset}: {name} r{a} {sbx}"
         }
-
-        // ABC format: arithmetic, comparison, logic, collections, etc.
+        // ABC: everything else
         _ => {
             const b = decode_b(instr)
             const c = decode_c(instr)

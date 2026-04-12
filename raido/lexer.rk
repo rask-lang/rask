@@ -36,13 +36,18 @@ enum Token {
     Break
     Continue
     Match
-    Global
     Try
-    Nil
     True
     False
     In
     Yield
+    Struct
+    Enum
+    Extern
+    Extend
+    Import
+    Is
+    As
 
     // Operators
     Plus            // +
@@ -60,6 +65,13 @@ enum Token {
     Bang            // !
     AmpAmp          // &&
     PipePipe        // ||
+    PlusEq          // +=
+    MinusEq         // -=
+    StarEq          // *=
+    SlashEq         // /=
+    PercentEq       // %=
+    QuestionQuestion // ??
+    Question        // ?
 
     // Delimiters
     LParen          // (
@@ -71,9 +83,11 @@ enum Token {
     Comma           // ,
     Dot             // .
     Colon           // :
+    Arrow           // ->
     FatArrow        // =>
     DotDot          // ..
     DotDotEq        // ..=
+    DotDotDot       // ...
     Pipe            // |
 
     // Structure
@@ -183,13 +197,18 @@ extend Lexer {
             "break" => return Token.Break,
             "continue" => return Token.Continue,
             "match" => return Token.Match,
-            "global" => return Token.Global,
             "try" => return Token.Try,
-            "nil" => return Token.Nil,
             "true" => return Token.True,
             "false" => return Token.False,
             "in" => return Token.In,
             "yield" => return Token.Yield,
+            "struct" => return Token.Struct,
+            "enum" => return Token.Enum,
+            "extern" => return Token.Extern,
+            "extend" => return Token.Extend,
+            "import" => return Token.Import,
+            "is" => return Token.Is,
+            "as" => return Token.As,
             _ => return Token.Ident(word),
         }
     }
@@ -215,7 +234,7 @@ extend Lexer {
     //   - '<' → could be '<' or '<=', check with match_char('=')
     //   - '!' → could be '!' or '!=', check with match_char('=')
     //   - '&' → must be '&&' (Raido has no single &)
-    //   - '|' → could be '||' or '|' (for closures)
+    //   - '|' → could be '||' or '|'
     //
     // For numbers:
     //   Read digits. If you hit a '.', read more digits → it's a NumLit.

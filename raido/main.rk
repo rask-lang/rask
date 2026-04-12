@@ -2,14 +2,14 @@
 // Raido VM — minimal working test
 // Run with: rask run --interp raido/main.rk
 
-// Opcodes
-const OP_LOAD_INT: i64 = 3
-const OP_ADD: i64 = 11
-const OP_SUB: i64 = 12
-const OP_LT: i64 = 18
-const OP_JMP: i64 = 29
-const OP_JMP_IF_NOT: i64 = 31
-const OP_RETURN: i64 = 34
+// Opcodes (must match opcodes.rk)
+const OP_LOAD_INT: i64 = 2
+const OP_ADD: i64 = 6
+const OP_SUB: i64 = 7
+const OP_LT: i64 = 13
+const OP_JMP: i64 = 28
+const OP_JMP_IF_NOT: i64 = 30
+const OP_RETURN: i64 = 33
 
 // Encoding
 func encode_abc(op: i64, a: i64, b: i64, c: i64) -> i64 {
@@ -35,7 +35,7 @@ func decode_sbx(instr: i64) -> i64 { return (instr & 0xFFFF) - 32768 }
 
 // Value type
 enum Value {
-    Nil
+    None
     Bool(bool)
     Int(i64)
 }
@@ -43,7 +43,7 @@ enum Value {
 extend Value {
     func is_truthy(self) -> bool {
         match self {
-            Value.Nil => return false,
+            Value.None => return false,
             Value.Bool(b) => return b,
             _ => return true,
         }
@@ -54,7 +54,7 @@ extend Value {
 func reg_get(regs: Vec<Value>, idx: i64) -> Value {
     match regs.get(idx) {
         Some(v) => return v,
-        None => return Value.Nil,
+        None => return Value.None,
     }
 }
 
@@ -74,7 +74,7 @@ func vm_run(code: Vec<i64>, fuel: i64) -> Value {
     const regs = Vec.new()
     let i: i64 = 0
     while i < 256 {
-        regs.push(Value.Nil)
+        regs.push(Value.None)
         i = i + 1
     }
 
@@ -85,7 +85,7 @@ func vm_run(code: Vec<i64>, fuel: i64) -> Value {
     while pc < code_len {
         if remaining <= 0 {
             print("FUEL EXHAUSTED\n")
-            return Value.Nil
+            return Value.None
         }
         remaining = remaining - 1
 
@@ -137,7 +137,7 @@ func vm_run(code: Vec<i64>, fuel: i64) -> Value {
             return reg_get(regs, a)
         }
     }
-    return Value.Nil
+    return Value.None
 }
 
 // Tests
