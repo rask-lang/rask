@@ -632,7 +632,7 @@ mod tests {
 
     fn block(n: u32) -> BlockId { BlockId(n) }
     fn local(n: u32) -> LocalId { LocalId(n) }
-    fn sp() -> crate::Span { crate::Span { start: 0, end: 0 } }
+    fn sp() -> crate::Span { crate::Span::new(0, 0) }
 
     fn int_local(id: u32, name: &str) -> MirLocal {
         MirLocal { id: local(id), name: Some(name.into()), ty: MirType::I64, is_param: false }

@@ -189,7 +189,7 @@ impl TypeChecker {
                 } else {
                     // Function is T or E where T != () - require explicit return
                     if !self.has_explicit_return(&f.body) {
-                        let end_span = Span::new(f.span.end.saturating_sub(1), f.span.end);
+                        let end_span = Span::with_file(f.span.end.saturating_sub(1), f.span.end, f.span.file_id);
                         self.errors.push(TypeError::MissingReturn {
                             function_name: f.name.clone(),
                             expected_type: ret_ty.clone(),
@@ -201,7 +201,7 @@ impl TypeChecker {
             _ => {
                 // Non-Result, non-Unit - require explicit return
                 if !self.has_explicit_return(&f.body) {
-                    let end_span = Span::new(f.span.end.saturating_sub(1), f.span.end);
+                    let end_span = Span::with_file(f.span.end.saturating_sub(1), f.span.end, f.span.file_id);
                     self.errors.push(TypeError::MissingReturn {
                         function_name: f.name.clone(),
                         expected_type: ret_ty.clone(),
@@ -324,6 +324,9 @@ impl TypeChecker {
         match &stmt.kind {
             StmtKind::Return(_) => true,
             StmtKind::Expr(expr) => self.expr_always_returns(expr),
+            // An unconditional loop either returns or diverges — either way,
+            // code after it is unreachable and the function has a return path.
+            StmtKind::Loop { .. } => true,
             _ => false,
         }
     }

@@ -127,6 +127,24 @@ impl Resolver {
             let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
         }
 
+        // Primitive types — always in scope so stdlib stubs and user code
+        // can reference them in casts (`as u16`) and type annotations.
+        let primitives = [
+            "u8", "u16", "u32", "u64", "u128", "usize",
+            "i8", "i16", "i32", "i64", "i128", "isize",
+            "f32", "f64", "bool", "char",
+        ];
+        for name in primitives {
+            let sym_id = self.symbols.insert(
+                name.to_string(),
+                SymbolKind::BuiltinType { builtin: BuiltinTypeKind::Primitive },
+                None,
+                Span::new(0, 0),
+                true,
+            );
+            let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
+        }
+
         self.register_builtin_enum("Option", &["Some", "None"]);
         self.register_builtin_enum("Result", &["Ok", "Err"]);
         self.register_builtin_enum("Ordering", &[
@@ -301,6 +319,7 @@ impl Resolver {
                 false,
             );
             let _ = self.scopes.define(type_name.to_string(), sym_id, span);
+            self.imported_symbols.insert(type_name.to_string());
         }
 
         // Register builtin types (File, Rng, SIMD)
@@ -324,6 +343,10 @@ impl Resolver {
                 continue;
             }
             self.register_builtin_enum(enum_name, variants);
+            self.imported_symbols.insert(enum_name.to_string());
+            for v in *variants {
+                self.imported_symbols.insert(v.to_string());
+            }
         }
     }
 
@@ -1026,7 +1049,8 @@ impl Resolver {
                     )
                 });
                 let is_stdlib = self.stdlib_symbols.contains(&existing_id);
-                if !is_builtin && !is_stdlib {
+                let is_imported = self.imported_symbols.contains(&binding_name);
+                if !is_builtin && !is_stdlib && !is_imported {
                     self.errors.push(ResolveError::shadows_import(binding_name.clone(), span));
                     return;
                 }

@@ -7,11 +7,17 @@
 pub struct Span {
     pub start: usize,
     pub end: usize,
+    /// Index into the source file list. 0 for single-file mode.
+    pub file_id: u16,
 }
 
 impl Span {
-    pub fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
+    pub const fn new(start: usize, end: usize) -> Self {
+        Self { start, end, file_id: 0 }
+    }
+
+    pub const fn with_file(start: usize, end: usize, file_id: u16) -> Self {
+        Self { start, end, file_id }
     }
 }
 

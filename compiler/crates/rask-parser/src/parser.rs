@@ -26,6 +26,8 @@ pub struct Parser {
     pending_decls: Vec<Decl>,
     /// Buffer for doc comments collected during skip_newlines
     doc_buffer: Vec<String>,
+    /// File index for multi-file packages (0 for single-file).
+    file_id: u16,
 }
 
 impl Parser {
@@ -36,7 +38,12 @@ impl Parser {
     /// Create a parser with a custom starting NodeId.
     /// Used by multi-file parsing to ensure unique NodeIds across files.
     pub fn new_with_start_id(tokens: Vec<Token>, start_id: u32) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new() }
+        Self::new_with_file_id(tokens, start_id, 0)
+    }
+
+    /// Create a parser with a custom starting NodeId and file index.
+    pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id }
     }
 
     /// Return the next available NodeId (for chaining across files).
@@ -48,6 +55,11 @@ impl Parser {
         let id = NodeId(self.next_node_id);
         self.next_node_id += 1;
         id
+    }
+
+    /// Create a span tagged with this parser's file_id.
+    fn span(&self, start: usize, end: usize) -> Span {
+        Span::with_file(start, end, self.file_id)
     }
 
     /// Record error, return if should continue.
@@ -524,7 +536,7 @@ impl Parser {
                     hint: Some("move statements into main() or remove the main function".to_string()),
                 });
             } else {
-                let span = Span::new(
+                let span = self.span(
                     top_level_stmts.first().map(|s| s.span.start).unwrap_or(0),
                     top_level_stmts.last().map(|s| s.span.end).unwrap_or(0),
                 );
@@ -611,7 +623,7 @@ impl Parser {
                 let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
                 let pending: Vec<Decl> = kinds.into_iter().map(|kind| {
                     let id = self.next_id();
-                    Decl { id, kind, span: Span::new(start, end) }
+                    Decl { id, kind, span: self.span(start, end) }
                 }).collect();
                 self.pending_decls.extend(pending);
                 first
@@ -636,7 +648,7 @@ impl Parser {
         };
 
         let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
-        Ok(Decl { id: self.next_id(), kind, span: Span::new(start, end) })
+        Ok(Decl { id: self.next_id(), kind, span: self.span(start, end) })
     }
 
     fn parse_attribute(&mut self) -> Result<String, ParseError> {
@@ -736,7 +748,7 @@ impl Parser {
         };
 
         let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
-        let fn_span = Span::new(fn_start, fn_end);
+        let fn_span = self.span(fn_start, fn_end);
         Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span }))
     }
 
@@ -1511,7 +1523,7 @@ impl Parser {
             abi: None,
             attrs: vec![],
             doc: None,
-            span: Span::new(fn_start, fn_end),
+            span: self.span(fn_start, fn_end),
         })
     }
 
@@ -1689,7 +1701,7 @@ impl Parser {
                     is_glob: false,
                     is_lazy,
                 }),
-                span: Span::new(start, end),
+                span: self.span(start, end),
             };
             self.pending_decls.push(decl);
         }
@@ -1871,7 +1883,7 @@ impl Parser {
                 abi: Some(abi.to_string()),
                 attrs: vec![],
                 doc,
-                span: Span::new(fn_start, self.tokens[self.pos.saturating_sub(1)].span.end),
+                span: self.span(fn_start, self.tokens[self.pos.saturating_sub(1)].span.end),
             }));
         }
 
@@ -2307,7 +2319,7 @@ impl Parser {
         };
 
         let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
-        Ok(Stmt { id: self.next_id(), kind, span: Span::new(start, end) })
+        Ok(Stmt { id: self.next_id(), kind, span: self.span(start, end) })
     }
 
     fn match_compound_assign(&mut self) -> Option<BinOp> {
@@ -2395,7 +2407,7 @@ impl Parser {
                 self.skip_newlines();
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(guard_start, end) }
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(guard_start, end) }
             };
 
             let end = else_branch.span.end;
@@ -2406,7 +2418,7 @@ impl Parser {
                     pattern,
                     else_branch: Box::new(else_branch),
                 },
-                span: Span::new(guard_start, end),
+                span: self.span(guard_start, end),
             };
         }
 
@@ -2448,7 +2460,7 @@ impl Parser {
                 self.skip_newlines();
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(guard_start, end) }
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(guard_start, end) }
             };
 
             let end = else_branch.span.end;
@@ -2459,7 +2471,7 @@ impl Parser {
                     pattern,
                     else_branch: Box::new(else_branch),
                 },
-                span: Span::new(guard_start, end),
+                span: self.span(guard_start, end),
             };
         }
 
@@ -2475,7 +2487,7 @@ impl Parser {
         self.expect_terminator()?;
         Ok(StmtKind::Discard {
             name,
-            name_span: Span::new(name_start, name_end),
+            name_span: self.span(name_start, name_end),
         })
     }
 
@@ -2742,7 +2754,7 @@ impl Parser {
                 lhs = Expr {
                     id: self.next_id(),
                     kind: ExprKind::Cast { expr: Box::new(lhs), ty },
-                    span: Span::new(start, end),
+                    span: self.span(start, end),
                 };
                 continue;
             }
@@ -2757,7 +2769,7 @@ impl Parser {
                 lhs = Expr {
                     id: self.next_id(),
                     kind: ExprKind::IsPattern { expr: Box::new(lhs), pattern },
-                    span: Span::new(start, end),
+                    span: self.span(start, end),
                 };
                 continue;
             }
@@ -2775,7 +2787,7 @@ impl Parser {
                             value: Box::new(lhs),
                             default: Box::new(default),
                         },
-                        span: Span::new(start, end),
+                        span: self.span(start, end),
                     };
                     continue;
                 }
@@ -2796,7 +2808,7 @@ impl Parser {
                             end: end_expr,
                             inclusive,
                         },
-                        span: Span::new(start, end),
+                        span: self.span(start, end),
                     };
                     continue;
                 }
@@ -2808,7 +2820,7 @@ impl Parser {
                 lhs = Expr {
                     id: self.next_id(),
                     kind: ExprKind::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
-                    span: Span::new(start, end),
+                    span: self.span(start, end),
                 };
                 continue;
             }
@@ -2825,34 +2837,34 @@ impl Parser {
         match self.current_kind().clone() {
             TokenKind::Int(n, suffix) => {
                 self.advance();
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Int(n, suffix.clone()), span: Span::new(start, self.tokens[self.pos - 1].span.end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Int(n, suffix.clone()), span: self.span(start, self.tokens[self.pos - 1].span.end) })
             }
             TokenKind::Float(n, suffix) => {
                 self.advance();
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Float(n, suffix.clone()), span: Span::new(start, self.tokens[self.pos - 1].span.end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Float(n, suffix.clone()), span: self.span(start, self.tokens[self.pos - 1].span.end) })
             }
             TokenKind::String(s) => {
                 self.advance();
-                Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: Span::new(start, self.tokens[self.pos - 1].span.end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: self.span(start, self.tokens[self.pos - 1].span.end) })
             }
             TokenKind::Char(c) => {
                 self.advance();
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Char(c), span: Span::new(start, self.tokens[self.pos - 1].span.end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Char(c), span: self.span(start, self.tokens[self.pos - 1].span.end) })
             }
             TokenKind::Bool(b) => {
                 self.advance();
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Bool(b), span: Span::new(start, self.tokens[self.pos - 1].span.end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Bool(b), span: self.span(start, self.tokens[self.pos - 1].span.end) })
             }
 
             TokenKind::None => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident("None".to_string()), span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident("None".to_string()), span: self.span(start, end) })
             }
             TokenKind::Null => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Null, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Null, span: self.span(start, end) })
             }
 
             TokenKind::Ident(name) => {
@@ -2873,14 +2885,14 @@ impl Parser {
                             return Ok(Expr {
                                 id: self.next_id(),
                                 kind: ExprKind::Loop { label, body },
-                                span: Span::new(start, end),
+                                span: self.span(start, end),
                             });
                         }
                         _ => {
                             return Err(ParseError::not_implemented(
                                 "labeled for/while expressions",
                                 "only labeled `loop` expressions are supported",
-                                Span::new(start, self.current().span.end),
+                                self.span(start, self.current().span.end),
                             ));
                         }
                     }
@@ -2940,7 +2952,7 @@ impl Parser {
                 if Self::is_type_name(&full_name) && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
                     self.parse_struct_literal(full_name, start)
                 } else {
-                    Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(full_name), span: Span::new(start, end) })
+                    Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(full_name), span: self.span(start, end) })
                 }
             }
 
@@ -2948,19 +2960,19 @@ impl Parser {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let end = operand.span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(operand) }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Bang => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let end = operand.span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Not, operand: Box::new(operand) }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Not, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Tilde => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let end = operand.span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::BitNot, operand: Box::new(operand) }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::BitNot, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Amp => {
                 return Err(ParseError::not_implemented(
@@ -2973,7 +2985,7 @@ impl Parser {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let end = operand.span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) }, span: self.span(start, end) })
             }
 
             // `own` as prefix in non-call contexts (struct field inits).
@@ -2990,7 +3002,7 @@ impl Parser {
             TokenKind::LBrace => {
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) })
             }
 
             TokenKind::PipePipe => {
@@ -3000,7 +3012,7 @@ impl Parser {
                 Ok(Expr {
                     id: self.next_id(),
                     kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(body) },
-                    span: Span::new(start, end),
+                    span: self.span(start, end),
                 })
             }
 
@@ -3016,7 +3028,7 @@ impl Parser {
                 Ok(Expr {
                     id: self.next_id(),
                     kind: ExprKind::Loop { label: None, body },
-                    span: Span::new(start, end),
+                    span: self.span(start, end),
                 })
             }
 
@@ -3040,7 +3052,7 @@ impl Parser {
                     vec![Stmt { id: self.next_id(), kind: StmtKind::Expr(expr.clone()), span: expr.span }]
                 };
                 let end = body.last().map(|s| s.span.end).unwrap_or(start);
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unsafe { body }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unsafe { body }, span: self.span(start, end) })
             }
 
             TokenKind::Comptime => {
@@ -3053,7 +3065,7 @@ impl Parser {
                     vec![Stmt { id: self.next_id(), kind: StmtKind::Expr(expr.clone()), span: expr.span }]
                 };
                 let end = body.last().map(|s| s.span.end).unwrap_or(start);
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Comptime { body }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Comptime { body }, span: self.span(start, end) })
             }
 
             TokenKind::Assert => self.parse_assert_expr(),
@@ -3085,7 +3097,7 @@ impl Parser {
                 Ok(Expr {
                     id: self.next_id(),
                     kind: ExprKind::Try { expr: Box::new(inner), else_clause },
-                    span: Span::new(start, end),
+                    span: self.span(start, end),
                 })
             }
 
@@ -3138,7 +3150,7 @@ impl Parser {
         Ok(Expr {
             id: self.next_id(),
             kind: ExprKind::StructLit { name, fields, spread },
-            span: Span::new(start, end),
+            span: self.span(start, end),
         })
     }
 
@@ -3155,7 +3167,7 @@ impl Parser {
         Ok(Expr {
             id: self.next_id(),
             kind: ExprKind::Assert { condition, message },
-            span: Span::new(start, end),
+            span: self.span(start, end),
         })
     }
 
@@ -3172,7 +3184,7 @@ impl Parser {
         Ok(Expr {
             id: self.next_id(),
             kind: ExprKind::Check { condition, message },
-            span: Span::new(start, end),
+            span: self.span(start, end),
         })
     }
 
@@ -3183,7 +3195,7 @@ impl Parser {
         if self.check(&TokenKind::RParen) {
             self.advance();
             let end = self.tokens[self.pos - 1].span.end;
-            return Ok(Expr { id: self.next_id(), kind: ExprKind::Tuple(Vec::new()), span: Span::new(start, end) });
+            return Ok(Expr { id: self.next_id(), kind: ExprKind::Tuple(Vec::new()), span: self.span(start, end) });
         }
 
         let first = self.parse_expr()?;
@@ -3196,7 +3208,7 @@ impl Parser {
             }
             self.expect(&TokenKind::RParen)?;
             let end = self.tokens[self.pos - 1].span.end;
-            Ok(Expr { id: self.next_id(), kind: ExprKind::Tuple(elements), span: Span::new(start, end) })
+            Ok(Expr { id: self.next_id(), kind: ExprKind::Tuple(elements), span: self.span(start, end) })
         } else {
             self.expect(&TokenKind::RParen)?;
             Ok(first)
@@ -3211,7 +3223,7 @@ impl Parser {
         if self.check(&TokenKind::RBracket) {
             self.advance();
             let end = self.tokens[self.pos - 1].span.end;
-            return Ok(Expr { id: self.next_id(), kind: ExprKind::Array(Vec::new()), span: Span::new(start, end) });
+            return Ok(Expr { id: self.next_id(), kind: ExprKind::Array(Vec::new()), span: self.span(start, end) });
         }
 
         let first = self.parse_expr()?;
@@ -3225,7 +3237,7 @@ impl Parser {
             return Ok(Expr {
                 id: self.next_id(),
                 kind: ExprKind::ArrayRepeat { value: Box::new(first), count: Box::new(count) },
-                span: Span::new(start, end),
+                span: self.span(start, end),
             });
         }
 
@@ -3242,7 +3254,7 @@ impl Parser {
 
         self.expect(&TokenKind::RBracket)?;
         let end = self.tokens[self.pos - 1].span.end;
-        Ok(Expr { id: self.next_id(), kind: ExprKind::Array(elements), span: Span::new(start, end) })
+        Ok(Expr { id: self.next_id(), kind: ExprKind::Array(elements), span: self.span(start, end) })
     }
 
     fn parse_closure(&mut self) -> Result<Expr, ParseError> {
@@ -3276,7 +3288,7 @@ impl Parser {
         Ok(Expr {
             id: self.next_id(),
             kind: ExprKind::Closure { params, ret_ty, body: Box::new(body) },
-            span: Span::new(start, end),
+            span: self.span(start, end),
         })
     }
 
@@ -3287,7 +3299,7 @@ impl Parser {
 
         if self.match_token(&TokenKind::Eq) {
             let value = self.parse_expr()?;
-            let span = Span::new(body.span.start, value.span.end);
+            let span = self.span(body.span.start, value.span.end);
             let assign_stmt = Stmt {
                 id: self.next_id(),
                 kind: StmtKind::Assign { target: body, value },
@@ -3305,7 +3317,7 @@ impl Parser {
                 },
                 span: body.span.clone(),
             };
-            let span = Span::new(body.span.start, value.span.end);
+            let span = self.span(body.span.start, value.span.end);
             let assign_stmt = Stmt {
                 id: self.next_id(),
                 kind: StmtKind::Assign { target: body, value },
@@ -3326,7 +3338,7 @@ impl Parser {
                 let args = self.parse_args()?;
                 self.expect(&TokenKind::RParen)?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Call { func: Box::new(lhs), args }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Call { func: Box::new(lhs), args }, span: self.span(start, end) })
             }
 
             TokenKind::Dot => {
@@ -3341,7 +3353,7 @@ impl Parser {
                     return Ok(Expr {
                         id: self.next_id(),
                         kind: ExprKind::DynamicField { object: Box::new(lhs), field_expr: Box::new(field_expr) },
-                        span: Span::new(start, end),
+                        span: self.span(start, end),
                     });
                 }
 
@@ -3357,7 +3369,7 @@ impl Parser {
                     let field = n.to_string();
                     self.advance();
                     let end = self.tokens[self.pos - 1].span.end;
-                    return Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: Span::new(start, end) });
+                    return Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) });
                 }
 
                 let field = self.expect_ident_or_keyword()?;
@@ -3383,7 +3395,7 @@ impl Parser {
                     Ok(Expr {
                         id: self.next_id(),
                         kind: ExprKind::MethodCall { object: Box::new(lhs), method: field, type_args, args },
-                        span: Span::new(start, end),
+                        span: self.span(start, end),
                     })
                 } else if type_args.is_some() {
                     // Had generic args but no parens - error
@@ -3401,15 +3413,15 @@ impl Parser {
                             self.parse_struct_literal(full_name, start)
                         } else {
                             let end = self.tokens[self.pos - 1].span.end;
-                            Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: Span::new(start, end) })
+                            Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) })
                         }
                     } else {
                         let end = self.tokens[self.pos - 1].span.end;
-                        Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: Span::new(start, end) })
+                        Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) })
                     }
                 } else {
                     let end = self.tokens[self.pos - 1].span.end;
-                    Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: Span::new(start, end) })
+                    Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) })
                 }
             }
 
@@ -3430,7 +3442,7 @@ impl Parser {
                     self.expect_ident_or_keyword()?
                 };
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::OptionalField { object: Box::new(lhs), field }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::OptionalField { object: Box::new(lhs), field }, span: self.span(start, end) })
             }
 
             // Index access
@@ -3439,7 +3451,7 @@ impl Parser {
                 let index = self.parse_expr()?;
                 self.expect(&TokenKind::RBracket)?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Index { object: Box::new(lhs), index: Box::new(index) }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Index { object: Box::new(lhs), index: Box::new(index) }, span: self.span(start, end) })
             }
 
             // Try operator (?)
@@ -3448,7 +3460,7 @@ impl Parser {
             TokenKind::Question => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Try { expr: Box::new(lhs), else_clause: None }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Try { expr: Box::new(lhs), else_clause: None }, span: self.span(start, end) })
             }
 
             // Unwrap operator (!) - panics if None/Err
@@ -3469,7 +3481,7 @@ impl Parser {
                     None
                 };
 
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unwrap { expr: Box::new(lhs), message }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unwrap { expr: Box::new(lhs), message }, span: self.span(start, end) })
             }
 
             // Detect :: path separator (Rust syntax)
@@ -3544,7 +3556,7 @@ impl Parser {
                 self.skip_newlines();
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) }
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
             };
 
             let else_branch = if self.check(&TokenKind::Else) ||
@@ -3561,7 +3573,7 @@ impl Parser {
                     self.skip_newlines();
                     let stmts = self.parse_block_body()?;
                     let end = self.tokens[self.pos - 1].span.end;
-                    Some(Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) }))
+                    Some(Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }))
                 }
             } else {
                 None
@@ -3571,7 +3583,7 @@ impl Parser {
             return Ok(Expr {
                 id: self.next_id(),
                 kind: ExprKind::IfLet { expr: scrutinee, pattern, then_branch: Box::new(then_branch), else_branch },
-                span: Span::new(start, end),
+                span: self.span(start, end),
             });
         }
 
@@ -3581,7 +3593,7 @@ impl Parser {
             self.skip_newlines();
             let stmts = self.parse_block_body()?;
             let end = self.tokens[self.pos - 1].span.end;
-            Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) }
+            Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
         };
 
         let else_branch = if self.check(&TokenKind::Else) ||
@@ -3598,7 +3610,7 @@ impl Parser {
                 self.skip_newlines();
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Some(Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) }))
+                Some(Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }))
             }
         } else {
             None
@@ -3608,7 +3620,7 @@ impl Parser {
         Ok(Expr {
             id: self.next_id(),
             kind: ExprKind::If { cond: Box::new(cond), then_branch: Box::new(then_branch), else_branch },
-            span: Span::new(start, end),
+            span: self.span(start, end),
         })
     }
 
@@ -3691,8 +3703,8 @@ impl Parser {
         };
 
         let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(stmt_start);
-        let stmt = Stmt { id: self.next_id(), kind, span: Span::new(stmt_start, end) };
-        Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![stmt]), span: Span::new(start, end) })
+        let stmt = Stmt { id: self.next_id(), kind, span: self.span(stmt_start, end) };
+        Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![stmt]), span: self.span(start, end) })
     }
 
     fn parse_match_expr(&mut self) -> Result<Expr, ParseError> {
@@ -3719,7 +3731,7 @@ impl Parser {
             let body = if self.check(&TokenKind::LBrace) {
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) }
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
             } else {
                 self.parse_inline_block(start)?
             };
@@ -3731,7 +3743,7 @@ impl Parser {
 
         self.expect(&TokenKind::RBrace)?;
         let end = self.tokens[self.pos - 1].span.end;
-        Ok(Expr { id: self.next_id(), kind: ExprKind::Match { scrutinee: Box::new(scrutinee), arms }, span: Span::new(start, end) })
+        Ok(Expr { id: self.next_id(), kind: ExprKind::Match { scrutinee: Box::new(scrutinee), arms }, span: self.span(start, end) })
     }
 
     /// Parse `using Name { }` or `using A, B(args) { }`.
@@ -3760,7 +3772,7 @@ impl Parser {
         self.skip_newlines();
         let body = self.parse_block_body()?;
         let end = self.tokens[self.pos - 1].span.end;
-        let span = Span::new(start, end);
+        let span = self.span(start, end);
 
         // Build nested UsingBlock from innermost (last) outward
         let (innermost_name, innermost_args) = contexts.pop().unwrap();
@@ -3837,7 +3849,7 @@ impl Parser {
         Ok(Expr {
             id: self.next_id(),
             kind: ExprKind::WithAs { bindings, body },
-            span: Span::new(start, end),
+            span: self.span(start, end),
         })
     }
 
@@ -3849,7 +3861,7 @@ impl Parser {
         let mut expr = Expr {
             id: self.next_id(),
             kind: ExprKind::Ident(ident),
-            span: Span::new(start, ident_end),
+            span: self.span(start, ident_end),
         };
 
         loop {
@@ -3861,7 +3873,7 @@ impl Parser {
                 expr = Expr {
                     id: self.next_id(),
                     kind: ExprKind::Index { object: Box::new(expr), index: Box::new(index) },
-                    span: Span::new(start, end),
+                    span: self.span(start, end),
                 };
             } else if self.check(&TokenKind::Dot) {
                 self.advance();
@@ -3881,7 +3893,7 @@ impl Parser {
                     expr = Expr {
                         id: self.next_id(),
                         kind: ExprKind::Field { object: Box::new(expr), field },
-                        span: Span::new(start, end),
+                        span: self.span(start, end),
                     };
                     continue;
                 }
@@ -3901,14 +3913,14 @@ impl Parser {
                             type_args: None,
                             args,
                         },
-                        span: Span::new(start, end),
+                        span: self.span(start, end),
                     };
                 } else {
                     let end = self.tokens[self.pos - 1].span.end;
                     expr = Expr {
                         id: self.next_id(),
                         kind: ExprKind::Field { object: Box::new(expr), field },
-                        span: Span::new(start, end),
+                        span: self.span(start, end),
                     };
                 }
             } else {
@@ -3949,7 +3961,7 @@ impl Parser {
 
         if arms.is_empty() {
             return Err(ParseError {
-                span: Span::new(start, end),
+                span: self.span(start, end),
                 message: "select requires at least one arm".to_string(),
                 hint: None,
             });
@@ -3958,7 +3970,7 @@ impl Parser {
         Ok(Expr {
             id: self.next_id(),
             kind: ExprKind::Select { arms, is_priority },
-            span: Span::new(start, end),
+            span: self.span(start, end),
         })
     }
 

@@ -138,6 +138,8 @@ pub enum BuiltinTypeKind {
     Rng,
     /// File - file handle
     File,
+    /// Primitive numeric/bool/char types (u8, i32, f64, bool, char, etc.)
+    Primitive,
 }
 
 /// Built-in function kinds.

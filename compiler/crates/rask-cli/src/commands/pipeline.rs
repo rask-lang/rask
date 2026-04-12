@@ -202,12 +202,12 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
 
 /// Frontend pipeline for a multi-file package.
 fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format) -> FrontendResult {
-    // Collect per-file source text early so error paths can use them.
-    let source_files: Vec<(std::path::PathBuf, String)> = pkg_ctx.registry.packages()
-        .iter()
-        .flat_map(|pkg| pkg.files.iter())
-        .map(|f| (f.path.clone(), f.source.clone()))
-        .collect();
+    // Collect per-file source text from the root package. File indices match
+    // the file_id assigned during parsing in parse_rk_files().
+    let source_files: Vec<(std::path::PathBuf, String)> = pkg_ctx.registry
+        .get(pkg_ctx.root_id)
+        .map(|pkg| pkg.files.iter().map(|f| (f.path.clone(), f.source.clone())).collect())
+        .unwrap_or_default();
 
     // Eliminate dead branches in `comptime if cfg.*` before any other pass (CC1)
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
@@ -411,20 +411,10 @@ fn show_multifile_diagnostics(
     format: Format,
 ) {
     for d in diagnostics {
-        // Find the primary label span to match against files.
-        let primary_span = d.labels.iter()
+        // Use file_id from the primary label span to look up the source file.
+        let matched = d.labels.iter()
             .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
-            .map(|l| l.span.end);
-
-        let matched = primary_span.and_then(|end| {
-            // Without file IDs in spans, match by checking which file
-            // can contain this byte offset. Only use the match when
-            // exactly one file qualifies to avoid showing the wrong file.
-            let candidates: Vec<_> = source_files.iter()
-                .filter(|(_, src)| end <= src.len() && !src.is_empty())
-                .collect();
-            if candidates.len() == 1 { Some(candidates[0]) } else { None }
-        });
+            .and_then(|l| source_files.get(l.span.file_id as usize));
 
         match (format, matched) {
             (Format::Human, Some((path, source))) => {

@@ -11,7 +11,7 @@ use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_types::TypedProgram;
 
-const DUMMY: Span = Span { start: 0, end: 0 };
+const DUMMY: Span = Span::new(0, 0);
 
 fn expr(kind: ExprKind) -> Expr {
     Expr { id: NodeId(0), kind, span: DUMMY }

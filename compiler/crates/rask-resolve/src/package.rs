@@ -170,7 +170,7 @@ fn collect_rk_files(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PackageE
 fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> {
     let mut source_files = Vec::new();
     let mut next_id: u32 = 0;
-    for file_path in paths {
+    for (file_idx, file_path) in paths.into_iter().enumerate() {
         let source = fs::read_to_string(&file_path)
             .map_err(|e| PackageError::Io(e, file_path.clone()))?;
 
@@ -183,7 +183,7 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
             });
         }
 
-        let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
+        let mut parser = rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_idx as u16);
         let parse_result = parser.parse();
         next_id = parser.next_node_id();
         if !parse_result.is_ok() {

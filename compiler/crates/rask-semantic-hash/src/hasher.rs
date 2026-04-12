@@ -217,6 +217,16 @@ impl Hasher {
                 self.feed_str(&ta.target);
                 self.feed_bool(ta.is_pub);
             }
+            DeclKind::CImport(ci) => {
+                self.feed_tag(15);
+                self.feed_str(&ci.alias);
+                for h in &ci.headers {
+                    self.feed_str(h);
+                }
+                for s in &ci.hiding {
+                    self.feed_str(s);
+                }
+            }
         }
     }
 

@@ -1457,11 +1457,17 @@ impl TypeChecker {
                 // The argument is already a Vec<T> (array literals desugar to Vec)
                 self.unify(ret, &args[0], span)
             }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::UnresolvedNamed("Vec".to_string()),
-                method: method.to_string(),
-                span,
-            }),
+            _ => {
+                let vec_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(self.ctx.fresh_var()))],
+                };
+                Err(TypeError::NoSuchMethod {
+                    ty: vec_ty,
+                    method: method.to_string(),
+                    span,
+                })
+            }
         }
     }
 
@@ -1749,11 +1755,20 @@ impl TypeChecker {
                 };
                 self.unify(ret, &map_ty, span)
             }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::UnresolvedNamed("Map".to_string()),
-                method: method.to_string(),
-                span,
-            }),
+            _ => {
+                let map_ty = Type::UnresolvedGeneric {
+                    name: "Map".to_string(),
+                    args: vec![
+                        GenericArg::Type(Box::new(self.ctx.fresh_var())),
+                        GenericArg::Type(Box::new(self.ctx.fresh_var())),
+                    ],
+                };
+                Err(TypeError::NoSuchMethod {
+                    ty: map_ty,
+                    method: method.to_string(),
+                    span,
+                })
+            }
         }
     }
 

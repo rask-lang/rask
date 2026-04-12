@@ -297,6 +297,7 @@ impl LanguageServer for Backend {
                         rask_resolve::SymbolKind::ExternFunction { .. } => "Extern Function",
                         rask_resolve::SymbolKind::ExternalPackage { .. } => "Package",
                         rask_resolve::SymbolKind::TypeAlias { .. } => "Type Alias",
+                        rask_resolve::SymbolKind::CNamespace { .. } => "C Namespace",
                     };
                     contents = format!("**{}:** `{}`\n\n**Type:** `{}`", kind_str, name, type_str);
 

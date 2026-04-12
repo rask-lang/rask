@@ -145,6 +145,9 @@ impl Backend {
                 rask_resolve::SymbolKind::TypeAlias { .. } => {
                     (CompletionItemKind::CLASS, "type alias".to_string())
                 }
+                rask_resolve::SymbolKind::CNamespace { .. } => {
+                    (CompletionItemKind::MODULE, "c namespace".to_string())
+                }
                 rask_resolve::SymbolKind::Field { .. } => continue,
             };
 
