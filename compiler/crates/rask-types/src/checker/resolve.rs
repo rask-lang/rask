@@ -332,11 +332,12 @@ impl TypeChecker {
                         // E9: .discriminant() returns u16 variant index
                         self.unify(&Type::U16, &ret, span)
                     } else {
-                        Err(TypeError::NoSuchMethod {
-                            ty,
-                            method,
-                            span,
-                        })
+                        // Method not in registered extend blocks. Check if this
+                        // Named type corresponds to a builtin with hardcoded
+                        // method resolution (Vec, Map, Shared, etc.).
+                        let type_name = self.types.type_name(*type_id);
+                        self.resolve_builtin_method_by_name(&type_name, &[], &method, &args, &ret, span)
+                            .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty, method, span }))
                     }
                 }
             }
@@ -525,11 +526,9 @@ impl TypeChecker {
                         }
                         Ok(progress)
                     } else {
-                        Err(TypeError::NoSuchMethod {
-                            ty,
-                            method,
-                            span,
-                        })
+                        let type_name = self.types.type_name(*base);
+                        self.resolve_builtin_method_by_name(&type_name, generic_args, &method, &args, &ret, span)
+                            .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty, method, span }))
                     }
                 }
             }
@@ -1840,6 +1839,51 @@ impl TypeChecker {
     }
 
     /// Resolve methods on Rng (both static and instance — no type params).
+    /// Try to resolve a method call via the hardcoded builtin handlers
+    /// using the type's name. Returns None if the name isn't a known builtin,
+    /// meaning the caller should produce its own error.
+    fn resolve_builtin_method_by_name(
+        &mut self,
+        type_name: &str,
+        type_args: &[GenericArg],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Option<Result<bool, TypeError>> {
+        // Strip generic params from name: "Vec<T>" → "Vec"
+        let base_name = type_name.split('<').next().unwrap_or(type_name);
+        match base_name {
+            "Vec" if type_args.is_empty() => {
+                Some(self.resolve_vec_static_method(method, args, ret, span))
+            }
+            "Vec" => {
+                Some(self.resolve_vec_method(type_args, method, args, ret, span))
+            }
+            "Map" if type_args.is_empty() => {
+                Some(self.resolve_map_static_method(method, args, ret, span))
+            }
+            "Map" => {
+                Some(self.resolve_map_method(type_args, method, args, ret, span))
+            }
+            "Rng" => Some(self.resolve_rng_method(method, args, ret, span)),
+            name if Self::is_atomic_type(name) => {
+                Some(self.resolve_atomic_method(name, method, args, ret, span))
+            }
+            name if Self::is_simd_type(name) => {
+                Some(self.resolve_simd_method(name, method, args, ret, span))
+            }
+            "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel" if !type_args.is_empty() => {
+                Some(self.resolve_concurrency_generic_method(type_name, type_args, method, args, ret, span))
+            }
+            name if matches!(name, "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex")
+                || rask_stdlib::StubRegistry::load().get_type(name).is_some() => {
+                Some(self.resolve_runtime_method(name, method, args, ret, span))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn resolve_rng_method(
         &mut self,
         method: &str,
