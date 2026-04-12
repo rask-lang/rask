@@ -1,54 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Raido VM — minimal working test
+// Raido VM — test harness
 // Run with: rask run --interp raido/main.rk
-
-// Opcodes (must match opcodes.rk)
-const OP_LOAD_INT: i64 = 2
-const OP_ADD: i64 = 6
-const OP_SUB: i64 = 7
-const OP_LT: i64 = 13
-const OP_JMP: i64 = 28
-const OP_JMP_IF_NOT: i64 = 30
-const OP_RETURN: i64 = 33
-
-// Encoding
-func encode_abc(op: i64, a: i64, b: i64, c: i64) -> i64 {
-    return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | ((b & 0xFF) << 8) | (c & 0xFF)
-}
-
-func encode_abx(op: i64, a: i64, bx: i64) -> i64 {
-    return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | (bx & 0xFFFF)
-}
-
-func encode_asbx(op: i64, a: i64, sbx: i64) -> i64 {
-    const biased = (sbx + 32768) & 0xFFFF
-    return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | biased
-}
-
-// Decoding
-func decode_op(instr: i64) -> i64 { return (instr >> 24) & 0xFF }
-func decode_a(instr: i64) -> i64 { return (instr >> 16) & 0xFF }
-func decode_b(instr: i64) -> i64 { return (instr >> 8) & 0xFF }
-func decode_c(instr: i64) -> i64 { return instr & 0xFF }
-func decode_bx(instr: i64) -> i64 { return instr & 0xFFFF }
-func decode_sbx(instr: i64) -> i64 { return (instr & 0xFFFF) - 32768 }
-
-// Value type
-enum Value {
-    None
-    Bool(bool)
-    Int(i64)
-}
-
-extend Value {
-    func is_truthy(self) -> bool {
-        match self {
-            Value.None => return false,
-            Value.Bool(b) => return b,
-            _ => return true,
-        }
-    }
-}
 
 // Vec helpers — Vec.get() returns T?, these unwrap with defaults
 func reg_get(regs: Vec<Value>, idx: i64) -> Value {
@@ -69,7 +21,7 @@ func code_get(code: Vec<i64>, idx: i64) -> i64 {
     }
 }
 
-// VM
+// Minimal VM loop for testing — uses opcodes and Value from the package
 func vm_run(code: Vec<i64>, fuel: i64) -> Value {
     const regs = Vec.new()
     let i: i64 = 0
