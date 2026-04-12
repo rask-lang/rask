@@ -1453,8 +1453,31 @@ impl TypeChecker {
             }
             // Vec.from(array) — construct Vec from array literal
             "from" if args.len() == 1 => {
-                // The argument is already a Vec<T> (array literals desugar to Vec)
-                self.unify(ret, &args[0], span)
+                // Extract element type from the argument (array literal or Vec)
+                // and produce Vec<T>.
+                let elem_ty = match &args[0] {
+                    Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
+                    Type::UnresolvedGeneric { name, args: type_args } if name == "Vec" => {
+                        if let Some(GenericArg::Type(t)) = type_args.first() {
+                            *t.clone()
+                        } else {
+                            self.ctx.fresh_var()
+                        }
+                    }
+                    Type::Generic { args: type_args, .. } => {
+                        if let Some(GenericArg::Type(t)) = type_args.first() {
+                            *t.clone()
+                        } else {
+                            self.ctx.fresh_var()
+                        }
+                    }
+                    _ => self.ctx.fresh_var(),
+                };
+                let vec_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(elem_ty))],
+                };
+                self.unify(ret, &vec_ty, span)
             }
             _ => {
                 let vec_ty = Type::UnresolvedGeneric {

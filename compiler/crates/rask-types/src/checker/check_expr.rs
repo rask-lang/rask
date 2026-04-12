@@ -15,6 +15,50 @@ use super::TypeChecker;
 
 use crate::types::{GenericArg, Type};
 
+/// Split a type argument string by commas, respecting nested angle brackets.
+/// "Map<string, bool>, i64" → ["Map<string, bool>", "i64"]
+fn split_type_args(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                args.push(s[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() {
+        args.push(last.to_string());
+    }
+    args
+}
+
+/// Parse a type argument string into a Type, handling nested generics.
+/// "Map<string, bool>" → UnresolvedGeneric { name: "Map", args: [string, bool] }
+/// "Route" → UnresolvedNamed("Route")
+fn parse_type_arg(s: &str) -> Type {
+    if let Some(open) = s.find('<') {
+        let base = &s[..open];
+        let inner = &s[open+1..s.len()-1];
+        let args = split_type_args(inner)
+            .into_iter()
+            .map(|a| GenericArg::Type(Box::new(parse_type_arg(&a))))
+            .collect();
+        Type::UnresolvedGeneric {
+            name: base.to_string(),
+            args,
+        }
+    } else {
+        Type::UnresolvedNamed(s.to_string())
+    }
+}
+
 impl TypeChecker {
     /// Infer expression type with an expected type hint for unsuffixed literals.
     /// Falls through to normal inference for non-literal or suffixed expressions.
@@ -1345,13 +1389,12 @@ impl TypeChecker {
                 || rask_stdlib::StubRegistry::load().get_type(base_name).is_some()
             {
                 let obj_ty = if name.contains('<') {
-                    // Parse generic args: "Vec<Route>" → UnresolvedGeneric { name: "Vec", args: [Type(Route)] }
-                    let generic_args = name[base_name.len()+1..name.len()-1]
-                        .split(',')
-                        .map(|s| {
-                            let s = s.trim();
-                            GenericArg::Type(Box::new(Type::UnresolvedNamed(s.to_string())))
-                        })
+                    // Parse generic args, respecting nested angle brackets:
+                    // "Shared<Map<string, bool>>" → ["Map<string, bool>"]
+                    let inner = &name[base_name.len()+1..name.len()-1];
+                    let generic_args = split_type_args(inner)
+                        .into_iter()
+                        .map(|s| GenericArg::Type(Box::new(parse_type_arg(&s))))
                         .collect();
                     Type::UnresolvedGeneric {
                         name: base_name.to_string(),

@@ -604,7 +604,7 @@ impl Desugarer {
                     if !lex.errors.is_empty() {
                         return None; // Parse error — leave as raw string
                     }
-                    let mut parser = rask_parser::Parser::new(lex.tokens);
+                    let mut parser = rask_parser::Parser::new_with_file_id(lex.tokens, 0, span.file_id);
                     let mut parsed = parser.parse_expr().ok()?;
 
                     // Remap spans from 0-based (within expr_str) to absolute file position.
