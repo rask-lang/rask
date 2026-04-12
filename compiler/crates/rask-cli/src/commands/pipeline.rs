@@ -133,10 +133,7 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
         }
     };
 
-    let mut stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
-    // Include all type definitions (struct/enum) from stubs so the type checker
-    // can resolve fields on types like Output, IoError, etc.
-    stdlib_decls.extend(rask_stdlib::StubRegistry::all_type_decls());
+    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
 
     let typed = match rask_types::typecheck_with_stdlib(resolved, &parse_result.decls, &stdlib_decls) {
         Ok(t) => t,
@@ -318,7 +315,7 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
         }
     }
 
-    let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
+    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
 
     let typed = match rask_types::typecheck_with_stdlib(resolved, &pkg_ctx.all_decls, &stdlib_decls) {
         Ok(t) => t,

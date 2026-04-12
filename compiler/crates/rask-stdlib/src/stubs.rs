@@ -116,6 +116,38 @@ impl StubRegistry {
     /// Return declarations from stdlib .rk files that have compilable function
     /// bodies. Includes struct/enum definitions so the resolver can find types
     /// referenced by impl blocks and function bodies.
+    /// All stdlib declarations with full method signatures preserved.
+    /// Used by the type checker which needs to see every method name and
+    /// its parameter/return types, even when the body is empty.
+    pub fn typecheck_decls() -> Vec<Decl> {
+        let mut decls = Vec::new();
+        let mut next_id: u32 = 1_000_000;
+
+        for (_filename, source) in STUB_SOURCES {
+            let lex_result = rask_lexer::Lexer::new(source).tokenize();
+            if !lex_result.is_ok() {
+                continue;
+            }
+            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
+            let parse_result = parser.parse();
+            next_id = parser.next_node_id();
+            for decl in parse_result.decls {
+                match &decl.kind {
+                    DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Extern(_)
+                    | DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Import(_) => {
+                        decls.push(decl);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        decls
+    }
+
+    /// Stdlib declarations with empty-body methods stripped.
+    /// Used by the monomorphizer, interpreter, and codegen which need
+    /// real implementations, not stub signatures.
     pub fn compilable_decls() -> Vec<Decl> {
         let mut decls = Vec::new();
         // Start NodeIds high to avoid collision with user code NodeIds.
