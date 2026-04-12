@@ -6,51 +6,36 @@ bytecode VM cleanly, that's a language bug to fix.
 Two-pass compiler: declaration pass scans types, compile pass emits bytecode
 with type checking. No full AST. Memory is O(declarations), not O(program size).
 
-## Prerequisites
+## File Structure
 
-1. ~~Bitwise ops on explicit integer types~~ -- **Fixed.**
-2. ~~`string.concat` arity mismatch~~ -- **Fixed.**
-3. ~~Vec index type mismatch~~ -- **Fixed.**
-4. **`fs.read_bytes` / `fs.write_bytes`** -- binary file I/O in the stdlib.
-   Needed for Phase 10 (serialization) and Phase 11 (chunk save/load).
-5. **Vec<u8> codegen load width** -- `ArrayIndex` in `builder.rs` defaults to
-   i64 loads when `expected_ty` is None. Fix: use the tracked `elem_type`
-   (already in `LocalMeta`) as the load width.
-
-## Skeleton Status
-
-Files in `raido/` and their state:
-
-| File | Status | Notes |
-|------|--------|-------|
-| `build.rk` | Done | Package declaration |
-| `bytes.rk` | **Done** | Little-endian read/write helpers |
-| `value.rk` | **Done** | Number type + Value enum |
-| `opcodes.rk` | **Done** | 42 opcodes, encode/decode, disassembler |
-| `chunk.rk` | **Done** | Prototype + Chunk types with type metadata |
-| `lexer.rk` | **Partial** | Structure done, `next_token()` is a stub |
-| `compiler.rk` | **Partial** | Scaffolding done. compile/statement/expression are stubs |
-| `vm.rk` | **Partial** | 6 opcodes implemented (load, return) |
-| `main.rk` | **Done** | Standalone test: encoding round-trips, 40+2, sum countdown |
-| `arena.rk` | Not started | |
-| `types.rk` | Not started | |
-| `stdlib.rk` | Not started | |
-| `coroutine.rk` | Not started | |
-| `host.rk` | Not started | |
-| `serialize.rk` | Not started | |
+```
+raido/
+  build.rk         # Package declaration
+  value.rk         # 8-byte values, 32.32 fixed-point Number
+  bytes.rk         # Byte encoding helpers (read/write u8, u16, u32, i64)
+  arena.rk         # Byte-buffer arena with bump allocation
+  opcodes.rk       # 42 opcodes, encode/decode 32-bit instructions
+  chunk.rk         # Prototype, Chunk types
+  types.rk         # Type table: struct layouts, enum defs, extern declarations
+  lexer.rk         # Tokenizer
+  compiler.rk      # Two-pass: declaration scan + recursive descent with type checking
+  vm.rk            # Dispatch loop, registers, call stack
+  stdlib.rk        # Core + opt-in module functions
+  coroutine.rk     # Coroutine state, resume/yield
+  host.rk          # Extern struct/func registry
+  serialize.rk     # VM state serialization
+  main.rk          # Standalone test harness
+```
 
 ## Phases
 
-### Phase 1: Byte helpers and value types ✓ (mostly)
+### Phase 1: Byte helpers and value types
 
-**bytes.rk** — **Done.** Little-endian encode/decode for u8, u16, u32, i64.
+**bytes.rk** — Little-endian encode/decode for u8, u16, u32, i64.
 
-**value.rk** — **Done.** Number type (32.32 fixed-point with add, sub, mul, div,
-comparisons, to_string). Value enum: None, Bool, Int, Num, Str, Array, MapVal,
-Struct, Enum, FuncRef, HostRef.
-
-**Remaining:** Test fixed-point edge cases: overflow saturation, division by
-zero, negative zero.
+**value.rk** — 32.32 fixed-point Number (add, sub, mul, div, comparisons,
+to_string). Value enum: None, Bool, Int, Num, Str, Array, MapVal, Struct,
+Enum, FuncRef, HostRef.
 
 ### Phase 2: Arena
 
@@ -90,36 +75,30 @@ func struct_set_field(self, offset: i64, field_idx: i64, val: i64)
 `frame_begin()` saves `top`. `frame_end()` resets `top = frame_base`.
 `reset()` sets `top = 0`.
 
-**Test:** Alloc each object type, read back, verify byte layout. Frame
-begin/end reclaims correctly. ArenaExhausted at capacity. Struct field
-get/set round-trips.
+### Phase 3: Opcodes and chunks
 
-### Phase 3: Opcodes and chunks ✓ (partial)
-
-**opcodes.rk** — **Done.** 42 opcodes, encode/decode, disassembler:
+**opcodes.rk** — 42 opcodes, encode/decode, disassembler:
 
 ```
-Spec opcodes (~38):
-  LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST, LOAD_NONE, MOVE,
-  ADD, SUB, MUL, DIV, MOD, NEG,
-  EQ, LT, LE,
-  NOT, LEN, CONCAT,
-  NEW_ARRAY, NEW_MAP, GET_INDEX, SET_INDEX,
-  NEW_STRUCT, GET_STRUCT_FIELD, SET_STRUCT_FIELD,
-  ENUM_TAG,
-  GET_FIELD, SET_FIELD,
-  JMP, JMP_IF, JMP_IF_NOT,
-  CALL, TAIL_CALL, RETURN, FUNC_REF,
-  IS_SOME, UNWRAP, WRAP_SOME,
-  COROUTINE, YIELD, RESUME,
-  TRY
+LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST, LOAD_NONE, MOVE,
+ADD, SUB, MUL, DIV, MOD, NEG,
+EQ, LT, LE,
+NOT, LEN, CONCAT,
+NEW_ARRAY, NEW_MAP, GET_INDEX, SET_INDEX,
+NEW_STRUCT, GET_STRUCT_FIELD, SET_STRUCT_FIELD,
+ENUM_TAG,
+GET_FIELD, SET_FIELD,
+JMP, JMP_IF, JMP_IF_NOT,
+CALL, TAIL_CALL, RETURN, FUNC_REF,
+IS_SOME, UNWRAP, WRAP_SOME,
+COROUTINE, YIELD, RESUME,
+TRY
 ```
 
-**chunk.rk** — **Done.** Prototype has type metadata (param_types, return_type).
-Chunk has module_imports. Test recursive `Vec<Prototype>` early — if Rask
-can't handle it, flatten into a pool.
+**chunk.rk** — Prototype (code, constants, nested prototypes, type metadata)
+and Chunk (main prototype, imports, module_imports, exports).
 
-**types.rk** — New file:
+**types.rk:**
 
 ```rask
 struct TypeTable {
@@ -142,30 +121,17 @@ struct EnumDef {
 }
 ```
 
-**Remaining:** Create types.rk. Test recursive Vec<Prototype>.
+### Phase 4: Lexer
 
-### Phase 4: Lexer ✓ (partial)
+Tokenize Raido source. Newline-sensitive (statement terminator).
 
-**lexer.rk** — Structure done: Lexer struct, peek/advance/match_char,
-skip_whitespace (including line and block comments), keyword_or_ident.
-
-**`next_token()` is a stub** — returns `Ok(Token.Eof)`. This is the main
-work item.
-
-**Token enum is spec-aligned:** keywords (struct/enum/extern/extend/import/is/as),
-compound operators (+=, -=, ??, etc.), type annotation tokens (->, ?).
+Keywords (struct/enum/extern/extend/import/is/as/etc.), compound operators
+(+=, -=, ??, etc.), type annotation tokens (->, ?).
 
 String interpolation: `"hello {name}"` emits a token sequence the compiler
 can handle. Implement after basic strings work.
 
-**Test:** Lex snippets, verify token streams. Typed function signatures
-(`func foo(x: int) -> number`). String escapes. Hex/binary int literals.
-
 ### Phase 5: Two-pass compiler
-
-**compiler.rk** — Scaffolding done: token consumption, register allocation,
-bytecode emission, scope management, backpatching. Core compile methods are
-stubs.
 
 **Pass 1: Declaration scan.**
 
@@ -182,9 +148,7 @@ Build TypeTable. This is O(declarations), not O(program size).
 
 **Pass 2: Compile with type checking.**
 
-Recursive descent emitting bytecode directly. The existing scaffolding
-(advance, emit, alloc_reg, begin_scope/end_scope, backpatching) is the
-foundation.
+Recursive descent emitting bytecode directly.
 
 ```rask
 struct Compiler {
@@ -221,8 +185,7 @@ struct Local {
 
 `compile_expression` returns `(register, type_id)`.
 
-**No upvalue resolution.** No closures. Function references are prototype
-indices loaded with `FUNC_REF`.
+No closures. Function references are prototype indices loaded with `FUNC_REF`.
 
 **Implement in order:**
 1. Literals → LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST, LOAD_NONE
@@ -240,10 +203,6 @@ indices loaded with `FUNC_REF`.
 13. Module imports → import resolution
 
 ### Phase 6: VM
-
-**vm.rk** — Skeleton exists with dispatch loop structure. 6 opcodes
-implemented: LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST, LOAD_NONE,
-RETURN. Missing arena.
 
 ```rask
 struct Vm {
@@ -267,8 +226,7 @@ struct CallFrame {
 
 The Rask implementation uses `Vec<Value>` (tagged) for registers even though
 Raido scripts are statically typed — the VM dispatch loop operates generically
-on register contents. This is not a spec violation; the spec's "no type tags"
-describes Raido's semantics, not the host implementation.
+on register contents.
 
 **Implement opcode handlers in the same order as Phase 5.** After each step,
 compile + run Raido scripts using those features.
@@ -279,9 +237,6 @@ compile + run Raido scripts using those features.
 - After step 6: struct creation and field access
 - After step 7: enum match dispatch
 - After step 8: arrays and maps
-
-**main.rk** has a standalone test that already exercises encoding, basic
-arithmetic, and a countdown loop — keep expanding it as opcodes land.
 
 ### Phase 7: Standard library
 
@@ -319,19 +274,12 @@ struct Coroutine {
 `R[B+1..B+C]`. First `resume()` starts execution. RESUME swaps VM state
 with coroutine state. YIELD swaps back. One runs at a time.
 
-**Test:** Producer/consumer. AI patrol from spec. Nested resume/yield.
-Resume-with-value.
-
 ### Phase 9: Host interop
 
 Extern funcs: closures stored in a Vec, invoked when CALL targets one.
 
 Extern structs: GET_FIELD/SET_FIELD dispatch through vtable by slot index.
 Type checked at load time against script declarations.
-
-**Test:** Rask program creates VM, registers extern bindings, compiles and
-loads script, verifies load-time type checking catches mismatches, runs
-script, reads results back.
 
 ### Phase 10: Serialization
 
@@ -349,20 +297,16 @@ Remaining state:
 
 No pointer fixup — all references are integer arena offsets.
 
-**Test:** Serialize mid-execution, deserialize, resume, verify identical result.
-
 ### Phase 11: Content identity
 
 SHA-256 of bytecode + constants + prototypes + type table. Pure integer
 math + bitwise ops — implementable in Rask (~200 lines). Start with FNV-1a
 if SHA-256 is too tedious, swap later.
 
-**Test:** Same source → same hash. Known test vectors.
-
 ## Dependency Graph
 
 ```
-Phase 1 (values + bytes) ✓
+Phase 1 (values + bytes)
     |
 Phase 2 (arena)          Phase 4 (lexer)
     |                        |
@@ -389,29 +333,16 @@ Phase 7    Phase 8    Phase 9
 Phases 1-3 and Phase 4 are parallel tracks.
 Phases 7, 8, 9 are parallel after Phase 6.
 
-## Next Steps
-
-The immediate work before building further:
-
-1. **Align skeleton with spec.** Fix the divergences listed above — Value
-   variants, opcodes, chunk fields, lexer tokens, VM fields. This is
-   cleanup, not new features.
-2. **Implement `next_token()`** in lexer.rk. Everything downstream blocks on it.
-3. **Build arena.rk and types.rk.** These are needed before the compiler can
-   emit struct/enum/collection operations.
-
-After that, the compiler (Phase 5) is the critical path.
-
 ## Risks
 
 **Recursive struct in Prototype:** `Prototype` contains `Vec<Prototype>`.
 If Rask doesn't handle this, flatten into a `Vec<Prototype>` pool with
-index references. Test early.
+index references.
 
 **Two-pass complexity:** The declaration pass needs to re-lex the source or
 store enough position info to restart. If the lexer isn't cheaply resettable,
-buffer tokens from pass 1 or just re-lex from the start (source is a string,
-cheap to reconstruct a new Lexer).
+just re-lex from the start (source is a string, cheap to reconstruct a new
+Lexer).
 
 **Vec\<Vec\<i64\>\> for enum payloads:** TypeTable uses nested Vecs. Verify
 Rask handles this.
@@ -421,16 +352,9 @@ Rask handles this.
 Track any point where the language gets in the way. This is the whole
 reason to write it in Rask.
 
-### Findings
-
-1. ~~Bitwise ops on i64~~ — **Fixed.** Typo in unify.rs.
-2. ~~Codegen crash on bitwise~~ — cascading from #1.
-3. **Vec.get() returns T? (optional).** Every register/code access needs
+1. **Vec.get() returns T? (optional).** Every register/code access needs
    unwrapping. Workable — helper functions `reg_get`/`code_get` wrap it.
-   Not a bug, but friction. Consider whether Vec should have an unchecked
-   `[]` operator.
-4. ~~Multi-file packages~~ — **Works fine.**
-5. ~~println with interpolation~~ — **Fixed.**
-6. **Newlines as statement terminators.** Multi-line `&&` chains like
+   Consider whether Vec should have an unchecked `[]` operator.
+2. **Newlines as statement terminators.** Multi-line `&&` chains like
    `a == 1 \n && b == 2` fail because the newline terminates the statement.
-   Must keep `&&` chains on one line. Not a bug — by design.
+   Must keep `&&` chains on one line. By design, not a bug.
