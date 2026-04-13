@@ -192,6 +192,7 @@ impl StubRegistry {
             }
         }
 
+        rask_desugar::desugar(&mut decls);
         decls
     }
 

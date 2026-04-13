@@ -1606,6 +1606,7 @@ name = "rask-stdlib"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
+ "rask-desugar",
  "rask-lexer",
  "rask-parser",
 ]

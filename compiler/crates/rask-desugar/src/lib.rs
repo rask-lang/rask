@@ -573,9 +573,10 @@ impl Desugarer {
         // Desugar StringInterp: segments → "lit".concat(expr.to_string()).concat("lit")...
         if let ExprKind::StringInterp(segments) = &expr.kind {
             let segments = segments.clone();
-            if let Some(desugared) = self.desugar_string_interp(&segments, span) {
-                expr.kind = desugared;
-            }
+            expr.kind = match self.desugar_string_interp(&segments, span) {
+                Some(desugared) => desugared,
+                None => ExprKind::String(String::new()),
+            };
         }
         // Legacy: raw strings with { that weren't parsed as StringInterp (shouldn't happen,
         // but kept for safety during transition)
