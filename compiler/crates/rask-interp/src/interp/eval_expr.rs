@@ -1585,6 +1585,7 @@ impl Interpreter {
                         match (&obj, method.as_str()) {
                             (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
                             (Value::Shared(s), "write") => WithSource::SharedWrite(Arc::clone(s)),
+                            (Value::RaskMutex(m), "lock") => WithSource::Mutex(Arc::clone(m)),
                             _ => {
                                 return Err(RuntimeDiagnostic::new(
                                     RuntimeError::TypeError(format!(

@@ -601,6 +601,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("TcpConnection_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpConnection_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
 
+        // ── HTTP server close (linear resource cleanup) ─────────────
+        StdlibEntry::simple("HttpServer_close", "rask_http_server_close", &[types::I64], None, false),
+
         // ── JSON module ─────────────────────────────────────────────
         StdlibEntry {
             mir_name: "json_encode", c_name: "rask_json_encode",

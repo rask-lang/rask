@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Regression test: calling .lock() on a Mutex field via a `with` block
+// must lower to the 2-arg Mutex_lock call (mutex ptr + closure).
+// Previously `with self.index.lock() as idx { ... }` was lowered as a
+// plain method call, emitting Mutex_lock with only 1 arg and failing
+// Cranelift verification.
+
+struct Counter {
+    value: Mutex<i64>
+}
+
+extend Counter {
+    func snapshot(self) -> i64 {
+        with self.value.lock() as v {
+            return v
+        }
+    }
+}
+
+func main() {
+    const c = Counter { value: Mutex.new(42) }
+    println(c.snapshot().to_string())
+}

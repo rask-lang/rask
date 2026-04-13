@@ -2610,6 +2610,35 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
+                // Detect Mutex pattern: with mutex.lock() as v { body }
+                // Source is a method call `.lock()` on a Mutex expression.
+                if bindings.len() == 1 {
+                    let binding = &bindings[0];
+                    if let ExprKind::MethodCall { object, method, args: call_args, .. } = &binding.source.kind {
+                        let is_lock_call = method == "lock" && call_args.is_empty();
+                        if is_lock_call {
+                            let is_mutex = self.ctx.lookup_raw_type(object.id)
+                                .map(|ty| matches!(ty,
+                                    rask_types::Type::UnresolvedGeneric { name, .. }
+                                    | rask_types::Type::UnresolvedNamed(name)
+                                    if name == "Mutex"
+                                ))
+                                .unwrap_or(false)
+                            || if let ExprKind::Ident(var_name) = &object.kind {
+                                self.meta(var_name)
+                                    .and_then(|m| m.type_prefix.as_deref())
+                                    .map(|p| p == "Mutex")
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            };
+                            if is_mutex {
+                                return self.lower_mutex_with_block(object, &binding.name, body);
+                            }
+                        }
+                    }
+                }
+
                 // Detect Mutex pattern: with mutex as v { body }
                 // Source is a plain Ident referring to a Mutex variable.
                 if bindings.len() == 1 {

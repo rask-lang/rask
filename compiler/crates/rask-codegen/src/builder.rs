@@ -163,7 +163,14 @@ impl<'a> FunctionBuilder<'a> {
         // and their transitive sub-blocks (handler/done blocks reachable
         // from cleanup blocks). These are excluded from normal codegen
         // and processed as part of shared cleanup blocks instead.
-        let mut cleanup_only: HashSet<BlockId> = self.mir_fn.blocks.iter()
+        //
+        // A block is cleanup-only IFF every path reaching it goes through a
+        // CleanupReturn terminator. Blocks reachable from both cleanup and
+        // normal paths (e.g. post-cleanup continuation points listed in a
+        // chain) must stay in the normal block_map so non-cleanup Gotos can
+        // still target them.
+        let preds = rask_mir::analysis::cfg::predecessors(self.mir_fn);
+        let chain_members: HashSet<BlockId> = self.mir_fn.blocks.iter()
             .filter_map(|b| {
                 if let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &b.terminator.kind {
                     Some(cleanup_chain.iter().copied())
@@ -173,19 +180,40 @@ impl<'a> FunctionBuilder<'a> {
             })
             .flatten()
             .collect();
-        // Transitively include sub-blocks reachable from cleanup blocks
-        // (e.g. else handler blocks, done blocks in ensure sub-CFGs).
-        {
-            let mut to_visit: Vec<BlockId> = cleanup_only.iter().copied().collect();
-            while let Some(bid) = to_visit.pop() {
-                if let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == bid) {
-                    for target in rask_mir::analysis::cfg::successors(&mir_block.terminator) {
-                        if cleanup_only.insert(target) {
-                            to_visit.push(target);
-                        }
-                    }
+        let is_cleanup_pred = |pred_id: &BlockId| -> bool {
+            self.mir_fn.blocks.iter()
+                .find(|b| b.id == *pred_id)
+                .map(|b| matches!(b.terminator.kind, MirTerminatorKind::CleanupReturn { .. }))
+                .unwrap_or(false)
+        };
+        let mut cleanup_only: HashSet<BlockId> = HashSet::new();
+        for &bid in &chain_members {
+            // Chain member is cleanup-only only if all non-CleanupReturn
+            // predecessors are absent (i.e. no normal Goto/Branch targets it).
+            let has_normal_pred = preds.get(&bid)
+                .map(|ps| ps.iter().any(|p| !is_cleanup_pred(p)))
+                .unwrap_or(false);
+            if !has_normal_pred {
+                cleanup_only.insert(bid);
+            }
+        }
+        // Transitively include successors whose *all* predecessors are
+        // already cleanup_only — these are blocks reachable only through
+        // cleanup paths (e.g. sub-CFGs in ensure handlers).
+        loop {
+            let mut added = false;
+            for mir_block in &self.mir_fn.blocks {
+                if cleanup_only.contains(&mir_block.id) { continue; }
+                let bid_preds = match preds.get(&mir_block.id) {
+                    Some(p) if !p.is_empty() => p,
+                    _ => continue,
+                };
+                if bid_preds.iter().all(|p| cleanup_only.contains(p)) {
+                    cleanup_only.insert(mir_block.id);
+                    added = true;
                 }
             }
+            if !added { break; }
         }
 
         // Deduplicate cleanup chains: map each unique chain to a shared block.

@@ -791,6 +791,14 @@ void rask_net_close(int64_t fd) {
     if (fd >= 0) close((int)fd);
 }
 
+// Close an HttpServer — extracts the listener fd from the struct
+// (listener is the first field) and closes it.
+void rask_http_server_close(int64_t server_ptr) {
+    if (server_ptr == 0) return;
+    int64_t fd = *(int64_t *)(uintptr_t)server_ptr;
+    if (fd >= 0) close((int)fd);
+}
+
 // Clone a socket fd via dup().
 int64_t rask_net_clone(int64_t fd) {
     if (fd < 0) return -1;

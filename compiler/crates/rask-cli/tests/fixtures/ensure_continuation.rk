@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Regression test: ensure-handler cleanup_chain's continuation block
+// must stay in the normal block_map even though it's a chain member.
+// Previously codegen's cleanup_only set transitively swallowed blocks
+// reachable from cleanup, making normal Gotos fail with "Target block
+// not found" when they targeted the post-cleanup continuation.
+
+func run(flag: bool) -> i64 {
+    let counter: i64 = 0
+    ensure { counter = counter + 10 }
+
+    if flag {
+        return counter
+    }
+
+    counter = counter + 1
+    return counter
+}
+
+func main() {
+    println(run(true).to_string())
+    println(run(false).to_string())
+}

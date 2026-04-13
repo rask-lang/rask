@@ -393,6 +393,7 @@ int64_t rask_net_tcp_listen(const RaskStr *addr);
 int64_t rask_net_tcp_connect(const RaskStr *addr);
 int64_t rask_net_tcp_accept(int64_t listen_fd);
 void    rask_net_close(int64_t fd);
+void    rask_http_server_close(int64_t server_ptr);
 int64_t rask_net_clone(int64_t fd);
 int64_t rask_net_read_all(int64_t fd, int64_t out_ptr);
 int64_t rask_net_write_all(int64_t fd, int64_t str_ptr);
