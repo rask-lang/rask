@@ -336,7 +336,7 @@ Compiler-known methods on primitive and collection types. These are not user-ext
 **`string` methods (always available, not opt-in):**
 
 - `len() -> int` -- byte length
-- `sub(start: int, end: int?) -> string` -- substring by byte offset
+- `substring(start: int, end: int) -> string` -- extract by byte offset, allocates
 - `find(pattern: string) -> int?` -- literal substring search
 - `upper() -> string`, `lower() -> string` -- ASCII only
 - `split(sep: string) -> array<string>`, `trim() -> string`

@@ -782,7 +782,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Shared_drop", "rask_shared_drop_i64", &[types::I64], None, false),
 
         // ── Concurrency: Mutex<T> ──────────────────────────────────
-        StdlibEntry::simple("Mutex_new", "rask_mutex_new_ptr", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Mutex_new", c_name: "rask_mutex_new_ptr",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Mutex_lock", "rask_mutex_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_try_lock", "rask_mutex_try_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_clone", "rask_mutex_clone", &[types::I64], Some(types::I64), false),

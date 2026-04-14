@@ -425,8 +425,19 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
 
     let variant_count = enum_decl.variants.len();
 
-    // E2: Determine discriminant type
-    let tag_ty = if variant_count <= 256 {
+    // E2/E14: Determine discriminant type
+    let tag_ty = if let Some(ref bt) = enum_decl.backing_type {
+        match bt.as_str() {
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "i8" => Type::I8,
+            "i16" => Type::I16,
+            "i32" => Type::I32,
+            "i64" | "int" => Type::I64,
+            _ => if variant_count <= 256 { Type::U8 } else { Type::U16 },
+        }
+    } else if variant_count <= 256 {
         Type::U8
     } else {
         Type::U16
@@ -472,7 +483,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
 
         variant_layouts.push(VariantLayout {
             name: variant.name.clone(),
-            tag: tag as u64,
+            tag: variant.discriminant.unwrap_or(tag as i128) as u64,
             payload_offset: 0, // Will be computed from tag
             payload_size,
             fields: variant_fields,
@@ -560,12 +571,14 @@ mod tests {
                             })
                             .collect(),
                         attrs: vec![],
+                        discriminant: None,
                     })
                     .collect(),
                 methods: vec![],
                 is_pub: false,
                 attrs: vec![],
                 doc: None,
+                backing_type: None,
             }),
             span: dummy_span(),
         }

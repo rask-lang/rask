@@ -16,6 +16,7 @@ enum Name { A, B }                    // Simple tag-only
 enum Name { A(T), B(U, V) }           // Positional payloads
 enum Name { A { x: T, y: U } }       // Named payloads
 enum Name<T> { Some(T), None }        // Generic enum
+enum Name: u8 { A = 0, B = 1 }       // Explicit discriminants (E14-E18)
 ```
 
 | Rule | Description |
@@ -398,7 +399,7 @@ Shape.variants()  // ❌ Compile error: variants() requires fieldless enum
 
 | Rule | Description |
 |------|-------------|
-| **E9: Discriminant access** | `discriminant(e)` returns zero-indexed variant index as `u16` |
+| **E9: Discriminant access** | `discriminant(e)` returns the variant's discriminant value |
 | **E10: Null-pointer optimization** | Compiler applies niche optimization automatically; `@layout(C)` disables it |
 
 ```rask
@@ -413,6 +414,8 @@ const d = discriminant(s)  // 1 (zero-indexed)
 func discriminant(e: T) -> u16 where T: Enum
 ```
 
+For enums with explicit backing types (E14), the return type matches the backing type instead of `u16`.
+
 | Attribute | Behavior |
 |-----------|----------|
 | None | Compiler MAY reorder variants for size optimization |
@@ -425,6 +428,70 @@ func discriminant(e: T) -> u16 where T: Enum
 |------|----------------|
 | `Option<Owned<T>>` | Null = None, non-null = Some |
 | `Option<Handle<T>>` | generation=0 = None, else Some |
+
+## Explicit Discriminants
+
+Fieldless enums can declare a backing type and assign specific values to variants. For wire formats, serialization, C interop.
+
+<!-- test: parse -->
+```rask
+enum ObjectKind: u8 {
+    Reserved = 0,
+    String = 1,
+    Array = 2,
+    Map = 3,
+    Struct = 4,
+    Enum = 5,
+}
+```
+
+| Rule | Description |
+|------|-------------|
+| **E14: Backing type** | `enum Foo: T { ... }` sets the discriminant representation. `T` is any integer type. Omit for default sizing (E2) |
+| **E15: Explicit values** | `Variant = N` assigns a discriminant value. Values must be unique and fit the backing type |
+| **E16: All or none** | If any variant has `= N`, all must. No mixing explicit and auto-indexed within one enum |
+| **E17: No payloads** | Enums with explicit values cannot have payload variants. `Variant(T) = 1` is a compile error |
+| **E18: Integer cast** | `e as i64` extracts the discriminant. Works on any fieldless enum, not just explicit ones |
+
+**Integer cast** works on all fieldless enums — auto-indexed or explicit:
+
+<!-- test: parse -->
+```rask
+// Explicit values
+enum ObjectKind: u8 {
+    Reserved = 0,
+    String = 1,
+}
+const tag = ObjectKind.String as u8   // 1
+const wide = ObjectKind.String as i64 // 1
+
+// Auto-indexed (zero-based declaration order)
+enum Color { Red, Green, Blue }
+Color.Blue as i64  // 2
+```
+
+Enums with payloads cannot use `as` integer cast — compile error.
+
+**Backing type** controls representation size and valid range:
+
+<!-- test: skip -->
+```rask
+enum Opcode: u8 { Add = 6, Sub = 7 }      // fits in 1 byte
+enum Port: u16 { Http = 80, Https = 443 }  // fits in 2 bytes
+enum Signal: i32 { Hup = 1, Kill = 9 }     // C-compatible signed
+```
+
+When a backing type is specified, variant reordering is disabled (implies `@layout(ordered)`). The compiler stores the enum using exactly the specified type.
+
+**Constructing from integer** for deserialization:
+
+<!-- test: skip -->
+```rask
+const kind: ObjectKind? = ObjectKind.from_value(1)  // Some(ObjectKind.String)
+const bad: ObjectKind? = ObjectKind.from_value(99)   // none
+```
+
+`from_value` is auto-generated for all fieldless enums. Returns optional — invalid values produce `none`.
 
 ## Empty Enum (Never Type)
 

@@ -169,11 +169,13 @@ impl TypeSubstitutor {
                     visibility: f.visibility,
                 }).collect(),
                 attrs: v.attrs.clone(),
+                discriminant: v.discriminant,
             }).collect(),
             methods: e.methods.iter().map(|m| self.clone_fn_decl(m)).collect(),
             is_pub: e.is_pub,
             attrs: e.attrs.clone(),
             doc: e.doc.clone(),
+            backing_type: e.backing_type.clone(),
         }
     }
 

@@ -4,12 +4,13 @@
 
 // Object kind tags (exhaustive, see architecture.md)
 // 0 = reserved (zeroed memory reads as invalid), 6-255 reserved
-enum ObjectKind {
-    String: u8 = 1
-    Array: u8 = 2
-    Map: u8 = 3
-    Struct: u8 = 4
-    Enum: u8 = 5
+enum ObjectKind: u8 {
+    Reserved = 0
+    String = 1
+    Array = 2
+    Map = 3
+    Struct = 4
+    Enum = 5
 }
 
 enum ArenaError {
@@ -55,7 +56,7 @@ extend Arena {
 
     // --- Internal allocation ---
 
-    func alloc(self, kind: i64, body_size: i64) -> i64 or ArenaError {
+    func alloc(self, kind: ObjectKind, body_size: i64) -> i64 or ArenaError {
         if body_size > MAX_BODY {
             return ArenaError.ObjectTooLarge
         }
@@ -65,7 +66,7 @@ extend Arena {
         }
         ensure_size(self.buf, self.top + aligned)
         const offset = self.top
-        write_u8(self.buf, offset, kind)
+        write_u8(self.buf, offset, kind as i64)
         write_u8(self.buf, offset + 1, 0)
         write_u16le(self.buf, offset + 2, body_size)
         self.top = self.top + aligned

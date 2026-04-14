@@ -21,7 +21,7 @@ impl TypeChecker {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Struct(s) => self.register_struct(s),
-                DeclKind::Enum(e) => self.register_enum(e),
+                DeclKind::Enum(e) => self.register_enum(e, decl.span),
                 DeclKind::Trait(t) => self.register_trait(t),
                 DeclKind::Union(u) => self.register_union(u),
                 DeclKind::TypeAlias(a) => self.register_type_alias(a, decl.span),
@@ -199,7 +199,48 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn register_enum(&mut self, e: &EnumDecl) {
+    pub(super) fn register_enum(&mut self, e: &EnumDecl, span: Span) {
+        // E16: If any variant has an explicit discriminant, all must
+        let has_disc = e.variants.iter().any(|v| v.discriminant.is_some());
+        let all_disc = e.variants.iter().all(|v| v.discriminant.is_some());
+        if has_disc && !all_disc && !e.variants.is_empty() {
+            self.errors.push(TypeError::MixedDiscriminants {
+                enum_name: e.name.clone(),
+                span,
+            });
+        }
+
+        // E17: Explicit discriminants cannot have payload variants
+        if has_disc {
+            for v in &e.variants {
+                if !v.fields.is_empty() {
+                    self.errors.push(TypeError::DiscriminantWithPayload {
+                        enum_name: e.name.clone(),
+                        variant: v.name.clone(),
+                        span,
+                    });
+                }
+            }
+        }
+
+        // E15: Discriminant values must be unique
+        if has_disc {
+            let mut seen = std::collections::HashMap::new();
+            for v in &e.variants {
+                if let Some(val) = v.discriminant {
+                    if let Some(prev) = seen.insert(val, v.name.clone()) {
+                        self.errors.push(TypeError::DuplicateDiscriminant {
+                            enum_name: e.name.clone(),
+                            value: val,
+                            first: prev,
+                            second: v.name.clone(),
+                            span,
+                        });
+                    }
+                }
+            }
+        }
+
         let variants: Vec<_> = e
             .variants
             .iter()
@@ -694,7 +735,7 @@ impl TypeChecker {
                         for ext_decl in &ext_decls {
                             match &ext_decl.kind {
                                 DeclKind::Struct(s) => self.register_struct(s),
-                                DeclKind::Enum(e) => self.register_enum(e),
+                                DeclKind::Enum(e) => self.register_enum(e, ext_decl.span),
                                 DeclKind::Trait(t) => self.register_trait(t),
                                 DeclKind::TypeAlias(a) => self.register_type_alias(a, ext_decl.span),
                                 _ => {}

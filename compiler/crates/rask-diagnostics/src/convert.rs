@@ -656,6 +656,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(format!("use `{}.{}().field` for inline access, or `with {}.{}() as v {{ }}` for multi-statement access", ty.to_lowercase(), method, ty.to_lowercase(), method))
                     .with_why(format!("sync inline access is expression-scoped — the lock is held only for the chain [mem.borrowing/E5]"))
             }
+            MixedDiscriminants { enum_name, span } => {
+                Diagnostic::error(format!("enum `{}` mixes explicit and auto-indexed discriminants", enum_name))
+                    .with_code("E0340")
+                    .with_primary(*span, "if any variant has `= N`, all must")
+                    .with_why("mixed discriminants make variant ordering ambiguous [type.enums/E16]")
+            }
+            DiscriminantWithPayload { enum_name, variant, span } => {
+                Diagnostic::error(format!("variant `{}` on `{}` has fields and an explicit discriminant", variant, enum_name))
+                    .with_code("E0341")
+                    .with_primary(*span, format!("variant `{}` cannot have both", variant))
+                    .with_why("enums with explicit discriminants are integer-backed and cannot carry payloads [type.enums/E17]")
+            }
+            DuplicateDiscriminant { enum_name, value, first, second, span } => {
+                Diagnostic::error(format!("duplicate discriminant value {} in `{}`", value, enum_name))
+                    .with_code("E0342")
+                    .with_primary(*span, format!("both `{}` and `{}` have value {}", first, second, value))
+                    .with_why("each variant must have a unique discriminant value [type.enums/E15]")
+            }
         }
     }
 }

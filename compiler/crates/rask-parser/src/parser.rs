@@ -1353,6 +1353,13 @@ impl Parser {
             vec![]
         };
 
+        // E14: Optional backing type (e.g., enum Foo: u8 { ... })
+        let backing_type = if self.match_token(&TokenKind::Colon) {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
         self.skip_newlines();
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
@@ -1427,7 +1434,25 @@ impl Parser {
                     self.expect(&TokenKind::RBrace)?;
                 }
 
-                variants.push(Variant { name: variant_name, fields, attrs: variant_attrs });
+                // E15: Optional explicit discriminant value (e.g., = 42)
+                let discriminant = if self.match_token(&TokenKind::Eq) {
+                    let negative = self.match_token(&TokenKind::Minus);
+                    if let TokenKind::Int(n, _) = &self.current().kind {
+                        let val = *n as i128;
+                        self.advance();
+                        Some(if negative { -val } else { val })
+                    } else {
+                        return Err(ParseError::expected(
+                        "integer literal",
+                        self.current_kind(),
+                        self.current().span,
+                    ));
+                    }
+                } else {
+                    None
+                };
+
+                variants.push(Variant { name: variant_name, fields, attrs: variant_attrs, discriminant });
             }
 
             self.match_token(&TokenKind::Comma);
@@ -1443,6 +1468,7 @@ impl Parser {
             is_pub,
             attrs,
             doc,
+            backing_type,
         }))
     }
 

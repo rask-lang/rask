@@ -87,8 +87,8 @@ Plain indices for lightweight stored references — the span type for parsers, t
 | Operation | Return | Notes |
 |-----------|--------|-------|
 | `Span(i, j)` | `Span` | Create view (just start, end indices) |
-| `source[view]` | expression-scoped slice | Panics if out of bounds |
-| `source.substr(view)` | `Option<expression-scoped slice>` | Safe bounds check |
+| `source[span]` | expression-scoped slice | Panics if out of bounds |
+| `source.get(span)` | `Option<expression-scoped slice>` | Safe bounds check |
 | `view.to_string(source)` | `string` | Allocates copy (panics if OOB) |
 | `view.start`, `view.end` | `usize` | Read indices |
 | `view.len()` | `usize` | `end - start` |
@@ -330,7 +330,7 @@ FIX:
 | String literal > 15 bytes | S6 | Sentinel refcount, never freed/decremented |
 | Short string (≤ 15 bytes) | S8 | SSO — pure value copy, no atomic ops |
 | `Span` of freed source | — | Undefined behavior (user's responsibility) |
-| `Span` out of bounds | — | Panic on `s[view]`, `None` on `s.substr(view)` |
+| `Span` out of bounds | — | Panic on `s[span]`, `None` on `s.get(span)` |
 | `StringSlice` with stale handle | — | `pool.get(slice)` returns `None` |
 | `StringSlice` wrong pool | — | `pool.get(slice)` returns `None` |
 | Refcount overflow | S6 | Panic (practically unreachable — requires ~4 billion live copies) |
@@ -462,7 +462,7 @@ const s2 = s1  // COPY: both s1 and s2 valid (refcount incremented)
 process(s2[0..3])  // passes "hel" as temporary slice
 
 const view = Span(0, 3)
-process(s2[view])  // user ensures s2 is still valid
+process(s2[view])  // same as s2[0..3], user ensures s2 is still valid
 ```
 
 **Parsing with StringPool (validated access):**

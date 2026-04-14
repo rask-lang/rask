@@ -244,7 +244,7 @@ No `type()` — types known at compile time.
 
 **Built-in methods (always present, compiler-known):**
 - **int:** wrapping_add, wrapping_sub, wrapping_mul, abs
-- **string:** len, sub, find, upper, lower, split, trim, starts_with,
+- **string:** len, substring, find, upper, lower, split, trim, starts_with,
   ends_with, rep, byte, char
 - **array\<T\>:** len, get (→T?), push, pop, insert, remove, sort (stable,
   function ref comparator), contains, join, reverse

@@ -254,4 +254,29 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
+
+    /// E16: mixed explicit and auto-indexed discriminants
+    #[error("enum `{enum_name}`: if any variant has `= N`, all must")]
+    MixedDiscriminants {
+        enum_name: String,
+        span: Span,
+    },
+
+    /// E17: explicit discriminant on variant with fields
+    #[error("enum `{enum_name}`: variant `{variant}` cannot have both fields and an explicit discriminant")]
+    DiscriminantWithPayload {
+        enum_name: String,
+        variant: String,
+        span: Span,
+    },
+
+    /// E15: duplicate discriminant value
+    #[error("enum `{enum_name}`: duplicate discriminant value {value} on `{first}` and `{second}`")]
+    DuplicateDiscriminant {
+        enum_name: String,
+        value: i128,
+        first: String,
+        second: String,
+        span: Span,
+    },
 }

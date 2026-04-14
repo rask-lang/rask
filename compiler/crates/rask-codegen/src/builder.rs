@@ -2853,8 +2853,8 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // Shared_new: ensure data is pointer, compute actual data_size
-            "Shared_new" => {
+            // Shared_new / Mutex_new: ensure data is pointer, compute actual data_size
+            "Shared_new" | "Mutex_new" => {
                 if args.len() >= 2 {
                     let (data_size, is_struct) = Self::struct_elem_size(mir_args, 0, ctx);
                     if !is_struct {

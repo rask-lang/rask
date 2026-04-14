@@ -207,6 +207,8 @@ pub struct EnumDecl {
     pub attrs: Vec<String>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
+    /// E14: Optional backing integer type (e.g., "u8", "i32")
+    pub backing_type: Option<String>,
 }
 
 /// An enum variant.
@@ -216,6 +218,8 @@ pub struct Variant {
     pub fields: Vec<Field>,
     /// Attributes like `@message("template string")`.
     pub attrs: Vec<String>,
+    /// E15: Optional explicit discriminant value
+    pub discriminant: Option<i128>,
 }
 
 /// A union declaration.

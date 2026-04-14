@@ -10,7 +10,6 @@
 // The compiler (Phase 5) will consume these tokens one at a time.
 // It never needs to look more than one token ahead.
 //
-// YOUR JOB: Implement the next_token() method. Everything else is done.
 
 // --- Token types ---
 
@@ -213,46 +212,161 @@ extend Lexer {
         }
     }
 
-    // =====================================================
-    // YOUR JOB: Implement this method
-    // =====================================================
-    //
-    // Read the next token from the source.
-    //
-    // Call self.skip_whitespace() first.
-    // Then look at self.peek() to decide what kind of token you're looking at:
-    //
-    //   - None → return Token.Eof
-    //   - '\n' → consume it, return Token.Newline
-    //   - digit → read a number (integer or decimal)
-    //   - letter or _ → read an identifier/keyword
-    //   - '"' → read a string literal
-    //   - '+' → return Token.Plus
-    //   - '-' → return Token.Minus
-    //   - etc. for all operators and delimiters
-    //   - '=' → could be '=' or '==', check with match_char('=')
-    //   - '<' → could be '<' or '<=', check with match_char('=')
-    //   - '!' → could be '!' or '!=', check with match_char('=')
-    //   - '&' → must be '&&' (Raido has no single &)
-    //   - '|' → could be '||' or '|'
-    //
-    // For numbers:
-    //   Read digits. If you hit a '.', read more digits → it's a NumLit.
-    //   Convert integer literals to i64.
-    //   Convert decimal literals to fixed-point: parse int and frac parts,
-    //   compute raw = int_part << 32 + frac_part * 2^32 / 10^frac_digits.
-    //
-    // For strings:
-    //   Read characters between quotes. Handle \n, \t, \\, \".
-    //   String interpolation is a stretch goal — skip it for now,
-    //   just read plain strings.
-    //
-    // For identifiers:
-    //   Read letters, digits, underscores. Then call keyword_or_ident().
-    //
     func next_token(self) -> Token or LexError {
-        // TODO: implement this
-        return Ok(Token.Eof)
+        self.skip_whitespace()
+        
+        match self.peek() {
+            None => return Token.Eof
+            '\n' => {self.advance(); return Token.Newline}
+            '0'..='9' => {
+                return self.read_number()
+            }
+            '"' => {
+                return self.read_string()
+            }
+            'a'..='z' | 'A'..='Z' | '_' =>
+                return self.read_identifier()
+            '+' => {self.advance(); return Token.Plus}
+            '-' => {self.advance(); return Token.Minus}
+            '*' => {self.advance(); return Token.Star}
+            '/' => {self.advance(); return Token.Slash}
+            '%' => {self.advance(); return Token.Percent}
+            '=' => {
+                self.advance()
+                if self.match_char('=') {
+                    return Token.EqEq
+                } else{
+                    return Token.Eq
+                }
+            }
+            '!' => {
+                self.advance()
+                if self.match_char('=') {
+                    return Token.BangEq
+                } else{
+                    return Token.Bang
+                }
+            }
+            '<' => {
+                self.advance()
+                if self.match_char('=') {
+                    return Token.LtEq
+                } else{
+                    return Token.Lt
+                }
+            }
+            '>' => {
+                self.advance()
+                if self.match_char('=') {
+                    return Token.GtEq
+                } else{
+                    return Token.Gt
+                }
+            }
+            '&' => {
+                self.advance()
+                if self.match_char('&') {
+                    return Token.AmpAmp
+                } else {
+                    return LexError.UnexpectedChar('&', self.line)
+                }
+            }
+            '|' => {
+                self.advance()
+                if self.match_char('|') {
+                    return Token.PipePipe
+                } else {
+                    return Token.Pipe
+                }
+            }
+            _ => {
+                const c = self.peek()!
+                return LexError.UnexpectedChar(c, self.line)
+            }
+        }
+    }
+
+    func read_number(self) -> Token or LexError {
+        const isNumLit = false
+        const start = self.pos
+        let frac_start = self.pos
+
+        while self.peek() is Some(c) {
+            match c {
+                '0'..='9' => { self.advance() }
+                '.' => {
+                    if isNumLit {
+                        return LexError.UnexpectedChar('.', self.line)  // second dot in number
+                    }
+                    if self.peek() is Some(next) && next >= '0' && next <= '9' {
+                        self.advance()
+                        frac_start = self.pos
+                    } else {
+                        return LexError.UnexpectedChar('.', self.line)  // dot not followed by digits
+                    }
+                    isNumLit = true
+                }
+                _ => break,
+            }
+        }
+        if isNumLit {
+            
+            const int_part = self.source.substring(start, frac_start - 1).parse_i64() or {
+                return LexError.UnexpectedChar('.', self.line)  // invalid integer part
+            }
+            const frac_part = self.source.substring(frac_start, self.pos - frac_start).parse_i64() or {
+                return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
+            }
+            const frac_digits = self.pos - frac_start
+            const raw = (int_part << 32) + (frac_part << 32) / pow(10, frac_digits)
+            return Token.NumLit(raw)
+
+        } else {
+            const value = self.source.substring(start, self.pos - start).parse_i64() or {
+                return LexError.UnexpectedChar('.', self.line)  // invalid integer
+            }
+            return Token.IntLit(value)
+        }
+    }
+
+    func read_string(self) -> Token or LexError {
+        self.advance()  // skip opening quote
+        const start = self.pos
+        const end = loop {
+           if c == '"' {
+                self.advance() // consume the ending quote
+                break self.pos
+           } else if c == '\\' {
+                self.advance() // skip the backslash
+                if self.peek() is Some(esc) {
+                    match esc {
+                        'n' | 't' | '\\' | '"' => self.advance(), // valid escape, consume it
+                        _ => return LexError.UnexpectedChar(esc, self.line), // invalid escape
+                    }
+                } else {
+                    return LexError.UnterminatedString(self.line) // string ends with a backslash
+                }
+            } else if c == '\n' || c == '\r' {
+                return LexError.UnterminatedString(self.line) // strings cannot contain newlines
+            } else {
+                self.advance() // consume regular character
+            }
+        }
+        const raw = self.source.substring(start, end - start)
+        return Token.StringLit(raw)
+    }
+
+    func read_identifier(self) -> Token or LexError {
+        const start = self.pos
+        while self.peek() is Some(c) {
+            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+                self.advance()
+            } else {
+                break
+            }
+        }
+        const word = self.source.substring(start, self.pos - start)
+        return self.keyword_or_ident(word)
     }
 }
 

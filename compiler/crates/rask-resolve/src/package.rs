@@ -73,12 +73,14 @@ pub enum PackageError {
     /// Parse error in a source file.
     Parse {
         file: PathBuf,
-        errors: Vec<String>,
+        source: String,
+        errors: Vec<rask_parser::ParseError>,
     },
     /// Lex error in a source file.
     Lex {
         file: PathBuf,
-        errors: Vec<String>,
+        source: String,
+        errors: Vec<rask_lexer::LexError>,
     },
     /// Circular dependency between packages.
     CircularDependency(Vec<String>),
@@ -86,6 +88,8 @@ pub enum PackageError {
     NotFound(Vec<String>),
     /// No .rk files found in directory.
     EmptyPackage(PathBuf),
+    /// Multiple errors across files.
+    Multiple(Vec<PackageError>),
 }
 
 impl std::fmt::Display for PackageError {
@@ -94,11 +98,13 @@ impl std::fmt::Display for PackageError {
             PackageError::Io(err, path) => {
                 write!(f, "I/O error at {}: {}", path.display(), err)
             }
-            PackageError::Parse { file, errors } => {
-                write!(f, "Parse errors in {}:\n{}", file.display(), errors.join("\n"))
+            PackageError::Parse { file, errors, .. } => {
+                let msgs: Vec<_> = errors.iter().map(|e| e.to_string()).collect();
+                write!(f, "Parse errors in {}:\n{}", file.display(), msgs.join("\n"))
             }
-            PackageError::Lex { file, errors } => {
-                write!(f, "Lex errors in {}:\n{}", file.display(), errors.join("\n"))
+            PackageError::Lex { file, errors, .. } => {
+                let msgs: Vec<_> = errors.iter().map(|e| e.to_string()).collect();
+                write!(f, "Lex errors in {}:\n{}", file.display(), msgs.join("\n"))
             }
             PackageError::CircularDependency(path) => {
                 write!(f, "Circular dependency: {}", path.join(" -> "))
@@ -108,6 +114,13 @@ impl std::fmt::Display for PackageError {
             }
             PackageError::EmptyPackage(path) => {
                 write!(f, "No .rk files found in {}", path.display())
+            }
+            PackageError::Multiple(errors) => {
+                for (i, e) in errors.iter().enumerate() {
+                    if i > 0 { writeln!(f)?; }
+                    write!(f, "{}", e)?;
+                }
+                Ok(())
             }
         }
     }
@@ -169,28 +182,38 @@ fn collect_rk_files(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PackageE
 /// Chains NodeIds across files to ensure uniqueness when decls are combined.
 fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> {
     let mut source_files = Vec::new();
+    let mut file_errors = Vec::new();
     let mut next_id: u32 = 0;
     for (file_idx, file_path) in paths.into_iter().enumerate() {
-        let source = fs::read_to_string(&file_path)
-            .map_err(|e| PackageError::Io(e, file_path.clone()))?;
+        let source = match fs::read_to_string(&file_path) {
+            Ok(s) => s,
+            Err(e) => {
+                file_errors.push(PackageError::Io(e, file_path));
+                continue;
+            }
+        };
 
         let mut lexer = rask_lexer::Lexer::new(&source);
         let lex_result = lexer.tokenize();
         if !lex_result.is_ok() {
-            return Err(PackageError::Lex {
+            file_errors.push(PackageError::Lex {
                 file: file_path,
-                errors: lex_result.errors.iter().map(|e| e.to_string()).collect(),
+                source,
+                errors: lex_result.errors,
             });
+            continue;
         }
 
         let mut parser = rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_idx as u16);
         let parse_result = parser.parse();
         next_id = parser.next_node_id();
         if !parse_result.is_ok() {
-            return Err(PackageError::Parse {
+            file_errors.push(PackageError::Parse {
                 file: file_path,
-                errors: parse_result.errors.iter().map(|e| e.to_string()).collect(),
+                source,
+                errors: parse_result.errors,
             });
+            continue;
         }
 
         source_files.push(SourceFile {
@@ -198,6 +221,13 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
             source,
             decls: parse_result.decls,
         });
+    }
+
+    if !file_errors.is_empty() {
+        if file_errors.len() == 1 {
+            return Err(file_errors.into_iter().next().unwrap());
+        }
+        return Err(PackageError::Multiple(file_errors));
     }
     Ok(source_files)
 }
@@ -212,7 +242,8 @@ fn parse_build_rk(path: &Path) -> Result<(Option<PackageDecl>, Vec<Decl>), Packa
     if !lex_result.is_ok() {
         return Err(PackageError::Lex {
             file: path.to_path_buf(),
-            errors: lex_result.errors.iter().map(|e| e.to_string()).collect(),
+            source,
+            errors: lex_result.errors,
         });
     }
 
@@ -221,7 +252,8 @@ fn parse_build_rk(path: &Path) -> Result<(Option<PackageDecl>, Vec<Decl>), Packa
     if !parse_result.is_ok() {
         return Err(PackageError::Parse {
             file: path.to_path_buf(),
-            errors: parse_result.errors.iter().map(|e| e.to_string()).collect(),
+            source,
+            errors: parse_result.errors,
         });
     }
 

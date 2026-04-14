@@ -336,6 +336,56 @@ impl Interpreter {
                             return Ok(Value::Vec(Arc::new(Mutex::new(values))));
                         }
 
+                        // E18: from_value(n) — construct enum from integer discriminant
+                        if method == "from_value" {
+                            let has_payload = enum_decl.variants.iter().any(|v| !v.fields.is_empty());
+                            if has_payload {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::TypeError(format!(
+                                        "from_value() requires fieldless enum, but `{}` has variants with fields",
+                                        name
+                                    )),
+                                    expr.span
+                                ));
+                            }
+                            let arg_vals: Vec<Value> = args
+                                .iter()
+                                .map(|a| self.eval_expr(&a.expr))
+                                .collect::<Result<_, _>>()?;
+                            let target_val = match arg_vals.first() {
+                                Some(Value::Int(n)) => *n,
+                                _ => return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::TypeError("from_value() expects an integer argument".to_string()),
+                                    expr.span
+                                )),
+                            };
+                            for (idx, v) in enum_decl.variants.iter().enumerate() {
+                                let disc = v.discriminant.unwrap_or(idx as i128);
+                                if disc == target_val as i128 {
+                                    return Ok(Value::Enum {
+                                        name: "Option".to_string(),
+                                        variant: "Some".to_string(),
+                                        fields: vec![Value::Enum {
+                                            name: name.clone(),
+                                            variant: v.name.clone(),
+                                            fields: vec![],
+                                            variant_index: idx as u32,
+                                            origin: None,
+                                        }],
+                                        variant_index: 0,
+                                        origin: None,
+                                    });
+                                }
+                            }
+                            return Ok(Value::Enum {
+                                name: "Option".to_string(),
+                                variant: "None".to_string(),
+                                fields: vec![],
+                                variant_index: 1,
+                                origin: None,
+                            });
+                        }
+
                         if let Some((vidx, variant)) = enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == method)
                         {
                             let field_count = variant.fields.len();
@@ -1247,6 +1297,22 @@ impl Interpreter {
                     }
                     (Value::Float(n), "i128") => Ok(Value::Int128(n as i128)),
                     (Value::Float(n), "u128") => Ok(Value::Uint128(n as u128)),
+                    // E18: fieldless enum to integer cast
+                    (Value::Enum { name, variant, fields, variant_index, .. }, target)
+                        if fields.is_empty()
+                        && matches!(target, "i8" | "i16" | "i32" | "i64" | "int"
+                            | "u8" | "u16" | "u32" | "u64" | "usize" | "isize") =>
+                    {
+                        let disc = if let Some(enum_decl) = self.enums.get(&name) {
+                            enum_decl.variants.iter()
+                                .find(|v| v.name == variant)
+                                .and_then(|v| v.discriminant)
+                                .unwrap_or(variant_index as i128)
+                        } else {
+                            variant_index as i128
+                        };
+                        Ok(Value::Int(disc as i64))
+                    }
                     (v, _) => Ok(v),
                 }
             }

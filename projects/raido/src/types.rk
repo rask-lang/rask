@@ -1,0 +1,32 @@
+
+
+struct TypeTable {
+    structs: Vec<StructDef>,
+    enums: Vec<EnumDef>,
+    extern_structs: Vec<ExternStructDef>,
+    extern_enums: Vec<ExternEnumDef>,
+}
+
+struct StructDef {
+    name: string
+    field_names: Vec<string>
+    field_types: Vec<i64>  // Type IDs for each field
+}
+
+struct EnumDef {
+    name: string
+    variant_names: Vec<string>
+    variant_payloads: Vec<Vec<i64>>  // Type IDs for each variant's payload (empty if no payload)
+}
+
+struct ExternStructDef {
+    name: string
+    field_names: Vec<string>
+    field_types: Vec<i64>  // Type IDs for each field
+}
+
+struct ExternEnumDef {
+    name: string
+    variant_names: Vec<string>
+    variant_payloads: Vec<Vec<i64>>  // Type IDs for each variant's payload (empty if no payload)
+}

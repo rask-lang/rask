@@ -2058,7 +2058,11 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 let index_name = type_prefix
-                    .map(|prefix| format!("{}_index", prefix))
+                    .map(|prefix| {
+                        // Strip generic parameters: "Vec<T>" → "Vec"
+                        let base = prefix.split('<').next().unwrap_or(&prefix);
+                        format!("{}_index", base)
+                    })
                     .unwrap_or_else(|| "index".to_string());
                 let result_local = self.builder.alloc_temp(result_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {

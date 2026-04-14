@@ -2435,6 +2435,7 @@ mod tests {
                 is_pub: false,
                 attrs: vec![],
                 doc: None,
+                backing_type: None,
             }),
             span: Span::new(0, 10),
         }];
@@ -2735,6 +2736,7 @@ mod tests {
                 is_pub: false,
                 attrs: vec![],
                 doc: None,
+                backing_type: None,
             }),
             span: Span::new(0, 10),
         }];
@@ -2753,11 +2755,13 @@ mod tests {
                     name: v.to_string(),
                     fields: vec![],
                     attrs: vec![],
+                    discriminant: None,
                 }).collect(),
                 methods: vec![],
                 is_pub: true,
                 attrs: vec![],
                 doc: None,
+                backing_type: None,
             }),
             span: Span::new(0, 10),
         }

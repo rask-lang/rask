@@ -331,6 +331,28 @@ impl TypeChecker {
                     } else if method == "discriminant" && args.is_empty() {
                         // E9: .discriminant() returns u16 variant index
                         self.unify(&Type::U16, &ret, span)
+                    } else if method == "from_value" && args.len() == 1 {
+                        // E18: from_value(n) on fieldless enums returns Option<Enum>
+                        let is_fieldless = self.types.get(*type_id).map(|def| {
+                            if let TypeDef::Enum { variants, .. } = def {
+                                variants.iter().all(|(_, fields)| fields.is_empty())
+                            } else {
+                                false
+                            }
+                        }).unwrap_or(false);
+                        if is_fieldless {
+                            if let Some(arg_ty) = args.first() {
+                                self.unify(arg_ty, &Type::I64, span)?;
+                            }
+                            let opt_ty = Type::Option(Box::new(ty));
+                            self.unify(&opt_ty, &ret, span)
+                        } else {
+                            Err(TypeError::NoSuchMethod {
+                                ty,
+                                method: "from_value (requires fieldless enum)".to_string(),
+                                span,
+                            })
+                        }
                     } else {
                         // Method not in registered extend blocks. Check if this
                         // Named type corresponds to a builtin with hardcoded

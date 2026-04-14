@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
+use rask_diagnostics::formatter::DiagnosticFormatter;
 use rask_diagnostics::ToDiagnostic;
+use rask_resolve::PackageError;
 
 use crate::output;
 
@@ -63,6 +65,46 @@ fn ensure_gitignore(root: &Path) {
     if build_dir.exists() && !gitignore.exists() {
         let _ = fs::write(&gitignore, "*\n");
     }
+}
+
+/// Format a single PackageError to stderr. Returns the error count.
+fn format_package_error(e: &PackageError) -> usize {
+    match e {
+        PackageError::Parse { file, source, errors } => {
+            let file_name = file.to_string_lossy();
+            let fmt = DiagnosticFormatter::new(source).with_file_name(&file_name);
+            for err in errors {
+                eprintln!("{}", fmt.format(&err.to_diagnostic()));
+            }
+            errors.len()
+        }
+        PackageError::Lex { file, source, errors } => {
+            let file_name = file.to_string_lossy();
+            let fmt = DiagnosticFormatter::new(source).with_file_name(&file_name);
+            for err in errors {
+                eprintln!("{}", fmt.format(&err.to_diagnostic()));
+            }
+            errors.len()
+        }
+        PackageError::Multiple(errors) => {
+            errors.iter().map(format_package_error).sum()
+        }
+        _ => {
+            eprintln!("{}: {}", output::error_label(), e);
+            1
+        }
+    }
+}
+
+/// Print a PackageError using the diagnostic formatter when possible.
+fn report_package_error(e: &PackageError) -> ! {
+    let count = format_package_error(e);
+    let phase = match e {
+        PackageError::Lex { .. } => "Lex",
+        _ => "Parse",
+    };
+    eprintln!("\n{}", output::banner_fail(phase, count));
+    process::exit(1);
 }
 
 /// Compute the output binary path for a project directory.
@@ -141,10 +183,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
     let mut registry = PackageRegistry::new();
     let root_ids = match registry.discover_workspace(&root) {
         Ok(ids) => ids,
-        Err(e) => {
-            eprintln!("{}: {}", output::error_label(), e);
-            process::exit(1);
-        }
+        Err(e) => report_package_error(&e),
     };
     let is_workspace = root_ids.len() > 1;
     let mut root_id = root_ids[0];
@@ -712,13 +751,25 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                 }
             }
 
-            // Resolve WITHOUT stdlib decls (same as rask check). Stdlib types
-            // (Option, Vec, etc.) are registered as builtins by the resolver.
-            // Typecheck adds full stdlib method signatures via typecheck_decls().
-            let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-            match rask_resolve::resolve_package_with_cfg(&all_decls, &registry, root_id, cfg.to_cfg_values()) {
+            // Resolve with stdlib method signatures so dispatch names are correct,
+            // but exclude Option/Result enum declarations — these are built-in types
+            // that the resolver already handles internally. Including them causes
+            // T? vs Option<T> unification failures.
+            let typecheck_stdlib = rask_stdlib::StubRegistry::typecheck_decls();
+            let resolve_stdlib: Vec<_> = typecheck_stdlib.iter().filter(|d| {
+                match &d.kind {
+                    rask_ast::decl::DeclKind::Enum(e) =>
+                        e.name != "Option" && e.name != "Result",
+                    rask_ast::decl::DeclKind::Impl(i) => {
+                        let base = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
+                        base != "Option" && base != "Result"
+                    }
+                    _ => true,
+                }
+            }).cloned().collect();
+
+            match rask_resolve::resolve_package_with_stdlib(&all_decls, &registry, root_id, &resolve_stdlib) {
                 Ok(resolved) => {
-                    let typecheck_stdlib = rask_stdlib::StubRegistry::typecheck_decls();
                     match rask_types::typecheck_with_stdlib(resolved, &all_decls, &typecheck_stdlib) {
                         Ok(typed) => {
                             let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
@@ -836,10 +887,7 @@ pub fn cmd_update(path: &str) {
     let mut registry = PackageRegistry::new();
     let root_ids = match registry.discover_workspace(&root) {
         Ok(ids) => ids,
-        Err(e) => {
-            eprintln!("{}: {}", output::error_label(), e);
-            process::exit(1);
-        }
+        Err(e) => report_package_error(&e),
     };
     let is_workspace = root_ids.len() > 1;
     let root_id = root_ids[0];
