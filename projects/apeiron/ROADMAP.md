@@ -6,14 +6,18 @@ Everything below is specs. ~14K lines of markdown across six projects. Zero impl
 ## Dependency Chain
 
 ```
-Rask (working) ──→ Raido VM ──→ Galaxy Gen ──→ Stage 1 Monolith
-                                                      │
-                                              Leden ──→ Allgard ──→ Stage 2-3 Federation
-                                                                          │
-                                                                   GDL ──→ Stage 4 Full Vision
+Rask (working) ──→ Raido VM (Rask) ──→ Galaxy Gen ──→ History Sim ──→ Stage 1 (Rask)
+                                                                           │
+                                             Leden (Rask) ──→ Allgard (Rask) ──→ Stage 2-3
+                                                                                      │
+                                                                               GDL ──→ Stage 4
 ```
 
-Stage 1 doesn't need federation. One operator, one process, five simulated systems. Raido provides deterministic physics and galaxy generation. The game server enforces conservation laws internally. When you federate in Stage 2, you extract enforcement into Allgard.
+Everything is Rask. Raido, Leden, Allgard, the game server — all written in Rask. These are language validation targets. Raido exercises low-level systems code (fixed-point arithmetic, arena allocation, bytecode dispatch). Leden exercises networking. Allgard exercises data structures and verification. The game server exercises everything.
+
+Stage 0 (simulations) validates game mechanics cheaply in Python before committing to implementation. Stage 1 doesn't need federation. One operator, one process, five simulated systems. Raido provides deterministic physics and galaxy generation. The game server enforces conservation laws internally. When you federate in Stage 2, you extract enforcement into Allgard.
+
+Leden and Allgard develop in parallel with Stage 1, not as prerequisites. They converge at Stage 2 when federation becomes real.
 
 Midgard isn't a build phase — it's the patterns that emerge when you federate. Document them as you go.
 
@@ -30,6 +34,42 @@ Combat is a parallel track. Prototype it standalone, integrate when both combat 
 | Midgard | 429 | None | Design docs |
 | GDL | 2,649 | None | Specs complete |
 | Apeiron | 2,100+ | 1 Python sim | Design docs |
+
+## Stage 0: Simulations
+
+Validate game mechanics before building anything. Python scripts, fast iteration, throw-away code. The goal is to kill bad ideas cheaply.
+
+### Economy Viability
+
+Extend the existing `transform_sim.py`. 5 systems, AI agents (extractors, haulers, stations), 10K ticks. Does the economy circulate? Do prices stabilize? Does trade emerge from geographic scarcity?
+
+**Passes if:** credits don't hyperinflate, at least 3 of 5 systems participate in trade, no single agent accumulates >50% of total supply.
+
+**Fails if:** economy collapses, one agent dominates, prices converge to uniform (no trade incentive).
+
+### Crafting Discovery
+
+Interactive CLI. A player picks elements, ratios, conditions. The interaction function evaluates. Hill-climbing toward stoichiometric peaks — is the search fun? Does the player feel like a scientist or a slot machine?
+
+**Passes if:** players can reason about results ("more carbon made it harder"), peaks are discoverable through experimentation, not random guessing.
+
+**Fails if:** the search space is too flat (everything works roughly the same) or too spiky (no gradient to follow).
+
+### Element Count
+
+5 elements vs 14 elements. Same economy sim, same crafting sim. Does 14 add meaningful depth — more trade routes, more specialization, more interesting recipes? Or is it just noise — more names to memorize, same dynamics?
+
+**Passes if:** 14 elements create trade patterns that 5 don't (specialized systems, multi-hop routes, element scarcity driving conflict).
+
+**Fails if:** reducing to 5 loses nothing noticeable. Simpler is better.
+
+### Galaxy Topology
+
+Generate 10K stars. Visualize clusters, bridges, chokepoints, frontier arms. Does the topology create interesting strategic geography? Are there natural trade corridors, defensible positions, exploration frontiers?
+
+**Passes if:** the galaxy has visible structure — dense cores, sparse arms, bridge stars that matter. A player looking at the map can identify "that cluster is rich but crowded" vs "that arm is remote but resource-dense."
+
+**Fails if:** it looks uniform, or the structure doesn't create meaningful gameplay differences.
 
 ## Phase 1: Raido VM
 
@@ -55,7 +95,7 @@ A register-based VM that executes Raido bytecode with:
 - Write one crafting script (structural steel: Fe+C at 97:3). If the interaction function evaluates deterministically with fixed-point math, transformation physics works.
 
 ### Implementation language
-Rust. Raido is a standalone crate — it doesn't depend on the Rask compiler. Eventually the Rask runtime embeds Raido for comptime execution, but that's later. Build it in Rust, ship it as a library.
+Rask. Raido exercises exactly the kind of systems code Rask needs to prove it handles well — fixed-point arithmetic, arena allocation, bytecode dispatch loops, host interop through FFI. If Rask can't build a register VM cleanly, that's a language problem to fix, not to work around.
 
 ## Phase 2: Galaxy Generation
 
@@ -82,6 +122,39 @@ Galaxy structure: dense cores, sparse arms, bridge stars. Not uniform random —
 
 ### Deliverable
 A working galaxy that anyone can regenerate from a seed integer. The first tangible artifact of the project.
+
+## Phase 2.5: History Simulation
+
+The galaxy needs history before players arrive. This phase generates it.
+
+AI agents run real domains in the generated galaxy. Civilizations emerge, expand, trade, conflict, fall. The simulation uses the same conservation laws, physics scripts, and economy rules that players will use. The history is real — verifiable, consistent, not hand-written.
+
+### What to build
+
+A simulation harness that:
+- Instantiates AI domain operators across the galaxy
+- Runs the economy (extraction, crafting, trade, consumption) for N epochs
+- Simulates civilization rise and fall (expansion pressure, conflict, resource depletion)
+- On civilization death: agents release objects, domains publish final [state snapshots](../allgard/PRIMITIVES.md#domain-state-snapshots)
+- Outputs a content-addressed history blob: per-star timeline, surviving objects, snapshot references
+
+### Output
+
+The simulation produces:
+- **History per star:** who claimed it, what they built, when they fell, what's left
+- **Unclaimed objects:** ancient ships, stations, stockpiles scattered across dead domains
+- **Resource depletion:** some deposits are partially mined. The galaxy isn't pristine.
+- **Ruins and artifacts:** objects with proof chains that reference civilizations that no longer exist
+
+### Validation
+
+- The history is internally consistent — proof chains validate, conservation laws hold
+- The history creates interesting exploration content — there are things to find, mysteries to investigate
+- The history is reproducible from the seeds (galaxy seed + history seed)
+
+### Open questions
+
+Full agent sim for the entire galaxy, or lighter seed-script for coarse galaxy-wide history with detailed agent sim only in the founding region? The mechanisms support both. The Stage 0 economy sim will inform this — if agents produce interesting history when fast-forwarded, go full agent. If the sim is too expensive or produces boring output, fall back to seed scripts for the periphery.
 
 ## Phase 3: Stage 1 — The Trading Game
 
@@ -137,7 +210,7 @@ The networking layer:
 - Observation protocol (push-based state change notifications)
 
 ### Implementation
-Rust crate. Transport-agnostic — works over TCP, WebSocket, QUIC. MessagePack wire format (already spec'd in [wire-format.md](../leden/wire-format.md)).
+Rask. Transport-agnostic — works over TCP, WebSocket, QUIC. MessagePack wire format (already spec'd in [wire-format.md](../leden/wire-format.md)). Leden exercises Rask's networking stack — socket I/O, async patterns, binary serialization.
 
 ### Validation
 - Two independent processes can establish a Leden session, exchange capabilities, and transfer an object.
@@ -227,8 +300,6 @@ When the combat prototype is fun and the trading game is federated, merge them. 
 Stage 4 is where the game grows beyond what I can prescribe. Player factions, emergent politics, custom physics, player-built worlds. The specs provide the constraints. The players provide everything else.
 
 ## What's Not On This Roadmap
-
-**A Rask self-hosted compiler.** Rask exists and works. The game infrastructure is built in Rust. Eventually the game server could be written in Rask — but that's a language maturity milestone, not a game milestone.
 
 **Mobile clients.** The architecture supports any client that can run Raido (for galaxy gen) and speak Leden (for networking). Mobile is a client engineering project, not a protocol project.
 

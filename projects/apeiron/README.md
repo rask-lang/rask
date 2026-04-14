@@ -98,12 +98,16 @@ A domain can go dark — the operator stops hosting. What happens to everything 
 
 **New claimant.** Another player can deploy a domain at the same star. The new claim triggers a fresh survey (new beacon value, new geology — the geology CHANGES because the beacon is different). The previous operator's objects are still frozen somewhere. If the previous operator comes back online, they have objects but no claim — they'd need to negotiate with the new claimant, or deploy at a different star.
 
+**Domain state snapshots.** If the domain published [state snapshots](../allgard/PRIMITIVES.md#domain-state-snapshots) during operation, the last snapshot survives in the Leden content store. Trading partners who cached the snapshot can serve it. A new claimant (or any interested party) can fetch the snapshot, verify proof chains, and materialize valid objects as [unclaimed](../allgard/PRIMITIVES.md#unclaimed-objects) in their domain.
+
+This is how ancient civilizations leave artifacts for future players. It's also how a player domain's legacy persists after the operator stops hosting. The objects don't vanish — they become unclaimed salvage for whoever claims the star next.
+
 **What doesn't happen:**
 - Objects don't get destroyed. Conservation law — mass doesn't vanish because a server went offline.
-- Objects don't transfer to the conquerer. No forced seizure. The frozen objects belong to the original operator. A new claimant gets the star's resources (fresh survey), not the previous occupant's stuff.
+- Objects don't transfer to the conqueror. No forced seizure. Snapshot-recovered objects are unclaimed — available to anyone, not automatically granted to the new claimant.
 - No automatic looting. A domain going dark is not a combat event — no debris, no salvage. The operator shut down their server. That's an infrastructure event, not a destruction event.
 
-**Conquest, then.** You can't take someone's stuff by besieging them into shutdown. You take their POSITION — the star, its resources, its strategic location. Their accumulated objects are frozen, inaccessible to everyone including the conqueror. The conquest incentive is geographic, not material.
+**Conquest, then.** You can't take someone's stuff by besieging them into shutdown. You take their POSITION — the star, its resources, its strategic location. If the previous domain published snapshots, you get unclaimed objects to salvage — but so does anyone else who fetches the snapshot. The conquest incentive is geographic, not material.
 
 ## Resources
 
@@ -175,6 +179,72 @@ The founding cluster picks their stars from the seed — probably dense-core sys
 New players start at a founding cluster system. They get a ship (an Allgard object — not a domain). They can trade, explore, mine, build. When they're ready, they claim their own star and join the network.
 
 The founding cluster is the seed of trust. Every domain in the galaxy traces its introduction chain back to the founding cluster. The cluster members start as each other's trusted partners. Everyone else earns trust through introduction.
+
+## Playstyles
+
+What do you actually DO in this game? The core loop: pick a star, fly there, do something profitable or interesting, fly home. Everything else is variation.
+
+| Playstyle | The loop | Stage 1 | Later |
+|-----------|----------|---------|-------|
+| **Trader** | Buy low, sell high, run routes. Arbitrage between systems. | Yes — the primary loop | Multi-hop routes, futures, market manipulation |
+| **Miner** | Claim deposits, extract, sell raw materials. | Yes | Facility upgrades, deep-system mining |
+| **Explorer** | Scout unclaimed systems, sell survey data, find anomalies. | Yes — [knowledge trading](KNOWLEDGE.md) | Ancient ruins, wormholes, new galaxy regions |
+| **Builder** | Construct stations, facilities, infrastructure. Run a system. | Partially — outposts and basic facilities | Full GDL stations, custom interiors |
+| **Researcher** | Experiment with crafting, discover recipes, publish findings. | Yes — crafting discovery loop | Advanced materials, exotic interactions |
+| **Fighter** | Combat, piracy, mercenary work, system defense. | No — combat is a parallel track | Full combat integration |
+| **Archaeologist** | Investigate ancient civilizations, salvage relics, decode history. | Partially — ruins exist from pre-player history | Deep lore, reconstruction, relic trading |
+
+A session might be 20 minutes (run one trade route) or 4 hours (explore a new sector). The game works at both scales because each action is discrete — jump, trade, mine, craft — not a continuous commitment.
+
+## Content Sources
+
+Three kinds of content, each from a different source. No central designer.
+
+### Seed as Game Designer
+
+The galaxy seed doesn't just generate stars. It generates anomalies, ruins, hazards, strange signals, resource distributions that imply history. The generation script is the game designer — it places content by algorithm, not by hand. Every client runs the same script, sees the same content.
+
+The founding cluster publishes updated generation scripts over time. A new script reads the same seed but reveals previously hidden data — a new asteroid belt, a derelict station, a signal source. The data was always "in" the math. The script is a better telescope.
+
+Beacon-gated content adds local variation. A star's seed data says "anomaly possible here." The beacon value (generated when a domain claims the star) determines what specific anomaly. Two domains claiming the same star at different times get different anomalies. Deterministic, verifiable, unique.
+
+### Domain Operators as Local Game Designers
+
+Sovereignty is creative control. A domain operator can:
+
+- Write contracts and missions for visitors ([CONTRACTS.md](CONTRACTS.md))
+- Set economic policies (tariffs, subsidies, trade restrictions)
+- Create NPCs and storylines (AI agents running on the domain)
+- Host events (tournaments, auctions, festivals)
+- Build physical spaces (stations, cities, landscapes via GDL)
+
+The founding cluster does this at scale — it IS the initial game designer, running scripted content across 5-20 systems. Player domain operators do the same at smaller scale with more personality. A player who runs a trading post with custom contracts and a backstory is creating content for every visitor.
+
+### Emergent Content
+
+The most interesting content isn't designed. It emerges from rational actors in a constrained economy:
+
+- **Piracy** emerges when stealing is more profitable than mining (risk-adjusted)
+- **Alliances** form when mutual defense is cheaper than individual defense
+- **Trade wars** happen when two factions compete for the same resource corridor
+- **Refugee crises** when a major domain goes dark and inhabitants scatter
+- **Gold rushes** when someone publishes a survey of a rich unclaimed sector
+
+This can't produce: grand narrative arcs, balanced difficulty progression, curated new-player experiences, quality control. The founding cluster handles onboarding and early experience. Everything beyond that is emergent or operator-created.
+
+## Pre-Player History
+
+The galaxy isn't a blank slate. It has history before players arrive.
+
+The idea: fast-forward the galaxy with AI agents running real domains. Civilizations rise, expand, trade, conflict, decline, fall. The history is real because it was simulated with the same rules players will use — same conservation laws, same physics, same economy. Ancient civilizations extracted real resources from real deposits, traded with real partners, and fought real wars.
+
+When civilizations fall, their agents [release](../allgard/PRIMITIVES.md#unclaimed-objects) their objects. Ancient ships, stations, refineries, stockpiles — all unclaimed, scattered across dead domains. [Domain state snapshots](../allgard/PRIMITIVES.md#domain-state-snapshots) persist the remnants. New claimants find ancient objects: a rusted refinery orbiting planet 3, a cargo hold full of exotic alloys, a derelict capital ship with equipment nobody knows how to build anymore.
+
+History explains WHY ruins are where they are. The simulation's timeline IS the lore. A cluster of dead systems with depleted iron deposits and scattered warship debris tells you: two civilizations fought over these mines. You don't read that in a codex — you infer it from what you find.
+
+The simulation output is cached as a content-addressed blob. Runs once at publishing time, hash-verified, clients download the result. The galaxy seed + the history seed = the complete starting state. Deterministic, verifiable.
+
+**Open:** Full agent sim everywhere, or lighter seed-script for galaxy-wide coarse history with detailed agent sim only in the founding region? Depends on what's built first. The mechanisms — unclaimed objects, snapshots, domain succession — support both approaches. The Stage 0 economy simulation will inform this choice.
 
 ## Physics and Natural Laws
 

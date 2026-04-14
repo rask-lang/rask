@@ -39,9 +39,11 @@ See [Domain Sovereignty over Supply](README.md#domain-sovereignty-over-supply) f
 
 ## Law 2: Singular Ownership
 
-> Every Object has exactly one Owner at every point in time. Ownership transfers are atomic.
+> Every Object has at most one Owner at every point in time. Ownership transfers are atomic.
 
-No duplication. No orphans. An Object is in at most one Domain's inventory at any point in time — never two.
+No duplication. No shared ownership. An Object is owned by zero or one Owners, and hosted in at most one Domain's inventory — never two.
+
+An Object without an Owner is **unclaimed**. It exists in a Domain, hosted but unowned. Any authorized Owner in the Domain can claim it — claiming is atomic, same guarantees as transfer. See [Unclaimed Objects](PRIMITIVES.md#unclaimed-objects) for the full mechanism.
 
 Within a domain, transfer is atomic: remove from A, add to B, in one transaction. Across domains, the bilateral escrow protocol maintains the same invariant under network failure — see [Cross-Domain Transfer](#cross-domain-transfer).
 
@@ -55,10 +57,11 @@ See [TRANSFER.md](TRANSFER.md) for the full protocol specification, failure mode
 
 ### Implications
 
-- No concurrent mutation (only the owner can authorize Transforms)
+- No concurrent mutation (only the owner — or the domain for unclaimed objects — can authorize Transforms)
 - No CRDTs needed for the base case
 - Cross-domain transfer is a bilateral escrow protocol — the object must leave one domain before entering another, with the source domain as escrow authority
 - Shared access is through Grants, not shared ownership
+- Unclaimed objects are domain-local — no cross-domain coordination needed for claiming
 
 ## Law 3: Conservation of Exchange
 
