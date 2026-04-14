@@ -28,3 +28,26 @@ public func assert(condition: bool, msg: string?) { }
 
 /// Format values into a string.
 public func format(fmt: string) -> string { }
+
+// ─── Core types ─────────────────────────────────────────────────
+
+/// A byte-index range. Used for source spans, text ranges, slicing.
+/// 16 bytes, Copy.
+public struct Span {
+    public start: usize
+    public end: usize
+}
+
+extend Span {
+    public func new(start: usize, end: usize) -> Span {
+        return Span { start: start, end: end }
+    }
+
+    public func len(self) -> usize {
+        return self.end - self.start
+    }
+
+    public func is_empty(self) -> bool {
+        return self.start == self.end
+    }
+}

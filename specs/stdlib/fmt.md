@@ -222,13 +222,13 @@ extend Color with Displayable {
 }
 ```
 
-**string_builder for loops:** `format()` allocates a new string each call. For repeated formatting, use `string_builder`:
+**StringBuilder for loops:** `format()` allocates a new string each call. For repeated formatting, use `StringBuilder`:
 
 <!-- test: skip -->
 ```rask
-const b = string_builder.with_capacity(1024)
+let b = StringBuilder.with_capacity(1024)
 for item in items {
-    b.append(format("{}: {}\n", item.name, item.value))
+    b.append("{item.name}: {item.value}\n")
 }
 const report = b.build()
 ```
@@ -241,6 +241,6 @@ const report = b.build()
 
 ### See Also
 
-- `std.strings` — `format()` returns a `string`, uses `string_builder` internally
+- `std.strings` — `format()` returns a `string`, uses `StringBuilder` internally
 - `type.traits` — Displayable and Debug are standard traits
 - `type.errors` — Error types auto-bridge to Displayable (D5)

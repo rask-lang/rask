@@ -113,8 +113,7 @@ Always available without import:
 | Type | Description |
 |------|-------------|
 | `string` | UTF-8 owned string |
-| `string_view` | Stored indices into string |
-| `string_builder` | Growable string buffer |
+| `StringBuilder` | Growable string buffer |
 
 ### Functions
 

@@ -303,11 +303,11 @@ Strings are UTF-8. Use `format()` for building, methods for inspecting.
 const msg = format("hello, {name}! you have {count} messages")
 
 // StringBuilder — for loops or many concatenations
-const sb = string_builder.new()
+let sb = StringBuilder.new()
 for item in items {
-    sb.push_str(format("{item}\n"))
+    sb.append("{item}\n")
 }
-const result = sb.to_string()
+const result = sb.build()
 
 // Searching
 if line.contains("error"): handle_error(line)
@@ -324,7 +324,7 @@ const clean = input.trim()
 ```
 
 **Anti-patterns:**
-- `+` for string concatenation in loops — use `string_builder`.
+- `+` for string concatenation in loops — use `StringBuilder`.
 - Byte-level indexing when you mean character operations — use `.chars()`.
 
 See [stdlib/strings.md](stdlib/strings.md), [stdlib/fmt.md](stdlib/fmt.md).
@@ -583,7 +583,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 | Clean up resources | `ensure` |
 | Handle options | `if x is Some`, `??`, guard, `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
-| Build strings | `format()`, `string_builder` |
+| Build strings | `format()`, `StringBuilder` |
 | Share state | `Shared<T>`, channels |
 | Run concurrently | `spawn`, `using Multitasking { }` |
 | Do I/O | `fs.read_file`, `fs.open` + `ensure close` |

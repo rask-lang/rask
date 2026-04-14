@@ -225,7 +225,7 @@ extend JsonParser {
             return Err(JsonError.ParseError("expected '\"'"))
         }
 
-        let b = string_builder.new()
+        let b = StringBuilder.new()
 
         while self.pos < self.len {
             const byte = self.advance()
@@ -411,7 +411,7 @@ extend json {
 
     /// Serialize a JsonValue to a pretty-printed JSON string.
     public func stringify_pretty(value: JsonValue) -> string {
-        let b = string_builder.new()
+        let b = StringBuilder.new()
         stringify_pretty_inner(value, mutate b, 0)
         return b.build()
     }
@@ -450,7 +450,7 @@ func stringify_value(value: JsonValue) -> string {
 }
 
 func stringify_array(arr: Vec<JsonValue>) -> string {
-    let b = string_builder.new()
+    let b = StringBuilder.new()
     b.append("[")
     let first = true
     for item in arr {
@@ -465,7 +465,7 @@ func stringify_array(arr: Vec<JsonValue>) -> string {
 }
 
 func stringify_object(map: Map<string, JsonValue>) -> string {
-    let b = string_builder.new()
+    let b = StringBuilder.new()
     b.append("{")
     let first = true
     for (key, value) in map {
@@ -482,7 +482,7 @@ func stringify_object(map: Map<string, JsonValue>) -> string {
 }
 
 func escape_string(s: string) -> string {
-    let b = string_builder.new()
+    let b = StringBuilder.new()
     b.append_char('"')
     let i: usize = 0
     while i < s.len() {
@@ -531,7 +531,7 @@ func format_number(n: f64) -> string {
 
 // ─── Pretty-print internals ─────────────────────────────────────
 
-func stringify_pretty_inner(value: JsonValue, mutate out: string_builder, indent: usize) {
+func stringify_pretty_inner(value: JsonValue, mutate out: StringBuilder, indent: usize) {
     match value {
         JsonValue.Null => out.append("null")
         JsonValue.Bool(b) => if b {
@@ -584,7 +584,7 @@ func stringify_pretty_inner(value: JsonValue, mutate out: string_builder, indent
     }
 }
 
-func write_indent(mutate out: string_builder, level: usize) {
+func write_indent(mutate out: StringBuilder, level: usize) {
     let i: usize = 0
     while i < level {
         out.append("  ")

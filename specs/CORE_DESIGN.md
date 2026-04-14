@@ -199,7 +199,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`build.rk`) handle full-language code generation. See [comptime.md](control/comptime.md).
 
-**Strings.** One type: `string` (UTF-8, immutable, refcounted, Copy). `string_builder` for construction. Slicing is inline — `.to_string()` copies bytes into a new independent string (no shared backing). `string_view` for lightweight stored indices, `StringPool` for validated handle-based access. See [strings.md](stdlib/strings.md).
+**Strings.** One type: `string` (UTF-8, immutable, refcounted, Copy). `StringBuilder` for construction (UTF-8 by construction — zero-copy `build()`). Slicing is inline — `.to_string()` copies bytes into a new independent string (no shared backing). `StringPool` for validated handle-based access. See [strings.md](stdlib/strings.md).
 
 **Modules.** Package = directory. Two visibility levels: default (package-internal) and `public`. Imports are qualified by default; `using` for selective unqualified access. See [modules.md](structure/modules.md), [packages.md](structure/packages.md).
 

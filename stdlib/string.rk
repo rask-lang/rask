@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// String types: immutable string, string_builder for construction,
-// string_view for stored indices, StringPool/StringSlice for handle-based
-// access, cstring for C interop.
+// String types: immutable string, StringBuilder for construction,
+// StringPool/StringSlice for handle-based access, cstring for C interop.
 
 // ─── string ─────────────────────────────────────────────────────
 //
@@ -168,63 +167,39 @@ extend string {
     public unsafe func from_raw(ptr: *u8, len: usize) -> string { }
 }
 
-// ─── string_builder ─────────────────────────────────────────────
+// ─── StringBuilder ─────────────────────────────────────────────
 //
-// Growable mutable buffer. Sole owner — mutation is always O(1) amortized.
-// Move on assignment (not Copy).
+// Growable mutable buffer for string construction. Sole owner —
+// mutation is always O(1) amortized. Move on assignment (not Copy).
+//
+// UTF-8 validity is maintained by construction: append() takes string,
+// append_char() takes char. No raw byte entry point.
 
-public struct string_builder { }
+public struct StringBuilder {
+    buf: Vec<u8>
+}
 
-extend string_builder {
+extend StringBuilder {
     /// Create an empty builder.
-    public func new() -> string_builder { }
+    public func new() -> StringBuilder { }
 
     /// Create a builder with pre-allocated capacity.
-    public func with_capacity(n: usize) -> string_builder { }
+    public func with_capacity(n: usize) -> StringBuilder { }
 
-    /// Append a string or expression-scoped slice.
+    /// Append a string.
     public func append(mutate self, s: string) { }
 
     /// Append a single character.
     public func append_char(mutate self, c: char) { }
 
-    /// Consume the builder, return the built string.
+    /// Consume the builder, return the built string. Zero-copy.
     public func build(take self) -> string { }
-
-    /// Return built string and reset to empty. Zero-copy buffer handoff.
-    public func build_and_reset(mutate self) -> string { }
-
-    /// Clear contents, keep capacity.
-    public func clear(mutate self) { }
 
     /// Current byte length.
     public func len(self) -> usize { }
-}
 
-// ─── string_view ────────────────────────────────────────────────
-//
-// Plain indices into a string — the span type for parsers, tokenizers,
-// and diagnostics. No validation — user ensures source string validity.
-// 16 bytes, Copy.
-
-public struct string_view {
-    public start: usize
-    public end: usize
-}
-
-extend string_view {
-    /// Create a view from start and end byte indices.
-    public func new(start: usize, end: usize) -> string_view {
-        return string_view { start: start, end: end }
-    }
-
-    /// Byte length of the view.
-    public func len(self) -> usize {
-        return self.end - self.start
-    }
-
-    /// Copy to owned string. Panics if out of bounds.
-    public func to_string(self, source: string) -> string { }
+    /// True if the builder contains no bytes.
+    public func is_empty(self) -> bool { }
 }
 
 // ─── StringPool / StringSlice ───────────────────────────────────

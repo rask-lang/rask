@@ -1,11 +1,11 @@
 <!-- id: std.strings -->
 <!-- status: decided -->
-<!-- summary: Immutable refcounted string (Copy), inline slicing, string_builder for construction -->
+<!-- summary: Immutable refcounted string (Copy), inline slicing, StringBuilder for construction -->
 <!-- depends: memory/borrowing.md, memory/value-semantics.md, memory/pools.md -->
 
 # String Handling
 
-Immutable refcounted `string` type with UTF-8 validation, inline slicing for zero-copy expression access, `string_view` for lightweight stored indices, `StringPool` for validated handle-based access, and `string_builder` for construction.
+Immutable refcounted `string` type with UTF-8 validation, inline slicing for zero-copy expression access, `StringBuilder` for construction, `StringPool` for validated handle-based access. `Span` (a core type, not string-specific) is used for byte-index ranges.
 
 ## Type Categories
 
@@ -13,11 +13,11 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 |------|-------------|
 | **S1: Immutable, refcounted, Copy** | `string` is UTF-8, immutable, 16 bytes (tagged union — see S8). Under VS1 threshold → implicit Copy |
 | **S2: Inline slicing** | `s[i..j]` creates a temporary view valid only within the expression |
-| **S3: Public APIs use string** | Never use `string_view` or `StringSlice` in public APIs |
+| **S3: Public APIs use string** | Prefer `string` over `StringSlice` in public APIs. `Span` is fine — it's a general-purpose range type |
 | **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
 | **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |
 | **S6: Refcount semantics** | Atomic refcount in heap header. SSO strings (S8) bypass refcounting entirely. Literals ≤ 15 bytes use SSO; longer literals use sentinel refcount (never freed/decremented). Compiler elides atomic ops for provably sole-owner heap strings (see `comp.string-refcount-elision`). This is a language primitive — not available to user-defined types |
-| **S7: Builder for mutation** | `push_str`, `push_char`, `truncate`, `clear` live on `string_builder` only. `string` has no mutation methods |
+| **S7: Builder for mutation** | `append`, `append_char` live on `StringBuilder` only. `string` has no mutation methods |
 | **S8: Small string optimization** | Strings ≤ 15 bytes are stored inline in the 16-byte value (no heap allocation, no refcount). Longer strings use heap mode with refcounted header. Layout is a tagged union — discriminant is the MSB of the last byte. User-facing semantics are identical in both modes |
 
 ### Internal Layout (S1 + S8)
@@ -47,8 +47,8 @@ SSO strings are pure value copies — no heap, no refcount. Heap strings share b
 | Type | Description | Ownership | Storable? |
 |------|-------------|-----------|-----------|
 | `string` | UTF-8 immutable, refcounted | Copy (16 bytes) | Yes |
-| `string_view` | Plain indices into a string | Copy (2 words) | Yes |
-| `string_builder` | Growable mutable buffer | Move on assignment | Yes |
+| `Span` | Plain indices into a string | Copy (2 words) | Yes |
+| `StringBuilder` | Growable mutable buffer | Move on assignment | Yes |
 | `StringPool` | Pool of strings with validated handles | Move on assignment | Yes |
 | `StringSlice` | Handle + indices into StringPool | Copy (4 words) | Yes |
 | `cstring` | Null-terminated for C FFI | Move on assignment | Yes (unsafe only) |
@@ -80,13 +80,13 @@ Slicing follows the same inline access rules as Vec and other growable sources u
 
 > **Why copy on `.to_string()`, not shared slice?** A 50-byte substring must not silently retain a 10MB source buffer. `.to_string()` copies bytes into a fresh allocation with its own refcount. The cost is visible and bounded by the slice size, not the source size. This prevents the classic "small slice pins large buffer" memory leak.
 
-## The `string_view` Type
+## The `Span` Type
 
 Plain indices for lightweight stored references — the span type for parsers, tokenizers, and diagnostics. No validation — user ensures source string validity (like storing a Vec index). 16 bytes, copy-eligible.
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `string_view(i, j)` | `string_view` | Create view (just start, end indices) |
+| `Span(i, j)` | `Span` | Create view (just start, end indices) |
 | `source[view]` | expression-scoped slice | Panics if out of bounds |
 | `source.substr(view)` | `Option<expression-scoped slice>` | Safe bounds check |
 | `view.to_string(source)` | `string` | Allocates copy (panics if OOB) |
@@ -151,22 +151,21 @@ Iterators borrow for expression scope only. Cannot be stored.
 
 ## String Builder
 
-`string_builder` is the sole owner of its buffer — mutation is always O(1) amortized. `string` has no mutation methods.
+`StringBuilder` is the sole owner of its buffer — mutation is always O(1) amortized. `string` has no mutation methods.
 
 | Operation | Signature | Notes |
 |-----------|-----------|-------|
-| `string_builder.new()` | `() -> string_builder` | Empty builder |
-| `string_builder.with_capacity(n)` | `(usize) -> string_builder` | Pre-allocate |
-| `b.append(s)` | `(self, s: string)` | Append string/slice |
-| `b.append_char(c)` | `(self, c: char)` | Append char |
-| `b.build()` | `(take self) -> string` | Consume builder, return string |
-| `b.build_and_reset()` | `(self) -> string` | Return built string, reset to empty. Zero-copy buffer handoff |
-| `b.clear()` | `(self)` | Clear contents, keep capacity |
+| `StringBuilder.new()` | `() -> StringBuilder` | Empty builder |
+| `StringBuilder.with_capacity(n)` | `(usize) -> StringBuilder` | Pre-allocate |
+| `b.append(s)` | `(mutate self, s: string)` | Append string |
+| `b.append_char(c)` | `(mutate self, c: char)` | Append char |
+| `b.build()` | `(take self) -> string` | Consume builder, return string. Zero-copy |
 | `b.len()` | `(self) -> usize` | Current byte length |
+| `b.is_empty()` | `(self) -> bool` | True if no bytes written |
 
-`build()` consumes the builder. `build_and_reset()` hands off the internal buffer to the new string and gives the builder a fresh allocation — for use with `mutate` parameters or accumulator loops where consuming isn't possible.
+`build()` consumes the builder and transfers the internal buffer to the new string without copying. The buffer is guaranteed valid UTF-8 by construction — `append` only accepts `string`, `append_char` only accepts `char`.
 
-**Interpolation optimization:** `builder.append("hello {name}")` — compiler desugars interpolation directly into builder appends, avoiding temp string allocation.
+**Interpolation optimization:** `b.append("hello {name}")` — compiler desugars interpolation directly into builder appends, avoiding temp string allocation.
 
 ## Concatenation and Formatting
 
@@ -287,7 +286,7 @@ FIX 1: Copy to owned string:
 
 FIX 2: Store indices instead:
 
-  const v = string_view(0, 5)    // store indices, resolve later
+  const v = Span(0, 5)    // store indices, resolve later
 ```
 
 ```
@@ -304,28 +303,15 @@ FIX: Use char_indices() to find safe boundaries:
 ```
 
 ```
-ERROR [std.strings/S3]: string_view in public API
-   |
-3  |  public func parse(s: string_view) -> Token
-   |                       ^^^^^^^^^^^ use string instead
-
-WHY: Public APIs always use string. string_view is an internal storage tool.
-
-FIX: Accept string and let the compiler infer borrow mode:
-
-  public func parse(s: string) -> Token
-```
-
-```
 ERROR [std.strings/S7]: cannot mutate string
    |
-3  |  s.push_str("x")
-   |    ^^^^^^^^ string is immutable
+3  |  s.append("x")
+   |    ^^^^^^ string is immutable
 
-WHY: Use string_builder for construction.
+WHY: Use StringBuilder for construction.
 
 FIX:
-  let b = string_builder.new()
+  let b = StringBuilder.new()
   b.append(s)
   b.append("x")
   const result = b.build()
@@ -343,8 +329,8 @@ FIX:
 | String literal ≤ 15 bytes | S8 | SSO — inline value, no heap, no refcount |
 | String literal > 15 bytes | S6 | Sentinel refcount, never freed/decremented |
 | Short string (≤ 15 bytes) | S8 | SSO — pure value copy, no atomic ops |
-| `string_view` of freed source | — | Undefined behavior (user's responsibility) |
-| `string_view` out of bounds | — | Panic on `s[view]`, `None` on `s.substr(view)` |
+| `Span` of freed source | — | Undefined behavior (user's responsibility) |
+| `Span` out of bounds | — | Panic on `s[view]`, `None` on `s.substr(view)` |
 | `StringSlice` with stale handle | — | `pool.get(slice)` returns `None` |
 | `StringSlice` wrong pool | — | `pool.get(slice)` returns `None` |
 | Refcount overflow | S6 | Panic (practically unreachable — requires ~4 billion live copies) |
@@ -374,9 +360,9 @@ This is one of the few cases where a type owns heap memory but is still Copy. Th
 
 **S6 (refcount semantics):** Atomic refcount enables safe sharing across tasks. Sentinel refcount for literals avoids overhead on the most common case. Compiler optimization for provably sole-owner strings eliminates atomic ops when sharing can't happen.
 
-**S7 (builder for mutation):** All mutation lives on `string_builder`. This means `string` is truly immutable — no COW surprise, no hidden cost. The builder is always the sole owner of its buffer, so mutation is always O(1) amortized.
+**S7 (builder for mutation):** All mutation lives on `StringBuilder`. This means `string` is truly immutable — no COW surprise, no hidden cost. The builder is always the sole owner of its buffer, so mutation is always O(1) amortized.
 
-**S8 (small string optimization):** Short strings are the most common case in many programs — field names, status codes, short identifiers, small log messages. The 15-byte threshold covers the vast majority of these. Without SSO, every string — even `"OK"` — heap-allocates and atomic-refcounts. With SSO, short strings are pure 16-byte values: no heap, no refcount, same cost as copying an `i128`. The tagged union uses a well-proven technique (same approach as libc++ and fbstring): the MSB of the last byte discriminates between SSO and heap mode. The 16-byte size and Copy semantics are unchanged — SSO is invisible to user code. `string_builder.build()` produces an SSO string when the result is ≤ 15 bytes, avoiding the heap allocation entirely.
+**S8 (small string optimization):** Short strings are the most common case in many programs — field names, status codes, short identifiers, small log messages. The 15-byte threshold covers the vast majority of these. Without SSO, every string — even `"OK"` — heap-allocates and atomic-refcounts. With SSO, short strings are pure 16-byte values: no heap, no refcount, same cost as copying an `i128`. The tagged union uses a well-proven technique (same approach as libc++ and fbstring): the MSB of the last byte discriminates between SSO and heap mode. The 16-byte size and Copy semantics are unchanged — SSO is invisible to user code. `StringBuilder.build()` produces an SSO string when the result is ≤ 15 bytes, avoiding the heap allocation entirely.
 
 ### Why Immutable Strings?
 
@@ -410,23 +396,24 @@ For cheap sharing of arbitrary data, use `Shared<T>` — explicit, visible, corr
 
 <!-- test: skip -->
 ```rask
-let b = string_builder.new()
+let b = StringBuilder.new()
 b.append("User: ")
 b.append(name)
 b.append_char('\n')
 const msg = b.build()
 ```
 
-**Accumulator pattern** — `build_and_reset()` for flush-text style loops:
+**Accumulator pattern** — create a new builder per iteration:
 
 <!-- test: skip -->
 ```rask
-func flush_lines(lines: Vec<string>, mutate builder: string_builder) -> Vec<string> {
+func flush_lines(lines: Vec<string>) -> Vec<string> {
     let results = Vec.new()
     for line in lines {
-        builder.append(line)
-        builder.append_char('\n')
-        results.push(builder.build_and_reset())
+        let b = StringBuilder.new()
+        b.append(line)
+        b.append_char('\n')
+        results.push(b.build())
     }
     return results
 }
@@ -437,11 +424,11 @@ func flush_lines(lines: Vec<string>, mutate builder: string_builder) -> Vec<stri
 <!-- test: skip -->
 ```rask
 trait Renderable {
-    func render(self, mutate builder: string_builder)
+    func render(self, mutate builder: StringBuilder)
 }
 
 extend HtmlTag: Renderable {
-    func render(self, mutate builder: string_builder) {
+    func render(self, mutate builder: StringBuilder) {
         builder.append("<{self.tag}>")
         for child in self.children {
             child.render(builder)
@@ -474,7 +461,7 @@ const s2 = s1  // COPY: both s1 and s2 valid (refcount incremented)
 
 process(s2[0..3])  // passes "hel" as temporary slice
 
-const view = string_view(0, 3)
+const view = Span(0, 3)
 process(s2[view])  // user ensures s2 is still valid
 ```
 
@@ -509,7 +496,7 @@ for (i, c) in text.char_indices() {
 ### Integration
 
 - `string` implements `Displayable`, `Hashable`, `Comparable` traits. Copy is structural (S1)
-- All types (`string`, `string_view`, `string_builder`, `StringPool`, `StringSlice`) are in core prelude
+- All types (`string`, `Span`, `StringBuilder`, `StringPool`, `StringSlice`) are in core prelude
 - String builders can contain linear resources; `build()` consumes builder to preserve linearity
 - String literals ≤ 15 bytes produce SSO values (inline, no allocation). Longer literals use static storage with sentinel refcount. Comptime interpolation follows the same rule based on result length
 
@@ -522,7 +509,6 @@ Current interpreter behavior differs from spec in some areas:
 - This causes allocation but matches common usage patterns
 
 **Method name aliases:**
-- `s.push(c)` and `s.push_char(c)` both work (on builder)
 - `s.parse()` and `s.parse_int()` both work
 - `s.index_of(pat)` is alias for `s.find(pat)`
 

@@ -96,15 +96,15 @@ const s = "hello world"
 const slice = s[0..5]    // ERROR: string slices can't be stored
 ```
 
-String slices are temporary views into the string's buffer — storing one would create a dangling reference if the source string is freed. Use `.to_string()` or `string_view` indices:
+String slices are temporary views into the string's buffer — storing one would create a dangling reference if the source string is freed. Use `.to_string()` or `Span` indices:
 <!-- test: skip -->
 ```rask
 const s = "hello world"
 const owned = s[0..5].to_string()  // copy to owned string
 process(owned)                     // OK: independent value
 
-const view = string_view(0, 5)     // or store indices
-process(s[view])                   // resolve inline
+const span = Span(0, 5)            // or store indices
+process(s[span])                   // resolve inline
 ```
 
 ## Inline Expression Access
@@ -418,7 +418,7 @@ FIX 1: Copy to owned string:
 
 FIX 2: Store indices:
 
-  const view = string_view(0, 5)
+  const view = Span(0, 5)
   process(line[view])
 ```
 
@@ -572,7 +572,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 
 **E5 (sync inline access):** Collections got inline access through `[]` indexing — `pool[h].field` works without `with`. Sync primitives didn't have an equivalent. `.read()`, `.write()`, and `.lock()` now serve the same role: they produce expression-scoped access to the inner value. The lock is visible in the dot-chain (`config.read().timeout`), so cost transparency is preserved. `with` blocks remain for multi-statement access — inline is just the single-expression shorthand.
 
-**Why string slices are temporary:** Strings are immutable and refcounted, but a slice (`s[i..j]`) is a raw view into the buffer without its own refcount. Storing it would require either a hidden view type or borrow tracking — both contradict the "no storable references" principle. The cost is `.to_string()` calls or `string_view` indices — visible, simple, no borrow tracking needed.
+**Why string slices are temporary:** Strings are immutable and refcounted, but a slice (`s[i..j]`) is a raw view into the buffer without its own refcount. Storing it would require either a hidden view type or borrow tracking — both contradict the "no storable references" principle. The cost is `.to_string()` calls or `Span` indices — visible, simple, no borrow tracking needed.
 
 **Inline access is still a temporary borrow:** `process(pool[h].name)` where `name` is a string — it's a temporary borrow for the expression. The user sees: "you can use it inline, or copy it out, or use `with`." Value-based framing, borrow-based implementation. Users don't need to understand the implementation.
 
@@ -600,13 +600,13 @@ with pool[h] as e: e.health -= damage
 
 Block-scoped borrowing means parsers can't return references into input buffers. Two patterns handle this.
 
-*Simple case:* `string_view` stores `(start, end)` indices. Resolve against the original input inline:
+*Simple case:* `Span` stores `(start, end)` indices. Resolve against the original input inline:
 
 <!-- test: parse -->
 ```rask
 struct Token {
     kind: TokenKind
-    span: string_view
+    span: Span
 }
 
 func tokenize(input: string) -> Vec<Token> {
@@ -614,7 +614,7 @@ func tokenize(input: string) -> Vec<Token> {
     let pos = 0
     // scan() returns positions — no allocations per token
     for (start, end, kind) in scan(input) {
-        tokens.push(Token { kind, span: string_view(start, end) })
+        tokens.push(Token { kind, span: Span(start, end) })
     }
     return tokens
 }

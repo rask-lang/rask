@@ -393,7 +393,7 @@ Total: 16 bytes. Alignment: 8 bytes. Both modes are Copy (16-byte memcpy).
 
 SSO strings store UTF-8 data directly in the 16-byte value — no heap pointer, no refcount. Heap strings point to a refcounted header followed by UTF-8 data, no null terminator unless needed for FFI.
 
-Strings ≤ 15 bytes (including all single-byte-per-char ASCII strings up to 15 chars) use SSO. Strings > 15 bytes use heap mode. `string_builder.build()` produces SSO when the result fits.
+Strings ≤ 15 bytes (including all single-byte-per-char ASCII strings up to 15 chars) use SSO. Strings > 15 bytes use heap mode. `StringBuilder.build()` produces SSO when the result fits.
 
 ## References and Slices
 
