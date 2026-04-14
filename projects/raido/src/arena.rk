@@ -1,0 +1,298 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Arena — flat byte-buffer with bump allocation
+// Matches vm/architecture.md byte-level layouts
+
+// Object kind tags (exhaustive, see architecture.md)
+// 0 = reserved (zeroed memory reads as invalid), 6-255 reserved
+enum ObjectKind {
+    String: u8 = 1
+    Array: u8 = 2
+    Map: u8 = 3
+    Struct: u8 = 4
+    Enum: u8 = 5
+}
+
+enum ArenaError {
+    Exhausted
+    ObjectTooLarge
+}
+
+const HEADER_SIZE: i64 = 4
+const VALUE_SIZE: i64 = 8
+const MAX_BODY: i64 = 65535
+const MAP_ENTRY_SIZE: i64 = 24  // key(8) + value(8) + hash(4) + pad(4)
+const EMPTY_SLOT: i64 = 0xFFFFFFFF
+
+struct Arena {
+    buf: Vec<u8>
+    top: i64
+    capacity: i64
+    frame_base: i64
+}
+
+extend Arena {
+    func new(capacity: i64) -> Arena {
+        return Arena {
+            buf: Vec.with_capacity(capacity as usize),
+            top: 0,
+            capacity: capacity,
+            frame_base: 0,
+        }
+    }
+
+    func reset(self) {
+        self.top = 0
+        self.frame_base = 0
+    }
+
+    func frame_begin(self) {
+        self.frame_base = self.top
+    }
+
+    func frame_end(self) {
+        self.top = self.frame_base
+    }
+
+    // --- Internal allocation ---
+
+    func alloc(self, kind: i64, body_size: i64) -> i64 or ArenaError {
+        if body_size > MAX_BODY {
+            return ArenaError.ObjectTooLarge
+        }
+        const aligned = ((HEADER_SIZE + body_size + 3) / 4) * 4
+        if self.top + aligned > self.capacity {
+            return ArenaError.Exhausted
+        }
+        ensure_size(self.buf, self.top + aligned)
+        const offset = self.top
+        write_u8(self.buf, offset, kind)
+        write_u8(self.buf, offset + 1, 0)
+        write_u16le(self.buf, offset + 2, body_size)
+        self.top = self.top + aligned
+        return offset
+    }
+
+    // --- Strings ---
+    // Body: len(u32) | utf-8 bytes[len]
+
+    func alloc_string(self, s: string) -> i64 or ArenaError {
+        const bytes = s.as_bytes()
+        const len = bytes.len()
+        const offset = try self.alloc(ObjectKind.String, 4 + len)
+        const body = offset + HEADER_SIZE
+        write_u32le(self.buf, body, len)
+        for i in 0..len {
+            write_u8(self.buf, body + 4 + i, bytes.get(i) as i64)
+        }
+        return offset
+    }
+
+    func read_string(self, offset: i64) -> string {
+        const body = offset + HEADER_SIZE
+        const len = read_u32le(self.buf, body)
+        let result = Vec.new()
+        for i in 0..len {
+            result.push(read_u8(self.buf, body + 4 + i) as u8)
+        }
+        return string.from_bytes(result)
+    }
+
+    // --- Arrays ---
+    // Body: len(u32) | cap(u32) | values[cap] (each 8 bytes)
+
+    func alloc_array(self, cap: i64) -> i64 or ArenaError {
+        const offset = try self.alloc(ObjectKind.Array, 8 + cap * VALUE_SIZE)
+        const body = offset + HEADER_SIZE
+        write_u32le(self.buf, body, 0)
+        write_u32le(self.buf, body + 4, cap)
+        return offset
+    }
+
+    func array_len(self, offset: i64) -> i64 {
+        return read_u32le(self.buf, offset + HEADER_SIZE)
+    }
+
+    func array_cap(self, offset: i64) -> i64 {
+        return read_u32le(self.buf, offset + HEADER_SIZE + 4)
+    }
+
+    func array_get(self, offset: i64, idx: i64) -> i64 {
+        return read_i64le(self.buf, offset + HEADER_SIZE + 8 + idx * VALUE_SIZE)
+    }
+
+    func array_set(self, offset: i64, idx: i64, val: i64) {
+        write_i64le(self.buf, offset + HEADER_SIZE + 8 + idx * VALUE_SIZE, val)
+    }
+
+    // Returns the (possibly new) array offset
+    func array_push(self, offset: i64, val: i64) -> i64 or ArenaError {
+        const body = offset + HEADER_SIZE
+        const len = read_u32le(self.buf, body)
+        const cap = read_u32le(self.buf, body + 4)
+        if len >= cap {
+            // New array with double capacity. Old one becomes dead space.
+            const new_cap = if cap == 0 { 4 } else { cap * 2 }
+            const new_offset = try self.alloc_array(new_cap)
+            const new_body = new_offset + HEADER_SIZE
+            for i in 0..len {
+                const v = read_i64le(self.buf, body + 8 + i * VALUE_SIZE)
+                write_i64le(self.buf, new_body + 8 + i * VALUE_SIZE, v)
+            }
+            write_i64le(self.buf, new_body + 8 + len * VALUE_SIZE, val)
+            write_u32le(self.buf, new_body, len + 1)
+            return new_offset
+        }
+        write_i64le(self.buf, body + 8 + len * VALUE_SIZE, val)
+        write_u32le(self.buf, body, len + 1)
+        return offset
+    }
+
+    // --- Structs ---
+    // Body: fields[N] (each 8 bytes)
+
+    func alloc_struct(self, field_count: i64) -> i64 or ArenaError {
+        return try self.alloc(ObjectKind.Struct, field_count * VALUE_SIZE)
+    }
+
+    func struct_get_field(self, offset: i64, idx: i64) -> i64 {
+        return read_i64le(self.buf, offset + HEADER_SIZE + idx * VALUE_SIZE)
+    }
+
+    func struct_set_field(self, offset: i64, idx: i64, val: i64) {
+        write_i64le(self.buf, offset + HEADER_SIZE + idx * VALUE_SIZE, val)
+    }
+
+    // --- Enums (with payload) ---
+    // Body: payload fields[N] (each 8 bytes)
+    // Discriminant lives in the register, not the arena.
+
+    func alloc_enum(self, field_count: i64) -> i64 or ArenaError {
+        return try self.alloc(ObjectKind.Enum, field_count * VALUE_SIZE)
+    }
+
+    func enum_get_field(self, offset: i64, idx: i64) -> i64 {
+        return read_i64le(self.buf, offset + HEADER_SIZE + idx * VALUE_SIZE)
+    }
+
+    func enum_set_field(self, offset: i64, idx: i64, val: i64) {
+        write_i64le(self.buf, offset + HEADER_SIZE + idx * VALUE_SIZE, val)
+    }
+
+    // --- Maps ---
+    // Body: live(u32) | cap(u32) | indices[cap] (u32 each) | entries (24 bytes each)
+    // Entry: key(i64) | value(i64) | hash(u32) | pad(u32)
+    // Index slot: EMPTY_SLOT = empty, otherwise entry index
+    // Open addressing, linear probing, entries dense in insertion order
+
+    func alloc_map(self, cap: i64) -> i64 or ArenaError {
+        const body_size = 8 + cap * 4 + cap * MAP_ENTRY_SIZE
+        const offset = try self.alloc(ObjectKind.Map, body_size)
+        const body = offset + HEADER_SIZE
+        write_u32le(self.buf, body, 0)
+        write_u32le(self.buf, body + 4, cap)
+        const idx_start = body + 8
+        for i in 0..cap {
+            write_u32le(self.buf, idx_start + i * 4, EMPTY_SLOT)
+        }
+        return offset
+    }
+
+    func map_len(self, offset: i64) -> i64 {
+        return read_u32le(self.buf, offset + HEADER_SIZE)
+    }
+
+    func map_get(self, offset: i64, key: i64, hash: i64) -> i64? {
+        const body = offset + HEADER_SIZE
+        const cap = read_u32le(self.buf, body + 4)
+        if cap == 0 { return none }
+        const idx_start = body + 8
+        const entries_start = idx_start + cap * 4
+        let slot = hash % cap
+        for _ in 0..cap {
+            const entry_idx = read_u32le(self.buf, idx_start + slot * 4)
+            if entry_idx == EMPTY_SLOT {
+                return none
+            }
+            const entry_base = entries_start + entry_idx * MAP_ENTRY_SIZE
+            if read_i64le(self.buf, entry_base) == key {
+                return read_i64le(self.buf, entry_base + 8)
+            }
+            slot = (slot + 1) % cap
+        }
+        return none
+    }
+
+    // Returns the (possibly new) map offset
+    func map_set(self, offset: i64, key: i64, hash: i64, val: i64) -> i64 or ArenaError {
+        const body = offset + HEADER_SIZE
+        const live = read_u32le(self.buf, body)
+        const cap = read_u32le(self.buf, body + 4)
+
+        // Rehash if empty or would exceed 75% load
+        if cap == 0 || (live + 1) * 100 > cap * 75 {
+            const new_cap = if cap == 0 { 8 } else { cap * 2 }
+            const new_offset = try self.rehash_map(offset, new_cap)
+            return try self.map_set(new_offset, key, hash, val)
+        }
+
+        const idx_start = body + 8
+        const entries_start = idx_start + cap * 4
+        let slot = hash % cap
+        for _ in 0..cap {
+            const entry_idx = read_u32le(self.buf, idx_start + slot * 4)
+            if entry_idx == EMPTY_SLOT {
+                // Insert new entry at position `live`
+                const entry_base = entries_start + live * MAP_ENTRY_SIZE
+                write_i64le(self.buf, entry_base, key)
+                write_i64le(self.buf, entry_base + 8, val)
+                write_u32le(self.buf, entry_base + 16, hash)
+                write_u32le(self.buf, entry_base + 20, 0)
+                write_u32le(self.buf, idx_start + slot * 4, live)
+                write_u32le(self.buf, body, live + 1)
+                return offset
+            }
+            const entry_base = entries_start + entry_idx * MAP_ENTRY_SIZE
+            if read_i64le(self.buf, entry_base) == key {
+                // Update existing value
+                write_i64le(self.buf, entry_base + 8, val)
+                return offset
+            }
+            slot = (slot + 1) % cap
+        }
+        return ArenaError.Exhausted
+    }
+
+    func rehash_map(self, old_offset: i64, new_cap: i64) -> i64 or ArenaError {
+        const old_body = old_offset + HEADER_SIZE
+        const old_live = read_u32le(self.buf, old_body)
+        const old_cap = read_u32le(self.buf, old_body + 4)
+        const old_entries = old_body + 8 + old_cap * 4
+
+        const new_offset = try self.alloc_map(new_cap)
+        const new_body = new_offset + HEADER_SIZE
+        const new_idx_start = new_body + 8
+        const new_entries = new_idx_start + new_cap * 4
+
+        // Re-insert all entries in insertion order
+        for i in 0..old_live {
+            const src = old_entries + i * MAP_ENTRY_SIZE
+            const k = read_i64le(self.buf, src)
+            const v = read_i64le(self.buf, src + 8)
+            const h = read_u32le(self.buf, src + 16)
+
+            let slot = h % new_cap
+            while read_u32le(self.buf, new_idx_start + slot * 4) != EMPTY_SLOT {
+                slot = (slot + 1) % new_cap
+            }
+
+            const dst = new_entries + i * MAP_ENTRY_SIZE
+            write_i64le(self.buf, dst, k)
+            write_i64le(self.buf, dst + 8, v)
+            write_u32le(self.buf, dst + 16, h)
+            write_u32le(self.buf, dst + 20, 0)
+            write_u32le(self.buf, new_idx_start + slot * 4, i)
+        }
+        write_u32le(self.buf, new_body, old_live)
+        return new_offset
+    }
+}

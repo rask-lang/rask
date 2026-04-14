@@ -2,7 +2,7 @@
 // Chunk and Prototype — the compiled output of the Raido compiler
 //
 // A Prototype is one function's compiled bytecode. It contains:
-//   - code: the instruction stream (Vec of 32-bit instructions stored as i64)
+//   - code: the instruction stream
 //   - constants: literal values used by LOAD_CONST (strings, large numbers)
 //   - prototypes: nested function definitions
 //   - metadata: how many registers it needs, how many parameters, etc.
@@ -30,11 +30,8 @@
 //   }
 
 struct Prototype {
-    code: Vec<i64>
+    code: Vec<u32>
     constants: Vec<Value>
-    // NOTE: If Rask doesn't support Vec<Prototype> (recursive struct),
-    // change this to Vec<i64> (indices into a flat prototype pool).
-    // Test this early!
     prototypes: Vec<Prototype>
     num_registers: i64      // Max registers this function uses
     arity: i64              // Number of parameters
