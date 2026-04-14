@@ -535,11 +535,15 @@ mod tests {
     }
 
     #[test]
-    fn newline_chained_logical_across_lines_breaks() {
-        // `&&` at start of next line does NOT continue the expression
-        // `a > b` is complete, then `&& b > c` starts new stmt
-        let stmts = parse_body("const ok = a > b\nb > c");
-        assert_eq!(stmts.len(), 2);
+    fn newline_infix_at_start_of_line_continues() {
+        // `&&` at start of next line continues the expression
+        let stmts = parse_body("const ok = a > b\n&& b > c");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::And, .. }));
+        } else {
+            panic!("expected const with logical and");
+        }
     }
 
     #[test]
@@ -551,6 +555,48 @@ mod tests {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::And, .. }));
         } else {
             panic!("expected const with logical and");
+        }
+    }
+
+    #[test]
+    fn newline_ambiguous_prefix_ops_do_not_continue() {
+        // `+` and `-` at start of next line are new statements (prefix ambiguity)
+        let stmts = parse_body("const x = a\n-b");
+        assert_eq!(stmts.len(), 2);
+
+        // Plain identifiers on next line are new statements
+        let stmts = parse_body("const ok = a > b\nb > c");
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn newline_multiple_infix_continuations() {
+        // Multiple lines of infix continuation
+        let stmts = parse_body("const ok = a == 1\n&& b == 2\n&& c == 3");
+        assert_eq!(stmts.len(), 1);
+    }
+
+    #[test]
+    fn newline_comparison_continuation() {
+        // `==` at start of next line continues
+        let stmts = parse_body("const ok = a\n== b");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Eq, .. }));
+        } else {
+            panic!("expected const with equality");
+        }
+    }
+
+    #[test]
+    fn newline_pipe_continuation() {
+        // `||` at start of next line continues
+        let stmts = parse_body("const ok = a\n|| b");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Or, .. }));
+        } else {
+            panic!("expected const with logical or");
         }
     }
 
