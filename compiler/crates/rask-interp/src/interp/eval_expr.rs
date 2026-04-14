@@ -902,7 +902,17 @@ impl Interpreter {
                 match (&obj, &idx) {
                     (Value::Vec(v), Value::Int(i)) => {
                         let vec = v.lock().unwrap();
-                        Ok(vec.get(*i as usize).cloned().unwrap_or(Value::Unit))
+                        let idx = *i as usize;
+                        match vec.get(idx).cloned() {
+                            Some(val) => Ok(val),
+                            None => Err(RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!(
+                                    "index out of bounds: index is {} but length is {}",
+                                    i, vec.len()
+                                )),
+                                expr.span,
+                            )),
+                        }
                     }
                     (Value::Vec(v), Value::Range { start, end, inclusive }) => {
                         let vec = v.lock().unwrap();
@@ -917,12 +927,19 @@ impl Interpreter {
                         let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
                         Ok(Value::Vec(Arc::new(Mutex::new(slice))))
                     }
-                    (Value::String(s), Value::Int(i)) => Ok(s
-                        .lock().unwrap()
-                        .chars()
-                        .nth(*i as usize)
-                        .map(Value::Char)
-                        .unwrap_or(Value::Unit)),
+                    (Value::String(s), Value::Int(i)) => {
+                        let str_val = s.lock().unwrap();
+                        match str_val.chars().nth(*i as usize) {
+                            Some(c) => Ok(Value::Char(c)),
+                            None => Err(RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!(
+                                    "string index out of bounds: index is {} but length is {}",
+                                    i, str_val.chars().count()
+                                )),
+                                expr.span,
+                            )),
+                        }
+                    }
                     (Value::String(s), Value::Range { start, end, inclusive }) => {
                         let str_val = s.lock().unwrap();
                         let len = str_val.len() as i64;
