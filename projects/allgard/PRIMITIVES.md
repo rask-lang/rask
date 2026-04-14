@@ -20,7 +20,7 @@ Objects are content-addressed: the ID is derived from the content. This means:
 - Integrity verification is free
 - References are unforgeable (you can't guess a valid ID)
 
-Every Object has exactly one Owner at any point in time (Conservation Law 2). Ownership transfer is atomic.
+Every Object has at most one Owner at any point in time (Conservation Law 2). Ownership transfer is atomic. Objects without an Owner are [unclaimed](#unclaimed-objects).
 
 ### Properties
 
@@ -31,6 +31,28 @@ Every Object has exactly one Owner at any point in time (Conservation Law 2). Ow
 | `owner` | The Owner identity that has authority over this object |
 | `domain` | The Domain currently hosting this object |
 | `content` | Opaque bytes. Interpretation determined by `type`. |
+
+### Unclaimed Objects
+
+An Object MAY exist without an Owner. An unclaimed object is hosted by a Domain but owned by nobody.
+
+**How objects become unclaimed:**
+
+- **Release.** An Owner explicitly releases an object. This is a Transform operation (type: `release`) — it extends the proof chain, preserves full history, and sets the owner field to empty. The object stays in the domain that hosts it.
+- **Domain succession.** A domain reconstitutes objects from a [state snapshot](#domain-state-snapshots) of a dead domain. The original owners are gone. The objects materialize as unclaimed.
+
+**What you can do with unclaimed objects:**
+
+| Action | Who | How |
+|--------|-----|-----|
+| Inspect | Any Owner in the domain | Standard observation — the object is visible, its type and proof chain are readable |
+| Claim | Any authorized Owner | A Transform (type: `claim`) — atomic, first valid claim wins. Claiming IS ownership transfer from empty to the claimant. |
+| Salvage | Domain operator | Domain policy determines salvage rules — break down unclaimed objects, extract materials, or incorporate them |
+| Ignore | Anyone | Unclaimed objects don't impose obligations. They just sit there. |
+
+**Properties preserved:** The proof chain is unaffected by release or claiming. History is append-only (Law 4). The `release` and `claim` operations are new entries in the chain, not edits to old ones. An unclaimed object's provenance is fully traceable.
+
+**No shared ownership.** Unclaimed means zero owners, not multiple owners. The transition is always: one owner → zero owners (release) or zero owners → one owner (claim). Singular ownership is preserved — the change from Conservation Law 2 is "exactly one" to "at most one."
 
 ## Owner
 
@@ -614,6 +636,45 @@ What it cannot do:
 
 Domains federate. Any Domain can communicate with any other Domain via Leden's capability protocol. There's no central authority, no global state, no master server. Domains discover each other through gossip and establish bilateral capability relationships.
 
+### Domain State Snapshots
+
+Domains MAY publish state snapshots to the Leden content store. A snapshot is a content-addressed blob containing all hosted objects with their proof chains.
+
+**Why.** Domains die. Servers go offline, operators lose interest, hardware fails. Without snapshots, every object in a dead domain is gone until someone does wallet recovery — which requires the original owners to still be around. Snapshots let the objects outlive the domain.
+
+**Publication is voluntary.** Sovereignty means the operator chooses whether to publish. Nobody can force a domain to reveal its state. But there are incentives — trading partners cache your snapshots because they want to recover their objects if you go dark. Bilateral self-interest does the work.
+
+**Snapshot contents:**
+
+| Field | Description |
+|-------|-------------|
+| `domain_id` | The domain that published this snapshot |
+| `epoch` | The domain's logical timestamp at snapshot time |
+| `objects` | All hosted objects: content, type, owner, proof chains |
+| `catalog` | Asset type registry — what types this domain recognizes |
+| `hash` | Content hash of the entire snapshot (self-verifying) |
+
+**Publication schedule:**
+
+- **Periodic** during normal operation. Frequency is domain policy — every epoch, every 100 epochs, once a day. More frequent = less data lost on crash.
+- **Final** on graceful shutdown. The operator publishes one last snapshot before turning off.
+- **Never** is also valid. A domain that never publishes snapshots is choosing opacity. Its trading partners know this and price the risk accordingly.
+
+**Recovery from snapshots:**
+
+When a domain dies, the last published snapshot is what survives in the content store. A new domain operator (or any interested party) can:
+
+1. Fetch the snapshot from the content store (peers who cached it serve it)
+2. Verify every object's proof chain — signatures, causal links, minting scripts. Can't publish garbage because proof chains won't verify.
+3. Materialize valid objects as [unclaimed](#unclaimed-objects) in their domain
+4. Objects are now claimable by anyone authorized in the new domain
+
+**What's lost:** Changes between the last snapshot and domain death. If the domain published hourly and died 59 minutes after the last snapshot, 59 minutes of mutations are gone. This is honest — conservation doesn't require perfect persistence, only no duplication. Lost mutations are lost, not duplicated.
+
+**Verification.** Snapshots are self-verifying. Each object's proof chain must validate back to legitimate minting scripts. A domain can't publish a snapshot with fabricated objects — the proof chains reference counterparties who can independently confirm or deny. This is the same bilateral verification that enforces the conservation laws during normal operation, applied to bulk data.
+
+ZK proofs are a potential optimization for reducing verification burden — prove that "all N objects in this snapshot have valid proof chains" without the verifier re-checking each one. Noted for future work, not required for the mechanism to function.
+
 ## Transform
 
 A proposed operation on an Object. A message send.
@@ -630,6 +691,8 @@ A Transform hasn't happened yet. It's a request: "I want to do this to this obje
 | `split` | Divide an Object into parts (fungible assets) |
 | `merge` | Combine Objects into one (fungible assets) |
 | `destroy` | Remove an Object from existence (burning). Must be backed by a Raido script ([verifiable minting](CONSERVATION.md#verifiable-minting)). |
+| `release` | Relinquish ownership. Object becomes [unclaimed](PRIMITIVES.md#unclaimed-objects) — hosted by the domain, owned by nobody. |
+| `claim` | Take ownership of an unclaimed Object. Atomic — first valid claim wins. |
 
 ### Promise Pipelining
 
