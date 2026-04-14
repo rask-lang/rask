@@ -229,24 +229,13 @@ fn main() {
                 help::print_run_help();
                 return;
             }
-            if cmd_args.len() < 3 {
-                eprintln!("{}: missing file or directory argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rk | dir> [-- args]"));
-                process::exit(1);
-            }
             let release = cmd_args.contains(&"--release");
             let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
             let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![] };
-            let file_arg = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj", "--profile", "--target", "--jobs", "-j"]);
-            let file = match file_arg {
-                Some(f) => f,
-                None => {
-                    eprintln!("{}: missing file or directory argument", output::error_label());
-                    process::exit(1);
-                }
-            };
+            let file = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj", "--profile", "--target", "--jobs", "-j"])
+                .unwrap_or(".");
 
             if Path::new(file).is_dir() {
                 let profile = if release {
