@@ -169,6 +169,15 @@ void        rask_string_append(RaskStr *out, const RaskStr *s, const RaskStr *ot
 void        rask_string_append_cstr(RaskStr *out, const RaskStr *s, const char *cstr);
 void        rask_string_push_str(RaskStr *out, const RaskStr *s, const RaskStr *other);
 
+// ─── StringBuilder ─────────────────────────────────────────
+int64_t     rask_string_builder_new(void);
+int64_t     rask_string_builder_with_capacity(int64_t cap);
+void        rask_string_builder_append(int64_t handle, int64_t str_ptr);
+void        rask_string_builder_append_char(int64_t handle, int64_t codepoint);
+void        rask_string_builder_build(RaskStr *out, int64_t handle);
+int64_t     rask_string_builder_len(int64_t handle);
+int64_t     rask_string_builder_is_empty(int64_t handle);
+
 // Vec-returning operations (elements are RaskStr, elem_size=16)
 RaskVec    *rask_string_lines(const RaskStr *s);
 RaskVec    *rask_string_split(const RaskStr *s, const RaskStr *sep);

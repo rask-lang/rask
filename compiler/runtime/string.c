@@ -786,3 +786,92 @@ extern RaskVec *rask_map_entries(const void *map);
 RaskVec *rask_map_iter(const void *map) {
     return rask_map_entries(map);
 }
+
+// ─── StringBuilder ──────────────────────────────────────────
+//
+// Growable byte buffer backed by realloc. UTF-8 valid by construction
+// (only string and char data enters through the API).
+
+typedef struct {
+    char  *data;
+    int64_t len;
+    int64_t cap;
+} RaskStringBuilder;
+
+int64_t rask_string_builder_new(void) {
+    RaskStringBuilder *sb = (RaskStringBuilder *)rask_alloc(sizeof(RaskStringBuilder));
+    sb->data = NULL;
+    sb->len = 0;
+    sb->cap = 0;
+    return (int64_t)(uintptr_t)sb;
+}
+
+int64_t rask_string_builder_with_capacity(int64_t cap) {
+    RaskStringBuilder *sb = (RaskStringBuilder *)rask_alloc(sizeof(RaskStringBuilder));
+    sb->data = (char *)rask_alloc((size_t)cap);
+    sb->len = 0;
+    sb->cap = cap;
+    return (int64_t)(uintptr_t)sb;
+}
+
+static void sb_grow(RaskStringBuilder *sb, int64_t extra) {
+    int64_t needed = sb->len + extra;
+    if (needed <= sb->cap) return;
+    int64_t new_cap = sb->cap < 16 ? 16 : sb->cap;
+    while (new_cap < needed) new_cap *= 2;
+    sb->data = (char *)realloc(sb->data, (size_t)new_cap);
+    sb->cap = new_cap;
+}
+
+void rask_string_builder_append(int64_t handle, int64_t str_ptr) {
+    RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
+    const RaskStr *s = (const RaskStr *)(uintptr_t)str_ptr;
+    int64_t slen = str_len(s);
+    if (slen <= 0) return;
+    sb_grow(sb, slen);
+    memcpy(sb->data + sb->len, str_data(s), (size_t)slen);
+    sb->len += slen;
+}
+
+void rask_string_builder_append_char(int64_t handle, int64_t codepoint) {
+    RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
+    uint32_t cp = (uint32_t)codepoint;
+    char buf[4];
+    int n;
+    if (cp < 0x80) {
+        buf[0] = (char)cp; n = 1;
+    } else if (cp < 0x800) {
+        buf[0] = (char)(0xC0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3F)); n = 2;
+    } else if (cp < 0x10000) {
+        buf[0] = (char)(0xE0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (cp & 0x3F)); n = 3;
+    } else {
+        buf[0] = (char)(0xF0 | (cp >> 18));
+        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (cp & 0x3F)); n = 4;
+    }
+    sb_grow(sb, n);
+    memcpy(sb->data + sb->len, buf, (size_t)n);
+    sb->len += n;
+}
+
+// Consume the builder, return a string. Zero-copy when possible.
+void rask_string_builder_build(RaskStr *out, int64_t handle) {
+    RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
+    str_make(out, sb->data, sb->len);
+    free(sb->data);
+    free(sb);
+}
+
+int64_t rask_string_builder_len(int64_t handle) {
+    RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
+    return sb->len;
+}
+
+int64_t rask_string_builder_is_empty(int64_t handle) {
+    RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
+    return sb->len == 0 ? 1 : 0;
+}

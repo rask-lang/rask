@@ -604,6 +604,19 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── HTTP server close (linear resource cleanup) ─────────────
         StdlibEntry::simple("HttpServer_close", "rask_http_server_close", &[types::I64], None, false),
 
+        // ── StringBuilder ───────────────────────────────────────────
+        StdlibEntry::simple("StringBuilder_new", "rask_string_builder_new", &[], Some(types::I64), false),
+        StdlibEntry::simple("StringBuilder_with_capacity", "rask_string_builder_with_capacity", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("StringBuilder_append", "rask_string_builder_append", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("StringBuilder_append_char", "rask_string_builder_append_char", &[types::I64, types::I64], None, false),
+        StdlibEntry {
+            mir_name: "StringBuilder_build", c_name: "rask_string_builder_build",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("StringBuilder_len", "rask_string_builder_len", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("StringBuilder_is_empty", "rask_string_builder_is_empty", &[types::I64], Some(types::I64), false),
+
         // ── JSON module ─────────────────────────────────────────────
         StdlibEntry {
             mir_name: "json_encode", c_name: "rask_json_encode",

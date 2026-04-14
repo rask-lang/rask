@@ -166,28 +166,30 @@ impl StubRegistry {
                 DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
                 _ => false,
             });
-            if has_fn_body {
-                // Include all declarations: functions with bodies, extern blocks,
-                // and struct/enum definitions. The resolver processes these in
-                // stdlib_mode to avoid builtin-shadowing errors.
-                for mut decl in parse_result.decls {
-                    let dominated = match &decl.kind {
+            for mut decl in parse_result.decls {
+                let dominated = if has_fn_body {
+                    match &decl.kind {
                         DeclKind::Fn(f) => !f.body.is_empty(),
                         DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
                         DeclKind::Extern(_) => true,
                         DeclKind::Struct(_) | DeclKind::Enum(_) => true,
                         DeclKind::Import(_) => true,
                         _ => false,
-                    };
-                    if dominated {
-                        // Strip empty-body methods from Impl blocks so they
-                        // don't reach the monomorphizer or interpreter as
-                        // no-op stubs that shadow C runtime implementations.
-                        if let DeclKind::Impl(ref mut i) = decl.kind {
-                            i.methods.retain(|m| !m.body.is_empty());
-                        }
-                        decls.push(decl);
                     }
+                } else {
+                    // Files without function bodies still contribute struct/enum
+                    // definitions — types must be visible for resolution even when
+                    // their methods aren't implemented yet.
+                    matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_))
+                };
+                if dominated {
+                    // Strip empty-body methods from Impl blocks so they
+                    // don't reach the monomorphizer or interpreter as
+                    // no-op stubs that shadow C runtime implementations.
+                    if let DeclKind::Impl(ref mut i) = decl.kind {
+                        i.methods.retain(|m| !m.body.is_empty());
+                    }
+                    decls.push(decl);
                 }
             }
         }
