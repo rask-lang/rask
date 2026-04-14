@@ -712,13 +712,14 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                 }
             }
 
-            // Resolve with stdlib decls in stdlib_mode (bypasses shadow checks)
-            let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
-
-            match rask_resolve::resolve_package_with_stdlib(&all_decls, &registry, root_id, &stdlib_decls) {
+            // Resolve WITHOUT stdlib decls (same as rask check). Stdlib types
+            // (Option, Vec, etc.) are registered as builtins by the resolver.
+            // Typecheck adds full stdlib method signatures via typecheck_decls().
+            let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+            match rask_resolve::resolve_package_with_cfg(&all_decls, &registry, root_id, cfg.to_cfg_values()) {
                 Ok(resolved) => {
-                    // Register stdlib types/methods, then typecheck user decls only
-                    match rask_types::typecheck_with_stdlib(resolved, &all_decls, &stdlib_decls) {
+                    let typecheck_stdlib = rask_stdlib::StubRegistry::typecheck_decls();
+                    match rask_types::typecheck_with_stdlib(resolved, &all_decls, &typecheck_stdlib) {
                         Ok(typed) => {
                             let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
                             if !ownership_result.is_ok() {
@@ -727,7 +728,8 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                                 }
                                 total_errors += ownership_result.errors.len();
                             } else {
-                                // Merge stdlib decls for mono/codegen
+                                // Merge compilable stdlib decls for mono/codegen
+                                let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
                                 all_decls.extend(stdlib_decls);
                                 // Merge dependency decls so mono/MIR can find them.
                                 // Desugar first so string interpolation etc. works.
