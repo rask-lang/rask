@@ -14,6 +14,11 @@ Choose simple over easy
 - Don’t include timeline estimates in plans.
 - Don’t add yourself as a co-author to git commits.
 
+## Debugging discipline
+                                                                   
+- Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
+- Fix causes, not symptoms.  
+
 **Tool usage:**
 - Use `Write` tool for creating test files, not `Bash` with cat/heredocs
 - Avoid pipes (`|`), redirects (`2>&1`), and command chaining (`&&`) in Bash commands - they break permission matching
@@ -47,6 +52,7 @@ Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after
 Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code files (.rs, .rk), not docs (.md)
 
 ## Documentation (Markdown)
+Dont be TOO consistent.
 
 **Use "I" for design choices:**
 - ✅ "I chose handles over pointers—indirection cost is explicit"

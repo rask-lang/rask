@@ -8,7 +8,7 @@ func logging(next: |Request| -> Response) -> |Request| -> Response {
         const duration = start.elapsed().as_millis()
         println("Request processed in {duration} ms")
         println("Responding with status: {response.status}")
-        return response
+        return response.clone()
     }
 }
 
@@ -23,6 +23,6 @@ func with_metrics(next: |Request| -> Response) -> |Request| -> Response {
             m.bytes_sent = m.bytes_sent + response.body.len()
             m.bytes_received = m.bytes_received + request.body.len()
         }
-        return response
+        return response.clone()
     }
 }

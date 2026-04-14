@@ -61,6 +61,13 @@ Hardening for the package ecosystem. Not blocking any examples.
 
 ---
 
+## 9. Parser Gaps (found via Raido)
+
+- [ ] **`try`/`else` closure syntax** — `try expr else |e| expr` doesn't parse. Workaround: use `match` on the result.
+- [ ] **`while`/`if` with `is` pattern** — `while self.current is Token.Newline` doesn't parse. Workaround: `loop { match ... _ => break }`.
+
+---
+
 ## Design Questions
 
 - [ ] Task-local storage syntax — deferred until M:N scheduler is real and explicit param passing proves inadequate
