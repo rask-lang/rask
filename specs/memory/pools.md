@@ -335,6 +335,7 @@ ensure files.take_all_with(|f| { f.close(); })
 | `Pool<T>` | if `T: Send` | if `T: Sync` |
 | `Handle<T>` | Yes (Copy) | Yes |
 | `WeakHandle<T>` | Yes (Copy) | Yes |
+| `AtomicHandle<T>` | Yes | Yes (atomic operations are safe cross-thread, `mem.atomics/AH1`) |
 
 ## Capacity and Allocation
 
