@@ -31,6 +31,7 @@ Atomic types provide safe, data-race-free shared memory access with explicit mem
 | `AtomicI64` / `AtomicU64` | 8 bytes | 64-bit integer |
 | `AtomicUsize` / `AtomicIsize` | Pointer-size | Pointer-sized integer |
 | `AtomicPtr<T>` | Pointer-size | Raw pointer to T |
+| `AtomicHandle<T>` | 8 or 16 bytes | Pool handle (AH1) |
 
 **Properties:**
 
@@ -159,6 +160,48 @@ unsafe {
 }
 ```
 
+### AtomicHandle Operations
+
+`AtomicHandle<T>` stores a `Handle<T>?` that can be atomically loaded, stored, and compared-and-exchanged. Handle fields (pool_id, index, generation) are packed into a single atomic word.
+
+| Rule | Description |
+|------|-------------|
+| **AH1: Packing** | Handle fields packed into `AtomicU64` (≤8 byte handles) or `AtomicU128` (≤16 byte, requires `target.has_atomic128`) |
+| **AH2: Nullable** | Holds `Handle<T>?` — `None` is a sentinel bit pattern distinct from any valid handle |
+| **AH3: ABA protection** | Generation counter in the handle prevents ABA — a reused slot gets a different generation, so CAS on a recycled handle correctly fails |
+| **AH4: Pool validation** | Atomicity guarantees a consistent load, not that the handle is live. Validate with `pool.get(h)` before access |
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `new(h)` | `Handle<T> -> AtomicHandle<T>` | Create with initial handle |
+| `none()` | `() -> AtomicHandle<T>` | Create empty (sentinel) |
+| `load(order)` | `self, Ordering -> Handle<T>?` | Atomically read |
+| `store(h, order)` | `self, Handle<T>?, Ordering` | Atomically write |
+| `swap(h, order)` | `self, Handle<T>?, Ordering -> Handle<T>?` | Replace, return old |
+| `compare_exchange(cur, new, succ, fail)` | `self, Handle<T>?, Handle<T>?, Ordering, Ordering -> Handle<T>? or Handle<T>?` | CAS |
+| `compare_exchange_weak(cur, new, succ, fail)` | Same | May spuriously fail |
+
+**Handle size:** Default `Handle<T>` is 12 bytes — requires `AtomicU128` (x86-64, ARM64). Compact handles (`Pool<T, PoolId=u16, Index=u16, Gen=u32>`) are 8 bytes — work everywhere via `AtomicU64`. Compile error if handle exceeds the available atomic word size.
+
+<!-- test: skip -->
+```rask
+// Atomic "latest value" slot — multiple writers, readers see most recent
+const latest: AtomicHandle<Reading> = AtomicHandle.none()
+
+func publish(mutate pool: Pool<Reading>, value: Reading) {
+    const h = pool.insert(value)
+    const prev = latest.swap(Some(h), Release)
+    if prev is Some(old_h) {
+        pool.remove(old_h)
+    }
+}
+
+func read_latest(pool: Pool<Reading>) -> Reading? {
+    const h = latest.load(Acquire) ?? return None
+    pool.get(h)   // None if writer just swapped and removed
+}
+```
+
 ### Non-Atomic Access
 
 | Operation | Signature | Description |
@@ -277,6 +320,24 @@ WHY: Lock-based emulation would hide a 10x cost, violating transparency.
 FIX: Use comptime if target.has_atomic128 { ... } to provide both paths.
 ```
 
+**AtomicHandle size mismatch [AH1]:**
+```
+ERROR [mem.atomics/AH1]: Handle<Entity> is 12 bytes — requires AtomicU128
+   |
+5  |  const head: AtomicHandle<Entity> = AtomicHandle.none()
+   |              ^^^^^^^^^^^^^^^^^^^^ handle does not fit in AtomicU64
+
+WHY: Default Handle is 12 bytes (PoolId=u32, Index=u32, Gen=u32).
+     AtomicU128 is not available on this platform.
+
+FIX 1: Use compact pool configuration:
+
+  const pool = Pool<Entity, PoolId=u16, Index=u16, Gen=u32>.new()
+  // Handle is now 8 bytes — fits in AtomicU64
+
+FIX 2: Use comptime if target.has_atomic128 { ... } for platform-specific paths.
+```
+
 ## Edge Cases
 
 | Case | Rule | Handling |
@@ -290,6 +351,10 @@ FIX: Use comptime if target.has_atomic128 { ... } to provide both paths.
 | `into_value` on shared atomic | AT3 | Requires `take self` — exclusive ownership |
 | Atomics at comptime | — | Not available (no meaningful semantics without threads) |
 | Atomic statics | AT1 | Safe to access from multiple threads without `unsafe` |
+| Handle too large for atomic word | AH1 | Compile error — use compact pool config or platform with `AtomicU128` |
+| `AtomicHandle.load` then `pool[h]` | AH4 | Handle may be stale — use `pool.get(h)` for safe validation |
+| CAS on handle to recycled slot | AH3 | Correctly fails — generation mismatch in packed word |
+| `AtomicHandle.none()` in CAS expected | AH2 | Works — `None` is a valid bit pattern for comparison |
 
 ---
 
@@ -305,6 +370,10 @@ FIX: Use comptime if target.has_atomic128 { ... } to provide both paths.
 
 **C interop:** Atomic types are ABI-compatible with C11 `_Atomic` types and C++ `std::atomic`.
 
+**AH3 (ABA protection):** Traditional lock-free algorithms need separate ABA mitigation — tagged pointers, hazard pointers, or epoch-based reclamation. Handle generation counters provide this structurally: when a pool slot is reused, the generation increments. A stale handle packed into an `AtomicHandle` has a different bit pattern than the new occupant's handle, so CAS correctly rejects it. This doesn't eliminate all concurrency hazards (safe reclamation is still needed), but it removes the most common source of subtle lock-free bugs for free.
+
+**AH4 (pool validation):** AtomicHandle guarantees you loaded a consistent handle value. It does NOT guarantee the handle is still live — another thread may have removed it between your load and your pool access. Always use `pool.get(h)` (returns `Option`) rather than `pool[h]` (panics on stale handle) after loading from an AtomicHandle.
+
 ### Patterns & Guidance
 
 **Ordering selection:**
@@ -318,6 +387,9 @@ FIX: Use comptime if target.has_atomic128 { ... } to provide both paths.
 | Reference count increment | `Relaxed` |
 | Reference count decrement (checking for zero) | `AcqRel` |
 | Unknown / unsure | `SeqCst` (safest, may be slower) |
+| AtomicHandle publish (writer) | `Release` store/swap |
+| AtomicHandle consume (reader) | `Acquire` load |
+| AtomicHandle CAS (lock-free op) | Success: `AcqRel`, Failure: `Relaxed` |
 
 **Performance hierarchy (fastest to slowest):**
 
@@ -437,8 +509,47 @@ func spin_release<T>(lock: *SpinLockInner<T>) {
 
 These patterns use raw pointers and unsafe blocks. The stdlib provides safe wrappers (`Mutex<T>`, `Arc<T>`) that encapsulate the unsafe implementation.
 
+**Lock-free stack (sketch using AtomicHandle):**
+
+<!-- test: skip -->
+```rask
+struct Node<T> {
+    data: T
+    next: Handle<Node<T>>?
+}
+
+struct LockFreeStack<T> {
+    pool: Pool<Node<T>, PoolId=u16, Index=u16, Gen=u32>
+    head: AtomicHandle<Node<T>>
+}
+
+extend LockFreeStack<T> {
+    func new() -> LockFreeStack<T> {
+        LockFreeStack {
+            pool: Pool.new(),
+            head: AtomicHandle.none(),
+        }
+    }
+
+    func push(mutate self, value: T) {
+        const node = self.pool.insert(Node { data: value, next: None })
+        loop {
+            const current = self.head.load(Acquire)
+            self.pool[node].next = current
+            match self.head.compare_exchange_weak(current, Some(node), Release, Relaxed) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+    }
+}
+```
+
+This sketch shows the push path — CAS on handles with generation-based ABA protection. A complete implementation needs thread-safe pool access and deferred reclamation on pop. The stdlib provides `LockFreeStack<T>` and `LockFreeQueue<T>` that handle these concerns internally.
+
 ### See Also
 
 - [Synchronization Primitives](../concurrency/sync.md) — `Mutex<T>`, `Shared<T>` for compound data (`conc.sync`)
 - [Concurrency](../concurrency/async.md) — Channels and task spawning (`conc.async`)
 - [Unsafe](unsafe.md) — Raw pointer dereferencing for `AtomicPtr` results (`mem.unsafe`)
+- [Pools](pools.md) — Handle-based storage, validation for `AtomicHandle` results (`mem.pools`)
