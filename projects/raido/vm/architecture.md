@@ -110,10 +110,25 @@ Arena is a flat `[u8]` with a bump pointer (`top: u32`). Every object starts wit
 
 ```
 Object header (4 bytes):
-  type (u8)   -- object kind (string, array, map, struct, enum)
+  kind (u8)   -- object kind tag (see table)
   _pad (u8)   -- reserved, zero
   size (u16)  -- object body size in bytes (max 65535 bytes per object)
 ```
+
+The `kind` tag is not read during normal execution -- static typing means every access already knows the layout. The tag exists for serialization validation, debugging, and arena walkers (anything that inspects the arena without bytecode context).
+
+**Object kind tags** (exhaustive):
+
+| Value | Kind | Body layout |
+|-------|------|-------------|
+| 0 | *reserved* | zeroed arena = invalid, not a zero-length string |
+| 1 | String | `len (u32) \| utf-8 bytes[len]` |
+| 2 | Array | `len (u32) \| cap (u32) \| values[cap]` |
+| 3 | Map | `live (u32) \| cap (u32) \| indices[cap] \| entries[cap]` |
+| 4 | Struct | `fields[N] (each 8 bytes)` |
+| 5 | Enum (with payload) | `payload fields[N] (each 8 bytes)` |
+
+Values 6--255 are reserved. Types that live in registers -- `int`, `number`, `bool`, `T?`, func ref, simple enum (no payload) -- have no arena object and no kind tag. Coroutines are stored in a separate VM-side structure, not the arena.
 
 **The `size` field is the hard limit.** A u16 caps every object at 64 KB. An array or struct totaling more than 65535 bytes of body can't exist -- the allocator rejects it with `ArenaExhausted` before writing the header.
 

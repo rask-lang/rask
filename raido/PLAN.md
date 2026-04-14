@@ -1,8 +1,5 @@
 # Raido in Rask -- Implementation Plan
 
-The real implementation, not a throwaway reference. If Rask can't express a
-bytecode VM cleanly, that's a language bug to fix.
-
 Two-pass compiler: declaration pass scans types, compile pass emits bytecode
 with type checking. No full AST. Memory is O(declarations), not O(program size).
 

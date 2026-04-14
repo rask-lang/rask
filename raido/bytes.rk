@@ -2,6 +2,8 @@
 // Byte encoding helpers — read/write integers to/from Vec<u8>
 // Little-endian throughout (least significant byte first)
 
+// 0xFF = 0b11111111 (a single byte with all bits set), acts as a mask to extract the least significant byte of a value.
+
 // --- Write ---
 
 func write_u8(buf: Vec<u8>, offset: i64, val: i64) {

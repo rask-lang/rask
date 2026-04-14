@@ -1,0 +1,110 @@
+
+struct ObjectHeader {
+    type_tag: u8
+    pad: u8
+    body_size: u16
+}
+
+enum ObjectType {
+    String: u8 = 1
+    Array: u8 = 2
+    Map: u8 = 3
+    Struct: u8 = 4
+    Enum: u8 = 5
+}
+
+struct Arena {
+    buf: Vec<u8>
+    top: i64
+    capacity: i64
+    frame_base: i64
+}
+
+
+
+extend Arena {
+    func new(initial_capacity: i64) -> Arena {
+        return Arena {
+            buf: Vec.with_capacity(initial_capacity as usize),
+            top: 0,
+            capacity: initial_capacity,
+            frame_base: 0,
+        }
+    }
+
+    func reset(self) {
+        self.top = 0
+        self.frame_base = 0
+    }
+
+    // Allocate an object in the arena and return its offset
+    func alloc(self, type_tag: u8, body_size: i64) -> i64 {
+        const total_size = ObjectHeader.size + body_size  // header + body
+        ensure_size(self.buf, self.top + total_size)
+        write_u8(self.buf, self.top, type_tag)
+        write_u8(self.buf, self.top + 1, 0)  // padding
+        write_u16le(self.buf, self.top + 2, body_size)
+        const obj_offset = self.top
+        self.top = self.top + total_size
+        return obj_offset
+    }
+
+    // Get a slice of the arena for the object's body
+    func get_body(self, offset: i64) -> Vec<u8> {
+        const body_size = read_u16le(self.buf, offset + 2)
+        return self.buf.slice(offset + 4, offset + 4 + body_size)
+    }
+    
+    func alloc_string(self, s: string) -> i64 {
+        const bytes = s.as_bytes()
+        const offset = self.alloc(ObjectType.String, bytes.len() as i64)
+        for i in 0..bytes.len() {
+            write_u8(self.buf, offset + 4 + i as i64, bytes.get(i))
+        }
+        return offset
+    }
+
+    func read_string(self, offset: i64) -> string {
+        const body = self.get_body(offset)
+        return string.from_bytes(body)
+    }
+
+    func alloc_array(self, length: i64) -> i64 {
+        const body_size = 8 * length
+        return self.alloc(ObjectType.Array, body_size)
+    }
+    
+    func array_get(self, offset: i64, idx: i64) -> Vec<u8> {
+        const body = self.get_body(offset)
+        const start = idx * 8
+        const end = start + 8
+        return body.slice(start, end)
+    }
+
+    func array_set(self, offset: i64, idx: i64, data: Vec<u8>) {
+        const body = self.get_body(offset)
+        const start = idx * 8
+        for i in 0..8 {
+            write_u8(body, start + i, data.get(i as usize))
+        }
+    }
+
+    func array_len(self, offset: i64) -> i64 {
+        const body_size = read_u16le(self.buf, offset + 2)
+        return body_size / 8
+    }
+
+    func array_push(self, offset: i64, data: Vec<u8>) {
+        const body_size = read_u16le(self.buf, offset + 2)
+        const length = body_size / 8
+        const new_body_size = body_size + 8
+        ensure_size(self.buf, offset + 4 + new_body_size)
+        write_u16le(self.buf, offset + 2, new_body_size)
+        const start = length * 8
+        for i in 0..8 {
+            write_u8(self.buf, offset + 4 + start + i, data.get(i as usize))
+        }
+    }
+
+
+}

@@ -20,7 +20,7 @@ struct Number {
 }
 
 const FRAC_BITS: i64 = 32
-const FRAC_SCALE: i64 = 4294967296  // 1 << 32, but written as literal to avoid shift issues
+const FRAC_SCALE: i64 = 0x100000000  // 1 << 32, but written as literal to avoid shift issues
 
 extend Number {
     // Create a Number from an integer (e.g., 42 → 42.0 in fixed-point)
@@ -48,37 +48,16 @@ extend Number {
         return Number { raw: -self.raw }
     }
 
-    // Multiplication: multiply raw values, shift right by 32
-    // Uses 32-bit half splitting to avoid i64 overflow.
-    // TODO: simplify with i128 when available.
+    // Multiplication: multiply raw values, shift right by 32 to correct the fixed-point scaling
     func mul(self, other: Number) -> Number {
-        // Split each value into upper and lower 32-bit halves
-        // a = a_hi * 2^32 + a_lo
-        // b = b_hi * 2^32 + b_lo
-        // a * b = a_hi*b_hi*2^64 + (a_hi*b_lo + a_lo*b_hi)*2^32 + a_lo*b_lo
-        // We then shift right by 32 (divide by FRAC_SCALE)
-        const a = self.raw
-        const b = other.raw
+        const a = self.raw as i128
+        const b = other.raw as i128
 
         // Handle signs manually to avoid issues with unsigned splits
         const sign = if (a < 0) != (b < 0) { -1 } else { 1 }
-        const abs_a = if a < 0 { -a } else { a }
-        const abs_b = if b < 0 { -b } else { b }
 
-        const a_hi = abs_a >> 32
-        const a_lo = abs_a & 0xFFFFFFFF
-        const b_hi = abs_b >> 32
-        const b_lo = abs_b & 0xFFFFFFFF
-
-        // The full product shifted right by 32:
-        // result = a_hi*b_hi*2^32 + a_hi*b_lo + a_lo*b_hi + (a_lo*b_lo >> 32)
-        const mid1 = a_hi * b_lo
-        const mid2 = a_lo * b_hi
-        const lo_part = (a_lo * b_lo) >> 32
-        const hi_part = a_hi * b_hi << 32
-
-        const result = hi_part + mid1 + mid2 + lo_part
-        return Number { raw: if sign < 0 { -result } else { result } }
+        const result = (abs(a) * abs(b)) >> FRAC_BITS
+        return Number { raw: if sign < 0 { -result as i64 } else { result as i64 } }
     }
 
     // Division: shift left by 32, then divide
@@ -89,29 +68,12 @@ extend Number {
             return Number { raw: if self.raw >= 0 { 0x7FFFFFFFFFFFFFFF } else { -0x7FFFFFFFFFFFFFFF } }
         }
 
-        const a = self.raw
-        const b = other.raw
+        const a = self.raw as i128
+        const b = other.raw as i128
         const sign = if (a < 0) != (b < 0) { -1 } else { 1 }
-        const abs_a = if a < 0 { -a } else { a }
-        const abs_b = if b < 0 { -b } else { b }
-
-        // (abs_a << 32) / abs_b — but abs_a << 32 can overflow i64
-        // Split: abs_a = hi * 2^32 + lo
-        // (hi * 2^32 + lo) << 32 = hi * 2^64 + lo * 2^32
-        // We compute hi * 2^64 / abs_b + lo * 2^32 / abs_b
-        const hi = abs_a >> 32
-        const lo = abs_a & 0xFFFFFFFF
-
-        const hi_div = if hi > 0 {
-            // hi * 2^64 / abs_b — may still overflow, but handles common cases
-            const hi_shifted = hi << 32  // This is hi * 2^32
-            (hi_shifted / abs_b) << 32
-        } else { 0 }
-
-        const lo_div = (lo << 32) / abs_b
-
-        const result = hi_div + lo_div
-        return Number { raw: if sign < 0 { -result } else { result } }
+    
+        const result = abs(a) << FRAC_BITS / abs(b) 
+        return Number { raw: if sign < 0 { -result as i64 } else { result as i64 } }
     }
 
     // Modulo
@@ -168,6 +130,7 @@ enum Value {
     MapVal(i64)         // Arena offset pointing to a map object
     Struct(i64)         // Arena offset pointing to a struct object
     Enum(i64, i64)      // (discriminant, payload arena offset)
+    Couroutine(i64)     // Coroutine ID (index into VM's coroutine table)
     FuncRef(i64)        // Prototype index
     HostRef(i64, i64)   // (type_id, ref_id) — opaque reference to host data
 }
@@ -193,6 +156,7 @@ extend Value {
             Value.MapVal(_) => return "map",
             Value.Struct(_) => return "struct",
             Value.Enum(_, _) => return "enum",
+            Value.Couroutine(_) => return "coroutine",
             Value.FuncRef(_) => return "function",
             Value.HostRef(_, _) => return "host_ref",
         }
@@ -209,6 +173,7 @@ extend Value {
             Value.MapVal(_) => return "<map>",
             Value.Struct(_) => return "<struct>",
             Value.Enum(tag, _) => return "<enum:{tag}>",
+            Value.Couroutine(id) => return "<coroutine:{id}>",
             Value.FuncRef(idx) => return "<func:{idx}>",
             Value.HostRef(t, r) => return "<host_ref:{t}:{r}>",
         }
