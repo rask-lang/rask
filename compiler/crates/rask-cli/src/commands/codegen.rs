@@ -633,7 +633,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
             let stem = p.file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("a.out");
-            let base_dir = if let Some(project_root) = super::pipeline::find_project_root_from(path) {
+            let base_dir = if let Some(project_root) = rask_compiler::find_project_root_from(path) {
                 project_root
             } else {
                 p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))

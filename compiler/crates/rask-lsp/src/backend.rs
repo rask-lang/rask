@@ -210,20 +210,17 @@ impl Backend {
             return diags;
         }
 
-        // --- Typecheck — now uses typecheck_decls (same as CLI) ---
+        // --- Typecheck (lenient — returns partial TypedProgram + errors
+        //     so ownership/effects still run for full diagnostic coverage) ---
         let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-        let typed = match rask_types::typecheck_with_stdlib(resolved, &parse_result.decls, &stdlib_decls) {
-            Ok(t) => t,
-            Err(errors) => {
-                for error in &errors {
-                    let diag = error.to_diagnostic();
-                    if is_current_file_diagnostic(&diag, &current_file_spans) {
-                        diags.push(diag);
-                    }
-                }
-                return diags;
+        let (typed, type_errors) =
+            rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
+        for error in &type_errors {
+            let diag = error.to_diagnostic();
+            if is_current_file_diagnostic(&diag, &current_file_spans) {
+                diags.push(diag);
             }
-        };
+        }
 
         // --- Ownership (non-blocking — accumulate and continue) ---
         let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);

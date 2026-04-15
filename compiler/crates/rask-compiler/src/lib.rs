@@ -4,6 +4,28 @@
 //! Every CLI command, LSP analysis, and test should go through this crate
 //! instead of calling rask-lexer/parser/resolve/types/ownership directly.
 //! This eliminates pipeline duplication and the divergence bugs it causes.
+//!
+//! # Error accumulation
+//!
+//! The pipeline accumulates errors across stages rather than bailing at the
+//! first failure:
+//!
+//! - **Lex errors** don't stop parsing (parser handles partial tokens).
+//! - **Desugar errors** don't stop resolution.
+//! - **Type errors** are collected via `typecheck_with_stdlib_lenient`, which
+//!   returns a partial TypedProgram. Ownership + effect stages still run on
+//!   that partial program so users see type errors, ownership errors, and
+//!   effect warnings in a single pipeline pass.
+//! - **Resolve errors** are currently blocking (no partial ResolvedProgram).
+//!   Lenient resolve is future work.
+//!
+//! # Known divergence
+//!
+//! `rask build` (in rask-cli's `build.rs`) does NOT yet use this driver.
+//! Converting it exposed a pre-existing stdlib dispatch issue (Option/Result
+//! being registered both as resolver builtins and as stdlib enum decls)
+//! that requires separate work in rask-resolve or rask-stdlib. Until then,
+//! `build.rs` keeps its own inline pipeline with filtered stdlib decls.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -221,17 +243,14 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
         }
     };
 
-    // --- Typecheck (blocking — need TypedProgram) ---
+    // --- Typecheck (lenient — always returns TypedProgram + errors, so
+    //     ownership/effects can still run and show accumulated diagnostics) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-    let typed = match rask_types::typecheck_with_stdlib(resolved, &parse_result.decls, &stdlib_decls) {
-        Ok(t) => t,
-        Err(errors) => {
-            for e in &errors {
-                diags.push(e.to_diagnostic());
-            }
-            return PipelineOutput::fail(diags);
-        }
-    };
+    let (typed, type_errors) =
+        rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
+    for e in &type_errors {
+        diags.push(e.to_diagnostic());
+    }
 
     // --- Ownership (non-blocking — accumulate and continue) ---
     let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
@@ -360,17 +379,13 @@ pub fn check_package(
         }
     };
 
-    // --- Typecheck ---
+    // --- Typecheck (lenient — always returns TypedProgram + errors) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-    let typed = match rask_types::typecheck_with_stdlib(resolved, &pkg_ctx.all_decls, &stdlib_decls) {
-        Ok(t) => t,
-        Err(errors) => {
-            for e in &errors {
-                diags.push(e.to_diagnostic());
-            }
-            return PipelineOutput::fail(diags);
-        }
-    };
+    let (typed, type_errors) =
+        rask_types::typecheck_with_stdlib_lenient(resolved, &pkg_ctx.all_decls, &stdlib_decls);
+    for e in &type_errors {
+        diags.push(e.to_diagnostic());
+    }
 
     // --- Ownership (non-blocking) ---
     let ownership_result = rask_ownership::check_ownership(&typed, &pkg_ctx.all_decls);
@@ -434,7 +449,7 @@ fn compile_single(
     finalize_compile(check_output, dep_decls, HashSet::new(), config)
 }
 
-fn compile_package(
+pub fn compile_package(
     pkg_ctx: &mut PackageContext,
     dep_decls: Vec<Decl>,
     config: &CompilerConfig,
