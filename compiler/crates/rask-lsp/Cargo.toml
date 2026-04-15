@@ -27,3 +27,4 @@ rask-stdlib = { path = "../rask-stdlib" }
 rask-compiler = { path = "../rask-compiler" }
 rask-comptime = { path = "../rask-comptime" }
 rask-effects = { path = "../rask-effects" }
+rask-fmt = { path = "../rask-fmt" }
