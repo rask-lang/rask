@@ -283,6 +283,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // stdlib exposes `substring` as the user-facing method name; the C
+        // runtime function is `rask_string_substr`. Alias so method dispatch
+        // from `.substring(...)` finds the right symbol.
+        StdlibEntry {
+            mir_name: "string_substring", c_name: "rask_string_substr",
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry {
             mir_name: "string_to_lowercase", c_name: "rask_string_to_lowercase",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
