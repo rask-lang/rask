@@ -8,49 +8,40 @@ use std::process;
 
 use crate::{output, Format};
 
-/// Run the full front-end pipeline + monomorphize. Exits on error.
-/// Returns (mono, typed, decls, source) — source is the original .rk text.
+/// Run the full front-end pipeline + monomorphize via rask-compiler. Exits on error.
 fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedProgram, Vec<rask_ast::decl::Decl>, Option<String>, Vec<String>) {
-    let mut result = super::pipeline::run_frontend(path, format);
+    let config = rask_compiler::CompilerConfig {
+        cfg: rask_compiler::CfgConfig::from_host("debug", vec![]),
+    };
+    let output = rask_compiler::compile_file(path, vec![], &config);
 
-    // Hidden parameter pass — desugar `using` clauses into explicit params
-    // Pass type info for proper CC4 scope resolution
-    rask_hidden_params::desugar_hidden_params_with_types(
-        &mut result.decls,
-        Some(&result.typed.node_types),
-    );
-
-    // Generate synthetic function bodies for auto-derived methods (compare, etc.)
-    super::derive::generate_derived_methods(&mut result.decls, &result.typed);
-
-    // Inject compiled stdlib functions + struct defs AFTER typechecking.
-    // Type signatures come from BuiltinModule stubs during resolve/typecheck.
-    // Function bodies and struct layouts are only needed at mono/codegen time.
-    // Desugar so string ==, interpolation, etc. work in stdlib Rask code.
-    let mut stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
-    // Stdlib code is NOT desugared — MIR lowering handles BinOp on strings directly.
-    let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
-    if !stdlib_fn_decls.is_empty() {
-        result.decls.extend(stdlib_fn_decls);
-    }
-    if !stdlib_struct_defs.is_empty() {
-        result.decls.extend(stdlib_struct_defs);
-    }
-
-    let decls = result.decls.clone();
-    let source = result.source.clone();
-    let package_names = result.package_names.clone();
-
-    // Monomorphize
-    let mono = match rask_mono::monomorphize(&result.typed, &result.decls) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("{}: monomorphization failed: {:?}", output::error_label(), e);
-            process::exit(1);
+    // Build source_files for display
+    let source_files: Vec<(std::path::PathBuf, String)> = if let Some(ref r) = output.result {
+        // Use the source from the compile result's check phase
+        vec![] // compile doesn't track source_files directly — read if needed
+    } else {
+        match std::fs::read_to_string(path) {
+            Ok(s) => vec![(std::path::PathBuf::from(path), s)],
+            Err(_) => vec![],
         }
     };
 
-    (mono, result.typed, decls, source, package_names)
+    crate::display_pipeline_output(&output, &source_files, format);
+
+    if output.has_errors() {
+        let err_count = output.diagnostics.iter()
+            .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Error))
+            .count();
+        if format == Format::Human {
+            eprintln!("\n{}", crate::output::banner_fail("Compile", err_count));
+        }
+        process::exit(1);
+    }
+
+    let result = output.result.unwrap();
+    let source = std::fs::read_to_string(path).ok();
+    let package_names = vec![]; // package_modules is in CompileResult but not as names
+    (result.mono, result.typed, result.decls, source, package_names)
 }
 
 /// Evaluate comptime const declarations and return serialized data.

@@ -17,12 +17,13 @@ pub struct TestOptions {
 }
 
 pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
-    let result = super::pipeline::run_frontend(path, format);
+    let result = crate::run_check_or_exit(path, format);
 
     let mut interp = rask_interp::Interpreter::with_args(program_args);
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
-    if let Some(source) = &result.source {
+    // Set source info from the first source file (single-file mode).
+    if let Some((_, source)) = result.source_files.first() {
         interp.set_source_info(path, source);
     }
     if !result.package_names.is_empty() {
@@ -37,12 +38,12 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
         }
         Err(diag) => {
             let diagnostic = diag.to_diagnostic();
-            if let Some(source) = &result.source {
-                show_diagnostics(&[diagnostic], source, path, "runtime", format);
-            } else if let Some((file_path, source)) = find_diagnostic_file(&diagnostic, &result.source_files) {
+            if let Some((file_path, source)) = find_diagnostic_file(&diagnostic, &result.source_files) {
                 let file_name = file_path.to_string_lossy();
                 let fmt = DiagnosticFormatter::new(&source).with_file_name(&file_name);
                 eprintln!("{}", fmt.format(&diagnostic));
+            } else if let Some((_, source)) = result.source_files.first() {
+                show_diagnostics(&[diagnostic], source, path, "runtime", format);
             } else {
                 eprintln!("{}: {}", output::error_label(), diagnostic.message);
             }
@@ -167,7 +168,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                     let mut dep_decls_desugared = dep_decls;
                     rask_desugar::desugar(&mut dep_decls_desugared);
                     all_decls.extend(dep_decls_desugared);
-                    rask_hidden_params::desugar_hidden_params_with_types(&mut all_decls, Some(&typed.node_types));
+                    rask_mir::hidden_params::desugar_hidden_params_with_types(&mut all_decls, Some(&typed.node_types));
 
                     // Extract tests (replaces main, adds test body functions)
                     let tests = super::compile::extract_tests(&mut all_decls, filter.as_deref());
@@ -266,7 +267,7 @@ pub fn cmd_test_native_with_opts(path: &str, filter: Option<String>, format: For
 
 pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
     let mut result = match std::panic::catch_unwind(|| {
-        super::pipeline::run_frontend(path, format)
+        crate::run_check_or_exit(path, format)
     }) {
         Ok(r) => r,
         Err(_) => {
@@ -275,7 +276,7 @@ pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
         }
     };
 
-    rask_hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed.node_types));
+    rask_mir::hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed.node_types));
     let tests = super::compile::extract_tests(&mut result.decls, filter.as_deref());
 
     if tests.is_empty() {
@@ -316,7 +317,7 @@ pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
 
     if let Err(errors) = super::compile::compile_tests_to_object(
         &mono, &result.typed, &result.decls, &comptime_globals,
-        &tests, Some(path), result.source.as_deref(), &obj_path, Some(&cfg),
+        &tests, Some(path), result.source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
     ) {
         for e in &errors {
             eprintln!("{}: compile: {}", output::error_label(), e);
@@ -496,7 +497,7 @@ pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
 
 /// Run benchmarks via interpreter (original behavior).
 fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
-    let result = super::pipeline::run_frontend(path, format);
+    let result = crate::run_check_or_exit(path, format);
 
     let mut interp = rask_interp::Interpreter::new();
     if !result.package_names.is_empty() {
@@ -545,7 +546,7 @@ fn try_benchmark_native(path: &str, filter: Option<&str>, format: Format) -> boo
     if rask_results.is_empty() {
         // run_benchmark_file returns empty on compile failure or no benchmarks
         // Check if the file has benchmarks at all (for the "no benchmarks found" message)
-        let result = super::pipeline::run_frontend(path, format);
+        let result = crate::run_check_or_exit(path, format);
         let has_benchmarks = result.decls.iter().any(|d|
             matches!(d.kind, rask_ast::decl::DeclKind::Benchmark(_))
         );
@@ -884,7 +885,7 @@ fn parse_bench_json_i64(s: &str, key: &str) -> Option<i64> {
 /// Run a single .rk benchmark file natively, return parsed results.
 fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<BenchResult> {
     let mut result = match std::panic::catch_unwind(|| {
-        super::pipeline::run_frontend(path, format)
+        crate::run_check_or_exit(path, format)
     }) {
         Ok(r) => r,
         Err(_) => {
@@ -895,7 +896,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         }
     };
 
-    rask_hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed.node_types));
+    rask_mir::hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed.node_types));
     let benchmarks = super::compile::extract_benchmarks(&mut result.decls, filter);
     if benchmarks.is_empty() {
         return Vec::new();
@@ -933,7 +934,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
 
     if let Err(errors) = super::compile::compile_benchmarks_to_object(
         &mono, &result.typed, &result.decls, &comptime_globals,
-        &benchmarks, Some(path), result.source.as_deref(), &obj_path, Some(&cfg),
+        &benchmarks, Some(path), result.source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
     ) {
         if format == Format::Human {
             for e in &errors {

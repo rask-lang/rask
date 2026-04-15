@@ -18,6 +18,7 @@ mod stmt;
 pub mod transform;
 mod types;
 
+pub mod hidden_params;
 pub mod lower;
 
 pub use builder::BlockBuilder;

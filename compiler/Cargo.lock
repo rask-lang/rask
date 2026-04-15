@@ -1350,13 +1350,13 @@ dependencies = [
  "rask-ast",
  "rask-c-parse",
  "rask-codegen",
+ "rask-compiler",
  "rask-comptime",
  "rask-describe",
  "rask-desugar",
  "rask-diagnostics",
  "rask-effects",
  "rask-fmt",
- "rask-hidden-params",
  "rask-interp",
  "rask-lexer",
  "rask-lint",
@@ -1388,6 +1388,25 @@ dependencies = [
  "rask-mono",
  "rask-types",
  "target-lexicon",
+]
+
+[[package]]
+name = "rask-compiler"
+version = "0.1.0"
+dependencies = [
+ "rask-ast",
+ "rask-comptime",
+ "rask-desugar",
+ "rask-diagnostics",
+ "rask-effects",
+ "rask-lexer",
+ "rask-mir",
+ "rask-mono",
+ "rask-ownership",
+ "rask-parser",
+ "rask-resolve",
+ "rask-stdlib",
+ "rask-types",
 ]
 
 [[package]]
@@ -1451,14 +1470,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rask-hidden-params"
-version = "0.1.0"
-dependencies = [
- "rask-ast",
- "rask-types",
-]
-
-[[package]]
 name = "rask-interp"
 version = "0.1.0"
 dependencies = [
@@ -1497,8 +1508,11 @@ name = "rask-lsp"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
+ "rask-compiler",
+ "rask-comptime",
  "rask-desugar",
  "rask-diagnostics",
+ "rask-effects",
  "rask-lexer",
  "rask-ownership",
  "rask-parser",

@@ -81,6 +81,77 @@ pub(crate) fn show_diagnostics(
     }
 }
 
+/// Display all diagnostics from a pipeline output and exit on errors.
+///
+/// Uses the source_files from CheckResult for multi-file diagnostic display,
+/// or falls back to file_path for single-source display. Returns the result
+/// if the pipeline succeeded, or exits with code 1 if there were errors.
+pub(crate) fn display_pipeline_output<T>(
+    output: &rask_compiler::PipelineOutput<T>,
+    source_files: &[(std::path::PathBuf, String)],
+    format: Format,
+) {
+    for d in &output.diagnostics {
+        match format {
+            Format::Human => {
+                if source_files.len() == 1 {
+                    let (path, source) = &source_files[0];
+                    show_diagnostic(source, &path.to_string_lossy(), d);
+                } else if !source_files.is_empty() {
+                    show_diagnostic_multi(d, source_files);
+                } else {
+                    eprintln!("{}: {}", self::output::error_label(), d.message);
+                }
+            }
+            Format::Json => {
+                // For JSON, emit each diagnostic individually for now
+                if let Some((path, source)) = source_files.first() {
+                    let report = json::to_json_report(
+                        std::slice::from_ref(d),
+                        source,
+                        &path.to_string_lossy(),
+                        "check",
+                    );
+                    println!("{}", json::to_json_string(&report));
+                }
+            }
+        }
+    }
+}
+
+/// Run check_file, display all diagnostics, exit on errors. Returns CheckResult on success.
+pub(crate) fn run_check_or_exit(path: &str, format: Format) -> rask_compiler::CheckResult {
+    let config = rask_compiler::CompilerConfig {
+        cfg: rask_compiler::CfgConfig::from_host("debug", vec![]),
+    };
+    let output = rask_compiler::check_file(path, &config);
+
+    // Build source_files for display: either from the result or read the file.
+    let source_files: Vec<(std::path::PathBuf, String)> = if let Some(ref r) = output.result {
+        r.source_files.clone()
+    } else {
+        // Pipeline failed — try to read the file for diagnostic display.
+        match fs::read_to_string(path) {
+            Ok(s) => vec![(std::path::PathBuf::from(path), s)],
+            Err(_) => vec![],
+        }
+    };
+
+    display_pipeline_output(&output, &source_files, format);
+
+    if output.has_errors() {
+        let err_count = output.diagnostics.iter()
+            .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Error))
+            .count();
+        if format == Format::Human {
+            eprintln!("\n{}", self::output::banner_fail("Check", err_count));
+        }
+        process::exit(1);
+    }
+
+    output.result.unwrap()
+}
+
 fn main() {
     output::init();
     let args: Vec<String> = env::args().collect();

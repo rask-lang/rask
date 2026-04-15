@@ -1,29 +1,20 @@
 # SPDX-License-Identifier: (MIT OR Apache-2.0)
 [package]
-name = "rask-lsp"
+name = "rask-compiler"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
-
-[[bin]]
-name = "rask-lsp"
-path = "src/main.rs"
 
 [dependencies]
-tower-lsp = "0.20"
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
 rask-ast = { path = "../rask-ast" }
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-desugar = { path = "../rask-desugar" }
+rask-comptime = { path = "../rask-comptime" }
 rask-resolve = { path = "../rask-resolve" }
 rask-types = { path = "../rask-types" }
 rask-ownership = { path = "../rask-ownership" }
+rask-effects = { path = "../rask-effects" }
 rask-diagnostics = { path = "../rask-diagnostics" }
 rask-stdlib = { path = "../rask-stdlib" }
-rask-compiler = { path = "../rask-compiler" }
-rask-comptime = { path = "../rask-comptime" }
-rask-effects = { path = "../rask-effects" }
+rask-mono = { path = "../rask-mono" }
+rask-mir = { path = "../rask-mir" }
