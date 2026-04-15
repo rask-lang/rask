@@ -663,70 +663,25 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
     // Compile root package (full pipeline, with compilation cache XC1-XC5)
     if total_errors == 0 {
-        if let Some(root_pkg) = registry.get(root_id) {
-            // Compute cache key from source files
+        // Extract data from registry before moving it into PackageContext.
+        let (source_files, all_decls, dep_decls, pkg_path_string) = {
+            let root_pkg = match registry.get(root_id) {
+                Some(p) => p,
+                None => {
+                    eprintln!("{}: root package not found in registry", output::error_label());
+                    process::exit(1);
+                }
+            };
             let source_files: Vec<_> = root_pkg.files.iter()
                 .map(|f| (f.path.clone(), f.source.clone()))
                 .collect();
-            let source_hash = super::cache::hash_source_files(&source_files);
-            let target_str = opts.target.as_deref().unwrap_or("native");
-            let cache_key = super::cache::compute_cache_key(&source_hash, &opts.profile, target_str);
-            let cache_dir = root.join("build").join(".cache");
+            let all_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
+            let pkg_path_string = root_pkg.path_string();
 
-            let obj_path = out_dir.join(format!("{}.o", bin_name));
-            let bin_path = out_dir.join(&bin_name);
-            let obj_str = obj_path.to_string_lossy().to_string();
-            let bin_str = bin_path.to_string_lossy().to_string();
-
-            // Check compilation cache (XC1-XC2); --force bypasses
-            if !opts.no_cache && !opts.force {
-                if let Some(cached_obj) = super::cache::lookup(&cache_dir, &cache_key) {
-                    if opts.verbose {
-                        println!("  {} (cache hit)", "Skipping codegen".dimmed());
-                    }
-                    if let Err(e) = std::fs::copy(&cached_obj, &obj_path) {
-                        eprintln!("warning: cache copy failed: {}", e);
-                        // Fall through to normal compilation
-                    } else {
-                        let release = opts.profile == "release";
-                        match super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release, opts.target.as_deref()) {
-                            Ok(_) => {
-                                // Success — skip to report
-                                let elapsed = start.elapsed();
-                                println!();
-                                println!(
-                                    "   {} {} ({}) [{:.2}s]",
-                                    "Finished".green().bold(),
-                                    bin_path.display(),
-                                    opts.profile,
-                                    elapsed.as_secs_f64()
-                                );
-                                return;
-                            }
-                            Err(e) => {
-                                eprintln!("link error: {}", e);
-                                total_errors += 1;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if opts.verbose {
-                println!("  {} {}", "Checking".dimmed(), root_pkg.path_string());
-            }
-
-            let mut all_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
-            rask_desugar::desugar(&mut all_decls);
-
-            // Collect imported package module names and all their declarations.
-            // All dependency declarations (public and private) are included so
-            // internal calls within dependency functions resolve correctly.
-            let mut package_modules = std::collections::HashSet::new();
+            // All dependency decls (public and private) for cross-package resolution.
             let mut dep_decls = Vec::new();
             for pkg in registry.packages() {
                 if pkg.id == root_id { continue; }
-                package_modules.insert(pkg.name.clone());
                 for decl in pkg.all_decls() {
                     match &decl.kind {
                         rask_ast::decl::DeclKind::Fn(_)
@@ -740,117 +695,111 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                     }
                 }
             }
-            // Include builtin stdlib modules referenced by imports.
-            for decl in &all_decls {
-                if let rask_ast::decl::DeclKind::Import(import) = &decl.kind {
-                    if let Some(first) = import.path.first() {
-                        if rask_resolve::BUILTIN_MODULE_NAMES.contains(&first.as_str()) {
-                            package_modules.insert(first.clone());
+            (source_files, all_decls, dep_decls, pkg_path_string)
+        };
+
+        let source_hash = super::cache::hash_source_files(&source_files);
+        let target_str = opts.target.as_deref().unwrap_or("native");
+        let cache_key = super::cache::compute_cache_key(&source_hash, &opts.profile, target_str);
+        let cache_dir = root.join("build").join(".cache");
+
+        let obj_path = out_dir.join(format!("{}.o", bin_name));
+        let bin_path = out_dir.join(&bin_name);
+        let obj_str = obj_path.to_string_lossy().to_string();
+        let bin_str = bin_path.to_string_lossy().to_string();
+
+        // Check compilation cache (XC1-XC2); --force bypasses
+        if !opts.no_cache && !opts.force {
+            if let Some(cached_obj) = super::cache::lookup(&cache_dir, &cache_key) {
+                if opts.verbose {
+                    println!("  {} (cache hit)", "Skipping codegen".dimmed());
+                }
+                if let Err(e) = std::fs::copy(&cached_obj, &obj_path) {
+                    eprintln!("warning: cache copy failed: {}", e);
+                } else {
+                    let release = opts.profile == "release";
+                    match super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release, opts.target.as_deref()) {
+                        Ok(_) => {
+                            let elapsed = start.elapsed();
+                            println!();
+                            println!(
+                                "   {} {} ({}) [{:.2}s]",
+                                "Finished".green().bold(),
+                                bin_path.display(),
+                                opts.profile,
+                                elapsed.as_secs_f64()
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            eprintln!("link error: {}", e);
+                            total_errors += 1;
                         }
                     }
                 }
             }
+        }
 
-            // Resolve with stdlib method signatures so dispatch names are correct,
-            // but exclude Option/Result enum declarations — these are built-in types
-            // that the resolver already handles internally. Including them causes
-            // T? vs Option<T> unification failures.
-            let typecheck_stdlib = rask_stdlib::StubRegistry::typecheck_decls();
-            let resolve_stdlib: Vec<_> = typecheck_stdlib.iter().filter(|d| {
-                match &d.kind {
-                    rask_ast::decl::DeclKind::Enum(e) =>
-                        e.name != "Option" && e.name != "Result",
-                    rask_ast::decl::DeclKind::Impl(i) => {
-                        let base = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
-                        base != "Option" && base != "Result"
+        if opts.verbose {
+            println!("  {} {}", "Checking".dimmed(), pkg_path_string);
+        }
+
+        // Run the full pipeline through the shared driver. Moves `registry`
+        // into PackageContext — not used after this point.
+        let cfg = rask_comptime::CfgConfig::from_target_or_host(
+            opts.target.as_deref(), &opts.profile, resolved_feature_names.clone(),
+        );
+        let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
+        let mut pkg_ctx = rask_compiler::PackageContext {
+            registry,
+            root_id,
+            all_decls,
+        };
+        let output = rask_compiler::compile_package(&mut pkg_ctx, dep_decls, &config);
+
+        for d in &output.diagnostics {
+            crate::show_diagnostic_multi(d, &source_files);
+        }
+
+        if let Some(result) = output.result {
+            // MIR-based comptime eval (fast path); falls back to AST interpreter.
+            let comptime_globals = super::codegen::evaluate_comptime_globals(
+                &result.decls, Some(&cfg),
+                Some(super::codegen::MirEvalContext { mono: &result.mono, typed: &result.typed }),
+            );
+            let target = opts.target.as_deref();
+
+            let build_mode = if opts.profile == "release" {
+                rask_codegen::BuildMode::Release
+            } else {
+                rask_codegen::BuildMode::Debug
+            };
+            match super::compile::compile_to_object(
+                &result.mono, &result.typed, &result.decls, &comptime_globals,
+                None, None, target, &obj_str, build_mode, Some(&cfg),
+                &result.package_modules,
+            ) {
+                Ok(()) => {
+                    if !opts.no_cache {
+                        let _ = super::cache::store(&cache_dir, &cache_key, &obj_path);
                     }
-                    _ => true,
-                }
-            }).cloned().collect();
-
-            match rask_resolve::resolve_package_with_stdlib(&all_decls, &registry, root_id, &resolve_stdlib) {
-                Ok(resolved) => {
-                    match rask_types::typecheck_with_stdlib(resolved, &all_decls, &typecheck_stdlib) {
-                        Ok(typed) => {
-                            let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
-                            if !ownership_result.is_ok() {
-                                for error in &ownership_result.errors {
-                                    crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
-                                }
-                                total_errors += ownership_result.errors.len();
-                            } else {
-                                // Merge compilable stdlib decls for mono/codegen
-                                let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
-                                all_decls.extend(stdlib_decls);
-                                // Merge dependency decls so mono/MIR can find them.
-                                // Desugar first so string interpolation etc. works.
-                                let mut dep_decls_desugared = dep_decls.clone();
-                                rask_desugar::desugar(&mut dep_decls_desugared);
-                                all_decls.extend(dep_decls_desugared);
-                                rask_hidden_params::desugar_hidden_params_with_types(&mut all_decls, Some(&typed.node_types));
-
-                                match rask_mono::monomorphize_with_packages(&typed, &all_decls, package_modules.clone()) {
-                                    Ok(mono) => {
-                                        let cfg = rask_comptime::CfgConfig::from_target_or_host(
-                                            opts.target.as_deref(), &opts.profile, resolved_feature_names.clone(),
-                                        );
-                                        let comptime_globals = super::codegen::evaluate_comptime_globals(
-                                            &all_decls, Some(&cfg),
-                                            Some(super::codegen::MirEvalContext { mono: &mono, typed: &typed }),
-                                        );
-                                        let target = opts.target.as_deref();
-
-                                        let build_mode = if opts.profile == "release" {
-                                            rask_codegen::BuildMode::Release
-                                        } else {
-                                            rask_codegen::BuildMode::Debug
-                                        };
-                                        match super::compile::compile_to_object(
-                                            &mono, &typed, &all_decls, &comptime_globals,
-                                            None, None, target, &obj_str, build_mode, Some(&cfg),
-                                            &package_modules,
-                                        ) {
-                                            Ok(()) => {
-                                                // Cache the compiled object (XC1)
-                                                if !opts.no_cache {
-                                                    let _ = super::cache::store(&cache_dir, &cache_key, &obj_path);
-                                                }
-                                                let release = opts.profile == "release";
-                                                if let Err(e) = super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release, opts.target.as_deref()) {
-                                                    eprintln!("link error: {}", e);
-                                                    total_errors += 1;
-                                                }
-                                            }
-                                            Err(errors) => {
-                                                for e in &errors {
-                                                    eprintln!("error: {}", e);
-                                                }
-                                                total_errors += errors.len();
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("monomorphization error: {:?}", e);
-                                        total_errors += 1;
-                                    }
-                                }
-                            }
-                        }
-                        Err(errors) => {
-                            for error in &errors {
-                                crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
-                            }
-                            total_errors += errors.len();
-                        }
+                    let release = opts.profile == "release";
+                    if let Err(e) = super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release, opts.target.as_deref()) {
+                        eprintln!("link error: {}", e);
+                        total_errors += 1;
                     }
                 }
                 Err(errors) => {
-                    for error in &errors {
-                        crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
+                    for e in &errors {
+                        eprintln!("error: {}", e);
                     }
                     total_errors += errors.len();
                 }
             }
+        } else {
+            total_errors += output.diagnostics.iter()
+                .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Error))
+                .count();
         }
     }
 

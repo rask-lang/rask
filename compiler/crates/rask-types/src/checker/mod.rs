@@ -128,7 +128,22 @@ impl TypeChecker {
         }
     }
 
-    pub fn check(mut self, decls: &[Decl]) -> Result<TypedProgram, Vec<TypeError>> {
+    pub fn check(self, decls: &[Decl]) -> Result<TypedProgram, Vec<TypeError>> {
+        let (program, errors) = self.check_lenient(decls);
+        if errors.is_empty() {
+            Ok(program)
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Lenient variant: always returns the (partial) TypedProgram plus any errors.
+    ///
+    /// The TypedProgram is usable even when errors exist — node_types contains
+    /// types for every expression that was successfully inferred. Callers can
+    /// run ownership/effects analysis on the partial program to collect more
+    /// diagnostics in a single pipeline pass.
+    pub fn check_lenient(mut self, decls: &[Decl]) -> (TypedProgram, Vec<TypeError>) {
         self.collect_type_declarations(decls);
 
         // Global scope for module-level bindings (imports, etc.)
@@ -179,41 +194,29 @@ impl TypeChecker {
             .map(|(key, ty)| (*key, self.ctx.apply(ty)))
             .collect();
 
-        if self.errors.is_empty() {
-            Ok(TypedProgram {
-                symbols: self.resolved.symbols,
-                resolutions: self.resolved.resolutions,
-                types: self.types,
-                node_types,
-                call_type_args,
-                trait_coercions,
-                unsafe_ops,
-                span_types,
-            })
-        } else {
+        let errors: Vec<_> = {
             let ctx = &self.ctx;
             let types = &self.types;
-            let errors: Vec<_> = self.errors.into_iter()
+            self.errors.into_iter()
                 .map(|e| Self::apply_error_substitutions_with_ctx(e, ctx))
                 .map(|e| types.resolve_error_types(e))
                 // Filter out cascading errors where both sides resolved to <error>
                 .filter(|e| !matches!(e, TypeError::Mismatch { expected: Type::Error, found: Type::Error, .. }))
-                .collect();
-            if errors.is_empty() {
-                Ok(TypedProgram {
-                    symbols: self.resolved.symbols,
-                    resolutions: self.resolved.resolutions,
-                    types: self.types,
-                    node_types,
-                    call_type_args,
-                    trait_coercions,
-                    unsafe_ops,
-                    span_types,
-                })
-            } else {
-                Err(errors)
-            }
-        }
+                .collect()
+        };
+
+        let program = TypedProgram {
+            symbols: self.resolved.symbols,
+            resolutions: self.resolved.resolutions,
+            types: self.types,
+            node_types,
+            call_type_args,
+            trait_coercions,
+            unsafe_ops,
+            span_types,
+        };
+
+        (program, errors)
     }
 
     /// Replace Named(TypeId) with UnresolvedNamed(name) so the monomorphizer
@@ -319,4 +322,20 @@ pub fn typecheck_with_stdlib(
     let mut checker = TypeChecker::new(resolved);
     checker.collect_type_declarations(stdlib_decls);
     checker.check(decls)
+}
+
+/// Lenient typecheck: always returns the (partial) TypedProgram plus errors.
+///
+/// Enables cross-stage error accumulation — the driver can feed the partial
+/// program to ownership/effects analysis even when type errors exist, so
+/// users see type errors + ownership errors + effect warnings in one pass
+/// instead of fixing them one category at a time.
+pub fn typecheck_with_stdlib_lenient(
+    resolved: ResolvedProgram,
+    decls: &[Decl],
+    stdlib_decls: &[Decl],
+) -> (TypedProgram, Vec<TypeError>) {
+    let mut checker = TypeChecker::new(resolved);
+    checker.collect_type_declarations(stdlib_decls);
+    checker.check_lenient(decls)
 }

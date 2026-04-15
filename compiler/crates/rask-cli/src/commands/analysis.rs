@@ -45,7 +45,7 @@ pub fn cmd_typecheck(path: &str, format: Format) {
 }
 
 fn typecheck_single(path: &str, format: Format, multi: bool) {
-    let result = super::pipeline::run_frontend(path, format);
+    let result = crate::run_check_or_exit(path, format);
 
     if format == Format::Human {
         if multi {
@@ -111,7 +111,7 @@ fn typecheck_single(path: &str, format: Format, multi: bool) {
 pub fn cmd_ownership(path: &str, format: Format) {
     let files = resolve_rk_targets(path);
     for file in &files {
-        let _result = super::pipeline::run_frontend(file, format);
+        let _result = crate::run_check_or_exit(file, format);
     }
 
     // run_frontend already checked ownership — if we get here, it passed
@@ -246,7 +246,7 @@ pub fn cmd_unsafe_report(path: &str, format: Format) {
 }
 
 fn unsafe_report_single(path: &str, format: Format, multi: bool) {
-    let result = super::pipeline::run_frontend(path, format);
+    let result = crate::run_check_or_exit(path, format);
 
     let ops = &result.typed.unsafe_ops;
 
@@ -276,8 +276,8 @@ fn unsafe_report_single(path: &str, format: Format, multi: bool) {
         return;
     }
 
-    // Build line map from source (single-file) or source_files (multi-file)
-    let line_map = result.source.as_ref().map(|s| rask_ast::LineMap::new(s));
+    // Build line map from the first source file (for line/col display).
+    let line_map = result.source_files.first().map(|(_, s)| rask_ast::LineMap::new(s));
 
     // Group by category, preserving order via BTreeMap on discriminant
     let mut grouped: BTreeMap<u8, (UnsafeCategory, Vec<&rask_ast::Span>)> = BTreeMap::new();

@@ -23,10 +23,10 @@ members = [
     "crates/rask-fmt",
     "crates/rask-describe",
     "crates/rask-lint",
-    "crates/rask-hidden-params",
     "crates/rask-semantic-hash",
     "crates/rask-effects",
     "crates/rask-c-parse",
+    "crates/rask-compiler",
 ]
 
 [workspace.package]

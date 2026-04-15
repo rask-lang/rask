@@ -92,8 +92,12 @@ impl TypeTable {
     }
 
     /// Register a user-defined type.
+    ///
+    /// If the type is `Option` or `Result` (already registered as builtins),
+    /// merge methods into the existing builtin entry instead of creating a
+    /// duplicate. This keeps `T?` / `T or E` sugar unifying cleanly with
+    /// explicit `Option<T>` / `Result<T, E>` from stdlib source.
     pub fn register_type(&mut self, def: TypeDef) -> TypeId {
-        let id = TypeId(self.types.len() as u32);
         let name = match &def {
             TypeDef::Struct { name, .. } => name.clone(),
             TypeDef::Enum { name, .. } => name.clone(),
@@ -101,6 +105,30 @@ impl TypeTable {
             TypeDef::Union { name, .. } => name.clone(),
             TypeDef::NominalAlias { name, .. } => name.clone(),
         };
+
+        // Option/Result have fixed builtin TypeIds. Redeclaration from stdlib
+        // (e.g., `enum Option<T> { ... }` in option.rk) must merge methods
+        // into the existing entry rather than duplicating it, so `T?` sugar
+        // and `Option<T>` resolve to the same TypeId.
+        //
+        // Match on the base name (strip generic params) since the parser
+        // stores names with their generic signature (e.g. "Option<T>").
+        let base_name = name.split('<').next().unwrap_or(&name);
+        let builtin_id = match base_name {
+            "Option" => self.option_type_id,
+            "Result" => self.result_type_id,
+            _ => None,
+        };
+        if let Some(existing_id) = builtin_id {
+            if let TypeDef::Enum { methods: new_methods, .. } = def {
+                if let Some(TypeDef::Enum { methods, .. }) = self.types.get_mut(existing_id.0 as usize) {
+                    methods.extend(new_methods);
+                }
+            }
+            return existing_id;
+        }
+
+        let id = TypeId(self.types.len() as u32);
         self.types.push(def);
         // Also register the base name (without <...>) for generic type lookup
         if let Some(base_end) = name.find('<') {
