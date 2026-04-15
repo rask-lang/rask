@@ -2,7 +2,7 @@
   "name": "rask",
   "displayName": "Rask",
   "description": "Language support for Rask",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "publisher": "rask-lang",
   "license": "MIT OR Apache-2.0",
   "icon": "icon.png",
@@ -55,8 +55,24 @@
         "icon": "$(play)"
       },
       {
+        "command": "rask.check",
+        "title": "Rask: Check File"
+      },
+      {
+        "command": "rask.test",
+        "title": "Rask: Run Tests"
+      },
+      {
+        "command": "rask.build",
+        "title": "Rask: Build Package"
+      },
+      {
         "command": "rask.restartServer",
         "title": "Rask: Restart Language Server"
+      },
+      {
+        "command": "rask.showOutput",
+        "title": "Rask: Show Language Server Output"
       }
     ],
     "snippets": [
@@ -82,6 +98,16 @@
           "type": "string",
           "default": "",
           "description": "Path to rask-lsp binary. If empty, searches PATH."
+        },
+        "rask.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the rask CLI binary (used by Run/Check/Test/Build). If empty, searches next to serverPath and PATH."
+        },
+        "rask.inlayHints.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred types as inlay hints on `let`/`const` bindings."
         }
       }
     }

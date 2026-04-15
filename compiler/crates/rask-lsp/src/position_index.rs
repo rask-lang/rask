@@ -257,7 +257,16 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
                 visit_expr(e, index);
             }
         }
-        ExprKind::StructLit { fields, .. } => {
+        ExprKind::StructLit { name, fields, .. } => {
+            // Struct name starts at the beginning of the expression span.
+            // Having it indexed lets hover/goto/references work on "Point"
+            // in `Point { x: 1 }`.
+            let name_span = rask_ast::Span::with_file(
+                expr.span.start,
+                expr.span.start + name.len(),
+                expr.span.file_id,
+            );
+            index.idents.push((name_span, expr.id, name.clone()));
             for field_init in fields {
                 visit_expr(&field_init.value, index);
             }

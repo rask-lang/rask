@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Core backend struct and compilation pipeline.
+//! Backend state and the analysis pipeline.
 //!
-//! Uses rask-compiler for package detection and shares the same pipeline
-//! stages as the CLI. The LSP-specific behavior (continue past errors,
-//! filter to current file, editor buffer substitution) wraps around the
-//! same functions.
+//! The backend owns:
+//!   - open documents (source text keyed by URI)
+//!   - the most recent compilation result per document
+//!   - the workspace root (for stub-file goto)
+//!
+//! All locks are `tokio::sync::RwLock` — blocking in an async handler would
+//! stall the shared tokio executor. The CPU-heavy analysis pass runs via
+//! `spawn_blocking` and is wrapped in `catch_unwind` so a compiler panic
+//! reports as a diagnostic instead of killing the server.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
+use tokio::sync::RwLock;
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
 
@@ -18,41 +27,56 @@ use rask_ast::Span;
 use rask_diagnostics::ToDiagnostic;
 use rask_types::TypedProgram;
 
-use crate::convert::{byte_offset_to_position, to_lsp_diagnostic};
+use crate::convert::{to_lsp_diagnostic, LineIndex};
 use crate::position_index::{build_position_index, PositionIndex};
 
+/// How long we wait for further keystrokes before re-analyzing.
+///
+/// 120 ms is enough that a fast typist (~8 chars/sec) gets at most one
+/// analysis per word, but short enough that the diagnostics feel live.
+const DEBOUNCE_MS: u64 = 120;
+
 /// Sibling file info for cross-file navigation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SiblingFile {
     pub path: PathBuf,
     pub source: String,
 }
 
-/// Cached compilation result for a file.
-#[derive(Debug)]
+/// Cached compilation result for a document.
 pub struct CompilationResult {
-    /// Source text (for cache validation)
+    /// Source text. Held so later lookups (hover, completion) see the same
+    /// bytes we analyzed, even if the document has moved on.
     pub source: String,
-    /// Parsed AST declarations (retained for future use)
-    pub _decls: Vec<Decl>,
-    /// Type-checked program
+    /// UTF-16 line index for this source snapshot.
+    pub line_index: LineIndex,
+    /// Parsed and desugared declarations (current file + siblings appended).
+    pub decls: Vec<Decl>,
+    /// Span range of each *current-file* declaration, used to filter
+    /// diagnostics produced by the whole-package pipeline down to just
+    /// the ones the editor buffer is responsible for.
+    pub current_file_spans: Vec<Span>,
     pub typed: TypedProgram,
-    /// Original diagnostics (before LSP conversion)
     pub diagnostics: Vec<rask_diagnostics::Diagnostic>,
-    /// Position index for fast lookups
     pub position_index: PositionIndex,
-    /// Maps top-level declaration names from sibling files to their source info.
     pub sibling_decl_names: HashMap<String, SiblingFile>,
 }
 
-#[derive(Debug)]
 pub struct Backend {
     pub client: Client,
-    pub documents: RwLock<HashMap<Url, String>>,
-    /// Cached compilation results
-    pub compiled: RwLock<HashMap<Url, CompilationResult>>,
-    /// Workspace root URI (set during initialization)
+    pub documents: RwLock<HashMap<Url, DocState>>,
+    pub compiled: RwLock<HashMap<Url, Arc<CompilationResult>>>,
     pub root_uri: RwLock<Option<Url>>,
+    /// Monotonic analysis generation counter — used to cancel outdated
+    /// debounced analyses when a newer keystroke arrives.
+    pub generation: AtomicU64,
+}
+
+/// Live document state (most recent text + client's version number).
+#[derive(Debug, Clone)]
+pub struct DocState {
+    pub text: String,
+    pub version: i32,
 }
 
 impl Backend {
@@ -62,220 +86,337 @@ impl Backend {
             documents: RwLock::new(HashMap::new()),
             compiled: RwLock::new(HashMap::new()),
             root_uri: RwLock::new(None),
+            generation: AtomicU64::new(0),
         }
     }
 
-    pub async fn publish_diagnostics(&self, uri: Url, text: &str) {
-        let diagnostics = self.analyze_and_cache(&uri, text);
+    /// Schedules diagnostics publication after a short debounce window.
+    /// Returns immediately; analysis runs on a blocking worker.
+    pub async fn schedule_analysis(self: Arc<Self>, uri: Url) {
+        let gen_at_call = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let backend = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(DEBOUNCE_MS)).await;
+            // Bail if another keystroke arrived during the sleep.
+            if backend.generation.load(Ordering::SeqCst) != gen_at_call {
+                return;
+            }
+            backend.analyze_now(uri).await;
+        });
+    }
 
-        let lsp_diagnostics: Vec<Diagnostic> = diagnostics
+    /// Runs analysis immediately (used by did_save and initial open).
+    pub async fn analyze_now(self: Arc<Self>, uri: Url) {
+        let Some(doc) = self.documents.read().await.get(&uri).cloned() else {
+            return;
+        };
+        let backend = self.clone();
+        let uri_for_task = uri.clone();
+        let doc_clone = doc.clone();
+
+        // Heavy work on a blocking thread so we don't stall the async runtime.
+        let analysis = tokio::task::spawn_blocking(move || {
+            let res = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                run_pipeline(&uri_for_task, &doc_clone.text, doc_clone.version)
+            }));
+            match res {
+                Ok(result) => result,
+                Err(_) => PipelineOutput::panic(&doc_clone.text, doc_clone.version),
+            }
+        })
+        .await;
+
+        let output = match analysis {
+            Ok(o) => o,
+            Err(_) => PipelineOutput::panic(&doc.text, doc.version),
+        };
+
+        // Publish diagnostics regardless of whether the pipeline had errors.
+        let lsp_diags: Vec<Diagnostic> = output
+            .diagnostics
             .iter()
-            .map(|d| to_lsp_diagnostic(text, &uri, d))
+            .map(|d| to_lsp_diagnostic(&output.line_index, &output.source, &uri, d))
             .collect();
-
         self.client
-            .publish_diagnostics(uri, lsp_diagnostics, None)
+            .publish_diagnostics(uri.clone(), lsp_diags, Some(output.version))
             .await;
+
+        // Only replace the cache if the analysis succeeded fully.
+        if let Some(result) = output.result {
+            backend.compiled.write().await.insert(uri, Arc::new(result));
+        }
     }
 
-    /// Analyze source and return diagnostics.
-    ///
-    /// Runs the same pipeline stages as the CLI (via rask-compiler types),
-    /// fixing previous divergences: now includes desugar_with_diagnostics,
-    /// desugar_default_args, comptime cfg elimination, correct stdlib decls,
-    /// and effect analysis.
-    pub fn analyze_and_cache(&self, uri: &Url, source: &str) -> Vec<rask_diagnostics::Diagnostic> {
-        let mut diags = Vec::new();
+    /// Read the cached compilation for `uri` (shared Arc — cheap to clone).
+    pub async fn get_compiled(&self, uri: &Url) -> Option<Arc<CompilationResult>> {
+        self.compiled.read().await.get(uri).cloned()
+    }
 
-        // --- Lex (collect all errors, deduplicate by line) ---
-        let mut lexer = rask_lexer::Lexer::new(source);
-        let lex_result = lexer.tokenize();
-
-        let mut last_lex_line: Option<u32> = None;
-        for error in &lex_result.errors {
-            let line = byte_offset_to_position(source, error.span.start).line;
-            if last_lex_line != Some(line) {
-                diags.push(error.to_diagnostic());
-                last_lex_line = Some(line);
-            }
-        }
-
-        // --- Parse (continue even with lex errors) ---
-        let mut parser = rask_parser::Parser::new(lex_result.tokens);
-        let mut parse_result = parser.parse();
-
-        let mut last_parse_line: Option<u32> = None;
-        for error in &parse_result.errors {
-            let line = byte_offset_to_position(source, error.span.start).line;
-            if last_parse_line != Some(line) {
-                diags.push(error.to_diagnostic());
-                last_parse_line = Some(line);
-            }
-        }
-
-        if !parse_result.is_ok() {
-            return diags;
-        }
-
-        // --- Comptime cfg elimination (CC1) — previously missing from LSP ---
-        let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-        rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &cfg);
-
-        // --- Desugar — now uses desugar_with_diagnostics + default args ---
-        let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut parse_result.decls);
-        rask_desugar::desugar_default_args(&mut parse_result.decls);
-        for e in &desugar_errors {
-            diags.push(
-                rask_diagnostics::Diagnostic::error(e.message.clone())
-                    .with_code("E0338")
-                    .with_primary(e.span, "variant needs @message(\"...\") annotation"),
-            );
-        }
-
-        // Record current file's decl span ranges for diagnostic filtering.
-        let current_file_spans: Vec<Span> = parse_result.decls.iter().map(|d| d.span).collect();
-
-        // Detect package context using rask-compiler (shared implementation).
-        let file_path_str = uri.to_file_path()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let pkg_ctx = rask_compiler::detect_package(&file_path_str);
-        let sibling_decl_names = if let Some(ref ctx) = pkg_ctx {
-            build_sibling_names(uri, ctx)
-        } else {
-            HashMap::new()
-        };
-
-        let is_stdlib = rask_stdlib::StubRegistry::is_stdlib_path(uri.path());
-        let resolved = if is_stdlib {
-            match rask_resolve::resolve_stdlib(&parse_result.decls) {
-                Ok(r) => r,
-                Err(errors) => {
-                    for error in &errors {
-                        diags.push(error.to_diagnostic());
-                    }
-                    return diags;
-                }
-            }
-        } else if let Some(ref ctx) = pkg_ctx {
-            // Multi-file package: use sibling decls from the package registry but
-            // replace the current file's decls with our freshly parsed version
-            // (editor buffer may differ from disk).
-            let file_path = uri.to_file_path().unwrap_or_default();
-            let mut sibling_decls: Vec<Decl> = ctx.registry.get(ctx.root_id)
-                .map(|pkg| {
-                    pkg.files.iter()
-                        .filter(|f| f.path != file_path)
-                        .flat_map(|f| f.decls.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            // Desugar siblings with full pipeline too
-            rask_desugar::desugar_with_diagnostics(&mut sibling_decls);
-            rask_desugar::desugar_default_args(&mut sibling_decls);
-            parse_result.decls.extend(sibling_decls);
-
-            match rask_resolve::resolve_package_with_cfg(
-                &parse_result.decls,
-                &ctx.registry,
-                ctx.root_id,
-                cfg.to_cfg_values(),
-            ) {
-                Ok(r) => r,
-                Err(errors) => {
-                    for error in &errors {
-                        let diag = error.to_diagnostic();
-                        if is_current_file_diagnostic(&diag, &current_file_spans) {
-                            diags.push(diag);
-                        }
-                    }
-                    return diags;
-                }
-            }
-        } else {
-            // Single-file mode — use resolve_with_cfg for consistency with CLI
-            match rask_resolve::resolve_with_cfg(&parse_result.decls, cfg.to_cfg_values()) {
-                Ok(r) => r,
-                Err(errors) => {
-                    for error in &errors {
-                        diags.push(error.to_diagnostic());
-                    }
-                    return diags;
-                }
-            }
-        };
-
-        // Stdlib stubs are signatures, not real code — skip semantic analysis
-        if is_stdlib {
-            return diags;
-        }
-
-        // --- Typecheck (lenient — returns partial TypedProgram + errors
-        //     so ownership/effects still run for full diagnostic coverage) ---
-        let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-        let (typed, type_errors) =
-            rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
-        for error in &type_errors {
-            let diag = error.to_diagnostic();
-            if is_current_file_diagnostic(&diag, &current_file_spans) {
-                diags.push(diag);
-            }
-        }
-
-        // --- Ownership (non-blocking — accumulate and continue) ---
-        let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
-        for error in &ownership_result.errors {
-            let diag = error.to_diagnostic();
-            if is_current_file_diagnostic(&diag, &current_file_spans) {
-                diags.push(diag);
-            }
-        }
-
-        // --- Effect analysis — previously missing from LSP ---
-        let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
-        for w in &effect_warnings {
-            let d = rask_diagnostics::Diagnostic::warning(&w.message)
-                .with_code(w.code)
-                .with_primary(w.span, format!("`{}` has IO effect", w.callee_name));
-            if is_current_file_diagnostic(&d, &current_file_spans) {
-                diags.push(d);
-            }
-        }
-
-        let frozen_diagnostics = rask_effects::frozen::check(&parse_result.decls, &effects);
-        for fd in &frozen_diagnostics {
-            let d = if fd.is_error {
-                rask_diagnostics::Diagnostic::error(&fd.message)
-            } else {
-                rask_diagnostics::Diagnostic::warning(&fd.message)
-            };
-            let d = d.with_code(fd.code).with_primary(fd.span, "");
-            if is_current_file_diagnostic(&d, &current_file_spans) {
-                diags.push(d);
-            }
-        }
-
-        // Build position index for fast lookups
-        let mut position_index = build_position_index(&parse_result.decls);
-        position_index.finalize();
-
-        let result = CompilationResult {
-            source: source.to_string(),
-            _decls: parse_result.decls,
-            typed,
-            diagnostics: diags.clone(),
-            position_index,
-            sibling_decl_names,
-        };
-
-        let mut compiled = self.compiled.write().unwrap();
-        compiled.insert(uri.clone(), result);
-
-        diags
+    /// Read the current live text (most recent keystrokes).
+    pub async fn get_text(&self, uri: &Url) -> Option<String> {
+        self.documents.read().await.get(uri).map(|d| d.text.clone())
     }
 }
 
-/// Build sibling declaration name mapping for cross-file navigation.
+/// All outputs of one analysis pass.
+struct PipelineOutput {
+    version: i32,
+    source: String,
+    line_index: LineIndex,
+    diagnostics: Vec<rask_diagnostics::Diagnostic>,
+    /// Full CompilationResult when every stage succeeded far enough to produce
+    /// one. None means resolve failed — we still report diagnostics but leave
+    /// the last good cache in place.
+    result: Option<CompilationResult>,
+}
+
+impl PipelineOutput {
+    fn panic(source: &str, version: i32) -> Self {
+        let line_index = LineIndex::new(source);
+        let diag = rask_diagnostics::Diagnostic::error(
+            "rask-lsp: analyzer panicked (this is a compiler bug)",
+        )
+        .with_code("E9999")
+        .with_primary(Span::new(0, 0), "");
+        Self {
+            version,
+            source: source.to_string(),
+            line_index,
+            diagnostics: vec![diag],
+            result: None,
+        }
+    }
+}
+
+/// Run lex → parse → desugar → resolve → typecheck → ownership → effects.
+///
+/// Never panics on its own input as long as the compiler doesn't; the caller
+/// wraps this in `catch_unwind` as a backstop.
+fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
+    let line_index = LineIndex::new(source);
+    let mut diags = Vec::new();
+
+    // --- Lex ---
+    let mut lexer = rask_lexer::Lexer::new(source);
+    let lex_result = lexer.tokenize();
+    dedupe_by_line(&lex_result.errors, |e| e.span.start, &line_index, &mut diags, |e| e.to_diagnostic());
+
+    // --- Parse ---
+    let mut parser = rask_parser::Parser::new(lex_result.tokens);
+    let mut parse_result = parser.parse();
+    dedupe_by_line(&parse_result.errors, |e| e.span.start, &line_index, &mut diags, |e| e.to_diagnostic());
+
+    if !parse_result.is_ok() {
+        return PipelineOutput {
+            version,
+            source: source.to_string(),
+            line_index,
+            diagnostics: diags,
+            result: None,
+        };
+    }
+
+    // --- Comptime cfg elimination ---
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &cfg);
+
+    // --- Desugar (operators + default/named args) ---
+    let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut parse_result.decls);
+    rask_desugar::desugar_default_args(&mut parse_result.decls);
+    for e in &desugar_errors {
+        diags.push(
+            rask_diagnostics::Diagnostic::error(e.message.clone())
+                .with_code("E0338")
+                .with_primary(e.span, "variant needs @message(\"...\") annotation"),
+        );
+    }
+
+    let current_file_spans: Vec<Span> = parse_result.decls.iter().map(|d| d.span).collect();
+
+    // --- Package context (if this file lives under a build.rk tree) ---
+    let file_path_str = uri.to_file_path()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let pkg_ctx = rask_compiler::detect_package(&file_path_str);
+    let sibling_decl_names = if let Some(ref ctx) = pkg_ctx {
+        build_sibling_names(uri, ctx)
+    } else {
+        HashMap::new()
+    };
+
+    // --- Resolve ---
+    let is_stdlib = rask_stdlib::StubRegistry::is_stdlib_path(uri.path());
+    let resolved = if is_stdlib {
+        match rask_resolve::resolve_stdlib(&parse_result.decls) {
+            Ok(r) => r,
+            Err(errors) => {
+                for error in &errors {
+                    diags.push(error.to_diagnostic());
+                }
+                return PipelineOutput {
+                    version,
+                    source: source.to_string(),
+                    line_index,
+                    diagnostics: diags,
+                    result: None,
+                };
+            }
+        }
+    } else if let Some(ref ctx) = pkg_ctx {
+        let file_path = uri.to_file_path().unwrap_or_default();
+        let mut sibling_decls: Vec<Decl> = ctx.registry.get(ctx.root_id)
+            .map(|pkg| {
+                pkg.files.iter()
+                    .filter(|f| f.path != file_path)
+                    .flat_map(|f| f.decls.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        rask_desugar::desugar_with_diagnostics(&mut sibling_decls);
+        rask_desugar::desugar_default_args(&mut sibling_decls);
+        parse_result.decls.extend(sibling_decls);
+
+        match rask_resolve::resolve_package_with_cfg(
+            &parse_result.decls,
+            &ctx.registry,
+            ctx.root_id,
+            cfg.to_cfg_values(),
+        ) {
+            Ok(r) => r,
+            Err(errors) => {
+                for error in &errors {
+                    let diag = error.to_diagnostic();
+                    if is_current_file_diagnostic(&diag, &current_file_spans) {
+                        diags.push(diag);
+                    }
+                }
+                return PipelineOutput {
+                    version,
+                    source: source.to_string(),
+                    line_index,
+                    diagnostics: diags,
+                    result: None,
+                };
+            }
+        }
+    } else {
+        match rask_resolve::resolve_with_cfg(&parse_result.decls, cfg.to_cfg_values()) {
+            Ok(r) => r,
+            Err(errors) => {
+                for error in &errors {
+                    diags.push(error.to_diagnostic());
+                }
+                return PipelineOutput {
+                    version,
+                    source: source.to_string(),
+                    line_index,
+                    diagnostics: diags,
+                    result: None,
+                };
+            }
+        }
+    };
+
+    if is_stdlib {
+        // Stdlib stubs are signatures only — no further analysis.
+        return PipelineOutput {
+            version,
+            source: source.to_string(),
+            line_index,
+            diagnostics: diags,
+            result: None,
+        };
+    }
+
+    // --- Typecheck (lenient so ownership/effects still run) ---
+    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    let (typed, type_errors) =
+        rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
+    for error in &type_errors {
+        let diag = error.to_diagnostic();
+        if is_current_file_diagnostic(&diag, &current_file_spans) {
+            diags.push(diag);
+        }
+    }
+
+    // --- Ownership ---
+    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    for error in &ownership_result.errors {
+        let diag = error.to_diagnostic();
+        if is_current_file_diagnostic(&diag, &current_file_spans) {
+            diags.push(diag);
+        }
+    }
+
+    // --- Effects (IO propagation + frozen check) ---
+    let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
+    for w in &effect_warnings {
+        let d = rask_diagnostics::Diagnostic::warning(&w.message)
+            .with_code(w.code)
+            .with_primary(w.span, format!("`{}` has IO effect", w.callee_name));
+        if is_current_file_diagnostic(&d, &current_file_spans) {
+            diags.push(d);
+        }
+    }
+    let frozen_diagnostics = rask_effects::frozen::check(&parse_result.decls, &effects);
+    for fd in &frozen_diagnostics {
+        let d = if fd.is_error {
+            rask_diagnostics::Diagnostic::error(&fd.message)
+        } else {
+            rask_diagnostics::Diagnostic::warning(&fd.message)
+        };
+        let d = d.with_code(fd.code).with_primary(fd.span, "");
+        if is_current_file_diagnostic(&d, &current_file_spans) {
+            diags.push(d);
+        }
+    }
+
+    let mut position_index = build_position_index(&parse_result.decls);
+    position_index.finalize();
+
+    let result = CompilationResult {
+        source: source.to_string(),
+        line_index: line_index.clone(),
+        decls: parse_result.decls,
+        current_file_spans,
+        typed,
+        diagnostics: diags.clone(),
+        position_index,
+        sibling_decl_names,
+    };
+
+    PipelineOutput {
+        version,
+        source: source.to_string(),
+        line_index,
+        diagnostics: diags,
+        result: Some(result),
+    }
+}
+
+/// Deduplicate errors that land on the same line — they tend to cascade
+/// after a single real problem, and a wall of them is noise.
+fn dedupe_by_line<E, F, G>(
+    errors: &[E],
+    span_start: F,
+    line_index: &LineIndex,
+    out: &mut Vec<rask_diagnostics::Diagnostic>,
+    to_diag: G,
+)
+where
+    F: Fn(&E) -> usize,
+    G: Fn(&E) -> rask_diagnostics::Diagnostic,
+{
+    let mut last_line: Option<u32> = None;
+    for e in errors {
+        let line = line_index.line_of_offset(span_start(e));
+        if last_line != Some(line) {
+            out.push(to_diag(e));
+            last_line = Some(line);
+        }
+    }
+}
+
 fn build_sibling_names(uri: &Url, ctx: &rask_compiler::PackageContext) -> HashMap<String, SiblingFile> {
     let file_path = match uri.to_file_path() {
         Ok(p) => p,
@@ -312,7 +453,6 @@ fn build_sibling_names(uri: &Url, ctx: &rask_compiler::PackageContext) -> HashMa
     names
 }
 
-/// Check if a diagnostic's primary span falls within one of the current file's decl spans.
 fn is_current_file_diagnostic(diag: &rask_diagnostics::Diagnostic, current_file_spans: &[Span]) -> bool {
     let primary_span = match diag.primary_span() {
         Some(s) => s,

@@ -1513,6 +1513,7 @@ dependencies = [
  "rask-desugar",
  "rask-diagnostics",
  "rask-effects",
+ "rask-fmt",
  "rask-lexer",
  "rask-ownership",
  "rask-parser",
