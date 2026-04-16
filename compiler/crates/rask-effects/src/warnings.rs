@@ -12,9 +12,15 @@ use rask_ast::stmt::{Stmt, StmtKind};
 use crate::{EffectMap, EffectWarning};
 
 /// Detect CW1 and CW2 warnings from declarations.
+///
+/// CW2 ("IO in loop blocks thread") is only relevant when the program actually
+/// uses concurrency. In a single-threaded program there is no other thread to
+/// starve, so the warning is noise. We check the effect map: if any function
+/// has the `async_` effect, the program is concurrent and CW2 applies.
 pub fn detect(decls: &[Decl], effects: &EffectMap) -> Vec<EffectWarning> {
     let mut warnings = Vec::new();
-    let mut ctx = WarnContext { effects, in_thread_pool: false, in_loop: false, in_multitasking: false };
+    let program_is_concurrent = effects.values().any(|e| e.async_);
+    let mut ctx = WarnContext { effects, program_is_concurrent, in_thread_pool: false, in_loop: false, in_multitasking: false };
 
     for decl in decls {
         match &decl.kind {
@@ -40,6 +46,9 @@ pub fn detect(decls: &[Decl], effects: &EffectMap) -> Vec<EffectWarning> {
 
 struct WarnContext<'a> {
     effects: &'a EffectMap,
+    /// True when any function in the program has async effects (spawn, channels, etc.).
+    /// CW2 is suppressed entirely when false — no concurrency means no thread-blocking concern.
+    program_is_concurrent: bool,
     in_thread_pool: bool,
     in_loop: bool,
     in_multitasking: bool,
@@ -316,8 +325,8 @@ impl<'a> WarnContext<'a> {
             });
         }
 
-        // CW2: IO in loop without Multitasking
-        if self.in_loop && !self.in_multitasking {
+        // CW2: IO in loop without Multitasking (only in concurrent programs)
+        if self.in_loop && !self.in_multitasking && self.program_is_concurrent {
             warnings.push(EffectWarning {
                 code: "comp.effects/CW2",
                 message: format!(
@@ -430,6 +439,15 @@ mod tests {
         m
     }
 
+    /// Effect map that marks a function as IO AND marks the program as concurrent.
+    fn effects_with_io_concurrent(name: &str) -> EffectMap {
+        let mut m = HashMap::new();
+        m.insert(name.into(), crate::Effects { io: true, async_: false, grow: false, shrink: false });
+        // Some other function uses concurrency, making the program concurrent.
+        m.insert("_concurrent_marker".into(), crate::Effects { io: false, async_: true, grow: false, shrink: false });
+        m
+    }
+
     #[test]
     fn cw1_io_in_thread_pool() {
         // ThreadPool.spawn { println() }
@@ -452,7 +470,7 @@ mod tests {
 
     #[test]
     fn cw2_io_in_loop_without_multitasking() {
-        // for x in items { println() }
+        // for x in items { println() } — in a concurrent program
         let body = vec![Stmt {
             id: NodeId(0),
             kind: StmtKind::For {
@@ -465,15 +483,35 @@ mod tests {
             span: sp(),
         }];
         let decls = vec![make_fn("process", body)];
-        let effects = effects_with_io("println");
+        let effects = effects_with_io_concurrent("println");
         let warnings = detect(&decls, &effects);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
     }
 
     #[test]
+    fn no_cw2_in_single_threaded_program() {
+        // for x in items { println() } — no concurrency in the program
+        let body = vec![Stmt {
+            id: NodeId(0),
+            kind: StmtKind::For {
+                label: None,
+                binding: ForBinding::Single("x".into()),
+                mutate: false,
+                iter: ident("items"),
+                body: vec![expr_stmt(call("println"))],
+            },
+            span: sp(),
+        }];
+        let decls = vec![make_fn("process", body)];
+        let effects = effects_with_io("println"); // no async_ effect anywhere
+        let warnings = detect(&decls, &effects);
+        assert!(warnings.is_empty(), "CW2 should not fire in single-threaded programs");
+    }
+
+    #[test]
     fn no_cw2_with_multitasking_context() {
-        // using Multitasking { for x in items { println() } }
+        // using Multitasking { for x in items { println() } } — concurrent program
         let loop_body = vec![Stmt {
             id: NodeId(0),
             kind: StmtKind::For {
@@ -495,7 +533,7 @@ mod tests {
             span: sp(),
         })];
         let decls = vec![make_fn("process", body)];
-        let effects = effects_with_io("println");
+        let effects = effects_with_io_concurrent("println");
         let warnings = detect(&decls, &effects);
         assert!(warnings.is_empty(), "No CW2 inside Multitasking context");
     }
