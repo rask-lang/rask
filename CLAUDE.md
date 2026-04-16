@@ -17,7 +17,8 @@ Choose simple over easy
 ## Debugging discipline
                                                                    
 - Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
-- Fix causes, not symptoms.  
+- Fix causes, not symptoms.
+- When you find a bug, file it as a GitHub issue on `rask-lang/rask` with a repro. Don't let bugs live only in chat.  
 
 **Tool usage:**
 - Use `Write` tool for creating test files, not `Bash` with cat/heredocs

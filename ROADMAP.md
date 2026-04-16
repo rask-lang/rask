@@ -1,22 +1,22 @@
 # Rask Roadmap
 
-Strategic phases. Tactical open items are in [TODO.md](TODO.md); runtime bugs in [KNOWN_BUGS.md](KNOWN_BUGS.md).
+Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub issues](https://github.com/rask-lang/rask/issues).
 
 ## Where things stand
 
 Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 73 decided specs.
 
-Everything in the core language compiles natively today. The HTTP server is the one validation program that doesn't — blocked on the stdlib rewrites in Phase 1.
+Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). The validation programs have regressed and need fixes (#203).
 
 ## Validation programs
 
-| Program | Native | Notes |
-|---------|--------|-------|
-| grep clone | Yes | CLI args + file I/O |
-| Text editor with undo | Yes | Pool + Handle + ensure |
-| Game loop with entities | Yes | Pool, handles, threading |
-| Sensor processor | Yes | Threads, timing, shared Vec |
-| HTTP JSON API server | No | Needs HTTP + JSON stdlib in Rask |
+| Program | Status | Blocker |
+|---------|--------|---------|
+| grep clone | Regressed | String slice storage error |
+| Text editor with undo | Regressed | Type mismatches from API changes |
+| Game loop with entities | Regressed | Pool.insert returns Result now |
+| Sensor processor | Regressed | Missing methods on generic T |
+| HTTP JSON API server | Blocked | Needs `json.encode`/`decode` (Phase 1) |
 
 ## Stdlib architecture
 
@@ -56,7 +56,7 @@ Each module needs: spec, implementation, tests.
 
 ## Phase 3: Runtime & codegen maturity
 
-- Runtime trait dispatch — `any Trait` for heterogeneous collections
+- Runtime trait dispatch — `any Trait` for heterogeneous collections (#194)
 - Cross-compilation — `--target` flag wired to Cranelift + cross-linker detection (XT1–XT6)
 
 ## Phase 4: Incremental compilation

@@ -1,17 +1,12 @@
 # Rask — TODO
 
-Open work. Complements [KNOWN_BUGS.md](KNOWN_BUGS.md) (runtime bugs with failing tests) and [ROADMAP.md](ROADMAP.md) (strategic phases).
+Open work, grouped by theme. Bugs are tracked as [GitHub issues](https://github.com/rask-lang/rask/issues).
 
 ---
 
-## Parser
-
-- [ ] **`try`/`else` closure syntax** — `try expr else |e| expr` doesn't parse. Workaround: `match` on the result.
-- [ ] **`while`/`if` with `is` pattern** — `while self.current is Token.Newline` doesn't parse. Workaround: `loop { match ... _ => break }`.
-
 ## Codegen
 
-- [ ] **SIMD is a stub** — `f32x8`/`i32x4` defined in MirType but passed as pointers. No vector instructions generated. Interpreter simulates element-wise.
+- [ ] **SIMD is a stub** — `f32x8`/`i32x4` defined in MirType but passed as pointers. No vector instructions generated.
 - [ ] **Debug info — partial DWARF** — Source locations tracked but DWARF generation is minimal.
 - [ ] **Single target — x86-64 only** — Cranelift supports ARM/WASM, compiler doesn't configure them.
 - [ ] **Linear resource commitment (L1–L3)** — Ownership checker tracks it, codegen doesn't enforce.
