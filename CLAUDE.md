@@ -18,7 +18,7 @@ Choose simple over easy
                                                                    
 - Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
 - Fix causes, not symptoms.
-- When you find a bug, file it as a GitHub issue on `rask-lang/rask` with a repro. Don't let bugs live only in chat.  
+- When you find a bug, check existing issues on `rask-lang/rask` first, then file a new one with a repro if it's not already tracked. Don't let bugs live only in chat.  
 
 **Tool usage:**
 - Use `Write` tool for creating test files, not `Bash` with cat/heredocs
