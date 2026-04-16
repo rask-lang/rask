@@ -59,22 +59,41 @@ sim/
 
 ### agent.py
 
-An agent is: an ID, a position (which location), inventory (dict), credits (float), and a `decide(observation) -> list[Action]` function. Agents are dataclasses + a function.
+An agent is: an ID, a position (which location), inventory (dict), credits (float), and a **generator** that yields actions.
 
-Different agent behaviors are different `decide` functions. Plug them in. The engine doesn't know what an "extractor" is — it just calls `decide` and resolves the returned actions.
+```python
+def hauler(agent_id):
+    while True:
+        obs = yield              # wait for next tick, receive observation
+        route = best_arbitrage(obs)
+        if not route:
+            yield None           # idle this tick
+            continue
+        yield Move(agent_id, route.buy_at)
+        obs = yield Buy(agent_id, route.item, route.qty, route.buy_price)
+        yield Move(agent_id, route.sell_at)
+        yield Sell(agent_id, route.item, route.qty, route.sell_price)
+```
+
+The engine calls `gen.send(observation)` each tick. The generator yields one action (or None). Multi-tick plans — fly, buy, fly, sell — are sequential code, not state machines. The generator suspends between ticks. An agent mid-flight just hasn't yielded its next action yet.
+
+Agent state (inventory, credits, position) lives in the world, not in the generator. The generator only holds plan state (where am I in my current sequence). This means the world stays serializable and the generator is just behavior logic.
+
+Different agent behaviors = different generator functions. The engine doesn't know what a "hauler" is. It just sends observations and collects yielded actions.
 
 ### world.py
 
-A world is: a list of locations, a list of agents, a list of active rules, a constraint config, a tick counter. Each tick:
+A world is: a list of locations, a list of agents (each with a generator), a list of active rules, a constraint config, a tick counter. Each tick:
 
 1. Build observation per agent (filtered by constraints)
-2. Each agent calls `decide(obs)`
-3. Collect all actions
-4. Each rule validates and resolves its action types
-5. Update world state
-6. Record metrics
+2. `gen.send(obs)` each agent — collect yielded actions
+3. Each rule validates and resolves its action types (one pass, no cross-rule interaction)
+4. Update world state
+5. Record metrics
 
-The tick loop is a function: `tick(world) -> world`. No mutation, no side effects except recording. Testable. A "simulation run" is just `for _ in range(N): world = tick(world)`.
+Rules don't interact within a tick. Cross-rule effects (craft then sell) happen across ticks naturally. The agent's generator sequences them: tick N yields Craft, tick N+1 the item is in inventory, tick N+2 yields Sell.
+
+One pass per tick. No iteration, no conflict resolution between rules. Fast.
 
 ### actions.py
 
@@ -178,17 +197,17 @@ Credit creation. Activity-tied: agents earn credits for completing actions (deli
 
 ## Agents
 
-Each agent is a `decide(observation) -> list[Action]` function. Stateless between calls — all state lives in the agent's world-state entry (inventory, credits, position). The function can carry internal heuristic state via closure if needed.
+Each agent is a generator function. Yields one action per tick. Receives observation via `send()`. Multi-tick plans are sequential code.
 
-**extractor.py** — Finds the best available deposit at current location. Extracts. Sells surplus on local market. Moves to a new location if local deposits are depleted.
+**extractor.py** — Loop: find best deposit at current location, extract, sell surplus. If deposits depleted, move to a new location. The move-extract-sell cycle is a few yields in a loop.
 
-**hauler.py** — Scans visible markets for price differences. Buys where cheap, moves, sells where expensive. Accounts for fuel cost. Greedy arbitrage.
+**hauler.py** — Loop: scan visible prices, find arbitrage route, fly-buy-fly-sell. Each leg is a yield. A round trip takes 4+ ticks. Accounts for fuel cost in route selection.
 
-**station.py** — Market maker. Holds inventory. Posts buy/sell orders with spread. Adjusts prices based on inventory levels: overstocked → lower ask, understocked → raise bid.
+**station.py** — Each tick: check inventory levels, post buy orders for low stock, sell orders for high stock. Adjusts prices gradually. No multi-tick plans — reactive each tick.
 
-**researcher.py** — Runs crafting experiments. Tries compositions near known peaks. Records results. Can use strategies from `crafting/strategies/`.
+**researcher.py** — Loop: pick a composition near a known peak (or random if no peaks known), craft, record result, update peak knowledge. Uses strategies from `crafting/strategies/`.
 
-**random.py** — Picks a random valid action each tick. Baseline for comparison.
+**random.py** — Each tick: pick a random valid action. Baseline for comparison.
 
 ## Galaxy
 
