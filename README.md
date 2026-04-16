@@ -12,7 +12,7 @@ Rask sits somewhere between Rust and Go — memory safety without lifetime annot
 
 It's a hobby project. I'm figuring out how far this approach can go. **[Why a new language?](WHY_RASK.md)**
 
-**Status:** Design phase with working interpreter (grep, game loop, text editor all run). No compiler yet.
+**Status:** Working compiler (Cranelift backend) and interpreter. Simple programs compile natively; validation programs need fixes.
 
 ---
 
@@ -141,7 +141,7 @@ The upside, if the approach works out:
 
 ## Implementation Status
 
-**Right now:** Everything runs interpreted. The lexer, parser, type checker, and interpreter work for the core language features. Three of five litmus test programs run (grep, game loop, text editor). Probably buggy — haven't had time testing everything.
+**Right now:** Cranelift backend compiles and runs programs natively. Interpreter available as fallback (`rask run --interp`). Some codegen bugs remain — see [issues](https://github.com/rask-lang/rask/issues).
 
 **What works:**
 - Memory model: ownership, moves, borrows, handles
@@ -151,12 +151,13 @@ The upside, if the approach works out:
 - Resource types: files must be closed, linear tracking works
 - Error handling: `T or E` results, `try` propagation
 - Standard types: Vec, Map, Pool, String, Option, Result
-- vscode extension with LSP
+- Native codegen: structs, closures, Vec/Map, threads, channels, file I/O
+- Build system: `rask build`, packages, workspaces, watch mode
+- Tooling: `rask test`, `rask fmt`, `rask lint`, `rask check`, LSP
 
 **What's next:**
-- Code generation (right now it's all interpreted)
-- Network I/O (HTTP server example is blocked on this)
-- SIMD and const generics (embedded example needs this)
+- Fix validation program regressions ([#203](https://github.com/rask-lang/rask/issues/203))
+- Stdlib modules in Rask (HTTP, JSON) — see [ROADMAP.md](ROADMAP.md)
 ---
 
 ## Design Principles
