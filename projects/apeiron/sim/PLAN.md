@@ -2,93 +2,127 @@
 
 Throwaway Python. Validate game mechanics cheaply. Kill bad ideas before building anything in Rask.
 
+## Core Idea
+
+The common layer IS the simulation engine. A **world** contains **locations** and **agents**. Agents observe, decide, act. The world resolves actions and advances. Everything else — economy, crafting, exploration — is a configuration of this engine: which rules apply, which agent behaviors exist, what the locations contain.
+
+The "economy sim" isn't a separate thing. It's the world sim with economic agents and trade rules plugged in.
+
 ## Structure
 
 ```
 sim/
-├── common/
+├── engine/
 │   ├── __init__.py
 │   ├── agent.py        # Agent: id, state, inventory, decide(obs) -> actions
-│   ├── world.py        # World: systems, agents, tick loop, observation filtering
-│   ├── trade.py        # Order posting, matching, settlement
+│   ├── world.py        # World: locations, agents, rules, tick loop
+│   ├── actions.py      # Action types: Move, Buy, Sell, Extract, Craft, ...
+│   ├── rules.py        # Rule interface: validates + resolves actions
+│   ├── observation.py  # Build per-agent observations, filtered by constraints
 │   ├── constraints.py  # Tunable knobs: visibility, trade reach, info delay, rate limits
 │   ├── record.py       # Append metrics per tick, dump CSV/JSON
-│   ├── plot.py          # Matplotlib: time series, heatmap, histogram, scatter, 3D
-│   └── sweep.py         # Run function across param combos with multiprocessing.Pool
-├── economy/
-│   ├── run.py           # CLI entry. Wire pieces, run, plot.
-│   ├── system.py        # Star system: resources, deposits, facilities, local market
-│   ├── agents/
-│   │   ├── extractor.py # Mines deposits, sells raw materials
-│   │   ├── hauler.py    # Buys low, flies, sells high
-│   │   ├── station.py   # Market-maker: holds inventory, adjusts prices
-│   │   └── random.py    # Baseline: random valid actions
-│   ├── resources.py     # Finite deposits, extraction rates, element types
-│   ├── fuel.py          # Fuel consumption model (distance * mass)
-│   └── scenarios/
-│       ├── founding_5.py    # 5 systems, standard element spread
-│       └── sparse_3.py      # 3 isolated systems, test fragile networks
-├── crafting/
-│   ├── run.py           # Terminal REPL: type ratios, see results, history
-│   ├── interaction.py   # Core interact() function (from transform_sim.py concepts)
-│   ├── peaks.py         # Peak generation, shapes, energy windows
-│   └── strategies/
-│       ├── hillclimb.py # Automated hill-climbing
-│       ├── grid.py      # Systematic grid search
-│       └── random.py    # Random baseline
-├── elements/
-│   ├── run.py           # A/B harness: run economy+crafting with different element configs
-│   └── configs/
-│       ├── five.py      # 5 elements: Fe, C, H, Si, Cu
-│       └── fourteen.py  # Full 14 element table
+│   ├── plot.py         # Matplotlib: time series, heatmap, histogram, scatter, 3D
+│   └── sweep.py        # Run function across param combos with multiprocessing.Pool
+├── rules/
+│   ├── trade.py        # Order posting, matching, settlement
+│   ├── extraction.py   # Mining from deposits
+│   ├── crafting.py     # Interaction function, material transformation
+│   ├── movement.py     # Moving between locations, fuel cost
+│   └── minting.py      # Credit creation (activity-tied)
+├── agents/
+│   ├── extractor.py    # Mines deposits, sells raw materials
+│   ├── hauler.py       # Buys low, flies, sells high
+│   ├── station.py      # Market-maker: holds inventory, adjusts prices
+│   ├── researcher.py   # Explores crafting space, discovers recipes
+│   └── random.py       # Baseline: random valid actions
 ├── galaxy/
-│   ├── run.py           # Generate stars, analyze topology, save plots
-│   ├── placement.py     # Star position algorithms
-│   ├── resources.py     # Resource distribution per element table + abundance tiers
-│   └── topology.py      # Graph from distance threshold, cluster detection, bridges
-└── transform_sim.py     # Old. Keep for reference.
+│   ├── generate.py     # Star placement algorithms (clustered + arms + bridges)
+│   ├── resources.py    # Resource distribution per element table + abundance tiers
+│   ├── topology.py     # Graph analysis: clusters, bridges, connectivity
+│   └── run.py          # CLI: generate, analyze, visualize
+├── crafting/
+│   ├── interaction.py  # Core interact() function (peaks, shapes, energy)
+│   ├── peaks.py        # Peak generation from seed
+│   ├── strategies/     # Hill-climbing, grid search, random
+│   └── run.py          # Terminal REPL
+├── scenarios/
+│   ├── founding_5.py   # 5 systems from galaxy gen, standard agents, standard rules
+│   ├── sparse_3.py     # 3 isolated systems, fragile network test
+│   ├── elements_5.py   # 5-element config for A/B comparison
+│   └── elements_14.py  # 14-element config for A/B comparison
+├── run_world.py        # CLI: run a scenario, record metrics, save plots
+├── run_compare.py      # CLI: run two scenarios, compare outputs
+└── transform_sim.py    # Old. Keep for reference.
 ```
 
-## Common Layer
+## Engine
 
 ### agent.py
 
-An agent is: an ID, a position (which system), inventory (dict), credits (float), and a `decide(observation) -> list[Action]` function. That's it. No base class hierarchy. Agents are dataclasses + a function.
+An agent is: an ID, a position (which location), inventory (dict), credits (float), and a `decide(observation) -> list[Action]` function. Agents are dataclasses + a function.
 
-Actions are tagged unions: `Move(to)`, `Buy(item, qty, price)`, `Sell(item, qty, price)`, `Extract(resource)`, `Craft(recipe)`. The world resolves them.
+Different agent behaviors are different `decide` functions. Plug them in. The engine doesn't know what an "extractor" is — it just calls `decide` and resolves the returned actions.
 
 ### world.py
 
-Holds systems, agents, a tick counter. Each tick:
-1. Build observations per agent (filtered by constraints)
-2. Each agent decides
-3. Resolve all actions (trades match, resources extract, ships move)
-4. Record metrics
+A world is: a list of locations, a list of agents, a list of active rules, a constraint config, a tick counter. Each tick:
 
-No inheritance. The tick loop is a function that takes a world and returns the next world. Functional, testable, swappable.
+1. Build observation per agent (filtered by constraints)
+2. Each agent calls `decide(obs)`
+3. Collect all actions
+4. Each rule validates and resolves its action types
+5. Update world state
+6. Record metrics
+
+The tick loop is a function: `tick(world) -> world`. No mutation, no side effects except recording. Testable. A "simulation run" is just `for _ in range(N): world = tick(world)`.
+
+### actions.py
+
+Tagged unions. The set of possible actions is open — rules define what actions they handle.
+
+```python
+Move(agent_id, to_location)
+Buy(agent_id, item, qty, max_price)
+Sell(agent_id, item, qty, min_price)
+Extract(agent_id, deposit_id, amount)
+Craft(agent_id, inputs, energy)
+Mint(agent_id, amount, reason)
+```
+
+New action types = new rules. The engine doesn't hardcode what actions exist.
+
+### rules.py
+
+A rule is a function: `resolve(world, actions) -> world`. It takes the world and all submitted actions, validates them, resolves conflicts, and returns the updated world.
+
+Rules are composable. The world sim runs with a list of rules: `[trade_rule, extraction_rule, movement_rule, minting_rule]`. Add crafting by adding `crafting_rule` to the list. Remove trade by removing `trade_rule`. Test movement in isolation by running only `movement_rule`.
+
+Each rule only touches the action types it understands. Trade rule ignores Extract actions. Extraction rule ignores Buy/Sell. No coupling between rules.
+
+### observation.py
+
+Builds what an agent can see. Filtered by constraints:
+
+- **Local**: agent sees its own location's state (market, resources, other agents)
+- **Regional**: agent sees neighbors within N hops
+- **Global**: agent sees everything
+
+The observation is a plain dict. Agents never access the world directly — only through their observation. This enforces information constraints structurally.
 
 ### constraints.py
 
-Tunable knobs, not protocol simulation:
+Tunable knobs:
 
 | Knob | Values | Tests |
 |------|--------|-------|
-| `visibility` | `local` / `regional` / `global` | Can the economy work without global price info? |
+| `visibility` | `local` / `regional(N)` / `global` | Can the economy work without global price info? |
 | `trade_reach` | `local` / `neighbors` / `global` | Must you trade locally or can you trade anywhere? |
 | `info_delay` | `0..N` ticks | Does lagged info change behavior? |
 | `rate_limit` | actions per tick per agent | Does bounding throughput matter? |
 
-Run the same scenario with different constraint configs. Compare outcomes.
-
-### trade.py
-
-Agents post orders. Market matches by price-time priority within a system. Cross-system trade requires a hauler agent to physically move goods. Settlement is instant within a system.
-
-No protocol details. No capabilities. No escrow. Just: can these two orders match? Yes → execute.
-
 ### record.py
 
-`Recorder` object. Call `rec.add(tick, "total_credits", value)`. At end, `rec.to_csv("out.csv")` or `rec.to_json("out.json")`. Records are just `list[tuple[int, str, float]]`. Flat, dumb, fast.
+`Recorder` object. Call `rec.add(tick, "total_credits", value)`. At end, `rec.to_csv("out.csv")` or `rec.to_json("out.json")`. Records are `list[tuple[int, str, float]]`. Flat, dumb, fast.
 
 ### plot.py
 
@@ -106,7 +140,7 @@ No interactive plots. Generate PNGs. Look at them.
 
 ```python
 results = sweep(
-    func=run_economy,
+    func=run_scenario,
     params={
         "seed": range(10),
         "visibility": ["local", "global"],
@@ -116,132 +150,157 @@ results = sweep(
 )
 ```
 
-Cartesian product of params. Run each combo in a process pool. Return list of results. Each result includes the params + whatever the function returned (metrics dict).
+Cartesian product of params. Run each combo in a process pool. Return list of results.
 
-## Economy Sim
+## Rules
 
-### What it tests
+Each rule is a separate module. Swap, combine, modify independently.
 
-Does a small economy (3-10 systems) produce functioning trade, stable-ish prices, and circulation? Or does it collapse, stagnate, or concentrate?
+### trade.py
 
-### Pieces (all swappable)
+Agents post Buy/Sell actions. Market matches by price-time priority within a location. Cross-location trade requires a hauler to physically move goods. Settlement is instant within a location.
 
-**system.py** — A system has: position (x,y), resource deposits (element -> remaining quantity), facilities (list), local market (list of orders). Systems are data. No methods that encode game logic.
+### extraction.py
 
-**resources.py** — How deposits work. extract(deposit, amount) -> (extracted, remaining). Finite. Rate-limited per tick. Different element types with different abundances. This is where element configs plug in.
+Agent submits Extract action on a deposit. If the deposit has remaining quantity and the agent is at the right location, deduct from deposit, add to agent inventory.
 
-**fuel.py** — `fuel_cost(distance, cargo_mass) -> float`. A function. Swap it to test different fuel models.
+### movement.py
 
-**agents/** — Each agent type is a `decide(observation) -> actions` function. Extractors mine the best available deposit. Haulers find price differences and move goods. Stations adjust prices based on inventory levels. All simple heuristics — the point is testing the economy, not building smart AI.
+Agent submits Move action. Fuel cost = `f(distance, cargo_mass)`. If agent has enough fuel, move. Fuel is consumed (destroyed). The fuel cost function is a parameter — swap it.
 
-**scenarios/** — A scenario is a function that returns a configured World. `founding_5()` returns 5 systems with standard resources, 2-3 agents per system, standard constraints. `sparse_3()` returns 3 far-apart systems to test fragile networks.
+### crafting.py
 
-### Metrics to record
+Agent submits Craft action with inputs and energy. Runs the interaction function (from `crafting/interaction.py`). Produces output materials. Consumes inputs. Mass loss applies.
 
-- Credits per agent per tick (wealth distribution)
-- Total credits in circulation (inflation)
-- Price per resource per system per tick (price convergence)
-- Trade volume per tick (is anything happening?)
-- Resource depletion per system (are sinks working?)
-- Fuel consumed per tick (is movement happening?)
+### minting.py
 
-### Pass/fail (from ROADMAP.md)
+Credit creation. Activity-tied: agents earn credits for completing actions (delivering cargo, extracting resources). The minting rate is a parameter.
 
-- Credits don't hyperinflate
-- At least 3 of 5 systems participate in trade
-- No single agent accumulates >50% of total supply
+## Agents
 
-## Crafting Sim
+Each agent is a `decide(observation) -> list[Action]` function. Stateless between calls — all state lives in the agent's world-state entry (inventory, credits, position). The function can carry internal heuristic state via closure if needed.
 
-### What it tests
+**extractor.py** — Finds the best available deposit at current location. Extracts. Sells surplus on local market. Moves to a new location if local deposits are depleted.
 
-Is hill-climbing toward stoichiometric peaks fun? Can a player reason about results?
+**hauler.py** — Scans visible markets for price differences. Buys where cheap, moves, sells where expensive. Accounts for fuel cost. Greedy arbitrage.
 
-### The REPL
+**station.py** — Market maker. Holds inventory. Posts buy/sell orders with spread. Adjusts prices based on inventory levels: overstocked → lower ask, understocked → raise bid.
+
+**researcher.py** — Runs crafting experiments. Tries compositions near known peaks. Records results. Can use strategies from `crafting/strategies/`.
+
+**random.py** — Picks a random valid action each tick. Baseline for comparison.
+
+## Galaxy
+
+Generates the world's locations. Feeds directly into world sim scenarios.
+
+**generate.py** — Star placement. Produces a list of locations with (x, y, z) positions. Algorithms: clustered cores, spiral arms, bridge stars, sparse frontier. Seeded, deterministic.
+
+**resources.py** — Assigns element deposits to locations based on abundance tiers (common 90-100%, strategic 30-80%, exotic 5-15%). The element config (5 or 14 elements) plugs in here.
+
+**topology.py** — Builds a graph from locations (edge if distance < jump_range). Computes: clusters, bridge stars (betweenness centrality), average connectivity, isolated nodes. Outputs analysis + data for plotting.
+
+**run.py** — CLI entry. Generate galaxy, analyze, save plots. Also exports locations as data that scenarios can import.
+
+A scenario like `founding_5.py` calls galaxy generation, picks 5 well-connected systems from a dense cluster, populates them with agents, and returns a configured World.
+
+## Crafting
+
+Standalone REPL for interactive experimentation. Also provides the interaction function that the `crafting` rule uses in the world sim.
+
+**interaction.py** — `interact(elements, fractions, energy, seed) -> properties`. The core function. Evaluates peaks, interference, energy windows. Returns 6 property values.
+
+**peaks.py** — Peak generation from seed. Shapes (gaussian, plateau, needle, ridge), per-property heights, energy windows, interference.
+
+**run.py** — Terminal REPL:
 
 ```
 > mix Fe=0.97 C=0.03 energy=30
   density: 42.3  hardness: 71.8  conductivity: 12.1
   reactivity: 3.2  stability: 88.4  radiance: 0.1
 
-> mix Fe=0.95 C=0.05 energy=30
-  density: 41.1  hardness: 65.2  conductivity: 13.0
-  reactivity: 4.1  stability: 82.1  radiance: 0.2
-
-> history
-  #1  Fe=0.97 C=0.03 e=30  hardness=71.8
-  #2  Fe=0.95 C=0.05 e=30  hardness=65.2
-
 > auto hillclimb target=hardness budget=50
-  ... runs 50 experiments ...
   Best: Fe=0.972 C=0.028 e=31.2  hardness=73.1
 
 > landscape Fe C hardness
   [saves heatmap PNG]
 ```
 
-Commands: `mix`, `history`, `auto <strategy>`, `landscape`, `peaks`, `reset`, `seed <n>`.
+## Scenarios
 
-### Pass/fail (from ROADMAP.md)
+A scenario is a function: `build(seed) -> World`. It assembles locations (from galaxy gen or hand-placed), agents, rules, and constraints into a ready-to-run world.
 
-- Players can reason about results ("more carbon made it harder")
-- Peaks are discoverable through experimentation, not random guessing
-- The search space isn't too flat or too spiky
+**founding_5.py** — 5 systems from galaxy gen (dense cluster), extractors + haulers + stations, all rules active, local visibility. The primary economy test.
 
-## Element Count Sim
+**sparse_3.py** — 3 isolated systems. Tests whether trade emerges across long distances.
 
-### What it tests
+**elements_5.py / elements_14.py** — Same topology and agents, different element configs. For A/B comparison.
 
-Does 14 elements add depth over 5? Or just noise?
+New scenarios are cheap to write. Pick locations, pick agents, pick rules, pick constraints. Run.
 
-### Approach
+## CLI Entry Points
 
-Run economy sim twice: once with `configs/five.py`, once with `configs/fourteen.py`. Same seeds, same agent strategies, same constraints. Compare:
+**run_world.py** — Run a scenario for N ticks. Record metrics. Save plots.
 
-- Number of distinct trade routes (more elements = more routes?)
-- System specialization (do systems export different things?)
-- Recipe diversity (more elements = more useful recipes?)
-- Price variance across systems (more scarcity = more variance?)
+```
+python run_world.py --scenario founding_5 --seed 42 --ticks 10000 --out results/
+```
 
-Also run crafting sim with both configs. Compare:
-- Number of discoverable peaks
-- Whether more elements make discovery harder or just broader
+**run_compare.py** — Run two scenarios with same seeds. Compare metrics. Save comparison plots.
 
-### Pass/fail (from ROADMAP.md)
+```
+python run_compare.py --a elements_5 --b elements_14 --seeds 10 --ticks 10000 --out compare/
+```
 
-- 14 elements create trade patterns that 5 don't
-- OR: reducing to 5 loses nothing noticeable (then simpler is better)
+**galaxy/run.py** — Generate and visualize galaxy.
 
-## Galaxy Sim
+```
+python -m galaxy.run --seed 42 --stars 10000 --out galaxy/
+```
 
-### What it tests
+**crafting/run.py** — Interactive REPL.
 
-Does the procedural galaxy have interesting topology? Clusters, bridges, chokepoints, frontiers?
+```
+python -m crafting.run --seed 42
+```
 
-### What it does
+## Pass/Fail Criteria
 
-1. Generate 10K star positions (placement algorithm: TBD — clustered + arms + bridges)
-2. Assign resources per element abundance tiers
-3. Build connectivity graph (edge if distance < jump_range)
-4. Analyze: cluster count, bridge stars (high betweenness centrality), isolated stars, average connectivity
-5. Visualize: 2D/3D scatter colored by cluster, resource heatmaps, connectivity graph
+### Economy (founding_5 scenario, 10K ticks)
 
-### Pass/fail (from ROADMAP.md)
+- Credits don't hyperinflate (< 10x starting supply)
+- At least 3 of 5 systems participate in trade (> 0 trade volume)
+- No single agent accumulates > 50% of total supply
+- Prices differ between systems (geographic scarcity creates spread)
+- Fuel is consumed (movement is happening, sinks work)
 
-- Galaxy has visible structure — dense cores, sparse arms, bridge stars
-- Structure creates meaningful gameplay differences
-- Not uniform, not too regular
+### Crafting (REPL + automated strategies)
+
+- Players can reason about results (nearby compositions give similar results)
+- Peaks are discoverable by hill-climbing within 50-200 experiments
+- The search space has gradient (not flat, not random spikes)
+
+### Element Count (A/B comparison)
+
+- 14 elements create more distinct trade routes than 5
+- OR: 5 elements produce equivalent economic complexity (then simpler wins)
+
+### Galaxy (10K stars)
+
+- Visible structure: dense cores, sparse arms, bridge stars
+- Bridge stars have measurably higher betweenness centrality
+- Resource distribution creates geographic scarcity (no system has everything)
 
 ## Build Order
 
-1. **common/** — record, plot, sweep, constraints, agent, world, trade
-2. **galaxy/** — simplest sim, standalone, proves plot.py works
-3. **crafting/** — REPL + interaction function, proves the mechanic
-4. **economy/** — the big one, uses common/agent+world+trade
-5. **elements/** — comparison harness, wraps economy + crafting
+1. **engine/** — world, agent, actions, rules, observation, constraints, record, plot, sweep
+2. **galaxy/** — generate, resources, topology, run. Proves plot.py. Produces locations.
+3. **crafting/** — interaction, peaks, REPL. Standalone. Also provides crafting rule.
+4. **rules/ + agents/ + scenarios/** — trade, extraction, movement, minting. Agent behaviors. Scenarios wiring it all together.
+5. **run_world.py + run_compare.py** — CLI entry points. Run scenarios, compare, plot.
 
-Each step is independently useful. Don't need step N+1 to get value from step N.
+Steps 2 and 3 are independent and can be built in parallel. Step 4 is where the economy sim comes together — it's just a scenario using the engine with economic rules and agents.
 
 ## Dependencies
 
-Python 3.10+. matplotlib. No other deps. Maybe numpy if matrix math gets heavy, but start without it.
+Python 3.10+. matplotlib. No other deps. Maybe numpy later if matrix math gets heavy, but start without it.
