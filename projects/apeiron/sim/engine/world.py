@@ -24,19 +24,23 @@ class Location:
 
 
 Rule = Callable[["World", list], "World"]
+MetricsHook = Callable[["World"], None]
 ObservationBuilder = Callable[["World", Agent], dict]
 
 
 def default_observation(world: World, agent: Agent) -> dict:
-    """Minimal observation: agent's own state + current location state."""
+    """Build observation for an agent. Includes last tick's action outcome."""
     loc = world.locations.get(agent.state.location)
+    outcomes = world.state.get("outcomes", {})
     return {
         "tick": world.tick,
         "agent_id": agent.id,
         "location": loc.id if loc else "",
         "location_state": dict(loc.state) if loc else {},
+        "neighbors": list(loc.neighbors) if loc else [],
         "inventory": dict(agent.state.inventory),
         "credits": agent.state.credits,
+        "outcome": outcomes.get(agent.id),
     }
 
 
@@ -45,6 +49,7 @@ class World:
     locations: dict[str, Location] = field(default_factory=dict)
     agents: dict[str, Agent] = field(default_factory=dict)
     rules: list[Rule] = field(default_factory=list)
+    metrics_hooks: list[MetricsHook] = field(default_factory=list)
     constraints: Constraints = field(default_factory=Constraints)
     recorder: Recorder = field(default_factory=Recorder)
     observe: ObservationBuilder = field(default=default_observation)
@@ -54,6 +59,8 @@ class World:
 
 def step(world: World) -> World:
     """Advance one tick. Collect actions from agents, resolve via rules."""
+    world.state["outcomes"] = {}
+
     actions = []
     for agent in world.agents.values():
         obs = world.observe(world, agent)
@@ -63,6 +70,9 @@ def step(world: World) -> World:
 
     for rule in world.rules:
         world = rule(world, actions)
+
+    for hook in world.metrics_hooks:
+        hook(world)
 
     world.tick += 1
     return world
