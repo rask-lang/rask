@@ -910,9 +910,10 @@ impl Resolver {
                 span,
                 enum_decl.is_pub,
             );
-            if let Err(e) = self.scopes.define(variant.name.clone(), variant_sym, span) {
-                self.errors.push(e);
-            }
+            // Don't register user-defined variants in the enclosing scope.
+            // Access via qualified syntax: Enum.Variant. Only builtin
+            // variants (Ok, Err, Some, None) are registered at top level
+            // by register_builtin_enum.
             variant_syms.push((variant.name.clone(), variant_sym));
         }
 

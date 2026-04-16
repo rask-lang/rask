@@ -58,6 +58,7 @@ impl Interpreter {
             "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a >> b)) }
             "bit_not" => Ok(Value::Int(!a)),
             "abs" => Ok(Value::Int(a.abs())),
+            "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.pow(b as u32))) }
             "min" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.min(b))) }
             "max" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
@@ -104,6 +105,7 @@ impl Interpreter {
             "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a >> b)) }
             "bit_not" => Ok(Value::Int128(!a)),
             "abs" => Ok(Value::Int128(a.abs())),
+            "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a.pow(b as u32))) }
             "min" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.min(b))) }
             "max" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
@@ -147,6 +149,7 @@ impl Interpreter {
             "shl" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a << b)) }
             "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a >> b)) }
             "bit_not" => Ok(Value::Uint128(!a)),
+            "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a.pow(b as u32))) }
             "min" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.min(b))) }
             "max" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
