@@ -147,6 +147,16 @@ impl Interpreter {
                 }
                 None
             }
+
+            Pattern::Range { start, end } => {
+                // Bounds are literal chars or ints, checked by the parser.
+                let in_range = match (value, &start.kind, &end.kind) {
+                    (Value::Char(c), ExprKind::Char(s), ExprKind::Char(e)) => c >= s && c <= e,
+                    (Value::Int(n), ExprKind::Int(s, _), ExprKind::Int(e, _)) => n >= s && n <= e,
+                    _ => false,
+                };
+                if in_range { Some(HashMap::new()) } else { None }
+            }
         }
     }
 

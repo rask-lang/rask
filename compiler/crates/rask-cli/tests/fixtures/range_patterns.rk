@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+func classify(c: char) -> string {
+    match c {
+        '0'..='9' => return "digit"
+        'a'..='z' | 'A'..='Z' => return "letter"
+        '_' => return "underscore"
+        _ => return "other"
+    }
+}
+
+func grade(n: i64) -> string {
+    match n {
+        0..=59 => return "F"
+        60..=69 => return "D"
+        70..=79 => return "C"
+        80..=89 => return "B"
+        90..=100 => return "A"
+        _ => return "invalid"
+    }
+}
+
+func main() {
+    println(classify('7'))
+    println(classify('K'))
+    println(classify('_'))
+    println(classify('!'))
+    println(grade(42))
+    println(grade(85))
+    println(grade(100))
+}

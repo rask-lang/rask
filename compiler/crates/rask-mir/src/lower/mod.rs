@@ -1480,7 +1480,7 @@ fn collect_pattern_names(
             // All alternatives bind the same names; just collect from the first
             if let Some(first) = alts.first() { collect_pattern_names(first, names); }
         }
-        Pattern::Wildcard | Pattern::Literal(_) => {}
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
     }
 }
 

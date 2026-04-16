@@ -1590,9 +1590,17 @@ impl Parser {
 
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            let saved_pos = self.pos;
             let mut method_attrs = Vec::new();
             while self.check(&TokenKind::At) {
-                method_attrs.push(self.parse_attribute()?);
+                match self.parse_attribute() {
+                    Ok(attr) => method_attrs.push(attr),
+                    Err(e) => {
+                        self.record_error(e);
+                        self.synchronize_to_next_method();
+                        continue;
+                    }
+                }
                 self.skip_newlines();
             }
             let method_doc = self.take_doc();
@@ -1600,8 +1608,18 @@ impl Parser {
             let m_pub = if !m_private { self.match_token(&TokenKind::Public) } else { false };
             let m_comptime = self.match_token(&TokenKind::Comptime);
             let m_unsafe = if !m_comptime { self.match_token(&TokenKind::Unsafe) } else { false };
-            if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, m_private, m_comptime, m_unsafe, method_attrs, method_doc)? {
-                methods.push(fn_decl);
+            match self.parse_fn_decl(m_pub, m_private, m_comptime, m_unsafe, method_attrs, method_doc) {
+                Ok(DeclKind::Fn(fn_decl)) => methods.push(fn_decl),
+                Ok(_) => {}
+                Err(e) => {
+                    self.record_error(e);
+                    self.synchronize_to_next_method();
+                    if self.pos == saved_pos && !self.at_end() {
+                        self.advance();
+                    }
+                    self.skip_newlines();
+                    continue;
+                }
             }
             self.skip_newlines();
         }
@@ -2264,6 +2282,31 @@ impl Parser {
                 TokenKind::Loop | TokenKind::Match | TokenKind::Break |
                 TokenKind::Continue | TokenKind::Ensure |
                 TokenKind::Assert | TokenKind::Check => return,
+                _ => { self.advance(); }
+            }
+        }
+    }
+
+    /// Skip to the next method boundary inside an extend/impl block.
+    /// Tracks brace depth so nested blocks are skipped properly. Stops
+    /// before `func` at depth 0 or before the closing `}` at depth 0,
+    /// so the caller's loop can continue or exit normally.
+    fn synchronize_to_next_method(&mut self) {
+        let mut brace_depth: i32 = 0;
+        while !self.at_end() {
+            match self.current_kind() {
+                TokenKind::LBrace => {
+                    brace_depth += 1;
+                    self.advance();
+                }
+                TokenKind::RBrace if brace_depth > 0 => {
+                    brace_depth -= 1;
+                    self.advance();
+                }
+                TokenKind::RBrace => return,
+                TokenKind::Func | TokenKind::Public | TokenKind::Private
+                | TokenKind::Comptime | TokenKind::Unsafe | TokenKind::At
+                    if brace_depth == 0 => return,
                 _ => { self.advance(); }
             }
         }
@@ -4297,7 +4340,15 @@ impl Parser {
             TokenKind::Int(n, suffix) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
-                Ok(Pattern::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::Int(n, suffix.clone()), span })))
+                let start = Box::new(Expr { id: self.next_id(), kind: ExprKind::Int(n, suffix.clone()), span });
+                if self.match_token(&TokenKind::DotDotEq) {
+                    let end = self.parse_single_pattern()?;
+                    if let Pattern::Literal(end_expr) = end {
+                        return Ok(Pattern::Range { start, end: end_expr });
+                    }
+                    return Err(ParseError::expected("literal", self.current_kind(), self.current().span));
+                }
+                Ok(Pattern::Literal(start))
             }
             TokenKind::String(s) => {
                 self.advance();
@@ -4312,7 +4363,15 @@ impl Parser {
             TokenKind::Char(c) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
-                Ok(Pattern::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::Char(c), span })))
+                let start = Box::new(Expr { id: self.next_id(), kind: ExprKind::Char(c), span });
+                if self.match_token(&TokenKind::DotDotEq) {
+                    let end = self.parse_single_pattern()?;
+                    if let Pattern::Literal(end_expr) = end {
+                        return Ok(Pattern::Range { start, end: end_expr });
+                    }
+                    return Err(ParseError::expected("literal", self.current_kind(), self.current().span));
+                }
+                Ok(Pattern::Literal(start))
             }
             _ => Err(ParseError::expected(
                 "pattern",

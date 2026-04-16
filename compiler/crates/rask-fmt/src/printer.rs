@@ -1970,6 +1970,11 @@ impl<'a> Printer<'a> {
                     self.format_pattern(a);
                 }
             }
+            Pattern::Range { start, end } => {
+                self.format_expr(start);
+                self.emit("..=");
+                self.format_expr(end);
+            }
         }
     }
 }

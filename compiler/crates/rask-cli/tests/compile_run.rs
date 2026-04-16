@@ -244,6 +244,13 @@ fn compile_control_flow() {
 }
 
 #[test]
+fn compile_range_patterns() {
+    let (stdout, code) = compile_and_run("range_patterns.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "digit\nletter\nunderscore\nother\nF\nB\nA\n");
+}
+
+#[test]
 fn compile_vec_basic() {
     let (stdout, code) = compile_and_run("vec_basic.rk");
     assert_eq!(code, 0);

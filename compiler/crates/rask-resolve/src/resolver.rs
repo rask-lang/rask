@@ -2301,6 +2301,7 @@ impl Resolver {
                     self.resolve_pattern(p);
                 }
             }
+            Pattern::Range { .. } => {}
         }
     }
 }

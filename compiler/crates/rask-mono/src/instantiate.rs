@@ -615,6 +615,10 @@ impl TypeSubstitutor {
             Pattern::Or(pats) => {
                 Pattern::Or(pats.iter().map(|p| self.clone_pattern(p)).collect())
             }
+            Pattern::Range { start, end } => Pattern::Range {
+                start: start.clone(),
+                end: end.clone(),
+            },
         }
     }
 

@@ -356,4 +356,9 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     /// Or pattern `a | b`
     Or(Vec<Pattern>),
+    /// Inclusive range pattern `start..=end`. Both bounds must be literal chars or ints.
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+    },
 }

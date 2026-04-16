@@ -9,6 +9,25 @@ use crate::{
 };
 use rask_ast::expr::{Expr, ExprKind};
 
+/// Walk a pattern to see if it contains a range pattern anywhere.
+fn contains_range_pattern(pattern: &rask_ast::expr::Pattern) -> bool {
+    use rask_ast::expr::Pattern;
+    match pattern {
+        Pattern::Range { .. } => true,
+        Pattern::Or(pats) => pats.iter().any(contains_range_pattern),
+        _ => false,
+    }
+}
+
+/// Flatten an Or pattern into its alternatives. Non-Or patterns return themselves.
+fn flatten_pattern_alternatives(pattern: &rask_ast::expr::Pattern) -> Vec<&rask_ast::expr::Pattern> {
+    use rask_ast::expr::Pattern;
+    match pattern {
+        Pattern::Or(pats) => pats.iter().collect(),
+        other => vec![other],
+    }
+}
+
 impl<'a> MirLowerer<'a> {
     /// Match expression lowering (spec L2).
     pub(super) fn lower_match(
@@ -22,6 +41,13 @@ impl<'a> MirLowerer<'a> {
         let has_tuple_patterns = arms.iter().any(|a| matches!(&a.pattern, Pattern::Tuple(_)));
         if has_tuple_patterns {
             return self.lower_tuple_match(scrutinee, arms);
+        }
+
+        // Range patterns can't be a switch case — fall back to an if-chain.
+        let has_range = arms.iter().any(|a| contains_range_pattern(&a.pattern));
+        if has_range {
+            let (scrutinee_op, scrutinee_ty) = self.lower_expr(scrutinee)?;
+            return self.lower_scalar_chain_match(scrutinee_op, scrutinee_ty, arms);
         }
 
         let is_niche = self.is_niche_option_expr(scrutinee);
@@ -551,6 +577,184 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// Chain lowering for scalar (int/char) matches that include range patterns.
+    /// Each arm becomes a boolean test branching to the body or the next arm.
+    pub(super) fn lower_scalar_chain_match(
+        &mut self,
+        scrutinee_op: MirOperand,
+        scrutinee_ty: MirType,
+        arms: &[rask_ast::expr::MatchArm],
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_ast::expr::Pattern;
+
+        let merge_block = self.builder.create_block();
+        let arm_body_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let result_local = self.builder.alloc_temp(MirType::I64);
+        let mut result_ty = MirType::Void;
+
+        for (i, arm) in arms.iter().enumerate() {
+            let next_arm = if i + 1 < arms.len() {
+                self.builder.create_block()
+            } else {
+                merge_block
+            };
+
+            // Catch-all patterns jump straight to the body.
+            let is_catch_all = matches!(
+                &arm.pattern,
+                Pattern::Wildcard
+                    | Pattern::Ident(_)
+            );
+
+            if !is_catch_all {
+                // Build the condition by OR-ing the condition of each alternative.
+                let alts = flatten_pattern_alternatives(&arm.pattern);
+                let pass = arm_body_blocks[i];
+
+                let n = alts.len();
+                for (j, alt) in alts.into_iter().enumerate() {
+                    let last = j + 1 == n;
+                    let on_fail = if last { next_arm } else { self.builder.create_block() };
+                    self.emit_pattern_test(&scrutinee_op, alt, pass, on_fail)?;
+                    if !last {
+                        self.builder.switch_to_block(on_fail);
+                    }
+                }
+            } else {
+                // Unconditional pass.
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: arm_body_blocks[i],
+                }));
+            }
+
+            // Body of this arm.
+            self.builder.switch_to_block(arm_body_blocks[i]);
+
+            // Bind the scrutinee to a catch-all identifier if present.
+            if let Pattern::Ident(name) = &arm.pattern {
+                // Scalar matches don't involve enums — just bind the value.
+                let bind_local = self.builder.alloc_local(name.clone(), scrutinee_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: bind_local,
+                    rvalue: MirRValue::Use(scrutinee_op.clone()),
+                }));
+                self.locals.insert(name.clone(), (bind_local, scrutinee_ty.clone()));
+            }
+
+            if let Some(guard_expr) = &arm.guard {
+                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                let guard_pass = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: guard_val,
+                    then_block: guard_pass,
+                    else_block: next_arm,
+                }));
+                self.builder.switch_to_block(guard_pass);
+            }
+
+            let (body_val, arm_ty) = self.lower_expr(&arm.body)?;
+            if i == 0 { result_ty = arm_ty; }
+
+            if self.builder.current_block_unterminated() {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Use(body_val),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: merge_block,
+                }));
+            }
+
+            if next_arm != merge_block {
+                self.builder.switch_to_block(next_arm);
+            }
+        }
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// Emit a boolean test for a non-Or pattern and branch accordingly.
+    fn emit_pattern_test(
+        &mut self,
+        scrutinee_op: &MirOperand,
+        pattern: &rask_ast::expr::Pattern,
+        pass_block: BlockId,
+        fail_block: BlockId,
+    ) -> Result<(), LoweringError> {
+        use rask_ast::expr::Pattern;
+
+        let cond_local = self.builder.alloc_temp(MirType::Bool);
+        match pattern {
+            Pattern::Literal(lit_expr) => {
+                let (lit_op, _) = self.lower_expr(lit_expr)?;
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: cond_local,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::BinOp::Eq,
+                        left: scrutinee_op.clone(),
+                        right: lit_op,
+                    },
+                }));
+            }
+            Pattern::Range { start, end } => {
+                let (start_op, _) = self.lower_expr(start)?;
+                let (end_op, _) = self.lower_expr(end)?;
+
+                // scrutinee >= start
+                let lo_local = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: lo_local,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::BinOp::Ge,
+                        left: scrutinee_op.clone(),
+                        right: start_op,
+                    },
+                }));
+
+                // Short-circuit: if lo is false, skip the hi check.
+                let hi_block = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(lo_local),
+                    then_block: hi_block,
+                    else_block: fail_block,
+                }));
+                self.builder.switch_to_block(hi_block);
+
+                // scrutinee <= end
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: cond_local,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::BinOp::Le,
+                        left: scrutinee_op.clone(),
+                        right: end_op,
+                    },
+                }));
+            }
+            Pattern::Wildcard | Pattern::Ident(_) => {
+                // Unconditional pass — caller should have handled this.
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: pass_block,
+                }));
+                return Ok(());
+            }
+            _ => {
+                // Unsupported scalar sub-pattern: always fail to stay safe.
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: fail_block,
+                }));
+                return Ok(());
+            }
+        }
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(cond_local),
+            then_block: pass_block,
+            else_block: fail_block,
+        }));
+        Ok(())
     }
 
     /// Resolve enum variant name to its tag value from the layout.

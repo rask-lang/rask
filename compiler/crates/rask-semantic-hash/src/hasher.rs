@@ -914,6 +914,11 @@ impl Hasher {
                     self.hash_pattern(p);
                 }
             }
+            Pattern::Range { start, end } => {
+                self.feed_tag(87);
+                self.hash_expr(start);
+                self.hash_expr(end);
+            }
         }
     }
 

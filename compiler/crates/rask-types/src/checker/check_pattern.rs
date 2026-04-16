@@ -106,6 +106,24 @@ impl TypeChecker {
                 bindings
             }
 
+            Pattern::Range { start, end } => {
+                // Both bounds must match the scrutinee type. The parser guarantees
+                // they're char or int literals of matching kind, so we just unify.
+                let start_ty = self.infer_expr(start);
+                let end_ty = self.infer_expr(end);
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    scrutinee_ty.clone(),
+                    start_ty,
+                    span,
+                ));
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    scrutinee_ty.clone(),
+                    end_ty,
+                    span,
+                ));
+                vec![]
+            }
+
             Pattern::Or(alternatives) => {
                 if let Some(first) = alternatives.first() {
                     let bindings = self.check_pattern(first, scrutinee_ty, span);

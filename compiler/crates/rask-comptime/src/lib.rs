@@ -1997,6 +1997,22 @@ impl ComptimeInterpreter {
                 }
                 Ok(false)
             }
+            Pattern::Range { start, end } => {
+                let start_val = self.eval_expr(start)?;
+                let end_val = self.eval_expr(end)?;
+                Ok(match (value, &start_val, &end_val) {
+                    (ComptimeValue::Char(c), ComptimeValue::Char(s), ComptimeValue::Char(e)) => {
+                        c >= s && c <= e
+                    }
+                    (ComptimeValue::I64(n), ComptimeValue::I64(s), ComptimeValue::I64(e)) => {
+                        n >= s && n <= e
+                    }
+                    (ComptimeValue::I32(n), ComptimeValue::I32(s), ComptimeValue::I32(e)) => {
+                        n >= s && n <= e
+                    }
+                    _ => false,
+                })
+            }
         }
     }
 
@@ -2054,6 +2070,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
+            Pattern::Range { .. } => Ok(()),
         }
     }
 }

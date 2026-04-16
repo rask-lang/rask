@@ -1588,7 +1588,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.register_pattern_bindings(pat);
                 }
             }
-            Pattern::Wildcard | Pattern::Literal(_) => {}
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
         }
     }
 
