@@ -29,16 +29,27 @@ pub fn goto_definition(
             return resolve_builtin_location(&symbol.name, None, root_uri);
         }
 
-        if let Some(sibling) = cached.sibling_decl_names.get(&symbol.name) {
-            if symbol.span.end <= sibling.source.len() {
-                let sibling_idx = LineIndex::new(&sibling.source);
-                let range = sibling_idx.span_to_range(&sibling.source, symbol.span);
-                let sibling_uri = Url::from_file_path(&sibling.path).unwrap_or_else(|_| uri.clone());
-                return Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: sibling_uri,
-                    range,
-                }));
+        // Check if the symbol's definition is in the current file by seeing
+        // if its span falls within any current-file declaration.
+        let in_current_file = cached.current_file_spans.iter().any(|ds| {
+            symbol.span.start >= ds.start && symbol.span.end <= ds.end
+        });
+
+        if !in_current_file {
+            // Try sibling files
+            if let Some(sibling) = cached.sibling_decl_names.get(&symbol.name) {
+                if symbol.span.end <= sibling.source.len() {
+                    let sibling_idx = LineIndex::new(&sibling.source);
+                    let range = sibling_idx.span_to_range(&sibling.source, symbol.span);
+                    let sibling_uri = Url::from_file_path(&sibling.path).unwrap_or_else(|_| uri.clone());
+                    return Some(GotoDefinitionResponse::Scalar(Location {
+                        uri: sibling_uri,
+                        range,
+                    }));
+                }
             }
+            // Symbol from sibling but not found — fall through to builtin check
+            return try_method_goto(&cached.source, offset, &name, cached, root_uri);
         }
 
         let range = cached.line_index.span_to_range(&cached.source, symbol.span);

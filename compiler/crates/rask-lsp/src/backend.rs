@@ -52,6 +52,9 @@ pub struct CompilationResult {
     pub line_index: LineIndex,
     /// Parsed and desugared declarations (current file + siblings appended).
     pub decls: Vec<Decl>,
+    /// How many of the leading `decls` belong to the current file.
+    /// Sibling decls are appended after this index.
+    pub current_file_decl_count: usize,
     /// Span range of each *current-file* declaration, used to filter
     /// diagnostics produced by the whole-package pipeline down to just
     /// the ones the editor buffer is responsible for.
@@ -132,9 +135,12 @@ impl Backend {
         };
 
         // Publish diagnostics regardless of whether the pipeline had errors.
+        // Cap to avoid flooding the editor — root causes come first,
+        // residual cascades are noise.
         let lsp_diags: Vec<Diagnostic> = output
             .diagnostics
             .iter()
+            .take(MAX_LSP_DIAGNOSTICS)
             .map(|d| to_lsp_diagnostic(&output.line_index, &output.source, &uri, d))
             .collect();
         self.client
@@ -206,15 +212,8 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     let mut parse_result = parser.parse();
     dedupe_by_line(&parse_result.errors, |e| e.span.start, &line_index, &mut diags, |e| e.to_diagnostic());
 
-    if !parse_result.is_ok() {
-        return PipelineOutput {
-            version,
-            source: source.to_string(),
-            line_index,
-            diagnostics: diags,
-            result: None,
-        };
-    }
+    // Don't bail on parse errors — the parser recovers and the recovered
+    // decls flow through resolve/typecheck so hover still works.
 
     // --- Comptime cfg elimination ---
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
@@ -232,6 +231,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     }
 
     let current_file_spans: Vec<Span> = parse_result.decls.iter().map(|d| d.span).collect();
+    let current_file_decl_count = parse_result.decls.len();
 
     // --- Package context (if this file lives under a build.rk tree) ---
     let file_path_str = uri.to_file_path()
@@ -330,7 +330,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
 
     // --- Typecheck (lenient so ownership/effects still run) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-    let (typed, type_errors) =
+    let (mut typed, type_errors) =
         rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
     for error in &type_errors {
         let diag = error.to_diagnostic();
@@ -371,13 +371,19 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
         }
     }
 
-    let mut position_index = build_position_index(&parse_result.decls);
+    // Only index current-file decls — sibling byte offsets would collide.
+    let mut position_index = build_position_index(&parse_result.decls[..current_file_decl_count]);
     position_index.finalize();
+
+    // Strip sibling entries from span_types — file_id 0 is the current file
+    // in LSP context (parsed fresh by Parser::new which defaults to file_id 0).
+    typed.span_types.retain(|&(_, _, file_id), _| file_id == 0);
 
     let result = CompilationResult {
         source: source.to_string(),
         line_index: line_index.clone(),
         decls: parse_result.decls,
+        current_file_decl_count,
         current_file_spans,
         typed,
         diagnostics: diags.clone(),
@@ -393,6 +399,11 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
         result: Some(result),
     }
 }
+
+/// Cap diagnostics to avoid flooding the editor. Root-cause errors come
+/// first; cascading errors (from poison propagation) are already filtered
+/// by the type checker, but residual noise can still exceed what's useful.
+const MAX_LSP_DIAGNOSTICS: usize = 20;
 
 /// Deduplicate errors that land on the same line — they tend to cascade
 /// after a single real problem, and a wall of them is noise.
@@ -453,15 +464,13 @@ fn build_sibling_names(uri: &Url, ctx: &rask_compiler::PackageContext) -> HashMa
     names
 }
 
-fn is_current_file_diagnostic(diag: &rask_diagnostics::Diagnostic, current_file_spans: &[Span]) -> bool {
+fn is_current_file_diagnostic(diag: &rask_diagnostics::Diagnostic, _current_file_spans: &[Span]) -> bool {
     let primary_span = match diag.primary_span() {
         Some(s) => s,
         None => return true,
     };
-    if current_file_spans.is_empty() {
-        return true;
-    }
-    current_file_spans.iter().any(|decl_span| {
-        primary_span.start >= decl_span.start && primary_span.end <= decl_span.end
-    })
+    // Current file is always file_id 0 in LSP context (parsed by Parser::new
+    // which defaults to file_id 0). Sibling decls have file_id > 0 from
+    // package parsing.
+    primary_span.file_id == 0
 }

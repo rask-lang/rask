@@ -91,7 +91,7 @@ fn user_signature(
             let ty = cached
                 .typed
                 .span_types
-                .get(&(p.span.start, p.span.end))
+                .get(&(p.span.start, p.span.end, p.span.file_id))
                 .map(|t| formatter.format(t));
             Some((p.name.clone(), ty))
         })

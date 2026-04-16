@@ -33,7 +33,7 @@ pub fn hover(position: Position, cached: &CompilationResult) -> Option<Hover> {
             .iter()
             .find(|(s, _, _)| s.start <= offset && offset <= s.end)
         {
-            ty_opt = cached.typed.span_types.get(&(span.start, span.end));
+            ty_opt = cached.typed.span_types.get(&(span.start, span.end, 0));
         }
     }
 

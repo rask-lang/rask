@@ -31,22 +31,12 @@ pub(crate) fn show_diagnostic_multi(
     diagnostic: &Diagnostic,
     source_files: &[(std::path::PathBuf, String)],
 ) {
-    let primary_end = diagnostic.labels.iter()
-        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
-        .map(|l| l.span.end);
-    let matched = primary_end.and_then(|end| {
-        let candidates: Vec<_> = source_files.iter()
-            .filter(|(_, src)| end <= src.len() && !src.is_empty())
-            .collect();
-        if candidates.len() == 1 {
-            Some(candidates[0])
-        } else if candidates.len() > 1 {
-            // Multiple files match by length — pick the smallest file where
-            // the span still fits, since smaller files are more likely to be
-            // the correct match (span offsets are per-file, not global).
-            candidates.iter()
-                .min_by_key(|(_, src)| src.len())
-                .copied()
+    let primary_label = diagnostic.labels.iter()
+        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary);
+    let matched = primary_label.and_then(|label| {
+        let fid = label.span.file_id as usize;
+        if fid < source_files.len() {
+            Some(&source_files[fid])
         } else {
             None
         }

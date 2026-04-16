@@ -184,7 +184,8 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
     let mut source_files = Vec::new();
     let mut file_errors = Vec::new();
     let mut next_id: u32 = 0;
-    for (file_idx, file_path) in paths.into_iter().enumerate() {
+    let mut successful_file_idx: u16 = 0;
+    for (_file_idx, file_path) in paths.into_iter().enumerate() {
         let source = match fs::read_to_string(&file_path) {
             Ok(s) => s,
             Err(e) => {
@@ -204,7 +205,7 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
             continue;
         }
 
-        let mut parser = rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_idx as u16);
+        let mut parser = rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, successful_file_idx);
         let parse_result = parser.parse();
         next_id = parser.next_node_id();
         if !parse_result.is_ok() {
@@ -221,6 +222,7 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
             source,
             decls: parse_result.decls,
         });
+        successful_file_idx += 1;
     }
 
     if !file_errors.is_empty() {

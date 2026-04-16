@@ -18,7 +18,8 @@ pub fn inlay_hints(cached: &CompilationResult, range: Range) -> Vec<InlayHint> {
     let range_start = cached.line_index.position_to_offset(&cached.source, range.start);
     let range_end = cached.line_index.position_to_offset(&cached.source, range.end);
 
-    for decl in &cached.decls {
+    // Only iterate current-file decls — sibling byte offsets would collide.
+    for decl in &cached.decls[..cached.current_file_decl_count] {
         match &decl.kind {
             DeclKind::Fn(f) => visit_fn(f, cached, &formatter, &mut out, range_start, range_end),
             DeclKind::Impl(i) => {
@@ -63,7 +64,7 @@ fn visit_stmt(
             if name_span.start < lo || name_span.end > hi {
                 return;
             }
-            if let Some(ty) = cached.typed.span_types.get(&(name_span.start, name_span.end)) {
+            if let Some(ty) = cached.typed.span_types.get(&(name_span.start, name_span.end, 0)) {
                 let label = format!(": {}", formatter.format(ty));
                 let pos = cached.line_index.offset_to_position(&cached.source, name_span.end);
                 out.push(InlayHint {
