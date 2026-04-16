@@ -238,6 +238,11 @@ impl TypeChecker {
                 then_branch,
                 else_branch,
             } => {
+                // Capture and clear the statement-position flag so it doesn't
+                // leak into nested expressions (e.g. const x = if ... { ... }).
+                let is_stmt = self.in_stmt_expr;
+                self.in_stmt_expr = false;
+
                 let cond_ty = self.infer_expr(cond);
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, expr.span));
@@ -264,6 +269,10 @@ impl TypeChecker {
                         then_ty
                     } else if matches!(resolved_then, Type::Never) {
                         else_ty
+                    } else if is_stmt {
+                        // Statement position: value is discarded, branches
+                        // don't need to agree. Return unit.
+                        Type::Unit
                     } else {
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             then_ty.clone(),
@@ -356,6 +365,9 @@ impl TypeChecker {
             }
 
             ExprKind::Match { scrutinee, arms } => {
+                let is_stmt = self.in_stmt_expr;
+                self.in_stmt_expr = false;
+
                 let scrutinee_ty = self.infer_expr(scrutinee);
                 let result_ty = self.ctx.fresh_var();
                 for arm in arms {
@@ -375,7 +387,8 @@ impl TypeChecker {
                     let arm_ty = self.infer_expr(&arm.body);
                     self.pop_scope();
                     let resolved_arm_ty = self.ctx.apply(&arm_ty);
-                    if !matches!(resolved_arm_ty, Type::Never) {
+                    // In statement position, arm types don't need to agree.
+                    if !is_stmt && !matches!(resolved_arm_ty, Type::Never) {
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             result_ty.clone(),
                             arm_ty,
@@ -387,7 +400,7 @@ impl TypeChecker {
                 // Exhaustiveness check for enum scrutinees
                 self.check_match_exhaustiveness(&scrutinee_ty, arms, expr.span);
 
-                result_ty
+                if is_stmt { Type::Unit } else { result_ty }
             }
 
             ExprKind::Block(stmts) => {
@@ -890,14 +903,6 @@ impl TypeChecker {
                     name: "ThreadHandle".to_string(),
                     args: vec![GenericArg::Type(Box::new(spawn_return_type))],
                 }
-            }
-
-            ExprKind::Loop { body, .. } => {
-                for stmt in body {
-                    self.check_stmt(stmt);
-                }
-                // Loop expressions type as Never — they run until break
-                Type::Never
             }
 
             ExprKind::UsingBlock { name, args, body } => {
@@ -1416,6 +1421,42 @@ impl TypeChecker {
             }
         }
 
+        // User-defined enum variant construction: LexError.UnexpectedChar(c, line)
+        // The name might be shadowed in scope by a same-named variant from
+        // another enum (e.g. CompileError { LexError(LexError) }). Check the
+        // type table directly — it's authoritative for type names.
+        if let ExprKind::Ident(name) = &object.kind {
+            // Look up the type table (not scope) to avoid variant-name shadowing.
+            let variant_fields = self.types.get_type_id(name).and_then(|type_id| {
+                if let Some(TypeDef::Enum { variants, .. }) = self.types.get(type_id) {
+                    variants.iter()
+                        .find(|(v, _)| v == method)
+                        .map(|(_, fields)| (type_id, fields.clone()))
+                } else {
+                    None
+                }
+            });
+            if let Some((type_id, field_types)) = variant_fields {
+                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                let instantiated = self.instantiate_type_vars(&field_types);
+                for (arg_ty, field_ty) in arg_types.iter().zip(instantiated.iter()) {
+                    self.ctx.add_constraint(TypeConstraint::Equal(
+                        arg_ty.clone(),
+                        field_ty.clone(),
+                        span,
+                    ));
+                }
+                if arg_types.len() != instantiated.len() {
+                    self.errors.push(TypeError::ArityMismatch {
+                        expected: instantiated.len(),
+                        found: arg_types.len(),
+                        span,
+                    });
+                }
+                return Type::Named(type_id);
+            }
+        }
+
         // ESAD Phase 1: Push borrow for the object being called
         if let ExprKind::Ident(var_name) = &object.kind {
             let mode = self.method_borrow_mode(var_name, method);
@@ -1926,7 +1967,9 @@ impl TypeChecker {
                 }
             }
             Pattern::Constructor { name, .. } => {
-                covered.insert(name.clone());
+                // Qualified names like "Enum.Variant" — extract the variant part
+                let variant = name.rsplit('.').next().unwrap_or(name);
+                covered.insert(variant.to_string());
             }
             Pattern::Or(patterns) => {
                 for p in patterns {

@@ -19,7 +19,10 @@ impl TypeChecker {
     pub(super) fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Expr(expr) => {
+                let was = self.in_stmt_expr;
+                self.in_stmt_expr = true;
                 self.infer_expr(expr);
+                self.in_stmt_expr = was;
                 // E5: Bare sync access without chaining is a compile error
                 self.check_bare_sync_access(expr);
                 // ESAD Phase 1: Clear borrows at statement end (semicolon)
@@ -45,7 +48,7 @@ impl TypeChecker {
                     self.define_local(name.clone(), init_ty.clone());
                     init_ty
                 };
-                self.span_types.insert((name_span.start, name_span.end), binding_ty);
+                self.span_types.insert((name_span.start, name_span.end, name_span.file_id), binding_ty);
                 // ESAD Phase 2: Track view creation
                 self.check_view_at_binding(name, init, stmt.span);
                 // E5: Cannot store sync access result in a variable
@@ -72,7 +75,7 @@ impl TypeChecker {
                     self.define_local_read_only(name.clone(), init_ty.clone());
                     init_ty
                 };
-                self.span_types.insert((name_span.start, name_span.end), binding_ty);
+                self.span_types.insert((name_span.start, name_span.end, name_span.file_id), binding_ty);
                 // ESAD Phase 2: Track view creation
                 self.check_view_at_binding(name, init, stmt.span);
                 // E5: Cannot store sync access result in a variable
@@ -263,7 +266,7 @@ impl TypeChecker {
                     // D2: Copy types — accepted but semantically a no-op.
                     // Warning emitted by the lint pass, not the type checker,
                     // because D2 is advisory, not a blocking error.
-                    self.span_types.insert((name_span.start, name_span.end), ty);
+                    self.span_types.insert((name_span.start, name_span.end, name_span.file_id), ty);
                     // D1: Invalidate the binding
                     self.discarded_bindings.insert(name.clone(), stmt.span);
                 } else {

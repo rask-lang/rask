@@ -98,7 +98,7 @@ impl TypeChecker {
             | "eq" | "ne" | "lt" | "gt" | "le" | "ge"
             | "neg" | "not" | "and" | "or"
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not"
-            | "abs" | "min" | "max" | "to_float" | "compare"
+            | "abs" | "min" | "max" | "pow" | "to_float" | "compare"
         )
     }
 
@@ -111,14 +111,20 @@ impl TypeChecker {
                 expected,
                 span,
                 self_type,
-            } => self.resolve_field(ty, field, expected, span, self_type),
+            } => {
+                if matches!(self.ctx.apply(&ty), Type::Error) { return Ok(false); }
+                self.resolve_field(ty, field, expected, span, self_type)
+            }
             TypeConstraint::HasMethod {
                 ty,
                 method,
                 args,
                 ret,
                 span,
-            } => self.resolve_method(ty, method, args, ret, span),
+            } => {
+                if matches!(self.ctx.apply(&ty), Type::Error) { return Ok(false); }
+                self.resolve_method(ty, method, args, ret, span)
+            }
             TypeConstraint::ReturnValue {
                 ret_ty,
                 expected,
@@ -168,6 +174,13 @@ impl TypeChecker {
     pub(super) fn unify(&mut self, t1: &Type, t2: &Type, span: Span) -> Result<bool, TypeError> {
         let t1 = self.ctx.apply(t1);
         let t2 = self.ctx.apply(t2);
+
+        // Poison propagation: if either side is already an error, unify
+        // silently to Error. No new diagnostic — the root cause was
+        // already reported when the Error was created.
+        if matches!((&t1, &t2), (Type::Error, _) | (_, Type::Error)) {
+            return Ok(false);
+        }
 
         match (&t1, &t2) {
             (a, b) if a == b => Ok(false),

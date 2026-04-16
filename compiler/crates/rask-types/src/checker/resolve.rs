@@ -341,8 +341,17 @@ impl TypeChecker {
                             }
                         }).unwrap_or(false);
                         if is_fieldless {
+                            // Accept any integer type for the discriminant value.
                             if let Some(arg_ty) = args.first() {
-                                self.unify(arg_ty, &Type::I64, span)?;
+                                let resolved_arg = self.ctx.apply(arg_ty);
+                                let is_int = matches!(
+                                    resolved_arg,
+                                    Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                                );
+                                if !is_int {
+                                    self.unify(arg_ty, &Type::I64, span)?;
+                                }
                             }
                             let opt_ty = Type::Option(Box::new(ty));
                             self.unify(&opt_ty, &ret, span)

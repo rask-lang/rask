@@ -83,6 +83,9 @@ pub struct TypeChecker {
     pub(super) unsafe_ops: Vec<(rask_ast::Span, UnsafeCategory)>,
     /// Whether we're inferring an assignment target (union field writes are safe per UN3).
     pub(super) in_assign_target: bool,
+    /// Whether we're inferring an expression in statement position (value discarded).
+    /// Suppresses branch-type agreement for if/else and match.
+    pub(super) in_stmt_expr: bool,
     /// GC1/GC2: Pre-created type vars for functions with inferred params/return.
     /// Key is function name, value is (param_type_vars, return_type_var).
     pub(super) inferred_fn_types: HashMap<String, (Vec<(String, Type)>, Type)>,
@@ -94,7 +97,7 @@ pub struct TypeChecker {
     /// ER20: Whether we're collecting errors instead of unifying them.
     pub(super) accumulate_errors: bool,
     /// Types for binding names and parameters, keyed by (span.start, span.end).
-    pub(super) span_types: HashMap<(usize, usize), Type>,
+    pub(super) span_types: HashMap<(usize, usize, u16), Type>,
     /// D1: Bindings invalidated by `discard`. Maps name → discard span.
     pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
 }
@@ -120,6 +123,7 @@ impl TypeChecker {
             unsafe_ops: Vec::new(),
             inferred_fn_types: HashMap::new(),
             in_assign_target: false,
+            in_stmt_expr: false,
             trait_coercions: HashMap::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
@@ -200,8 +204,12 @@ impl TypeChecker {
             self.errors.into_iter()
                 .map(|e| Self::apply_error_substitutions_with_ctx(e, ctx))
                 .map(|e| types.resolve_error_types(e))
-                // Filter out cascading errors where both sides resolved to <error>
-                .filter(|e| !matches!(e, TypeError::Mismatch { expected: Type::Error, found: Type::Error, .. }))
+                // Filter out cascading errors where either side resolved to <error>.
+                // These are always consequences of an earlier failure, not root causes.
+                .filter(|e| !matches!(e,
+                    TypeError::Mismatch { expected: Type::Error, .. }
+                    | TypeError::Mismatch { found: Type::Error, .. }
+                ))
                 .collect()
         };
 

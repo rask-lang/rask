@@ -115,7 +115,7 @@ impl TypeChecker {
                     } else {
                         self.define_local_read_only("self".to_string(), self_ty.clone());
                     }
-                    self.span_types.insert((param.name_span.start, param.name_span.end), self_ty);
+                    self.span_types.insert((param.name_span.start, param.name_span.end, param.name_span.file_id), self_ty);
                 }
                 continue;
             }
@@ -139,7 +139,7 @@ impl TypeChecker {
             } else {
                 self.define_local_read_only(param.name.clone(), ty.clone());
             }
-            self.span_types.insert((param.name_span.start, param.name_span.end), ty);
+            self.span_types.insert((param.name_span.start, param.name_span.end, param.name_span.file_id), ty);
         }
 
         for stmt in &f.body {
