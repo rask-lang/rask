@@ -1,59 +1,46 @@
 # Rask Roadmap
 
-## What's done
+Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub issues](https://github.com/rask-lang/rask/issues).
 
-1. **Language design** — 73 decided specs across memory, types, control flow, concurrency, build system
-2. **Frontend** — lexer, parser, resolver, type checker, ownership checker
-3. **Interpreter** — runs all validation programs (I/O, threads, channels, closures, collections, pools)
-4. **Tooling** — `rask test`, `rask fmt`, `rask lint`, `rask describe`, `rask explain`, `rask check`, LSP
-5. **Monomorphization** — reachability analysis, generic instantiation, layout computation
-6. **MIR lowering** — full AST → MIR for all constructs (control flow, closures, error handling)
-7. **Cranelift backend** — MIR → native code, 244 dispatch entries, links with C runtime
-8. **C runtime** — Vec, Map, Pool, String, channels, green scheduler (M:N with io_uring/epoll), threading, file I/O, JSON encoding, atomics, Shared<T>
-9. **Build system** — full pipeline (`rask build`), `rask init/fetch/add/remove/clean`, watch mode, build scripts, feature resolution, capability inference
-10. **Package management** — remote registry (`packages.rask-lang.dev`), semver resolution, SHA-256 verified cache, lock files, transitive deps
+## Where things stand
 
-## What compiles natively today
+Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 73 decided specs.
 
-Hello world, string ops/interpolation, structs, field access, for/while loops, closures (mixed-type captures), Vec/Map/Pool operations, enum construction, multi-function programs, arithmetic, control flow, threads (`Thread.spawn`, `ThreadPool.spawn`), channels, timing, file I/O, unsafe blocks, raw pointers, result types, error propagation.
+Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). The validation programs have regressed and need fixes (#203).
 
 ## Validation programs
 
-| Program | Native | Notes |
-|---------|--------|-------|
-| grep clone | Yes | CLI args + file I/O |
-| Text editor with undo | Yes | Pool + Handle + ensure |
-| Game loop with entities | Yes | Pool, handles, threading |
-| Sensor processor | Yes | Threads, timing, shared Vec |
-| HTTP JSON API server | No | Needs HTTP + JSON stdlib in Rask |
+| Program | Status | Blocker |
+|---------|--------|---------|
+| grep clone | Regressed | String slice storage error |
+| Text editor with undo | Regressed | Type mismatches from API changes |
+| Game loop with entities | Regressed | Pool.insert returns Result now |
+| Sensor processor | Regressed | Missing methods on generic T |
+| HTTP JSON API server | Blocked | Needs `json.encode`/`decode` (Phase 1) |
 
 ## Stdlib architecture
 
-The stdlib has two layers:
-
 | Layer | Language | What lives here |
 |-------|----------|-----------------|
-| **Runtime** | C | OS interface, memory primitives, data structures (Vec, Map, Pool, String), concurrency (threads, channels, green scheduler, atomics), raw I/O syscalls |
+| **Runtime** | C | OS interface, memory primitives, data structures, concurrency, raw I/O |
 | **Stdlib** | Rask | Everything above the OS — HTTP, JSON, CSV, URL, base64, hashing, unicode, terminal |
 
-**Why Rask for stdlib:** Dogfooding validates the language. Rask code gets ownership/bounds checking that C doesn't. Writing an HTTP parser in Rask is a harder test than an example program — if the language can't handle it, something's wrong.
+Dogfooding validates the language. Rask code gets ownership and bounds checking that C doesn't. If the language can't handle an HTTP parser, something's wrong.
 
-**C stays for:** things that must talk to the OS (syscalls, memory allocation, thread creation, io_uring) or wrap existing C libraries (TLS via OpenSSL/mbedTLS, hardware-accelerated crypto).
+C stays for things that must talk to the OS (syscalls, io_uring) or wrap existing C libraries (TLS via OpenSSL/mbedTLS, hardware crypto).
 
-## What's next
+---
 
-### Phase 1: Stdlib in Rask + HTTP server validation
+## Phase 1: Stdlib in Rask + HTTP validation
 
-Write the first stdlib modules in Rask and validate the HTTP server compiles natively. This is the real test of multi-file compilation + stdlib imports + native codegen on real code.
+The real test of multi-file compilation, stdlib imports, and native codegen on real code.
 
-- [ ] HTTP/1.1 request parser in Rask (method, path, headers, body)
-- [ ] HTTP response serialization in Rask (status line, headers, body)
-- [ ] JSON parser rewrite in Rask (nested objects, arrays — current C version only handles flat objects)
-- [ ] Validate http_api_server.rk compiles and runs natively — all 5 programs done
+- HTTP/1.1 request parser in Rask (method, path, headers, body)
+- HTTP response serialization in Rask (status line, headers, body)
+- JSON parser rewrite in Rask (current C version only handles flat objects)
+- Validate `http_api_server.rk` compiles and runs natively
 
-### Phase 2: Stdlib breadth
-
-Remaining modules, all written in Rask (except TLS which wraps a C library):
+## Phase 2: Stdlib breadth
 
 | Module | Language | Purpose |
 |--------|----------|---------|
@@ -65,38 +52,30 @@ Remaining modules, all written in Rask (except TLS which wraps a C library):
 | hash | Rask (or C for HW accel) | SHA-256, MD5, CRC32 |
 | tls | C shim + Rask API | TLS/SSL via OpenSSL/mbedTLS |
 
-Each module needs: spec, implementation in Rask, tests.
+Each module needs: spec, implementation, tests.
 
-### Phase 3: Build system completion
+## Phase 3: Runtime & codegen maturity
 
-Specified but not implemented:
+- Runtime trait dispatch — `any Trait` for heterogeneous collections (#194)
+- Cross-compilation — `--target` flag wired to Cranelift + cross-linker detection (XT1–XT6)
 
-- [x] **Vendoring** — `rask vendor` for offline builds (VD1-VD5)
-- [x] **Workspaces** — multi-package repos with shared lock file (WS1-WS3)
-- [x] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2)
-- [x] **`rask publish`** — push packages to registry (PB1-PB7)
-- [x] **Dependency auditing** — `rask audit` for CVE checking (AU1-AU5)
+## Phase 4: Incremental compilation
 
-### Phase 4: Runtime & codegen maturity
+The IR design for function-level granularity can't be retrofitted. Spec: [incremental.md](specs/compiler/incremental.md).
 
-- [ ] **Runtime trait dispatch** — `any Trait` for heterogeneous collections
-- [ ] **Cross-compilation** — `--target` flag wired to Cranelift + cross-linker detection (XT1-XT6)
+- Semantic hashing — hash computation, Merkle tree, cache keys
+- Function identity — `MonoFunctionKey` in monomorphization output
+- MIR serialization — `serde` derives on MIR types
+- Per-function object caching (Phase 1)
+- Fast relink with `mold`/`lld`
+- In-place binary patching — function slots + GOT + ELF patcher (Phase 2, when relink becomes bottleneck)
 
-### Phase 5: Incremental compilation foundations
+---
 
-Design the IR for function-level granularity now — this can't be retrofitted. See [incremental.md](specs/compiler/incremental.md).
+## Post-v1.0
 
-- [ ] **Semantic hashing** — implement `comp.semantic-hash` (hash computation, Merkle tree, cache keys)
-- [ ] **Function identity** — add `MonoFunctionKey` to monomorphization output
-- [ ] **MIR serialization** — `serde` derives on MIR types for object caching
-- [ ] **Per-function object caching** — cache compiled code blobs by semantic hash (Phase 1)
-- [ ] **Fast relink** — incremental relink with `mold`/`lld`
-- [ ] **In-place binary patching** — function slots + GOT + ELF patcher (Phase 2, when relink becomes bottleneck)
-
-### Post-v1.0
-
-- **State machine codegen** — stackless transforms for green tasks (optimization, not blocking)
-- **Cross-compilation extras** — platform-specific deps (XT7), multi-target builds (XT8), `rask targets` (XT9)
+- State machine codegen — stackless transforms for green tasks
+- Platform-specific deps (XT7), multi-target builds (XT8), `rask targets` (XT9)
 - LLVM backend
 - Macros / `format!`
 - Comptime debugger
@@ -105,10 +84,5 @@ Design the IR for function-level granularity now — this can't be retrofitted. 
 - `std.reflect` — comptime reflection
 - Inline assembly
 - Pointer provenance rules
-
-## Open design questions
-
-- Task-local storage syntax
-- String C interop — `as_c_str()`, `string.from_c()`
-- `pool.remove_with(h, |val| { ... })` — cascading @resource cleanup
-- Style guideline: max 3 context clauses per function
+- `compile_cpp()` build script support
+- Auto Rask wrapper generation from cbindgen
