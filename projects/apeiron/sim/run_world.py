@@ -18,6 +18,10 @@ def main():
     parser.add_argument("--ticks", type=int, default=1000)
     parser.add_argument("--out", default=None,
                         help="Output directory for CSV + plots")
+    parser.add_argument("--dashboard", action="store_true",
+                        help="Launch live web dashboard")
+    parser.add_argument("--port", type=int, default=8050,
+                        help="Dashboard port (default 8050)")
     args = parser.parse_args()
 
     mod = importlib.import_module(f"scenarios.{args.scenario}")
@@ -29,7 +33,13 @@ def main():
     print(f"  rules: {len(world.rules)}")
 
     t0 = time.time()
-    world = run(world, args.ticks)
+    if args.dashboard:
+        from engine.dashboard import Dashboard
+        dash = Dashboard(port=args.port)
+        print(f"  dashboard: http://localhost:{args.port}")
+        world = dash.run(world, args.ticks)
+    else:
+        world = run(world, args.ticks)
     elapsed = time.time() - t0
 
     print(f"  completed in {elapsed:.2f}s ({args.ticks / elapsed:.0f} ticks/s)")
