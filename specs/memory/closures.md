@@ -260,7 +260,7 @@ FIX: Use Cell<T> for shared mutable state:
 ```
 ERROR [mem.closures/IO3]: closure accesses outer scope directly but is stored
    |
-5  |  let f = items.filter(|i| vec[*i].active)
+5  |  const f = items.filter(|i| vec[*i].active)
    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ closure accesses 'vec' without capturing
 
 FIX 1: Consume immediately:
@@ -269,7 +269,7 @@ FIX 1: Consume immediately:
 
 FIX 2: Capture explicitly:
 
-  let active_set = items.filter(|i| vec[*i].active).collect()
+  const active_set = items.filter(|i| vec[*i].active).collect()
 ```
 
 ## Edge Cases
@@ -378,6 +378,9 @@ When the cursor is in a scope-limited closure, the IDE highlights the block boun
 
 - [Value Semantics](value-semantics.md) -- Copy vs move for captured values (`mem.value`)
 - [Borrowing](borrowing.md) -- Block-scoped views and `with`-based access (`mem.borrowing`)
+- [Boxes](boxes.md) -- Cell and Pool as containers for shared mutable state (`mem.boxes`)
 - [Cell](cell.md) -- Single-value mutable container (`mem.cell`)
 - [Pools](pools.md) -- Pool+Handle pattern for shared mutable state (`mem.pools`)
+- [Linearity](linear.md) -- Closures capturing linear values must consume them (`mem.linear`)
+- [Owned Pointers](owned.md) -- Moving an `Owned<T>` into a closure consumes it (`mem.owned`)
 - [Concurrency](../concurrency/sync.md) -- Closures sent cross-task must capture owned values (`conc.sync`)

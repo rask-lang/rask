@@ -1,12 +1,14 @@
 <!-- id: mem.resources -->
 <!-- status: decided -->
-<!-- summary: @resource types must be consumed exactly once; ensure provides deferred consumption -->
-<!-- depends: memory/ownership.md, control/ensure.md -->
+<!-- summary: @resource marks struct types as linear — must be consumed exactly once -->
+<!-- depends: memory/linear.md, memory/ownership.md, control/ensure.md -->
 <!-- implemented-by: compiler/crates/rask-interp/ -->
 
 # Resource Types
 
-`@resource` marks types that must be consumed exactly once — you can't forget to close a file or commit a transaction. The compiler enforces it. `ensure` provides deferred consumption. (These are sometimes called "linear types" in academic literature.)
+`@resource` marks a struct type as **linear** — every value of that type must be consumed exactly once. You can't forget to close a file or commit a transaction; the compiler enforces it.
+
+The consume-exactly-once rules live in [`mem.linear`](linear.md) and apply identically to `@resource` structs, `Owned<T>`, and linear elements in pools. This spec describes the `@resource` annotation and the patterns specific to I/O handles and transactions.
 
 ## Declaration
 
@@ -27,13 +29,15 @@ struct Connection {
 
 ## Consumption Rules
 
-| Rule | Description |
-|------|-------------|
-| **R1: Must consume** | Resource value must be consumed before scope exit |
-| **R2: Consume once** | Cannot consume same resource value twice |
-| **R3: Read allowed** | Can borrow for reading without consuming |
-| **R4: `ensure` satisfies** | Registering with `ensure` counts as consumption commitment |
-| **R5: Pool cleanup enforcement** | `Pool<Resource>` panics at runtime if non-empty when it goes out of scope |
+`@resource` values follow the linearity rules `mem.linear/L1–L6`. This table restates them in `@resource` context with the rule identifiers they're cited by in other specs:
+
+| Rule | Citation | Description |
+|------|----------|-------------|
+| **R1** | `mem.linear/L1` | Must be consumed before scope exit |
+| **R2** | `mem.linear/L2` | Cannot be consumed twice |
+| **R3** | `mem.linear/L3` | Can borrow for reading without consuming |
+| **R4** | `mem.linear/L4` | Registering with `ensure` counts as consumption commitment |
+| **R5** | — | `Pool<Resource>` panics at runtime if non-empty when dropped |
 
 A resource is consumed by calling a method with `take self`, passing to a `take` parameter, or explicit consumption (e.g., `file.close()`).
 
@@ -64,7 +68,7 @@ func process() -> () or Error {
 }
 ```
 
-**Forgetting to consume:**
+**Forgetting to consume (L1):**
 <!-- test: compile-fail -->
 ```rask
 @resource
@@ -94,7 +98,7 @@ func bad() -> () or Error {
 }
 ```
 
-**Double consumption:**
+**Double consumption (L2):**
 <!-- test: compile-fail -->
 ```rask
 @resource
@@ -122,7 +126,7 @@ func also_bad() -> () or Error {
 
 ## The `ensure` Statement
 
-`ensure` commits to consuming a resource at scope exit, satisfying R1 immediately.
+`ensure` commits to consuming a resource at scope exit, satisfying L1 immediately.
 
 | Phase | What happens |
 |-------|--------------|
@@ -251,9 +255,9 @@ for file in files.take_all() {
 
 ## Error Messages
 
-**Resource not consumed [R1]:**
+**Resource not consumed [L1]:**
 ```
-ERROR [mem.resources/R1]: resource not consumed before scope exit
+ERROR [mem.linear/L1]: resource not consumed before scope exit
    |
 3  |  const file = try File.open("data.txt")
    |        ^^^^ File created here
@@ -268,9 +272,9 @@ FIX: Consume with a method or register with ensure:
   ensure file.close()        // Deferred consumption
 ```
 
-**Double consumption [R2]:**
+**Double consumption [L2]:**
 ```
-ERROR [mem.resources/R2]: resource already consumed
+ERROR [mem.linear/L2]: resource already consumed
    |
 5  |  try file.close()
    |      ^^^^ consumed here
@@ -288,13 +292,13 @@ Resources must be explicitly consumed (use take_all() before scope ends).
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Resource in error path | R1 | Must consume or register with `ensure` |
-| Resource in error type | R1 | Caller must extract and consume from error |
-| Resource across match arms | R1 | Each arm must consume (or share `ensure`) |
-| Nested resource values | R1 | Each level must be consumed |
-| Resource + panic | R4 | `ensure` runs during unwind |
-| Conditional consumption | R1 | Both branches must consume |
-| Loop with resource | R1 | Can't create resource in loop without consuming each iteration |
+| Resource in error path | L1 | Must consume or register with `ensure` |
+| Resource in error type | L1 | Caller must extract and consume from error |
+| Resource across match arms | L1 | Each arm must consume (or share `ensure`) |
+| Nested resource values | L1 | Each level must be consumed |
+| Resource + panic | L4 | `ensure` runs during unwind |
+| Conditional consumption | L1 | Both branches must consume |
+| Loop with resource | L1 | Can't create resource in loop without consuming each iteration |
 | `clear()` on Pool<Resource> | RC2 | Compile error (would abandon linear elements) |
 
 **Conditional consumption:**
@@ -378,9 +382,9 @@ func handle_connections(pool: Pool<Connection>) -> () or Error {
 
 ### Rationale
 
-**R1–R4 (must-consume):** Resource types prevent leaks by construction. Unlike RAII (automatic destructors, as in C++ or Rust), resources need explicit consumption — cleanup is visible while still guaranteed.
+**Why `@resource` exists:** Linearity is a property, but in real code you want to attach it to a specific kind of value — a file, a socket, a transaction. `@resource` is the annotation that says "every value of this struct type is linear." Rules L1–L4 do the work; the annotation just scopes them to a concrete type.
 
-**R4 (ensure):** `ensure` bridges resources with error handling: commit to cleanup early, then use `try` freely knowing it'll happen.
+**L4 (ensure):** The bridge between linearity and error handling. Commit to cleanup early, then use `try` freely knowing it'll happen.
 
 **R5 (pool drop panic):** The compiler can't statically track dynamic pool contents — that would require whole-program analysis. Runtime panic is preferable to silent leaks because the program fails loudly rather than leaking resources.
 
@@ -456,6 +460,8 @@ func process_files(paths: Vec<string>) -> () or Error {
 
 ### See Also
 
+- [Linearity](linear.md) — Rule set (L1–L6) shared by `@resource`, `Owned<T>`, `Pool<Linear>` (`mem.linear`)
+- [Owned Pointers](owned.md) — `Owned<T>`, the other linear value (`mem.owned`)
 - [Value Semantics](value-semantics.md) — Copy vs move, `@unique` (`mem.value`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)
 - [Ensure](../control/ensure.md) — Deferred execution (`ctrl.ensure`)

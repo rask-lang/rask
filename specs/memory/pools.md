@@ -260,6 +260,18 @@ pool[h].z = 3    // Same check as above — coalesced
 // Total: ONE generation check
 ```
 
+### Elimination tower
+
+The handle safety story is a three-layer tower where each layer strips more checks:
+
+| Layer | What it gives up | What you keep | Residual cost |
+|-------|------------------|---------------|---------------|
+| **1. Bare access** (`pool[h]`) | Nothing | Use-after-free safety | ~1ns per access |
+| **2. Coalesced access** (repeated `pool[h].x`, `pool[h].y`) | One access per block, tracked by compiler | Same safety | ~1ns per coalesced group |
+| **3. Frozen context** (`using frozen Pool<T>`) | Structural mutation inside the context | Same safety + read-only guarantee | Often zero |
+
+Safety and performance aren't in tension here — they compose. You pay the check where it's needed, the compiler strips it where it isn't. This is what makes handles usable in tight loops without an escape hatch.
+
 ## Context Clauses (Auto-Resolution)
 
 Handles auto-resolve fields without explicitly naming the pool. See `mem.context` for full specification.
@@ -650,9 +662,14 @@ extend Observable<T> {
 ### See Also
 
 - [Borrowing](borrowing.md) — Value-based access, `with` blocks (`mem.borrowing`)
-- [Resource Types](resource-types.md) — Resource consumption in pools (`mem.resources`)
+- [Boxes](boxes.md) — The container family Pool belongs to (`mem.boxes`)
+- [Linearity](linear.md) — Rules for `Pool<Linear>` cleanup (`mem.linear`)
+- [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
+- [Owned Pointers](owned.md) — Handle alternative for single-owner recursive types (`mem.owned`)
 - [Context Clauses](context-clauses.md) — Handle auto-resolution (`mem.context`)
 - [Closures](closures.md) — Pool+Handle pattern for shared mutable state (`mem.closures`)
 - [Collections](../stdlib/collections.md) — Vec and Map types (`std.collections`)
 - [Aliasing Detection](aliasing-detection.md) — Compile-time closure aliasing analysis (`mem.aliasing`)
+- [Relocatable Memory](relocatable.md) — Pool serialization and mmap (`mem.relocatable`)
+- [Cell](cell.md) — Single-slot alternative when identity is not needed (`mem.cell`)
 - [Generation Coalescing](../compiler/generation-coalescing.md) — Check elimination algorithm (`comp.gen-coalesce`)

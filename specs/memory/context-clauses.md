@@ -351,6 +351,10 @@ Quick action: "Make context explicit" fills in the inferred `using` clause.
 
 - [Pools](pools.md) — Handle-based sparse storage (`mem.pools`)
 - [Borrowing](borrowing.md) — Expression-scoped views, `with` element binding (`mem.borrowing`)
-- [Resource Types](resource-types.md) — Must-consume types (`mem.resources`)
+- [Linearity](linear.md) — Contexts are borrowed, never consumed (`mem.linear`)
+- [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
+- [Allocators](allocators.md) — `using Allocator` as an ambient context (`mem.allocators`)
 - [Closures](closures.md) — Closure capture semantics (`mem.closures`)
+- [Boxes](boxes.md) — Contexts complement `with`-scoped access (`mem.boxes`)
+- [Concurrency Runtime](../concurrency/runtime.md) — `using ThreadPool` as a threaded ambient context (`conc.runtime`)
 - [Async](../concurrency/async.md) — `using Multitasking` runtime contexts (`conc.async`)

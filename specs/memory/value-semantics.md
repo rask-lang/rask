@@ -192,5 +192,6 @@ const p6 = p5                              // ERROR: move, not copy
 
 - [Ownership Rules](ownership.md) — Single-owner model and move semantics (`mem.ownership`)
 - [Borrowing](borrowing.md) — Scoped borrowing rules (`mem.borrowing`)
-- [Resource Types](resource-types.md) — Must-consume resources (`mem.resources`)
+- [Linearity](linear.md) — How `@resource` and `Owned<T>` extend the value model with must-consume rules (`mem.linear`)
+- [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
 - [Warnings](../tooling/warnings.md) — `@warn(implicit_copy)` (`tool.warnings`)

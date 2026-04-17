@@ -139,12 +139,15 @@ Systems language where **safety is invisible**. Eliminate abstraction tax, cover
 
 ## Core Principles
 
+Unifying thread: **safety through visibility.** Safety mechanisms are visible in source (explicit `ensure`, `mutate`, `take`, `own`, scoped `with`) rather than hidden in destructors, lifetime annotations, or effect types. The compiler guarantees invariants; the source shows the mechanism.
+
 1. **Transparency of Cost** — Major costs visible in code (allocations, locks, I/O). Small costs (bounds checks) can be implicit.
 2. **Mechanical Safety** — Safety by structure. Use-after-free, data races, null derefs impossible by construction.
 3. **Practical Coverage** — Handle web services, CLI, data processing, embedded. Not limited to fixed-size programs.
 4. **Ergonomic Simplicity** — Low ceremony. If Rask needs 3+ lines where Go needs 1, question the design.
+5. **Information Without Enforcement** — Track effects, captures, and modes as metadata surfaced via tooling (IDE ghosts, lints) instead of type-system constraints. No function coloring, no effect polymorphism.
 
-See [METRICS.md](specs/METRICS.md) for scoring methodology.
+Full nine-principle set: [specs/CORE_DESIGN.md](specs/CORE_DESIGN.md). Scoring methodology: [METRICS.md](specs/METRICS.md).
 
 ---
 
@@ -160,8 +163,10 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 |------|----------|------|
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
 | Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](specs/memory/borrowing.md) |
+| Linearity | Consume exactly once (L1–L6) — shared by `@resource`, `Owned<T>`, `Pool<Linear>` | [linear.md](specs/memory/linear.md) |
+| Boxes | Container family with `with`-scoped access — Cell, Pool, Shared, Mutex, Owned | [boxes.md](specs/memory/boxes.md) |
 | Collections | Vec, Map, Pool+Handle for graphs | [collections.md](specs/stdlib/collections.md), [pools.md](specs/memory/pools.md) |
-| Resource types | Must-consume (linear resources), `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
+| Resource types | `@resource` annotation for I/O handles, transactions; `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions, tuples, nominal types, type aliases | [types/](specs/types/) |
 | Errors | `T or E` result, `try` propagation, `T?` optionals, `todo()`/`unreachable()` | [error-types.md](specs/types/error-types.md) |
 | Concurrency | spawn(\|\| {})/join/detach (functions), channels, no function coloring | [concurrency/](specs/concurrency/) |

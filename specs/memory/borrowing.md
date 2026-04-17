@@ -384,7 +384,7 @@ Error messages use value-based framing. No "statement-scoped" or "view released 
 ```
 ERROR [mem.borrowing/E4]: cannot bind non-Copy collection element
    |
-5  |  let entity = pool[h]
+5  |  const entity = pool[h]
    |               ^^^^^^^ Entity is not Copy
 6  |  entity.update()
    |  ^^^^^^ cannot use — element was not copied out
@@ -670,6 +670,7 @@ Hover information shows the access type, duration, and suggested patterns for th
 
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value-semantics`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)
+- [Boxes](boxes.md) — The container family whose `with` access follows these rules (`mem.boxes`)
 - [Pools](pools.md) — Handle-based indirection (`mem.pools`)
 - [Collections](../stdlib/collections.md) — Vec, Map APIs (`std.collections`)
 - [Cell](cell.md) — Single-value `with` access (`mem.cell`)

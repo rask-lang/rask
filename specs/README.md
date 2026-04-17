@@ -71,10 +71,12 @@ Quick navigation by task or concept:
 
 | Term | Definition Location |
 |------|---------------------|
+| Linear | [memory/linear.md](memory/linear.md) — Value that must be consumed exactly once |
+| Box | [memory/boxes.md](memory/boxes.md) — Container with `with`-scoped access (Cell, Pool, Shared, Mutex, Owned) |
 | Handle | [memory/pools.md](memory/pools.md) — Opaque identifier into Pool |
 | Borrow | [memory/borrowing.md](memory/borrowing.md) — Temporary read/write access |
 | Take | [memory/parameters.md](memory/parameters.md) — Ownership transfer |
-| Resource type | [memory/resource-types.md](memory/resource-types.md) — Must be consumed exactly once (linear resource) |
+| Resource type | [memory/resource-types.md](memory/resource-types.md) — Struct marked linear with `@resource` |
 | Instant view | [memory/borrowing.md](memory/borrowing.md) — View released at semicolon (growable sources) |
 | Persistent view | [memory/borrowing.md](memory/borrowing.md) — View held until block ends (fixed sources) |
 | ensure | [control/ensure.md](control/ensure.md) — Deferred cleanup at scope exit |
@@ -108,11 +110,15 @@ Quick navigation by task or concept:
 |------|-------------|
 | [ownership.md](memory/ownership.md) | Core ownership rules, cross-task transfer |
 | [value-semantics.md](memory/value-semantics.md) | Copy vs move, 16-byte threshold, move-only types |
+| [linear.md](memory/linear.md) | Consume-exactly-once rules (L1–L6) — shared by `@resource`, `Owned<T>`, `Pool<Linear>` |
+| [boxes.md](memory/boxes.md) | The box family — `with`-scoped access across Cell, Pool, Shared, Mutex, Owned |
 | [borrowing.md](memory/borrowing.md) | Views last as long as source is stable |
-| [parameters.md](memory/parameters.md) | Parameter modes: borrow (default) vs `take` |
-| [resource-types.md](memory/resource-types.md) | Must-consume resources (linear resources), `ensure` integration |
-| [closures.md](memory/closures.md) | Capture rules, scope constraints, Pool+Handle pattern |
+| [parameters.md](memory/parameters.md) | Parameter modes: borrow (default), `mutate`, `take` |
+| [resource-types.md](memory/resource-types.md) | `@resource` annotation — linear struct types |
+| [owned.md](memory/owned.md) | `Owned<T>` — linear heap pointer for recursive types |
+| [closures.md](memory/closures.md) | Capture rules, scope constraints, Cell/Pool patterns |
 | [pools.md](memory/pools.md) | Handle-based indirection, weak handles, cursors, freezing |
+| [cell.md](memory/cell.md) | Single-value mutable box |
 | [unsafe.md](memory/unsafe.md) | Unsafe blocks, raw pointers, FFI |
 | [atomics.md](memory/atomics.md) | Atomic types, memory orderings, lock-free primitives |
 

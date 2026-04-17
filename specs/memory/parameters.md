@@ -284,7 +284,9 @@ This bridges the gap between source-level simplicity and full visibility. In an 
 ### See Also
 
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value`)
-- [Resource Types](resource-types.md) — Must-consume resources (`mem.resources`)
+- [Linearity](linear.md) — Only `take` parameters can consume linear values (`mem.linear`)
+- [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
 - [Borrowing](borrowing.md) — Borrow scope rules (`mem.borrowing`)
 - [Closures](closures.md) — Closure parameter modes (`mem.closures`)
+- [Boxes](boxes.md) — Box parameters move ownership like any other value (`mem.boxes`)
 - [Structs](../types/structs.md) — Struct definition, methods (`type.structs`)
