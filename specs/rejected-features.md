@@ -407,6 +407,14 @@ For user-defined variadic functions: Rask doesn't have them. Pass a `Vec` or use
 
 `comptime for` + `std.reflect` handles serialization, encoding, and struct-walking patterns (`ctrl.comptime/CT48-CT54`). Build scripts handle external codegen (protobuf, schemas). `comptime if cfg.*` handles conditional compilation.
 
+The serialization story in particular is where other languages reach for macros. Rask covers it with three composable primitives:
+
+- `comptime for field in reflect.fields<T>()` — unroll struct layout at compile time
+- `value.(field.name)` — comptime-resolved field access
+- Field annotations (`@default`, `@skip`, `@no_encode`) — per-field metadata
+
+Combined, these auto-derive `Encode` / `Decode` for any struct. Schema evolution (add/remove fields) works because field names are embedded by the comptime iteration. This is the Rust `#[derive(Serialize, Deserialize)]` story — without a procedural macro crate, a second language, or anything the formatter, linter, and IDE can't already see. See [stdlib/encoding.md](stdlib/encoding.md).
+
 ### Domain-specific syntax
 
 Not supported. DSLs in macros look concise but break tooling—IDEs, formatters, linters all need macro expansion to understand the code. Write functions instead.
