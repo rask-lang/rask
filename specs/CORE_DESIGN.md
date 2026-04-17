@@ -133,6 +133,19 @@ Code should be analyzable by tools — linters, refactoring engines, IDE plugins
 
 See [Canonical Patterns](canonical-patterns.md) for conventions, naming patterns, and tooling specs.
 
+### 9. Information Without Enforcement
+
+The compiler tracks information the language deliberately keeps out of the type system. That information surfaces through tooling — ghost text, lints, generated docs, warnings — but never becomes a constraint that splits the ecosystem or colors function signatures.
+
+**What this means:**
+- I/O, async, and mutation effects are tracked transitively (`comp.effects`) but don't appear in function signatures. No function coloring.
+- `@pure` is a lint annotation, not a type qualifier. A pure function can call an impure one; the lint warns.
+- IDE ghost annotations show parameter modes, closure captures, inferred types, and pause points — the compiler knows, the source doesn't say.
+
+**Why I chose this:** Effect systems and function coloring buy transparency at the cost of ecosystem fragmentation and annotation overhead. Rask keeps the information without the tax. You get `[io]` badges in the IDE and compiler warnings for I/O in tight loops — without `.await` on every line or effect polymorphism in every signature.
+
+This principle is what makes the async model (no `async`/`await`), the purity story (no effect types), and the IDE experience (ghost annotations everywhere) coherent rather than a list of compromises. They're all applications of the same rule: the compiler knows, tooling shows, syntax stays clean.
+
 ---
 
 ## Why Not X?
@@ -183,7 +196,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Collections.** `Vec<T>` for sequences, `Map<K,V>` for key-value lookup, `Pool<T>` for handle-based sparse storage (graphs, entities, caches). All growth operations return `Result` — allocation is fallible. `with pool[h] as entity { ... }` for multi-statement element access. See [collections.md](stdlib/collections.md), [pools.md](memory/pools.md).
 
-**Context clauses.** Functions using handles declare pool requirements with `using Pool<T>` clauses. The compiler threads pools as hidden parameters — no runtime registry. Private functions can omit these (inferred from body). See [context-clauses.md](memory/context-clauses.md).
+**Context clauses.** `using` is Rask's ambient-context mechanism, full stop. A function declares its ambient dependencies (`using Pool<T>`, `using Multitasking`, `using ThreadPool`) and the compiler threads them as hidden parameters — no runtime registry, no lookup cost, compile-time checked. Public functions declare their contexts (part of the API contract); private functions can have them inferred. Today `using` threads pool dependencies, the multitasking runtime, and thread pools; the mechanism is general and intentionally so. See [context-clauses.md](memory/context-clauses.md).
 
 **Error handling.** Errors are values: `T or E` result type, `try` for propagation, `T?` for optionals with `??` fallback and `x!` force-unwrap. Error types compose with `A | B` union syntax. Functions returning `T or E` auto-wrap bare returns as `Ok(T)`. No exceptions, no hidden control flow. See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 

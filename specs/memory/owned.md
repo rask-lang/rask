@@ -1,12 +1,14 @@
 <!-- id: mem.owned -->
 <!-- status: decided -->
 <!-- summary: Linear heap pointer for recursive types; own keyword, zero-overhead, compile-time safety -->
-<!-- depends: memory/ownership.md, memory/value-semantics.md -->
+<!-- depends: memory/linear.md, memory/ownership.md, memory/value-semantics.md -->
 <!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-interp/ -->
 
 # Owned Pointers
 
-`Owned<T>` is a linear heap pointer. `own` allocates, linearity guarantees safety at compile time, zero runtime overhead.
+`Owned<T>` is a linear heap pointer. `own` allocates, the linearity rules (`mem.linear`) guarantee safety at compile time, zero runtime overhead.
+
+The consume-exactly-once rules live in [`mem.linear`](linear.md) and apply identically to `@resource` structs, `Owned<T>`, and linear elements in pools. This spec describes the `Owned<T>` type, the `own` operator, and patterns specific to recursive types and single-owner heap values.
 
 ## Allocation and Usage
 
@@ -35,14 +37,16 @@ drop(ptr)                         // Consume (deallocate)
 
 ## Linearity Rules
 
-`Owned<T>` is linear: must be consumed exactly once.
+`Owned<T>` is linear: it follows the rules in `mem.linear/L1–L6`. The table below maps the rule identifiers other specs cite to their canonical source.
 
-| Rule | Description |
-|------|-------------|
-| **OW1: Must consume** | Owned value must be consumed before scope exit |
-| **OW2: Consume once** | Cannot consume same Owned value twice |
-| **OW3: Borrow allowed** | Can dereference for reading/writing without consuming |
-| **OW4: Move consumes** | Passing to a function or assigning to another variable moves (consumes) |
+| Rule | Citation | Description |
+|------|----------|-------------|
+| **OW1** | `mem.linear/L1` | Must be consumed before scope exit |
+| **OW2** | `mem.linear/L2` | Cannot be consumed twice |
+| **OW3** | `mem.linear/L3` | Dereference (borrow) does not consume |
+| **OW4** | `mem.linear/L5` | Passing to `take` or assigning to another binding consumes |
+
+Consumption methods: `drop(ptr)`, passing to a `take` parameter, assignment to another binding, or `ensure drop(ptr)` for deferred consumption.
 
 <!-- test: parse -->
 ```rask
@@ -195,9 +199,9 @@ drop(file_ptr)  // Runs File destructor, then frees memory
 
 ## Error Messages
 
-**Owned value not consumed [OW1]:**
+**Owned value not consumed [L1]:**
 ```
-ERROR [mem.owned/OW1]: Owned<i32> not consumed before scope exit
+ERROR [mem.linear/L1]: Owned<i32> not consumed before scope exit
    |
 5  |  }
    |  ^ scope ends without consuming 'ptr'
@@ -209,9 +213,9 @@ FIX: Consume the value with drop(), pass to a function, or use ensure:
   drop(ptr)
 ```
 
-**Double consumption [OW2]:**
+**Double consumption [L2]:**
 ```
-ERROR [mem.owned/OW2]: ptr already consumed
+ERROR [mem.linear/L2]: ptr already consumed
    |
 4  |  drop(ptr)
    |       ^^^ consumed here
@@ -223,9 +227,9 @@ WHY: Owned values can only be consumed once. Double-free is undefined behavior.
 FIX: Remove the second consumption.
 ```
 
-**Use after move [OW4]:**
+**Use after move [L5]:**
 ```
-ERROR [mem.owned/OW4]: ptr used after move
+ERROR [mem.linear/L5]: ptr used after move
    |
 3  |  const other = ptr
    |                ^^^ moved here
@@ -243,12 +247,12 @@ FIX: Use the new binding instead:
 
 | Case | Rule | Handling |
 |------|------|----------|
-| `own` in loop | OW1 | Each iteration allocates; each must be consumed |
+| `own` in loop | L1 | Each iteration allocates; each must be consumed |
 | `Owned<Owned<T>>` | — | Valid but unusual; double indirection |
 | Zero-sized T | — | Valid; allocates minimal (may optimize to no-op) |
 | `Owned<[T; N]>` | — | Valid; heap-allocated array |
-| Recursive drop | OW1 | Dropping a tree drops children recursively |
-| `Owned<T>` in error path | OW1 | Must be consumed or registered with `ensure` |
+| Recursive drop | L1 | Dropping a tree drops children recursively |
+| `Owned<T>` in error path | L1 | Must be consumed or registered with `ensure` |
 
 ---
 
@@ -256,7 +260,9 @@ FIX: Use the new binding instead:
 
 ### Rationale
 
-**OW1-OW4 (linearity):** I wanted heap allocation without runtime overhead. `Handle<T>` uses generation checks — safe but costs 4+ bytes and a branch on every access. `Owned<T>` has exactly one owner, so the compiler can track it statically. Linearity prevents use-after-free, double-free, and leaks without any runtime cost.
+**Why linear heap pointers?** I wanted heap allocation without runtime overhead. `Handle<T>` uses generation checks — safe but costs 4+ bytes and a branch on every access. `Owned<T>` has exactly one owner, so the compiler can track it statically via the linearity rules (`mem.linear`). Use-after-free, double-free, and leaks are all prevented without any runtime cost.
+
+**Why the same rules as `@resource`?** Both `Owned<T>` and `@resource` structs are linear values — the compiler uses one rule set (`mem.linear/L1–L6`) for both. A reader who understands `@resource` already understands `Owned<T>`; only the use cases differ.
 
 **OW5 (transparent type checking):** I don't want `Owned<T>` to infect every function signature. If a function takes `T`, it should accept `Owned<T>` with auto-deref. The alternative — explicit unwrapping everywhere — adds noise without safety benefit.
 
@@ -306,8 +312,9 @@ enum Expr {
 
 ### See Also
 
+- [Linearity](linear.md) — Rule set (L1–L6) shared by `@resource`, `Owned<T>`, `Pool<Linear>` (`mem.linear`)
 - [Ownership](ownership.md) — Single-owner model (`mem.ownership`)
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value`)
 - [Borrowing](borrowing.md) — Scoped borrowing rules (`mem.borrowing`)
-- [Resource Types](resource-types.md) — Must-consume resources (`mem.resources`)
+- [Resource Types](resource-types.md) — `@resource` struct annotation (`mem.resources`)
 - [Pools](pools.md) — Handle-based indirection (`mem.pools`)
