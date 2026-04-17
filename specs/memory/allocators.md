@@ -339,4 +339,5 @@ func sensor_loop() {
 - [Pools](pools.md) — Handle-based storage, typed arenas (`mem.pools`)
 - [Borrowing](borrowing.md) — Scope restrictions for growable sources (`mem.borrowing`)
 - [Boxes](boxes.md) — Boxes allocate through the ambient allocator (`mem.boxes`)
+- [Owned Pointers](owned.md) — `own expr` allocates through the context allocator (`mem.owned`)
 - [Collections](../stdlib/collections.md) — Vec, Map allocation semantics (`std.collections`)

@@ -186,4 +186,5 @@ pool.get(h)?.transform().apply(|v| {
 - [Cell](cell.md) — Single-value box with exclusive access (`mem.cell`)
 - [Closures](closures.md) — EC1-EC4 rules for expression-scoped closures (`mem.closures`)
 - [Pools](pools.md) — Pool `with`-based access (`mem.pools`)
+- [Owned Pointers](owned.md) — Single-consumer semantics remove aliasing entirely (`mem.owned`)
 - [Synchronization](../concurrency/sync.md) — `Mutex<T>` exclusive-lock variant (`conc.sync`)
