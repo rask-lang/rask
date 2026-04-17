@@ -150,20 +150,30 @@ func walk<T>(node: Node<T>, yield: |Node<T>| -> bool) -> bool {
 
 **From a channel:**
 
+The receiver must be owned by the Sequence because the closure calls `recv()` *after* the method that built it has returned. Any capture of `rx` by borrow would make the closure expression-scoped — it would not type-check at the storage or return site.
+
 <!-- test: skip -->
 ```rask
-func messages(rx: Channel<Msg>) -> Sequence<Msg> {
-    return |yield| {
-        loop {
-            const msg = match rx.recv() {
-                Ok(m) => m,
-                Err(_) => break,
+extend Receiver<T> {
+    public func stream(take self) -> Sequence<T> {
+        return |yield| {
+            loop {
+                const msg = match self.recv() {
+                    Ok(m) => m,
+                    Err(_) => break,
+                }
+                if not yield(msg): break
             }
-            if not yield(msg): break
         }
     }
 }
+
+for msg in rx.stream() {      // rx is consumed here
+    handle(msg)
+}
 ```
+
+If the returned `Sequence<T>` is dropped without being consumed, the captured `Receiver` drops with it — channel close follows normal Receiver-drop semantics. Senders do not block on a dropped receiver.
 
 ## Standard Adapters
 
@@ -173,6 +183,7 @@ Adapters are plain generic functions. They take a `Sequence<T>` and return a new
 |------|-------------|
 | **SEQ12: Adapter shape** | Adapters are `public func name<T, ...>(seq: Sequence<T>, ...) -> Sequence<U>` |
 | **SEQ13: Chain syntax** | `seq.adapter(args)` resolves via extension — identical surface to method calls |
+| **SEQ13a: Short-circuit propagation** | If the downstream yield returns `false`, the adapter must stop and return `false` from its own yield call. Sources must likewise stop emitting when their yield returns `false`. This is the contract that makes `.take(n)`, `.find()`, and `break` work. Violating it changes observable semantics |
 
 | Adapter | Behavior | Signature |
 |---------|----------|-----------|
@@ -278,7 +289,15 @@ This is a hard contract. A benchmark regression in adapter fusion is a compiler 
 
 ## Scope Rules
 
-A `Sequence<T>` constructed by capturing a source is scope-limited to that source's validity, following closure rules.
+`Sequence<T>` storability is not a new rule — it falls out of ordinary closure capture rules (`mem.closures/SL1-SL2`, `mem.closures/MC3`). A `Sequence<T>` is a closure value; its lifetime is the lifetime of whatever it captures.
+
+| Rule | Description |
+|------|-------------|
+| **SEQ25: Owned captures = storable** | A `Sequence<T>` whose closure captures only owned or Copy data can be stored in structs, returned across function boundaries, and sent across tasks. The canonical pattern is `take self` on the method that builds it |
+| **SEQ26: Borrow captures = expression-scoped** | A `Sequence<T>` whose closure captures any block-scoped borrow is limited to that borrow's scope. It cannot be returned past the source, stored in a struct, or sent across tasks |
+| **SEQ27: No separate closed-world rule** | There is no "Sequence-specific" storability constraint. The rule above is `mem.closures/SL1-SL2` applied verbatim to the closure that implements the sequence |
+
+Concretely: if your method builds a `Sequence<T>` by borrowing `self`, the returned Sequence is expression-scoped (like a closure that captures a block-scoped borrow). If the method takes `take self`, the Sequence owns the source and is freely storable.
 
 <!-- test: skip -->
 ```rask
