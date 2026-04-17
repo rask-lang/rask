@@ -36,7 +36,7 @@
 //   }
 //   print_length(my_vec)    // my_vec is still yours after the call
 //
-// To let a function modify your value, use `mutate`:
+// To mut a function modify your value, use `mutate`:
 //   func add_item(mutate list: Vec<i32>, item: i32) {
 //       list.push(item)
 //   }
@@ -135,7 +135,7 @@ func sqrt(x: f64) -> f64 {
     if x <= 0.0 {
         return 0.0
     }
-    let g = x / 2.0
+    mut g = x / 2.0
     for i in 0..30 {
         g = (g + x / g) / 2.0
     }
@@ -169,7 +169,7 @@ test "flight altitudes" {
 }
 
 test "record altitude" {
-    let log = Vec.from([0, 5000])
+    mut log = Vec.from([0, 5000])
     record_altitude(mutate log, 10000)
     assert log.len() == 3
     assert log[2] == 10000

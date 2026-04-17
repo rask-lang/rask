@@ -12,7 +12,7 @@ func parse_wind(metar: string) -> Wind {
 }
 
 func format_flight_plan(departure: string, arrival: string, waypoints: Vec<string>) -> string {
-    let result = departure
+    mut result = departure
     for wp in waypoints {
         result = "{result} → {wp}"
     }
@@ -27,7 +27,7 @@ func word_count(text: string) -> i32 {
 }
 
 func callsign_prefix(callsign: string) -> string {
-    let end = 0
+    mut end = 0
     for c in callsign.chars() {
         if c >= 'A' && c <= 'Z' {
             end = end + 1

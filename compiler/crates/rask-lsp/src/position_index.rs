@@ -114,12 +114,12 @@ fn visit_stmt(stmt: &Stmt, index: &mut PositionIndex) {
         StmtKind::Break { value: Some(value), .. } => {
             visit_expr(value, index);
         }
-        StmtKind::Let { name, name_span, init, .. } | StmtKind::Const { name, name_span, init, .. } => {
+        StmtKind::Mut { name, name_span, init, .. } | StmtKind::Const { name, name_span, init, .. } => {
             // Track the declaration name as an identifier for hover support
             index.idents.push((*name_span, stmt.id, name.clone()));
             visit_expr(init, index);
         }
-        StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
             visit_expr(init, index);
         }
         StmtKind::Assign { target, value } => {

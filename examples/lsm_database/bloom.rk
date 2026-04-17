@@ -14,7 +14,7 @@ struct BloomFilter {
 
 extend BloomFilter {
     func new() -> BloomFilter {
-        let bits = Vec.new()
+        mut bits = Vec.new()
         for _ in 0..BLOOM_BITS {
             bits.push(false)
         }
@@ -38,7 +38,7 @@ extend BloomFilter {
     }
 
     func false_positive_rate(self) -> f64 {
-        let set_bits = 0
+        mut set_bits = 0
         for b in self.bits {
             if b { set_bits += 1 }
         }
@@ -48,7 +48,7 @@ extend BloomFilter {
 }
 
 func bloom_hash(key: string, seed: i32) -> usize {
-    let hash: i64 = 2166136261 + (seed as i64) * 16777619
+    mut hash: i64 = 2166136261 + (seed as i64) * 16777619
     for ch in key.chars() {
         hash = hash ^ (ch.to_int() as i64)
         hash = (hash * 16777619) % 4294967296
@@ -57,8 +57,8 @@ func bloom_hash(key: string, seed: i32) -> usize {
 }
 
 func encode_bloom(filter: BloomFilter) -> string {
-    let out = ""
-    let first = true
+    mut out = ""
+    mut first = true
     for b in filter.bits {
         if !first { out.push_str(",") }
         first = false
@@ -74,8 +74,8 @@ func decode_bloom(data: string) -> BloomFilter or SstError {
             "expected {BLOOM_BITS} bits, got {parts.len()}"
         ))
     }
-    let bits = Vec.new()
-    let count = 0
+    mut bits = Vec.new()
+    mut count = 0
     for p in parts {
         const val = p.trim() == "1"
         bits.push(val)
@@ -87,7 +87,7 @@ func decode_bloom(data: string) -> BloomFilter or SstError {
 // ─── Tests ──────────────────────────────────────────────────────────
 
 test "bloom filter basic" {
-    let bloom = BloomFilter.new()
+    mut bloom = BloomFilter.new()
     bloom.insert("hello")
     bloom.insert("world")
 
@@ -96,7 +96,7 @@ test "bloom filter basic" {
 }
 
 test "bloom filter encode/decode roundtrip" {
-    let bloom = BloomFilter.new()
+    mut bloom = BloomFilter.new()
     bloom.insert("key1")
     bloom.insert("key2")
     bloom.insert("key3")

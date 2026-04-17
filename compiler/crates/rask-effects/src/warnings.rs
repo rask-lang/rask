@@ -72,10 +72,10 @@ impl<'a> WarnContext<'a> {
     fn check_stmt(&mut self, stmt: &Stmt, warnings: &mut Vec<EffectWarning>) {
         match &stmt.kind {
             StmtKind::Expr(e) => self.check_expr(e, warnings),
-            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+            StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
                 self.check_expr(init, warnings);
             }
-            StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
                 self.check_expr(init, warnings);
             }
             StmtKind::Assign { target, value } => {

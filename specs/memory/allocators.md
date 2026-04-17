@@ -208,7 +208,7 @@ using arena {
 // all memory freed at once
 
 // FixedBuffer — no malloc, embedded-safe
-let buf: [u8; 4096] = [0; 4096]
+mut buf: [u8; 4096] = [0; 4096]
 const alloc = FixedBuffer.new(buf)
 using alloc {
     const data = Vec.new()
@@ -317,7 +317,7 @@ func typecheck(ast: Ast) -> TypedAst {
 <!-- test: skip -->
 ```rask
 func sensor_loop() {
-    let buf: [u8; 2048] = [0; 2048]
+    mut buf: [u8; 2048] = [0; 2048]
     const alloc = FixedBuffer.new(buf)
 
     using alloc {

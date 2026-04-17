@@ -5,7 +5,7 @@
 // --- Range iteration (always works) ---
 
 test "for range basic" {
-    let sum = 0
+    mut sum = 0
     for i in 0..5 {
         sum = sum + i
     }
@@ -15,7 +15,7 @@ test "for range basic" {
 test "for range with variable bounds" {
     const start = 2
     const end = 6
-    let sum = 0
+    mut sum = 0
     for i in start..end {
         sum = sum + i
     }
@@ -23,7 +23,7 @@ test "for range with variable bounds" {
 }
 
 test "for range empty when start >= end" {
-    let count = 0
+    mut count = 0
     for i in 5..5 {
         count = count + 1
     }
@@ -31,7 +31,7 @@ test "for range empty when start >= end" {
 }
 
 test "for range single element" {
-    let count = 0
+    mut count = 0
     for i in 3..4 {
         count = count + 1
         assert i == 3
@@ -48,7 +48,7 @@ test "for-in vec sums elements" {
     v.push(1)
     v.push(2)
     v.push(3)
-    let sum = 0
+    mut sum = 0
     for item in v {
         sum = sum + item
     }
@@ -59,7 +59,7 @@ test "for-in vec counts elements" {
     const v = Vec<i32>.new()
     v.push(10)
     v.push(20)
-    let count = 0
+    mut count = 0
     for item in v {
         count = count + 1
     }
@@ -68,7 +68,7 @@ test "for-in vec counts elements" {
 
 test "for-in empty vec" {
     const v = Vec<i32>.new()
-    let count = 0
+    mut count = 0
     for item in v {
         count = count + 1
     }
@@ -82,7 +82,7 @@ test "range-based vec iteration" {
     v.push(10)
     v.push(20)
     v.push(30)
-    let sum = 0
+    mut sum = 0
     for i in 0..v.len() {
         sum = sum + v[i]
     }
@@ -92,7 +92,7 @@ test "range-based vec iteration" {
 // --- Nested loops ---
 
 test "nested range loops" {
-    let sum = 0
+    mut sum = 0
     for i in 0..3 {
         for j in 0..3 {
             sum = sum + 1

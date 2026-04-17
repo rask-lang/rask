@@ -5,10 +5,10 @@
 // generation check per handle per iteration instead of N.
 
 benchmark "pool[h] x5 reads (coalesce target)" {
-    let p = Pool.new()
-    let h = p.insert(42)
-    let sum = 0
-    let i = 0
+    mut p = Pool.new()
+    mut h = p.insert(42)
+    mut sum = 0
+    mut i = 0
     while i < 100000 {
         sum = sum + p[h]
         sum = sum + p[h]
@@ -20,10 +20,10 @@ benchmark "pool[h] x5 reads (coalesce target)" {
 }
 
 benchmark "pool[h] x1 read baseline" {
-    let p = Pool.new()
-    let h = p.insert(42)
-    let sum = 0
-    let i = 0
+    mut p = Pool.new()
+    mut h = p.insert(42)
+    mut sum = 0
+    mut i = 0
     while i < 100000 {
         sum = sum + p[h]
         i = i + 1
@@ -31,12 +31,12 @@ benchmark "pool[h] x1 read baseline" {
 }
 
 benchmark "pool 3 handles x3 reads (coalesce target)" {
-    let p = Pool.new()
-    let h1 = p.insert(10)
-    let h2 = p.insert(20)
-    let h3 = p.insert(30)
-    let sum = 0
-    let i = 0
+    mut p = Pool.new()
+    mut h1 = p.insert(10)
+    mut h2 = p.insert(20)
+    mut h3 = p.insert(30)
+    mut sum = 0
+    mut i = 0
     while i < 100000 {
         sum = sum + p[h1]
         sum = sum + p[h1]

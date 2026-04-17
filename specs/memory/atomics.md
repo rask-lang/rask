@@ -213,7 +213,7 @@ func read_latest(pool: Pool<Reading>) -> Reading? {
 
 <!-- test: skip -->
 ```rask
-let counter = AtomicU64.new(0)
+mut counter = AtomicU64.new(0)
 const final_value = counter.into_value()
 ```
 

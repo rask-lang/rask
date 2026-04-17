@@ -15,7 +15,12 @@ func test_path() {
     const x = Result::Ok(42)
 }
 
-// ERROR: `let mut` — use `let` (rebindable by default)
+// ERROR: `let` is not a keyword — use `mut` (rebindable) or `const` (permanent)
+func test_let() {
+    let counter = 0
+}
+
+// ERROR: `let mut` — use `mut` directly
 func test_let_mut() {
     let mut counter = 0
 }

@@ -55,7 +55,7 @@ func recover_wal(path: string) -> Vec<KeyValue> or WalError {
         return Err(WalError.RecoveryFailure("cannot read WAL: {path}"))
     }
 
-    let entries = Vec.new()
+    mut entries = Vec.new()
     for line in content.lines() {
         const trimmed = line.trim()
         if trimmed.is_empty() { continue }

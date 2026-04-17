@@ -32,7 +32,7 @@ Non-public functions may omit parameter types, return types, and bounds. Compile
 <!-- test: skip -->
 ```rask
 func find_best(items, score_fn) {
-    let best = items[0]
+    mut best = items[0]
     for i in 1..items.len() {
         if score_fn(items[i]) > score_fn(best) {
             best = items[i]
@@ -48,7 +48,7 @@ func find_best(items, score_fn) {
 <!-- test: skip -->
 ```rask
 func find_best(items: Vec<Record>, score_fn) -> Record {
-    let best = items[0]
+    mut best = items[0]
     for i in 1..items.len() {
         if score_fn(items[i]) > score_fn(best) {
             best = items[i]
@@ -63,7 +63,7 @@ func find_best(items: Vec<Record>, score_fn) -> Record {
 <!-- test: parse -->
 ```rask
 public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U) -> T {
-    let best = items[0]
+    mut best = items[0]
     for i in 1..items.len() {
         if score_fn(items[i]) > score_fn(best) {
             best = items[i]
@@ -99,7 +99,7 @@ public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U)
 // PascalCase: explicitly name the type parameter
 func identity(x: T) -> T { return x }
 
-// Gradual: omit type, let compiler decide
+// Gradual: omit type, mut compiler decide
 func identity(x) { return x }
 // Inferred: func identity<T>(x: T) -> T
 ```

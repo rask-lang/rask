@@ -17,7 +17,7 @@ func abs(n: i32) -> i32 {
 }
 
 func sum_range(start: i32, end: i32) -> i32 {
-    let total = 0
+    mut total = 0
     for i in start..end {
         total += i
     }
@@ -32,7 +32,7 @@ test "if-else" {
 
 test "nested if" {
     const x = 42
-    let result = ""
+    mut result = ""
     if x > 0 {
         if x > 100 {
             result = "big"
@@ -53,8 +53,8 @@ test "for range loop" {
 }
 
 test "while loop" {
-    let n = 0
-    let sum = 0
+    mut n = 0
+    mut sum = 0
     while n < 10 {
         sum += n
         n += 1
@@ -64,7 +64,7 @@ test "while loop" {
 }
 
 test "break in while" {
-    let i = 0
+    mut i = 0
     while true {
         if i == 5 { break }
         i += 1
@@ -73,7 +73,7 @@ test "break in while" {
 }
 
 test "continue in for" {
-    let sum = 0
+    mut sum = 0
     for i in 0..10 {
         if i % 2 == 0 { continue }
         sum += i
@@ -89,7 +89,7 @@ test "early return" {
 }
 
 test "multiple return paths" {
-    let x = 10
+    mut x = 10
     if x > 5 {
         assert true
     } else {

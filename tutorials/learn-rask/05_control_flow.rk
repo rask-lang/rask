@@ -27,7 +27,7 @@
 // --- Example ---
 
 func countdown(n: i32) {
-    let i = n
+    mut i = n
     while i > 0 {
         println("{i}...")
         i = i - 1

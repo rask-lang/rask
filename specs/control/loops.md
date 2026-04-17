@@ -175,7 +175,7 @@ for item in vec { body }
 // Equivalent to:
 {
     const _len = vec.len()
-    let _pos = 0
+    mut _pos = 0
     while _pos < _len {
         // `item` is a read-only alias for vec[_pos]  (LP17)
         // item.field  → vec[_pos].field  (inline access, E1)
@@ -194,7 +194,7 @@ for mutate item in vec { body }
 // Equivalent to:
 {
     const _len = vec.len()
-    let _pos = 0
+    mut _pos = 0
     while _pos < _len {
         // `item` is a mutable alias for vec[_pos]
         // item.field  → vec[_pos].field  (inline access)
@@ -214,7 +214,7 @@ for mutate item in pool { body }
 // Equivalent to:
 {
     const _handles = pool._snapshot_handles()  // Handle snapshot
-    let _idx = 0
+    mut _idx = 0
     while _idx < _handles.len() {
         const _h = _handles[_idx]
         // `item` is a mutable alias for pool[_h]
@@ -248,7 +248,7 @@ for i in 0..vec.len() { body }
 // Equivalent to:
 {
     const _len = vec.len()
-    let _pos = 0
+    mut _pos = 0
     while _pos < _len {
         const i = _pos
         body

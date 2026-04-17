@@ -299,7 +299,7 @@ impl<'a> OwnershipChecker<'a> {
 
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
-            StmtKind::Let { name, name_span: _, ty, init } => {
+            StmtKind::Mut { name, name_span: _, ty, init } => {
                 self.check_expr(init);
                 // let: Copy types are copied (source stays valid),
                 // non-Copy types are moved (source invalidated)
@@ -322,7 +322,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.resource_bindings.insert(name.clone());
                 }
             }
-            StmtKind::LetTuple { patterns, init } => {
+            StmtKind::MutTuple { patterns, init } => {
                 self.check_expr(init);
                 self.handle_assignment(init, stmt.span, true);
                 let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
@@ -1794,10 +1794,10 @@ impl<'a> OwnershipChecker<'a> {
     ) {
         match &stmt.kind {
             StmtKind::Expr(e) => self.collect_free_vars_inner(e, locals, out, projections),
-            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+            StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
                 self.collect_free_vars_inner(init, locals, out, projections);
             }
-            StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
                 self.collect_free_vars_inner(init, locals, out, projections);
             }
             StmtKind::Assign { target, value } => {

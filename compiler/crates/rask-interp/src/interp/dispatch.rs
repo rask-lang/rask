@@ -643,6 +643,7 @@ impl Interpreter {
             Http => matches!(method, "listen_and_serve"),
             Env => matches!(method, "var" | "vars"),
             Cli => matches!(method, "args" | "parse"),
+            Reflect => false,
         }
     }
 }

@@ -7,7 +7,7 @@
 
 // Infinite loop at comptime - compiler catches this
 comptime func infinite() -> i32 {
-    let x = 0
+    mut x = 0
     loop {
         x += 1
         // COMPILE ERROR: exceeded 1000 backwards branches
@@ -32,7 +32,7 @@ comptime func infinite() -> i32 {
 
 // This is fine - bounded loop
 comptime func build_table() -> [u8; 256] {
-    let table = [0u8; 256]
+    mut table = [0u8; 256]
     for i in 0..256 {  // 256 iterations, well under limit
         table[i] = (i * i) as u8
     }
@@ -49,7 +49,7 @@ const FACT_10 = comptime factorial(10)  // OK: 10 recursive calls
 
 // This would fail - too many iterations
 comptime func too_many_iterations() -> i32 {
-    let sum = 0
+    mut sum = 0
     for i in 0..1_000_000 {  // COMPILE ERROR: exceeds iteration limit
         sum += i
     }

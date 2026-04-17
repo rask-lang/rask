@@ -41,13 +41,13 @@ extend Db {
         try fs.create_dir_all(config.dir)
             else |e| DbError.Io("cannot create directory: {config.dir}: {e}")
 
-        let wal = try Wal.open(config.wal_path)
+        mut wal = try Wal.open(config.wal_path)
             else |e| DbError.Wal(e)
         ensure wal.close() else |_| {}
 
         // Recover memtable from WAL
-        let memtable = Memtable.new()
-        let max_seq: i64 = 0
+        mut memtable = Memtable.new()
+        mut max_seq: i64 = 0
         const recovered = try recover_wal(config.wal_path)
             else |e| DbError.Wal(e)
 
@@ -57,11 +57,11 @@ extend Db {
         }
 
         // Discover existing SSTables
-        let levels = Vec.new()
+        mut levels = Vec.new()
         for _ in 0..MAX_LEVELS {
             levels.push(Vec.new())
         }
-        let next_sst_id = 0
+        mut next_sst_id = 0
 
         const discovered = discover_sstables(config.dir)
         for meta in discovered {
@@ -113,10 +113,10 @@ extend Db {
         }
 
         // Search levels from newest to oldest
-        let level_idx: usize = 0
+        mut level_idx: usize = 0
         while level_idx < self.levels.len() {
             const level = self.levels[level_idx].clone()
-            let sst_idx = level.len()
+            mut sst_idx = level.len()
             while sst_idx > 0 {
                 sst_idx -= 1
                 const meta = level[sst_idx].clone()
@@ -158,9 +158,9 @@ extend Db {
     }
 
     func scan(mutate self, start: string, end: string) -> Vec<KeyValue> or DbError {
-        let all_entries = self.memtable.scan(start, end)
+        mut all_entries = self.memtable.scan(start, end)
 
-        let level_idx: usize = 0
+        mut level_idx: usize = 0
         while level_idx < self.levels.len() {
             const level = self.levels[level_idx].clone()
             for meta in level {
@@ -186,8 +186,8 @@ extend Db {
             return b.seq.compare(a.seq)
         })
 
-        let deduped = Vec.new()
-        let last_key = ""
+        mut deduped = Vec.new()
+        mut last_key = ""
         for entry in all_entries {
             if entry.key == last_key { continue }
             last_key = entry.key
@@ -257,8 +257,8 @@ extend Db {
     }
 
     func stats(self) -> DbStats {
-        let total_sst = 0
-        let level_counts = Vec.new()
+        mut total_sst = 0
+        mut level_counts = Vec.new()
         for level in self.levels {
             level_counts.push(level.len() as i32)
             total_sst += level.len()
@@ -277,7 +277,7 @@ extend Db {
 
     func compact_all(mutate self) -> () or DbError {
         try self.flush()
-        let level = 0
+        mut level = 0
         while level < MAX_LEVELS - 1 {
             try self.compact_level(level)
             level += 1
@@ -317,7 +317,7 @@ func print_stats(stats: DbStats) {
     println("  Memtable:  {stats.memtable_entries} entries, {stats.memtable_bytes} bytes")
     println("  SSTables:  {stats.sst_count} total")
 
-    let level = 0
+    mut level = 0
     for count in stats.level_counts {
         if count > 0 {
             println("    L{level}: {count} files")
@@ -338,7 +338,7 @@ struct BatchEntry {
 }
 
 func execute_batch(mutate db: Db, entries: Vec<BatchEntry>) -> i32 or DbError {
-    let success_count = 0
+    mut success_count = 0
     for entry in entries {
         if entry.is_delete {
             try db.delete(entry.key)

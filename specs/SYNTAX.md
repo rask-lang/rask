@@ -68,7 +68,7 @@ Try to use readable keywords, not symbols or abbreviations.
 
 | Concept | Rask | Rust | Go |
 |---------|------|------|-----|
-| Variable binding | `let` | `let` | `:=` or `var` |
+| Variable binding | `const` / `mut` | `let` / `let mut` | `:=` or `var` |
 | Function | `func` | `fn` | `func` |
 | Return | `return` | `return` | `return` |
 | Match | `match` | `match` | `switch` |
@@ -141,21 +141,21 @@ false
 ```rask
 const x = 42                  // Permanent binding — x always refers to this value
 const name = "Alice"
-let counter = 0               // Rebindable — can reassign counter later
+mut counter = 0               // Rebindable — can reassign counter later
 counter = 1                   // Reassignment
 
-let x = "shadow"              // Shadowing allowed (IDE shows ghost annotation)
+mut x = "shadow"              // Shadowing allowed (IDE shows ghost annotation)
 ```
 
 | Syntax | Meaning |
 |--------|---------|
 | `const x = v` | Permanent binding — `x` cannot be reassigned |
-| `let x = v` | Rebindable — `x` can be reassigned |
+| `mut x = v` | Rebindable — `x` can be reassigned |
 | `x = v` | Reassignment (variable must exist) |
 
 **`const` controls the binding, not the value.** `const v = Vec.new()` means `v` always refers to this Vec — you can't write `v = other_vec`. But `v.push(1)` works fine because the Vec itself is mutable. This is the JavaScript/Go model, not C++/Rust `const`. The name is fixed; the contents aren't.
 
-**Why `const`/`let`:** `const` means "this name is permanently bound." `let` means "let it vary." Opposite of Rust but matches the most common meaning of `const` across languages.
+**Why `const`/`mut`:** `const` for permanent bindings, `mut` for rebindable. No `let`. Rust users writing `let x = 5` get a clear parse error pointing to `mut` or `const` — better than silent semantic inversion.
 
 ---
 
@@ -700,17 +700,17 @@ if state is Connected(sock) && sock.is_ready() {
 
 `is` is non-exhaustive — unmatched patterns skip the block. Use `match` when you need to handle all cases.
 
-**Guard pattern with `let ... is ... else`:**
+**Guard pattern with `const ... is ... else` (or `mut` for rebindable):**
 
 Early exits where bindings need to escape to outer scope:
 
 ```rask
-let value = result is Ok else { return Err(e) }
+const value = result is Ok else { return Err(e) }
 // value available here
 
-let sock = state is Connected else { panic("not connected") }
-let item = queue.pop() is Some else { break }
-let (a, b) = pair is Some else { return None }
+const sock = state is Connected else { panic("not connected") }
+const item = queue.pop() is Some else { break }
+const (a, b) = pair is Some else { return None }
 ```
 
 The `else` block must diverge (`return`, `break`, `panic`).
@@ -1093,7 +1093,7 @@ const v = Vec.new()
 v.push(1)
 v.push(2)
 v.push(3)
-let sum = 0
+mut sum = 0
 for i in 0..v.len() {
     sum += v[i]
 }
@@ -1112,7 +1112,7 @@ println("{sum}")
 | Types | `: Type` | Inference reduces annotations |
 | Functions | `func name(params) -> Type` | Familiar |
 | Permanent binding | `const x = ...` | Cannot reassign (value still mutable) |
-| Rebindable | `let x = ...` | Can reassign |
+| Rebindable | `mut x = ...` | Can reassign |
 | Mutable | `mutate param` | Explicit mutable borrow |
 | Ownership | `take param` | Explicit when consuming |
 | Optional | `T?` | Type and chaining |
@@ -1120,7 +1120,7 @@ println("{sum}")
 | Error prop | `try expr` | Prefix keyword |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
-| Guard extraction | `let v = x is P else { }` | Binds to outer scope |
+| Guard extraction | `const v = x is P else { }` | Binds to outer scope |
 | Loops | `for x in xs: ...` | Inline or braced |
 | Loop value | `break expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |

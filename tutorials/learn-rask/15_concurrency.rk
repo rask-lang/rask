@@ -74,7 +74,7 @@ func parallel_max(readings: Vec<f64>) -> f64 {
 
 // Helper — finds the largest value in a Vec
 func vec_max(v: Vec<f64>) -> f64 {
-    let m = v[0]
+    mut m = v[0]
     for i in 1..v.len() {
         if v[i] > m { m = v[i] }
     }

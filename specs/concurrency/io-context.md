@@ -179,7 +179,7 @@ extend File with Reader {
 func io.copy(reader: any Reader, writer: any Writer) -> usize or IoError {
     // Compiler desugars to: io.copy(reader, writer, __ctx?)
     const buf = [0u8; 8192]
-    let total = 0
+    mut total = 0
     loop {
         const n = try reader.read(buf)   // __ctx forwarded
         if n == 0 { break }

@@ -51,12 +51,12 @@ fn walk_stmts_for_unwrap(stmts: &[Stmt], source: &str, diags: &mut Vec<LintDiagn
 fn walk_stmt_for_unwrap(stmt: &Stmt, source: &str, diags: &mut Vec<LintDiagnostic>) {
     match &stmt.kind {
         StmtKind::Expr(e) => walk_expr_for_unwrap(e, source, diags),
-        StmtKind::Let { init, .. }
+        StmtKind::Mut { init, .. }
         | StmtKind::Const { init, .. }
         | StmtKind::Break { value: Some(init), .. } => {
             walk_expr_for_unwrap(init, source, diags);
         }
-        StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
             walk_expr_for_unwrap(init, source, diags);
         }
         StmtKind::Return(Some(e)) => walk_expr_for_unwrap(e, source, diags),
@@ -260,7 +260,7 @@ fn check_stmt_for_resource(
     diags: &mut Vec<LintDiagnostic>,
 ) {
     match &stmt.kind {
-        StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
             check_expr_for_resource(init, resource_types, has_ensure, source, diags);
         }
         StmtKind::Expr(expr) => {
@@ -340,7 +340,7 @@ fn check_ensure_ordering_in_block(
 
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Const { name, .. } | StmtKind::Let { name, .. } => {
+            StmtKind::Const { name, .. } | StmtKind::Mut { name, .. } => {
                 binding_order.push(name.clone());
             }
             StmtKind::Ensure { body, .. } => {
@@ -488,7 +488,7 @@ fn walk_for_large_unsafe(stmts: &[Stmt], source: &str, max: usize, diags: &mut V
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Expr(e) => check_expr_for_large_unsafe(e, source, max, diags),
-            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+            StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
                 check_expr_for_large_unsafe(init, source, max, diags);
             }
             StmtKind::While { cond, body } => {

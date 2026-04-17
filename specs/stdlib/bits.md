@@ -92,7 +92,7 @@ const data = BinaryBuilder.new()
 
 // Zero-alloc buffer write
 const buffer: [u8; 64] = [0; 64]
-let cursor = 0
+mut cursor = 0
 cursor += buffer[cursor..].write_u32be(0xCAFEBABE)
 cursor += buffer[cursor..].write_u8(1)
 ```

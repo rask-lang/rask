@@ -83,7 +83,7 @@ Erlang's supervision trees are great—processes automatically restart when they
 
 ```rask
 // Explicit restart loop
-let restart_count = 0
+mut restart_count = 0
 loop {
     const h = spawn(|| { worker_task() }
     match h.join() {

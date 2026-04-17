@@ -71,7 +71,7 @@ const result = try h.join()
 spawn(|| { background_work() }).detach()
 
 // Multiple tasks
-let (a, b) = join_all(
+mut (a, b) = join_all(
     spawn(|| { work1() }),
     spawn(|| { work2() })
 )

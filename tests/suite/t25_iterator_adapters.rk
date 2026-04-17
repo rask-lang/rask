@@ -214,7 +214,7 @@ test "skip first n" {
 // --- for-in on range (basic, already tested elsewhere, included for completeness) ---
 
 test "range iteration" {
-    let sum = 0
+    mut sum = 0
     for i in 0..5 {
         sum += i
     }
@@ -228,7 +228,7 @@ test "map iteration with destructuring" {
     m.insert("a", 1)
     m.insert("b", 2)
 
-    let total = 0
+    mut total = 0
     for (key, value) in m {
         total += value
     }
@@ -261,7 +261,7 @@ test "take_all consumes vec" {
     v.push(20)
     v.push(30)
 
-    let sum = 0
+    mut sum = 0
     for item in v.take_all() {
         sum += item
     }

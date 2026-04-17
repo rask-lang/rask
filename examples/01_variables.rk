@@ -14,8 +14,8 @@ func main() {
     print(age)
     print("\n")
 
-    // let - binding can be reassigned
-    let counter = 0
+    // mut - binding can be reassigned
+    mut counter = 0
     counter = counter + 1
     counter = counter + 1
 

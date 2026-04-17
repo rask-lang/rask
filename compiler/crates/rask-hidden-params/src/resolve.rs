@@ -237,10 +237,10 @@ fn body_accesses_handle_fields(stmts: &[Stmt], handle_names: &[&str]) -> bool {
 fn stmt_accesses_handle_fields(stmt: &Stmt, handle_names: &[&str]) -> bool {
     match &stmt.kind {
         StmtKind::Expr(e) => expr_accesses_handle_fields(e, handle_names),
-        StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
             expr_accesses_handle_fields(init, handle_names)
         }
-        StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
             expr_accesses_handle_fields(init, handle_names)
         }
         StmtKind::Assign { target, value } => {

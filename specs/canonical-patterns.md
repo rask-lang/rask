@@ -156,7 +156,7 @@ match fs.read_file(path) {
 
 // Guard pattern — early return on error
 func get_user(id: i64) -> User or NotFound {
-    let user = db.find(id) is Ok else { return Err(NotFound {}) }
+    mut user = db.find(id) is Ok else { return Err(NotFound {}) }
     return user
 }
 ```
@@ -237,7 +237,7 @@ if opt is Some(v) {
 const name = opt ?? "anonymous"
 
 // Guard — early return if absent
-let v = opt is Some else { return None }
+mut v = opt is Some else { return None }
 
 // Full handling — both branches matter
 match opt {
@@ -303,7 +303,7 @@ Strings are UTF-8. Use `format()` for building, methods for inspecting.
 const msg = format("hello, {name}! you have {count} messages")
 
 // StringBuilder — for loops or many concatenations
-let sb = StringBuilder.new()
+mut sb = StringBuilder.new()
 for item in items {
     sb.append("{item}\n")
 }
@@ -465,7 +465,7 @@ if point is Point { x, y } {
 }
 
 // Guard pattern
-let conn = try_connect() is Ok else { return Err(ConnectFailed {}) }
+mut conn = try_connect() is Ok else { return Err(ConnectFailed {}) }
 ```
 
 **Anti-patterns:**

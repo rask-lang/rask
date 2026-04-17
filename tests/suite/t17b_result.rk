@@ -12,7 +12,7 @@ func divide(a: i32, b: i32) -> i32 or string {
 
 test "result ok match" {
     const r = divide(10, 2)
-    let value = 0
+    mut value = 0
     match r {
         Ok(v) => value = v
         Err(e) => value = -1
@@ -22,7 +22,7 @@ test "result ok match" {
 
 test "result err match" {
     const r = divide(10, 0)
-    let is_err = false
+    mut is_err = false
     match r {
         Ok(v) => is_err = false
         Err(e) => is_err = true
@@ -38,7 +38,7 @@ func compute() -> i32 or string {
 
 test "try propagates error" {
     const r = compute()
-    let got_err = false
+    mut got_err = false
     match r {
         Ok(v) => got_err = false
         Err(e) => got_err = true
@@ -54,7 +54,7 @@ func compute_ok() -> i32 or string {
 
 test "try passes through ok" {
     const r = compute_ok()
-    let value = 0
+    mut value = 0
     match r {
         Ok(v) => value = v
         Err(e) => value = -1
@@ -68,7 +68,7 @@ func always_ok(n: i32) -> i32 or string {
 
 test "auto-ok wrapping" {
     const r = always_ok(21)
-    let value = 0
+    mut value = 0
     match r {
         Ok(v) => value = v
         Err(e) => value = -1

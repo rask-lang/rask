@@ -267,7 +267,7 @@ func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> () or JsonError 
 
 // Top-level entry point
 public func encode<T: Encode>(value: T) -> string or JsonError {
-    let w = JsonWriter.new()
+    mut w = JsonWriter.new()
     try encode_value(value, mutate w)
     return w.finish()
 }
@@ -292,7 +292,7 @@ func decode_value<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
         }
         return Some(try decode_value(parser))
     } else if reflect.is_vec<T>() {
-        let result = Vec.new()
+        mut result = Vec.new()
         try parser.begin_array()
         while !parser.end_array() {
             result.push(try decode_value(parser))
@@ -305,7 +305,7 @@ func decode_value<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
 
 func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
     try parser.begin_object()
-    let fields = Map<string, JsonValue>.new()
+    mut fields = Map<string, JsonValue>.new()
     while !parser.end_object() {
         const key = try parser.read_key()
         fields.insert(key, try parser.read_value())
