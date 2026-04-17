@@ -6,7 +6,7 @@
   </picture>
 </p>
 
-A systems language I'm building around one question: **what if references can't be stored?**
+A programming language I'm building around one question: **what if references can't be stored?**
 
 Make references temporary — never in structs, never returned from functions — and lifetime annotations stop being necessary. The cost is handles where you'd want shared identity: graphs, entity systems, observers. The benefit is memory safety without annotations, deterministic cleanup without a GC, and function signatures you can read in one pass.
 
