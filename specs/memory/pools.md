@@ -260,6 +260,18 @@ pool[h].z = 3    // Same check as above — coalesced
 // Total: ONE generation check
 ```
 
+### Elimination tower
+
+The handle safety story is a three-layer tower where each layer strips more checks:
+
+| Layer | What it gives up | What you keep | Residual cost |
+|-------|------------------|---------------|---------------|
+| **1. Bare access** (`pool[h]`) | Nothing | Use-after-free safety | ~1ns per access |
+| **2. Coalesced access** (repeated `pool[h].x`, `pool[h].y`) | One access per block, tracked by compiler | Same safety | ~1ns per coalesced group |
+| **3. Frozen context** (`using frozen Pool<T>`) | Structural mutation inside the context | Same safety + read-only guarantee | Often zero |
+
+Safety and performance aren't in tension here — they compose. You pay the check where it's needed, the compiler strips it where it isn't. This is what makes handles usable in tight loops without an escape hatch.
+
 ## Context Clauses (Auto-Resolution)
 
 Handles auto-resolve fields without explicitly naming the pool. See `mem.context` for full specification.
