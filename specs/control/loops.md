@@ -259,17 +259,47 @@ for i in 0..vec.len() { body }
 
 <!-- test: parse -->
 ```rask
-// Consume iteration (take_all):
+// Consume iteration (take_all returns a Sequence<T>):
 for item in vec.take_all() { body }
 
+// Equivalent to the Sequence desugar below (LP18).
+```
+
+## Custom Sequence Iteration
+
+For-loops over a `Sequence<T>` or `SequenceMut<T>` desugar to a yield-closure call. See `type.sequence` for the full protocol.
+
+| Rule | Description |
+|------|-------------|
+| **LP18: Sequence desugar** | `for x in seq_expr { body }` where `seq_expr: Sequence<T>` desugars to `seq_expr(\|x\| { body_with_break_continue_translated; return true })` |
+| **LP19: SequenceMut desugar** | `for mutate x in seq_expr { body }` where `seq_expr: SequenceMut<T>` desugars to `seq_expr(\|mutate x: T\| { body_with_break_continue_translated; return true })` |
+| **LP20: Break translation** | Inside the desugared closure body, `break` becomes `return false` |
+| **LP21: Continue translation** | Inside the desugared closure body, `continue` becomes `return true` |
+| **LP22: Return propagation** | `return` in the loop body exits the enclosing function (not the closure). Compiler translates via a non-local exit flag |
+| **LP23: No break with value** | `break value` is not supported inside Sequence for-loops — desugaring to a closure return cannot carry a value out. Use `find` or an outer `let` binding |
+
+<!-- test: parse -->
+```rask
+// Custom sequence (value):
+for node in tree.in_order() { body }
+
 // Equivalent to:
-{
-    const _iter = vec.take_all()  // Takes ownership, vec now empty
-    while _iter.next() is Some(item) {
-        body
-    }
-    // _iter drops here, dropping any remaining items
-}
+tree.in_order()(|node| {
+    body   // break → return false, continue → return true
+    return true
+})
+```
+
+<!-- test: skip -->
+```rask
+// Custom sequence (mutable):
+for mutate node in tree.in_order_mut() { body }
+
+// Equivalent to:
+tree.in_order_mut()(|mutate node: Node<T>| {
+    body
+    return true
+})
 ```
 
 ## Edge Cases
@@ -448,4 +478,4 @@ Hover on `for i in 0..collection.len()` shows:
 - [Borrowing](../memory/borrowing.md) — Value-based access, `with` blocks (`mem.borrowing`)
 - [Value Semantics](../memory/value-semantics.md) — Copy threshold (`mem.value-semantics`)
 - [Collections](../stdlib/collections.md) — Vec, Pool, Map APIs (`std.collections`)
-- [Iterator Protocol](iterator-protocol.md) — Iterator trait and adapters (`ctrl.iterator`)
+- [Sequence Protocol](../types/sequence-protocol.md) — Function-valued iteration, adapters, terminals (`type.sequence`)
