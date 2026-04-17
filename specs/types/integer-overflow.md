@@ -27,7 +27,7 @@ Default: panic on overflow, consistent in debug and release. Use `Wrapping<T>` o
 
 <!-- test: skip -->
 ```rask
-let x: u8 = 255
+mut x: u8 = 255
 const y = x + 1   // Panic: "integer overflow: 255 + 1 exceeds u8 range"
 ```
 

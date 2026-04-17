@@ -28,7 +28,7 @@ impl TypeChecker {
                 // ESAD Phase 1: Clear borrows at statement end (semicolon)
                 self.clear_expression_borrows();
             }
-            StmtKind::Let { name, name_span, ty, init } => {
+            StmtKind::Mut { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         let init_ty = self.infer_expr_expecting(init, &declared);
@@ -228,7 +228,7 @@ impl TypeChecker {
                 }
                 self.pop_scope();
             }
-            StmtKind::LetTuple { patterns, init } | StmtKind::ConstTuple { patterns, init } => {
+            StmtKind::MutTuple { patterns, init } | StmtKind::ConstTuple { patterns, init } => {
                 let is_const = matches!(&stmt.kind, StmtKind::ConstTuple { .. });
                 let init_ty = self.infer_expr(init);
                 self.bind_tuple_patterns(patterns, &init_ty, is_const, stmt.span);

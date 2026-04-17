@@ -10,7 +10,7 @@ const SQUARES = comptime {
 
 const FACTORIALS = comptime {
     const v = Vec.new()
-    let f: i64 = 1
+    mut f: i64 = 1
     v.push(f)
     for i in 1..13 {
         f = f * i as i64

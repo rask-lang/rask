@@ -108,7 +108,7 @@ fn collect_locals_from_stmt(
     locals: &mut Vec<(String, String)>,
 ) {
     match &stmt.kind {
-        StmtKind::Let { name, ty, init, .. } | StmtKind::Const { name, ty, init, .. } => {
+        StmtKind::Mut { name, ty, init, .. } | StmtKind::Const { name, ty, init, .. } => {
             // If explicit type annotation, use it
             if let Some(t) = ty {
                 locals.push((name.clone(), t.clone()));

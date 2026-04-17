@@ -182,5 +182,9 @@ pool.get(h)?.transform().apply(|v| {
 ### See Also
 
 - [Borrowing](borrowing.md) — Value-based access, `with` blocks, block-scoped views (`mem.borrowing`)
+- [Boxes](boxes.md) — The container family whose `with` access this analysis secures (`mem.boxes`)
+- [Cell](cell.md) — Single-value box with exclusive access (`mem.cell`)
 - [Closures](closures.md) — EC1-EC4 rules for expression-scoped closures (`mem.closures`)
 - [Pools](pools.md) — Pool `with`-based access (`mem.pools`)
+- [Owned Pointers](owned.md) — Single-consumer semantics remove aliasing entirely (`mem.owned`)
+- [Synchronization](../concurrency/sync.md) — `Mutex<T>` exclusive-lock variant (`conc.sync`)

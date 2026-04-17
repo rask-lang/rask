@@ -231,21 +231,21 @@ extern func noise(quality: number, id: int, index: int) -> number
 
 See [vm/interop.md](../vm/interop.md) for host-side binding.
 
-## Const and Let
+## Const and Mut
 
-`const` and `let` control mutability of the binding **and the data it reaches**:
+`const` and `mut` control mutability of the binding **and the data it reaches**:
 
 - `const x = ...` -- cannot reassign `x`, cannot mutate fields through `x`
-- `let x = ...` -- can reassign `x`, can mutate fields through `x`
+- `mut x = ...` -- can reassign `x`, can mutate fields through `x`
 
 ```raido
 const ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
 ship.health -= 10  // ERROR: ship is const
 ship = other_ship  // ERROR: ship is const
 
-let ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
-ship.health -= 10  // OK: ship is let
-ship = other_ship  // OK: ship is let
+mut ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
+ship.health -= 10  // OK: ship is mut
+ship = other_ship  // OK: ship is mut
 ```
 
 **Function parameters are const.** A function cannot mutate a struct passed to it. Return a modified copy instead:

@@ -4,6 +4,7 @@
 // A Sequence is a function that takes a yield closure and calls it per item.
 // Returning `false` from the yield closure stops iteration early.
 
-public type alias Sequence<T> = func(yield: |T| -> bool)
+public type alias Sequence<T> = func(|T| -> bool)
 
-public type alias SequenceMut<T> = func(yield: |mutate item: T| -> bool)
+// SequenceMut<T> = func(|mutate T| -> bool) — pending type parser support for
+// `mutate` in closure-type parameter position.

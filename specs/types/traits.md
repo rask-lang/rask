@@ -269,7 +269,7 @@ match shape {
 }
 
 // any: open set, methods only
-let shapes: []any Drawable = [circle, rect, custom_shape]
+mut shapes: []any Drawable = [circle, rect, custom_shape]
 for s in shapes { s.draw() }  // Only trait methods
 ```
 

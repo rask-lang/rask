@@ -371,7 +371,7 @@ impl Hasher {
                 self.feed_tag(20);
                 self.hash_expr(e);
             }
-            StmtKind::Let { name, ty, init, .. } => {
+            StmtKind::Mut { name, ty, init, .. } => {
                 self.feed_tag(21);
                 self.feed_var(name);
                 if let Some(t) = ty {
@@ -382,7 +382,7 @@ impl Hasher {
                 }
                 self.hash_expr(init);
             }
-            StmtKind::LetTuple { patterns, init } => {
+            StmtKind::MutTuple { patterns, init } => {
                 self.feed_tag(22);
                 let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
                 self.feed_u32(names.len() as u32);

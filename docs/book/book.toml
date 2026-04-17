@@ -1,7 +1,7 @@
 [book]
 title = "The Rask Programming Language"
 authors = ["Rask Contributors"]
-description = "A systems language where safety is invisible"
+description = "A programming language where safety is invisible"
 language = "en"
 src = "src"
 

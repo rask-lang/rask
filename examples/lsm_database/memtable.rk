@@ -29,7 +29,7 @@ extend Memtable {
         } else {
             // Manual insert at position: append then bubble into place
             self.entries.push(kv)
-            let i = self.entries.len() - 1
+            mut i = self.entries.len() - 1
             while i > pos {
                 const tmp = self.entries[i].clone()
                 self.entries[i] = self.entries[i - 1].clone()
@@ -60,8 +60,8 @@ extend Memtable {
     }
 
     func find_pos(self, key: string) -> usize {
-        let lo: usize = 0
-        let hi: usize = self.entries.len()
+        mut lo: usize = 0
+        mut hi: usize = self.entries.len()
         while lo < hi {
             const mid = lo + (hi - lo) / 2
             if self.entries[mid].key < key {
@@ -74,9 +74,9 @@ extend Memtable {
     }
 
     func scan(self, start: string, end: string) -> Vec<KeyValue> {
-        let result = Vec.new()
+        mut result = Vec.new()
         const start_pos = self.find_pos(start)
-        let i = start_pos
+        mut i = start_pos
         while i < self.entries.len() {
             if self.entries[i].key > end { break }
             result.push(self.entries[i].clone())
@@ -89,7 +89,7 @@ extend Memtable {
 // ─── Tests ──────────────────────────────────────────────────────────
 
 test "memtable put and get" {
-    let mt = Memtable.new()
+    mut mt = Memtable.new()
     mt.put(KeyValue.new("b", "2", 1))
     mt.put(KeyValue.new("a", "1", 2))
     mt.put(KeyValue.new("c", "3", 3))
@@ -104,7 +104,7 @@ test "memtable put and get" {
 }
 
 test "memtable overwrites by key" {
-    let mt = Memtable.new()
+    mut mt = Memtable.new()
     mt.put(KeyValue.new("k", "old", 1))
     mt.put(KeyValue.new("k", "new", 2))
 
@@ -115,7 +115,7 @@ test "memtable overwrites by key" {
 }
 
 test "memtable maintains sort order" {
-    let mt = Memtable.new()
+    mut mt = Memtable.new()
     mt.put(KeyValue.new("delta", "4", 1))
     mt.put(KeyValue.new("alpha", "1", 2))
     mt.put(KeyValue.new("charlie", "3", 3))
@@ -128,7 +128,7 @@ test "memtable maintains sort order" {
 }
 
 test "memtable range scan" {
-    let mt = Memtable.new()
+    mut mt = Memtable.new()
     mt.put(KeyValue.new("a", "1", 1))
     mt.put(KeyValue.new("b", "2", 2))
     mt.put(KeyValue.new("c", "3", 3))

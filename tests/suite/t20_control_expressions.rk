@@ -57,7 +57,7 @@ test "match expression in binding" {
 // BUG: parser doesn't support loop-as-expression yet
 
 test "loop with break value" {
-    let i = 0
+    mut i = 0
     const found = loop {
         if i == 5: break i * 10
         i += 1
@@ -66,7 +66,7 @@ test "loop with break value" {
 }
 
 test "loop break value type" {
-    let n = 1
+    mut n = 1
     const result = loop {
         if n > 100: break n
         n = n * 2
@@ -77,7 +77,7 @@ test "loop break value type" {
 // --- labeled loop with break value (CF22-CF25) ---
 
 test "labeled loop break" {
-    let found = -1
+    mut found = -1
     outer: for i in 0..10 {
         for j in 0..10 {
             if i * 10 + j == 42 {
@@ -102,7 +102,7 @@ test "labeled loop break value" {
 // --- continue with label (CF25) ---
 
 test "continue label" {
-    let count = 0
+    mut count = 0
     outer: for i in 0..5 {
         for j in 0..5 {
             if j == 2: continue outer
@@ -132,7 +132,7 @@ test "is pattern with binding" {
 
 test "is pattern non-match skips" {
     const s = Shape.Point
-    let matched = false
+    mut matched = false
     if s is Circle(r) {
         matched = true
     }
@@ -173,8 +173,8 @@ test "while is pattern" {
     items.push(Some(2))
     items.push(Some(3))
 
-    let sum = 0
-    let idx = 0
+    mut sum = 0
+    mut idx = 0
     while idx < items.len() {
         if items[idx] is Some(v) {
             sum += v
@@ -184,10 +184,10 @@ test "while is pattern" {
     assert sum == 6
 }
 
-// --- guard pattern: let...is...else (CF13-CF15) ---
+// --- guard pattern: mut...is...else (CF13-CF15) ---
 
 func extract_or_zero(opt: i32?) -> i32 {
-    let value = opt is Some else { return 0 }
+    mut value = opt is Some else { return 0 }
     return value * 2
 }
 
@@ -200,7 +200,7 @@ test "guard pattern None diverges" {
 }
 
 func extract_ok(result: i32 or string) -> i32 {
-    let value = result is Ok else { return -1 }
+    mut value = result is Ok else { return -1 }
     return value
 }
 
@@ -284,7 +284,7 @@ test "pattern guards" {
 // This is tested implicitly by if expressions where one branch diverges.
 
 test "never coercion in if expression" {
-    let x = 5
+    mut x = 5
     const y = if x > 0: x else { panic("negative") }
     // The else branch has type Never, which coerces to i32
     assert y == 5

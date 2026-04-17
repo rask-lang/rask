@@ -2,7 +2,7 @@
 
 func integrate(f: |f64| -> f64, a: f64, b: f64, n: i32) -> f64 {
     const h = (b - a) / n as f64
-    let sum = f(a) / 2.0 + f(b) / 2.0
+    mut sum = f(a) / 2.0 + f(b) / 2.0
     for i in 1..n {
         sum = sum + f(a + i as f64 * h)
     }
@@ -16,7 +16,7 @@ func cruising_altitudes_meters(readings_feet: Vec<f64>) -> Vec<f64> {
 }
 
 func apply_n(f: |f64| -> f64, x: f64, n: i32) -> f64 {
-    let result = x
+    mut result = x
     for i in 0..n {
         result = f(result)
     }

@@ -112,7 +112,7 @@ extend Lexer {
 
     func read_number(self) -> Token or CalcError {
         const num_str = string.new()
-        let has_dot = false
+        mut has_dot = false
 
         while self.peek_char() is Some(c) {
             if c.is_digit() {
@@ -176,7 +176,7 @@ extend Parser {
 
     // expression = term (('+' | '-') term)*
     func parse_expression(self) -> Expr or CalcError {
-        let left = try self.parse_term()
+        mut left = try self.parse_term()
 
         loop {
             const op = match self.current {
@@ -194,7 +194,7 @@ extend Parser {
 
     // term = power (('*' | '/' | '%') power)*
     func parse_term(self) -> Expr or CalcError {
-        let left = try self.parse_power()
+        mut left = try self.parse_power()
 
         loop {
             const op = match self.current {

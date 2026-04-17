@@ -36,7 +36,7 @@ Cross-task shared state when channels aren't enough.
 
 <!-- test: skip -->
 ```rask
-let config = Shared.new(AppConfig {
+mut config = Shared.new(AppConfig {
     timeout: 30.seconds,
     max_retries: 3,
 })
@@ -135,7 +135,7 @@ with mutex as data {
 }
 
 // Guard-based (Rust) — reference can escape scope
-// let guard = mutex.lock()  // NOT in Rask
+// mut guard = mutex.lock()  // NOT in Rask
 ```
 
 ## Deadlock Prevention

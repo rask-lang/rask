@@ -5,10 +5,10 @@
 //
 // Two kinds of variables:
 //   const x = 42      // can never change (default — use this most of the time)
-//   let x = 42        // can be reassigned: x = 43
+//   mut x = 42        // can be reassigned: x = 43
 //
-// Think of `const` as the normal case and `let` as the exception.
-// In Python everything is `let`. In Rask you opt *in* to mutability.
+// Think of `const` as the normal case and `mut` as the exception.
+// In Python everything is mutable. In Rask you opt *in* to mutability.
 //
 // Types you'll use:
 //   i32       — integer (whole number). The default. Handles up to ~2 billion.
@@ -32,8 +32,8 @@ func example_variables() {
     println("pi = {pi}")
     println("name = {name}")
 
-    // Mutable variable — use `let`
-    let counter = 0
+    // Mutable variable — use `mut`
+    mut counter = 0
     counter = counter + 1
     counter = counter + 1
     println("counter = {counter}")    // 2
@@ -85,7 +85,7 @@ func celsius_to_kelvin(c: f64) -> f64 {
 }
 
 // --- Puzzle 4: Mutable accumulator ---
-// Sum the integers from 1 to n (inclusive) using a `let` variable and a loop.
+// Sum the integers from 1 to n (inclusive) using a `mut` variable and a loop.
 // Example: sum_to(5) = 1 + 2 + 3 + 4 + 5 = 15
 //
 // Hint: for i in 1..n+1 { ... }  gives you 1, 2, ..., n

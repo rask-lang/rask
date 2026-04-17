@@ -238,6 +238,7 @@ impl Parser {
             // Declarations
             TokenKind::Func => "func".to_string(),
             TokenKind::Let => "let".to_string(),
+            TokenKind::Mut => "mut".to_string(),
             TokenKind::Const => "const".to_string(),
             TokenKind::Struct => "struct".to_string(),
             TokenKind::Enum => "enum".to_string(),
@@ -475,12 +476,21 @@ impl Parser {
                             self.advance();
                             self.synchronize();
                         }
-                    // Reject mutable bindings at top level
+                    // Reject rebindable bindings at top level
+                    } else if matches!(self.current_kind(), TokenKind::Mut) {
+                        let err = ParseError {
+                            span: self.current().span,
+                            message: "rebindable 'mut' bindings are not allowed at the top level".to_string(),
+                            hint: Some("use 'const' for permanent bindings, or move into a function".to_string()),
+                        };
+                        if !self.record_error(err) { break; }
+                        self.synchronize();
+                    // Reject Rust-style 'let' at top level with guidance
                     } else if matches!(self.current_kind(), TokenKind::Let) {
                         let err = ParseError {
                             span: self.current().span,
-                            message: "mutable 'let' bindings are not allowed at the top level".to_string(),
-                            hint: Some("use 'const' for immutable bindings, or move into a function".to_string()),
+                            message: "'let' is not a keyword in Rask".to_string(),
+                            hint: Some("use 'const' for permanent bindings at the top level, or 'mut' inside a function for rebindable".to_string()),
                         };
                         if !self.record_error(err) { break; }
                         self.synchronize();
@@ -2277,7 +2287,7 @@ impl Parser {
             }
             // Stop before statement-starting keywords
             match self.current_kind() {
-                TokenKind::Let | TokenKind::Const | TokenKind::Return |
+                TokenKind::Mut | TokenKind::Let | TokenKind::Const | TokenKind::Return |
                 TokenKind::If | TokenKind::While | TokenKind::For |
                 TokenKind::Loop | TokenKind::Match | TokenKind::Break |
                 TokenKind::Continue | TokenKind::Ensure |
@@ -2350,7 +2360,16 @@ impl Parser {
         };
 
         let kind = match self.current_kind() {
-            TokenKind::Let => self.parse_let_stmt()?,
+            TokenKind::Mut => self.parse_mut_stmt()?,
+            TokenKind::Let => {
+                let err = ParseError {
+                    span: self.current().span,
+                    message: "'let' is not a keyword in Rask".to_string(),
+                    hint: Some("use 'mut' for rebindable bindings or 'const' for permanent bindings".to_string()),
+                };
+                self.advance(); // consume 'let' so recovery doesn't loop
+                return Err(err);
+            }
             TokenKind::Const => self.parse_const_stmt()?,
             TokenKind::Return => self.parse_return_stmt()?,
             TokenKind::Break => self.parse_break_stmt()?,
@@ -2452,19 +2471,8 @@ impl Parser {
         }
     }
 
-    fn parse_let_stmt(&mut self) -> Result<StmtKind, ParseError> {
-        self.expect(&TokenKind::Let)?;
-
-        // Detect 'mut' keyword after 'let' (Rust syntax)
-        if let TokenKind::Ident(s) = self.current_kind() {
-            if s == "mut" {
-                return Err(ParseError {
-                    span: self.current().span,
-                    message: "unexpected 'mut' keyword".to_string(),
-                    hint: Some("'let' is already mutable in Rask. Use 'const' for immutable bindings".to_string()),
-                });
-            }
-        }
+    fn parse_mut_stmt(&mut self) -> Result<StmtKind, ParseError> {
+        self.expect(&TokenKind::Mut)?;
 
         if self.match_token(&TokenKind::LParen) {
             let mut patterns = Vec::new();
@@ -2476,7 +2484,7 @@ impl Parser {
             self.expect(&TokenKind::Eq)?;
             let init = self.parse_expr()?;
             self.expect_terminator()?;
-            return Ok(StmtKind::LetTuple { patterns, init });
+            return Ok(StmtKind::MutTuple { patterns, init });
         }
 
         let name_span = self.current().span;
@@ -2485,7 +2493,7 @@ impl Parser {
         self.expect(&TokenKind::Eq)?;
         let mut init = self.parse_expr()?;
 
-        // Check for guard pattern: let v = expr is Pattern else { ... }
+        // Check for guard pattern: mut v = expr is Pattern else { ... }
         if matches!(init.kind, ExprKind::IsPattern { .. }) && self.check(&TokenKind::Else) {
             let ExprKind::IsPattern { expr, pattern } = init.kind else { unreachable!() };
             let guard_start = expr.span.start;
@@ -2513,7 +2521,7 @@ impl Parser {
         }
 
         self.expect_terminator()?;
-        Ok(StmtKind::Let { name, name_span, ty, init })
+        Ok(StmtKind::Mut { name, name_span, ty, init })
     }
 
     fn parse_const_stmt(&mut self) -> Result<StmtKind, ParseError> {

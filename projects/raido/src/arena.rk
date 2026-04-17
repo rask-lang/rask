@@ -91,7 +91,7 @@ extend Arena {
     func read_string(self, offset: i64) -> string {
         const body = offset + HEADER_SIZE
         const len = read_u32le(self.buf, body)
-        let result = Vec.new()
+        mut result = Vec.new()
         for i in 0..len {
             result.push(read_u8(self.buf, body + 4 + i) as u8)
         }
@@ -208,7 +208,7 @@ extend Arena {
         if cap == 0 { return none }
         const idx_start = body + 8
         const entries_start = idx_start + cap * 4
-        let slot = hash % cap
+        mut slot = hash % cap
         for _ in 0..cap {
             const entry_idx = read_u32le(self.buf, idx_start + slot * 4)
             if entry_idx == EMPTY_SLOT {
@@ -238,7 +238,7 @@ extend Arena {
 
         const idx_start = body + 8
         const entries_start = idx_start + cap * 4
-        let slot = hash % cap
+        mut slot = hash % cap
         for _ in 0..cap {
             const entry_idx = read_u32le(self.buf, idx_start + slot * 4)
             if entry_idx == EMPTY_SLOT {
@@ -281,7 +281,7 @@ extend Arena {
             const v = read_i64le(self.buf, src + 8)
             const h = read_u32le(self.buf, src + 16)
 
-            let slot = h % new_cap
+            mut slot = h % new_cap
             while read_u32le(self.buf, new_idx_start + slot * 4) != EMPTY_SLOT {
                 slot = (slot + 1) % new_cap
             }

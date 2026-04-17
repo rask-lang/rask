@@ -76,7 +76,7 @@ fn has_unsafe_in_stmts(stmts: &[Stmt]) -> bool {
 fn has_unsafe_in_stmt(stmt: &Stmt) -> bool {
     match &stmt.kind {
         StmtKind::Expr(expr) => has_unsafe_in_expr(expr),
-        StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
             has_unsafe_in_expr(init)
         }
         StmtKind::Assign { target, value } => {

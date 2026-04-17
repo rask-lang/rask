@@ -158,7 +158,7 @@ extend JsonParser {
         self.pos = self.pos + 1
         self.skip_ws()
 
-        let map = Map<string, JsonValue>.new()
+        mut map = Map<string, JsonValue>.new()
 
         if self.peek() == 125 {
             self.pos = self.pos + 1
@@ -196,7 +196,7 @@ extend JsonParser {
         self.pos = self.pos + 1
         self.skip_ws()
 
-        let arr = Vec<JsonValue>.new()
+        mut arr = Vec<JsonValue>.new()
 
         if self.peek() == 93 {
             self.pos = self.pos + 1
@@ -225,7 +225,7 @@ extend JsonParser {
             return Err(JsonError.ParseError("expected '\"'"))
         }
 
-        let b = StringBuilder.new()
+        mut b = StringBuilder.new()
 
         while self.pos < self.len {
             const byte = self.advance()
@@ -271,8 +271,8 @@ extend JsonParser {
         if self.pos + 4 > self.len {
             return Err(JsonError.ParseError("incomplete unicode escape"))
         }
-        let cp: u32 = 0
-        let i = 0
+        mut cp: u32 = 0
+        mut i = 0
         while i < 4 {
             const b = self.advance()
             const digit = hex_digit(b)
@@ -395,7 +395,7 @@ struct json {  }
 extend json {
     /// Parse a JSON string into a JsonValue tree. RFC 8259 compliant.
     public func parse(input: string) -> JsonValue or JsonError {
-        let parser = JsonParser.new(input)
+        mut parser = JsonParser.new(input)
         const value = try parser.parse_value()
         parser.skip_ws()
         if parser.pos < parser.len {
@@ -411,7 +411,7 @@ extend json {
 
     /// Serialize a JsonValue to a pretty-printed JSON string.
     public func stringify_pretty(value: JsonValue) -> string {
-        let b = StringBuilder.new()
+        mut b = StringBuilder.new()
         stringify_pretty_inner(value, mutate b, 0)
         return b.build()
     }
@@ -450,9 +450,9 @@ func stringify_value(value: JsonValue) -> string {
 }
 
 func stringify_array(arr: Vec<JsonValue>) -> string {
-    let b = StringBuilder.new()
+    mut b = StringBuilder.new()
     b.append("[")
-    let first = true
+    mut first = true
     for item in arr {
         if !first {
             b.append(",")
@@ -465,9 +465,9 @@ func stringify_array(arr: Vec<JsonValue>) -> string {
 }
 
 func stringify_object(map: Map<string, JsonValue>) -> string {
-    let b = StringBuilder.new()
+    mut b = StringBuilder.new()
     b.append("{")
-    let first = true
+    mut first = true
     for (key, value) in map {
         if !first {
             b.append(",")
@@ -482,9 +482,9 @@ func stringify_object(map: Map<string, JsonValue>) -> string {
 }
 
 func escape_string(s: string) -> string {
-    let b = StringBuilder.new()
+    mut b = StringBuilder.new()
     b.append_char('"')
-    let i: usize = 0
+    mut i: usize = 0
     while i < s.len() {
         const byte = s.byte_at(i)
         if byte == 34 {
@@ -547,7 +547,7 @@ func stringify_pretty_inner(value: JsonValue, mutate out: StringBuilder, indent:
                 return
             }
             out.append("[\n")
-            let first = true
+            mut first = true
             for item in arr {
                 if !first {
                     out.append(",\n")
@@ -566,7 +566,7 @@ func stringify_pretty_inner(value: JsonValue, mutate out: StringBuilder, indent:
                 return
             }
             out.append("{\n")
-            let first = true
+            mut first = true
             for (key, val) in map {
                 if !first {
                     out.append(",\n")
@@ -585,7 +585,7 @@ func stringify_pretty_inner(value: JsonValue, mutate out: StringBuilder, indent:
 }
 
 func write_indent(mutate out: StringBuilder, level: usize) {
-    let i: usize = 0
+    mut i: usize = 0
     while i < level {
         out.append("  ")
         i = i + 1

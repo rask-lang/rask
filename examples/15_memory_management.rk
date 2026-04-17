@@ -53,7 +53,7 @@ func main() {
 
     // Traverse the list using handles
     print("List values: ")
-    let current = Some(first)
+    mut current = Some(first)
 
     loop {
         if current is Some(handle) {

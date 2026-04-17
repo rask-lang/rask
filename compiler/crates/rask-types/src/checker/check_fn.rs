@@ -235,7 +235,7 @@ impl TypeChecker {
     pub(super) fn check_no_alloc_stmt(&mut self, fn_name: &str, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Expr(e) => self.check_no_alloc_expr(fn_name, e),
-            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+            StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
                 self.check_no_alloc_expr(fn_name, init);
             }
             StmtKind::Assign { value, .. } => self.check_no_alloc_expr(fn_name, value),

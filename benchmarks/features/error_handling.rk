@@ -8,8 +8,8 @@ func checked_div(a: i64, b: i64) -> i64 or string {
 }
 
 func sum_divs(n: i64) -> i64 or string {
-    let sum = 0
-    let i = 1
+    mut sum = 0
+    mut i = 1
     while i <= n {
         sum = sum + try checked_div(1000, i)
         i = i + 1
@@ -18,7 +18,7 @@ func sum_divs(n: i64) -> i64 or string {
 }
 
 benchmark "result propagation 10k" {
-    let i = 0
+    mut i = 0
     while i < 100 {
         sum_divs(100)
         i = i + 1

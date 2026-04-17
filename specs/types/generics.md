@@ -354,7 +354,7 @@ func increment<T: Numeric>(val: T) -> T {
 ```rask
 public func sort<T: Comparable>(items: []T) {
     for i in 1..items.len() {
-        let j = i
+        mut j = i
         while j > 0 && items[j] < items[j - 1] {
             swap(mut items[j], mut items[j - 1])
             j = j - 1

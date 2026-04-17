@@ -1139,8 +1139,8 @@ impl<'a> Printer<'a> {
             StmtKind::Expr(expr) => {
                 self.format_expr(expr);
             }
-            StmtKind::Let { name, name_span: _, ty, init } => {
-                self.emit("let ");
+            StmtKind::Mut { name, name_span: _, ty, init } => {
+                self.emit("mut ");
                 self.emit(name);
                 if let Some(ref ty) = ty {
                     self.emit(": ");
@@ -1150,8 +1150,8 @@ impl<'a> Printer<'a> {
                 self.emit(" = ");
                 self.format_expr(init);
             }
-            StmtKind::LetTuple { patterns, init } => {
-                self.emit("let ");
+            StmtKind::MutTuple { patterns, init } => {
+                self.emit("mut ");
                 self.format_tuple_pat_list(patterns);
                 self.emit(" = ");
                 self.format_expr(init);

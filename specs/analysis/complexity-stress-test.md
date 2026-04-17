@@ -106,7 +106,7 @@ func sync_physics(mutate world: GameWorld) {
 <!-- test: skip -->
 ```rask
 func update_entities(mutate world: GameWorld) -> () or Error {
-    let doomed: Vec<Handle<Entity>> = Vec.new()
+    mut doomed: Vec<Handle<Entity>> = Vec.new()
 
     for h in world.entities.cursor() {
         world.entities[h].health -= 1

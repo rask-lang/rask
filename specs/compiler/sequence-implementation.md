@@ -44,15 +44,15 @@ Each stage is independently shippable and testable.
 - `ClosureParam.is_mutate` field already exists in `rask-ast/src/expr.rs:260`
 - **Tests**: `|mutate x: T|` parses; `|mutate x|` without type errors; untyped `|x|` unchanged
 
-### Stage 2 — Stdlib: declare `Sequence<T>` / `SequenceMut<T>` ✓
+### Stage 2 — Stdlib: declare `Sequence<T>` / `SequenceMut<T>` ✓ (partial)
 
-- **File**: `stdlib/sequence.rk`
+- **File**: `stdlib/sequence.rk` — currently contains:
   ```rask
-  public type alias Sequence<T> = func(yield: |T| -> bool)
-  public type alias SequenceMut<T> = func(yield: |mutate item: T| -> bool)
+  public type alias Sequence<T> = func(|T| -> bool)
   ```
 - **File**: `compiler/crates/rask-stdlib/src/stubs.rs` — forwards `DeclKind::TypeAlias` from stdlib stubs (previously filtered out)
-- **Follow-up**: verify the aliases actually resolve at use sites. Tests of the form `const s: Sequence<i32> = |yield| { yield(1); true }` should type-check. If resolution fails, inspect `rask-resolve/src/resolver.rs` and `rask-types/src/checker/declarations.rs`.
+- **Known gap**: `SequenceMut<T>` is commented out. The type-parser path for function types (`parse_fn_type`) doesn't accept named parameters (`yield: |T|`) or `mutate` in closure-type parameter position. Stage 3 or a separate small stage should extend `compiler/crates/rask-types/src/checker/parse_type.rs` (`parse_fn_type` around line 247) to accept both, then restore the `SequenceMut` and named-`yield` forms.
+- **Follow-up**: verify the alias resolves at use sites. `const s: Sequence<i32> = |x| { x > 0 }` should type-check. If resolution fails, inspect `rask-resolve/src/resolver.rs` and `rask-types/src/checker/declarations.rs`.
 
 ### Stage 3 — MIR: for-loop lowering over `Sequence<T>`
 

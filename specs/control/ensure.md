@@ -277,7 +277,7 @@ Cleaning up pools of linear resources:
 <!-- test: parse -->
 ```rask
 func process_many_files(paths: Vec<string>) -> () or Error {
-    let files: Pool<File> = Pool.new()
+    mut files: Pool<File> = Pool.new()
     ensure files.take_all_with(|f| { f.close(); })
 
     for path in paths {
@@ -297,7 +297,7 @@ Errors during cleanup (e.g., `close()` fails) are ignored by default (ER1). If c
 <!-- test: parse -->
 ```rask
 func process_many_files_careful(paths: Vec<string>) -> () or Error {
-    let files: Pool<File> = Pool.new()
+    mut files: Pool<File> = Pool.new()
 
     for path in paths {
         const file = try File.open(path)
@@ -459,7 +459,7 @@ func modify_database(db: Database) -> () or Error {
 <!-- test: skip -->
 ```rask
 func process_many(paths: Vec<string>) -> () or Error {
-    let resources: Pool<Resource> = Pool.new()
+    mut resources: Pool<Resource> = Pool.new()
     ensure resources.take_all_with(|r| { r.cleanup(); })
 
     for path in paths {

@@ -30,7 +30,7 @@ extend TextBuffer {
 }
 
 test "string is Copy — read then write same container" {
-    let buf = TextBuffer.new()
+    mut buf = TextBuffer.new()
     buf.add("hello")
     buf.add("world")
     const old = buf.replace(0, "changed")

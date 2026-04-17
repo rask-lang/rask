@@ -104,7 +104,7 @@ For one-off parsing without a struct, use `unpack`:
 
 <!-- test: skip -->
 ```rask
-let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
+mut (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
 ```
 
 See [stdlib/bits.md](../stdlib/bits.md) for `unpack`, `pack`, and related functions.

@@ -258,7 +258,7 @@ for i in 0..min(a.len(), b.len()) {
 
 // Non-indexable (rare — explicit buffer shows the cost)
 const a_items = tree_a.in_order().collect()
-let idx = 0
+mut idx = 0
 tree_b.in_order()(|b_node| {
     if idx >= a_items.len(): return false
     process(a_items[idx], b_node)
@@ -369,7 +369,7 @@ FIX: Use find() or capture via a local:
   const result = seq.find(|x| matches(x))
 
   // or
-  let found: T? = None
+  mut found: T? = None
   for x in seq {
       if matches(x) { found = Some(x); break }
   }

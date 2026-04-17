@@ -67,8 +67,8 @@ extend Prototype {
 
     // Disassemble the whole prototype to a string
     func disassemble(self) -> string {
-        let out = "== {self.name} (regs={self.num_registers}, args={self.arity}) ==\n"
-        let i = 0
+        mut out = "== {self.name} (regs={self.num_registers}, args={self.arity}) ==\n"
+        mut i = 0
         while i < self.code.len() {
             const instr = self.code.get(i)
             out = out + disassemble_instr(instr, i) + "\n"

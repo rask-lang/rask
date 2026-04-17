@@ -11,7 +11,7 @@ func gravitational_force(m1: f64, m2: f64, r: f64) -> f64 {
 
 func sqrt(x: f64) -> f64 {
     if x <= 0.0 { return 0.0 }
-    let g = x / 2.0
+    mut g = x / 2.0
     for i in 0..20 {
         g = (g + x / g) / 2.0
     }

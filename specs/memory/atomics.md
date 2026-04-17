@@ -213,7 +213,7 @@ func read_latest(pool: Pool<Reading>) -> Reading? {
 
 <!-- test: skip -->
 ```rask
-let counter = AtomicU64.new(0)
+mut counter = AtomicU64.new(0)
 const final_value = counter.into_value()
 ```
 
@@ -550,6 +550,8 @@ This sketch shows the push path — CAS on handles with generation-based ABA pro
 ### See Also
 
 - [Synchronization Primitives](../concurrency/sync.md) — `Mutex<T>`, `Shared<T>` for compound data (`conc.sync`)
+- [Boxes](boxes.md) — Why atomics sit adjacent to the box family (`mem.boxes`)
 - [Concurrency](../concurrency/async.md) — Channels and task spawning (`conc.async`)
 - [Unsafe](unsafe.md) — Raw pointer dereferencing for `AtomicPtr` results (`mem.unsafe`)
 - [Pools](pools.md) — Handle-based storage, validation for `AtomicHandle` results (`mem.pools`)
+- [Ownership](ownership.md) — Atomic values are owned, not reference-typed (`mem.ownership`)

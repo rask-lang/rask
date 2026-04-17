@@ -42,7 +42,7 @@ struct Holder { data: Vec<i32> }
 
 func test_borrow_escape() {
     const h = Holder { data: Vec.new() }
-    let escaped = h.data     // ERROR: h.data is a block-scoped borrow (non-Copy)
+    mut escaped = h.data     // ERROR: h.data is a block-scoped borrow (non-Copy)
     // escaped would outlive h
 }
 
@@ -78,7 +78,7 @@ func boost(mutate health: i32) { health += 10 }
 func read_player(p: Player) -> i32 { return p.score }
 
 func test_overlapping_borrow() {
-    let p = Player { health: 50, score: 10 }
+    mut p = Player { health: 50, score: 10 }
     // Passing p.health as mutate, then p as borrow — whole-object
     // conflicts with field-level borrow (F3)
     boost(p.health)

@@ -208,7 +208,7 @@ using arena {
 // all memory freed at once
 
 // FixedBuffer — no malloc, embedded-safe
-let buf: [u8; 4096] = [0; 4096]
+mut buf: [u8; 4096] = [0; 4096]
 const alloc = FixedBuffer.new(buf)
 using alloc {
     const data = Vec.new()
@@ -317,7 +317,7 @@ func typecheck(ast: Ast) -> TypedAst {
 <!-- test: skip -->
 ```rask
 func sensor_loop() {
-    let buf: [u8; 2048] = [0; 2048]
+    mut buf: [u8; 2048] = [0; 2048]
     const alloc = FixedBuffer.new(buf)
 
     using alloc {
@@ -334,6 +334,10 @@ func sensor_loop() {
 ### See Also
 
 - [Context Clauses](context-clauses.md) — `using` clause mechanics (`mem.context`)
+- [Ownership](ownership.md) — Value lifetimes within allocator scopes (`mem.ownership`)
+- [Linearity](linear.md) — Arena vs linear: why they're separate mechanisms (`mem.linear`)
 - [Pools](pools.md) — Handle-based storage, typed arenas (`mem.pools`)
 - [Borrowing](borrowing.md) — Scope restrictions for growable sources (`mem.borrowing`)
+- [Boxes](boxes.md) — Boxes allocate through the ambient allocator (`mem.boxes`)
+- [Owned Pointers](owned.md) — `own expr` allocates through the context allocator (`mem.owned`)
 - [Collections](../stdlib/collections.md) — Vec, Map allocation semantics (`std.collections`)

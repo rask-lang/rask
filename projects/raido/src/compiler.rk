@@ -36,7 +36,7 @@
 //    ← parameters →       ← locals →            ← temporaries →
 //
 // - Parameters get the first registers (r0, r1, ...).
-// - Local variables (const/let) get the next ones.
+// - Local variables (const/mut) get the next ones.
 // - Temporaries are used during expression evaluation and freed afterward.
 //
 // The compiler tracks `next_reg` — the next free register. To allocate:
@@ -234,7 +234,7 @@ extend Compiler {
     // Look up a variable by name. Returns the register, or -1 if not found.
     func resolve_local(self, name: string) -> i64 {
         // Search backwards (innermost scope first)
-        let i = self.scope.locals.len() - 1
+        mut i = self.scope.locals.len() - 1
         while i >= 0 {
             const local = self.scope.locals.get(i)
             if local.name == name {
@@ -286,7 +286,7 @@ extend Compiler {
     // --- Statements ---
     // A statement is one "line" of code:
     //   const x = 42
-    //   let y = x + 1
+    //   mut y = x + 1
     //   return x
     //   if x > 0 { ... }
     //   func foo() { ... }
@@ -328,6 +328,6 @@ extend Compiler {
 // --- Public API ---
 
 func compile(source: string) -> Chunk or CompileError {
-    let compiler = Compiler.new(source)
+    mut compiler = Compiler.new(source)
     return compiler.compile()
 }

@@ -274,11 +274,11 @@ func load_manifest(path: string) -> Manifest or FetchError {
 
 func parse_manifest(content: string) -> Manifest or ManifestError {
     const lines = content.lines()
-    let name = ""
-    let version_str = ""
-    let deps = Vec.new()
-    let in_block = false
-    let line_num = 0
+    mut name = ""
+    mut version_str = ""
+    mut deps = Vec.new()
+    mut in_block = false
+    mut line_num = 0
 
     for line in lines {
         line_num += 1
@@ -327,8 +327,8 @@ func parse_manifest(content: string) -> Manifest or ManifestError {
 
 // Extract the nth quoted string from a line, or error.
 func extract_nth_quoted(line: string, n: i32, line_num: i32, label: string) -> string or ManifestError {
-    let pos = 0
-    let found = 0
+    mut pos = 0
+    mut found = 0
     while found <= n {
         const open = line[pos..].find("\"") is Some(idx) else {
             return Err(ManifestError.ParseError(line_num, "expected quoted {label}"))
@@ -407,7 +407,7 @@ func local_available(root: string, name: string) -> Vec<PackageMeta> or Registry
         return Err(RegistryError.IoError("expected array in {index_path}"))
     }
 
-    let versions = Vec.new()
+    mut versions = Vec.new()
     for entry in version_list {
         const ver_str = entry.as_string() is Some(s) else { continue }
         const meta_path = "{root}/{name}/{ver_str}/meta.json"
@@ -460,7 +460,7 @@ func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or Regi
         return Err(RegistryError.IoError("bad version in {source}: {ver_str}"))
     }
 
-    let deps = Vec.new()
+    mut deps = Vec.new()
     if m.get("deps")?.as_array() is Some(dep_arr) {
         for d_val in dep_arr {
             const d_obj = d_val.as_object() is Some(dm) else { continue }
@@ -516,7 +516,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
         return Err(RegistryError.NetworkError("expected array from registry for {name}"))
     }
 
-    let versions = Vec.new()
+    mut versions = Vec.new()
     for entry in arr {
         const meta = parse_meta_from_json(entry, name) is Ok(m) else { continue }
         versions.push(meta)
@@ -560,7 +560,7 @@ struct ResolveState {
 }
 
 func resolve(manifest: Manifest, registry: any Registry) -> DepGraph or FetchError {
-    let state = ResolveState {
+    mut state = ResolveState {
         packages: Pool.new(),
         by_name: Map.new(),
         visiting: Vec.new(),
@@ -633,7 +633,7 @@ func resolve_one(
         else |e| FetchError.Registry(e)
 
     // Filter to satisfying versions, pick newest via sort_by
-    let candidates = versions.filter(|m| constraint.satisfies(m.version))
+    mut candidates = versions.filter(|m| constraint.satisfies(m.version))
     candidates.sort_by(|a, b| b.version.compare(a.version))
 
     const meta = candidates.first() is Some else {
@@ -667,7 +667,7 @@ func resolve_one(
 }
 
 func format_cycle(chain: Vec<string>, name: string) -> string {
-    let parts = chain.clone()
+    mut parts = chain.clone()
     parts.push(name)
     return parts.join(" -> ")
 }
@@ -685,7 +685,7 @@ struct FetchItem {
 }
 
 func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
-    let items = Vec.new()
+    mut items = Vec.new()
     const handles = graph.packages.handles()
     for handle in handles {
         with graph.packages[handle] as pkg {
@@ -713,7 +713,7 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
 func verify_checksum(data: string, expected: string, pkg_name: string) -> () or RegistryError {
     if expected.is_empty() { return Ok(()) }
     // Simple hash: sum all bytes mod 2^32 (real impl would SHA-256)
-    let hash: i64 = 0
+    mut hash: i64 = 0
     for ch in data.chars() {
         hash = (hash * 31 + ch.to_int()) % 4294967296
     }
@@ -742,7 +742,7 @@ func fetch_packages(
     // Concurrent fetch: spawn a task per package, collect results via channel.
     // Mutex<i32> tracks fetch count across tasks (conc.sync/MX1).
     using Multitasking {
-        let (tx, rx) = Channel.buffered(items.len())
+        mut (tx, rx) = Channel.buffered(items.len())
         const counter = Mutex.new(0)
 
         for item in items {
@@ -761,8 +761,8 @@ func fetch_packages(
         }
 
         // Collect results — first error is fatal
-        let first_error: FetchError? = None
-        let received = 0
+        mut first_error: FetchError? = None
+        mut received = 0
         while received < items.len() {
             if rx.recv() is Ok(result) {
                 match result {
@@ -822,7 +822,7 @@ func write_lockfile(graph: DepGraph, path: string) -> () or FetchError {
         else |e| FetchError.Io("cannot create temp lock file: {e}")
     ensure fs.remove(tmp_path) else |_| {}
 
-    let out = string.new()
+    mut out = string.new()
     out.push_str("lockfile-version = 1\n\n")
 
     const order = topo_sort(graph)
@@ -838,7 +838,7 @@ func write_lockfile(graph: DepGraph, path: string) -> () or FetchError {
             out.push_str("checksum = \"{pkg.meta.checksum}\"\n")
 
             if !pkg.deps.is_empty() {
-                let dep_names = Vec.new()
+                mut dep_names = Vec.new()
                 for dep_handle in pkg.deps {
                     with graph.packages[dep_handle] as dep_pkg {
                         dep_names.push("\"{dep_pkg.meta.name}\"")
@@ -866,16 +866,16 @@ func write_lockfile(graph: DepGraph, path: string) -> () or FetchError {
 }
 
 func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
-    let packages = Map.new()
+    mut packages = Map.new()
 
     const content = fs.read_file(path) is Ok(c) else {
         // No lock file yet — that's fine
         return Ok(packages)
     }
 
-    let current_name = ""
-    let current_version = ""
-    let current_checksum = ""
+    mut current_name = ""
+    mut current_version = ""
+    mut current_checksum = ""
 
     for line in content.lines() {
         const trimmed = line.trim()
@@ -935,8 +935,8 @@ func extract_quoted_value(line: string) -> string {
 // unique in the dependency graph.
 
 func topo_sort(graph: DepGraph) -> Vec<Handle<ResolvedPkg>> {
-    let visited = Map.new()
-    let order = Vec.new()
+    mut visited = Map.new()
+    mut order = Vec.new()
 
     topo_visit(graph, graph.root, mutate visited, mutate order)
 
@@ -988,9 +988,9 @@ func print_node(graph: DepGraph, handle: Handle<ResolvedPkg>, depth: i32) {
 
 func print_lock_diff(old_lock: Map<string, LockedPackage>, graph: DepGraph) {
     const handles = graph.packages.handles()
-    let added = 0
-    let updated = 0
-    let unchanged = 0
+    mut added = 0
+    mut updated = 0
+    mut unchanged = 0
 
     for handle in handles {
         with graph.packages[handle] as pkg {
@@ -1037,7 +1037,7 @@ struct CliArgs {
 }
 
 func parse_cli_args(args: Vec<string>) -> CliArgs or FetchError {
-    let result = CliArgs {
+    mut result = CliArgs {
         command: "",
         manifest_path: "build.rk",
         registry_type: RegistryType.Local,
@@ -1047,8 +1047,8 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or FetchError {
         lock_path: "rask.lock",
     }
 
-    let positional = Vec.new()
-    let i = 1  // skip program name
+    mut positional = Vec.new()
+    mut i = 1  // skip program name
 
     while i < args.len() {
         const arg = args[i]
@@ -1188,7 +1188,7 @@ func run(args: CliArgs) -> () or FetchError {
             println("Resolving dependencies...")
             const graph = try resolve(manifest, registry)
 
-            let drift = false
+            mut drift = false
             const handles = graph.packages.handles()
             for handle in handles {
                 with graph.packages[handle] as pkg {

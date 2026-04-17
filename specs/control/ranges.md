@@ -82,7 +82,7 @@ for x in (0.0..1.0).step(0.1) { }  // Floats: 0.0, 0.1, ..., 0.9
 
 <!-- test: skip -->
 ```rask
-let vec: Vec<u16> = Vec.new()
+mut vec: Vec<u16> = Vec.new()
 for i in 0..vec.len() { }  // i inferred as usize
 for i in 0..10 { }          // i inferred as i32 (default)
 for i in 0u8..10 { }        // i explicitly u8
@@ -135,7 +135,7 @@ struct RangeInclusive<T> {
 extend RangeInclusive<T> where T: Int {
     public func iter(self) -> Sequence<T> {
         return |yield| {
-            let cur = self.start
+            mut cur = self.start
             loop {
                 if not yield(cur): return
                 if cur == self.end: return
