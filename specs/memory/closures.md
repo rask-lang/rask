@@ -67,7 +67,27 @@ const parse = |s| {
 
 `return` inside a closure exits the **closure**, not the enclosing function (`ctrl.flow/CF26`). A closure is an anonymous function — same return semantics apply.
 
-Closure parameters use borrow mode only — no `mutate` or `take`. The `||` list already serves double duty for captures and parameters (e.g., `|item, mutate total|` where `item` is a parameter and `mutate total` is a capture). Adding parameter modes would create ambiguity: `|mutate x|` could mean either "mutable capture of outer `x`" or "parameter `x` by mutable borrow." If a closure needs `mutate` parameters, extract it to a standalone function.
+Closure parameters default to borrow mode. Mutable-borrow parameters are allowed with an explicit type: `|mutate x: T|`. The explicit type distinguishes a parameter from a capture — `|mutate x|` (no type) remains mutable-capture syntax (`mutate total` in the `|item, mutate total|` example below). `take` parameters are not supported; if a closure needs `take` parameters, extract it to a standalone function.
+
+| Rule | Description |
+|------|-------------|
+| **CP1: Borrow by default** | `\|x\|` binds parameter `x` by read-only borrow |
+| **CP2: Mutable parameter with explicit type** | `\|mutate x: T\|` binds parameter `x` by mutable borrow. Explicit type required to distinguish from mutable-capture syntax |
+| **CP3: No untyped mutable parameter** | `\|mutate x\|` without a type is always mutable-capture syntax, never a parameter. Enforced to keep the shorthand `\|mutate var\|` unambiguous |
+| **CP4: No take parameter** | Closures cannot take ownership via a parameter. Use a standalone function |
+
+<!-- test: parse -->
+```rask
+// Borrow parameter (default)
+const print_name = |u: User| print(u.name)
+
+// Mutable-borrow parameter (explicit type required)
+const grow = |mutate item: Item| { item.level += 1 }
+
+// Mutable capture (no type on parameter)
+let total = 0
+items.for_each(|item, mutate total| { total += item.value })
+```
 
 ## Mutable Capture
 

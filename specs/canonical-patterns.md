@@ -507,7 +507,7 @@ const result = items
 - `while` with manual index increment — use `for i in 0..n`.
 - Manual `collect` loops — use `.map()` / `.filter()` / `.fold()`.
 
-See [stdlib/iteration.md](stdlib/iteration.md), [types/iterator-protocol.md](types/iterator-protocol.md).
+See [stdlib/iteration.md](stdlib/iteration.md), [types/sequence-protocol.md](types/sequence-protocol.md).
 
 ---
 

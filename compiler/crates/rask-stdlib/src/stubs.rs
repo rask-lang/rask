@@ -35,6 +35,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("char.rk", include_str!("../../../../stdlib/char.rk")),
     ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
+    ("sequence.rk", include_str!("../../../../stdlib/sequence.rk")),
 ];
 
 /// A method extracted from a stub file.
@@ -134,7 +135,8 @@ impl StubRegistry {
             for decl in parse_result.decls {
                 match &decl.kind {
                     DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Extern(_)
-                    | DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Import(_) => {
+                    | DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Import(_)
+                    | DeclKind::TypeAlias(_) => {
                         decls.push(decl);
                     }
                     _ => {}
@@ -174,6 +176,7 @@ impl StubRegistry {
                         DeclKind::Extern(_) => true,
                         DeclKind::Struct(_) | DeclKind::Enum(_) => true,
                         DeclKind::Import(_) => true,
+                        DeclKind::TypeAlias(_) => true,
                         _ => false,
                     }
                 } else {
