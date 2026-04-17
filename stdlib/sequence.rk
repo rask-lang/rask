@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Sequence<T>: push iteration protocol (see specs/types/sequence-protocol.md).
+// A Sequence is a function that takes a yield closure and calls it per item.
+// Returning `false` from the yield closure stops iteration early.
+
+public type alias Sequence<T> = func(yield: |T| -> bool)
+
+public type alias SequenceMut<T> = func(yield: |mutate item: T| -> bool)
