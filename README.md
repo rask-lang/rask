@@ -12,7 +12,7 @@ Rask sits somewhere between Rust and Go — memory safety without lifetime annot
 
 It's a hobby project. I'm figuring out how far this approach can go. **[Why a new language?](WHY_RASK.md)**
 
-**Status:** Working compiler (Cranelift backend) and interpreter. Simple programs compile natively; validation programs need fixes.
+**Status:** Cranelift backend compiles and runs programs natively; interpreter available as a fallback. Core language works end-to-end. Some codegen regressions open — see [issues](https://github.com/rask-lang/rask/issues).
 
 ---
 
@@ -30,16 +30,6 @@ func search_file(path: string, pattern: string) -> () or IoError {
 ```
 
 Full example: [grep_clone.rk](examples/grep_clone.rk)
-
----
-
-**Jump to:**
-- [Getting Started](#getting-started) - Build and run
-- [The Idea](#the-idea) - What I'm trying and why
-- [What This Costs](#what-this-costs) - Tradeoffs
-- [Implementation Status](#implementation-status) - What works today
-- [Design Principles](#design-principles) - Core philosophy
-- [Documentation](#documentation) - Where to look
 
 ---
 
@@ -122,7 +112,7 @@ Structs hold data, traits define behavior, you extend types with methods. No inh
 
 I'm not pretending there aren't tradeoffs. Here's what you give up:
 
-**Handle overhead:** Accessing through handles costs ~1-2ns (generation check + bounds check, needs actual benchmark proof). In most code this doesn't matter. In tight loops processing millions of items, copy data out and batch process. Compiler coalesces redundant checks; frozen contexts (`using frozen Pool<T>`) enable further elimination during iteration.
+**Handle overhead:** Accessing through handles costs roughly one generation check plus a bounds check. In most code this doesn't matter. In tight loops processing millions of items, copy data out and batch-process. The compiler coalesces redundant checks and can eliminate them entirely in frozen contexts (`using frozen Pool<T>`).
 
 **Restructuring some patterns:**
 - Parent pointers → store handles
@@ -141,23 +131,22 @@ The upside, if the approach works out:
 
 ## Implementation Status
 
-**Right now:** Cranelift backend compiles and runs programs natively. Interpreter available as fallback (`rask run --interp`). Some codegen bugs remain — see [issues](https://github.com/rask-lang/rask/issues).
-
 **What works:**
-- Memory model: ownership, moves, borrows, handles
+- Memory model: ownership, moves, borrows, handles, linearity
 - Type system: primitives, structs, enums, generics, traits
 - Control flow: if/match/loops with explicit returns
 - Concurrency: spawn/join, channels, thread pools
-- Resource types: files must be closed, linear tracking works
-- Error handling: `T or E` results, `try` propagation
+- Resource types: linear tracking, `ensure` cleanup, `try` propagation
+- Error handling: `T or E` results, union errors, optionals (`T?`, `??`, `!`)
 - Standard types: Vec, Map, Pool, String, Option, Result
 - Native codegen: structs, closures, Vec/Map, threads, channels, file I/O
 - Build system: `rask build`, packages, workspaces, watch mode
 - Tooling: `rask test`, `rask fmt`, `rask lint`, `rask check`, LSP
 
 **What's next:**
-- Fix validation program regressions ([#203](https://github.com/rask-lang/rask/issues/203))
+- Fix validation-program regressions ([#203](https://github.com/rask-lang/rask/issues/203))
 - Stdlib modules in Rask (HTTP, JSON) — see [ROADMAP.md](ROADMAP.md)
+
 ---
 
 ## Design Principles
