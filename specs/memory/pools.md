@@ -650,6 +650,8 @@ extend Observable<T> {
 ### See Also
 
 - [Borrowing](borrowing.md) — Value-based access, `with` blocks (`mem.borrowing`)
+- [Boxes](boxes.md) — The container family Pool belongs to (`mem.boxes`)
+- [Linearity](linear.md) — Rules for `Pool<Linear>` cleanup (`mem.linear`)
 - [Resource Types](resource-types.md) — Resource consumption in pools (`mem.resources`)
 - [Context Clauses](context-clauses.md) — Handle auto-resolution (`mem.context`)
 - [Closures](closures.md) — Pool+Handle pattern for shared mutable state (`mem.closures`)

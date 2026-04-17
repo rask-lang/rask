@@ -384,7 +384,7 @@ Error messages use value-based framing. No "statement-scoped" or "view released 
 ```
 ERROR [mem.borrowing/E4]: cannot bind non-Copy collection element
    |
-5  |  let entity = pool[h]
+5  |  const entity = pool[h]
    |               ^^^^^^^ Entity is not Copy
 6  |  entity.update()
    |  ^^^^^^ cannot use — element was not copied out

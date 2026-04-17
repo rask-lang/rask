@@ -260,7 +260,7 @@ FIX: Use Cell<T> for shared mutable state:
 ```
 ERROR [mem.closures/IO3]: closure accesses outer scope directly but is stored
    |
-5  |  let f = items.filter(|i| vec[*i].active)
+5  |  const f = items.filter(|i| vec[*i].active)
    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ closure accesses 'vec' without capturing
 
 FIX 1: Consume immediately:
@@ -269,7 +269,7 @@ FIX 1: Consume immediately:
 
 FIX 2: Capture explicitly:
 
-  let active_set = items.filter(|i| vec[*i].active).collect()
+  const active_set = items.filter(|i| vec[*i].active).collect()
 ```
 
 ## Edge Cases

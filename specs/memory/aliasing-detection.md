@@ -182,5 +182,6 @@ pool.get(h)?.transform().apply(|v| {
 ### See Also
 
 - [Borrowing](borrowing.md) — Value-based access, `with` blocks, block-scoped views (`mem.borrowing`)
+- [Boxes](boxes.md) — The container family whose `with` access this analysis secures (`mem.boxes`)
 - [Closures](closures.md) — EC1-EC4 rules for expression-scoped closures (`mem.closures`)
 - [Pools](pools.md) — Pool `with`-based access (`mem.pools`)
