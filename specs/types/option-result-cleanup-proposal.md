@@ -1,128 +1,128 @@
 <!-- id: type.option-result-cleanup -->
 <!-- status: proposed -->
-<!-- summary: Shrink the Option/Result surface: drop magic rebind, collapse five rebind forms to one destructure, keep try as the propagation keyword -->
+<!-- summary: Remove Some. Option becomes a builtin "present or none" status type. Binding happens through the language's regular mechanisms (const=, match, narrowing), not through Option-specific destructure forms. -->
 <!-- depends: types/optionals.md, types/error-types.md -->
 
-# Option/Result Handling — Cleanup Proposal
+# Option Handling — Cleanup Proposal
 
-The current Option/Result surface has accumulated overlap and ambiguity. `is Some` narrows implicitly inside `if` but not in guards. `if x is Some { use(x) }` silently rebinds `x` from `Option<T>` to `T` with no syntactic marker. The same intent can be written five different ways, each with slightly different rules. This proposal shrinks the surface to a set of non-overlapping constructs that each do one thing, without inventing new keywords.
+The current spec says "Option is just an enum" (OPT1). In practice Option is not just an enum — it has dedicated type sugar (`T?`), a dedicated literal (`none`), dedicated chain/fallback/force operators (`?.`, `??`, `!`), auto-wrapping (OPT8), and dedicated propagation via `try`. The "just an enum" framing is fiction we tell ourselves, and it's the source of the churn in the rebinding forms.
+
+This proposal stops pretending. **Option becomes a builtin status type with no `Some` wrapper.** Everything that exists today because of `Some` — `is Some(u)`, `as u`, `const Some(u) = x`, `if const Some(u) = x`, magic rebind — disappears, because there is nothing to wrap or destructure. Result stays exactly as it is: a regular enum with `Ok` and `Err` variants.
 
 ## Problems with the current design
 
-**P1 — Magic rebind in `if x is Some { use(x) }`.** The scrutinee silently changes from `Option<T>` to `T` inside the block, with no syntactic marker. It's the only place in the language where pattern matching retroactively rewrites an outer-scope variable's type invisibly.
+**P1 — The `Some` wrapper is pure ceremony.** Auto-wrapping (OPT8) already makes `T` coerce to `T?` at function boundaries. Construction sites still have to write `Some(x)` manually when an intermediate expression needs to be `T?`. The wrapper adds a tag that's always the same tag.
 
-**P2 — `is Some` behaves differently in `if` vs. guards.** In `if x is Some { use(x) }` it narrows-and-unwraps. In `const u = x is Some else { return }` it narrows-and-unwraps (guard case). In `if x is Some(u)` it destructures. Three constructs, three rulesets for the same prefix.
+**P2 — Every rebind form exists because of `Some`.** `is Some(u)`, `is Some as u`, `const Some(u) = x`, `if const Some(u) = x`, magic rebind — five ways to say "check present and name the value." The entire category exists to work around the wrapper.
 
-**P3 — Redundant rebinding forms.** `is Some(u)`, `is Some as u`, `const Some(u) = x`, `if const Some(u) = x`, and magic rebind all express "check Some and name the payload" with slightly different rules and readings.
+**P3 — Match on Option has a noise tag.** `match x { Some(v) => …, None => … }` — the `Some` on the left always matches the same shape. Compare `match x { v => …, none => … }`.
+
+**P4 — The "Option is just an enum" line is a lie.** Option has more dedicated surface than any other type in the language. Treating it as a regular enum forces the language to smuggle specialness back in everywhere (sugar, auto-wrap, propagation, linear propagation, sentinel layout). Accepting Option as builtin lets us collapse the whole surface cleanly.
 
 ## Proposed design
 
-### Core vocabulary
+### The rule
+
+**Option is a builtin status type. `T?` means "a value of `T`, or `none`." There is no `Some`.** Binding happens through the language's regular mechanisms — `const =`, match arms, if-narrowing — with no Option-specific bind syntax.
+
+### Surface
 
 | Need | Syntax |
 |------|--------|
-| Propagate failure (Option or Result), single call | `const v = try fetch(url)` |
-| Propagate failure, chain | `const v = try { fetch(url).parse().validate() }` |
-| Propagation with error transform | `const v = try { … } else \|e\| context(e)` |
-| Option chain | `x?.field` |
-| Option value fallback | `x ?? default` |
-| Option diverging fallback | `x ?? return none` (also `?? continue`, `?? break`, `?? panic("…")`) |
-| Option force (panic on none) | `x!` |
-| Variant check (narrows scrutinee) | `if x is Variant { … }` |
-| Variant destructure (bind payload) | `if x is Variant(a, b) { … }` |
-| Variant guard (narrows, early exit on mismatch) | `const v = x is Variant else { … }` |
-| Multi-arm | `match x { … }` |
+| Type | `T?` |
+| Absent literal | `none` |
+| Construct present | just the value (auto-wrap via OPT8) |
+| Present check + narrow | `if x? { use(x) }` (x is T in block) |
+| Absent check | `if x == none { … }` |
+| Chain | `x?.field` |
+| Fallback value | `x ?? default` |
+| Diverging fallback | `x ?? return none` (also `?? break`, `?? continue`, `?? panic("…")`) |
+| Force (panic on none) | `x!` |
+| Propagate | `try x` or `try { … }` or `try { … } else \|e\| …` |
+| Multi-arm | `match x { none => …, v => … }` |
 
-### The two load-bearing rules
+### One binding rule
 
-**R1 — `is Variant` narrows the scrutinee's type in the true branch.** General flow-typing rule, applied uniformly to `if`, `match`, and guards. After `if x is Click`, `x` is typed `Click` in the block. Narrowing does **not** unwrap positional payloads — to bind a payload, destructure with `is Variant(u)`. This replaces the magic rebind.
+All binding happens through the language's existing mechanisms. Option adds nothing.
 
-**R2 — Payload binding happens in exactly one place: destructure.** `is Variant(a, b)` binds payload fields. `as u` binding, `const Pattern = x`, and magic unwrap all go. If you want the whole narrowed value under a different name, write `const c = event` inside the block.
+- **const bind:** `const u = x ?? default`, `const u = try x`, `const u = x!` — regular `const =` with an Option expression on the right.
+- **match arm:** `match x { none => …, v => use(v) }` — `v` is a regular identifier pattern that catches the present case and binds it.
+- **narrowing in if:** `if x? { use(x) }` — `x` is typed `T` inside the block (flow-narrowing, same mechanism that exists for other narrowing in the language).
 
-`try` stays as the propagation keyword. It already covers both Option and Result, already works in prefix and block form, and adding a new keyword just moves the friction rather than removing it. The existing OPT13 rule ("`try x` on Option requires the enclosing function to return `Option<U>`") stays.
+Nothing else. No `is Some(u)`, no `as u`, no `const Some(u) =`. Those forms can't exist because `Some` doesn't exist.
 
-### Mental model
+### `try` unchanged
 
-One sentence: **subject first, predicate second, bind payloads via destructure.**
+`try x` propagates `none` to the caller, requires the enclosing function to return `T?`. Block form and `else |e|` transform work as today. Result propagation via `try` is unaffected.
 
-- "Is this enum this variant?" → `x is Variant`
-- "I want the payload" → `x is Variant(a, b)` (in `if`, `match`, or guard)
-- "This must succeed or I propagate" → `try x`
-- "What happens if it's absent?" → `?? <value>` (fallback), `?? <diverge>` (early exit)
-- "Miss = programmer bug" → `x!`
+### Result is unaffected
+
+Result stays as it is: a regular enum with `Ok(T)` and `Err(E)` variants. All the existing patterns (`if r is Ok(v) { … }`, `match r { Ok(v) => …, Err(e) => … }`, `try`, `on_err`, `map_err`, union widening, etc.) keep working. Only the *Option* surface changes.
 
 ## What gets deleted
 
-- **Magic rebind** (`if x is Some { use(x) }` silently unwrapping `x` to `T`). Replaced by R1 narrowing — `x` is typed `Some<T>` inside the block. To use the payload, destructure: `if x is Some(u) { use(u) }`.
-- **`is Some as u` and `as u` whole-variant binding.** Narrowing preserves the original name. For a rename, `const c = event` inside the block.
-- **`const Some(u) = x else { … }` guard form.** Option case becomes `const u = x ?? return none`. For general enum destructure-with-guard, use `match` or narrow + destructure in an `if/else`.
-- **`if const Some(u) = x { … }` conditional bind.** Use `if x is Some(u)` — same effect, universal syntax.
-- **Magic unwrap in guard** (`const v = x is Some else { return }` giving `v: T`). After R1, `v: Some<T>`. For Option early-exit-with-unwrap, use `const v = x ?? return none`.
+- **`Some` as a constructor and pattern.** It no longer exists.
+- **`None` as a variant.** Replaced by the `none` literal (already exists).
+- **All Option-specific rebind forms:** `is Some(u)`, `is Some as u`, `const Some(u) = x`, `if const Some(u) = x`.
+- **Magic rebind** (`if x is Some { use(x) }` silently unwrapping). Replaced by explicit `if x? { use(x) }`.
+- **`is none` as a predicate.** Use `== none`. The `is Variant` machinery is for enums, and Option is no longer an enum.
+- **Nested optionals (`T??`).** Compile error. If you need to distinguish "explicitly none" from "value absent," use `T or NotFound` or a real enum.
 
-## What survives from the current spec
+## What survives
 
-- The `?`-family: `T?`, `x?.field`, `x ?? y`, `x!`.
-- `none` literal and auto-Some wrapping (OPT8).
-- `try` keyword, including block form and `else |e|` transform.
-- `match` semantics.
-- Result methods (`on_err`, `map`, `map_err`, `is_ok`, `is_err`, `to_option`, `to_error`, `to_result`).
-- Auto-Ok wrapping (ER7), implicit `Ok(())` (ER8), union widening (ER9), `any Error` boxing (ER10).
-- Error origin tracking (ER15, ER16).
-- `@message` annotation for error enums.
-- Custom error types via structural `message()` method (ER1).
+- `T?` type sugar, `none` literal, `?.`, `??`, `!`, auto-wrap (OPT8), `try`, linear propagation (OPT11), `x == none` comparison.
+- All Result behaviour: `Ok`/`Err`, `try`, `try … else |e|`, `match r`, `is Ok(v)` destructure, methods, union widening, auto-Ok wrapping, error origin tracking, `@message`, custom error types.
+- Match on Option remains exhaustive — `none` arm plus a catch-all identifier (or literal pattern) covers all cases.
 
 ## Migration map
 
 | Current | Proposed |
 |---------|----------|
-| `try result` | unchanged |
-| `try result else \|e\| context(e)` | unchanged |
-| `try opt` (in `T?`-returning function) | unchanged (or `opt ?? return none` if you prefer control flow visible) |
-| `if x is Some { use(x) }` (magic unwrap) | `if x is Some(u) { use(u) }` |
-| `if x is Some(u) { use(u) }` | unchanged |
-| `if x is Some as u { use(u) }` | `if x is Some(u) { use(u) }` |
-| `const Some(u) = x else { return }` | `const u = x ?? return none` |
-| `if const Some(u) = x { use(u) }` | `if x is Some(u) { use(u) }` |
-| `const u = x is Some else { return }` (magic unwrap) | `const u = x ?? return none` |
-| `if result is Ok(v) { use(v) }` | unchanged |
-| `const v = result is Ok else { return }` (narrow-only) | unchanged |
-| `if event is Click { use(event.field) }` (magic, non-Option) | `if event is Click(c) { use(c.field) }` — or keep `is Click` if you don't need the payload; narrowing gives you the variant type |
-
-## Three ways to handle a missing Option — orthogonal by intent
-
-| Intent | Syntax |
-|--------|--------|
-| Propagate absence to caller | `try x` (requires `T?` return) |
-| Custom control flow on absence | `x ?? return err(…)`, `?? break`, `?? continue`, `?? panic(…)` |
-| Programmer invariant: must be present | `x!` |
-
-All three survive. They differ in intent, and each one's shape makes the intent obvious at the call site.
+| `Some(x)` | `x` (bare — auto-wrap handles it) |
+| `None` | `none` |
+| `if x is Some { use(x) }` | `if x? { use(x) }` |
+| `if x is Some(u) { use(u) }` | `match x { none => …, u => use(u) }` or `if x? { const u = x; use(u) }` |
+| `match x { Some(v) => f(v), None => g() }` | `match x { none => g(), v => f(v) }` |
+| `const Some(u) = x else { return none }` | `const u = x ?? return none` |
+| `x is none` | `x == none` |
+| `x.is_some()`, `x.is_none()` | unchanged (compiler-provided methods on builtin `T?`) |
+| `x.map(f)`, `x.filter(p)`, `x.to_result(err)` | unchanged |
+| `try x` | unchanged |
+| `x ?? y`, `x?.f`, `x!` | unchanged |
+| Result patterns (`Ok`, `Err`, `try`, `is Ok(v)`, `match`, methods) | unchanged |
 
 ## Open questions
 
-**Q1 — `try` block error-type.** Inside `try { a().b().c() }` where `a()` returns `Result<X, E1>` and `b()` returns `Result<Y, E2>`, the block's error type is `E1 | E2` (union widening, same as today). Mixing Option and Result inside the block requires explicit `.to_result(err)` or `.to_option()`. **Proposal: confirm this is already the rule in error-types.md; if not, spell it out.**
+**Q1 — Representation.** `T?` where `T` is a pointer-like type uses null-pointer optimisation (same as today). For other `T`, a one-byte discriminant sits next to the payload. Implementation detail; no user-visible change.
 
-**Q2 — Narrowing on positional tuple variants.** After `if x is Some`, `x` is typed `Some<T>`. How is the payload reached without destructure? In Rask's current enums spec, positional payloads are accessed by pattern, not by `.0`. So the answer is: you don't — destructure. This is the intended discipline, but worth spelling out explicitly in optionals.md so users don't hunt for `x.0`.
+**Q2 — Methods on builtin Option.** `map`, `filter`, `is_some`, `is_none`, `to_result` etc. become compiler-provided methods rather than user-defined `impl` blocks. Need to decide if these are written as `impl` in stdlib, or hard-coded. Leaning stdlib `extend` for grep-ability.
 
-**Q3 — Non-Option/Result enums with magic unwrap.** If today's compiler applies magic unwrap for any single-field tuple variant (not just `Some`), that behaviour also goes. Check the current implementation to confirm the scope of the change.
+**Q3 — Match exhaustiveness.** `match x { none => …, v => … }` — the `v` arm is an identifier pattern that catches "any present value." Exhaustiveness checker must recognise this as covering the present case. Should be natural.
+
+**Q4 — Linear `T?`.** If `T` is linear, `T?` is linear (OPT11 unchanged). Both paths must consume. Works with `if x? { consume(x) }` + implicit drop of `none` branch, and with match.
+
+**Q5 — User-defined Maybe-like enums.** A user can still write `enum MyMaybe<T> { Present(T), Empty }`. It just doesn't get the `?`-family sugar. That's fine — the sugar is Option-specific.
+
+**Q6 — Migration scope.** Need to grep Rask sources and the stdlib for `Some(` and `None` to size the change. Mechanical but wide.
 
 ## Cost
 
-- Migration of existing Rask code using magic rebind — mechanical (add `(u)` to every `is Some` that uses the scrutinee afterward, rename uses from `x` to `u`). Tooling can automate.
-- Learning cost: destructure is now mandatory when you want the payload. Four extra characters `(u)` in exchange for one narrowing rule across the whole language.
-- One-shot documentation pass across optionals.md, error-types.md, SYNTAX.md, canonical-patterns.md.
+- Large mechanical migration across Rask source and stdlib. Tooling can automate `Some(x) → x`, `None → none`, pattern rewrites.
+- Users coming from Rust need to unlearn `Some(x)`. One sentence: "Rask doesn't wrap; bare values are already optional when the type says so."
+- `T??` becoming illegal may surprise generic code that was relying on it. In practice uncommon; add a lint with a clear error message.
+- Documentation rewrite across optionals.md, SYNTAX.md, canonical-patterns.md. Error-types.md largely unaffected.
 
 ## Rationale summary
 
-The current design accumulated overlap because each feature was added locally — `try` for propagation, `is Some` for checks, magic rebind for ergonomics, guards for early exit. Each made sense in isolation; together they produce a surface where the same intent has three or four valid spellings with different rules.
+The original proposal tried to clean up the Option surface while preserving `Some`. That kept the root cause alive — every "ways to do one thing" complaint was a symptom of the wrapper. Remove the wrapper and the whole cloud of rebind forms evaporates, because there is no tag to check and no payload to name separately from the scrutinee.
 
-The proposal collapses the surface around two rules (`is Variant` narrows; payload binding happens in destructure only) and keeps the existing keywords and operators. Nothing new is invented. Every remaining construct does one thing, has one reading, and carries its meaning on its face. The magic rebind goes because invisible type rewriting belongs nowhere in the language. The rebinding forms collapse to destructure because having five ways to name a payload is five times the cognitive tax for one operation.
+Option was never a regular enum in spirit. This proposal makes the spec agree with the language.
 
-`try` stays. It was already doing the job, works the same on Option and Result, and swapping it for `must` would trade a cosmetic concern (Swift/Rust readers associating `try` with exceptions) for a real problem (`must x` and `x!` both reading as strong assertions with different behaviour).
+Result stays an enum because error values are genuinely two-sided — `Ok(T)` and `Err(E)` are distinct shapes with distinct payloads, and both need destructuring. Option is one-sided: "present" is the value itself, "absent" is a sentinel. Treating them the same was the mistake.
 
 ## See Also
 
-- [Optionals](optionals.md) — current Option spec
-- [Error Types](error-types.md) — current Result spec
+- [Optionals](optionals.md) — current Option spec (to be rewritten against this proposal)
+- [Error Types](error-types.md) — Result spec, unaffected
 - [Syntax Reference](../SYNTAX.md) — language-wide syntax
 - [Canonical Patterns](../canonical-patterns.md) — existing idioms
