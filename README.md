@@ -85,26 +85,24 @@ rask fmt <file>       # auto-format
 
 ## The Idea
 
-### No Storable References
-The core experiment. You can borrow a value temporarily (for a function call or expression), but you can't store that borrow in a struct or return it. This sounds limiting — and it is — but it sidesteps the need for lifetime annotations entirely. For graphs and complex structures, you use handles (validated indices) instead.
+**No storable references.** The core experiment. You can borrow a value for a function call or expression, but you can't store that borrow in a struct or return it. This sidesteps lifetime annotations entirely. For graphs and cyclic structures, you use handles (validated indices) instead of references.
 
-### No Garbage Collection
-Cleanup happens deterministically when values go out of scope. For I/O resources, the `ensure` keyword guarantees cleanup even on early returns.
+**No garbage collection.** Cleanup is deterministic — values are freed when their owner goes out of scope. For I/O resources (files, sockets, transactions), `ensure` guarantees cleanup even on early returns.
 
-### Composition Over Inheritance
-Structs hold data, traits define behavior, you extend types with methods. No inheritance hierarchies, no vtable gymnastics unless you explicitly want runtime polymorphism (`any Trait`).
+**Composition over inheritance.** Structs hold data, traits define behavior, `extend` blocks attach methods. No inheritance hierarchies; runtime polymorphism only when you explicitly opt in with `any Trait`.
 
-### What I've Landed On So Far
+### What's decided
 
-| Concept | What It Means |
-|---------|--------------|
-| **Value semantics** | Everything is a value, no hidden sharing |
-| **Single ownership** | Every value has one owner, cleanup is deterministic |
-| **Two-tier borrowing** | "Can it grow?" — fixed sources keep views to block end, collections release at semicolon |
-| **Handles for graphs** | Entity systems and cycles use validated indices. Regular structs stay on the stack |
-| **Context clauses** | Handle functions declare pool needs; compiler threads them implicitly |
-| **Linear resource types** | Files, sockets must be explicitly consumed—can't forget to close them |
-| **No function coloring** | I/O operations just work, no async/await split |
+| Concept | What it means |
+|---------|---------------|
+| **Value semantics** | Everything is a value — no hidden sharing, no reference types |
+| **Single ownership** | Every value has one owner; cleanup is deterministic |
+| **Two-tier borrowing** | Fixed sources (struct fields, arrays) give block-scoped views; growable sources (Vec, Pool, Map) give inline access or `with` blocks |
+| **Handles for graphs** | `Pool<T>` + `Handle<T>` for entities, cycles, observers — validated by generation counters, zero-cost in frozen contexts |
+| **Context clauses** | `using Pool<T>`, `using Multitasking`, etc. — the compiler threads ambient dependencies as hidden parameters |
+| **Linearity** | `@resource`, `Owned<T>`, and `Pool<Linear>` share one rule: consume exactly once. `ensure` defers the consumption |
+| **Boxes** | One family — `Cell`, `Pool`, `Shared`, `Mutex`, `Owned` — all accessed through `with` or inline expressions |
+| **No function coloring** | One function works in sync and async contexts; `using Multitasking { ... }` opts into task pausing |
 
 ---
 
