@@ -658,4 +658,5 @@ extend Observable<T> {
 - [Closures](closures.md) — Pool+Handle pattern for shared mutable state (`mem.closures`)
 - [Collections](../stdlib/collections.md) — Vec and Map types (`std.collections`)
 - [Aliasing Detection](aliasing-detection.md) — Compile-time closure aliasing analysis (`mem.aliasing`)
+- [Relocatable Memory](relocatable.md) — Pool serialization and mmap (`mem.relocatable`)
 - [Generation Coalescing](../compiler/generation-coalescing.md) — Check elimination algorithm (`comp.gen-coalesce`)

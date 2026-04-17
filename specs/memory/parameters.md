@@ -288,4 +288,5 @@ This bridges the gap between source-level simplicity and full visibility. In an 
 - [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
 - [Borrowing](borrowing.md) — Borrow scope rules (`mem.borrowing`)
 - [Closures](closures.md) — Closure parameter modes (`mem.closures`)
+- [Boxes](boxes.md) — Box parameters move ownership like any other value (`mem.boxes`)
 - [Structs](../types/structs.md) — Struct definition, methods (`type.structs`)
