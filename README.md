@@ -8,13 +8,13 @@
 
 A systems language I'm building around one question: **what if references can't be stored?**
 
-Make references temporary — never in structs, never returned from functions — and lifetime annotations stop being necessary. You pay for it with handles where you'd want shared identity (graphs, entity systems, observers). You get memory safety without annotations and deterministic cleanup without a GC.
+Make references temporary — never in structs, never returned from functions — and lifetime annotations stop being necessary. The cost is handles where you'd want shared identity: graphs, entity systems, observers. The benefit is memory safety without annotations, deterministic cleanup without a GC, and function signatures you can read in one pass.
 
-Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremony.
+Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremony. Whether the trade actually works out is what I'm trying to find out.
 
 **[Why a new language?](WHY_RASK.md)**
 
-**Status.** Compiler (Cranelift backend) and interpreter both run programs. The core language works end-to-end. A few codegen regressions are open — see [issues](https://github.com/rask-lang/rask/issues).
+**Status.** Compiler (Cranelift backend) and interpreter both run programs. Core language works end-to-end. A handful of codegen regressions open — see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
 
 ---
 
@@ -37,7 +37,7 @@ Full example: [grep_clone.rk](examples/grep_clone.rk).
 
 ## Getting started
 
-Build from source (you'll need a Rust toolchain):
+Build from source. You'll need a Rust toolchain for now — bootstrapping the compiler in Rask itself is on the list, just not soon.
 
 ```bash
 git clone https://github.com/rask-lang/rask.git
@@ -62,11 +62,11 @@ Next steps: browse [examples/](examples/), try the [tutorials](tutorials/), or r
 
 Three ideas do most of the work.
 
-**No storable references.** You can borrow for a call or expression; you can't store the borrow in a struct or return it. The whole lifetime system becomes unnecessary — there's nothing to track. For graphs and entity systems, you use `Handle<T>`: an integer key into a `Pool<T>`, validated by a generation counter. Accesses are ~2ns; the compiler coalesces redundant checks and eliminates them entirely in `using frozen Pool<T>` contexts.
+**No storable references.** You can borrow for a call or an expression; you can't store the borrow in a struct, and you can't return it. The whole lifetime system stops being necessary — there's just nothing to track. For graphs and entity systems, you use `Handle<T>`: an integer key into a `Pool<T>`, validated by a generation counter. Each access is a branch or two; the compiler coalesces redundant checks and eliminates them entirely inside `using frozen Pool<T>` contexts.
 
-**Everything is a value.** No reference types, no `Box<T>`/`Rc<T>`/`Arc<T>` distinction. Small values (≤16 bytes) copy; larger ones move. If you need to share, you `.clone()` — which keeps allocations and copies visible where they happen.
+**Everything is a value.** No reference types. No `Box<T>`/`Rc<T>`/`Arc<T>` distinction. Small values (≤16 bytes) copy, larger ones move, and you `.clone()` when you want to share. More clones than Rust, but the clones are visible in the code, which I think is the right direction.
 
-**Linearity for I/O.** Files, sockets, and transactions are linear: the compiler makes you consume them exactly once. `ensure file.close()` defers that consumption to scope exit, which is what lets `try` propagate errors without leaking the resource. Three concepts — linearity, deferred consumption, error propagation — and the three-line idiom at the top of this file falls out of them.
+**Linearity for I/O.** Files, sockets, and transactions are linear: the compiler makes you consume them exactly once. `ensure file.close()` defers that consumption to scope exit, which is what lets `try` propagate errors without leaking the resource. Three concepts that compose — linearity, deferred consumption, error propagation — and the idiom at the top of this file falls out of them. This is probably the piece of the design I'm happiest with.
 
 Full rationale: [specs/CORE_DESIGN.md](specs/CORE_DESIGN.md).
 
@@ -79,7 +79,7 @@ More `.clone()` calls. Some patterns restructure around handles:
 - string slices in structs → `Span` indices or `StringPool`
 - arbitrary graphs → `Pool<T>`
 
-That's most of the cost. In exchange: no lifetime annotations in signatures, no GC pauses, no use-after-free, no data races. I think that's a good trade.
+That's most of the cost. What you get back: no lifetime annotations in signatures, no GC pauses, no use-after-free, no data races. I think it's a good trade. Some days I'm less sure.
 
 ---
 
