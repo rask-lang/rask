@@ -6,18 +6,18 @@
 // Compares: Rask pool[h] → C with same pool.c → C raw array (unsafe)
 
 benchmark "handle sequential read 1k" {
-    let p = Pool.new()
-    let handles = Vec.new()
-    let i = 0
+    mut p = Pool.new()
+    mut handles = Vec.new()
+    mut i = 0
     while i < 1000 {
-        let result = p.insert(i)
+        mut result = p.insert(i)
         if result is Ok(h) {
             handles.push(h)
         }
         i = i + 1
     }
 
-    let sum = 0
+    mut sum = 0
     i = 0
     while i < 1000 {
         sum = sum + p[handles[i]]
@@ -26,11 +26,11 @@ benchmark "handle sequential read 1k" {
 }
 
 benchmark "handle random read 1k" {
-    let p = Pool.new()
-    let handles = Vec.new()
-    let i = 0
+    mut p = Pool.new()
+    mut handles = Vec.new()
+    mut i = 0
     while i < 1000 {
-        let result = p.insert(i)
+        mut result = p.insert(i)
         if result is Ok(h) {
             handles.push(h)
         }
@@ -38,8 +38,8 @@ benchmark "handle random read 1k" {
     }
 
     // Read in a pseudo-random order (stride 7, wraps around)
-    let sum = 0
-    let idx = 0
+    mut sum = 0
+    mut idx = 0
     i = 0
     while i < 1000 {
         sum = sum + p[handles[idx]]
@@ -49,11 +49,11 @@ benchmark "handle random read 1k" {
 }
 
 benchmark "handle churn remove 1k" {
-    let p = Pool.new()
-    let handles = Vec.new()
-    let i = 0
+    mut p = Pool.new()
+    mut handles = Vec.new()
+    mut i = 0
     while i < 1000 {
-        let result = p.insert(i)
+        mut result = p.insert(i)
         if result is Ok(h) {
             handles.push(h)
         }
@@ -64,7 +64,7 @@ benchmark "handle churn remove 1k" {
     i = 0
     while i < 1000 {
         if i % 5 == 0 {
-            let h = handles[i]
+            mut h = handles[i]
             p.remove(h)
         }
         i = i + 1
@@ -77,11 +77,11 @@ benchmark "handle churn remove 1k" {
 }
 
 benchmark "handle churn read 800" {
-    let p = Pool.new()
-    let handles = Vec.new()
-    let i = 0
+    mut p = Pool.new()
+    mut handles = Vec.new()
+    mut i = 0
     while i < 1000 {
-        let result = p.insert(i)
+        mut result = p.insert(i)
         if result is Ok(h) {
             handles.push(h)
         }
@@ -89,7 +89,7 @@ benchmark "handle churn read 800" {
     }
 
     // Read 800 surviving handles (skip every 5th)
-    let sum = 0
+    mut sum = 0
     i = 0
     while i < 1000 {
         if i % 5 != 0 {

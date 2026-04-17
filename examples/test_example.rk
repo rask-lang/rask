@@ -59,7 +59,7 @@ func add_is_commutative() {
 // === Benchmark ===
 
 benchmark "add 1000 times" {
-    let sum = 0
+    mut sum = 0
     for i in 0..1000 {
         sum = add(sum, i)
     }

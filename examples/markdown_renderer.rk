@@ -85,7 +85,7 @@ enum Block {
 // ─── HTML Utilities ─────────────────────────────────────────────────
 
 func html_escape(input: string) -> string {
-    let builder = string.new()
+    mut builder = string.new()
     for ch in input.chars() {
         match ch {
             '&' => builder.push_str("&amp;")
@@ -103,7 +103,7 @@ func html_escape(input: string) -> string {
 }
 
 func count_leading(line: string, ch: char) -> i32 {
-    let count = 0
+    mut count = 0
     for c in line.chars() {
         if c != ch {
             break
@@ -129,7 +129,7 @@ func is_hr_line(line: string) -> bool {
         return false
     }
 
-    let count = 0
+    mut count = 0
     for ch in trimmed.chars() {
         if ch == first {
             count = count + 1
@@ -270,7 +270,7 @@ extend Scanner {
 // These are removed from the document and stored for later resolution.
 
 func parse_references(input: string) -> Map<string, string> {
-    let refs = Map.new()
+    mut refs = Map.new()
 
     for line in input.lines() {
         const trimmed = line.trim()
@@ -316,7 +316,7 @@ func is_reference_def(line: string) -> bool {
 // via recursive descent. This is the most string-intensive part.
 
 func parse_inline(text: string) -> Vec<Inline> or MarkdownError {
-    let scanner = Scanner.new(text)
+    mut scanner = Scanner.new(text)
     return parse_inline_until(mutate scanner, "")
 }
 
@@ -328,8 +328,8 @@ func flush_text(mutate result: Vec<Inline>, mutate text_buf: string) {
 }
 
 func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or MarkdownError {
-    let result = Vec.new()
-    let text_buf = string.new()
+    mut result = Vec.new()
+    mut text_buf = string.new()
 
     while !scanner.is_done() {
         // Check for stop sequence
@@ -454,8 +454,8 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
 
 func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
     const lines = input.lines().collect()
-    let blocks = Vec.new()
-    let i = 0
+    mut blocks = Vec.new()
+    mut i = 0
     const line_count = lines.len()
 
     while i < line_count {
@@ -499,8 +499,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         // Fenced code block: ```
         if trimmed.starts_with("```") {
             const lang = trimmed[3..].trim().to_string()
-            let code = string.new()
-            let first_code_line = true
+            mut code = string.new()
+            mut first_code_line = true
             i = i + 1
             while i < line_count {
                 if lines[i].trim() == "```" {
@@ -520,7 +520,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
 
         // Blockquote: > text
         if trimmed.starts_with(">") {
-            let quote_lines = Vec.new()
+            mut quote_lines = Vec.new()
             while i < line_count {
                 const ql = lines[i].trim()
                 if !ql.starts_with(">") && !is_blank_line(lines[i]) {
@@ -546,7 +546,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
 
         // Unordered list: - item or * item
         if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-            let items = Vec.new()
+            mut items = Vec.new()
             while i < line_count {
                 const il = lines[i]
                 const it = il.trim()
@@ -586,7 +586,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
 
         // Ordered list: 1. item
         if ordered_list_start(trimmed) is Some(start_num) {
-            let items = Vec.new()
+            mut items = Vec.new()
             while i < line_count {
                 const il = lines[i]
                 const it = il.trim()
@@ -625,7 +625,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         }
 
         // Paragraph: collect consecutive non-blank, non-special lines
-        let para_lines = Vec.new()
+        mut para_lines = Vec.new()
         while i < line_count {
             const pl = lines[i]
             const pt = pl.trim()
@@ -806,7 +806,7 @@ func render_markdown(input: string) -> string or RenderError {
     const refs = parse_references(input)
     const blocks = try parse_blocks(input) else |e| RenderError.Parse(e)
 
-    let out = string.new()
+    mut out = string.new()
     render_children(blocks, mutate out, refs)
     return Ok(out)
 }
@@ -814,7 +814,7 @@ func render_markdown(input: string) -> string or RenderError {
 func render_full_page(input: string) -> string or RenderError {
     const body = try render_markdown(input)
 
-    let out = string.new()
+    mut out = string.new()
     out.push_str("""
 <!DOCTYPE html>
 <html>
@@ -846,11 +846,11 @@ func print_usage() {
 
 func main() {
     const args = cli.args()
-    let input_path = ""
-    let output_path = ""
-    let use_stdout = false
-    let fragment = false
-    let i = 1
+    mut input_path = ""
+    mut output_path = ""
+    mut use_stdout = false
+    mut fragment = false
+    mut i = 1
 
     while i < args.len() {
         const arg = args[i]

@@ -112,7 +112,7 @@ import net
 const socket = try net.udp_bind("0.0.0.0:9000")
 ensure socket.close()
 
-let buf = [0u8; 1024]
+mut buf = [0u8; 1024]
 const (n, sender) = try socket.recv_from(buf)
 try socket.send_to(buf[0..n], sender)
 ```

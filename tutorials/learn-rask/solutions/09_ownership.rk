@@ -2,7 +2,7 @@
 
 func sqrt(x: f64) -> f64 {
     if x <= 0.0 { return 0.0 }
-    let g = x / 2.0
+    mut g = x / 2.0
     for i in 0..30 { g = (g + x / g) / 2.0 }
     return g
 }
@@ -22,7 +22,7 @@ func record_altitude(mutate log: Vec<i32>, altitude: i32) {
 }
 
 func max_altitude(log: Vec<i32>) -> i32 {
-    let max_val = log[0]
+    mut max_val = log[0]
     for alt in log {
         if alt > max_val {
             max_val = alt
@@ -32,7 +32,7 @@ func max_altitude(log: Vec<i32>) -> i32 {
 }
 
 func mean(data: Vec<f64>) -> f64 {
-    let total = 0.0
+    mut total = 0.0
     for v in data {
         total = total + v
     }
@@ -41,7 +41,7 @@ func mean(data: Vec<f64>) -> f64 {
 
 func std_dev(data: Vec<f64>) -> f64 {
     const m = mean(data)
-    let sum_sq = 0.0
+    mut sum_sq = 0.0
     for v in data {
         const diff = v - m
         sum_sq = sum_sq + diff * diff
@@ -67,7 +67,7 @@ test "flight altitudes" {
 }
 
 test "record altitude" {
-    let log = Vec.from([0, 5000])
+    mut log = Vec.from([0, 5000])
     record_altitude(mutate log, 10000)
     assert log.len() == 3
     assert log[2] == 10000

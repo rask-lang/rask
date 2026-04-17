@@ -17,8 +17,8 @@ func grep_file(pattern: string, path: string) -> GrepResult {
 
     match lines_result {
         Ok(lines) => {
-            let match_count = 0
-            let line_num = 0
+            mut match_count = 0
+            mut line_num = 0
 
             for line in lines {
                 line_num = line_num + 1

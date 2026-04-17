@@ -215,11 +215,18 @@ mod tests {
     }
 
     #[test]
+    fn rust_syntax_let() {
+        let result = parse("func main() { let counter = 0 }");
+        assert!(!result.is_ok());
+        assert_eq!(result.errors[0].message, "'let' is not a keyword in Rask");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("use 'mut' for rebindable bindings or 'const' for permanent bindings"));
+    }
+
+    #[test]
     fn rust_syntax_let_mut() {
         let result = parse("func main() { let mut counter = 0 }");
         assert!(!result.is_ok());
-        assert_eq!(result.errors[0].message, "unexpected 'mut' keyword");
-        assert_eq!(result.errors[0].hint.as_deref(), Some("'let' is already mutable in Rask. Use 'const' for immutable bindings"));
+        assert_eq!(result.errors[0].message, "'let' is not a keyword in Rask");
     }
 
     #[test]

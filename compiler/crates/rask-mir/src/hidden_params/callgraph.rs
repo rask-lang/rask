@@ -151,9 +151,9 @@ fn collect_callees_from_body(stmts: &[Stmt]) -> HashSet<String> {
 fn collect_callees_from_stmt(stmt: &Stmt, callees: &mut HashSet<String>) {
     match &stmt.kind {
         StmtKind::Expr(e) => collect_callees_from_expr(e, callees),
-        StmtKind::Let { init, .. }
+        StmtKind::Mut { init, .. }
         | StmtKind::Const { init, .. }
-        | StmtKind::LetTuple { init, .. }
+        | StmtKind::MutTuple { init, .. }
         | StmtKind::ConstTuple { init, .. } => {
             collect_callees_from_expr(init, callees);
         }

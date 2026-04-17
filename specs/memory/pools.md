@@ -295,7 +295,7 @@ func cleanup(h: Handle<Entity>) using entities: Pool<Entity> {
 
 <!-- test: skip -->
 ```rask
-let (snapshot, mut pool) = entities.snapshot()
+mut (snapshot, mut pool) = entities.snapshot()
 
 // Readers see frozen state
 spawn(|| { render_frame(snapshot) })
@@ -594,8 +594,8 @@ Pool cannot be split by predicate because accessing entities requires borrowing 
 
 ```rask
 func process_by_type(mut entities: Pool<Entity>) {
-    let player_handles = Vec.new()
-    let enemy_handles = Vec.new()
+    mut player_handles = Vec.new()
+    mut enemy_handles = Vec.new()
 
     for h in entities.handles() {
         match entities[h].kind {

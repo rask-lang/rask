@@ -86,7 +86,7 @@ test "vec clone is independent" {
 
 test "copy survives if/else branches" {
     const x = 42
-    let result = 0
+    mut result = 0
     if true {
         result = x
     }
@@ -96,7 +96,7 @@ test "copy survives if/else branches" {
 
 test "copy in loop iterations" {
     const base = 10
-    let sum = 0
+    mut sum = 0
     for i in 0..5 {
         sum = sum + base
     }

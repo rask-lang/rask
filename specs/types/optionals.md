@@ -40,13 +40,13 @@ enum Option<T> {
 | **OPT9: No reverse coercion** | `Option<T>` does NOT coerce to `T` — must unwrap explicitly |
 
 ```rask
-let user: User? = load_user()    // wraps to Some(user)
+mut user: User? = load_user()    // wraps to Some(user)
 ```
 
 ## The `none` Literal
 
 ```rask
-let x: User? = none
+mut x: User? = none
 func find(id: i64) -> User? { none }
 ```
 
@@ -137,7 +137,7 @@ const user = get_user(id) is Some else { return None }
 | **OPT11: Linear propagation** | If `T` is linear, `T?` is linear — must handle both paths |
 
 ```rask
-let file: File? = open("data.txt")
+mut file: File? = open("data.txt")
 if file is Some(f) {
     f.close()
 }

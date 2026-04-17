@@ -42,13 +42,13 @@ The compiler creates a fingerprint (hash) of each function's simplified code tre
 ```rask
 // These two functions have IDENTICAL semantic hashes:
 func compute(data: Vec<i32>) -> i32 {
-    let total = 0
+    mut total = 0
     for item in data { total += item }
     return total
 }
 
 func compute(items: Vec<i32>) -> i32 {
-    let sum = 0
+    mut sum = 0
     for element in items { sum += element }
     return sum
 }

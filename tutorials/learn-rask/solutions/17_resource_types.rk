@@ -20,7 +20,7 @@ extend Booking {
 }
 
 func book_flight(id: i32, passenger: string) -> i32 or string {
-    let booking = Booking.new(id)
+    mut booking = Booking.new(id)
 
     if passenger == "FAIL" {
         return Err("payment failed")
@@ -36,10 +36,10 @@ struct BookingStatus {
 }
 
 func two_bookings() -> BookingStatus {
-    let b1 = Booking.new(1)
+    mut b1 = Booking.new(1)
     b1.commit()
 
-    let b2 = Booking.new(2)
+    mut b2 = Booking.new(2)
 
     return BookingStatus {
         first_committed: b1.is_committed(),
@@ -62,7 +62,7 @@ test "booking failure" {
 }
 
 test "booking pattern" {
-    let b = Booking.new(42)
+    mut b = Booking.new(42)
     assert b.is_committed() == false
     b.commit()
     assert b.is_committed() == true

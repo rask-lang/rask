@@ -48,8 +48,8 @@ func test_double_move() {
 struct Token { id: i32 }
 
 func test_unique_no_copy() {
-    let t = Token { id: 1 }
-    let t2 = t           // moves, not copies (despite being small)
+    mut t = Token { id: 1 }
+    mut t2 = t           // moves, not copies (despite being small)
     println("{t.id}")    // ERROR: t was moved
 }
 
@@ -58,8 +58,8 @@ func test_unique_no_copy() {
 struct Wrapper { tok: Token, label: string }
 
 func test_unique_transitive() {
-    let w = Wrapper { tok: Token { id: 1 }, label: "test" }
-    let w2 = w           // moves (Wrapper contains @unique Token)
+    mut w = Wrapper { tok: Token { id: 1 }, label: "test" }
+    mut w2 = w           // moves (Wrapper contains @unique Token)
     println("{w.label}")  // ERROR: w was moved
 }
 

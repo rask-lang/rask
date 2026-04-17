@@ -153,7 +153,7 @@ struct NetworkHeader {
 }
 
 const header = try NetworkHeader.parse(bytes)
-let port: u16 = header.port   // Native u16
+mut port: u16 = header.port   // Native u16
 ```
 
 ## Numeric Traits

@@ -64,7 +64,7 @@ struct GameState {
 
 extend GameState {
     func new() -> GameState or Error {
-        let entities = Pool.new()
+        mut entities = Pool.new()
 
         // Spawn player at center
         const player_handle = entities.insert(Entity {
@@ -120,7 +120,7 @@ func movement_system(mutate entities: Pool<Entity>, dt: f32) {
 
 // System: Check collisions between entities
 func collision_system(mutate state: GameState) {
-    let to_check = state.entities.handles()
+    mut to_check = state.entities.handles()
 
     for i in 0..to_check.len() {
         for j in (i + 1)..to_check.len() {
@@ -181,7 +181,7 @@ func handle_collision(mutate state: GameState, h1: Handle<Entity>, h2: Handle<En
 
 // System: Remove inactive entities
 func cleanup_system(mutate state: GameState) {
-    let to_remove = Vec.new()
+    mut to_remove = Vec.new()
 
     for h in state.entities {
         if !state.entities[h].active {
@@ -213,14 +213,14 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
 func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_threads: usize)
     using ThreadPool
 {
-    let handles = entities.handles()
-    let chunk_size = (handles.len() + num_threads - 1) / num_threads
+    mut handles = entities.handles()
+    mut chunk_size = (handles.len() + num_threads - 1) / num_threads
 
     // Split work across thread pool
-    let thread_handles = Vec.new()
+    mut thread_handles = Vec.new()
     for chunk in handles.chunks(chunk_size) {
-        let chunk = chunk.to_vec()
-        let task = ThreadPool.spawn(|| {
+        mut chunk = chunk.to_vec()
+        mut task = ThreadPool.spawn(|| {
             for h in chunk {
                 if !entities[h].active: continue
                 entities[h].position.x += entities[h].velocity.dx * dt
@@ -238,16 +238,16 @@ func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_thread
 
 // Main game loop with fixed timestep and threading
 func main() -> () or Error {
-    let state = try GameState.new()
+    mut state = try GameState.new()
 
     const target_fps = 60.0f32
     const dt = 1.0f32 / target_fps
     const NUM_PHYSICS_THREADS: usize = 4u64
 
-    let last_time = 0.0f32  // Simplified: track elapsed time
-    let accumulator = 0.0f32
-    let spawn_timer = 0.0f32
-    let frame_count = 0
+    mut last_time = 0.0f32  // Simplified: track elapsed time
+    mut accumulator = 0.0f32
+    mut spawn_timer = 0.0f32
+    mut frame_count = 0
 
     println("Game started! Score: 0")
 
@@ -291,7 +291,7 @@ func main() -> () or Error {
         // Render (simulated - just print status occasionally)
         if frame_count % 60 == 0 {
             const entity_count = state.entities.len()
-            let player_health = 0
+            mut player_health = 0
             if state.player is Some(h) {
                 player_health = state.entities[h].health.current
             }

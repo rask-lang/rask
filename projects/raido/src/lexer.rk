@@ -24,7 +24,7 @@ enum Token {
 
     // Keywords
     Const
-    Let
+    Mut
     Func
     Return
     If
@@ -185,7 +185,7 @@ extend Lexer {
     func keyword_or_ident(self, word: string) -> Token {
         match word {
             "const" => return Token.Const,
-            "let" => return Token.Let,
+            "mut" => return Token.Mut,
             "func" => return Token.Func,
             "return" => return Token.Return,
             "if" => return Token.If,
@@ -289,7 +289,7 @@ extend Lexer {
     func read_number(self) -> Token or LexError {
         const isNumLit = false
         const start = self.pos
-        let frac_start = self.pos
+        mut frac_start = self.pos
 
         while self.peek() is Some(c) {
             match c {

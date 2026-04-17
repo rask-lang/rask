@@ -82,14 +82,14 @@ Closures can borrow mutable locals with explicit `mutate` in the capture:
 
 <!-- test: skip -->
 ```rask
-let count = 0
+mut count = 0
 const inc = |mutate count| { count += 1 }
 inc()
 inc()
 // count == 2
 
 // Iterator example
-let total = 0
+mut total = 0
 items.for_each(|item, mutate total| { total += item.value })
 print(total)  // sees accumulated value
 ```
@@ -98,7 +98,7 @@ Without `mutate`, captured values are copies. The mutation stays inside the clos
 
 <!-- test: skip -->
 ```rask
-let count = 0
+mut count = 0
 const inc = || { count += 1 }  // Captures count by COPY
 inc()
 // count is still 0 — the closure mutated its own copy
@@ -110,7 +110,7 @@ The `mutate` keyword makes the intent visible — you see exactly which variable
 
 <!-- test: skip -->
 ```rask
-let x = 0
+mut x = 0
 const a = |mutate x| { x += 1 }
 const b = |mutate x| { x += 2 }  // ERROR: x already mutably captured by a
 ```
@@ -136,7 +136,7 @@ items.filter(|i| vec[*i].active)
      .collect()
 
 // Mutation in inline context
-let count = 0
+mut count = 0
 items.for_each(|item| { count += 1 })  // inline: direct access, no capture needed
 ```
 
@@ -177,7 +177,7 @@ Note: Copy fields like `string` don't create scope-limited closures — `const n
 
 <!-- test: compile-fail -->
 ```rask
-let outer_closure
+mut outer_closure
 {
     const entity = get_entity()
     const tags = entity.tags

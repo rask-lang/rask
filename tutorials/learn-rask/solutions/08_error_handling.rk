@@ -2,7 +2,7 @@
 
 func sqrt(x: f64) -> f64 {
     if x <= 0.0 { return 0.0 }
-    let g = x / 2.0
+    mut g = x / 2.0
     for i in 0..30 { g = (g + x / g) / 2.0 }
     return g
 }

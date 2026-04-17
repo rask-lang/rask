@@ -144,7 +144,7 @@ if items.any(|i| i.is_expired()) { alert() }
 
 <!-- test: skip -->
 ```rask
-let total = 0
+mut total = 0
 items.for_each(|item, mutate total| { total += item.value })
 ```
 

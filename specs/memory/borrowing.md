@@ -528,7 +528,7 @@ func parse_header(line: string) -> Option<(string, string)> {
 <!-- test: parse -->
 ```rask
 func update_combat(pool: Pool<Entity>) {
-    let targets: Vec<Handle<Entity>> = find_targets(pool)
+    mut targets: Vec<Handle<Entity>> = find_targets(pool)
 
     for h in targets {
         pool[h].health -= 10             // Inline access (E1)
@@ -610,8 +610,8 @@ struct Token {
 }
 
 func tokenize(input: string) -> Vec<Token> {
-    let tokens = Vec.new()
-    let pos = 0
+    mut tokens = Vec.new()
+    mut pos = 0
     // scan() returns positions — no allocations per token
     for (start, end, kind) in scan(input) {
         tokens.push(Token { kind, span: Span(start, end) })

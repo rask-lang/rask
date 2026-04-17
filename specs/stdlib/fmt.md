@@ -226,7 +226,7 @@ extend Color with Displayable {
 
 <!-- test: skip -->
 ```rask
-let b = StringBuilder.with_capacity(1024)
+mut b = StringBuilder.with_capacity(1024)
 for item in items {
     b.append("{item.name}: {item.value}\n")
 }

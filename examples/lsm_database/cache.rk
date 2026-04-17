@@ -64,8 +64,8 @@ extend BlockCache {
     }
 
     func evict_one(mutate self) {
-        let min_access: i64 = i64.MAX
-        let victim: Handle<CacheBlock>? = None
+        mut min_access: i64 = i64.MAX
+        mut victim: Handle<CacheBlock>? = None
 
         for handle in self.blocks {
             if self.blocks[handle].access_count < min_access {
@@ -84,7 +84,7 @@ extend BlockCache {
     }
 
     func invalidate(mutate self, sst_id: i32) {
-        let to_remove = Vec.new()
+        mut to_remove = Vec.new()
         for handle in self.blocks {
             if self.blocks[handle].sst_id == sst_id {
                 const key = BlockCache.cache_key(
@@ -158,7 +158,7 @@ func sst_point_lookup(
 // ─── Tests ──────────────────────────────────────────────────────────
 
 test "block cache put and get" {
-    let cache = BlockCache.new()
+    mut cache = BlockCache.new()
     const entries = Vec.from([
         KeyValue.new("k1", "v1", 1),
         KeyValue.new("k2", "v2", 2),
@@ -175,11 +175,11 @@ test "block cache put and get" {
 }
 
 test "block cache eviction" {
-    let cache = BlockCache.new()
+    mut cache = BlockCache.new()
 
-    let i = 0
+    mut i = 0
     while i < MAX_CACHE_ENTRIES + 10 {
-        let entries = Vec.new()
+        mut entries = Vec.new()
         entries.push(KeyValue.new("k", "v", i as i64))
         cache.put(i as i32, 0, entries)
         i += 1
@@ -189,10 +189,10 @@ test "block cache eviction" {
 }
 
 test "block cache invalidate" {
-    let cache = BlockCache.new()
-    let e1 = Vec.new(); e1.push(KeyValue.new("a", "1", 1))
-    let e2 = Vec.new(); e2.push(KeyValue.new("b", "2", 2))
-    let e3 = Vec.new(); e3.push(KeyValue.new("c", "3", 3))
+    mut cache = BlockCache.new()
+    mut e1 = Vec.new(); e1.push(KeyValue.new("a", "1", 1))
+    mut e2 = Vec.new(); e2.push(KeyValue.new("b", "2", 2))
+    mut e3 = Vec.new(); e3.push(KeyValue.new("c", "3", 3))
     cache.put(1, 0, e1)
     cache.put(1, 1, e2)
     cache.put(2, 0, e3)

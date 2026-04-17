@@ -20,7 +20,7 @@ func main() {
     }
 
     // While loop
-    let count = 0
+    mut count = 0
     print("\nWhile counting:\n")
     while count < 3 {
         print(count)

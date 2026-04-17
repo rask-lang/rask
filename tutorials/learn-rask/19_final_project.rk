@@ -50,7 +50,7 @@ extend Vec3 {
 // You wrote this in lesson 03
 func sqrt(x: f64) -> f64 {
     if x <= 0.0 { return 0.0 }
-    let g = x / 2.0
+    mut g = x / 2.0
     for i in 0..30 { g = (g + x / g) / 2.0 }
     return g
 }
@@ -287,7 +287,7 @@ test "simulation runs" {
 func main() {
     // Simulate a light aircraft takeoff
     // 2 tons, ~136 knots initial speed, moderate thrust
-    let ac = Aircraft {
+    mut ac = Aircraft {
         position: Vec3.zero(),
         velocity: Vec3.new(0.0, 70.0, 0.0),
         mass: 2000.0,

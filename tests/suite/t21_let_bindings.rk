@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// let rebinding, const vs let, shadowing.
+// mut rebinding, const vs mut, shadowing.
 //
 // Spec: SYNTAX.md (bindings section)
 //
-// SPEC ISSUE: Every existing test uses only `const`. Zero coverage of `let`
-// with reassignment, which is a core language feature. `let` is the mutable
-// binding keyword (rebindable), `const` is permanent.
+// `mut` is the rebindable binding keyword, `const` is permanent.
 //
 // Note: `const` controls the binding, not the value. `const v = Vec.new()`
 // allows `v.push(1)` but not `v = other_vec`. This is like JS `const`.
@@ -18,10 +16,10 @@ test "const binding is permanent" {
     assert x == 42
 }
 
-// --- let can be reassigned ---
+// --- mut can be reassigned ---
 
-test "let binding reassignment" {
-    let x = 1
+test "mut binding reassignment" {
+    mut x = 1
     assert x == 1
     x = 2
     assert x == 2
@@ -29,16 +27,16 @@ test "let binding reassignment" {
     assert x == 12
 }
 
-test "let in loop" {
-    let sum = 0
+test "mut in loop" {
+    mut sum = 0
     for i in 0..5 {
         sum += i
     }
     assert sum == 10
 }
 
-test "let multiple reassignments" {
-    let s = "hello"
+test "mut multiple reassignments" {
+    mut s = "hello"
     assert s == "hello"
     s = "world"
     assert s == "world"
@@ -54,8 +52,8 @@ test "const shadows const" {
     assert x == 2
 }
 
-test "const shadows let" {
-    let x = 1
+test "const shadows mut" {
+    mut x = 1
     x = 5
     const x = x * 2
     assert x == 10
@@ -92,14 +90,14 @@ test "const map allows insert" {
     assert m["a"] == 1
 }
 
-// --- let with struct field mutation ---
+// --- mut with struct field mutation ---
 
 struct Counter {
     value: i32
 }
 
-test "let struct reassignment" {
-    let c = Counter { value: 0 }
+test "mut struct reassignment" {
+    mut c = Counter { value: 0 }
     assert c.value == 0
     c = Counter { value: 10 }
     assert c.value == 10

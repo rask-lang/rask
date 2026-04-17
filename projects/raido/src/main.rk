@@ -24,14 +24,14 @@ func code_get(code: Vec<i64>, idx: i64) -> i64 {
 // Minimal VM loop for testing — uses opcodes and Value from the package
 func vm_run(code: Vec<i64>, fuel: i64) -> Value {
     const regs = Vec.new()
-    let i: i64 = 0
+    mut i: i64 = 0
     while i < 256 {
         regs.push(Value.None)
         i = i + 1
     }
 
-    let pc: i64 = 0
-    let remaining = fuel
+    mut pc: i64 = 0
+    mut remaining = fuel
     const code_len = code.len() as i64
 
     while pc < code_len {

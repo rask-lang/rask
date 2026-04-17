@@ -396,7 +396,7 @@ For cheap sharing of arbitrary data, use `Shared<T>` — explicit, visible, corr
 
 <!-- test: skip -->
 ```rask
-let b = StringBuilder.new()
+mut b = StringBuilder.new()
 b.append("User: ")
 b.append(name)
 b.append_char('\n')
@@ -408,9 +408,9 @@ const msg = b.build()
 <!-- test: skip -->
 ```rask
 func flush_lines(lines: Vec<string>) -> Vec<string> {
-    let results = Vec.new()
+    mut results = Vec.new()
     for line in lines {
-        let b = StringBuilder.new()
+        mut b = StringBuilder.new()
         b.append(line)
         b.append_char('\n')
         results.push(b.build())

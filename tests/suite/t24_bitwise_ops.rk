@@ -86,21 +86,21 @@ test "shift near limit" {
 // --- compound assignment (CA1) ---
 
 test "compound bitwise assignment" {
-    let x = 0xFF
+    mut x = 0xFF
     x &= 0x0F
     assert x == 0x0F
 
-    let y = 0xF0
+    mut y = 0xF0
     y |= 0x0F
     assert y == 0xFF
 
-    let z = 0xFF
+    mut z = 0xFF
     z ^= 0xF0
     assert z == 0x0F
 }
 
 test "compound shift assignment" {
-    let x = 1
+    mut x = 1
     x <<= 4
     assert x == 16
     x >>= 2

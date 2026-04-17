@@ -227,7 +227,7 @@ const BAD = comptime {
 <!-- test: skip -->
 ```rask
 comptime func slow() {
-    let i = 0
+    mut i = 0
     while i < 5000 {  // Exceeds default 1,000 backwards branches
         i += 1
     }
@@ -409,7 +409,7 @@ FIX: Call .freeze() to convert to const data:
 comptime func crc8_table() -> [u8; 256] {
     const table = [0u8; 256]
     for i in 0..256 {
-        let crc = i as u8
+        mut crc = i as u8
         for _ in 0..8 {
             if crc & 0x80 != 0 {
                 crc = (crc << 1) ^ 0x07
@@ -425,7 +425,7 @@ comptime func crc8_table() -> [u8; 256] {
 const CRC8_TABLE: [u8; 256] = comptime crc8_table()
 
 func crc8(data: []u8) -> u8 {
-    let crc = 0u8
+    mut crc = 0u8
     for byte in data {
         crc = CRC8_TABLE[(crc ^ byte) as usize]
     }

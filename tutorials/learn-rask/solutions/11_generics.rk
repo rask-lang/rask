@@ -19,8 +19,8 @@ func clamp_value<T: Comparable>(value: T, low: T, high: T) -> T {
 }
 
 func min_max<T: Comparable>(items: Vec<T>) -> Pair<T, T> {
-    let lo = items[0]
-    let hi = items[0]
+    mut lo = items[0]
+    mut hi = items[0]
     for i in 1..items.len() {
         if items[i] < lo { lo = items[i] }
         if items[i] > hi { hi = items[i] }

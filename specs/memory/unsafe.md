@@ -20,7 +20,7 @@ Explicit `unsafe` blocks quarantine operations that bypass safety checks. Debug 
 <!-- test: skip -->
 ```rask
 const x = 42
-let ptr: *i32 = &x as *i32
+mut ptr: *i32 = &x as *i32
 
 const value = unsafe { *ptr }
 ```
@@ -66,8 +66,8 @@ const value = unsafe { *ptr }
 ```rask
 // Creating raw pointers (safe)
 const x = 42
-let ptr: *i32 = &x as *i32
-let null_ptr: *i32 = null
+mut ptr: *i32 = &x as *i32
+mut null_ptr: *i32 = null
 
 // Using raw pointers (unsafe)
 unsafe {
@@ -116,7 +116,7 @@ unsafe func read_ptr<T>(ptr: *T) -> T {
 }
 
 func caller() {
-    let x = 0
+    mut x = 0
     unsafe {
         dangerous_operation(&x)
     }
@@ -180,8 +180,8 @@ Reinterprets the bits of one type as another. Requires unsafe.
 <!-- test: parse -->
 ```rask
 unsafe {
-    let x: u32 = 0x41424344
-    let bytes: [u8; 4] = transmute(x)
+    mut x: u32 = 0x41424344
+    mut bytes: [u8; 4] = transmute(x)
 }
 ```
 
@@ -525,7 +525,7 @@ extend CString {
 ```rask
 func rdtsc() -> u64 {
     unsafe {
-        let result: u64
+        mut result: u64
         asm {
             "rdtsc; shl rdx, 32; or rax, rdx"
             out("rax") result

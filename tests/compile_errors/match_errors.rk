@@ -33,7 +33,7 @@ func test_wildcard_linear() {
 // ERROR: else block must diverge
 func test_guard_no_diverge() {
     const opt: i32? = Some(42)
-    let value = opt is Some else { 0 }   // ERROR: 0 doesn't diverge
+    mut value = opt is Some else { 0 }   // ERROR: 0 doesn't diverge
     // else must use return, break, panic, etc.
 }
 

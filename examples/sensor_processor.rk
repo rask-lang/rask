@@ -12,7 +12,7 @@ import time
 func build_crc8_table() -> Vec<i64> {
     const table = Vec.new()
     for i in 0..256 {
-        let crc = i
+        mut crc = i
         for j in 0..8 {
             if crc & 128 != 0 {
                 crc = ((crc * 2) & 255) ^ 7
@@ -26,7 +26,7 @@ func build_crc8_table() -> Vec<i64> {
 }
 
 func crc8(data: Vec<i64>, table: Vec<i64>) -> i64 {
-    let crc: i64 = 0
+    mut crc: i64 = 0
     const n = data.len()
     for i in 0..n {
         const byte = data.get(i).unwrap()
@@ -96,8 +96,8 @@ func isqrt(n: i64) -> i64 {
     if n == 0 {
         return 0
     }
-    let x = n
-    let y = (x + 1) / 2
+    mut x = n
+    mut y = (x + 1) / 2
     while y < x {
         x = y
         y = (x + n / x) / 2
@@ -117,7 +117,7 @@ func interrupt_handler(
     sample_rate_hz: i64
 ) {
     const period_ns = 1000000000 / sample_rate_hz
-    let sequence: i64 = 0
+    mut sequence: i64 = 0
 
     while sequence < sample_rate_hz * 2 {
         const now_ns = time.Instant.now().duration_since(start_time).as_nanos() as i64
@@ -175,9 +175,9 @@ extend ProcessorState {
             return
         }
 
-        let temp_sum = 0.0
-        let pres_sum = 0.0
-        let hum_sum = 0.0
+        mut temp_sum = 0.0
+        mut pres_sum = 0.0
+        mut hum_sum = 0.0
         for i in 0..self.history_count {
             temp_sum += self.temp_history.get(i).unwrap()
             pres_sum += self.pressure_history.get(i).unwrap()
@@ -224,7 +224,7 @@ func main() {
         pres_hist.push(0.0)
         hum_hist.push(0.0)
     }
-    let state = ProcessorState {
+    mut state = ProcessorState {
         temp_history: temp_hist,
         pressure_history: pres_hist,
         humidity_history: hum_hist,
@@ -240,7 +240,7 @@ func main() {
     for i in 0..256 {
         timing_samples.push(0)
     }
-    let timing = TimingStats {
+    mut timing = TimingStats {
         samples: timing_samples,
         sample_idx: 0,
         sample_count: 0,
@@ -255,15 +255,15 @@ func main() {
     const deadline_ns = HARD_DEADLINE_US * 1000
 
     // Start interrupt handler on separate thread
-    let isr_handle = Thread.spawn(|| {
+    mut isr_handle = Thread.spawn(|| {
         interrupt_handler(readings, start_time, SAMPLE_RATE_HZ)
     })
 
     println("Started. Processing for {DURATION_SECS} seconds...")
     println("")
 
-    let cycle: i64 = 0
-    let read_idx: i64 = 0
+    mut cycle: i64 = 0
+    mut read_idx: i64 = 0
 
     while (time.Instant.now().duration_since(start_time).as_secs() as i64) < DURATION_SECS {
         const cycle_start = time.Instant.now()

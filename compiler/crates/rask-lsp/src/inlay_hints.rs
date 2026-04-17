@@ -60,7 +60,7 @@ fn visit_stmt(
     hi: usize,
 ) {
     match &stmt.kind {
-        StmtKind::Let { name_span, ty: None, .. } | StmtKind::Const { name_span, ty: None, .. } => {
+        StmtKind::Mut { name_span, ty: None, .. } | StmtKind::Const { name_span, ty: None, .. } => {
             if name_span.start < lo || name_span.end > hi {
                 return;
             }

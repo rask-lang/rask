@@ -8,7 +8,7 @@ func worker(id: i32, iterations: i32) -> i32 {
     print(id)
     print(" starting\n")
 
-    let sum = 0
+    mut sum = 0
     for i in 1..iterations + 1 {
         sum = sum + i
     }

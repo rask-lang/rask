@@ -95,7 +95,7 @@ enum JoinError {
 
 <!-- test: skip -->
 ```rask
-let (a, b) = join_all(
+mut (a, b) = join_all(
     spawn(|| { work1() }),
     spawn(|| { work2() })
 )
@@ -201,7 +201,7 @@ try h.cancel()
 
 <!-- test: skip -->
 ```rask
-let (tx, rx) = Channel<Message>.buffered(100)
+mut (tx, rx) = Channel<Message>.buffered(100)
 
 const producer = spawn(|| {
     for msg in generate_messages() {

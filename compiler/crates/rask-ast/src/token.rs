@@ -40,6 +40,7 @@ pub enum TokenKind {
     // Keywords
     Func,
     Let,
+    Mut,
     Const,
     Struct,
     Enum,
@@ -173,6 +174,7 @@ impl TokenKind {
             // Keywords
             TokenKind::Func => "'func'",
             TokenKind::Let => "'let'",
+            TokenKind::Mut => "'mut'",
             TokenKind::Const => "'const'",
             TokenKind::Struct => "'struct'",
             TokenKind::Enum => "'enum'",

@@ -29,7 +29,7 @@ func area(s: Shape) -> i32 {
 
 test "simple enum match" {
     const c = Color.Red
-    let name = ""
+    mut name = ""
     match c {
         Color.Red => name = "red"
         Color.Green => name = "green"
@@ -70,7 +70,7 @@ test "enum with number payload" {
 
 test "enum wildcard match" {
     const c = Color.Blue
-    let matched_wildcard = false
+    mut matched_wildcard = false
     match c {
         Color.Red => assert false, "wrong"
         _ => matched_wildcard = true

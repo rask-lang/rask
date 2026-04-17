@@ -1522,7 +1522,7 @@ impl Resolver {
             StmtKind::Expr(expr) => {
                 self.resolve_expr(expr);
             }
-            StmtKind::Let { name, name_span, ty, init } => {
+            StmtKind::Mut { name, name_span, ty, init } => {
                 self.resolve_expr(init);
                 let sym_id = self.symbols.insert(
                     name.clone(),
@@ -1548,7 +1548,7 @@ impl Resolver {
                     self.errors.push(e);
                 }
             }
-            StmtKind::LetTuple { patterns, init } => {
+            StmtKind::MutTuple { patterns, init } => {
                 self.resolve_expr(init);
                 for name in rask_ast::stmt::tuple_pats_flat_names(patterns) {
                     let sym_id = self.symbols.insert(

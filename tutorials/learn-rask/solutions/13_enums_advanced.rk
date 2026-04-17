@@ -25,8 +25,8 @@ func entry_time(entry: LogEntry) -> i32 {
 }
 
 func flight_time(log: Vec<LogEntry>) -> i32 {
-    let takeoff_time = -1
-    let landing_time = -1
+    mut takeoff_time = -1
+    mut landing_time = -1
     for entry in log {
         match entry {
             Takeoff(t, _) => { takeoff_time = t }

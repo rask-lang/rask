@@ -261,7 +261,7 @@ match point {
 **Partial patterns:**
 <!-- test: skip -->
 ```rask
-let Point { x, .. } = point    // Bind visible fields, ignore rest
+mut Point { x, .. } = point    // Bind visible fields, ignore rest
 ```
 
 Visibility in patterns: `extend` blocks see all fields; same package sees package-visible + `public` fields; external sees only `public` fields. `private` fields require `..`.
