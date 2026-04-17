@@ -356,4 +356,5 @@ Quick action: "Make context explicit" fills in the inferred `using` clause.
 - [Allocators](allocators.md) — `using Allocator` as an ambient context (`mem.allocators`)
 - [Closures](closures.md) — Closure capture semantics (`mem.closures`)
 - [Boxes](boxes.md) — Contexts complement `with`-scoped access (`mem.boxes`)
+- [Concurrency Runtime](../concurrency/runtime.md) — `using ThreadPool` as a threaded ambient context (`conc.runtime`)
 - [Async](../concurrency/async.md) — `using Multitasking` runtime contexts (`conc.async`)
