@@ -3363,13 +3363,27 @@ impl Parser {
 
         let mut params = Vec::new();
         while !self.check(&TokenKind::Pipe) && !self.at_end() {
+            // Typed mutable parameter: |mutate x: T|. Explicit type is required
+            // (mem.closures/CP2). Untyped `|mutate x|` is mutable-capture syntax
+            // (CP3), not a parameter — and is not handled by this loop.
+            let mutate_span = self.current().span;
+            let is_mutate = self.match_token(&TokenKind::MutateKw);
             let name = self.expect_ident()?;
             let ty = if self.match_token(&TokenKind::Colon) {
                 Some(self.parse_type_name()?)
+            } else if is_mutate {
+                return Err(ParseError {
+                    span: mutate_span,
+                    message: format!(
+                        "closure parameter '{}' with 'mutate' requires an explicit type",
+                        name
+                    ),
+                    hint: Some(format!("write it as |mutate {}: T|", name)),
+                });
             } else {
                 None
             };
-            params.push(ClosureParam { name, ty, is_mutate: false, is_take: false });
+            params.push(ClosureParam { name, ty, is_mutate, is_take: false });
             if !self.match_token(&TokenKind::Comma) { break; }
         }
 
