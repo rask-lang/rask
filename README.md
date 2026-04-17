@@ -162,12 +162,11 @@ The upside, if the approach works out:
 
 ## Design Principles
 
-1. **Transparency of Cost** — Major costs visible in code (allocations, locks, I/O)
-2. **Mechanical Safety** — Safety by construction, not runtime checks
-3. **Practical Coverage** — Handle 80%+ of real use cases
-4. **Ergonomic Simplicity** — Common patterns should be low ceremony.
+One thread runs through everything: **safety through visibility.** Where other systems languages trade safety against ceremony, Rask makes safety *visible in source* — as explicit calls (`ensure file.close()`), scoped blocks (`with`, inline access), and named keywords (`mutate`, `take`, `own`) — rather than hide it in destructors, lifetime annotations, or effect types. The compiler guarantees the invariants; the source shows the mechanism.
 
-The constant balancing act is keeping ergonomics high without hiding costs. When in doubt, I choose visibility over convenience.
+From that thread come nine principles: safety without annotation, everything is a value, no storable references, transparent costs, local analysis only, resource types, compiler knowledge is visible, machine-readable code, and information without enforcement.
+
+Full rationale: [specs/CORE_DESIGN.md](specs/CORE_DESIGN.md).
 
 ## Inspiration
 
@@ -208,12 +207,12 @@ Rask borrows ideas from everywhere:
 
 ```
 ├── LANGUAGE_GUIDE.md       # The full language explanation
-├── CORE_DESIGN.md          # Design philosophy and core mechanisms
 ├── tutorials/              # Hands-on challenges (5 levels)
 ├── examples/               # Working .rk programs
 ├── specs/                  # Language specifications
+│   ├── CORE_DESIGN.md      # Design philosophy and core mechanisms
 │   ├── types/              # Type system, generics, traits
-│   ├── memory/             # Ownership, borrowing, resources
+│   ├── memory/             # Ownership, borrowing, linearity, resources
 │   ├── control/            # Loops, match, comptime
 │   ├── concurrency/        # Tasks, threads, channels
 │   ├── structure/          # Modules, packages, builds
