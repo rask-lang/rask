@@ -369,8 +369,8 @@ trait Displayable {
     func to_string(self) -> string
 }
 
-trait Iterator {
-    func next(self) -> Option<Self.Item>
+trait Comparable {
+    func compare(self, other: Self) -> Ordering
 }
 ```
 

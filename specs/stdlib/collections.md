@@ -290,7 +290,7 @@ struct SliceDescriptor<T> {
 | `handle.slice(range)` | `SliceDescriptor<T>` | Create descriptor |
 | `desc.len()` | `usize` | Length of range |
 | `desc.is_empty()` | `bool` | Range is empty |
-| `for x in desc` | Iterator | Iterate (requires ambient pool) |
+| `for x in desc` | `Sequence<T>` | Iterate (requires ambient pool) |
 
 ## Capacity Introspection
 
@@ -429,4 +429,5 @@ FIX: Use try_push to handle capacity limits:
 
 - `mem.pools` — Handle-based sparse storage for graphs, entity systems
 - `mem.borrowing` — View duration rules
-- `std.iteration` — Iterator modes and adapters
+- `std.iteration` — Collection iteration modes
+- `type.sequence` — Sequence protocol, adapters, terminals

@@ -54,7 +54,7 @@ Quick navigation by task or concept:
 | Define interfaces/contracts | [types/traits.md](types/traits.md) |
 | Create a type alias | [types/type-aliases.md](types/type-aliases.md) |
 | Work with tuples | [types/tuples.md](types/tuples.md) |
-| Work with iterators | [types/iterator-protocol.md](types/iterator-protocol.md) |
+| Iterate over things | [types/sequence-protocol.md](types/sequence-protocol.md) |
 
 ### Low-Level
 | "How do I..." | See |
@@ -96,7 +96,7 @@ Quick navigation by task or concept:
 | [generics.md](types/generics.md) | Parametric polymorphism, constraints |
 | [gradual-constraints.md](types/gradual-constraints.md) | Type/bound inference for private functions |
 | [traits.md](types/traits.md) | Trait objects, dynamic dispatch |
-| [iterator-protocol.md](types/iterator-protocol.md) | Iterator trait, adapters |
+| [sequence-protocol.md](types/sequence-protocol.md) | Sequence<T> type, adapters, terminals |
 | [integer-overflow.md](types/integer-overflow.md) | Overflow semantics |
 | [binary.md](types/binary.md) | Binary structs, bit-level layouts |
 | [tuples.md](types/tuples.md) | Anonymous product types, destructuring |
