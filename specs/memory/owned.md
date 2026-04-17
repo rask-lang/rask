@@ -313,6 +313,7 @@ enum Expr {
 ### See Also
 
 - [Linearity](linear.md) — Rule set (L1–L6) shared by `@resource`, `Owned<T>`, `Pool<Linear>` (`mem.linear`)
+- [Boxes](boxes.md) — `Owned<T>` as a linear box in the container family (`mem.boxes`)
 - [Ownership](ownership.md) — Single-owner model (`mem.ownership`)
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value`)
 - [Borrowing](borrowing.md) — Scoped borrowing rules (`mem.borrowing`)

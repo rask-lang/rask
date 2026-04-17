@@ -142,7 +142,8 @@ WHY: Linear values can be consumed exactly once. A second consumption
 - [Owned Pointers](owned.md) — Linear heap box (`mem.owned`)
 - [Ensure](../control/ensure.md) — Deferred consumption (`ctrl.ensure`)
 - [Pools](pools.md) — `Pool<Linear>` cleanup rules (`mem.pools`)
-- [Ownership](ownership.md) — Single-owner model (`mem.ownership`)
+- [Ownership](ownership.md) — Single-owner model that linearity refines (`mem.ownership`)
+- [Value Semantics](value-semantics.md) — Copy/move rules that linear values opt out of (`mem.value`)
 
 ---
 

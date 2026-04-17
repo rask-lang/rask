@@ -461,6 +461,7 @@ func process_files(paths: Vec<string>) -> () or Error {
 ### See Also
 
 - [Linearity](linear.md) — Rule set (L1–L6) shared by `@resource`, `Owned<T>`, `Pool<Linear>` (`mem.linear`)
+- [Owned Pointers](owned.md) — `Owned<T>`, the other linear value (`mem.owned`)
 - [Value Semantics](value-semantics.md) — Copy vs move, `@unique` (`mem.value`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)
 - [Ensure](../control/ensure.md) — Deferred execution (`ctrl.ensure`)

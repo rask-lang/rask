@@ -610,5 +610,6 @@ This is "information without enforcement" — the data exists for tools that wan
 - [Ownership](ownership.md) -- Single-owner model (`mem.ownership`)
 - [Atomics](atomics.md) -- Atomic types and memory orderings (`mem.atomics`)
 - [C Interop](../structure/c-interop.md) -- Full FFI details (`struct.c-interop`)
-- [Resource Types](resource-types.md) -- Must-consume types (`mem.resources`)
+- [Linearity](linear.md) -- Consume-exactly-once rules (`mem.linear`)
+- [Resource Types](resource-types.md) -- `@resource` annotation (`mem.resources`)
 - [Concurrency](../concurrency/README.md) -- Send/Sync in concurrent contexts (`conc`)
