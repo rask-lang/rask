@@ -659,4 +659,5 @@ extend Observable<T> {
 - [Collections](../stdlib/collections.md) — Vec and Map types (`std.collections`)
 - [Aliasing Detection](aliasing-detection.md) — Compile-time closure aliasing analysis (`mem.aliasing`)
 - [Relocatable Memory](relocatable.md) — Pool serialization and mmap (`mem.relocatable`)
+- [Cell](cell.md) — Single-slot alternative when identity is not needed (`mem.cell`)
 - [Generation Coalescing](../compiler/generation-coalescing.md) — Check elimination algorithm (`comp.gen-coalesce`)

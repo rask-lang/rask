@@ -355,4 +355,5 @@ Quick action: "Make context explicit" fills in the inferred `using` clause.
 - [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
 - [Allocators](allocators.md) — `using Allocator` as an ambient context (`mem.allocators`)
 - [Closures](closures.md) — Closure capture semantics (`mem.closures`)
+- [Boxes](boxes.md) — Contexts complement `with`-scoped access (`mem.boxes`)
 - [Async](../concurrency/async.md) — `using Multitasking` runtime contexts (`conc.async`)

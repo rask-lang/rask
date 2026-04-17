@@ -381,4 +381,5 @@ When the cursor is in a scope-limited closure, the IDE highlights the block boun
 - [Boxes](boxes.md) -- Cell and Pool as containers for shared mutable state (`mem.boxes`)
 - [Cell](cell.md) -- Single-value mutable container (`mem.cell`)
 - [Pools](pools.md) -- Pool+Handle pattern for shared mutable state (`mem.pools`)
+- [Linearity](linear.md) -- Closures capturing linear values must consume them (`mem.linear`)
 - [Concurrency](../concurrency/sync.md) -- Closures sent cross-task must capture owned values (`conc.sync`)

@@ -312,5 +312,6 @@ func receive_migration(stream: TcpStream) -> Pool<Entity> or Error {
 - [Value Semantics](value-semantics.md) — Copy vs move, 16-byte threshold (`mem.value`)
 - [Linearity](linear.md) — Why linear values are the Tier-3 opaque case (`mem.linear`)
 - [Boxes](boxes.md) — Box types and their relocatability tiers (`mem.boxes`)
+- [Resource Types](resource-types.md) — Why resources are Tier-3 opaque (`mem.resources`)
 - [Encoding](../stdlib/encoding.md) — `Encode`/`Decode` traits, field annotations (`std.encoding`)
 - [Reflect](../stdlib/reflect.md) — `reflect.is_flat<T>()`, comptime type introspection (`std.reflect`)
