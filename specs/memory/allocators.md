@@ -335,6 +335,7 @@ func sensor_loop() {
 
 - [Context Clauses](context-clauses.md) — `using` clause mechanics (`mem.context`)
 - [Ownership](ownership.md) — Value lifetimes within allocator scopes (`mem.ownership`)
+- [Linearity](linear.md) — Arena vs linear: why they're separate mechanisms (`mem.linear`)
 - [Pools](pools.md) — Handle-based storage, typed arenas (`mem.pools`)
 - [Borrowing](borrowing.md) — Scope restrictions for growable sources (`mem.borrowing`)
 - [Collections](../stdlib/collections.md) — Vec, Map allocation semantics (`std.collections`)

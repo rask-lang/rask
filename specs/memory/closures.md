@@ -378,6 +378,7 @@ When the cursor is in a scope-limited closure, the IDE highlights the block boun
 
 - [Value Semantics](value-semantics.md) -- Copy vs move for captured values (`mem.value`)
 - [Borrowing](borrowing.md) -- Block-scoped views and `with`-based access (`mem.borrowing`)
+- [Boxes](boxes.md) -- Cell and Pool as containers for shared mutable state (`mem.boxes`)
 - [Cell](cell.md) -- Single-value mutable container (`mem.cell`)
 - [Pools](pools.md) -- Pool+Handle pattern for shared mutable state (`mem.pools`)
 - [Concurrency](../concurrency/sync.md) -- Closures sent cross-task must capture owned values (`conc.sync`)

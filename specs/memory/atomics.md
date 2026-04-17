@@ -554,3 +554,4 @@ This sketch shows the push path — CAS on handles with generation-based ABA pro
 - [Concurrency](../concurrency/async.md) — Channels and task spawning (`conc.async`)
 - [Unsafe](unsafe.md) — Raw pointer dereferencing for `AtomicPtr` results (`mem.unsafe`)
 - [Pools](pools.md) — Handle-based storage, validation for `AtomicHandle` results (`mem.pools`)
+- [Ownership](ownership.md) — Atomic values are owned, not reference-typed (`mem.ownership`)

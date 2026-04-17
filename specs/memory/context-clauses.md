@@ -353,5 +353,6 @@ Quick action: "Make context explicit" fills in the inferred `using` clause.
 - [Borrowing](borrowing.md) — Expression-scoped views, `with` element binding (`mem.borrowing`)
 - [Linearity](linear.md) — Contexts are borrowed, never consumed (`mem.linear`)
 - [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
+- [Allocators](allocators.md) — `using Allocator` as an ambient context (`mem.allocators`)
 - [Closures](closures.md) — Closure capture semantics (`mem.closures`)
 - [Async](../concurrency/async.md) — `using Multitasking` runtime contexts (`conc.async`)
