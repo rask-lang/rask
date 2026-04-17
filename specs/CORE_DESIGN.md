@@ -10,6 +10,8 @@ The breakthrough was realizing that most of Rust's complexity comes from trying 
 
 ## Design Principles
 
+The nine principles below are applications of one meta-principle: **safety through visibility.** Wherever other systems-languages trade safety against ceremony, Rask tries to make safety *visible in source* — as explicit calls, scoped blocks, and named keywords — rather than hide it in destructors, lifetime annotations, or effect types. Cleanup you can see (`ensure file.close()`), aliasing control you can scope (`with`, inline access), mutation you can mark (`mutate`), cost you can spot (`.clone()`, `own`, `spawn`). The compiler still guarantees the invariants; the source still shows the mechanism. This is the thread tying the specific choices together.
+
 ### 1. Safety Without Annotation
 
 I enforce memory safety through the type system and scope rules without requiring lifetime markers, borrow annotations, or ownership syntax at call sites.
