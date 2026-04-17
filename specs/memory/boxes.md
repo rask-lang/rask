@@ -94,6 +94,7 @@ Every box heap-allocates its contents — that's part of being a box. The `with`
 - [Pools](pools.md) — Handle-based identity box (`mem.pools`)
 - [Owned Pointers](owned.md) — Linear heap box (`mem.owned`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T>` and `Mutex<T>` (`conc.sync`)
+- [Ownership](ownership.md) — Why boxes hold heap data by value (`mem.ownership`)
 - [Borrowing](borrowing.md) — `with` semantics and rules (`mem.borrowing`)
 - [Linearity](linear.md) — Must-consume rules (`mem.linear`)
 
