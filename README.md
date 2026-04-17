@@ -6,11 +6,9 @@
   </picture>
 </p>
 
-A research language exploring one question: **what if references can't be stored?**
+A systems language built around one question: **what if references can't be stored?**
 
-Rask sits somewhere between Rust and Go — memory safety without lifetime annotations or garbage collection, by making references temporary. They can't be stored in structs or returned from functions.
-
-It's a hobby project. I'm figuring out how far this approach can go. **[Why a new language?](WHY_RASK.md)**
+Make references temporary — never stored in structs, never returned from functions — and lifetime annotations become unnecessary. You pay for it with explicit handles where graphs or cycles need shared identity. Memory safety, deterministic cleanup, no garbage collection, no borrow-checker wrestling. **[Why a new language?](WHY_RASK.md)**
 
 **Status:** Cranelift backend compiles and runs programs natively; interpreter available as a fallback. Core language works end-to-end. Some codegen regressions open — see [issues](https://github.com/rask-lang/rask/issues).
 
@@ -29,7 +27,7 @@ func search_file(path: string, pattern: string) -> () or IoError {
 }
 ```
 
-Full example: [grep_clone.rk](examples/grep_clone.rk)
+Three concepts, three lines: a linear resource (the file *must* close), deferred consumption (`ensure` commits to closing on any exit), and error propagation (`try`). Each is useful alone; together they cover most I/O code. Full example: [grep_clone.rk](examples/grep_clone.rk).
 
 ---
 
@@ -66,7 +64,7 @@ cd ..
 rask run examples/hello_world.rk
 ```
 
-### What you can do
+### Common commands
 
 ```bash
 rask run <file>       # execute a .rk program
