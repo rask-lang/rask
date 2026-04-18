@@ -29,7 +29,10 @@ Rask currently uses `Result<T, E>` and `Option<T>` as standard enums with constr
 - **`T?` is a language-level nullable** (compiler-generated tagged union), not a user-definable enum. `Option<T>` as a named user-facing type is gone.
 - **No constructor keywords or wrappers.** No `Ok`, `Err`, `Some`, `None`, `ok`, `err`, `some` keywords or constructors anywhere.
 - **Type-based branch disambiguation.** `T or E` requires T and E to be distinct nominal types. The compiler picks the branch from the value's type at construction.
-- **Universal auto-wrap.** Any value of type T or E auto-wraps into the corresponding `T or E` branch in any context where the target type is known (return, assignment, collection literal, struct field, function argument).
+- **Error bound.** Every `E` in `T or E` must implement the structural `ErrorMessage` trait (`message(self) -> string`). Enforced at type formation. Primitives like `i32`, `f64` don't qualify unless wrapped in a nominal type. This bound is what makes `r!` format a useful message and removes the "is this literal an error?" ambiguity at construction.
+- **Auto-wrap rules (asymmetric):**
+  - **`T or E`:** auto-wrap fires **only at `return`**. Elsewhere (assignment, field, argument) requires the value to already have the union type. This keeps the error-branch coercion visible — you can only produce a `T or E` by returning from a function declared to return one.
+  - **`T?`:** auto-wrap fires at return **and** assignment (OPT8 unchanged). Bare `T` becomes `T?` wherever a `T?` is expected. Absence-via-sentinel is unambiguous and the pattern is too common for ceremony.
 
 ### Option surface
 
@@ -49,16 +52,17 @@ try user                              // propagate (current fn must return U?)
 | Need | Syntax |
 |------|--------|
 | Type | `T?` |
-| Construct present | bare value (auto-wrap) |
+| Construct present | bare value (auto-wrap at return and assignment) |
 | Absent literal | `none` |
+| Present bool expression (anywhere) | `x?` (returns `bool`) |
 | Present check + narrow (const) | `if x? { use(x) }` |
 | Present + destructure bind (any) | `if x? as v { use(v) }` |
-| Absent check | `if x == none { … }` |
+| Absent check | `if x == none { … }` or `!x?` |
 | Early-exit narrow | `if x == none { return } … use(x)` (x: T after) |
 | Chain | `x?.field` |
 | Fallback value | `x ?? default` |
 | Diverging fallback | `x ?? return none` / `?? break` / `?? panic("…")` |
-| Force | `x!` |
+| Force | `x!` (panics with "none" or `x! "custom {ctx}"` override) |
 | Propagate | `try x` / `try { … }` |
 
 No `some` keyword, no `is some`, no `match` arm for `none`, no Option-specific pattern.
@@ -79,9 +83,9 @@ if r? { use(r) } else as e { log(e) }      // bind error in else branch
 if r is DivError as e { log(e); return }   // narrow-to-error via type pattern
 
 try r                                      // propagate (E ⊆ caller's E2)
-r ?? 0.0                                   // value fallback
-r ?? |e| fallback_from(e)                  // closure fallback (sees error)
-r!                                         // force (panic on err)
+try { compute(r) } else |e| context(e)     // block form for error-recovery-with-context
+r ?? 0.0                                   // value fallback (value only)
+r!                                         // force (panic on err, uses E's message())
 r?.field                                   // chain (propagates err)
 
 // match kept for multi-error unions
@@ -98,10 +102,11 @@ Match arms dispatch on type and narrow the scrutinee in each arm. No forced rena
 
 The operator family covers most cases. A small set of combinators stays as methods because they compose in ways operators can't (they preserve the wrapper type for chaining; operators always extract or panic).
 
-**Option `T?`** — three methods:
+**Option `T?`** — four methods:
 - `.map(f: |T| -> U) -> U?` — transform present without unwrapping
 - `.filter(pred: |T| -> bool) -> T?` — keep if predicate holds
 - `.and_then(f: |T| -> U?) -> U?` — chain Option-returning operations
+- `.to_result(err: E) -> T or E` — lift to Result. Needed because `??` does not widen; `o ?? err_value` is a type error when `err_value`'s type doesn't match `T`.
 
 **Result `T or E`** — four methods:
 - `.map(f: |T| -> U) -> U or E` — transform success
@@ -109,7 +114,7 @@ The operator family covers most cases. A small set of combinators stays as metho
 - `.and_then(f: |T| -> U or E) -> U or E` — chain Result-returning
 - `.ok() -> T?` — drop error, lift to Option
 
-Seven methods total. Compiler-provided on the builtin types — no `impl` blocks for users to discover or replicate.
+Eight methods total. Compiler-provided on the builtin types — no `impl` blocks for users to discover or replicate.
 
 **Cut from today's surface:**
 
@@ -119,13 +124,12 @@ Seven methods total. Compiler-provided on the builtin types — no `impl` blocks
 | `.is_ok()` / `.is_err()` | `r?` / `r is E` |
 | `.unwrap()` | `x!` / `r!` |
 | `.unwrap_or(default)` | `x ?? default` |
-| `.unwrap_or_else(f)` | `r ?? \|e\| f(e)` |
-| `.to_result(err)` | `o ?? err` (auto-wrap handles the E branch) |
+| `.unwrap_or_else(f)` | `try { … } else \|e\| f(e)` block form |
 | `.to_option()` | `.ok()` (single survivor) |
 | `.or(other)` | `x ?? other` already returns `T?` |
-| `.or_else(f)` | `match` or chain |
+| `.or_else(f)` | `try { … } else \|e\| …` or `match` |
 
-Each removed method either duplicated an operator or can be reconstructed trivially. The retained seven are precisely the ones that keep a value in wrapper-land for the next chain step.
+Each removed method either duplicated an operator or can be reconstructed trivially. The retained eight are precisely the ones that keep a value in wrapper-land for the next chain step, plus the two explicit conversion paths (`.ok()`, `.to_result(err)`).
 
 ### Narrowing rides on `const`
 
@@ -176,13 +180,21 @@ Anywhere you introduce a name for an existing value, `as` is the operator. Anywh
 
 ### Disjointness rule
 
-`T or E` requires T ≠ E. Enforced at:
+`T or E` requires T ≠ E. Uses Rask's existing nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)):
+
+- `type Score = i32` (nominal) — `i32 or Score` is **legal**; `Score` is a distinct type.
+- `type alias Score = i32` (transparent) — `i32 or Score` = `i32 or i32`, **illegal**.
+- Generic instantiations like `Vec<i32>` and `Vec<string>` are distinct (different type constructors applied).
+- `T or Never` (where `Never` is uninhabited) collapses to `T` — the E branch can't exist at runtime.
+- References vs values: `T or &T` is legal (distinct types).
+
+Enforcement happens at:
 
 - **Type formation** for concrete types (compile error)
 - **Instantiation** for generics (compile error at the use site, not the definition)
 - **Signature parse** for trivially-equal forms like `func id<T>(x: T) -> T or T`
 
-The escape hatch is **newtypes**, not language syntax. `struct ParseError(i32)` lets you express what would have been `i32 or i32`. No special-case `err` keyword for the same-type case.
+The escape hatch is **newtypes**, not language syntax. `type ParseError = i32 with (…)` lets you express what would have been `i32 or i32`. No special-case `err` keyword for the same-type case.
 
 ### Migration diagnostic
 
@@ -211,6 +223,16 @@ Analogous diagnostics fire for `Some(v)`, `Ok(v)`, `Err(e)`, `None`.
 
 ## Details and edge cases
 
+**`try` cross-shape.** `try` never crosses shapes. Legal combinations:
+- `try r` (`T or E`) in fn returning `U or E2`: requires `E ⊆ E2`.
+- `try o` (`T?`) in fn returning `U?`: propagates `none`.
+
+Illegal (compile error, not silent conversion):
+- `try o` (`T?`) in fn returning `U or E`: fabricating an error is a footgun.
+- `try r` (`T or E`) in fn returning `U?`: dropping the error is a footgun.
+
+Use `.ok()` or `.to_result(err)` for explicit conversions.
+
 **Linear resources.** OPT11 stays: if `T` is linear, `T?` is linear, and `T or E` is linear if either branch is. Operators must consume the resource exactly once.
 
 - `if x? as v { consume(v) }` — `v` binds the payload; the linear resource moves into `v` at the bind site. `x` is no longer usable in the block (standard move semantics).
@@ -222,7 +244,32 @@ Analogous diagnostics fire for `Some(v)`, `Ok(v)`, `Err(e)`, `None`.
 
 **`else as` is Result-only.** `if r? { … } else as e { log(e) }` binds the error value. Option has no error to name in the else branch — `else as n { … }` would bind "none" which has no payload. Only `T or E` supports `else as`.
 
-**Error bound on `E`.** `T or E` accepts any nominal `E` — numeric status codes (`f64 or i32`), enums, structs, all legal. Operators that print error information (`r!` without a literal message) require `E` to implement `ErrorMessage` (Q6). `try r`, `match r`, `r ?? default`, and the methods impose no trait bounds beyond disjointness.
+**`ErrorMessage` trait.** Structural; requires a single `message(self) -> string` method. Implemented by writing an `extend` block with that method — no explicit trait declaration needed. Examples:
+
+```rask
+enum DivError { ByZero, Overflow }
+extend DivError {
+    func message(self) -> string {
+        match self {
+            DivError.ByZero => "division by zero",
+            DivError.Overflow => "overflow",
+        }
+    }
+}
+
+struct NotFound { key: string }
+extend NotFound {
+    func message(self) -> string { "not found: {self.key}" }
+}
+```
+
+The bound is enforced at type formation: `T or E` where `E` doesn't implement `ErrorMessage` is a compile error pointing at the missing method. Primitives (`i32`, `f64`, `string`) don't qualify — wrap them in a nominal type that does.
+
+**Layered error traits.** `ErrorMessage` is the minimum. Richer capabilities live in opt-in traits on top — `LinedError` (source line), `ContextualError` (key/value context map), `CodedError` (numeric code), etc. Libraries choose which they implement. Operators and `match` don't require the richer traits; they're for diagnostics/logging pipelines that want more than a string.
+
+**`??` is strictly extract, never widens.** `x ?? y` requires `y` to be compatible with the inner type of `x` (`T` for `x: T?`, `T` for `x: T or E`). Never produces a wider type. If you have `o: T?` and want `T or E`, use `o.to_result(err)`.
+
+**`x?` as a boolean.** `x?` / `r?` is a bool expression anywhere. Narrowing is the special behaviour gated to condition position over a const scrutinee; the expression itself is always a bool. `!x?`, `x? && y?`, `const b: bool = x?` all legal.
 
 **Anonymous expressions don't narrow.** The narrowing rule applies to const bindings. `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `const v = compute()` first, then `if v? { use(v) }`, or use `if compute()? as v { use(v) }` to bind at the check site.
 
@@ -260,58 +307,6 @@ Don't reintroduce without strong reason.
 7. **`is some` / `is ok` keywords.** `some` and `ok` would be destructure-only keywords with no construction counterpart. Inconsistent.
 8. **`x == none` and `is none` both available.** Kept `== none` as the absent form. `is none` not pursued — `is <variant>` is enum-only.
 9. **Matching on Option.** Covered above — operators suffice and keep the builtin framing honest.
-
-## Open spec questions
-
-Each needs a one-paragraph answer before the Option/Result specs can be rewritten.
-
-**Q1 — Define disjointness precisely.**
-- Type aliases (`type Score = i32`): is `i32 or Score` legal? *Recommendation: no, same nominal type.*
-- Empty types (`enum Never {}`): does `T or Never` collapse to T? *Recommendation: yes.*
-- Generic instantiations: `Vec<i32>` vs `Vec<string>` — different types? *Recommendation: yes.*
-- Newtypes: confirmed disjoint from their wrapped type.
-
-**Q2 — Auto-wrap scope.**
-- Universal (return, assignment, literal, field, argument)? *Recommendation: universal.*
-- Or positional (return only, like Rust)? Document the call.
-
-**Q3 — `r?` / `x?` in expression position.**
-- Forbidden outside `if`/`while` conditions? *Recommendation: forbidden.* Use `try r` for propagation, `r!` for force, `if r?` for test+narrow, `x != none` / `r is E` for a plain bool.
-- If permitted as bool outside conditions, document explicitly — otherwise the Option surface table should read "in conditions only" for `x?`.
-
-**Q4 — `??` with closure form.**
-- Single operator overloaded on RHS type (`T` value vs `|E| -> T` closure)? *Recommendation: yes, single overloaded.*
-- Closure form is Result-only (Option has no error value to pass).
-
-**Q5 — `try` cross-type rules.**
-- `try r` (`T or E`) in fn returning `U or E2`: requires E ⊆ E2.
-- `try o` (`T?`) in fn returning `U?`: propagates `none`.
-- `try o` (`T?`) in fn returning `U or E`: *Recommendation: ill-typed.*
-- `try r` (`T or E`) in fn returning `U?`: *Recommendation: ill-typed.*
-- Spec the error message explicitly so cross-shape is diagnostic, not a generic type mismatch.
-
-**Q6 — `r!` / `x!` panic message.**
-- Generic ("Result was error") — useless.
-- Required `ErrorMessage` trait, structurally checked — *recommended*.
-- Literal-message override (`x! "msg"`, with interpolation) stays as today.
-- Same trait applies to `x!` on Option (defaults to "none").
-
-**Q7 — Result ↔ Option conversion.**
-- `r: T or E` → `T?`: drop error. Method `.ok()`.
-- `o: T?` → `T or E`: needs an error. `o ?? Error.NotFound` works under universal auto-wrap (the RHS auto-wraps into the E branch).
-
-**Q8 — `T or T` rejection timing.**
-- Reject at signature parse for trivially-equal forms.
-- Reject at instantiation for generic cases (`map<i32, i32, i32>`).
-
-**Q9 — Auto-wrap inference with numeric literals.**
-- `func f(x: i32 or i64) -> …` called as `f(5)`: both branches accept the literal. *Recommendation: require explicit annotation or a cast (`f(5 as i32)`), since the disjointness rule doesn't help when both types accept the value.* Most real code uses a newtype for the error side, so this is rare — but it needs to be diagnosed, not silently defaulted.
-
-**Q10 — Panic-message trait scope.**
-- Q6 proposes `ErrorMessage` as the trait for `r!`'s default panic message.
-- Does `try r` also require `ErrorMessage` for origin tracking / diagnostic messages? *Recommendation: no — `try r` propagates the error unchanged, no formatting needed at the propagation site.*
-- Does the trait apply to `match` arms' default printing? *Recommendation: no — match is explicit, user decides whether to format.*
-- Net: `ErrorMessage` is only for `r!` / `x!` without a literal message override.
 
 ## Migration scope
 
@@ -356,14 +351,13 @@ Breaking change. Affected:
 
 ## Recommended order of work
 
-1. Answer Q1–Q8 in spec form
-2. Write `specs/types/error-types.md` and `specs/types/optionals.md` (full rewrites)
-3. Update CORE_DESIGN, SYNTAX, GLOSSARY
-4. Implement compiler changes (parser → types → MIR)
-5. Build migration tool
-6. Migrate stdlib
-7. Migrate examples
-8. Update canonical-patterns; write the prior-art comparison page
+1. Write `specs/types/error-types.md` and `specs/types/optionals.md` (full rewrites against the decisions in this proposal)
+2. Update CORE_DESIGN, SYNTAX, GLOSSARY
+3. Implement compiler changes (parser → types → MIR)
+4. Build migration tool
+5. Migrate stdlib
+6. Migrate examples
+7. Update canonical-patterns; write the prior-art comparison page
 
 ## What "done" looks like
 
