@@ -308,11 +308,147 @@ Don't reintroduce without strong reason.
 8. **`x == none` and `is none` both available.** Kept `== none` as the absent form. `is none` not pursued — `is <variant>` is enum-only.
 9. **Matching on Option.** Covered above — operators suffice and keep the builtin framing honest.
 
+## Worked example
+
+A user-config loader exercising most of the surface: `try` propagation, error union widening, `?.` chain, `??` fallback, narrowing, match with type patterns, method chaining, and `ErrorMessage`.
+
+```rask
+// Error types — each implements ErrorMessage
+
+enum IoError { NotFound(string), PermissionDenied(string), Unreadable }
+extend IoError {
+    func message(self) -> string {
+        match self {
+            IoError.NotFound(p)         => "file not found: {p}",
+            IoError.PermissionDenied(p) => "permission denied: {p}",
+            IoError.Unreadable          => "file unreadable",
+        }
+    }
+}
+
+enum ParseError { BadJson(i64), MissingField(string) }
+extend ParseError {
+    func message(self) -> string {
+        match self {
+            ParseError.BadJson(line)     => "bad JSON at line {line}",
+            ParseError.MissingField(key) => "missing field: {key}",
+        }
+    }
+}
+
+struct Config {
+    user: string
+    email: string?
+    theme: string?
+}
+
+// Low-level: returns single error
+func read_file(path: string) -> string or IoError { ... }
+
+// Mid-level: composes errors via union widening
+func load_config(path: string) -> Config or (IoError | ParseError) {
+    const text = try read_file(path)    // IoError widens to (IoError | ParseError)
+    const json = try parse_json(text)   // ParseError widens
+
+    const user = json.get("user") ?? return ParseError.MissingField("user")
+
+    return Config {
+        user: user,
+        email: json.get("email"),
+        theme: json.get("theme"),
+    }
+}
+
+// High-level: consumes, narrows, chains, recovers
+func greet(path: string) -> string {
+    const loaded = load_config(path)
+
+    if loaded is ParseError as e {
+        log("config malformed: {e.message()}")
+        return "Hello, guest"
+    }
+
+    if loaded is IoError.NotFound(p) as e {
+        log(e.message())
+        return "Hello, new user"
+    }
+
+    if loaded is IoError {
+        // narrow-and-force: we know it's one of the remaining IoError variants
+        return "Config load failed: {loaded!.message()}"
+    }
+
+    // loaded narrows to Config here (all error arms handled via early-exit)
+    const theme = loaded.theme ?? "default"
+    const name = loaded.email
+        .map(|e| e.split("@").first)
+        .and_then(|s| s)
+        ?? loaded.user
+
+    return "Hello, {name} ({theme} theme)"
+}
+
+// Alternative greet() showing match-based dispatch instead of if-ladder
+func greet_v2(path: string) -> string {
+    match load_config(path) {
+        Config => format_greeting(load_config(path)!),   // narrow + force (const)
+        ParseError as e => {
+            log("config malformed: {e.message()}")
+            "Hello, guest"
+        }
+        IoError.NotFound(_) => "Hello, new user",
+        IoError => "config load failed",
+    }
+}
+```
+
+**What this exercises:**
+- No constructors: `return ParseError.MissingField("user")`, `return Config { … }` — both bare, auto-wrapped at return only.
+- `??` with `return` (diverging fallback on Option).
+- `try` with error union widening (`IoError ⊆ IoError | ParseError`).
+- `.map`, `.and_then` method chaining on `T?`.
+- `if r is E as e` narrow-to-error with rename.
+- Early-exit narrowing: by the time control reaches line "narrows to Config here," every error arm has diverged.
+- `match` with type patterns (`Config`, `ParseError`, `IoError`) and variant patterns (`IoError.NotFound(_)`).
+- `ErrorMessage.message()` used at `.message()` call sites; compiler-enforced because every `E` satisfies the trait.
+
+**What would not compile:**
+- `const r: Config or IoError = read_file(path)` — assignment position rejects auto-wrap for `T or E`.
+- `try read_file(path)` in a function returning `Config?` — cross-shape, ill-typed.
+- `return 42` in any of these (`42` is `i32`, doesn't match either branch).
+- `Config or i32` as a return type — `i32` doesn't implement `ErrorMessage`.
+
 ## Migration scope
 
 Breaking change. Affected:
 
 **Spec files:** `specs/types/error-types.md` (full rewrite), `specs/types/optionals.md` (full rewrite), `specs/types/union-types.md` (extend disjointness rule), `specs/types/gradual-constraints.md` (error union inference GC7 update), `specs/control/ensure.md` (try interaction), `specs/SYNTAX.md`, `specs/CORE_DESIGN.md`, `specs/GLOSSARY.md`, `specs/rejected-features.md`, `specs/canonical-patterns.md`.
+
+### Cross-read deltas (specific)
+
+After reading the affected specs, here are the concrete changes each needs:
+
+**`type-aliases.md`** — no changes. The disjointness rule references T2 (nominal) vs A2 (transparent) correctly.
+
+**`union-types.md`** — small changes:
+- The pattern-matching example (line 70–75) uses old `Ok(config)` / `Err(IoError.NotFound(p))` wrappers. Rewrite to the new model: type patterns for the success branch, variant patterns for the error branch.
+- S1 (subset widening) and S2 (auto-widen on try) carry through unchanged.
+- Error messages (U1/S1) don't need conceptual changes, just example code updates.
+- Union types remain error-position only; the proposal doesn't change that.
+
+**`gradual-constraints.md`** — one rule update:
+- GC7 says "try calls and `Err()` returns contribute to the inferred error union." Rewrite: "try calls and bare error values in return position contribute." Example code needs `Err(…)` → bare error removed.
+
+**`ensure.md`** — examples need updating:
+- Function signature `() or Error` stays, but the `Ok(())` return becomes implicit (bare success path auto-wraps). Specifically `return Ok(())` / final `Ok(())` becomes `return` or nothing (depending on whether Rask's empty-return works in a `() or E` function).
+- EN4 (errors ignored in ensure body) references `Result` — rewrite as `T or E`.
+- EN5 (try forbidden in ensure) carries through unchanged.
+
+**`canonical-patterns.md`** — 12 occurrences of old constructors. Mechanical rewrite once the core specs land.
+
+**`rejected-features.md`** — add an entry documenting the Ok/Err/Some/None constructor rejection with the reasoning from this proposal's Problems section.
+
+**`CORE_DESIGN.md`, `SYNTAX.md`, `GLOSSARY.md`** — error-handling descriptions and terminology tables updated to match.
 
 **Stdlib:** `stdlib/result.rk` and `stdlib/option.rk` likely deleted (combinators move to free functions or compiler builtins). Every stdlib file using `Result`/`Option` migrates.
 
