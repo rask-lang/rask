@@ -57,7 +57,7 @@ try user                              // propagate (current fn must return U?)
 | Present bool expression (anywhere) | `x?` (returns `bool`) |
 | Present check + narrow (const) | `if x? { use(x) }` |
 | Present + destructure bind (any) | `if x? as v { use(v) }` |
-| Absent check | `if x == none { … }` or `!x?` |
+| Absent check | `if x == none { … }` |
 | Early-exit narrow | `if x == none { return } … use(x)` (x: T after) |
 | Chain | `x?.field` |
 | Fallback value | `x ?? default` |
@@ -144,7 +144,9 @@ All the usual flow-typing complications — mutation, intervening calls, closure
 
 Same rule for `T or E`.
 
-**Both branches narrow symmetrically.** When the condition is a recognised predicate over a const scrutinee, the then-branch narrows to the positive variant and the else-branch to the negative. For Option, `x?`, `!x?`, `x == none`, `x != none` all narrow equivalently. For Result, `r?`, `!r?`, `r is E` all narrow equivalently. Compound predicates (`&&`, `||`) do **not** narrow — use nested `if` or `as v` bind.
+**Both branches narrow symmetrically.** When the condition is a recognised predicate over a const scrutinee, the then-branch narrows to the positive variant and the else-branch to the negative. For Option, `x?`, `x == none`, `x != none` all narrow equivalently. For Result, `r?`, `r is E` narrow equivalently. Compound predicates (`&&`, `||`) do **not** narrow — use nested `if` or `as v` bind.
+
+**`!x?` is forbidden.** Mixing prefix `!` with suffix `?` reads as "not-x-present" — the reading order fights the parse. Use `x == none` for the absent check. The parser rejects `!x?` (with or without parens) with a diagnostic suggesting the replacement. Other negations like `!some_bool_fn()` remain legal; the rule is specifically about `!` applied directly to a `?`-suffixed expression.
 
 **Early-exit narrows the fall-through.** If a branch diverges (`return`, `break`, `continue`, `panic`, `loop { … }`), the code after the `if` is narrowed as if the other branch had run.
 
@@ -269,7 +271,7 @@ The bound is enforced at type formation: `T or E` where `E` doesn't implement `E
 
 **`??` is strictly extract, never widens.** `x ?? y` requires `y` to be compatible with the inner type of `x` (`T` for `x: T?`, `T` for `x: T or E`). Never produces a wider type. If you have `o: T?` and want `T or E`, use `o.to_result(err)`.
 
-**`x?` as a boolean.** `x?` / `r?` is a bool expression anywhere. Narrowing is the special behaviour gated to condition position over a const scrutinee; the expression itself is always a bool. `!x?`, `x? && y?`, `const b: bool = x?` all legal.
+**`x?` as a boolean.** `x?` / `r?` is a bool expression anywhere. Narrowing is the special behaviour gated to condition position over a const scrutinee; the expression itself is always a bool. `x? && y?`, `const b: bool = x?` are legal. `!x?` is not (see above).
 
 **Anonymous expressions don't narrow.** The narrowing rule applies to const bindings. `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `const v = compute()` first, then `if v? { use(v) }`, or use `if compute()? as v { use(v) }` to bind at the check site.
 
