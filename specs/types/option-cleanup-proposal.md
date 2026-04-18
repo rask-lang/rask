@@ -33,10 +33,12 @@ Result is handled in a separate proposal. The `is <variant>` narrowing rule desc
 |------|--------|
 | Type | `T?` |
 | Construct present | bare value (auto-wrap via OPT8) |
-| Construct / test absent | `none` (literal, used with `==` and as rvalue) |
+| Absent literal | `none` |
+| Present bool expression | `x?` (evaluates to `bool`) |
+| Absent bool expression | `x == none` or `!x?` |
 | Present check + narrow (const) | `if x? { use(x) }` (x: T in block) |
 | Present + destructure bind (any) | `if x? as v { use(v) }` (v: const T in block) |
-| Absent check | `if x == none { … }` or `if !x? { … }` |
+| Early-exit narrow | `if x == none { return } … use(x)` (x: T after) |
 | Chain | `x?.field` |
 | Fallback value | `x ?? default` |
 | Diverging fallback | `x ?? return none` (also `?? break`, `?? continue`, `?? panic("…")`) |
@@ -47,16 +49,56 @@ That's the complete surface. There is no `some` keyword, no `is some`, no `match
 
 ### Narrowing rides on `const`
 
-The usual flow-typing complications — does mutation invalidate the narrow, do calls touch the binding, does the narrow survive across closures, what about field paths — all collapse into one structural fact Rask already enforces:
+All the usual flow-typing complications — mutation, intervening calls, closure capture, field paths — collapse into one structural fact the language already enforces:
 
 **`const` bindings cannot be reassigned. Narrowing works on them for free. `mut` bindings require `if x? as v` to get a stable binding.**
 
-| Scrutinee | `if x? { … }` | `if x? as v { … }` |
-|-----------|----------------|---------------------|
-| `const x: T?` | narrows `x` to `T` in the block | also binds `v: T`; `v` is a redundant alias |
-| `mut x: T?` | predicate is legal, `x` stays `T?` (no narrow) | binds const `v: T`; `x` stays `T?` |
+#### `x?` is a boolean
 
-That's the whole rule. No flow analysis, no tracking of intervening calls, no closure-capture exceptions. Field paths narrow iff the full path is rooted in a `const` binding.
+`x?` is a plain boolean expression meaning "x is present." It composes like any other bool: `!x?`, `x? && y?`, assignment to a `bool` local. Narrowing is triggered when the compiler recognises the predicate form in a branching construct; the expression itself is just a bool.
+
+#### Both branches narrow symmetrically
+
+When the condition of an `if` is a recognised Option predicate over a const scrutinee `x`, **both branches narrow**:
+
+- `if x? { … } else { … }` — then: `x: T`. else: `x` known-absent.
+- `if !x? { … } else { … }` — then: `x` known-absent. else: `x: T`.
+- `if x == none { … } else { … }` — then: `x` known-absent. else: `x: T`.
+- `if x != none { … } else { … }` — then: `x: T`. else: `x` known-absent.
+
+All four predicate forms narrow equivalently. The known-absent narrow is information-only — there is no `T` value to use — but it keeps the rule symmetric with user-enum narrowing and prevents surprising asymmetry.
+
+Compound predicates (`x? && y?`, `x? || fallback_known()`) do **not** trigger narrowing. Use nested `if` or `as v` bind when multiple predicates combine.
+
+#### Early-exit narrows the fall-through
+
+If a branch of an `if` diverges (`return`, `break`, `continue`, `panic`, `loop { … }`), the code after the `if` is narrowed as if the other branch had run:
+
+```rask
+const user: User? = load()
+
+if user == none {
+    return
+}
+// user: T here — the diverging branch proved it's not absent
+
+greet(user)
+```
+
+This is the common guard-style pattern. It works with any of the four predicate forms.
+
+#### Destructure bind at the check site
+
+`if x? as v { … }` binds a fresh const `v: T` in the block. Useful when `x` is `mut`, or when a fresh name reads better. `x` itself is unchanged.
+
+#### Summary
+
+| Scrutinee | `if x? { … }` | `if x? as v { … }` | `if x == none { return } …` |
+|-----------|----------------|---------------------|------------------------------|
+| `const x: T?` | narrows `x` in both branches | binds `v: T`; also narrows `x` | narrows `x` to `T` after the guard |
+| `mut x: T?` | predicate legal, no narrowing | binds `v: T`; `x` unchanged | no narrowing |
+
+No flow analysis beyond this. Field paths narrow iff the full path is rooted in a `const` binding.
 
 ### Examples
 
@@ -98,6 +140,40 @@ Match earns its keep on types with multiple shapes, guards, complex destructure,
 
 Keeping match on Option would mean reintroducing `some` and `none` as pattern keywords, which is exactly what the builtin framing is trying to remove. Enums get match; Option gets operators. Clean split.
 
+### Migration diagnostic
+
+The biggest ergonomic cliff is a user typing `match user { Some(u) => …, None => … }` from Rust or old-Rask habit. The parser otherwise produces a cryptic "Some is not defined" or "cannot match Option" error. The diagnostic must be first-class:
+
+```
+ERROR [type.option-cleanup/NO_MATCH]: Option cannot be matched
+   |
+5  |  match user { Some(u) => …, None => … }
+   |  ^^^^^ Option is a builtin status type, not an enum
+
+WHY: Option has two states — present and absent — and the ?-family
+covers both more concisely than a match.
+
+FIX: use operators instead:
+
+  // branching
+  if user? { … } else { … }
+
+  // branching with a fresh name (for mut, or when renaming reads better)
+  if user? as u { use(u) } else { default() }
+
+  // chained access with fallback
+  user?.name ?? "Anonymous"
+
+  // early exit
+  if user == none { return }
+  greet(user)   // user: User here
+
+Use match only for enums with three or more branches, or for
+destructuring with guards.
+```
+
+Without this diagnostic, users migrating from Rust will lose time on a parser error that doesn't point at the real issue. Same treatment applies to `Some(x)` at construction and `match x { None => … }` — short, specific, code-suggested.
+
 ## What gets deleted
 
 - **`Some` / `None` (PascalCase).** Gone entirely. `none` is a literal (like `true`, `false`); there is no "Some variant."
@@ -132,11 +208,13 @@ Keeping match on Option would mean reintroducing `some` and `none` as pattern ke
 
 **Q1 — `if x? as v` grammar.** `as` is used elsewhere for casts (`x as i64`). Parser must disambiguate on position. Alternative spellings: `if const v = x?` (Swift/Kotlin style). Preference: `as` is shorter and consistent with the "introduce a name at the check site" role. Confirm.
 
-**Q2 — Interior mutability through const.** `const x: Shared<U?>` holds a shared cell; contents can change via box access. Narrowing applies to `x` itself (the box, const), not to contents accessed through it. Box access uses `with`-scoped const names, which narrow normally inside the `with` block.
+**Q2 — Canonical predicate form for the linter.** Four predicate forms narrow equivalently (`x?`, `!x?`, `x == none`, `x != none`). Lint should pick one per context — likely `x?` / `!x?` for conditions and `x == none` / `x != none` for guards, because they read most naturally in those positions. Confirm.
 
-**Q3 — Coordination with Result.** Result is a real enum with `Ok`/`Err` variants and keeps `match` / `is <variant>` narrowing. `try` and `x ?? y` mixing across Option/Result need to line up with whatever the Result proposal decides.
+**Q3 — Interior mutability through const.** `const x: Shared<U?>` holds a shared cell; contents can change via box access. Narrowing applies to `x` itself (the box, const), not to contents accessed through it. Box access uses `with`-scoped const names, which narrow normally inside the `with` block.
 
-**Q4 — Migration scope.** Need to grep sources and stdlib for `Some(`, `None`, `match … { Some`, `match … { None` to size the rewrite. Mechanical but wide.
+**Q4 — Coordination with Result.** Result is a real enum with `Ok`/`Err` variants and keeps `match` / `is <variant>` narrowing. `try` and `x ?? y` mixing across Option/Result need to line up with whatever the Result proposal decides.
+
+**Q5 — Migration scope.** Need to grep sources and stdlib for `Some(`, `None`, `match … { Some`, `match … { None` to size the rewrite. Mechanical but wide.
 
 ## Cost
 
