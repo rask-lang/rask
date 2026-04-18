@@ -86,13 +86,13 @@ r?.field                                   // chain (propagates err)
 
 // match kept for multi-error unions
 match r {
-    v: f64 => use(v),
-    e: IoError => handle_io(e),
-    e: ParseError => handle_parse(e),
+    f64 => use(r),                    // r: f64 in this arm (const narrow)
+    IoError => log(r),                // r: IoError in this arm
+    ParseError as e => handle(e),     // optional rename with `as`
 }
 ```
 
-Match arms use **type-based patterns** (`v: T => …`, `e: SomeError => …`). No keyword wrappers.
+Match arms dispatch on type and narrow the scrutinee in each arm. No forced rename — `r` just narrows to the arm's type, the same way `if r? { use(r) }` narrows. Use `Type as name` when a fresh name reads better or when the scrutinee is `mut`.
 
 ### Narrowing rides on `const`
 
@@ -125,6 +125,21 @@ Match earns its keep on types with multiple shapes, guards, complex destructure,
 | `match x { none => panic("…"), v => v }` | `x!` (or `x ?? panic("…")`) |
 
 Match on `T or E` is kept because multi-error unions (`T or (A | B | C)`) genuinely need multi-arm dispatch. Two-branch `T or E` matches are still written with operators.
+
+### Naming: `:` vs `as`
+
+`:` annotates in declarations. `as` renames in usage positions. They never compete for the same job.
+
+| Position | Operator | Example |
+|----------|----------|---------|
+| Declaration (binding with type) | `:` | `const x: i64 = 1`, `func f(x: i64)`, `struct P { x: i64 }` |
+| Cast | `as` | `x as i64` |
+| Narrow with rename | `as` | `if x? as v { … }` |
+| Branch rename | `as` | `if r? { … } else as e { … }` |
+| Type-pattern narrow with rename | `as` | `if r is DivError as e { … }` |
+| Match arm rename | `as` | `match r { Type as name => … }` |
+
+Anywhere you introduce a name for an existing value, `as` is the operator. Anywhere you annotate a declaration with a type, `:` is the operator. Match arms without `as` simply narrow the scrutinee in place — no rename is forced.
 
 ### Disjointness rule
 
