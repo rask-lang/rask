@@ -225,6 +225,26 @@ The honest framing: "Zig-class tightness with better consumer ergonomics, at the
 
 A new Rask user reading the error-handling section sees: type-based wrap, four operators, no constructors. They can write a fallible function in three lines without learning any wrapper types. They can read existing code and understand it without consulting an enum-variant reference. The model fits on one page.
 
+## Reconciliation with the Option cleanup proposal
+
+The Option cleanup proposal (`option-cleanup-proposal.md`) was drafted before the Result side was in scope. Several of its detail decisions need revisiting once Q1–Q8 are answered:
+
+**R1 — `x?` in expression position.** Option proposal says `x?` is "a plain boolean expression." Handoff Q3 recommends forbidding `x?` outside `if`/`while` conditions. **If Q3 lands as recommended, amend the Option proposal: `x?` is a branching-construct form, not a standalone bool. Use `x != none` for a bool expression.**
+
+**R2 — Auto-wrap scope.** Option proposal keeps OPT8 (return/assignment coercion). Handoff Q2 proposes universal auto-wrap (also literals, fields, arguments). **If universal, Option's OPT8 expands correspondingly.** No surface change at call sites — just more positions where the coercion fires.
+
+**R3 — `??` closure form.** Handoff Q4 adds `r ?? |e| fallback(e)` for Result. Option has no error value to pass to a closure. **Decide: does `x ?? |_| fallback()` exist for Option, or is the closure form Result-only?** Recommendation: Result-only. Option's fallback is already value-only; a closure without an argument adds nothing.
+
+**R4 — `!` panic message.** Option proposal keeps the literal-message sugar (`x! "msg"`, with interpolation). Handoff Q6 proposes a structural `ErrorMessage` trait as the default. **If the trait lands, both Option and Result get a generic default message ("none" for Option, trait-driven for Result). The literal-message sugar likely stays as an override.** Spec both.
+
+**R5 — Symmetric narrow + early-exit.** Option proposal specs both-branch narrowing and early-exit fall-through narrowing. Handoff says "same rule for T or E" for const/mut narrowing. **Extend the symmetric-narrow and early-exit-narrow rules to Result explicitly in the Result spec.** Not a change to the Option proposal, just cross-application.
+
+**R6 — Match diagnostic scope.** Option proposal specs a first-class "cannot match on Option" diagnostic. Result keeps match. **The diagnostic fires only when the scrutinee is `T?`, not `T or E`.** Already implicit; worth stating in the diagnostic spec.
+
+**R7 — `try` cross-shape.** Handoff Q5 recommends cross-shape `try` (Option-in-Result-returning fn, or vice versa) is ill-typed. Option proposal inherits today's OPT13. **Either way, spec must state cross-shape explicitly so the error message is specific, not a generic type mismatch.**
+
+Net: the Option proposal's final surface stands, but `x?`-as-bool, auto-wrap scope, closure-`??`, and `!`-message need the handoff's answers before the Option spec is rewritten. The narrowing rules (symmetric, early-exit, const-rides-narrow) carry over to Result unchanged.
+
 ## See Also
 
 - [Option Cleanup Proposal](option-cleanup-proposal.md) — detailed Option narrowing rules and migration diagnostic (subsumed by this handoff)
