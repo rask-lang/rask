@@ -53,15 +53,46 @@ match user {
 
 **The present path is unmarked at construction because it's the default. At destructuring, every branch is named because you're choosing between them.** This is the entire mental model for the construction/match split.
 
-### Narrowing rules
+### Narrowing rides on `const`
 
-These are the edges any `is <variant>` narrowing mechanism has to pin down. Not Option-specific — same rules apply to user enums.
+The usual flow-typing complications — does mutation invalidate the narrow, do calls touch the binding, does the narrow survive across closures, what about field paths — all collapse into one structural fact Rask already enforces:
 
-1. **Mutation invalidates the narrow.** If the scrutinee is reassigned inside the block (`user = load_again()`), it reverts to `T?` — the new value might be `none`.
-2. **Calls that don't reassign preserve the narrow.** `greet(user)` doesn't touch the binding; narrow stays.
-3. **Narrow doesn't cross closure boundaries.** Inside a closure captured from a narrowed scope, the name reverts to `T?` — the closure might run later when the narrow no longer holds.
-4. **The `else` branch gets the negative narrow.** `if x is some { T } else { none }`. Symmetric.
-5. **Plain identifiers only, not field paths.** `if player.weapon is some { use(player.weapon) }` does **not** narrow — `player.weapon` could be reassigned between check and use. Use a local: `const w = player.weapon; if w is some { use(w) }`. (Kotlin-style strict, not TypeScript-style loose.)
+**`const` bindings cannot be reassigned. Narrowing works on them for free. `mut` bindings require explicit destructure.**
+
+| Scrutinee | `if x is some { … }` | `if x is some(v) { … }` |
+|-----------|---------------------|--------------------------|
+| `const x: T?` | narrows `x` to `T` in the block | also narrows; `v` is a redundant alias |
+| `mut x: T?` | predicate is legal, but `x` stays `T?` (no narrow) | binds const `v: T` in the block; `x` stays `T?` |
+
+That's the whole rule. No flow analysis, no tracking of intervening calls, no closure-capture exceptions. The language's const/mut discipline is already a structural invariant, and narrowing rides on it.
+
+Consequences that fall out automatically:
+
+- **Closures capturing a const scrutinee.** The binding can't change, so the narrowed type holds across the closure boundary. No special case.
+- **Field paths.** `if player.weapon is some { use(player.weapon) }` narrows iff the full path is rooted in a `const` binding and every step is immutable. If `player` is `const`, its fields are immutable by inheritance, and the narrow applies. If `player` is `mut`, use `is some(w)` to bind.
+- **Else branch.** Symmetric: in `if x is some { … } else { … }`, the `else` narrows `x` to `none` when `x` is const. When `x` is mut, neither branch narrows.
+
+The const/mut split is load-bearing here: without it, narrowing would need to track mutation and call effects. With it, the compiler only has to ask "is this binding const?" and everything else follows.
+
+### Examples
+
+```rask
+const user: User? = load()
+if user is some {
+    greet(user)              // user: User (const, narrow holds)
+}
+
+mut cache: Cache? = try_load_cache()
+if cache is some(c) {
+    c.sweep()                // c: Cache (const in block)
+    // cache itself stays Cache?; may be reassigned below
+}
+
+const player: Player = load_player()
+if player.weapon is some {
+    fire(player.weapon)      // narrows — path is const all the way
+}
+```
 
 ### Surface
 
@@ -70,9 +101,9 @@ These are the edges any `is <variant>` narrowing mechanism has to pin down. Not 
 | Type | `T?` |
 | Construct present | bare value (auto-wrap) |
 | Construct absent | `none` |
-| Narrow to present | `if x is some { use(x) }` |
-| Narrow to absent | `if x is none { … }` |
-| Bind with rename | `if x is some(u) { use(u) }` |
+| Narrow to present (const scrutinee) | `if x is some { use(x) }` |
+| Narrow to absent (const scrutinee) | `if x is none { … }` |
+| Bind with rename (any scrutinee) | `if x is some(u) { use(u) }` |
 | Chain | `x?.field` |
 | Fallback value | `x ?? default` |
 | Diverging fallback | `x ?? return none` (also `?? break`, `?? continue`, `?? panic("…")`) |
@@ -107,15 +138,13 @@ These are the edges any `is <variant>` narrowing mechanism has to pin down. Not 
 
 ## Open questions
 
-**Q1 — Field-path narrowing.** Proposal says no, use a local. Confirm this is acceptable ergonomically. The escape hatch is one line.
+**Q1 — PascalCase in existing user code.** User enums stay PascalCase. Only Option builtin variants are lowercase. Confirm this split is acceptable, or decide whether all enum variants move to lowercase (separate, larger decision).
 
-**Q2 — Closure capture of narrow.** Proposal says narrow doesn't cross closures (conservative). An opt-in "closure captures the narrowed type if synchronous" escape hatch might be added later. Not in this proposal.
+**Q2 — Coordination with Result proposal.** `try`, `x ?? y` on mixed Option/Result, and any narrowing behaviour for Result need to line up with whatever lands there. The const/mut narrowing rule above is written to be type-agnostic so it can be adopted wholesale.
 
-**Q3 — PascalCase in existing user code.** User enums stay PascalCase. Only Option builtin variants are lowercase. Confirm this split is acceptable, or decide whether all enum variants move to lowercase (separate, larger decision).
+**Q3 — Interior mutability through const.** `const x: Shared<T>` holds a shared cell whose contents can change through the box. If `T` is `U?`, does narrowing on the box contents work? Proposal: narrowing applies to `x` itself (the box, which is const), not to contents accessed through a box — box access is explicit (`with`-scoped) and narrowing inside a `with` block uses the `with`-bound const name normally.
 
-**Q4 — Coordination with Result proposal.** `try`, `x ?? y` on mixed Option/Result, and any narrowing behaviour for Result need to line up with whatever lands there. Narrowing rules above are written to be Option/Result-agnostic so they can be adopted wholesale.
-
-**Q5 — Migration scope.** Need to grep sources and stdlib for `Some(`, `None` to size the rewrite. Mechanical but wide.
+**Q4 — Migration scope.** Need to grep sources and stdlib for `Some(`, `None` to size the rewrite. Mechanical but wide.
 
 ## Cost
 
@@ -128,7 +157,7 @@ These are the edges any `is <variant>` narrowing mechanism has to pin down. Not 
 
 The original surface accumulated because each feature was added locally: `Some` as a wrapper, `is Some` as a predicate, magic rebind for ergonomics, five rebind forms for different contexts. Each made sense in isolation; together they produced duplication.
 
-Collapsing around "`is <variant>` narrows the scrutinee" gives one rule that:
+Collapsing around "`is <variant>` narrows the scrutinee (when const)" gives one rule that:
 
 - Removes the magic-rebind footgun — narrowing is explicit at the `is some` call site.
 - Removes the "invent a new name" cost — the scrutinee's existing name is the narrowed value.
@@ -136,6 +165,8 @@ Collapsing around "`is <variant>` narrows the scrutinee" gives one rule that:
 - Leaves a clean shape for Result to adopt when its own proposal lands.
 
 Dropping `Some` at construction removes the last piece of Rust-legacy ceremony: auto-wrap was already doing the work; the wrapper was a redundant label. Keeping `none` and `some` as pattern keywords preserves readability at destructuring sites, where branch identity matters.
+
+**Design synergy.** The const/mut split was introduced for ownership and mutation discipline. Narrowing reuses it instead of inventing flow typing — the same invariant ("const bindings are stable") does both jobs. Two features reinforcing each other beats two features overlapping.
 
 ## See Also
 
