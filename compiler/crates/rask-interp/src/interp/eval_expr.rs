@@ -1199,6 +1199,31 @@ impl Interpreter {
                 }
             }
 
+            // Postfix `?` — presence predicate. OPT10/ER12.
+            ExprKind::IsPresent { expr: inner } => {
+                let val = self.eval_expr(inner)?;
+                match &val {
+                    Value::Enum { variant, .. } => match variant.as_str() {
+                        "Some" | "Ok" => Ok(Value::Bool(true)),
+                        "None" | "Err" => Ok(Value::Bool(false)),
+                        _ => Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "? presence predicate requires Option or Result, got variant {}",
+                                variant
+                            )),
+                            expr.span,
+                        )),
+                    },
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "? presence predicate requires Option or Result, got {}",
+                            val.type_name()
+                        )),
+                        expr.span,
+                    )),
+                }
+            }
+
             ExprKind::Unwrap { expr: inner, message } => {
                 let val = self.eval_expr(inner)?;
                 match &val {

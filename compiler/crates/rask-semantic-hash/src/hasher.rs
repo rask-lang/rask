@@ -685,6 +685,10 @@ impl Hasher {
                     self.feed_bool(false);
                 }
             }
+            ExprKind::IsPresent { expr } => {
+                self.feed_tag(100);
+                self.hash_expr(expr);
+            }
             ExprKind::Unwrap { expr, message } => {
                 self.feed_tag(61);
                 self.hash_expr(expr);

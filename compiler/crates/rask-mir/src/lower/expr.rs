@@ -2361,6 +2361,24 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
+            // Presence predicate (postfix ?) — evaluates to bool.
+            // Some/Ok tag is 0 (present/ok); None/Err tag is 1.
+            ExprKind::IsPresent { expr: inner } => {
+                let is_niche = self.is_niche_option_expr(inner);
+                let (val, _ty) = self.lower_expr(inner)?;
+                let tag = self.emit_option_tag(&val, is_niche);
+                let result = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Eq,
+                        left: MirOperand::Local(tag),
+                        right: MirOperand::Constant(MirConst::Int(0)),
+                    },
+                }));
+                Ok((MirOperand::Local(result), MirType::Bool))
+            }
+
             // Unwrap (postfix !) - panic on None/Err
             ExprKind::Unwrap { expr: inner, message: _ } => {
                 let is_niche = self.is_niche_option_expr(inner);

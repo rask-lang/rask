@@ -106,10 +106,15 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
     },
-    /// Try expression (try prefix or postfix ?)
+    /// Try expression (prefix `try expr` for propagation; optional `else |e| handler`)
     Try {
         expr: Box<Expr>,
         else_clause: Option<TryElse>,
+    },
+    /// Presence predicate (postfix `expr?`) — evaluates to bool.
+    /// `true` if scrutinee is `Some`/`Ok`, `false` if `None`/`Err`.
+    IsPresent {
+        expr: Box<Expr>,
     },
     /// Unwrap expression (postfix !) - panics if None/Err
     Unwrap {

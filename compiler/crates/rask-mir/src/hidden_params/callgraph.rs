@@ -296,6 +296,9 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
                 collect_callees_from_expr(&ec.body, callees);
             }
         }
+        ExprKind::IsPresent { expr: e } => {
+            collect_callees_from_expr(e, callees);
+        }
         ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
             collect_callees_from_expr(e, callees);
         }

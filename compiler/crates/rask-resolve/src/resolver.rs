@@ -2025,6 +2025,9 @@ impl Resolver {
                     self.scopes.pop();
                 }
             }
+            ExprKind::IsPresent { expr: inner } => {
+                self.resolve_expr(inner);
+            }
             ExprKind::Unwrap { expr: inner, message: _ } => {
                 self.resolve_expr(inner);
             }

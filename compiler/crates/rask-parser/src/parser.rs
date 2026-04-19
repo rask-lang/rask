@@ -3576,13 +3576,11 @@ impl Parser {
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Index { object: Box::new(lhs), index: Box::new(index) }, span: self.span(start, end) })
             }
 
-            // Try operator (?)
-            // Note: Postfix ? is for optional chaining (T?).
-            // For Result error propagation, use prefix 'try expr' instead.
+            // Presence predicate (postfix ?) — evaluates to bool (OPT10/ER12).
             TokenKind::Question => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Try { expr: Box::new(lhs), else_clause: None }, span: self.span(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::IsPresent { expr: Box::new(lhs) }, span: self.span(start, end) })
             }
 
             // Unwrap operator (!) - panics if None/Err

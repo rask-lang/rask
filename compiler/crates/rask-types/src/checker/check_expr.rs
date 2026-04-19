@@ -715,6 +715,26 @@ impl TypeChecker {
                 }
             }
 
+            // Postfix `?` — presence predicate. OPT10/ER12.
+            ExprKind::IsPresent { expr: inner } => {
+                let inner_ty = self.infer_expr(inner);
+                let resolved = self.ctx.apply(&inner_ty);
+                match &resolved {
+                    Type::Option(_) | Type::Result { .. } => Type::Bool,
+                    Type::Var(_) => {
+                        // Unresolved scrutinee — leave as bool, let later context constrain.
+                        Type::Bool
+                    }
+                    _ => {
+                        self.errors.push(TypeError::TryOnNonResult {
+                            found: resolved,
+                            span: expr.span,
+                        });
+                        Type::Error
+                    }
+                }
+            }
+
             ExprKind::Unwrap { expr: inner, message: _ } => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);

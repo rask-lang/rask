@@ -925,6 +925,9 @@ impl<'a> OwnershipChecker<'a> {
                     self.bindings = pre_else;
                 }
             }
+            ExprKind::IsPresent { expr: inner } => {
+                self.check_expr(inner);
+            }
             ExprKind::Unwrap { expr: inner, .. } => {
                 self.check_expr(inner);
             }
@@ -1729,6 +1732,9 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(tc) = else_clause {
                     self.collect_free_vars_inner(&tc.body, locals, out, projections);
                 }
+            }
+            ExprKind::IsPresent { expr: inner } => {
+                self.collect_free_vars_inner(inner, locals, out, projections);
             }
             ExprKind::Unwrap { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
                 self.collect_free_vars_inner(inner, locals, out, projections);

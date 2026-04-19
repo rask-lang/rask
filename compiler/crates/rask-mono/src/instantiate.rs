@@ -458,6 +458,9 @@ impl TypeSubstitutor {
                         body: Box::new(self.clone_expr(&ec.body)),
                     }),
                 },
+                ExprKind::IsPresent { expr: inner } => ExprKind::IsPresent {
+                    expr: Box::new(self.clone_expr(inner)),
+                },
                 ExprKind::Unwrap { expr: inner, message } => ExprKind::Unwrap {
                     expr: Box::new(self.clone_expr(inner)),
                     message: message.clone(),
