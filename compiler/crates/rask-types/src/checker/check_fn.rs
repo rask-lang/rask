@@ -64,6 +64,8 @@ impl TypeChecker {
         } else {
             Type::Unit
         };
+        // ER3/ER4: validate every `T or E` that appears in the return type.
+        self.validate_result_types_in(&ret_ty, f.span);
         self.current_return_type = Some(ret_ty);
 
         // ER20: Save outer accumulation state and detect if we should accumulate
@@ -134,6 +136,8 @@ impl TypeChecker {
             } else {
                 continue;
             };
+            // ER3/ER4: validate nested `T or E` in parameter types.
+            self.validate_result_types_in(&ty, param.name_span);
             if param.is_mutate || param.is_take {
                 self.define_local(param.name.clone(), ty.clone());
             } else {

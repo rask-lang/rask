@@ -31,6 +31,8 @@ impl TypeChecker {
             StmtKind::Mut { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
+                        // ER3/ER4: validate `T or E` in let annotation.
+                        self.validate_result_types_in(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
                         (init_ty, Some(declared))
                     } else {
@@ -58,6 +60,8 @@ impl TypeChecker {
             StmtKind::Const { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
+                        // ER3/ER4: validate `T or E` in const annotation.
+                        self.validate_result_types_in(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
                         (init_ty, Some(declared))
                     } else {

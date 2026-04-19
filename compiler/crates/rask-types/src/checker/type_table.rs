@@ -420,6 +420,14 @@ impl TypeTable {
                 found: self.resolve_type_names(&found),
                 span,
             },
+            TypeError::ResultNotDisjoint { ty, span } => TypeError::ResultNotDisjoint {
+                ty: self.resolve_type_names(&ty),
+                span,
+            },
+            TypeError::ErrorMessageMissing { ty, span } => TypeError::ErrorMessageMissing {
+                ty: self.resolve_type_names(&ty),
+                span,
+            },
             other => other,
         }
     }

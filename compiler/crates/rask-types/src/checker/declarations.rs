@@ -141,13 +141,23 @@ impl TypeChecker {
     }
 
     pub(super) fn register_struct(&mut self, s: &StructDecl) {
-        let fields: Vec<_> = s
+        let field_tys: Vec<(Span, Type)> = s
             .fields
             .iter()
             .map(|f| {
                 let ty = parse_type_string(&f.ty, &self.types).unwrap_or(Type::Error);
-                (f.name.clone(), ty)
+                (f.name_span, ty)
             })
+            .collect();
+        // ER3/ER4: validate nested `T or E` in field types.
+        for (fspan, fty) in &field_tys {
+            self.validate_result_types_in(fty, *fspan);
+        }
+        let fields: Vec<_> = s
+            .fields
+            .iter()
+            .zip(field_tys.into_iter())
+            .map(|(f, (_, ty))| (f.name.clone(), ty))
             .collect();
 
         // V5: collect private field names for access checking
@@ -241,17 +251,32 @@ impl TypeChecker {
             }
         }
 
-        let variants: Vec<_> = e
+        // Parse variant payload types first (immutable borrow of self.types),
+        // then validate (mutable borrow of self for errors).
+        let variants: Vec<(String, Vec<(Span, Type)>)> = e
             .variants
             .iter()
             .map(|v| {
-                let field_types: Vec<_> = v
+                let field_types: Vec<(Span, Type)> = v
                     .fields
                     .iter()
-                    .map(|f| parse_type_string(&f.ty, &self.types).unwrap_or(Type::Error))
+                    .map(|f| {
+                        let ty = parse_type_string(&f.ty, &self.types).unwrap_or(Type::Error);
+                        (f.name_span, ty)
+                    })
                     .collect();
                 (v.name.clone(), field_types)
             })
+            .collect();
+        // ER3/ER4: validate nested `T or E` in variant payload types.
+        for (_, field_types) in &variants {
+            for (fspan, fty) in field_types {
+                self.validate_result_types_in(fty, *fspan);
+            }
+        }
+        let variants: Vec<_> = variants
+            .into_iter()
+            .map(|(vname, fts)| (vname, fts.into_iter().map(|(_, t)| t).collect::<Vec<_>>()))
             .collect();
 
         let methods = e.methods.iter().map(|m| self.method_signature(m)).collect();
@@ -290,6 +315,8 @@ impl TypeChecker {
         } else {
             // `type X = Y` — nominal, gets its own TypeId
             let underlying = parse_type_string(&a.target, &self.types).unwrap_or(Type::Error);
+            // ER3/ER4: validate nested `T or E` in the alias target.
+            self.validate_result_types_in(&underlying, span);
             self.types.register_type(TypeDef::NominalAlias {
                 name: a.name.clone(),
                 underlying,
@@ -299,14 +326,19 @@ impl TypeChecker {
     }
 
     pub(super) fn register_union(&mut self, u: &UnionDecl) {
-        let fields: Vec<_> = u
+        let field_tys: Vec<(String, Span, Type)> = u
             .fields
             .iter()
             .map(|f| {
                 let ty = parse_type_string(&f.ty, &self.types).unwrap_or(Type::Error);
-                (f.name.clone(), ty)
+                (f.name.clone(), f.name_span, ty)
             })
             .collect();
+        // ER3/ER4: validate nested `T or E` in union field types.
+        for (_, fspan, fty) in &field_tys {
+            self.validate_result_types_in(fty, *fspan);
+        }
+        let fields: Vec<_> = field_tys.into_iter().map(|(n, _, t)| (n, t)).collect();
 
         self.types.register_type(TypeDef::Union {
             name: u.name.clone(),

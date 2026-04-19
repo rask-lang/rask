@@ -279,4 +279,18 @@ pub enum TypeError {
         second: String,
         span: Span,
     },
+
+    /// ER3: success and error types in `T or E` must be distinct
+    #[error("`T or E` requires T and E to be distinct types — both sides are `{ty}`")]
+    ResultNotDisjoint {
+        ty: Type,
+        span: Span,
+    },
+
+    /// ER4: error type must implement `ErrorMessage` (structural: `message(self) -> string`)
+    #[error("error type `{ty}` must implement `ErrorMessage` — needs `func message(self) -> string`")]
+    ErrorMessageMissing {
+        ty: Type,
+        span: Span,
+    },
 }

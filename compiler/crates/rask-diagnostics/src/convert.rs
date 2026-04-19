@@ -674,6 +674,20 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, format!("both `{}` and `{}` have value {}", first, second, value))
                     .with_why("each variant must have a unique discriminant value [type.enums/E15]")
             }
+            ResultNotDisjoint { ty, span } => {
+                Diagnostic::error(format!("`T or E` needs distinct types — both sides are `{}`", ty))
+                    .with_code("E0343")
+                    .with_primary(*span, "T and E must differ")
+                    .with_help("newtype one side (e.g. `type MyError = ...`) or pick a different error type")
+                    .with_why("type-based branch disambiguation only works when T and E are distinct [type.errors/ER3]")
+            }
+            ErrorMessageMissing { ty, span } => {
+                Diagnostic::error(format!("error type `{}` does not implement `ErrorMessage`", ty))
+                    .with_code("E0344")
+                    .with_primary(*span, format!("`{}` needs a `message` method", ty))
+                    .with_help(format!("add `extend {ty} {{ func message(self) -> string {{ ... }} }}`"))
+                    .with_why("every error type must provide `func message(self) -> string`; primitives don't qualify — newtype them [type.errors/ER4]")
+            }
         }
     }
 }
