@@ -247,21 +247,41 @@ impl TypeChecker {
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, expr.span));
 
-                // Type narrowing: if the condition is `opt is Some` (OPT10),
+                // Type narrowing: if the condition is `opt is Some` (legacy OPT10),
                 // rebind `opt` to the inner type inside the then-branch.
                 let narrowing = self.extract_is_some_narrowing(cond);
+
+                // OPT19/ER19: `if x?` on a const Option/Result narrows.
+                // ER21: for Result, the else-branch narrows to E.
+                let presence_narrowing = self.extract_is_present_narrowing(cond);
 
                 if let Some((ref var_name, ref inner_ty)) = narrowing {
                     self.push_scope();
                     self.define_local(var_name.clone(), inner_ty.clone());
+                } else if let Some((ref var_name, ref then_ty, _)) = presence_narrowing {
+                    self.push_scope();
+                    self.define_local(var_name.clone(), then_ty.clone());
                 }
                 let then_ty = self.infer_expr(then_branch);
-                if narrowing.is_some() {
+                if narrowing.is_some() || presence_narrowing.is_some() {
                     self.pop_scope();
                 }
 
                 if let Some(else_branch) = else_branch {
+                    // ER21: narrow the else branch to E for Result scrutinees.
+                    let else_narrowed = matches!(
+                        &presence_narrowing,
+                        Some((_, _, Some(_)))
+                    );
+                    if else_narrowed {
+                        let (var_name, _, else_ty) = presence_narrowing.as_ref().unwrap();
+                        self.push_scope();
+                        self.define_local(var_name.clone(), else_ty.clone().unwrap());
+                    }
                     let else_ty = self.infer_expr(else_branch);
+                    if else_narrowed {
+                        self.pop_scope();
+                    }
                     let resolved_then = self.ctx.apply(&then_ty);
                     let resolved_else = self.ctx.apply(&else_ty);
                     // Never coerces to any type (CF32) — don't constrain
@@ -2023,6 +2043,42 @@ impl TypeChecker {
             // Handle `opt is Some && ...` — narrow on the left side
             ExprKind::Binary { op: rask_ast::expr::BinOp::And, left, .. } => {
                 self.extract_is_some_narrowing(left)
+            }
+            _ => None,
+        }
+    }
+
+    /// Detect `if x?` on an Option or Result bound locally. Returns the
+    /// variable name, the then-branch type, and (for Result) the else-branch
+    /// type. OPT19/OPT21 for Option; ER19/ER21 for Result.
+    ///
+    /// Narrowing only applies when the scrutinee is a plain const-bound ident —
+    /// mutability and compound expressions are rejected to keep the rule
+    /// structural (no flow analysis).
+    pub(super) fn extract_is_present_narrowing(
+        &self,
+        cond: &Expr,
+    ) -> Option<(String, Type, Option<Type>)> {
+        let ExprKind::IsPresent { expr: inner } = &cond.kind else {
+            return None;
+        };
+        let ExprKind::Ident(var_name) = &inner.kind else {
+            return None;
+        };
+        // OPT19/ER19: const scrutinee only. Mut requires `as v` bind (OPT20/ER20).
+        if !self.is_local_read_only(var_name) {
+            return None;
+        }
+        let var_ty = self.lookup_local(var_name)?;
+        let resolved = self.ctx.apply(&var_ty);
+        match resolved {
+            Type::Option(inner_ty) => {
+                // Option: then = T, else = no narrowing (information-only).
+                Some((var_name.clone(), *inner_ty, None))
+            }
+            Type::Result { ok, err } => {
+                // Result: then = T, else = E.
+                Some((var_name.clone(), *ok, Some(*err)))
             }
             _ => None,
         }

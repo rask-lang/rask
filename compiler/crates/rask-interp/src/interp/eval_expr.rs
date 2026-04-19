@@ -590,10 +590,41 @@ impl Interpreter {
                 then_branch,
                 else_branch,
             } => {
+                // OPT19/ER19: `if x?` narrows x to its inner value in the block.
+                // ER21: else branch narrows to E for Result.
+                let presence_narrow = match &cond.kind {
+                    ExprKind::IsPresent { expr: inner } => match &inner.kind {
+                        ExprKind::Ident(name) => Some(name.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+
                 let cond_val = self.eval_expr(cond)?;
                 if self.is_truthy(&cond_val) {
+                    if let Some(name) = presence_narrow.as_ref() {
+                        // Rebind to the inner (Some/Ok) payload in the then-scope.
+                        if let Some(inner_val) = self.extract_presence_payload(name, true) {
+                            self.env.push_scope();
+                            self.env.define(name.clone(), inner_val);
+                            let result = self.eval_expr(then_branch);
+                            self.env.pop_scope();
+                            return result;
+                        }
+                    }
                     self.eval_expr(then_branch)
                 } else if let Some(else_br) = else_branch {
+                    if let Some(name) = presence_narrow.as_ref() {
+                        // For Result, rebind to the Err payload in the else-scope.
+                        // For Option, no payload — fall through to normal eval.
+                        if let Some(err_val) = self.extract_presence_payload(name, false) {
+                            self.env.push_scope();
+                            self.env.define(name.clone(), err_val);
+                            let result = self.eval_expr(else_br);
+                            self.env.pop_scope();
+                            return result;
+                        }
+                    }
                     self.eval_expr(else_br)
                 } else {
                     Ok(Value::Unit)
