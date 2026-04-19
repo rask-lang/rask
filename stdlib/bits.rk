@@ -40,6 +40,15 @@ enum ParseError {
     InvalidData { message: string }
 }
 
+extend ParseError {
+    public func message(self) -> string {
+        match self {
+            ParseError.UnexpectedEnd { expected, actual } => return "unexpected end: expected {expected} bytes, got {actual}",
+            ParseError.InvalidData { message } => return "invalid data: {message}",
+        }
+    }
+}
+
 // ── Binary building (K1-K2) ─────────────────────────────────────────
 
 struct BinaryBuilder {

@@ -30,27 +30,27 @@ extend Method {
     public func from_string(s: string) -> Method? {
         const len = s.len()
         if len == 3 && s.byte_at(0) == 71 && s.byte_at(1) == 69 && s.byte_at(2) == 84 {
-            return Some(Method.Get)    // GET
+            return Method.Get    // GET
         }
         if len == 4 && s.byte_at(0) == 72 && s.byte_at(1) == 69 && s.byte_at(2) == 65 && s.byte_at(3) == 68 {
-            return Some(Method.Head)   // HEAD
+            return Method.Head   // HEAD
         }
         if len == 4 && s.byte_at(0) == 80 && s.byte_at(1) == 79 && s.byte_at(2) == 83 && s.byte_at(3) == 84 {
-            return Some(Method.Post)   // POST
+            return Method.Post   // POST
         }
         if len == 3 && s.byte_at(0) == 80 && s.byte_at(1) == 85 && s.byte_at(2) == 84 {
-            return Some(Method.Put)    // PUT
+            return Method.Put    // PUT
         }
         if len == 6 && s.byte_at(0) == 68 && s.byte_at(1) == 69 && s.byte_at(2) == 76 {
-            return Some(Method.Delete) // DELETE (check first 3 bytes)
+            return Method.Delete // DELETE (check first 3 bytes)
         }
         if len == 5 && s.byte_at(0) == 80 && s.byte_at(1) == 65 && s.byte_at(2) == 84 {
-            return Some(Method.Patch)  // PATCH (check first 3 bytes)
+            return Method.Patch  // PATCH (check first 3 bytes)
         }
         if len == 7 && s.byte_at(0) == 79 && s.byte_at(1) == 80 && s.byte_at(2) == 84 {
-            return Some(Method.Options) // OPTIONS (check first 3 bytes)
+            return Method.Options // OPTIONS (check first 3 bytes)
         }
-        return None
+        return none
     }
 
     // Serialize to the standard HTTP method string.
@@ -137,7 +137,7 @@ extend Request {
     // URL path before '?'.
     public func path(self) -> string {
         const qpos = self.url.find("?")
-        if qpos is Some(pos) {
+        if qpos? as pos {
             return self.url[0..pos]
         }
         return self.url
@@ -153,17 +153,17 @@ extend Request {
     public func query_params(self) -> Map<string, string> {
         mut result = Map<string, string>.new()
         const qpos = self.url.find("?")
-        if qpos is None { return result }
-
-        const query = self.url[qpos + 1..]
-        for pair in query.split("&") {
-            const eq = pair.find("=")
-            if eq is Some(eqpos) {
-                const key = pair[0..eqpos]
-                const value = pair[eqpos + 1..]
-                result.insert(key, value)
-            } else {
-                result.insert(pair, "")
+        if qpos? as qp {
+            const query = self.url[qp + 1..]
+            for pair in query.split("&") {
+                const eq = pair.find("=")
+                if eq? as eqpos {
+                    const key = pair[0..eqpos]
+                    const value = pair[eqpos + 1..]
+                    result.insert(key, value)
+                } else {
+                    result.insert(pair, "")
+                }
             }
         }
         return result
@@ -270,6 +270,21 @@ enum HttpError {
     NotFound
 }
 
+extend HttpError {
+    public func message(self) -> string {
+        match self {
+            HttpError.InternalServerError(msg) => return "internal server error: {msg}",
+            HttpError.ConnectionFailed(msg) => return "connection failed: {msg}",
+            HttpError.Timeout => return "request timed out",
+            HttpError.InvalidUrl(msg) => return "invalid URL: {msg}",
+            HttpError.InvalidResponse(msg) => return "invalid response: {msg}",
+            HttpError.TooManyRedirects => return "too many redirects",
+            HttpError.Io(msg) => return "I/O error: {msg}",
+            HttpError.NotFound => return "not found",
+        }
+    }
+}
+
 
 // ─── HTTP/1.1 Parser ─────────────────────────────────────────────
 //
@@ -280,7 +295,7 @@ enum HttpError {
 func parse_http_request(raw: string) -> Request or HttpError {
     const len = raw.len()
     if len == 0 {
-        return Err(HttpError.InvalidResponse("empty request"))
+        return HttpError.InvalidResponse("empty request")
     }
 
     // Find end of request line (first \r\n)
@@ -306,8 +321,8 @@ func parse_http_request(raw: string) -> Request or HttpError {
     const method_str = raw[0..first_sp]
     const path = raw[first_sp + 1..second_sp]
 
-    const method = Method.from_string(method_str) is Some else {
-        return Err(HttpError.InvalidResponse("unknown HTTP method"))
+    const method = if Method.from_string(method_str)? as m { m } else {
+        return HttpError.InvalidResponse("unknown HTTP method")
     }
 
     // Parse headers: starts after first \r\n, ends at \r\n\r\n
@@ -353,12 +368,12 @@ func parse_http_request(raw: string) -> Request or HttpError {
         string.new()
     }
 
-    return Ok(Request {
+    return Request {
         method: method,
         url: path,
         headers: headers,
         body: body,
-    })
+    }
 }
 
 // ─── HTTP/1.1 Response Formatter ─────────────────────────────────
@@ -442,14 +457,14 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     if rest.starts_with("http://") {
         rest = rest[7..].to_string()
     } else if rest.starts_with("https://") {
-        return Err(HttpError.InvalidUrl("HTTPS not supported yet"))
+        return HttpError.InvalidUrl("HTTPS not supported yet")
     }
 
     // Split host+port from path at first /
     mut host_port = rest
     mut path = "/"
     const slash = rest.find("/")
-    if slash is Some(pos) {
+    if slash? as pos {
         host_port = rest[0..pos].to_string()
         path = rest[pos..].to_string()
     }
@@ -458,16 +473,16 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     mut host = host_port
     mut port = "80"
     const colon = host_port.find(":")
-    if colon is Some(cpos) {
+    if colon? as cpos {
         host = host_port[0..cpos].to_string()
         port = host_port[cpos + 1..].to_string()
     }
 
     if host.is_empty() {
-        return Err(HttpError.InvalidUrl("empty host in URL: {url}"))
+        return HttpError.InvalidUrl("empty host in URL: {url}")
     }
 
-    return Ok((host, port, path))
+    return (host, port, path)
 }
 
 // Format an HTTP/1.1 request for the wire.
@@ -513,7 +528,7 @@ func format_http_request(req: Request, host: string) -> string {
 func parse_http_response(raw: string) -> Response or HttpError {
     const len = raw.len()
     if len == 0 {
-        return Err(HttpError.InvalidResponse("empty response"))
+        return HttpError.InvalidResponse("empty response")
     }
 
     // Find end of status line
@@ -537,8 +552,8 @@ func parse_http_response(raw: string) -> Response or HttpError {
     }
 
     const status_str = raw[first_sp + 1..second_sp]
-    const status_val = status_str.parse_int() is Ok(v) else {
-        return Err(HttpError.InvalidResponse("bad status code: {status_str}"))
+    const status_val = if status_str.parse_int()? as v { v } else {
+        return HttpError.InvalidResponse("bad status code: {status_str}")
     }
     const status = status_val as u16
 
@@ -583,11 +598,11 @@ func parse_http_response(raw: string) -> Response or HttpError {
         string.new()
     }
 
-    return Ok(Response {
+    return Response {
         status: status,
         headers: headers,
         body: body,
-    })
+    }
 }
 
 // Connect, send request, read response, close connection.
@@ -599,7 +614,7 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
     // Connect
     const conn_fd = unsafe { rask_net_tcp_connect(addr as i64) }
     if conn_fd < 0 {
-        return Err(HttpError.ConnectionFailed("cannot connect to {addr}"))
+        return HttpError.ConnectionFailed("cannot connect to {addr}")
     }
 
     // Build and send request
@@ -638,7 +653,7 @@ func TcpConnection_read_http_request(conn_fd: i64) -> i64 or Error {
     // This matches what the codegen expects for HttpRequest struct access.
     // Once the compiler handles the new Request type natively, this shim
     // can be replaced with a direct return.
-    return Ok(request as i64)
+    return request as i64
 }
 
 // Write HTTP/1.1 response to a TCP connection.
@@ -647,7 +662,7 @@ func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or Er
     const resp = resp_ptr as Response
     const raw = format_http_response(resp)
     write_raw(conn_fd, raw)
-    return Ok(0)
+    return 0
 }
 
 // ─── Server Types ────────────────────────────────────────────────
@@ -660,22 +675,22 @@ struct HttpServer {
 
 extend HttpServer {
     public func listen(addr: string) -> HttpServer or HttpError {
-        const listener = net.tcp_listen(addr) is Ok else {
-            return Err(HttpError.ConnectionFailed("failed to bind {addr}"))
+        const listener = if net.tcp_listen(addr)? as l { l } else {
+            return HttpError.ConnectionFailed("failed to bind {addr}")
         }
-        return Ok(HttpServer { listener: listener, addr: addr })
+        return HttpServer { listener: listener, addr: addr }
     }
 
     public func accept(self) -> (Request, Responder) or HttpError {
-        const conn = self.listener.accept() is Ok else {
-            return Err(HttpError.Io("accept failed"))
+        const conn = if self.listener.accept()? as c { c } else {
+            return HttpError.Io("accept failed")
         }
         const raw = read_raw(conn as i64, 65536)
-        const request = parse_http_request(raw) is Ok else {
-            return Err(HttpError.InvalidResponse("malformed request"))
+        const request = if parse_http_request(raw)? as r { r } else {
+            return HttpError.InvalidResponse("malformed request")
         }
         const responder = Responder { conn_fd: conn as i64, sent: false }
-        return Ok((request, responder))
+        return (request, responder)
     }
 
     public func local_addr(self) -> string {
@@ -710,13 +725,14 @@ extend http {
     /// Requires `using Multitasking`.
     public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> () or HttpError
     {
-        const server = HttpServer.listen(addr) is Ok else {
-            return Err(HttpError.Io("listen failed"))
+        const server = if HttpServer.listen(addr)? as s { s } else {
+            return HttpError.Io("listen failed")
         }
         ensure server.close()
         loop {
             const result = server.accept()
-            if result is Ok((req, responder)) {
+            if result? as r {
+                const (req, responder) = r
                 spawn(|| {
                     responder.respond(handler(req))
                 }).detach()

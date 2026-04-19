@@ -40,7 +40,8 @@ pub fn is_valid_default_expr(expr: &Expr) -> bool {
         | ExprKind::StringInterp(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
-        | ExprKind::Null => true,
+        | ExprKind::Null
+        | ExprKind::None => true,
 
         // Negated literal: -1, -3.14
         ExprKind::Unary { op: rask_ast::expr::UnaryOp::Neg, operand } => {
@@ -287,6 +288,7 @@ fn clone_expr_kind(
         ExprKind::Char(c) => ExprKind::Char(*c),
         ExprKind::Bool(b) => ExprKind::Bool(*b),
         ExprKind::Null => ExprKind::Null,
+        ExprKind::None => ExprKind::None,
         ExprKind::Ident(n) => ExprKind::Ident(n.clone()),
         ExprKind::Field { object, field } => ExprKind::Field {
             object: Box::new(clone_expr_with_fresh_ids(object, fresh_id)),
@@ -427,7 +429,7 @@ impl DefaultDesugarer {
             ExprKind::Block(stmts) => {
                 for s in stmts { self.desugar_stmt(s); }
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.desugar_expr(cond);
                 self.desugar_expr(then_branch);
                 if let Some(e) = else_branch { self.desugar_expr(e); }
@@ -514,7 +516,7 @@ impl DefaultDesugarer {
             // Terminals
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
             | ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_)
-            | ExprKind::Ident(_) | ExprKind::Null => {}
+            | ExprKind::Ident(_) | ExprKind::Null | ExprKind::None => {}
         }
 
         // After recursing, try to resolve defaults at this call site

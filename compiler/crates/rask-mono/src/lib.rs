@@ -780,6 +780,7 @@ mod tests {
                         }),
                         then_branch: Box::new(call_expr("a", vec![])),
                         else_branch: Some(Box::new(call_expr("b", vec![]))),
+                        else_binding: None,
                     },
                     span: sp(),
                 })],

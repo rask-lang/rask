@@ -24,6 +24,7 @@ mod check_expr;
 mod unify;
 mod generics;
 mod resolve;
+mod validate;
 
 pub use type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram};
 pub use type_table::TypeTable;

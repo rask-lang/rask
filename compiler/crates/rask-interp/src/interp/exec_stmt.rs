@@ -12,8 +12,11 @@ impl Interpreter {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.eval_expr(expr),
 
-            StmtKind::Const { name, init, .. } => {
-                let value = self.eval_expr(init)?;
+            StmtKind::Const { name, init, ty, .. } => {
+                let mut value = self.eval_expr(init)?;
+                if let Some(ty_str) = ty {
+                    value = auto_wrap_for_annotation(value, ty_str);
+                }
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone());
                 }
@@ -27,6 +30,12 @@ impl Interpreter {
                 let value = if ty.as_deref() == Some("f32x8") {
                     Self::coerce_to_simd_f32x8(value)
                         .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?
+                } else {
+                    value
+                };
+                // OPT6: auto-wrap bare T into T? / T or E when annotated.
+                let value = if let Some(ty_str) = ty {
+                    auto_wrap_for_annotation(value, ty_str)
                 } else {
                     value
                 };
@@ -620,5 +629,88 @@ impl Interpreter {
             }
         }
     }
+}
+
+/// OPT6: wrap `value` to match the declared `T?` or `Result<T, E>` annotation.
+/// No-op for non-Option/non-Result annotations, or when the value is already
+/// shaped like the annotation. For Result, picks Ok vs Err by the value's type.
+fn auto_wrap_for_annotation(value: Value, ty: &str) -> Value {
+    let ty = ty.trim();
+    if ty.ends_with('?') && !ty.starts_with('(') {
+        // T? annotation
+        if matches!(&value, Value::Enum { name, .. } if name == "Option") {
+            return value;
+        }
+        return Value::Enum {
+            name: "Option".to_string(),
+            variant: "Some".to_string(),
+            fields: vec![value],
+            variant_index: 0,
+            origin: None,
+        };
+    }
+    if ty.starts_with("Result<") && ty.ends_with('>') {
+        if matches!(&value, Value::Enum { name, .. } if name == "Result") {
+            return value;
+        }
+        let err_names = extract_err_names(ty);
+        let is_err = match &value {
+            Value::Enum { name, .. } => err_names.iter().any(|n| n == name),
+            Value::Struct(s) => {
+                let guard = s.lock().unwrap();
+                err_names.iter().any(|n| n == &guard.name)
+            }
+            _ => false,
+        };
+        return Value::Enum {
+            name: "Result".to_string(),
+            variant: if is_err { "Err".to_string() } else { "Ok".to_string() },
+            fields: vec![value],
+            variant_index: if is_err { 1 } else { 0 },
+            origin: None,
+        };
+    }
+    value
+}
+
+/// Parse `Result<T, E>` and return the error type component names.
+fn extract_err_names(ty: &str) -> Vec<String> {
+    let Some(rest) = ty.strip_prefix("Result<").and_then(|s| s.strip_suffix('>')) else {
+        return Vec::new();
+    };
+    let mut depth: i32 = 0;
+    let mut split_at: Option<usize> = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
+            ',' if depth == 0 => { split_at = Some(i); break; }
+            _ => {}
+        }
+    }
+    let Some(idx) = split_at else { return Vec::new() };
+    let err_str = rest[idx + 1..].trim();
+    let err_str = err_str
+        .strip_prefix('(').and_then(|s| s.strip_suffix(')'))
+        .map(str::trim)
+        .unwrap_or(err_str);
+    let mut out = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in err_str.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
+            '|' if depth == 0 => {
+                out.push(err_str[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < err_str.len() {
+        out.push(err_str[start..].trim().to_string());
+    }
+    out
 }
 

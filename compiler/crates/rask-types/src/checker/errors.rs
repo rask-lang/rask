@@ -279,4 +279,54 @@ pub enum TypeError {
         second: String,
         span: Span,
     },
+
+    /// ER3: success and error types in `T or E` must be distinct
+    #[error("`T or E` requires T and E to be distinct types — both sides are `{ty}`")]
+    ResultNotDisjoint {
+        ty: Type,
+        span: Span,
+    },
+
+    /// ER4: error type must implement `ErrorMessage` (structural: `message(self) -> string`)
+    #[error("error type `{ty}` must implement `ErrorMessage` — needs `func message(self) -> string`")]
+    ErrorMessageMissing {
+        ty: Type,
+        span: Span,
+    },
+
+    /// ER22: `else as e` requires a `T or E` condition to bind the error
+    #[error("`else as {name}` requires an `if r?` condition on a Result (`T or E`)")]
+    ElseBindingNotResult {
+        name: String,
+        span: Span,
+    },
+
+    /// ER23: `is TypeName as ...` requires the scrutinee to be a Result
+    #[error("type pattern `{ty_name}` requires a Result scrutinee, found `{found}`")]
+    TypePatternNotResult {
+        ty_name: String,
+        found: Type,
+        span: Span,
+    },
+
+    /// ER23: `is TypeName` must reference a component of the union error
+    #[error("type pattern `{ty_name}` is not part of the error union `{union}`")]
+    TypePatternNotInUnion {
+        ty_name: String,
+        union: Type,
+        span: Span,
+    },
+
+    /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
+    #[error("`{name}(...)` is no longer a valid constructor")]
+    LegacyWrapperConstructor {
+        name: String,
+        span: Span,
+    },
+
+    /// OPT NO_MATCH: match on `T?` is rejected — migration error
+    #[error("match on an Option is not supported — use the `?`-operator family")]
+    MatchOnOption {
+        span: Span,
+    },
 }

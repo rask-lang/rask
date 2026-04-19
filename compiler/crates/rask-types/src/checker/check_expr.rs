@@ -121,6 +121,8 @@ impl TypeChecker {
             ExprKind::Char(_) => Type::Char,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),
+            // OPT3: `none` is `T?` with inner type inferred from context.
+            ExprKind::None => Type::Option(Box::new(self.ctx.fresh_var())),
 
             ExprKind::Ident(name) => {
                 // D1: use after discard is a compile error
@@ -237,6 +239,7 @@ impl TypeChecker {
                 cond,
                 then_branch,
                 else_branch,
+                else_binding,
             } => {
                 // Capture and clear the statement-position flag so it doesn't
                 // leak into nested expressions (e.g. const x = if ... { ... }).
@@ -267,19 +270,36 @@ impl TypeChecker {
                     self.pop_scope();
                 }
 
+                // ER22: `else as e` requires a Result cond. Reject otherwise.
+                if let Some(name) = else_binding {
+                    let has_err = matches!(presence_narrowing, Some((_, _, Some(_))));
+                    if !has_err {
+                        self.errors.push(TypeError::ElseBindingNotResult {
+                            name: name.clone(),
+                            span: expr.span,
+                        });
+                    }
+                }
+
                 if let Some(else_branch) = else_branch {
-                    // ER21: narrow the else branch to E for Result scrutinees.
-                    let else_narrowed = matches!(
-                        &presence_narrowing,
-                        Some((_, _, Some(_)))
-                    );
-                    if else_narrowed {
-                        let (var_name, _, else_ty) = presence_narrowing.as_ref().unwrap();
+                    // ER21/ER22: narrow the else branch to E for Result scrutinees.
+                    // `else as e` picks a separate name; otherwise reuse the
+                    // cond's `as v` / scrutinee name.
+                    let else_narrow = match (else_binding, &presence_narrowing) {
+                        (Some(e_name), Some((_, _, Some(err_ty)))) => {
+                            Some((e_name.clone(), err_ty.clone()))
+                        }
+                        (None, Some((var_name, _, Some(err_ty)))) => {
+                            Some((var_name.clone(), err_ty.clone()))
+                        }
+                        _ => None,
+                    };
+                    if let Some((ref name, ref err_ty)) = else_narrow {
                         self.push_scope();
-                        self.define_local(var_name.clone(), else_ty.clone().unwrap());
+                        self.define_local(name.clone(), err_ty.clone());
                     }
                     let else_ty = self.infer_expr(else_branch);
-                    if else_narrowed {
+                    if else_narrow.is_some() {
                         self.pop_scope();
                     }
                     let resolved_then = self.ctx.apply(&then_ty);
@@ -389,6 +409,11 @@ impl TypeChecker {
                 self.in_stmt_expr = false;
 
                 let scrutinee_ty = self.infer_expr(scrutinee);
+                // OPT NO_MATCH: reject `match x?` on an Option — migration error.
+                let resolved_sc = self.ctx.apply(&scrutinee_ty);
+                if matches!(resolved_sc, Type::Option(_)) {
+                    self.errors.push(TypeError::MatchOnOption { span: expr.span });
+                }
                 let result_ty = self.ctx.fresh_var();
                 for arm in arms {
                     self.push_scope();
@@ -568,6 +593,37 @@ impl TypeChecker {
             }
 
             ExprKind::Try { expr: inner, ref else_clause } => {
+                // ER17/ER18: `try { ... } [else |e| handler]` block form.
+                // Inner `try` expressions inside the block propagate E.
+                // The else clause catches and transforms; without else, this
+                // is just the block's value (errors keep propagating).
+                if matches!(&inner.kind, ExprKind::Block(_)) {
+                    let block_ty = self.infer_expr(inner);
+                    if let Some(ec) = else_clause {
+                        let err_ty = self
+                            .current_return_type
+                            .as_ref()
+                            .map(|t| self.ctx.apply(t))
+                            .and_then(|t| match t {
+                                Type::Result { err, .. } => Some(*err),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| self.ctx.fresh_var());
+                        self.push_scope();
+                        if let Some(scope) = self.local_types.last_mut() {
+                            scope.insert(ec.error_binding.clone(), (err_ty, true));
+                        }
+                        let handler_ty = self.infer_expr(&ec.body);
+                        self.pop_scope();
+                        // Block and handler must produce the same type.
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            block_ty.clone(),
+                            handler_ty,
+                            expr.span,
+                        ));
+                    }
+                    return block_ty;
+                }
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
@@ -1138,6 +1194,18 @@ impl TypeChecker {
 
     pub(super) fn check_call(&mut self, call_id: NodeId, func: &Expr, args: &[CallArg], span: Span) -> Type {
         if let ExprKind::Ident(name) = &func.kind {
+            // OPT2/ER2: reject legacy `Some(x)`, `Ok(x)`, `Err(x)` constructors.
+            // The new model auto-wraps bare values at return/assignment, and
+            // error values use their own constructor (e.g., `DivError.ByZero`).
+            if matches!(name.as_str(), "Some" | "Ok" | "Err") {
+                self.errors.push(TypeError::LegacyWrapperConstructor {
+                    name: name.clone(),
+                    span,
+                });
+                for arg in args { self.infer_expr(&arg.expr); }
+                return Type::Error;
+            }
+
             // transmute(val) — reinterpret bits, requires unsafe
             if name == "transmute" {
                 self.unsafe_ops.push((span, super::UnsafeCategory::Transmute));

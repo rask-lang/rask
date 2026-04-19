@@ -219,7 +219,7 @@ fn eliminate_in_expr(expr: &mut Expr, cfg_values: &HashMap<String, String>) {
             eliminate_in_expr(index, cfg_values);
         }
         ExprKind::Block(stmts) => eliminate_in_stmts(stmts, cfg_values),
-        ExprKind::If { cond, then_branch, else_branch } => {
+        ExprKind::If { cond, then_branch, else_branch, .. } => {
             eliminate_in_expr(cond, cfg_values);
             eliminate_in_expr(then_branch, cfg_values);
             if let Some(e) = else_branch { eliminate_in_expr(e, cfg_values); }
@@ -261,7 +261,7 @@ fn try_eval_comptime_if_stmts(stmts: &[Stmt], cfg_values: &HashMap<String, Strin
         _ => return None,
     };
     let (cond, then_branch, else_branch) = match &inner.kind {
-        ExprKind::If { cond, then_branch, else_branch } => (cond, then_branch, else_branch),
+        ExprKind::If { cond, then_branch, else_branch, .. } => (cond, then_branch, else_branch),
         _ => return None,
     };
 
@@ -895,6 +895,7 @@ impl ComptimeInterpreter {
                 cond,
                 then_branch,
                 else_branch,
+                ..
             } => {
                 let cond_val = self.eval_expr(cond)?;
                 let cond_bool = cond_val.as_bool().ok_or_else(|| ComptimeError::TypeMismatch {
@@ -2013,6 +2014,10 @@ impl ComptimeInterpreter {
                     _ => false,
                 })
             }
+            Pattern::TypePat { ty_name, .. } => {
+                // Match when the value's enum tag matches the named type.
+                Ok(matches!(value, ComptimeValue::Enum { variant, .. } if variant == ty_name))
+            }
         }
     }
 
@@ -2071,6 +2076,12 @@ impl ComptimeInterpreter {
                 Ok(())
             }
             Pattern::Range { .. } => Ok(()),
+            Pattern::TypePat { binding, .. } => {
+                if let Some(name) = binding {
+                    self.env.define(name.clone(), value.clone());
+                }
+                Ok(())
+            }
         }
     }
 }

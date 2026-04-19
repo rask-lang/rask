@@ -30,6 +30,9 @@ pub enum ExprKind {
     Bool(bool),
     /// Null pointer literal
     Null,
+    /// OPT3: absent sentinel for `T?`. Dedicated literal — not tied to the
+    /// `None` enum variant. Context infers the inner type `T`.
+    None,
     /// Identifier
     Ident(String),
     /// Binary operation
@@ -77,11 +80,14 @@ pub enum ExprKind {
     },
     /// Block expression
     Block(Vec<super::stmt::Stmt>),
-    /// If expression
+    /// If expression. `else_binding` (ER22) is the optional `as e` on the else
+    /// clause that binds the error value from a `IsPresent` cond on a Result.
+    /// `if r? { … } else as e { use(e) }`.
     If {
         cond: Box<Expr>,
         then_branch: Box<Expr>,
         else_branch: Option<Box<Expr>>,
+        else_binding: Option<String>,
     },
     /// If-is pattern matching expression (if expr is Pattern { })
     IfLet {
@@ -368,5 +374,12 @@ pub enum Pattern {
     Range {
         start: Box<Expr>,
         end: Box<Expr>,
+    },
+    /// ER23: type pattern `Type as name` — narrows the scrutinee to `Type`
+    /// and binds the value as `name`. Currently supported for `T or E` Result
+    /// errors in `if r is E as e { ... }`.
+    TypePat {
+        ty_name: String,
+        binding: Option<String>,
     },
 }

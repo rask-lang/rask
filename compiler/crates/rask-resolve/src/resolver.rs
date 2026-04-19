@@ -1745,7 +1745,7 @@ impl Resolver {
             _ => return None,
         };
         let (cond, then_branch, else_branch) = match &inner.kind {
-            ExprKind::If { cond, then_branch, else_branch } => (cond, then_branch, else_branch),
+            ExprKind::If { cond, then_branch, else_branch, .. } => (cond, then_branch, else_branch),
             _ => return None,
         };
 
@@ -1849,7 +1849,7 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) |
-            ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null => {}
+            ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None => {}
             ExprKind::Ident(name) => {
                 match self.scopes.lookup(name) {
                     Some(sym_id) => {
@@ -1978,7 +1978,7 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, else_binding } => {
                 self.resolve_expr(cond);
                 // OPT20/ER20: `if expr? as v` binds v in the then-branch.
                 // ER21: else-branch also binds v (to the error) for Result.
@@ -2004,7 +2004,10 @@ impl Resolver {
                     self.resolve_expr(then_branch);
                 }
                 if let Some(else_br) = else_branch {
-                    if let Some(ref name) = presence_binding {
+                    // ER22: explicit `else as e` takes precedence over the cond's
+                    // `as v` for the else-branch name.
+                    let else_name = else_binding.clone().or_else(|| presence_binding.clone());
+                    if let Some(ref name) = else_name {
                         self.scopes.push(ScopeKind::Block);
                         let sym_id = self.symbols.insert(
                             name.clone(),
@@ -2344,6 +2347,20 @@ impl Resolver {
                 }
             }
             Pattern::Range { .. } => {}
+            Pattern::TypePat { binding, .. } => {
+                if let Some(name) = binding {
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        None,
+                        Span::new(0, 0),
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
+                        self.errors.push(e);
+                    }
+                }
+            }
         }
     }
 }

@@ -197,6 +197,12 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
+            // `read` is reserved by the lexer but has no structural role in the grammar.
+            // Allow it anywhere a plain identifier is expected.
+            TokenKind::ReadKw => {
+                self.advance();
+                Ok("read".to_string())
+            }
             _ => Err(ParseError::expected(
                 "a name",
                 self.current_kind(),
@@ -2679,7 +2685,7 @@ impl Parser {
                 | TokenKind::Select | TokenKind::SelectPriority
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
                 | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
-                | TokenKind::None | TokenKind::Null
+                | TokenKind::None | TokenKind::Null | TokenKind::ReadKw
         )
     }
 
@@ -2967,7 +2973,8 @@ impl Parser {
             TokenKind::None => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident("None".to_string()), span: self.span(start, end) })
+                // OPT3: dedicated absent literal, not the `None` enum variant.
+                Ok(Expr { id: self.next_id(), kind: ExprKind::None, span: self.span(start, end) })
             }
             TokenKind::Null => {
                 self.advance();
@@ -3111,6 +3118,16 @@ impl Parser {
             TokenKind::Own => {
                 self.advance();
                 self.parse_expr_bp(Self::PREFIX_BP)
+            }
+
+            // `read` is reserved as a parameter mode keyword but has no syntactic
+            // role in expressions. Allow it as a plain identifier so user-defined
+            // functions and variables named `read` work correctly.
+            TokenKind::ReadKw => {
+                self.advance();
+                let name = "read".to_string();
+                let end = self.tokens[self.pos - 1].span.end;
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.span(start, end) })
             }
 
             TokenKind::LParen => self.parse_paren_or_tuple(),
@@ -3740,30 +3757,40 @@ impl Parser {
             Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
         };
 
-        let else_branch = if self.check(&TokenKind::Else) ||
+        let (else_branch, else_binding) = if self.check(&TokenKind::Else) ||
             (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else()) {
             if self.check(&TokenKind::Newline) {
                 self.skip_newlines();
             }
             self.expect(&TokenKind::Else)?;
-            if self.check(&TokenKind::If) {
-                Some(Box::new(self.parse_if_expr()?))
+            // ER22: `else as e { … }` binds the error from a Result cond.
+            let binding = if self.check(&TokenKind::As)
+                && matches!(self.peek(1), TokenKind::Ident(_))
+            {
+                self.advance();
+                Some(self.expect_ident()?)
+            } else {
+                None
+            };
+            let body = if self.check(&TokenKind::If) {
+                Box::new(self.parse_if_expr()?)
             } else if self.match_token(&TokenKind::Colon) {
-                Some(Box::new(self.parse_inline_block(start)?))
+                Box::new(self.parse_inline_block(start)?)
             } else {
                 self.skip_newlines();
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Some(Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }))
-            }
+                Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) })
+            };
+            (Some(body), binding)
         } else {
-            None
+            (None, None)
         };
 
         let end = self.tokens[self.pos - 1].span.end;
         Ok(Expr {
             id: self.next_id(),
-            kind: ExprKind::If { cond: Box::new(cond), then_branch: Box::new(then_branch), else_branch },
+            kind: ExprKind::If { cond: Box::new(cond), then_branch: Box::new(then_branch), else_branch, else_binding },
             span: self.span(start, end),
         })
     }
@@ -4353,6 +4380,14 @@ impl Parser {
                     }
                     self.expect(&TokenKind::RParen)?;
                     Ok(Pattern::Constructor { name, fields })
+                } else if self.check(&TokenKind::As)
+                    && matches!(self.peek(1), TokenKind::Ident(_))
+                {
+                    // ER23: type pattern `Type as binding`. Unqualified name
+                    // without a constructor — interpret as a type match.
+                    self.advance();
+                    let binding = self.expect_ident()?;
+                    Ok(Pattern::TypePat { ty_name: name, binding: Some(binding) })
                 } else if self.check(&TokenKind::LBrace) && name.contains('.') {
                     // Struct variant pattern: Enum.Variant { field1, field2 }
                     // Only for qualified names to avoid ambiguity with blocks

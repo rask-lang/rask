@@ -364,6 +364,7 @@ impl<'a> Monomorphizer<'a> {
                 cond,
                 then_branch,
                 else_branch,
+                ..
             } => {
                 self.visit_expr(cond);
                 self.visit_expr(then_branch);
@@ -504,6 +505,7 @@ impl<'a> Monomorphizer<'a> {
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
             | ExprKind::Null
+            | ExprKind::None
             | ExprKind::Ident(_) => {}
         }
     }
