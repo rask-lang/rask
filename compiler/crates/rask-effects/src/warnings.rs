@@ -239,6 +239,9 @@ impl<'a> WarnContext<'a> {
                     self.check_expr(&ec.body, warnings);
                 }
             }
+            ExprKind::IsPresent { expr: e, .. } => {
+                self.check_expr(e, warnings);
+            }
             ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
                 self.check_expr(e, warnings);
             }

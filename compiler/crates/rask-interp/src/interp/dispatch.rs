@@ -490,6 +490,7 @@ impl Interpreter {
         }
     }
 
+
     /// Handle ctx.step(name, inputs, body) — incremental build step.
     /// Hashes input files, skips if unchanged since last run.
     fn call_build_step(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {

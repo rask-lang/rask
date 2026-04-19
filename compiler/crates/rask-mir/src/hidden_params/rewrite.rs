@@ -276,6 +276,9 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
                 rewrite_expr(pass, caller, &mut ec.body);
             }
         }
+        ExprKind::IsPresent { expr: e, .. } => {
+            rewrite_expr(pass, caller, e);
+        }
         ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
             rewrite_expr(pass, caller, e);
         }

@@ -1574,6 +1574,10 @@ impl<'a> Printer<'a> {
                     self.format_expr(&ec.body);
                 }
             }
+            ExprKind::IsPresent { expr: inner, .. } => {
+                self.format_expr(inner);
+                self.emit("?");
+            }
             ExprKind::Unwrap { expr: inner, message } => {
                 self.format_expr(inner);
                 self.emit("!");

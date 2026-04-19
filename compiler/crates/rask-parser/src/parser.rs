@@ -3074,6 +3074,16 @@ impl Parser {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let end = operand.span.end;
+                // OPT17/ER26: `!x?` is forbidden — prefix `!` with suffix `?`
+                // fights the parse. Suggest `x == none` (Option) or `x is E`
+                // (Result) instead. `!` on a plain bool is still fine.
+                if matches!(operand.kind, ExprKind::IsPresent { .. }) {
+                    return Err(ParseError {
+                        span: self.span(start, end),
+                        message: "cannot negate `?` with prefix `!`".to_string(),
+                        hint: Some("use `x == none` for Option or `r is E` for Result".to_string()),
+                    });
+                }
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Not, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Tilde => {
@@ -3576,13 +3586,25 @@ impl Parser {
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Index { object: Box::new(lhs), index: Box::new(index) }, span: self.span(start, end) })
             }
 
-            // Try operator (?)
-            // Note: Postfix ? is for optional chaining (T?).
-            // For Result error propagation, use prefix 'try expr' instead.
+            // Presence predicate (postfix ?) — evaluates to bool (OPT10/ER12).
+            // OPT20/ER20: `expr? as v` binds the payload as a fresh const in
+            // the then-branch. Consuming `as <ident>` here avoids the `as` cast
+            // infix operator swallowing `v` as a type name. To cast a bool from
+            // `?`, wrap in parens: `(x?) as i32`.
             TokenKind::Question => {
                 self.advance();
-                let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Try { expr: Box::new(lhs), else_clause: None }, span: self.span(start, end) })
+                let mut end = self.tokens[self.pos - 1].span.end;
+                let binding = if self.check(&TokenKind::As)
+                    && matches!(self.peek(1), TokenKind::Ident(_))
+                {
+                    self.advance();
+                    let name = self.expect_ident()?;
+                    end = self.tokens[self.pos - 1].span.end;
+                    Some(name)
+                } else {
+                    None
+                };
+                Ok(Expr { id: self.next_id(), kind: ExprKind::IsPresent { expr: Box::new(lhs), binding }, span: self.span(start, end) })
             }
 
             // Unwrap operator (!) - panics if None/Err
