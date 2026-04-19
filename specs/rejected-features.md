@@ -4,6 +4,22 @@ Why I made certain design choices. Mostly about what I didn't add from other lan
 
 ---
 
+## Ok/Err/Some/None Constructors
+
+**Looked at:** Rust, ML-family
+
+**Why rejected:**
+
+Rask originally had `Option<T>` and `Result<T, E>` as standard enums with `Some(v)`, `None`, `Ok(v)`, `Err(e)` constructors (Rust-style). In practice these wrappers add a tag that is always the same tag — auto-wrapping (today's OPT8, ER7) already coerced bare values at function boundaries, so the constructor survived only at intermediate sites. Every rebind form (`is Some(u)`, `is Some as u`, `const Some(u) = x`, magic rebind) existed because the wrapper needed to be unwrapped. Remove the wrapper and the rebind cloud evaporates.
+
+`T or E` and `T?` are now builtin tagged unions. The compiler picks the branch from the value's type at return (enforced by the disjointness rule T ≠ E and the `ErrorMessage` bound on E), so construction is keyword-free on both paths: `return config` or `return MyError.Failed`, never `return Ok(config)` / `return Err(MyError.Failed)`. `none` stays as the absent sentinel (literal, not a variant).
+
+The trade-off is a disjointness rule (T ≠ E in `T or E`, `T?` can't nest). Newtype is the escape hatch. The rule also rules out primitive-error patterns like `i32 or i32`, which were always bad style.
+
+See [types/error-model-redesign-proposal.md](types/error-model-redesign-proposal.md) for the full design record.
+
+---
+
 ## Algebraic Effects
 
 **Looked at:** OCaml, Koka, Unison

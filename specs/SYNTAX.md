@@ -173,7 +173,7 @@ func add(a: i32, b: i32) -> i32 {
 }
 
 func divide(a: f64, b: f64) -> f64 or Error {
-    if b == 0.0: return Err(Error.DivByZero)
+    if b == 0.0: return Error.DivByZero
     return a / b              // Auto-wrapped in Ok (explicit return)
 }
 ```
@@ -311,16 +311,13 @@ extend File {
 
 ### Enums (Sum Types)
 
+`Option<T>` (`T?`) and `Result<T, E>` (`T or E`) are builtin tagged unions, not user enums. See [types/optionals.md](types/optionals.md) and [types/error-types.md](types/error-types.md). User enums cover everything else:
+
 ```rask
 // Positional payloads — clean for wrappers and simple cases
-enum Option<T> {
-    Some(T)
-    None
-}
-
-enum Result<T, E> {
-    Ok(T)
-    Err(E)
+enum Shape {
+    Circle(f64)
+    Square(f64)
 }
 
 // Named payloads — when fields have distinct roles
@@ -340,23 +337,19 @@ enum Event {
 ```
 
 ```rask
-enum Option<T> {
-    Some(T)
-    None
-}
-
-extend Option<T> {
-    func is_some(self) -> bool {
+// extend blocks add methods to user types
+extend Shape {
+    func area(self) -> f64 {
         return match self {
-            Some(_) => true,
-            None => false,
+            Circle(r)  => 3.14159 * r * r,
+            Square(s)  => s * s,
         }
     }
 
-    func force(take self) -> T {
+    func scale(self, factor: f64) -> Shape {
         return match self {
-            Some(v) => v,
-            None => panic("force on None"),
+            Circle(r)  => Circle(r * factor),
+            Square(s)  => Square(s * factor),
         }
     }
 }
@@ -475,7 +468,7 @@ func transfer(from: Handle<Player>, to: Handle<Player>, item: Handle<Item>)
 {
     from.inventory.remove(item)
     to.inventory.add(item)
-    items[item].owner = Some(to)
+    items[item].owner = to    // auto-wraps to Handle<Player>?
 }
 ```
 
@@ -645,15 +638,15 @@ match status {
     Failed(e) => {
         log(e)
         notify_admin()
-        return Err(e)
+        return e
     }
 }
 
-// Pattern guards
+// Pattern guards (T or E match with type patterns)
 match response {
-    Ok(body) if body.len() > 0 => process(body),
-    Ok(_) => handle_empty(),
-    Err(e) => handle_error(e),
+    Body as body if body.len() > 0 => process(body),
+    Body => handle_empty(),
+    HttpError as e => handle_error(e),
 }
 
 // Destructuring
@@ -678,8 +671,8 @@ if result is Ok(value) {
     handle_error()
 }
 
-// Loop while pattern matches
-while reader.next() is Some(line) {
+// Loop while pattern matches (Option narrowing with `as`)
+while reader.next()? as line {
     process(line)
 }
 
@@ -693,27 +686,36 @@ if state is Connected(sock) && sock.is_ready() {
 
 | Use Case | Recommended |
 |----------|-------------|
-| Check Option with binding | `if opt is Some` |
-| Check other enum variant | `if x is Variant` |
+| Check Option presence | `if opt?` (narrow) or `if opt? as v` (bind) |
+| Check error variant on `T or E` | `if r is IoError as e` |
+| Check user enum variant | `if x is Variant` |
 | Exhaustive handling | `match` |
 | Loop over iterator | `for x in iter` |
 
 `is` is non-exhaustive — unmatched patterns skip the block. Use `match` when you need to handle all cases.
 
-**Guard pattern with `const ... is ... else` (or `mut` for rebindable):**
+**Guard pattern with early-exit narrow:**
 
-Early exits where bindings need to escape to outer scope:
+For Option, use `?? return` or the early-exit absent check:
 
 ```rask
-const value = result is Ok else { return Err(e) }
-// value available here
+const value = result ?? return  // Option: divert on absent, value: T after
 
-const sock = state is Connected else { panic("not connected") }
-const item = queue.pop() is Some else { break }
-const (a, b) = pair is Some else { return None }
+if opt == none { return }
+use(opt)                         // opt: T here (early-exit narrow)
 ```
 
-The `else` block must diverge (`return`, `break`, `panic`).
+For Result, use `try` for propagation, or type-pattern narrow with divergence:
+
+```rask
+const data = try read_file(path)             // propagates the error
+
+const conn = connect()
+if conn is ConnectError as e { return e }
+use(conn!)                                    // conn: Connection after
+```
+
+The `else` block of a guard must diverge (`return`, `break`, `panic`).
 
 ### Loops
 
@@ -777,7 +779,7 @@ const result = search: loop {
     for item in items {
         if item.matches(): break search item
     }
-    if no_more(): break search None
+    if no_more(): break search none
 }
 ```
 
@@ -811,8 +813,8 @@ Pool access, `ensure` cleanup, and `@resource` types are shown in the sections a
 ## Error Handling Syntax
 
 ```rask
-// Option shorthand
-const x: i32? = Some(42)
+// Option shorthand — bare value auto-wraps
+const x: i32? = 42
 const name = user?.profile?.name    // None if any step is None
 const port = config.port ?? 8080
 const must_exist = optional!
