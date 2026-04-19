@@ -39,21 +39,21 @@ extend fs {
         const p = unsafe path.as_c_str()
         const f = unsafe fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
-            return Err("could not open file")
+            return IoError.Other("could not open file")
         }
         unsafe fseek(f, 0, 2)
         const size = unsafe ftell(f)
         unsafe fseek(f, 0, 0)
         if size <= 0 {
             unsafe fclose(f)
-            return Ok("")
+            return ""
         }
         const buf = unsafe rask_alloc(size + 1)
         const n = unsafe fread(buf, 1, size as u64, f)
         unsafe fclose(f)
         const result = unsafe string.from_raw(buf, n as usize)
         unsafe rask_free(buf)
-        return Ok(result)
+        return result
     }
 
     /// Read the entire contents of a file as bytes.
@@ -61,7 +61,7 @@ extend fs {
         const p = unsafe path.as_c_str()
         const f = unsafe fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
-            return Err("could not open file")
+            return IoError.Other("could not open file")
         }
         unsafe fseek(f, 0, 2)
         const size = unsafe ftell(f)
@@ -80,7 +80,7 @@ extend fs {
             unsafe rask_free(buf)
         }
         unsafe fclose(f)
-        return Ok(bytes)
+        return bytes
     }
 
     /// Write a string to a file, replacing its contents.
@@ -88,13 +88,13 @@ extend fs {
         const p = unsafe path.as_c_str()
         const f = unsafe fopen(p, "wb\0".as_ptr())
         if unsafe f.is_null() {
-            return Err("could not open file")
+            return IoError.Other("could not open file")
         }
         const ptr = unsafe content.as_ptr()
         const len = content.len() as u64
         unsafe fwrite(ptr, 1, len, f)
         unsafe fclose(f)
-        return Ok(())
+        return
     }
 
     /// Write bytes to a file, replacing its contents.
@@ -113,7 +113,7 @@ extend fs {
         for line in content.lines() {
             lines.push(line)
         }
-        return Ok(lines)
+        return lines
     }
 
     /// Return the canonical, absolute form of a path.
@@ -122,24 +122,24 @@ extend fs {
         const result = unsafe realpath(path.as_c_str(), buf)
         if unsafe result.is_null() {
             unsafe rask_free(buf)
-            return Err("could not resolve path")
+            return IoError.Other("could not resolve path")
         }
         const len = unsafe strlen(buf)
         const s = unsafe string.from_raw(buf, len as usize)
         unsafe rask_free(buf)
-        return Ok(s)
+        return s
     }
 
     /// Copy a file from one path to another. Returns bytes copied.
     public func copy(from: string, to: string) -> u64 or IoError {
         const src = unsafe fopen(from.as_c_str(), "rb\0".as_ptr())
         if unsafe src.is_null() {
-            return Err("could not open source file")
+            return IoError.Other("could not open source file")
         }
         const dst = unsafe fopen(to.as_c_str(), "wb\0".as_ptr())
         if unsafe dst.is_null() {
             unsafe fclose(src)
-            return Err("could not open destination file")
+            return IoError.Other("could not open destination file")
         }
         const buf = unsafe rask_alloc(8192)
         mut total: u64 = 0
@@ -152,34 +152,34 @@ extend fs {
         unsafe rask_free(buf)
         unsafe fclose(src)
         unsafe fclose(dst)
-        return Ok(total)
+        return total
     }
 
     /// Rename a file or directory.
     public func rename(from: string, to: string) -> () or IoError {
         const r = unsafe rask_libc_rename(from.as_c_str(), to.as_c_str())
         if r != 0 {
-            return Err("could not rename")
+            return IoError.Other("could not rename")
         }
-        return Ok(())
+        return
     }
 
     /// Remove a file.
     public func remove(path: string) -> () or IoError {
         const r = unsafe rask_libc_remove(path.as_c_str())
         if r != 0 {
-            return Err("could not remove")
+            return IoError.Other("could not remove")
         }
-        return Ok(())
+        return
     }
 
     /// Create a directory.
     public func create_dir(path: string) -> () or IoError {
         const r = unsafe rask_libc_mkdir(path.as_c_str(), 493)
         if r != 0 {
-            return Err("could not create directory")
+            return IoError.Other("could not create directory")
         }
-        return Ok(())
+        return
     }
 
     /// Create a directory and all parent directories.
@@ -190,20 +190,20 @@ extend fs {
         const p = unsafe path.as_c_str()
         const f = unsafe fopen(p, "ab\0".as_ptr())
         if unsafe f.is_null() {
-            return Err("could not open file for append")
+            return IoError.Other("could not open file for append")
         }
         const ptr = unsafe content.as_ptr()
         const len = content.len() as u64
         unsafe fwrite(ptr, 1, len, f)
         unsafe fclose(f)
-        return Ok(())
+        return
     }
 
     /// List entries in a directory.
     public func list_dir(path: string) -> Vec<string> or IoError {
         const dir = unsafe opendir(path.as_c_str())
         if unsafe dir.is_null() {
-            return Err("could not open directory")
+            return IoError.Other("could not open directory")
         }
         mut entries: Vec<string> = Vec.new()
         loop {
@@ -220,7 +220,7 @@ extend fs {
             }
         }
         unsafe closedir(dir)
-        return Ok(entries)
+        return entries
     }
 
     /// Get metadata for a file or directory.

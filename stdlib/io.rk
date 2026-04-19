@@ -12,6 +12,21 @@ public enum IoError {
     Other(string)
 }
 
+extend IoError {
+    public func message(self) -> string {
+        match self {
+            IoError.NotFound(msg) => return "not found: {msg}",
+            IoError.PermissionDenied(msg) => return "permission denied: {msg}",
+            IoError.AlreadyExists(msg) => return "already exists: {msg}",
+            IoError.BrokenPipe => return "broken pipe",
+            IoError.ConnectionReset => return "connection reset",
+            IoError.TimedOut => return "timed out",
+            IoError.UnexpectedEof => return "unexpected end of file",
+            IoError.Other(msg) => return msg,
+        }
+    }
+}
+
 /// Input/output module functions.
 struct io { }
 
