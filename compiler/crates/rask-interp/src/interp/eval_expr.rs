@@ -1211,6 +1211,39 @@ impl Interpreter {
             }
 
             ExprKind::Try { expr: inner, ref else_clause } => {
+                // ER17/ER18: `try { … }` block form. Catches TryError raised
+                // by inner `try` propagations and routes to the else handler.
+                // Without an else, behaves like a normal block (errors continue
+                // propagating to the enclosing function).
+                if matches!(&inner.kind, ExprKind::Block(_)) {
+                    let block_result = self.eval_expr(inner);
+                    return match block_result {
+                        Ok(v) => Ok(v),
+                        Err(diag) => match diag.error {
+                            RuntimeError::TryError(err_val) => {
+                                if let Some(ec) = else_clause {
+                                    let inner_err = match &err_val {
+                                        Value::Enum { fields, .. } => {
+                                            fields.first().cloned().unwrap_or(Value::Unit)
+                                        }
+                                        _ => err_val,
+                                    };
+                                    self.env.push_scope();
+                                    self.env.define(ec.error_binding.clone(), inner_err);
+                                    let transformed = self.eval_expr(&ec.body);
+                                    self.env.pop_scope();
+                                    transformed
+                                } else {
+                                    Err(RuntimeDiagnostic::new(
+                                        RuntimeError::TryError(err_val),
+                                        diag.span,
+                                    ))
+                                }
+                            }
+                            other => Err(RuntimeDiagnostic::new(other, diag.span)),
+                        },
+                    };
+                }
                 let val = self.eval_expr(inner)?;
                 match &val {
                     Value::Enum {

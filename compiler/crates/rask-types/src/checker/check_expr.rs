@@ -593,6 +593,37 @@ impl TypeChecker {
             }
 
             ExprKind::Try { expr: inner, ref else_clause } => {
+                // ER17/ER18: `try { ... } [else |e| handler]` block form.
+                // Inner `try` expressions inside the block propagate E.
+                // The else clause catches and transforms; without else, this
+                // is just the block's value (errors keep propagating).
+                if matches!(&inner.kind, ExprKind::Block(_)) {
+                    let block_ty = self.infer_expr(inner);
+                    if let Some(ec) = else_clause {
+                        let err_ty = self
+                            .current_return_type
+                            .as_ref()
+                            .map(|t| self.ctx.apply(t))
+                            .and_then(|t| match t {
+                                Type::Result { err, .. } => Some(*err),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| self.ctx.fresh_var());
+                        self.push_scope();
+                        if let Some(scope) = self.local_types.last_mut() {
+                            scope.insert(ec.error_binding.clone(), (err_ty, true));
+                        }
+                        let handler_ty = self.infer_expr(&ec.body);
+                        self.pop_scope();
+                        // Block and handler must produce the same type.
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            block_ty.clone(),
+                            handler_ty,
+                            expr.span,
+                        ));
+                    }
+                    return block_ty;
+                }
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
