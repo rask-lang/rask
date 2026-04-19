@@ -116,11 +116,13 @@ pub(crate) fn run_check_or_exit(path: &str, format: Format) -> rask_compiler::Ch
     };
     let output = rask_compiler::check_file(path, &config);
 
-    // Build source_files for display: either from the result or read the file.
-    let source_files: Vec<(std::path::PathBuf, String)> = if let Some(ref r) = output.result {
+    // Source files for display: prefer from pipeline (has all package files
+    // with correct file_id ordering), fall back to reading the target file.
+    let source_files: Vec<(std::path::PathBuf, String)> = if !output.source_files.is_empty() {
+        output.source_files.clone()
+    } else if let Some(ref r) = output.result {
         r.source_files.clone()
     } else {
-        // Pipeline failed — try to read the file for diagnostic display.
         match fs::read_to_string(path) {
             Ok(s) => vec![(std::path::PathBuf::from(path), s)],
             Err(_) => vec![],

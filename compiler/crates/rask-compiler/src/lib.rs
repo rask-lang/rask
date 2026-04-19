@@ -91,6 +91,9 @@ pub struct PipelineOutput<T> {
     pub result: Option<T>,
     /// All diagnostics (errors + warnings) from every stage that ran.
     pub diagnostics: Vec<Diagnostic>,
+    /// Source files for diagnostic display. Available even when the
+    /// pipeline fails — needed to map errors to the correct file.
+    pub source_files: Vec<(PathBuf, String)>,
 }
 
 impl<T> PipelineOutput<T> {
@@ -103,11 +106,19 @@ impl<T> PipelineOutput<T> {
     }
 
     fn fail(diagnostics: Vec<Diagnostic>) -> Self {
-        Self { result: None, diagnostics }
+        Self { result: None, diagnostics, source_files: Vec::new() }
+    }
+
+    fn fail_with_sources(diagnostics: Vec<Diagnostic>, source_files: Vec<(PathBuf, String)>) -> Self {
+        Self { result: None, diagnostics, source_files }
     }
 
     fn ok(value: T, diagnostics: Vec<Diagnostic>) -> Self {
-        Self { result: Some(value), diagnostics }
+        Self { result: Some(value), diagnostics, source_files: Vec::new() }
+    }
+
+    fn ok_with_sources(value: T, diagnostics: Vec<Diagnostic>, source_files: Vec<(PathBuf, String)>) -> Self {
+        Self { result: Some(value), diagnostics, source_files }
     }
 }
 
@@ -405,20 +416,21 @@ pub fn check_package(
     }
 
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
-        return PipelineOutput::fail(diags);
+        return PipelineOutput::fail_with_sources(diags, source_files);
     }
 
-    PipelineOutput::ok(
+    PipelineOutput::ok_with_sources(
         CheckResult {
             typed,
             decls: std::mem::take(&mut pkg_ctx.all_decls),
             package_names,
-            source_files,
+            source_files: source_files.clone(),
             effects,
             effect_warnings,
             frozen_diagnostics,
         },
         diags,
+        source_files,
     )
 }
 
@@ -484,9 +496,10 @@ fn finalize_compile(
     config: &CompilerConfig,
 ) -> PipelineOutput<CompileResult> {
     let mut diags = check_output.diagnostics;
+    let pkg_source_files = check_output.source_files;
     let mut check = match check_output.result {
         Some(c) => c,
-        None => return PipelineOutput::fail(diags),
+        None => return PipelineOutput::fail_with_sources(diags, pkg_source_files),
     };
 
     // --- Hidden parameter desugaring ---
@@ -521,14 +534,14 @@ fn finalize_compile(
         Ok(m) => m,
         Err(e) => {
             diags.push(Diagnostic::error(format!("monomorphization failed: {:?}", e)));
-            return PipelineOutput::fail(diags);
+            return PipelineOutput::fail_with_sources(diags, pkg_source_files);
         }
     };
 
     // --- Evaluate comptime globals ---
     let comptime_globals = evaluate_comptime_globals(&check.decls, Some(&config.cfg));
 
-    PipelineOutput::ok(
+    PipelineOutput::ok_with_sources(
         CompileResult {
             typed: check.typed,
             mono,
@@ -537,6 +550,7 @@ fn finalize_compile(
             package_modules,
         },
         diags,
+        pkg_source_files,
     )
 }
 
