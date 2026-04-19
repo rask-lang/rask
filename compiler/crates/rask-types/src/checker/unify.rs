@@ -133,7 +133,8 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve a return value constraint with deferred auto-Ok wrapping.
+    /// Resolve a return value constraint with deferred auto-wrap.
+    /// Handles `T or E` and `T?`: bare `T` wraps to the success branch.
     /// If the return expression's type is still unresolved, defer until later.
     fn resolve_return_value(
         &mut self,
@@ -146,9 +147,7 @@ impl TypeChecker {
         if let Type::Result { ok: _, err } = &resolved_expected {
             let resolved_ret = self.ctx.apply(&ret_ty);
             match &resolved_ret {
-                // Already a Result — unify directly
                 Type::Result { .. } => self.unify(&expected, &ret_ty, span),
-                // Still unresolved — defer
                 Type::Var(_) => {
                     self.ctx.add_constraint(TypeConstraint::ReturnValue {
                         ret_ty,
@@ -157,12 +156,31 @@ impl TypeChecker {
                     });
                     Ok(false)
                 }
-                // Concrete non-Result — auto-wrap in Ok
                 _ => {
                     let wrapped = Type::Result {
                         ok: Box::new(ret_ty),
                         err: err.clone(),
                     };
+                    self.unify(&expected, &wrapped, span)
+                }
+            }
+        } else if let Type::Option(_) = &resolved_expected {
+            let resolved_ret = self.ctx.apply(&ret_ty);
+            // Named(option_type_id) is Option-shaped (e.g. bare `None` or Option<T> reference).
+            let is_option_shaped = matches!(&resolved_ret, Type::Option(_))
+                || matches!(&resolved_ret, Type::Named(id) if Some(*id) == self.types.get_option_type_id());
+            match &resolved_ret {
+                _ if is_option_shaped => self.unify(&expected, &ret_ty, span),
+                Type::Var(_) => {
+                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                        ret_ty,
+                        expected,
+                        span,
+                    });
+                    Ok(false)
+                }
+                _ => {
+                    let wrapped = Type::Option(Box::new(ret_ty));
                     self.unify(&expected, &wrapped, span)
                 }
             }
