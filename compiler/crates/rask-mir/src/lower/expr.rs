@@ -2363,7 +2363,7 @@ impl<'a> MirLowerer<'a> {
 
             // Presence predicate (postfix ?) — evaluates to bool.
             // Some/Ok tag is 0 (present/ok); None/Err tag is 1.
-            ExprKind::IsPresent { expr: inner } => {
+            ExprKind::IsPresent { expr: inner, .. } => {
                 let is_niche = self.is_niche_option_expr(inner);
                 let (val, _ty) = self.lower_expr(inner)?;
                 let tag = self.emit_option_tag(&val, is_niche);

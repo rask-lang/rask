@@ -408,7 +408,7 @@ impl Desugarer {
                     self.desugar_expr(&mut ec.body);
                 }
             }
-            ExprKind::IsPresent { expr: e } => self.desugar_expr(e),
+            ExprKind::IsPresent { expr: e, .. } => self.desugar_expr(e),
             ExprKind::Unwrap { expr: e, message: _ } => self.desugar_expr(e),
             ExprKind::GuardPattern {
                 expr,
@@ -820,7 +820,7 @@ fn offset_expr_spans(expr: &mut Expr, offset: usize) {
             offset_expr_spans(expr, offset);
             if let Some(tc) = else_clause { offset_expr_spans(&mut tc.body, offset); }
         }
-        ExprKind::IsPresent { expr } => offset_expr_spans(expr, offset),
+        ExprKind::IsPresent { expr, .. } => offset_expr_spans(expr, offset),
         ExprKind::Unwrap { expr, .. } => offset_expr_spans(expr, offset),
         ExprKind::Cast { expr, .. } => offset_expr_spans(expr, offset),
         ExprKind::NullCoalesce { value, default } => {

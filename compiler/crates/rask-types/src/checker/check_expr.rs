@@ -736,7 +736,7 @@ impl TypeChecker {
             }
 
             // Postfix `?` — presence predicate. OPT10/ER12.
-            ExprKind::IsPresent { expr: inner } => {
+            ExprKind::IsPresent { expr: inner, .. } => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
@@ -2048,38 +2048,38 @@ impl TypeChecker {
         }
     }
 
-    /// Detect `if x?` on an Option or Result bound locally. Returns the
-    /// variable name, the then-branch type, and (for Result) the else-branch
-    /// type. OPT19/OPT21 for Option; ER19/ER21 for Result.
+    /// Detect a presence check (`x?` or `x? as v`) in an if-condition and
+    /// return the narrow name, the then-branch type, and (for Result) the
+    /// else-branch type.
     ///
-    /// Narrowing only applies when the scrutinee is a plain const-bound ident —
-    /// mutability and compound expressions are rejected to keep the rule
-    /// structural (no flow analysis).
+    /// OPT19/ER19 — plain `if x?`: narrows the scrutinee when it's a
+    /// const-bound ident; mut is rejected (user needs `as v`).
+    /// OPT20/ER20 — `if expr? as v`: binds a fresh const `v: T` regardless
+    /// of the scrutinee's shape or mutability.
+    ///
+    /// Must run after the cond has been inferred so the scrutinee's type is
+    /// available in `node_types`.
     pub(super) fn extract_is_present_narrowing(
         &self,
         cond: &Expr,
     ) -> Option<(String, Type, Option<Type>)> {
-        let ExprKind::IsPresent { expr: inner } = &cond.kind else {
+        let ExprKind::IsPresent { expr: inner, binding } = &cond.kind else {
             return None;
         };
-        let ExprKind::Ident(var_name) = &inner.kind else {
-            return None;
+
+        // Use the already-inferred scrutinee type; no re-inference.
+        let scrutinee_ty = self.node_types.get(&inner.id).cloned()?;
+        let resolved = self.ctx.apply(&scrutinee_ty);
+
+        let narrow_name = match (binding, &inner.kind) {
+            (Some(v), _) => v.clone(),
+            (None, ExprKind::Ident(n)) if self.is_local_read_only(n) => n.clone(),
+            _ => return None,
         };
-        // OPT19/ER19: const scrutinee only. Mut requires `as v` bind (OPT20/ER20).
-        if !self.is_local_read_only(var_name) {
-            return None;
-        }
-        let var_ty = self.lookup_local(var_name)?;
-        let resolved = self.ctx.apply(&var_ty);
+
         match resolved {
-            Type::Option(inner_ty) => {
-                // Option: then = T, else = no narrowing (information-only).
-                Some((var_name.clone(), *inner_ty, None))
-            }
-            Type::Result { ok, err } => {
-                // Result: then = T, else = E.
-                Some((var_name.clone(), *ok, Some(*err)))
-            }
+            Type::Option(inner_ty) => Some((narrow_name, *inner_ty, None)),
+            Type::Result { ok, err } => Some((narrow_name, *ok, Some(*err))),
             _ => None,
         }
     }

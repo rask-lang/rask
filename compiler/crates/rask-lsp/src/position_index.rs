@@ -242,7 +242,7 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
                 visit_expr(&ec.body, index);
             }
         }
-        ExprKind::IsPresent { expr: e } => {
+        ExprKind::IsPresent { expr: e, .. } => {
             visit_expr(e, index);
         }
         ExprKind::Unwrap { expr: e, .. } => {

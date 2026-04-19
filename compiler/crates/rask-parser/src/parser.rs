@@ -3577,10 +3577,24 @@ impl Parser {
             }
 
             // Presence predicate (postfix ?) — evaluates to bool (OPT10/ER12).
+            // OPT20/ER20: `expr? as v` binds the payload as a fresh const in
+            // the then-branch. Consuming `as <ident>` here avoids the `as` cast
+            // infix operator swallowing `v` as a type name. To cast a bool from
+            // `?`, wrap in parens: `(x?) as i32`.
             TokenKind::Question => {
                 self.advance();
-                let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::IsPresent { expr: Box::new(lhs) }, span: self.span(start, end) })
+                let mut end = self.tokens[self.pos - 1].span.end;
+                let binding = if self.check(&TokenKind::As)
+                    && matches!(self.peek(1), TokenKind::Ident(_))
+                {
+                    self.advance();
+                    let name = self.expect_ident()?;
+                    end = self.tokens[self.pos - 1].span.end;
+                    Some(name)
+                } else {
+                    None
+                };
+                Ok(Expr { id: self.next_id(), kind: ExprKind::IsPresent { expr: Box::new(lhs), binding }, span: self.span(start, end) })
             }
 
             // Unwrap operator (!) - panics if None/Err

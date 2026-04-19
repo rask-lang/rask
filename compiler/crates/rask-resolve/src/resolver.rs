@@ -1980,9 +1980,47 @@ impl Resolver {
             }
             ExprKind::If { cond, then_branch, else_branch } => {
                 self.resolve_expr(cond);
-                self.resolve_expr(then_branch);
+                // OPT20/ER20: `if expr? as v` binds v in the then-branch.
+                // ER21: else-branch also binds v (to the error) for Result.
+                let presence_binding = match &cond.kind {
+                    ExprKind::IsPresent { binding: Some(name), .. } => Some(name.clone()),
+                    _ => None,
+                };
+                if let Some(ref name) = presence_binding {
+                    self.scopes.push(ScopeKind::Block);
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        None,
+                        Span::new(0, 0),
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
+                        self.errors.push(e);
+                    }
+                    self.resolve_expr(then_branch);
+                    self.scopes.pop();
+                } else {
+                    self.resolve_expr(then_branch);
+                }
                 if let Some(else_br) = else_branch {
-                    self.resolve_expr(else_br);
+                    if let Some(ref name) = presence_binding {
+                        self.scopes.push(ScopeKind::Block);
+                        let sym_id = self.symbols.insert(
+                            name.clone(),
+                            SymbolKind::Variable { mutable: false },
+                            None,
+                            Span::new(0, 0),
+                            false,
+                        );
+                        if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
+                            self.errors.push(e);
+                        }
+                        self.resolve_expr(else_br);
+                        self.scopes.pop();
+                    } else {
+                        self.resolve_expr(else_br);
+                    }
                 }
             }
             ExprKind::IfLet { expr, pattern, then_branch, else_branch } => {
@@ -2025,7 +2063,7 @@ impl Resolver {
                     self.scopes.pop();
                 }
             }
-            ExprKind::IsPresent { expr: inner } => {
+            ExprKind::IsPresent { expr: inner, .. } => {
                 self.resolve_expr(inner);
             }
             ExprKind::Unwrap { expr: inner, message: _ } => {

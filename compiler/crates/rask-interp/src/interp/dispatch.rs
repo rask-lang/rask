@@ -490,28 +490,6 @@ impl Interpreter {
         }
     }
 
-    /// Extract the inner payload of an Option/Result bound to `name`.
-    /// `present=true` returns the Some/Ok payload; `false` returns the Err
-    /// payload (or None for Option since there is no payload).
-    /// Used by `if x?` narrowing to rebind the variable in the branch scope.
-    pub(crate) fn extract_presence_payload(&self, name: &str, present: bool) -> Option<Value> {
-        let val = self.env.get(name)?;
-        match &val {
-            Value::Enum { variant, fields, .. } => {
-                let match_present = matches!(variant.as_str(), "Some" | "Ok");
-                let match_absent = matches!(variant.as_str(), "None" | "Err");
-                if present && match_present {
-                    fields.first().cloned()
-                } else if !present && match_absent {
-                    // None has no payload; Err has a payload.
-                    fields.first().cloned()
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
 
     /// Handle ctx.step(name, inputs, body) — incremental build step.
     /// Hashes input files, skips if unchanged since last run.

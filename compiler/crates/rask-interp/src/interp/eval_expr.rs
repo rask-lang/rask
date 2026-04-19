@@ -590,41 +590,55 @@ impl Interpreter {
                 then_branch,
                 else_branch,
             } => {
-                // OPT19/ER19: `if x?` narrows x to its inner value in the block.
-                // ER21: else branch narrows to E for Result.
-                let presence_narrow = match &cond.kind {
-                    ExprKind::IsPresent { expr: inner } => match &inner.kind {
-                        ExprKind::Ident(name) => Some(name.clone()),
+                // OPT19/OPT20 + ER19/ER20/ER21: `if x?` or `if expr? as v`
+                // evaluates the scrutinee once and rebinds the payload as the
+                // narrow name (scrutinee ident for plain, `v` for `as v`).
+                if let ExprKind::IsPresent { expr: inner, binding } = &cond.kind {
+                    let narrow_name = match (binding, &inner.kind) {
+                        (Some(v), _) => Some(v.clone()),
+                        (None, ExprKind::Ident(n)) => Some(n.clone()),
                         _ => None,
-                    },
-                    _ => None,
-                };
-
-                let cond_val = self.eval_expr(cond)?;
-                if self.is_truthy(&cond_val) {
-                    if let Some(name) = presence_narrow.as_ref() {
-                        // Rebind to the inner (Some/Ok) payload in the then-scope.
-                        if let Some(inner_val) = self.extract_presence_payload(name, true) {
+                    };
+                    if let Some(name) = narrow_name {
+                        let scrutinee_val = self.eval_expr(inner)?;
+                        let present = matches!(
+                            &scrutinee_val,
+                            Value::Enum { variant, .. } if matches!(variant.as_str(), "Some" | "Ok")
+                        );
+                        if present {
+                            let payload = match &scrutinee_val {
+                                Value::Enum { fields, .. } => fields.first().cloned().unwrap_or(Value::Unit),
+                                _ => Value::Unit,
+                            };
                             self.env.push_scope();
-                            self.env.define(name.clone(), inner_val);
+                            self.env.define(name, payload);
                             let result = self.eval_expr(then_branch);
                             self.env.pop_scope();
                             return result;
+                        } else if let Some(else_br) = else_branch {
+                            let payload = match &scrutinee_val {
+                                Value::Enum { fields, .. } => fields.first().cloned(),
+                                _ => None,
+                            };
+                            if let Some(p) = payload {
+                                // Result Err branch binds E; Option None has no payload.
+                                self.env.push_scope();
+                                self.env.define(name, p);
+                                let result = self.eval_expr(else_br);
+                                self.env.pop_scope();
+                                return result;
+                            }
+                            return self.eval_expr(else_br);
+                        } else {
+                            return Ok(Value::Unit);
                         }
                     }
+                }
+
+                let cond_val = self.eval_expr(cond)?;
+                if self.is_truthy(&cond_val) {
                     self.eval_expr(then_branch)
                 } else if let Some(else_br) = else_branch {
-                    if let Some(name) = presence_narrow.as_ref() {
-                        // For Result, rebind to the Err payload in the else-scope.
-                        // For Option, no payload — fall through to normal eval.
-                        if let Some(err_val) = self.extract_presence_payload(name, false) {
-                            self.env.push_scope();
-                            self.env.define(name.clone(), err_val);
-                            let result = self.eval_expr(else_br);
-                            self.env.pop_scope();
-                            return result;
-                        }
-                    }
                     self.eval_expr(else_br)
                 } else {
                     Ok(Value::Unit)
@@ -1231,7 +1245,10 @@ impl Interpreter {
             }
 
             // Postfix `?` — presence predicate. OPT10/ER12.
-            ExprKind::IsPresent { expr: inner } => {
+            // When in a condition with narrowing, the outer If handler evaluates
+            // the scrutinee directly; this path only fires for bare `x?` uses
+            // outside a condition.
+            ExprKind::IsPresent { expr: inner, .. } => {
                 let val = self.eval_expr(inner)?;
                 match &val {
                     Value::Enum { variant, .. } => match variant.as_str() {

@@ -190,7 +190,7 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
                 walk_expr_for_unwrap(&ec.body, source, diags);
             }
         }
-        ExprKind::IsPresent { expr: inner } => {
+        ExprKind::IsPresent { expr: inner, .. } => {
             walk_expr_for_unwrap(inner, source, diags);
         }
         ExprKind::Unwrap { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {

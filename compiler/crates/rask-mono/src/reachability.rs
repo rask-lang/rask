@@ -407,7 +407,7 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_expr(&ec.body);
                 }
             }
-            ExprKind::IsPresent { expr: e } => self.visit_expr(e),
+            ExprKind::IsPresent { expr: e, .. } => self.visit_expr(e),
             ExprKind::Unwrap { expr: e, .. } => self.visit_expr(e),
             ExprKind::NullCoalesce { value, default } => {
                 self.visit_expr(value);

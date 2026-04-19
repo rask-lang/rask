@@ -685,9 +685,15 @@ impl Hasher {
                     self.feed_bool(false);
                 }
             }
-            ExprKind::IsPresent { expr } => {
+            ExprKind::IsPresent { expr, binding } => {
                 self.feed_tag(100);
                 self.hash_expr(expr);
+                if let Some(b) = binding {
+                    self.feed_bool(true);
+                    self.feed_str(b);
+                } else {
+                    self.feed_bool(false);
+                }
             }
             ExprKind::Unwrap { expr, message } => {
                 self.feed_tag(61);

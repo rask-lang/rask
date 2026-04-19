@@ -328,7 +328,7 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
                 classify_expr(&ec.body, effects, callees);
             }
         }
-        ExprKind::IsPresent { expr: e } => {
+        ExprKind::IsPresent { expr: e, .. } => {
             classify_expr(e, effects, callees);
         }
         ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {

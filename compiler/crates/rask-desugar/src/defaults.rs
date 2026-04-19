@@ -450,7 +450,7 @@ impl DefaultDesugarer {
                     self.desugar_expr(&mut ec.body);
                 }
             }
-            ExprKind::IsPresent { expr: e } => {
+            ExprKind::IsPresent { expr: e, .. } => {
                 self.desugar_expr(e);
             }
             ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {

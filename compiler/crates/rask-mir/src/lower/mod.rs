@@ -1285,7 +1285,7 @@ impl<'a> MirLowerer<'a> {
                     self.walk_free_vars(&ec.body, &inner_bound, seen, free);
                 }
             }
-            ExprKind::IsPresent { expr: inner } => {
+            ExprKind::IsPresent { expr: inner, .. } => {
                 self.walk_free_vars(inner, bound, seen, free);
             }
             ExprKind::Unwrap { expr: inner, .. } => {
