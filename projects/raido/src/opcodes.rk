@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Raido instruction set — 42 opcodes, 32-bit instructions
 //
-// Three instruction formats (all packed into a single i64):
+// Three instruction formats (all packed into a single u32):
 //
 //   ABC:  [ op (8 bits) | A (8 bits) | B (8 bits) | C (8 bits) ]
 //         Used for: 3-operand ops like ADD A B C → R[A] = R[B] + R[C]
@@ -12,201 +12,180 @@
 //   AsBx: [ op (8 bits) | A (8 bits) | sBx (16 bits, signed) ]
 //         Used for: jumps, like JMP_IF A sBx → if R[A] is truthy, jump sBx instructions
 
-// --- Opcode constants ---
-// Load/Move
-const OP_LOAD_TRUE: i64 = 0    // R[A] = true
-const OP_LOAD_FALSE: i64 = 1   // R[A] = false
-const OP_LOAD_INT: i64 = 2     // R[A] = sBx (16-bit signed, sign-extended to i64)
-const OP_LOAD_CONST: i64 = 3   // R[A] = constants[Bx]
-const OP_LOAD_NONE: i64 = 4    // R[A] = None
-const OP_MOVE: i64 = 5         // R[A] = R[B]
+enum Opcode: u8 {
+    LOAD_TRUE = 0,
+    LOAD_FALSE = 1,
+    LOAD_INT = 2,
+    LOAD_CONST = 3,
+    LOAD_NONE = 4,
+    MOVE = 5,
+    ADD = 6,
+    SUB = 7,
+    MUL = 8,
+    DIV = 9,
+    MOD = 10,
+    NEG = 11,
+    EQ = 12,
+    LT = 13,
+    LE = 14,
+    NOT = 15,
+    LEN = 16,
+    CONCAT = 17,
+    NEW_ARRAY = 18,
+    NEW_MAP = 19,
+    GET_INDEX = 20,
+    SET_INDEX = 21,
+    NEW_STRUCT = 22,
+    GET_STRUCT_FIELD = 23,
+    SET_STRUCT_FIELD = 24,
+    ENUM_TAG = 25,
+    GET_FIELD = 26,
+    SET_FIELD = 27,
+    JMP = 28,
+    JMP_IF = 29,
+    JMP_IF_NOT = 30,
+    CALL = 31,
+    TAIL_CALL = 32,
+    RETURN = 33,
+    FUNC_REF = 34,
+    IS_SOME = 35,
+    UNWRAP = 36,
+    WRAP_SOME = 37,
+    COROUTINE = 38,
+    YIELD = 39,
+    RESUME = 40,
+    TRY = 41
+}
 
-// Arithmetic — R[A] = R[B] op R[C]
-const OP_ADD: i64 = 6
-const OP_SUB: i64 = 7
-const OP_MUL: i64 = 8
-const OP_DIV: i64 = 9          // Always returns number (even int / int)
-const OP_MOD: i64 = 10
-const OP_NEG: i64 = 11         // R[A] = -R[B]
-
-// Comparison — R[A] = R[B] op R[C], result is bool
-const OP_EQ: i64 = 12
-const OP_LT: i64 = 13
-const OP_LE: i64 = 14
-
-// Logic / misc
-const OP_NOT: i64 = 15         // R[A] = !R[B] (None and false are falsy, all else truthy)
-const OP_LEN: i64 = 16         // R[A] = len(R[B])
-const OP_CONCAT: i64 = 17      // R[A] = tostring(R[B]) ++ tostring(R[C])
-
-// Collections
-const OP_NEW_ARRAY: i64 = 18   // R[A] = new array with B initial elements from R[A+1..A+B]
-const OP_NEW_MAP: i64 = 19     // R[A] = new map with B key-value pairs from R[A+1..A+2B]
-const OP_GET_INDEX: i64 = 20   // R[A] = R[B][R[C]]
-const OP_SET_INDEX: i64 = 21   // R[A][R[B]] = R[C]
-
-// Structs
-const OP_NEW_STRUCT: i64 = 22     // R[A] = new struct with B fields from R[A+1..A+B]
-const OP_GET_STRUCT_FIELD: i64 = 23  // R[A] = R[B].field[C]
-const OP_SET_STRUCT_FIELD: i64 = 24  // R[A].field[B] = R[C]
-
-// Enums
-const OP_ENUM_TAG: i64 = 25    // R[A] = discriminant tag of R[B]
-
-// Host references (extern struct interop)
-const OP_GET_FIELD: i64 = 26   // R[A] = R[B].vtable[C]  (call host getter)
-const OP_SET_FIELD: i64 = 27   // R[A].vtable[B] = R[C]  (call host setter)
-
-// Control flow
-const OP_JMP: i64 = 28         // PC += sBx (unconditional jump)
-const OP_JMP_IF: i64 = 29      // if truthy(R[A]): PC += sBx
-const OP_JMP_IF_NOT: i64 = 30  // if falsy(R[A]): PC += sBx
-
-// Functions
-const OP_CALL: i64 = 31        // Call R[A] with B args from R[A+1..A+B], result in R[A]
-const OP_TAIL_CALL: i64 = 32   // Same as CALL but reuses frame
-const OP_RETURN: i64 = 33      // Return R[A] to caller. A=255 means return None
-const OP_FUNC_REF: i64 = 34    // R[A] = function reference to prototype Bx
-
-// Optionals
-const OP_IS_SOME: i64 = 35     // R[A] = R[B] is Some (bool)
-const OP_UNWRAP: i64 = 36      // R[A] = unwrap R[B] (error if None)
-const OP_WRAP_SOME: i64 = 37   // R[A] = Some(R[B])
-
-// Coroutines
-const OP_COROUTINE: i64 = 38   // R[A] = new coroutine from func ref R[B] with C args
-const OP_YIELD: i64 = 39       // Suspend current coroutine, yield R[A] to resumer
-const OP_RESUME: i64 = 40      // Resume coroutine R[A] with value R[B], result in R[A]
-
-// Error handling
-const OP_TRY: i64 = 41         // If next instruction errors, jump sBx, error in R[A]
-
-const OP_COUNT: i64 = 42       // Total opcode count (for validation)
-
-// --- Opcode names (for disassembly) ---
-
-func op_name(op: i64) -> string {
-    match op {
-        0 => return "LOAD_TRUE",
-        1 => return "LOAD_FALSE",
-        2 => return "LOAD_INT",
-        3 => return "LOAD_CONST",
-        4 => return "LOAD_NONE",
-        5 => return "MOVE",
-        6 => return "ADD",
-        7 => return "SUB",
-        8 => return "MUL",
-        9 => return "DIV",
-        10 => return "MOD",
-        11 => return "NEG",
-        12 => return "EQ",
-        13 => return "LT",
-        14 => return "LE",
-        15 => return "NOT",
-        16 => return "LEN",
-        17 => return "CONCAT",
-        18 => return "NEW_ARRAY",
-        19 => return "NEW_MAP",
-        20 => return "GET_INDEX",
-        21 => return "SET_INDEX",
-        22 => return "NEW_STRUCT",
-        23 => return "GET_STRUCT_FIELD",
-        24 => return "SET_STRUCT_FIELD",
-        25 => return "ENUM_TAG",
-        26 => return "GET_FIELD",
-        27 => return "SET_FIELD",
-        28 => return "JMP",
-        29 => return "JMP_IF",
-        30 => return "JMP_IF_NOT",
-        31 => return "CALL",
-        32 => return "TAIL_CALL",
-        33 => return "RETURN",
-        34 => return "FUNC_REF",
-        35 => return "IS_SOME",
-        36 => return "UNWRAP",
-        37 => return "WRAP_SOME",
-        38 => return "COROUTINE",
-        39 => return "YIELD",
-        40 => return "RESUME",
-        41 => return "TRY",
-        _ => return "UNKNOWN",
+extend Opcode {
+    func name(self) -> string {
+        match self {
+            Opcode.LOAD_TRUE => return "LOAD_TRUE"
+            Opcode.LOAD_FALSE => return "LOAD_FALSE"
+            Opcode.LOAD_INT => return "LOAD_INT"
+            Opcode.LOAD_CONST => return "LOAD_CONST"
+            Opcode.LOAD_NONE => return "LOAD_NONE"
+            Opcode.MOVE => return "MOVE"
+            Opcode.ADD => return "ADD"
+            Opcode.SUB => return "SUB"
+            Opcode.MUL => return "MUL"
+            Opcode.DIV => return "DIV"
+            Opcode.MOD => return "MOD"
+            Opcode.NEG => return "NEG"
+            Opcode.EQ => return "EQ"
+            Opcode.LT => return "LT"
+            Opcode.LE => return "LE"
+            Opcode.NOT => return "NOT"
+            Opcode.LEN => return "LEN"
+            Opcode.CONCAT => return "CONCAT"
+            Opcode.NEW_ARRAY => return "NEW_ARRAY"
+            Opcode.NEW_MAP => return "NEW_MAP"
+            Opcode.GET_INDEX => return "GET_INDEX"
+            Opcode.SET_INDEX => return "SET_INDEX"
+            Opcode.NEW_STRUCT => return "NEW_STRUCT"
+            Opcode.GET_STRUCT_FIELD => return "GET_STRUCT_FIELD"
+            Opcode.SET_STRUCT_FIELD => return "SET_STRUCT_FIELD"
+            Opcode.ENUM_TAG => return "ENUM_TAG"
+            Opcode.GET_FIELD => return "GET_FIELD"
+            Opcode.SET_FIELD => return "SET_FIELD"
+            Opcode.JMP => return "JMP"
+            Opcode.JMP_IF => return "JMP_IF"
+            Opcode.JMP_IF_NOT => return "JMP_IF_NOT"
+            Opcode.CALL => return "CALL"
+            Opcode.TAIL_CALL => return "TAIL_CALL"
+            Opcode.RETURN => return "RETURN"
+            Opcode.FUNC_REF => return "FUNC_REF"
+            Opcode.IS_SOME => return "IS_SOME"
+            Opcode.UNWRAP => return "UNWRAP"
+            Opcode.WRAP_SOME => return "WRAP_SOME"
+            Opcode.COROUTINE => return "COROUTINE"
+            Opcode.YIELD => return "YIELD"
+            Opcode.RESUME => return "RESUME"
+            Opcode.TRY => return "TRY"
+        }
     }
 }
 
 // --- Instruction encoding ---
-// Pack fields into a 32-bit value stored as i64
+// Pack fields into a 32-bit value
 
-func encode_abc(op: i64, a: i64, b: i64, c: i64) -> i64 {
-    return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | ((b & 0xFF) << 8) | (c & 0xFF)
+func encode_abc(op: Opcode, a: i64, b: i64, c: i64) -> u32 {
+    const o = op as i64
+    return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | (b & 0xFF) << 8 | c & 0xFF) as u32
 }
 
-func encode_abx(op: i64, a: i64, bx: i64) -> i64 {
-    return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | (bx & 0xFFFF)
+func encode_abx(op: Opcode, a: i64, bx: i64) -> u32 {
+    const o = op as i64
+    return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | bx & 0xFFFF) as u32
 }
 
-func encode_asbx(op: i64, a: i64, sbx: i64) -> i64 {
-    // Store signed offset as unsigned by adding bias (32768)
-    const biased = (sbx + 32768) & 0xFFFF
-    return ((op & 0xFF) << 24) | ((a & 0xFF) << 16) | biased
+func encode_asbx(op: Opcode, a: i64, sbx: i64) -> u32 {
+    const o = op as i64
+    const biased = sbx + 32768 & 0xFFFF
+    return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | biased) as u32
 }
 
 // --- Instruction decoding ---
 
-func decode_op(instr: i64) -> i64 {
-    return (instr >> 24) & 0xFF
+func decode_op(instr: u32) -> i64 {
+    return instr as i64 >> 24 & 0xFF
 }
 
-func decode_a(instr: i64) -> i64 {
-    return (instr >> 16) & 0xFF
+func decode_opcode(instr: u32) -> Opcode? {
+    return Opcode.from_value(decode_op(instr) as u8)
 }
 
-func decode_b(instr: i64) -> i64 {
-    return (instr >> 8) & 0xFF
+func decode_a(instr: u32) -> i64 {
+    return instr as i64 >> 16 & 0xFF
 }
 
-func decode_c(instr: i64) -> i64 {
-    return instr & 0xFF
+func decode_b(instr: u32) -> i64 {
+    return instr as i64 >> 8 & 0xFF
 }
 
-func decode_bx(instr: i64) -> i64 {
-    return instr & 0xFFFF
+func decode_c(instr: u32) -> i64 {
+    return instr as i64 & 0xFF
 }
 
-func decode_sbx(instr: i64) -> i64 {
-    // Remove bias to get signed value back
-    return (instr & 0xFFFF) - 32768
+func decode_bx(instr: u32) -> i64 {
+    return instr as i64 & 0xFFFF
+}
+
+func decode_sbx(instr: u32) -> i64 {
+    return instr as i64 & 0xFFFF - 32768
 }
 
 // --- Disassembler ---
 // Prints a human-readable representation of a single instruction
 
-func disassemble_instr(instr: i64, offset: i64) -> string {
-    const op = decode_op(instr)
+func disassemble_instr(instr: u32, offset: i64) -> string {
+    const op = decode_opcode(instr) is Some else {
+        return "{offset}: UNKNOWN"
+    }
     const a = decode_a(instr)
-    const name = op_name(op)
+    const name = op.name()
 
     match op {
-        // Single register: LOAD_TRUE, LOAD_FALSE, LOAD_NONE, RETURN
-        0 | 1 | 4 | 33 => {
+        Opcode.LOAD_TRUE | Opcode.LOAD_FALSE | Opcode.LOAD_NONE | Opcode.RETURN => {
             return "{offset}: {name} r{a}"
         }
-        // LOAD_INT: signed immediate
-        2 => {
+        Opcode.LOAD_INT => {
             const bx = decode_bx(instr)
-            const val = if bx >= 32768 { bx - 65536 } else { bx }
+            const val = if bx >= 32768 {
+                bx - 65536
+            } else {
+                bx
+            }
             return "{offset}: {name} r{a} {val}"
         }
-        // ABx with index: LOAD_CONST, FUNC_REF
-        3 | 34 => {
+        Opcode.LOAD_CONST | Opcode.FUNC_REF => {
             const bx = decode_bx(instr)
             return "{offset}: {name} r{a} #{bx}"
         }
-        // AsBx: jumps, yield, try
-        28 | 29 | 30 | 39 | 41 => {
+        Opcode.JMP | Opcode.JMP_IF | Opcode.JMP_IF_NOT | Opcode.YIELD | Opcode.TRY => {
             const sbx = decode_sbx(instr)
             return "{offset}: {name} r{a} {sbx}"
         }
-        // ABC: everything else
         _ => {
             const b = decode_b(instr)
             const c = decode_c(instr)

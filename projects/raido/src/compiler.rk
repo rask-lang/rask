@@ -52,7 +52,7 @@
 // Solution: emit a placeholder jump with offset 0, remember its position,
 // compile the body, then go back and patch the real offset.
 //
-//   const jump_idx = self.emit_jump(OP_JMP_IF_NOT)  // placeholder
+//   const jump_idx = self.emit_jump(Opcode.JMP_IF_NOT)  // placeholder
 //   self.compile_block()                              // compile the body
 //   self.patch_jump(jump_idx)                         // now we know the offset
 //
@@ -78,21 +78,21 @@
 
 enum CompileError {
     LexError(LexError)
-    UnexpectedToken(string, i64)    // (message, line)
-    TooManyLocals(i64)              // line
-    TooManyConstants(i64)           // line
+    UnexpectedToken(string, i64)
+    TooManyLocals(i64)
+    TooManyConstants(i64)
 }
+// (message, line)
+// line
+// line
 
 extend CompileError {
     func message(self) -> string {
         match self {
-            CompileError.LexError(e) => return e.message(),
-            CompileError.UnexpectedToken(msg, line) =>
-                return "line {line}: {msg}",
-            CompileError.TooManyLocals(line) =>
-                return "line {line}: too many local variables (max 256)",
-            CompileError.TooManyConstants(line) =>
-                return "line {line}: too many constants (max 65536)",
+            CompileError.LexError(e) => return e.message()
+            CompileError.UnexpectedToken(msg, line) => return "line {line}: {msg}"
+            CompileError.TooManyLocals(line) => return "line {line}: too many local variables (max 256)"
+            CompileError.TooManyConstants(line) => return "line {line}: too many constants (max 65536)"
         }
     }
 }
@@ -101,10 +101,13 @@ extend CompileError {
 
 struct Local {
     name: string
-    reg: i64            // Which register holds this variable
-    depth: i64          // Scope depth (0 = top-level of function)
-    type_id: i64        // Known type (from inference or annotation)
+    reg: i64
+    depth: i64
+    type_id: i64
 }
+// Which register holds this variable
+// Scope depth (0 = top-level of function)
+// Known type (from inference or annotation)
 
 struct Scope {
     locals: Vec<Local>
@@ -115,16 +118,21 @@ struct Scope {
 
 struct Compiler {
     lexer: Lexer
-    current: Token          // The token we're about to consume
-    previous: Token         // The token we just consumed
-    current_line: i64       // Line number of current token
-
-    proto: Prototype        // The function prototype we're building
-    proto_stack: Vec<Prototype>  // Stack for nested function compilation
-    scope: Scope            // Current scope (locals and depth)
-
-    next_reg: i64           // Next free register
+    current: Token
+    previous: Token
+    current_line: i64
+    proto: Prototype
+    proto_stack: Vec<Prototype>
+    scope: Scope
+    next_reg: i64
 }
+// The token we're about to consume
+// The token we just consumed
+// Line number of current token
+// The function prototype we're building
+// Stack for nested function compilation
+// Current scope (locals and depth)
+// Next free register
 
 extend Compiler {
     func new(source: string) -> Compiler {
@@ -140,39 +148,39 @@ extend Compiler {
         }
     }
 
-    // --- Token consumption ---
-
-    // Move to the next token. Previous = what was current.
     func advance(self) -> () or CompileError {
-        self.previous = self.current
+        // --- Token consumption ---
+
+        // Move to the next token. Previous = what was current.
+        const prev = self.current
+        self.previous = prev
         match self.lexer.next_token() {
-            Ok(tok) => self.current = tok,
-            Err(e) => return Err(CompileError.LexError(e)),
+            Ok(tok) => self.current = tok
+            Err(e) => return Err(CompileError.LexError(e))
         }
         self.current_line = self.lexer.line
         return Ok(())
     }
 
-    // Consume the current token if it matches. Error if it doesn't.
     func expect(self, expected: string) -> () or CompileError {
+        // Consume the current token if it matches. Error if it doesn't.
         // TODO: match self.current against the expected token type
         // For now, just advance
         return self.advance()
     }
 
-    // Skip newlines (they're statement terminators, but sometimes optional)
     func skip_newlines(self) {
+        // Skip newlines (they're statement terminators, but sometimes optional)
         loop {
             match self.current {
-                Token.Newline => self.advance(),
-                _ => break,
+                Token.Newline => self.advance()
+                _ => break
             }
         }
     }
 
-    // --- Register management ---
-
     func alloc_reg(self) -> i64 {
+        // --- Register management ---
         const reg = self.next_reg
         self.next_reg = self.next_reg + 1
         if self.next_reg > self.proto.num_registers {
@@ -185,42 +193,42 @@ extend Compiler {
         self.next_reg = reg
     }
 
-    // --- Bytecode emission ---
-
-    func emit(self, instr: i64) {
+    func emit(self, instr: u32) {
+        // --- Bytecode emission ---
         self.proto.code.push(instr)
         self.proto.lines.push(self.current_line)
     }
 
-    func emit_abc(self, op: i64, a: i64, b: i64, c: i64) {
+    func emit_abc(self, op: Opcode, a: i64, b: i64, c: i64) {
         self.emit(encode_abc(op, a, b, c))
     }
 
-    func emit_abx(self, op: i64, a: i64, bx: i64) {
+    func emit_abx(self, op: Opcode, a: i64, bx: i64) {
         self.emit(encode_abx(op, a, bx))
     }
 
-    // Emit a jump instruction with placeholder offset. Returns the index
-    // of the instruction so you can patch it later.
-    func emit_jump(self, op: i64, a: i64) -> i64 {
+    func emit_jump(self, op: Opcode, a: i64) -> i64 {
+        // Emit a jump instruction with placeholder offset. Returns the index
+        // of the instruction so you can patch it later.
         const idx = self.proto.code.len()
-        self.emit(encode_asbx(op, a, 0))  // offset 0 = placeholder
-        return idx
+        self.emit(encode_asbx(op, a, 0))
+        // offset 0 = placeholder
+        return idx as i64
     }
 
-    // Patch a previously-emitted jump to land at the current position.
     func patch_jump(self, idx: i64) {
+        // Patch a previously-emitted jump to land at the current position.
         const offset = self.proto.code.len() - idx - 1
-        const instr = self.proto.code.get(idx)
-        const op = decode_op(instr)
+        const instr = self.proto.code.get(idx)!
+        const op = decode_opcode(instr)!
         const a = decode_a(instr)
-        self.proto.code.set(idx, encode_asbx(op, a, offset))
+        self.proto.code.set(idx, encode_asbx(op, a as i64, offset as i64) as u32)
     }
 
-    // --- Scope management ---
-
-    // Add a local variable in the current scope. Returns its register.
     func declare_local(self, name: string) -> i64 {
+        // --- Scope management ---
+
+        // Add a local variable in the current scope. Returns its register.
         const reg = self.alloc_reg()
         self.scope.locals.push(Local {
             name: name,
@@ -231,18 +239,22 @@ extend Compiler {
         return reg
     }
 
-    // Look up a variable by name. Returns the register, or -1 if not found.
     func resolve_local(self, name: string) -> i64 {
+        // Look up a variable by name. Returns the register, or -1 if not found.
         // Search backwards (innermost scope first)
         let i = self.scope.locals.len() - 1
         while i >= 0 {
-            const local = self.scope.locals.get(i)
-            if local.name == name {
-                return local.reg
+            const local = self.scope.locals.get(i as i64)
+            if local is Some(l) {
+                if l.name == name {
+                    return l.reg
+                }
             }
             i = i - 1
         }
-        return -1  // Not found
+        return -1
+        // Not found
+        // Remove locals that belong to the scope we're leaving
     }
 
     func begin_scope(self) {
@@ -250,67 +262,69 @@ extend Compiler {
     }
 
     func end_scope(self) {
-        // Remove locals that belong to the scope we're leaving
         while self.scope.locals.len() > 0 {
             const last = self.scope.locals.last()
-            if last.depth < self.scope.depth { break }
+            if last.depth < self.scope.depth {
+                break
+            }
             self.scope.locals.pop()
             self.next_reg = self.next_reg - 1
         }
         self.scope.depth = self.scope.depth - 1
     }
 
-    // --- Add a constant to the pool ---
     func make_constant(self, val: Value) -> i64 {
+        // --- Add a constant to the pool ---
         return self.proto.add_constant(val)
     }
 
-    // =====================================================
-    // YOUR JOB: Implement these methods, one at a time
-    // =====================================================
-
-    // --- Entry point ---
-    // Compile a full script. Returns the chunk.
     func compile(self) -> Chunk or CompileError {
-        try self.advance()  // Load first token
+        // =====================================================
+        // YOUR JOB: Implement these methods, one at a time
+        // =====================================================
+
+        // --- Entry point ---
+        // Compile a full script. Returns the chunk.
+        try self.advance()
+        // Load first token
 
         // TODO: loop calling compile_statement() until Eof
         // Skip newlines between statements
 
         // Emit implicit return None at end
-        self.emit_abx(OP_RETURN, 255, 0)
+        self.emit_abx(Opcode.RETURN, 255, 0)
 
         return Ok(Chunk.new(self.proto))
     }
 
-    // --- Statements ---
-    // A statement is one "line" of code:
-    //   const x = 42
-    //   let y = x + 1
-    //   return x
-    //   if x > 0 { ... }
-    //   func foo() { ... }
-    //   expression (as a statement, like a function call)
-    //
     func compile_statement(self) -> () or CompileError {
+        // --- Statements ---
+        // A statement is one "line" of code:
+        //   const x = 42
+        //   let y = x + 1
+        //   return x
+        //   if x > 0 { ... }
+        //   func foo() { ... }
+        //   expression (as a statement, like a function call)
+        //
         // TODO: match self.current to decide which kind of statement
         // Start with just: expression statements (compile_expression + discard result)
         return Ok(())
     }
 
-    // --- Expressions ---
-    // An expression produces a value: 42, x, x + 1, foo(x), [1,2,3]
-    //
-    // Uses Pratt parsing for operator precedence. The idea:
-    // - Each operator has a "binding power" (precedence number)
-    // - compile_expression(min_bp) parses everything with binding power >= min_bp
-    // - Higher number = binds tighter (* is higher than +)
-    //
-    // Call compile_expression(0) to parse any expression.
-    //
-    // Returns the register number where the result ended up.
-    //
     func compile_expression(self, min_bp: i64) -> i64 or CompileError {
+        // --- Expressions ---
+        // An expression produces a value: 42, x, x + 1, foo(x), [1,2,3]
+        //
+        // Uses Pratt parsing for operator precedence. The idea:
+        // - Each operator has a "binding power" (precedence number)
+        // - compile_expression(min_bp) parses everything with binding power >= min_bp
+        // - Higher number = binds tighter (* is higher than +)
+        //
+        // Call compile_expression(0) to parse any expression.
+        //
+        // Returns the register number where the result ended up.
+        //
         // Step 1: Parse the "prefix" part (a literal, variable, unary op, etc.)
         // Step 2: While the next token is an infix operator with bp >= min_bp,
         //         parse the operator and the right-hand side.

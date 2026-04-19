@@ -24,7 +24,7 @@ func write_u32le(buf: Vec<u8>, offset: i64, val: i64) {
 
 func write_i64le(buf: Vec<u8>, offset: i64, val: i64) {
     write_u32le(buf, offset, val & 0xFFFFFFFF)
-    write_u32le(buf, offset + 4, (val >> 32) & 0xFFFFFFFF)
+    write_u32le(buf, offset + 4, ((val >> 32) & 0xFFFFFFFF))
 }
 
 // --- Read ---
@@ -36,7 +36,7 @@ func read_u8(buf: Vec<u8>, offset: i64) -> i64 {
 func read_u16le(buf: Vec<u8>, offset: i64) -> i64 {
     const lo = buf.get(offset) as i64 & 0xFF
     const hi = buf.get(offset + 1) as i64 & 0xFF
-    return lo | (hi << 8)
+    return lo | hi << 8
 }
 
 func read_u32le(buf: Vec<u8>, offset: i64) -> i64 {
@@ -44,13 +44,13 @@ func read_u32le(buf: Vec<u8>, offset: i64) -> i64 {
     const b1 = buf.get(offset + 1) as i64 & 0xFF
     const b2 = buf.get(offset + 2) as i64 & 0xFF
     const b3 = buf.get(offset + 3) as i64 & 0xFF
-    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    return b0 | b1 << 8 | b2 << 16 | b3 << 24
 }
 
 func read_i64le(buf: Vec<u8>, offset: i64) -> i64 {
     const lo = read_u32le(buf, offset)
     const hi = read_u32le(buf, offset + 4)
-    return lo | (hi << 32)
+    return lo | hi << 32
 }
 
 // --- Helpers ---

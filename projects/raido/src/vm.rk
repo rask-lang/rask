@@ -26,7 +26,7 @@
 enum VmError {
     TypeError(string)
     DivisionByZero
-    IndexOutOfBounds(i64, i64)     // (index, length)
+    IndexOutOfBounds(i64, i64)
     KeyNotFound(string)
     UnwrapNone
     ArenaExhausted
@@ -37,32 +37,35 @@ enum VmError {
     ScriptError(string)
     HostError(string)
 }
+// (index, length)
 
 extend VmError {
     func message(self) -> string {
         match self {
-            VmError.TypeError(msg) => return "TypeError: {msg}",
-            VmError.DivisionByZero => return "DivisionByZero",
-            VmError.IndexOutOfBounds(idx, len) =>
-                return "IndexOutOfBounds: index {idx}, length {len}",
-            VmError.KeyNotFound(key) => return "KeyNotFound: {key}",
-            VmError.UnwrapNone => return "UnwrapNone",
-            VmError.ArenaExhausted => return "ArenaExhausted",
-            VmError.FuelExhausted => return "FuelExhausted",
-            VmError.CallOverflow => return "CallOverflow",
-            VmError.CoroutineDead => return "CoroutineDead",
-            VmError.ReadOnlyField => return "ReadOnlyField",
-            VmError.ScriptError(msg) => return "ScriptError: {msg}",
-            VmError.HostError(msg) => return "HostError: {msg}",
+            VmError.TypeError(msg) => return "TypeError: {msg}"
+            VmError.DivisionByZero => return "DivisionByZero"
+            VmError.IndexOutOfBounds(idx, len) => return "IndexOutOfBounds: index {idx}, length {len}"
+            VmError.KeyNotFound(key) => return "KeyNotFound: {key}"
+            VmError.UnwrapNone => return "UnwrapNone"
+            VmError.ArenaExhausted => return "ArenaExhausted"
+            VmError.FuelExhausted => return "FuelExhausted"
+            VmError.CallOverflow => return "CallOverflow"
+            VmError.CoroutineDead => return "CoroutineDead"
+            VmError.ReadOnlyField => return "ReadOnlyField"
+            VmError.ScriptError(msg) => return "ScriptError: {msg}"
+            VmError.HostError(msg) => return "HostError: {msg}"
         }
     }
 }
 
 struct CallFrame {
-    proto_idx: i64      // Which prototype we're executing (index into chunk)
-    pc: i64             // Program counter: index into prototype.code
-    base_reg: i64       // Where this frame's registers start in the flat vec
+    proto_idx: i64
+    pc: i64
+    base_reg: i64
 }
+// Which prototype we're executing (index into chunk)
+// Program counter: index into prototype.code
+// Where this frame's registers start in the flat vec
 
 struct Vm {
     chunk: Chunk
@@ -90,36 +93,39 @@ extend Vm {
         }
     }
 
-    // --- Register access (relative to current frame) ---
-
     func get_reg(self, idx: i64) -> Value {
+        // --- Register access (relative to current frame) ---
         const base = if self.call_stack.len() > 0 {
             self.call_stack.last().base_reg
-        } else { 0 }
-        return self.registers.get(base + idx)
+        } else {
+            0
+        }
+        return self.registers.get(base + idx)!
     }
 
     func set_reg(self, idx: i64, val: Value) {
         const base = if self.call_stack.len() > 0 {
             self.call_stack.last().base_reg
-        } else { 0 }
+        } else {
+            0
+        }
         self.registers.set(base + idx, val)
     }
 
-    // =====================================================
-    // Dispatch loop — implement opcodes incrementally
-    // =====================================================
-    //
-    // Suggested order:
-    //   1. LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST, LOAD_NONE → can load values
-    //   2. ADD, SUB, MUL, DIV, NEG → arithmetic works
-    //   3. RETURN → can get a result back
-    //   4. EQ, LT, LE, NOT → comparisons work
-    //   5. JMP, JMP_IF, JMP_IF_NOT → control flow (if/while)
-    //   6. CALL, FUNC_REF → function calls (fibonacci!)
-    //   7. Everything else
-    //
     func execute(self) -> Value or VmError {
+        // =====================================================
+        // Dispatch loop — implement opcodes incrementally
+        // =====================================================
+        //
+        // Suggested order:
+        //   1. LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST, LOAD_NONE → can load values
+        //   2. ADD, SUB, MUL, DIV, NEG → arithmetic works
+        //   3. RETURN → can get a result back
+        //   4. EQ, LT, LE, NOT → comparisons work
+        //   5. JMP, JMP_IF, JMP_IF_NOT → control flow (if/while)
+        //   6. CALL, FUNC_REF → function calls (fibonacci!)
+        //   7. Everything else
+        //
         let pc = 0
         const code = self.chunk.main.code
 
@@ -133,82 +139,51 @@ extend Vm {
                 return Ok(Value.None)
             }
 
-            const instr = code.get(pc)
+            const instr = code.get(pc) is Some else {
+                return Err(VmError.ScriptError("pc out of bounds: {pc}"))
+            }
             pc = pc + 1
-            const op = decode_op(instr)
+            const op = decode_opcode(instr) is Some else {
+                return Err(VmError.ScriptError("unknown opcode: {decode_op(instr)}"))
+            }
 
             match op {
-                // OP_LOAD_TRUE
-                0 => {
+                Opcode.LOAD_TRUE => {
                     const a = decode_a(instr)
                     self.set_reg(a, Value.Bool(true))
                 }
-
-                // OP_LOAD_FALSE
-                1 => {
+                Opcode.LOAD_FALSE => {
                     const a = decode_a(instr)
                     self.set_reg(a, Value.Bool(false))
                 }
-
-                // OP_LOAD_INT
-                2 => {
+                Opcode.LOAD_INT => {
                     const a = decode_a(instr)
                     const bx = decode_bx(instr)
-                    const val = if bx >= 32768 { bx - 65536 } else { bx }
+                    const val = if bx >= 32768 {
+                        bx - 65536
+                    } else {
+                        bx
+                    }
                     self.set_reg(a, Value.Int(val))
                 }
-
-                // OP_LOAD_CONST
-                3 => {
+                Opcode.LOAD_CONST => {
                     const a = decode_a(instr)
                     const bx = decode_bx(instr)
-                    const val = self.chunk.main.constants.get(bx)
+                    const val = self.chunk.main.constants.get(bx) is Some else { continue }
                     self.set_reg(a, val)
                 }
-
-                // OP_LOAD_NONE
-                4 => {
+                Opcode.LOAD_NONE => {
                     const a = decode_a(instr)
                     self.set_reg(a, Value.None)
                 }
-
-                // OP_RETURN
-                33 => {
+                Opcode.RETURN => {
                     const a = decode_a(instr)
                     if a == 255 {
                         return Ok(Value.None)
                     }
                     return Ok(self.get_reg(a))
                 }
-
-                // TODO: Add more opcodes here as you implement them.
-                // Each one is ~5-15 lines of code. Start with ADD:
-                //
-                // 6 => {  // OP_ADD
-                //     const a = decode_a(instr)
-                //     const b = decode_b(instr)
-                //     const c = decode_c(instr)
-                //     const lhs = self.get_reg(b)
-                //     const rhs = self.get_reg(c)
-                //     match (lhs, rhs) {
-                //         (Value.Int(x), Value.Int(y)) =>
-                //             self.set_reg(a, Value.Int(x + y)),
-                //         (Value.Num(x), Value.Num(y)) =>
-                //             self.set_reg(a, Value.Num(x.add(y))),
-                //         // int + number → promote int to number
-                //         (Value.Int(x), Value.Num(y)) =>
-                //             self.set_reg(a, Value.Num(Number.from_int(x).add(y))),
-                //         (Value.Num(x), Value.Int(y)) =>
-                //             self.set_reg(a, Value.Num(x.add(Number.from_int(y)))),
-                //         _ => return Err(VmError.TypeError(
-                //             "cannot add {lhs.type_name()} and {rhs.type_name()}")),
-                //     }
-                // }
-
-                _ => {
-                    return Err(VmError.ScriptError(
-                        "unimplemented opcode: {op_name(op)} ({op})"))
-                }
+                _ => return Err(VmError.ScriptError("unimplemented opcode: {op.name()}"))
             }
         }
     }

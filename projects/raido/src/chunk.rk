@@ -33,13 +33,19 @@ struct Prototype {
     code: Vec<u32>
     constants: Vec<Value>
     prototypes: Vec<Prototype>
-    num_registers: i64      // Max registers this function uses
-    arity: i64              // Number of parameters
-    param_types: Vec<i64>   // Type IDs for parameters
-    return_type: i64        // Type ID for return value
-    name: string            // Function name (or "<main>" for top-level)
-    lines: Vec<i64>         // Source line number per instruction (debug info)
+    num_registers: i64
+    arity: i64
+    param_types: Vec<i64>
+    return_type: i64
+    name: string
+    lines: Vec<i64>
 }
+// Max registers this function uses
+// Number of parameters
+// Type IDs for parameters
+// Type ID for return value
+// Function name (or "<main>" for top-level)
+// Source line number per instruction (debug info)
 
 extend Prototype {
     func new(name: string, arity: i64) -> Prototype {
@@ -56,22 +62,22 @@ extend Prototype {
         }
     }
 
-    // Add a constant and return its index in the constant pool.
-    // If the same constant already exists, return the existing index.
     func add_constant(self, val: Value) -> i64 {
+        // Add a constant and return its index in the constant pool.
+        // If the same constant already exists, return the existing index.
         // For now, always add (deduplication is an optimization)
         const idx = self.constants.len()
         self.constants.push(val)
-        return idx
+        return idx as i64
     }
 
-    // Disassemble the whole prototype to a string
     func disassemble(self) -> string {
+        // Disassemble the whole prototype to a string
         let out = "== {self.name} (regs={self.num_registers}, args={self.arity}) ==\n"
         let i = 0
         while i < self.code.len() {
-            const instr = self.code.get(i)
-            out = out + disassemble_instr(instr, i) + "\n"
+            const instr = self.code.get(i) is Some else { break }
+            out = "{out}{disassemble_instr(instr, i)}\n"
             i = i + 1
         }
         return out
@@ -80,10 +86,13 @@ extend Prototype {
 
 struct Chunk {
     main: Prototype
-    imports: Vec<string>        // Extern declarations the script requires
-    module_imports: Vec<string> // Content-addressed chunk imports
-    exports: Vec<string>        // Top-level functions the host can call
+    imports: Vec<string>
+    module_imports: Vec<string>
+    exports: Vec<string>
 }
+// Extern declarations the script requires
+// Content-addressed chunk imports
+// Top-level functions the host can call
 
 extend Chunk {
     func new(main: Prototype) -> Chunk {

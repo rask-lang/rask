@@ -20,73 +20,99 @@ struct Number {
 }
 
 const FRAC_BITS: i64 = 32
-const FRAC_SCALE: i64 = 0x100000000  // 1 << 32, but written as literal to avoid shift issues
+
+const FRAC_SCALE: i64 = 0x100000000
+// 1 << 32, but written as literal to avoid shift issues
 
 extend Number {
-    // Create a Number from an integer (e.g., 42 → 42.0 in fixed-point)
     func from_int(n: i64) -> Number {
+        // Create a Number from an integer (e.g., 42 → 42.0 in fixed-point)
         return Number { raw: n << FRAC_BITS }
     }
 
-    // Truncate to integer (drops fractional part)
     func to_int(self) -> i64 {
+        // Truncate to integer (drops fractional part)
         return self.raw >> FRAC_BITS
     }
 
-    // Addition: just add the raw values
     func add(self, other: Number) -> Number {
+        // Addition: just add the raw values
         return Number { raw: self.raw + other.raw }
     }
 
-    // Subtraction: just subtract
     func sub(self, other: Number) -> Number {
+        // Subtraction: just subtract
         return Number { raw: self.raw - other.raw }
     }
 
-    // Negation
     func neg(self) -> Number {
+        // Negation
         return Number { raw: -self.raw }
     }
 
-    // Multiplication: multiply raw values, shift right by 32 to correct the fixed-point scaling
     func mul(self, other: Number) -> Number {
+        // Multiplication: multiply raw values, shift right by 32 to correct the fixed-point scaling
         const a = self.raw as i128
         const b = other.raw as i128
 
         // Handle signs manually to avoid issues with unsigned splits
-        const sign = if (a < 0) != (b < 0) { -1 } else { 1 }
+        const sign = if a < 0 != b < 0 {
+            -1
+        } else {
+            1
+        }
 
-        const result = (abs(a) * abs(b)) >> FRAC_BITS
-        return Number { raw: if sign < 0 { -result as i64 } else { result as i64 } }
+        const result = i128.abs(a) * i128.abs(b) >> FRAC_BITS
+        return Number { raw: if sign < 0 {
+            -result as i64
+        } else {
+            result as i64
+        } }
     }
 
-    // Division: shift left by 32, then divide
-    // Same split trick as multiplication
     func div(self, other: Number) -> Number {
+        // Division: shift left by 32, then divide
+        // Same split trick as multiplication
         if other.raw == 0 {
             // Caller should check for this — but saturate rather than crash
-            return Number { raw: if self.raw >= 0 { 0x7FFFFFFFFFFFFFFF } else { -0x7FFFFFFFFFFFFFFF } }
+            return Number { raw: if self.raw >= 0 {
+                0x7FFFFFFFFFFFFFFF
+            } else {
+                -0x7FFFFFFFFFFFFFFF
+            } }
         }
 
         const a = self.raw as i128
         const b = other.raw as i128
-        const sign = if (a < 0) != (b < 0) { -1 } else { 1 }
-    
-        const result = abs(a) << FRAC_BITS / abs(b) 
-        return Number { raw: if sign < 0 { -result as i64 } else { result as i64 } }
+        const sign = if a < 0 != b < 0 {
+            -1
+        } else {
+            1
+        }
+
+        const result = i128.abs(a) << FRAC_BITS / i128.abs(b)
+        return Number { raw: if sign < 0 {
+            -result as i64
+        } else {
+            result as i64
+        } }
     }
 
-    // Modulo
     func modulo(self, other: Number) -> Number {
+        // Modulo
         if other.raw == 0 {
             return Number { raw: 0 }
         }
         return Number { raw: self.raw % other.raw }
     }
 
-    // Comparison
     func eq(self, other: Number) -> bool {
+        // Comparison
         return self.raw == other.raw
+
+        // Convert fractional part to decimal (4 digits)
+
+        // Pad to 4 digits
     }
 
     func lt(self, other: Number) -> bool {
@@ -99,20 +125,33 @@ extend Number {
 
     func to_string(self) -> string {
         const int_part = self.raw >> FRAC_BITS
-        const frac_raw = if self.raw < 0 { -(self.raw & 0xFFFFFFFF) } else { self.raw & 0xFFFFFFFF }
-        const abs_frac = if frac_raw < 0 { -frac_raw } else { frac_raw }
-
-        // Convert fractional part to decimal (4 digits)
-        const scaled = (abs_frac * 10000) >> FRAC_BITS
+        const frac_raw = if self.raw < 0 {
+            -self.raw & 0xFFFFFFFF
+        } else {
+            self.raw & 0xFFFFFFFF
+        }
+        const abs_frac = if frac_raw < 0 {
+            -frac_raw
+        } else {
+            frac_raw
+        }
+        const scaled = abs_frac * 10000 >> FRAC_BITS
         const frac_str = "{scaled}"
+        const padded = if scaled < 10 {
+            "000{frac_str}"
+        } else if scaled < 100 {
+            "00{frac_str}"
+        } else if scaled < 1000 {
+            "0{frac_str}"
+        } else {
+            frac_str
+        }
 
-        // Pad to 4 digits
-        const padded = if scaled < 10 { "000{frac_str}" }
-            else if scaled < 100 { "00{frac_str}" }
-            else if scaled < 1000 { "0{frac_str}" }
-            else { frac_str }
-
-        const sign = if self.raw < 0 && int_part == 0 { "-" } else { "" }
+        const sign = if self.raw < 0 && int_part == 0 {
+            "-"
+        } else {
+            ""
+        }
         return "{sign}{int_part}.{padded}"
     }
 }
@@ -125,57 +164,70 @@ enum Value {
     Bool(bool)
     Int(i64)
     Num(Number)
-    Str(i64)            // Arena offset pointing to a string object
-    Array(i64)          // Arena offset pointing to an array object
-    MapVal(i64)         // Arena offset pointing to a map object
-    Struct(i64)         // Arena offset pointing to a struct object
-    Enum(i64, i64)      // (discriminant, payload arena offset)
-    Couroutine(i64)     // Coroutine ID (index into VM's coroutine table)
-    FuncRef(i64)        // Prototype index
-    HostRef(i64, i64)   // (type_id, ref_id) — opaque reference to host data
+    Str(i64)
+    Array(i64)
+    MapVal(i64)
+    Struct(i64)
+    Enum(i64, i64)
+    Couroutine(i64)
+    FuncRef(i64)
+    HostRef(i64, i64)
 }
+// Arena offset pointing to a string object
+// Arena offset pointing to an array object
+// Arena offset pointing to a map object
+// Arena offset pointing to a struct object
+// (discriminant, payload arena offset)
+// Coroutine ID (index into VM's coroutine table)
+// Prototype index
+// (type_id, ref_id) — opaque reference to host data
 
 extend Value {
-    // Check if a value is "truthy" — everything except None and false
     func is_truthy(self) -> bool {
+        // Check if a value is "truthy" — everything except None and false
         match self {
-            Value.None => return false,
-            Value.Bool(b) => return b,
-            _ => return true,
+            Value.None => return false
+            Value.Bool(b) => return b
+            _ => return true
         }
+        // Needs arena to read actual content
     }
 
     func type_name(self) -> string {
         match self {
-            Value.None => return "none",
-            Value.Bool(_) => return "bool",
-            Value.Int(_) => return "int",
-            Value.Num(_) => return "number",
-            Value.Str(_) => return "string",
-            Value.Array(_) => return "array",
-            Value.MapVal(_) => return "map",
-            Value.Struct(_) => return "struct",
-            Value.Enum(_, _) => return "enum",
-            Value.Couroutine(_) => return "coroutine",
-            Value.FuncRef(_) => return "function",
-            Value.HostRef(_, _) => return "host_ref",
+            Value.None => return "none"
+            Value.Bool(_) => return "bool"
+            Value.Int(_) => return "int"
+            Value.Num(_) => return "number"
+            Value.Str(_) => return "string"
+            Value.Array(_) => return "array"
+            Value.MapVal(_) => return "map"
+            Value.Struct(_) => return "struct"
+            Value.Enum(_, _) => return "enum"
+            Value.Couroutine(_) => return "coroutine"
+            Value.FuncRef(_) => return "function"
+            Value.HostRef(_, _) => return "host_ref"
         }
     }
 
     func to_display(self) -> string {
         match self {
-            Value.None => return "none",
-            Value.Bool(b) => return if b { "true" } else { "false" },
-            Value.Int(n) => return "{n}",
-            Value.Num(n) => return n.to_string(),
-            Value.Str(_) => return "<string>",  // Needs arena to read actual content
-            Value.Array(_) => return "<array>",
-            Value.MapVal(_) => return "<map>",
-            Value.Struct(_) => return "<struct>",
-            Value.Enum(tag, _) => return "<enum:{tag}>",
-            Value.Couroutine(id) => return "<coroutine:{id}>",
-            Value.FuncRef(idx) => return "<func:{idx}>",
-            Value.HostRef(t, r) => return "<host_ref:{t}:{r}>",
+            Value.None => return "none"
+            Value.Bool(b) => return if b {
+                return "true"
+            } else {
+                return "false"
+            }
+            Value.Int(n) => return "{n}"
+            Value.Num(n) => return n.to_string()
+            Value.Str(_) => return "<string>"
+            Value.Array(_) => return "<array>"
+            Value.MapVal(_) => return "<map>"
+            Value.Struct(_) => return "<struct>"
+            Value.Enum(tag, _) => return "<enum:{tag}>"
+            Value.Couroutine(id) => return "<coroutine:{id}>"
+            Value.FuncRef(idx) => return "<func:{idx}>"
+            Value.HostRef(t, r) => return "<host_ref:{t}:{r}>"
         }
     }
 }

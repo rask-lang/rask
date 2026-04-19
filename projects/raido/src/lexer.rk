@@ -123,8 +123,8 @@ extend Lexer {
         if self.pos >= self.source.len(): return None
         const c = self.source.char_at(self.pos)
         self.pos = self.pos + 1
-        if c == '\n' { self.line = self.line + 1 }
-        return Some(c)
+        if c is Some(cc) && cc == '\n' { self.line = self.line + 1 }
+        return c
     }
 
     // Check if current char matches expected, and consume it if so.
@@ -149,7 +149,7 @@ extend Lexer {
             } else if c == '/' {
                 // Check for comments
                 if self.pos + 1 < self.source.len() {
-                    const next = self.source.char_at(self.pos + 1)
+                    const next = self.source.char_at(self.pos + 1) is Some else { break }
                     if next == '/' {
                         // Line comment — skip to end of line
                         while self.peek() is Some(ch) {
@@ -184,19 +184,19 @@ extend Lexer {
     // If not a keyword, it's an identifier.
     func keyword_or_ident(self, word: string) -> Token {
         match word {
-            "const" => return Token.Const,
-            "let" => return Token.Let,
-            "func" => return Token.Func,
-            "return" => return Token.Return,
-            "if" => return Token.If,
-            "else" => return Token.Else,
-            "for" => return Token.For,
-            "while" => return Token.While,
-            "loop" => return Token.Loop,
-            "break" => return Token.Break,
-            "continue" => return Token.Continue,
-            "match" => return Token.Match,
-            "try" => return Token.Try,
+            "const" => return Token.Const
+            "let" => return Token.Let
+            "func" => return Token.Func
+            "return" => return Token.Return
+            "if" => return Token.If
+            "else" => return Token.Else
+            "for" => return Token.For
+            "while" => return Token.While
+            "loop" => return Token.Loop
+            "break" => return Token.Break
+            "continue" => return Token.Continue
+            "match" => return Token.Match
+            "try" => return Token.Try
             "true" => return Token.True,
             "false" => return Token.False,
             "in" => return Token.In,
@@ -214,9 +214,8 @@ extend Lexer {
 
     func next_token(self) -> Token or LexError {
         self.skip_whitespace()
-        
-        match self.peek() {
-            None => return Token.Eof
+        const c = self.peek() is Some else { return Token.Eof }
+        match c {
             '\n' => {self.advance(); return Token.Newline}
             '0'..='9' => {
                 return self.read_number()
@@ -268,7 +267,7 @@ extend Lexer {
                 if self.match_char('&') {
                     return Token.AmpAmp
                 } else {
-                    return LexError.UnexpectedChar('&', self.line)
+                    return Err(LexError.UnexpectedChar('&', self.line))
                 }
             }
             '|' => {
@@ -279,15 +278,15 @@ extend Lexer {
                     return Token.Pipe
                 }
             }
-            _ => {
-                const c = self.peek()!
-                return LexError.UnexpectedChar(c, self.line)
+            c => {
+                self.advance()
+                return Err(LexError.UnexpectedChar(c, self.line))
             }
         }
     }
 
     func read_number(self) -> Token or LexError {
-        const isNumLit = false
+        let is_num_lit = false
         const start = self.pos
         let frac_start = self.pos
 
@@ -295,35 +294,34 @@ extend Lexer {
             match c {
                 '0'..='9' => { self.advance() }
                 '.' => {
-                    if isNumLit {
-                        return LexError.UnexpectedChar('.', self.line)  // second dot in number
+                    if is_num_lit {
+                        return Err(LexError.UnexpectedChar('.', self.line))  // second dot in number
                     }
+                    self.advance() // consume the dot
                     if self.peek() is Some(next) && next >= '0' && next <= '9' {
-                        self.advance()
                         frac_start = self.pos
                     } else {
-                        return LexError.UnexpectedChar('.', self.line)  // dot not followed by digits
+                        return Err(LexError.UnexpectedChar('.', self.line))  // dot not followed by digits
                     }
-                    isNumLit = true
+                    is_num_lit = true
                 }
                 _ => break,
             }
         }
-        if isNumLit {
+        if is_num_lit {
             
-            const int_part = self.source.substring(start, frac_start - 1).parse_i64() or {
-                return LexError.UnexpectedChar('.', self.line)  // invalid integer part
+            const int_part = self.source.substring(start, frac_start - 1).parse_i64() is Some else {
+                return Err(LexError.UnexpectedChar('.', self.line))  // invalid integer part
             }
-            const frac_part = self.source.substring(frac_start, self.pos - frac_start).parse_i64() or {
-                return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
+            const frac_part = self.source.substring(frac_start, self.pos).parse_i64() is Some else {
+                return Err(LexError.UnexpectedChar('.', self.line))  // invalid fractional part
             }
             const frac_digits = self.pos - frac_start
-            const raw = (int_part << 32) + (frac_part << 32) / pow(10, frac_digits)
+            const raw = (int_part << 32) + (frac_part << 32) / i64.pow(10, frac_digits)
             return Token.NumLit(raw)
-
         } else {
-            const value = self.source.substring(start, self.pos - start).parse_i64() or {
-                return LexError.UnexpectedChar('.', self.line)  // invalid integer
+            const value = self.source.substring(start, self.pos).parse_i64() is Some else {
+                return Err(LexError.UnexpectedChar('.', self.line))  // invalid integer
             }
             return Token.IntLit(value)
         }
@@ -333,26 +331,28 @@ extend Lexer {
         self.advance()  // skip opening quote
         const start = self.pos
         const end = loop {
+           const c = self.peek() is Some else { return Err(LexError.UnterminatedString(self.line)) }
            if c == '"' {
+                const end_pos = self.pos
                 self.advance() // consume the ending quote
-                break self.pos
+                break end_pos
            } else if c == '\\' {
                 self.advance() // skip the backslash
                 if self.peek() is Some(esc) {
                     match esc {
                         'n' | 't' | '\\' | '"' => self.advance(), // valid escape, consume it
-                        _ => return LexError.UnexpectedChar(esc, self.line), // invalid escape
+                        _ => return Err(LexError.UnexpectedChar(esc, self.line)) // invalid escape
                     }
                 } else {
-                    return LexError.UnterminatedString(self.line) // string ends with a backslash
+                    return Err(LexError.UnterminatedString(self.line)) // string ends with a backslash
                 }
             } else if c == '\n' || c == '\r' {
-                return LexError.UnterminatedString(self.line) // strings cannot contain newlines
+                return Err(LexError.UnterminatedString(self.line)) // strings cannot contain newlines
             } else {
                 self.advance() // consume regular character
             }
         }
-        const raw = self.source.substring(start, end - start)
+        const raw = self.source.substring(start, end)
         return Token.StringLit(raw)
     }
 
@@ -365,7 +365,7 @@ extend Lexer {
                 break
             }
         }
-        const word = self.source.substring(start, self.pos - start)
+        const word = self.source.substring(start, self.pos)
         return self.keyword_or_ident(word)
     }
 }
