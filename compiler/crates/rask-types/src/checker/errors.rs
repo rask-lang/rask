@@ -308,4 +308,12 @@ pub enum TypeError {
         found: Type,
         span: Span,
     },
+
+    /// ER23: `is TypeName` must reference a component of the union error
+    #[error("type pattern `{ty_name}` is not part of the error union `{union}`")]
+    TypePatternNotInUnion {
+        ty_name: String,
+        union: Type,
+        span: Span,
+    },
 }

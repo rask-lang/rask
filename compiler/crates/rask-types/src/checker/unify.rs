@@ -134,8 +134,10 @@ impl TypeChecker {
     }
 
     /// Resolve a return value constraint with deferred auto-wrap.
-    /// Handles `T or E` and `T?`: bare `T` wraps to the success branch.
-    /// If the return expression's type is still unresolved, defer until later.
+    /// Handles `T or E` and `T?`: bare `T` wraps to the success branch,
+    /// bare `E` (or a component of a union `E`) wraps to the error branch
+    /// — ER9 auto-wrap at return, disambiguated by type (ER3 disjointness).
+    /// If the return expression's type is still unresolved, defer.
     fn resolve_return_value(
         &mut self,
         ret_ty: Type,
@@ -144,7 +146,7 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
 
-        if let Type::Result { ok: _, err } = &resolved_expected {
+        if let Type::Result { ok, err } = &resolved_expected {
             let resolved_ret = self.ctx.apply(&ret_ty);
             match &resolved_ret {
                 Type::Result { .. } => self.unify(&expected, &ret_ty, span),
@@ -157,9 +159,24 @@ impl TypeChecker {
                     Ok(false)
                 }
                 _ => {
-                    let wrapped = Type::Result {
-                        ok: Box::new(ret_ty),
-                        err: err.clone(),
+                    // ER9: pick the branch by type. A value whose type equals
+                    // (or is in) E goes to the error branch; otherwise it goes
+                    // to T. Disjointness (ER3) makes this unambiguous.
+                    let resolved_err = self.ctx.apply(err);
+                    let is_err_branch = match &resolved_err {
+                        Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
+                        other => other == &resolved_ret,
+                    };
+                    let wrapped = if is_err_branch {
+                        Type::Result {
+                            ok: ok.clone(),
+                            err: Box::new(resolved_err),
+                        }
+                    } else {
+                        Type::Result {
+                            ok: Box::new(ret_ty),
+                            err: err.clone(),
+                        }
                     };
                     self.unify(&expected, &wrapped, span)
                 }

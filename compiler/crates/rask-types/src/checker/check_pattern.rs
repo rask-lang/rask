@@ -125,9 +125,8 @@ impl TypeChecker {
             }
 
             // ER23: `is TypeName as binding` — narrows the scrutinee to TypeName.
-            // Scope: two-branch `T or E` where the error side matches TypeName.
-            // Union errors are not supported here yet (ER23 mentions them but
-            // runtime type dispatch for union components lands separately).
+            // Two-branch `T or E`: constrain E == TypeName.
+            // Union `E = A | B | ...`: accept if TypeName is a union component.
             Pattern::TypePat { ty_name, binding } => {
                 let narrow_ty = match self.types.get_type_id(ty_name) {
                     Some(id) => Type::Named(id),
@@ -137,11 +136,24 @@ impl TypeChecker {
                 match &resolved {
                     Type::Result { err, .. } => {
                         let err_applied = self.ctx.apply(err);
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            err_applied,
-                            narrow_ty.clone(),
-                            span,
-                        ));
+                        match &err_applied {
+                            Type::Union(variants) => {
+                                if !variants.contains(&narrow_ty) {
+                                    self.errors.push(TypeError::TypePatternNotInUnion {
+                                        ty_name: ty_name.clone(),
+                                        union: err_applied.clone(),
+                                        span,
+                                    });
+                                }
+                            }
+                            _ => {
+                                self.ctx.add_constraint(TypeConstraint::Equal(
+                                    err_applied,
+                                    narrow_ty.clone(),
+                                    span,
+                                ));
+                            }
+                        }
                     }
                     Type::Var(_) => {
                         let ok_ty = self.ctx.fresh_var();

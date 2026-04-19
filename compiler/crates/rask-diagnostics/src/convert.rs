@@ -702,6 +702,13 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("type patterns narrow the error side of `T or E`; the scrutinee must be a Result")
                     .with_why("`is Type as name` dispatches on the error branch — not applicable to other types [type.errors/ER23]")
             }
+            TypePatternNotInUnion { ty_name, union, span } => {
+                Diagnostic::error(format!("`{}` is not a component of `{}`", ty_name, union))
+                    .with_code("E0347")
+                    .with_primary(*span, format!("not in `{}`", union))
+                    .with_help("the type in a type pattern must appear in the Result's error union")
+                    .with_why("type dispatch can only match types that the Result is declared to contain [type.errors/ER23]")
+            }
         }
     }
 }
