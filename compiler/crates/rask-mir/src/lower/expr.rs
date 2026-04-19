@@ -1125,6 +1125,36 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
+                // `x == none` / `x != none`: desugared to x.eq(none) / !(x.eq(none)).
+                // Lower as a tag comparison — emit the option tag and compare to 1 (None).
+                let is_option_none_cmp = (method == "eq" || method == "ne")
+                    && args.len() == 1
+                    && matches!(args[0].expr.kind, ExprKind::None)
+                    && self.ctx.lookup_raw_type(object.id)
+                        .map_or(false, |ty| matches!(ty, rask_types::Type::Option(_)));
+                if is_option_none_cmp {
+                    let is_niche = self.is_niche_option_expr(object);
+                    let tag_local = self.emit_option_tag(&obj_op, is_niche);
+                    let result = self.builder.alloc_temp(MirType::Bool);
+                    // tag == 1 means None; tag == 0 means Some.
+                    // eq(none) → true when None (tag == 1)
+                    // ne(none) → true when Some (tag == 0), i.e. tag != 1
+                    let cmp_op = if method == "eq" {
+                        crate::operand::BinOp::Eq
+                    } else {
+                        crate::operand::BinOp::Ne
+                    };
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: result,
+                        rvalue: MirRValue::BinaryOp {
+                            op: cmp_op,
+                            left: MirOperand::Local(tag_local),
+                            right: MirOperand::Constant(MirConst::Int(1)),
+                        },
+                    }));
+                    return Ok((MirOperand::Local(result), MirType::Bool));
+                }
+
                 // Skip native binop for types that need C runtime calls (strings,
                 // SIMD vectors) or special method dispatch (raw pointers:
                 // ptr.add != arithmetic add).
