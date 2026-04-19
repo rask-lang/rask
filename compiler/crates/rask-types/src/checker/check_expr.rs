@@ -121,6 +121,8 @@ impl TypeChecker {
             ExprKind::Char(_) => Type::Char,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),
+            // OPT3: `none` is `T?` with inner type inferred from context.
+            ExprKind::None => Type::Option(Box::new(self.ctx.fresh_var())),
 
             ExprKind::Ident(name) => {
                 // D1: use after discard is a compile error
@@ -407,6 +409,11 @@ impl TypeChecker {
                 self.in_stmt_expr = false;
 
                 let scrutinee_ty = self.infer_expr(scrutinee);
+                // OPT NO_MATCH: reject `match x?` on an Option — migration error.
+                let resolved_sc = self.ctx.apply(&scrutinee_ty);
+                if matches!(resolved_sc, Type::Option(_)) {
+                    self.errors.push(TypeError::MatchOnOption { span: expr.span });
+                }
                 let result_ty = self.ctx.fresh_var();
                 for arm in arms {
                     self.push_scope();
@@ -1156,6 +1163,18 @@ impl TypeChecker {
 
     pub(super) fn check_call(&mut self, call_id: NodeId, func: &Expr, args: &[CallArg], span: Span) -> Type {
         if let ExprKind::Ident(name) = &func.kind {
+            // OPT2/ER2: reject legacy `Some(x)`, `Ok(x)`, `Err(x)` constructors.
+            // The new model auto-wraps bare values at return/assignment, and
+            // error values use their own constructor (e.g., `DivError.ByZero`).
+            if matches!(name.as_str(), "Some" | "Ok" | "Err") {
+                self.errors.push(TypeError::LegacyWrapperConstructor {
+                    name: name.clone(),
+                    span,
+                });
+                for arg in args { self.infer_expr(&arg.expr); }
+                return Type::Error;
+            }
+
             // transmute(val) — reinterpret bits, requires unsafe
             if name == "transmute" {
                 self.unsafe_ops.push((span, super::UnsafeCategory::Transmute));

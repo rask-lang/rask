@@ -24,6 +24,17 @@ impl Interpreter {
                         {
                             Some(HashMap::new())
                         }
+                        // ER28: for a Result scrutinee, descend into Ok/Err
+                        // and retry against the payload (so arms like
+                        // `IoError.NotFound` work against `r: T or IoError`).
+                        Value::Enum { name: en, variant, fields, .. }
+                            if en == "Result" && matches!(variant.as_str(), "Ok" | "Err") =>
+                        {
+                            if let Some(inner) = fields.first() {
+                                return self.match_pattern(pattern, inner);
+                            }
+                            None
+                        }
                         // Unit struct variant with no fields
                         Value::Struct(ref s) => {
                             let guard = s.lock().unwrap();
@@ -46,6 +57,19 @@ impl Interpreter {
                             return Some(HashMap::new());
                         } else {
                             return None;
+                        }
+                    }
+                }
+                // ER27: bare type name as match arm on a Result scrutinee —
+                // match by payload type. Primitives (`i32`, `f64`, ...) and
+                // user type names (`DivError`) match if the Ok/Err payload
+                // has that runtime type.
+                if let Value::Enum { name: sc_name, fields, .. } = value {
+                    if sc_name == "Result" {
+                        if let Some(inner) = fields.first() {
+                            if runtime_type_matches(inner, name) {
+                                return Some(HashMap::new());
+                            }
                         }
                     }
                 }
@@ -88,6 +112,14 @@ impl Interpreter {
                             }
                         }
                         return Some(bindings);
+                    }
+                    // ER28: for a Result scrutinee, descend into Ok/Err and
+                    // match against the inner value. Lets `match r { IoError.NotFound(p) => ... }`
+                    // work when r: T or IoError.
+                    if enum_name == "Result" && matches!(variant.as_str(), "Ok" | "Err") {
+                        if let Some(inner) = enum_fields.first() {
+                            return self.match_pattern(pattern, inner);
+                        }
                     }
                 }
                 None
@@ -158,40 +190,28 @@ impl Interpreter {
                 if in_range { Some(HashMap::new()) } else { None }
             }
 
-            // ER23: `r is TypeName as e` — match the Err branch of a Result,
-            // narrowing to the named error type and binding the payload.
+            // ER23/ER27: `TypeName [as name]` type pattern.
+            // For Result scrutinees, match either the Ok branch (T side) or
+            // Err branch (E side) by inspecting the payload's runtime type.
             Pattern::TypePat { ty_name, binding } => {
-                let Value::Enum { variant, fields, .. } = value else {
+                let Value::Enum { name: sc_name, variant, fields, .. } = value else {
                     return None;
                 };
-                if variant != "Err" {
+                // Only Result (and Option, but TypePat is Result-scoped) match here.
+                if sc_name != "Result" {
                     return None;
                 }
                 let inner = fields.first()?;
-                let inner_name = match inner {
-                    Value::Enum { name, .. } => name.as_str(),
-                    Value::Struct(s) => {
-                        let guard = s.lock().unwrap();
-                        if &guard.name == ty_name {
-                            let mut bindings = HashMap::new();
-                            if let Some(n) = binding {
-                                bindings.insert(n.clone(), inner.clone());
-                            }
-                            return Some(bindings);
-                        }
-                        return None;
-                    }
-                    _ => return None,
-                };
-                if inner_name == ty_name {
-                    let mut bindings = HashMap::new();
-                    if let Some(n) = binding {
-                        bindings.insert(n.clone(), inner.clone());
-                    }
-                    Some(bindings)
-                } else {
-                    None
+                if !runtime_type_matches(inner, ty_name) {
+                    return None;
                 }
+                // Found a match. Must be Ok or Err — both bind the inner.
+                let _ = variant;
+                let mut bindings = HashMap::new();
+                if let Some(n) = binding {
+                    bindings.insert(n.clone(), inner.clone());
+                }
+                Some(bindings)
             }
         }
     }
@@ -307,6 +327,29 @@ impl Interpreter {
             }
             _ => None,
         }
+    }
+}
+
+/// Does the runtime `value` have type `ty_name`?
+/// Handles primitives (`i32`, `f64`, `string`, `bool`, `char`) and named
+/// enum/struct types. Used by ER27 match type patterns.
+fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
+    match value {
+        Value::Bool(_) => ty_name == "bool",
+        Value::Char(_) => ty_name == "char",
+        Value::String(_) => ty_name == "string",
+        Value::Int(_) => matches!(
+            ty_name,
+            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+                | "int" | "uint" | "isize" | "usize"
+        ),
+        Value::Float(_) => matches!(ty_name, "f32" | "f64"),
+        Value::Enum { name, .. } => name == ty_name,
+        Value::Struct(s) => {
+            let guard = s.lock().unwrap();
+            guard.name == ty_name
+        }
+        _ => false,
     }
 }
 

@@ -352,6 +352,7 @@ impl TypeSubstitutor {
                 ExprKind::Char(c) => ExprKind::Char(*c),
                 ExprKind::Bool(b) => ExprKind::Bool(*b),
                 ExprKind::Null => ExprKind::Null,
+                ExprKind::None => ExprKind::None,
 
                 // Variables
                 ExprKind::Ident(name) => ExprKind::Ident(name.clone()),

@@ -573,6 +573,9 @@ impl Hasher {
             ExprKind::Null => {
                 self.feed_tag(45);
             }
+            ExprKind::None => {
+                self.feed_tag(89);
+            }
             ExprKind::Ident(name) => {
                 self.feed_tag(46);
                 // H4: Normalize local variable references

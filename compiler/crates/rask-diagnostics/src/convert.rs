@@ -709,6 +709,35 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("the type in a type pattern must appear in the Result's error union")
                     .with_why("type dispatch can only match types that the Result is declared to contain [type.errors/ER23]")
             }
+            LegacyWrapperConstructor { name, span } => {
+                let (what, fix) = match name.as_str() {
+                    "Some" => (
+                        "Option has no `Some` constructor — bare values auto-wrap at return/assignment",
+                        "drop the wrapper: `return value` instead of `return Some(value)`",
+                    ),
+                    "Ok" => (
+                        "Result has no `Ok` constructor — bare T values auto-wrap at return",
+                        "drop the wrapper: `return value` instead of `return Ok(value)`",
+                    ),
+                    "Err" => (
+                        "Result has no `Err` constructor — return the error value directly",
+                        "drop the wrapper: `return MyError.Variant` instead of `return Err(MyError.Variant)`",
+                    ),
+                    _ => ("legacy wrapper constructor", "remove the wrapper"),
+                };
+                Diagnostic::error(format!("`{}(...)` is no longer a valid constructor", name))
+                    .with_code("E0348")
+                    .with_primary(*span, format!("`{}` is not callable", name))
+                    .with_help(fix)
+                    .with_why(format!("{} [type.optionals/OPT2, type.errors/ER2]", what))
+            }
+            MatchOnOption { span } => {
+                Diagnostic::error("match on an Option is not supported")
+                    .with_code("E0349")
+                    .with_primary(*span, "Option is not a user enum")
+                    .with_help("use the ?-operator family: `if x? { ... } else { ... }`, `x?.field ?? default`, or `if x == none { return }`")
+                    .with_why("Option has two states — the operator family covers both more concisely [type.optionals/NO_MATCH]")
+            }
         }
     }
 }

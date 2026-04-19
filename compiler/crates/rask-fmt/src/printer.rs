@@ -1386,6 +1386,7 @@ impl<'a> Printer<'a> {
                 let text = self.source_text(expr.span).to_string();
                 self.emit(&text);
             }
+            ExprKind::None => self.emit("none"),
             ExprKind::StringInterp(_) => {
                 let text = self.source_text(expr.span).to_string();
                 self.emit(&text);

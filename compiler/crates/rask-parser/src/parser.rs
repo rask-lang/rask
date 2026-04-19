@@ -2967,7 +2967,8 @@ impl Parser {
             TokenKind::None => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident("None".to_string()), span: self.span(start, end) })
+                // OPT3: dedicated absent literal, not the `None` enum variant.
+                Ok(Expr { id: self.next_id(), kind: ExprKind::None, span: self.span(start, end) })
             }
             TokenKind::Null => {
                 self.advance();

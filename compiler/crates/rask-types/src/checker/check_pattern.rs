@@ -6,10 +6,18 @@ use rask_ast::Span;
 
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
+use super::parse_type::parse_type_string;
 use super::type_defs::TypeDef;
+use super::type_table::TypeTable;
 use super::TypeChecker;
 
 use crate::types::Type;
+
+/// Resolve a bare type name to a Type.
+/// Returns UnresolvedNamed when the name isn't a known primitive or user type.
+fn resolve_type_name(name: &str, types: &TypeTable) -> Type {
+    parse_type_string(name, types).unwrap_or_else(|_| Type::UnresolvedNamed(name.to_string()))
+}
 
 impl TypeChecker {
     // ------------------------------------------------------------------------
@@ -28,6 +36,25 @@ impl TypeChecker {
                 // Bare constructors (Ok, Err, Some, None) without parens — match, don't bind
                 if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") {
                     return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
+                }
+                // ER27: bare `Type` in a Result match is a type pattern.
+                // Recognize when `name` resolves to a type matching the ok or
+                // err branch of the scrutinee.
+                let resolved = self.ctx.apply(scrutinee_ty);
+                if let Type::Result { ok, err } = &resolved {
+                    let candidate = resolve_type_name(name, &self.types);
+                    if !matches!(candidate, Type::UnresolvedNamed(_)) {
+                        let ok_applied = self.ctx.apply(ok);
+                        let err_applied = self.ctx.apply(err);
+                        let matches_ok = ok_applied == candidate;
+                        let matches_err = match &err_applied {
+                            Type::Union(variants) => variants.contains(&candidate),
+                            other => other == &candidate,
+                        };
+                        if matches_ok || matches_err {
+                            return vec![];
+                        }
+                    }
                 }
                 vec![(name.clone(), scrutinee_ty.clone())]
             }
@@ -124,34 +151,37 @@ impl TypeChecker {
                 vec![]
             }
 
-            // ER23: `is TypeName as binding` — narrows the scrutinee to TypeName.
-            // Two-branch `T or E`: constrain E == TypeName.
+            // ER23/ER27: `TypeName [as binding]` type pattern.
+            // In match arms, matches either the T (ok) or E (err) branch of a
+            // Result by type. In `if r is E as e`, typically the err side.
             // Union `E = A | B | ...`: accept if TypeName is a union component.
             Pattern::TypePat { ty_name, binding } => {
-                let narrow_ty = match self.types.get_type_id(ty_name) {
-                    Some(id) => Type::Named(id),
-                    None => Type::UnresolvedNamed(ty_name.clone()),
-                };
+                let narrow_ty = resolve_type_name(ty_name, &self.types);
                 let resolved = self.ctx.apply(scrutinee_ty);
                 match &resolved {
-                    Type::Result { err, .. } => {
+                    Type::Result { ok, err } => {
+                        let ok_applied = self.ctx.apply(ok);
                         let err_applied = self.ctx.apply(err);
-                        match &err_applied {
-                            Type::Union(variants) => {
-                                if !variants.contains(&narrow_ty) {
-                                    self.errors.push(TypeError::TypePatternNotInUnion {
-                                        ty_name: ty_name.clone(),
-                                        union: err_applied.clone(),
-                                        span,
-                                    });
-                                }
-                            }
-                            _ => {
-                                self.ctx.add_constraint(TypeConstraint::Equal(
-                                    err_applied,
-                                    narrow_ty.clone(),
+                        let matches_ok = ok_applied == narrow_ty;
+                        let matches_err = match &err_applied {
+                            Type::Union(variants) => variants.contains(&narrow_ty),
+                            other => other == &narrow_ty,
+                        };
+                        if !matches_ok && !matches_err {
+                            // If err was a single type (not union), emit the
+                            // "not in union" error for clearer messaging.
+                            if matches!(&err_applied, Type::Union(_)) {
+                                self.errors.push(TypeError::TypePatternNotInUnion {
+                                    ty_name: ty_name.clone(),
+                                    union: err_applied,
                                     span,
-                                ));
+                                });
+                            } else {
+                                self.errors.push(TypeError::TypePatternNotResult {
+                                    ty_name: ty_name.clone(),
+                                    found: resolved,
+                                    span,
+                                });
                             }
                         }
                     }

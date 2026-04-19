@@ -219,6 +219,25 @@ impl<'a> MirLowerer<'a> {
                 // Null pointer literal — zero value
                 Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Ptr))
             }
+            ExprKind::None => {
+                // OPT3: `none` — identical lowering to bare `None`.
+                // Niche Option<Handle<T>> uses a sentinel; otherwise tag = 1.
+                if self.is_niche_option_expr(expr) {
+                    Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle))
+                } else {
+                    let option_ty = self.lookup_expr_type(expr)
+                        .filter(|t| matches!(t, MirType::Option(_)))
+                        .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
+                    let result_local = self.builder.alloc_temp(option_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: result_local,
+                        offset: 0,
+                        value: MirOperand::Constant(MirConst::Int(1)), // tag = None
+                        store_size: None,
+                    }));
+                    Ok((MirOperand::Local(result_local), option_ty))
+                }
+            }
 
             // Variable reference (or bare enum variant like None)
             ExprKind::Ident(name) => {

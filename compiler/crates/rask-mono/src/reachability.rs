@@ -505,6 +505,7 @@ impl<'a> Monomorphizer<'a> {
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
             | ExprKind::Null
+            | ExprKind::None
             | ExprKind::Ident(_) => {}
         }
     }

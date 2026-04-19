@@ -512,6 +512,7 @@ impl Desugarer {
             | ExprKind::Bool(_)
             | ExprKind::Ident(_)
             | ExprKind::Null
+            | ExprKind::None
             => {}
             ExprKind::String(_) | ExprKind::StringInterp(_) => {
                 // String interpolation desugaring handled below

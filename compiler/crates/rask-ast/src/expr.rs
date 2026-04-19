@@ -30,6 +30,9 @@ pub enum ExprKind {
     Bool(bool),
     /// Null pointer literal
     Null,
+    /// OPT3: absent sentinel for `T?`. Dedicated literal — not tied to the
+    /// `None` enum variant. Context infers the inner type `T`.
+    None,
     /// Identifier
     Ident(String),
     /// Binary operation

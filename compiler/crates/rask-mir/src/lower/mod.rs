@@ -1364,7 +1364,7 @@ impl<'a> MirLowerer<'a> {
             // Literals — no free variables
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(..)
             | ExprKind::StringInterp(..)
-            | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::Null => {}
+            | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::Null | ExprKind::None => {}
         }
     }
 

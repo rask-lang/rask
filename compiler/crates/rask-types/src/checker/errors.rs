@@ -316,4 +316,17 @@ pub enum TypeError {
         union: Type,
         span: Span,
     },
+
+    /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
+    #[error("`{name}(...)` is no longer a valid constructor")]
+    LegacyWrapperConstructor {
+        name: String,
+        span: Span,
+    },
+
+    /// OPT NO_MATCH: match on `T?` is rejected — migration error
+    #[error("match on an Option is not supported — use the `?`-operator family")]
+    MatchOnOption {
+        span: Span,
+    },
 }

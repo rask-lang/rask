@@ -1849,7 +1849,7 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) |
-            ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null => {}
+            ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None => {}
             ExprKind::Ident(name) => {
                 match self.scopes.lookup(name) {
                     Some(sym_id) => {

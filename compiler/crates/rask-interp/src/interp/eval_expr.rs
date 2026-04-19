@@ -162,6 +162,14 @@ impl Interpreter {
             }
             ExprKind::Char(c) => Ok(Value::Char(*c)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
+            // OPT3: `none` is Option::None — a stateless sentinel, cheaply cloned.
+            ExprKind::None => Ok(Value::Enum {
+                name: "Option".to_string(),
+                variant: "None".to_string(),
+                fields: vec![],
+                variant_index: 1,
+                origin: None,
+            }),
 
             ExprKind::Ident(name) => {
                 if let Some(val) = self.env.get(name) {

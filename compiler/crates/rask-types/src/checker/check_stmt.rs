@@ -42,8 +42,13 @@ impl TypeChecker {
                     (self.infer_expr(init), None)
                 };
                 let binding_ty = if let Some(declared) = declared_ty {
-                    self.ctx
-                        .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
+                    // OPT6: auto-wrap `T` into `T?`, and `T` or `E` into `T or E`
+                    // at assignment when the annotation is an Option/Result.
+                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                        ret_ty: init_ty,
+                        expected: declared.clone(),
+                        span: stmt.span,
+                    });
                     self.define_local(name.clone(), declared.clone());
                     declared
                 } else {
@@ -71,8 +76,12 @@ impl TypeChecker {
                     (self.infer_expr(init), None)
                 };
                 let binding_ty = if let Some(declared) = declared_ty {
-                    self.ctx
-                        .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
+                    // OPT6: auto-wrap at assignment (same as Mut above).
+                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                        ret_ty: init_ty,
+                        expected: declared.clone(),
+                        span: stmt.span,
+                    });
                     self.define_local_read_only(name.clone(), declared.clone());
                     declared
                 } else {
