@@ -3,8 +3,10 @@
 .devcontainer/**
 .claude/**
 src/**
-node_modules/.vscode-test/**
+node_modules/**
+out/**/*.map
 tsconfig.json
+esbuild.js
 package-lock.json
 *.map
 *.vsix

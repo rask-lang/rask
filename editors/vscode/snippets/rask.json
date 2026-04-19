@@ -55,19 +55,26 @@
     ],
     "description": "For loop"
   },
-  "If is": {
-    "prefix": "ifis",
+  "If present (narrow)": {
+    "prefix": "ifq",
     "body": [
-      "if ${1:value} is ${2:Some}: ${3:expr}"
+      "if ${1:value}? { ${2:expr} }"
     ],
-    "description": "Pattern match with if-is"
+    "description": "Narrow T? / T or E: use scrutinee as T in the then-branch"
   },
-  "Guard pattern": {
+  "If present (bind)": {
+    "prefix": "ifqas",
+    "body": [
+      "if ${1:value}? as ${2:v} { ${3:expr} }"
+    ],
+    "description": "Narrow and bind the present value"
+  },
+  "Guard absent": {
     "prefix": "guard",
     "body": [
-      "const ${1:v} = ${2:expr} is ${3:Ok} else { return ${4:None} }"
+      "if ${1:value} == none { return none }"
     ],
-    "description": "Guard pattern"
+    "description": "Early-exit guard; scrutinee narrows to T after"
   },
   "Test": {
     "prefix": "test",

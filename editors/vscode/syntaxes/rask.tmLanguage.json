@@ -151,7 +151,7 @@
         },
         {
           "name": "constant.language.rk",
-          "match": "\\b(true|false|None|null)\\b"
+          "match": "\\b(true|false|none|null)\\b"
         },
         {
           "name": "variable.language.self.rk",

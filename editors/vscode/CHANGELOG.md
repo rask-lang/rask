@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Update for `let` → `mut` rename (mutable bindings)
+- Update for optionals redesign: `none` sentinel (lowercase), no `Some`/`None`/`Ok`/`Err` constructors
+- Refresh snippets to use `if x? { … }` / `if x? as v { … }` narrowing
+
 ## 0.2.0
 
 - Modern LSP client integration

@@ -2,7 +2,7 @@
   "name": "rask",
   "displayName": "Rask",
   "description": "Language support for Rask",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "rask-lang",
   "license": "MIT OR Apache-2.0",
   "icon": "icon.png",
@@ -24,8 +24,13 @@
     "languages": [
       {
         "id": "rask",
-        "aliases": ["Rask", "rask"],
-        "extensions": [".rk"],
+        "aliases": [
+          "Rask",
+          "rask"
+        ],
+        "extensions": [
+          ".rk"
+        ],
         "configuration": "./language-configuration.json",
         "icon": {
           "light": "./icons/rask-file.svg",
@@ -42,7 +47,9 @@
       {
         "scopeName": "text.markdown.rk.codeblock",
         "path": "./syntaxes/rask-markdown.tmLanguage.json",
-        "injectTo": ["text.html.markdown"],
+        "injectTo": [
+          "text.html.markdown"
+        ],
         "embeddedLanguages": {
           "meta.embedded.block.rk": "rask"
         }
@@ -107,15 +114,17 @@
         "rask.inlayHints.enable": {
           "type": "boolean",
           "default": true,
-          "description": "Show inferred types as inlay hints on `let`/`const` bindings."
+          "description": "Show inferred types as inlay hints on `mut`/`const` bindings."
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "vscode:prepublish": "npm run package",
+    "package": "npm run check-types && node esbuild.js --production",
+    "compile": "npm run check-types && node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "check-types": "tsc --noEmit -p ./"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
@@ -123,6 +132,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.75.0",
+    "esbuild": "^0.25.12",
     "typescript": "^5.0.0"
   }
 }
