@@ -262,6 +262,7 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
             cond,
             then_branch,
             else_branch,
+            ..
         } => {
             collect_callees_from_expr(cond, callees);
             collect_callees_from_expr(then_branch, callees);
@@ -393,6 +394,7 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Null
+        | ExprKind::None
         | ExprKind::Ident(_) => {}
     }
 }

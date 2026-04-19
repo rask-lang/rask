@@ -674,6 +674,70 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, format!("both `{}` and `{}` have value {}", first, second, value))
                     .with_why("each variant must have a unique discriminant value [type.enums/E15]")
             }
+            ResultNotDisjoint { ty, span } => {
+                Diagnostic::error(format!("`T or E` needs distinct types — both sides are `{}`", ty))
+                    .with_code("E0343")
+                    .with_primary(*span, "T and E must differ")
+                    .with_help("newtype one side (e.g. `type MyError = ...`) or pick a different error type")
+                    .with_why("type-based branch disambiguation only works when T and E are distinct [type.errors/ER3]")
+            }
+            ErrorMessageMissing { ty, span } => {
+                Diagnostic::error(format!("error type `{}` does not implement `ErrorMessage`", ty))
+                    .with_code("E0344")
+                    .with_primary(*span, format!("`{}` needs a `message` method", ty))
+                    .with_help(format!("add `extend {ty} {{ func message(self) -> string {{ ... }} }}`"))
+                    .with_why("every error type must provide `func message(self) -> string`; primitives don't qualify — newtype them [type.errors/ER4]")
+            }
+            ElseBindingNotResult { name, span } => {
+                Diagnostic::error(format!("`else as {}` requires a Result condition", name))
+                    .with_code("E0345")
+                    .with_primary(*span, "the `if` condition has no error to bind")
+                    .with_help("use `else as e` only when the condition is `if r?` on a `T or E`")
+                    .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
+            }
+            TypePatternNotResult { ty_name, found, span } => {
+                Diagnostic::error(format!("type pattern `{}` needs a Result scrutinee", ty_name))
+                    .with_code("E0346")
+                    .with_primary(*span, format!("found `{}`", found))
+                    .with_help("type patterns narrow the error side of `T or E`; the scrutinee must be a Result")
+                    .with_why("`is Type as name` dispatches on the error branch — not applicable to other types [type.errors/ER23]")
+            }
+            TypePatternNotInUnion { ty_name, union, span } => {
+                Diagnostic::error(format!("`{}` is not a component of `{}`", ty_name, union))
+                    .with_code("E0347")
+                    .with_primary(*span, format!("not in `{}`", union))
+                    .with_help("the type in a type pattern must appear in the Result's error union")
+                    .with_why("type dispatch can only match types that the Result is declared to contain [type.errors/ER23]")
+            }
+            LegacyWrapperConstructor { name, span } => {
+                let (what, fix) = match name.as_str() {
+                    "Some" => (
+                        "Option has no `Some` constructor — bare values auto-wrap at return/assignment",
+                        "drop the wrapper: `return value` instead of `return Some(value)`",
+                    ),
+                    "Ok" => (
+                        "Result has no `Ok` constructor — bare T values auto-wrap at return",
+                        "drop the wrapper: `return value` instead of `return Ok(value)`",
+                    ),
+                    "Err" => (
+                        "Result has no `Err` constructor — return the error value directly",
+                        "drop the wrapper: `return MyError.Variant` instead of `return Err(MyError.Variant)`",
+                    ),
+                    _ => ("legacy wrapper constructor", "remove the wrapper"),
+                };
+                Diagnostic::error(format!("`{}(...)` is no longer a valid constructor", name))
+                    .with_code("E0348")
+                    .with_primary(*span, format!("`{}` is not callable", name))
+                    .with_help(fix)
+                    .with_why(format!("{} [type.optionals/OPT2, type.errors/ER2]", what))
+            }
+            MatchOnOption { span } => {
+                Diagnostic::error("match on an Option is not supported")
+                    .with_code("E0349")
+                    .with_primary(*span, "Option is not a user enum")
+                    .with_help("use the ?-operator family: `if x? { ... } else { ... }`, `x?.field ?? default`, or `if x == none { return }`")
+                    .with_why("Option has two states — the operator family covers both more concisely [type.optionals/NO_MATCH]")
+            }
         }
     }
 }

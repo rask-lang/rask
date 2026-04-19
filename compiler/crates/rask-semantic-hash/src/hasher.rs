@@ -573,6 +573,9 @@ impl Hasher {
             ExprKind::Null => {
                 self.feed_tag(45);
             }
+            ExprKind::None => {
+                self.feed_tag(89);
+            }
             ExprKind::Ident(name) => {
                 self.feed_tag(46);
                 // H4: Normalize local variable references
@@ -633,13 +636,19 @@ impl Hasher {
                 self.feed_tag(54);
                 self.hash_stmts(stmts);
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, else_binding } => {
                 self.feed_tag(55);
                 self.hash_expr(cond);
                 self.hash_expr(then_branch);
                 if let Some(eb) = else_branch {
                     self.feed_bool(true);
                     self.hash_expr(eb);
+                } else {
+                    self.feed_bool(false);
+                }
+                if let Some(name) = else_binding {
+                    self.feed_bool(true);
+                    self.feed_str(name);
                 } else {
                     self.feed_bool(false);
                 }
@@ -928,6 +937,16 @@ impl Hasher {
                 self.feed_tag(87);
                 self.hash_expr(start);
                 self.hash_expr(end);
+            }
+            Pattern::TypePat { ty_name, binding } => {
+                self.feed_tag(88);
+                self.feed_str(ty_name);
+                if let Some(name) = binding {
+                    self.feed_bool(true);
+                    self.feed_var(name);
+                } else {
+                    self.feed_bool(false);
+                }
             }
         }
     }

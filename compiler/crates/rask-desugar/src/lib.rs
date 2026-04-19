@@ -377,6 +377,7 @@ impl Desugarer {
                 cond,
                 then_branch,
                 else_branch,
+                ..
             } => {
                 self.desugar_expr(cond);
                 self.desugar_expr(then_branch);
@@ -511,6 +512,7 @@ impl Desugarer {
             | ExprKind::Bool(_)
             | ExprKind::Ident(_)
             | ExprKind::Null
+            | ExprKind::None
             => {}
             ExprKind::String(_) | ExprKind::StringInterp(_) => {
                 // String interpolation desugaring handled below

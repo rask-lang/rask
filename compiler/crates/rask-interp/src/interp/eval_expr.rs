@@ -162,6 +162,14 @@ impl Interpreter {
             }
             ExprKind::Char(c) => Ok(Value::Char(*c)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
+            // OPT3: `none` is Option::None — a stateless sentinel, cheaply cloned.
+            ExprKind::None => Ok(Value::Enum {
+                name: "Option".to_string(),
+                variant: "None".to_string(),
+                fields: vec![],
+                variant_index: 1,
+                origin: None,
+            }),
 
             ExprKind::Ident(name) => {
                 if let Some(val) = self.env.get(name) {
@@ -589,17 +597,20 @@ impl Interpreter {
                 cond,
                 then_branch,
                 else_branch,
+                else_binding,
             } => {
-                // OPT19/OPT20 + ER19/ER20/ER21: `if x?` or `if expr? as v`
+                // OPT19/OPT20 + ER19/ER20/ER21/ER22: `if x?` or `if expr? as v`
                 // evaluates the scrutinee once and rebinds the payload as the
-                // narrow name (scrutinee ident for plain, `v` for `as v`).
+                // narrow name (scrutinee ident for plain, `v` for `as v`,
+                // `else as e` for the else branch).
                 if let ExprKind::IsPresent { expr: inner, binding } = &cond.kind {
-                    let narrow_name = match (binding, &inner.kind) {
+                    let then_name = match (binding, &inner.kind) {
                         (Some(v), _) => Some(v.clone()),
                         (None, ExprKind::Ident(n)) => Some(n.clone()),
                         _ => None,
                     };
-                    if let Some(name) = narrow_name {
+                    let else_name = else_binding.clone().or_else(|| then_name.clone());
+                    if then_name.is_some() || else_name.is_some() {
                         let scrutinee_val = self.eval_expr(inner)?;
                         let present = matches!(
                             &scrutinee_val,
@@ -611,7 +622,9 @@ impl Interpreter {
                                 _ => Value::Unit,
                             };
                             self.env.push_scope();
-                            self.env.define(name, payload);
+                            if let Some(name) = then_name {
+                                self.env.define(name, payload);
+                            }
                             let result = self.eval_expr(then_branch);
                             self.env.pop_scope();
                             return result;
@@ -620,7 +633,7 @@ impl Interpreter {
                                 Value::Enum { fields, .. } => fields.first().cloned(),
                                 _ => None,
                             };
-                            if let Some(p) = payload {
+                            if let (Some(name), Some(p)) = (else_name, payload) {
                                 // Result Err branch binds E; Option None has no payload.
                                 self.env.push_scope();
                                 self.env.define(name, p);
@@ -1198,6 +1211,39 @@ impl Interpreter {
             }
 
             ExprKind::Try { expr: inner, ref else_clause } => {
+                // ER17/ER18: `try { … }` block form. Catches TryError raised
+                // by inner `try` propagations and routes to the else handler.
+                // Without an else, behaves like a normal block (errors continue
+                // propagating to the enclosing function).
+                if matches!(&inner.kind, ExprKind::Block(_)) {
+                    let block_result = self.eval_expr(inner);
+                    return match block_result {
+                        Ok(v) => Ok(v),
+                        Err(diag) => match diag.error {
+                            RuntimeError::TryError(err_val) => {
+                                if let Some(ec) = else_clause {
+                                    let inner_err = match &err_val {
+                                        Value::Enum { fields, .. } => {
+                                            fields.first().cloned().unwrap_or(Value::Unit)
+                                        }
+                                        _ => err_val,
+                                    };
+                                    self.env.push_scope();
+                                    self.env.define(ec.error_binding.clone(), inner_err);
+                                    let transformed = self.eval_expr(&ec.body);
+                                    self.env.pop_scope();
+                                    transformed
+                                } else {
+                                    Err(RuntimeDiagnostic::new(
+                                        RuntimeError::TryError(err_val),
+                                        diag.span,
+                                    ))
+                                }
+                            }
+                            other => Err(RuntimeDiagnostic::new(other, diag.span)),
+                        },
+                    };
+                }
                 let val = self.eval_expr(inner)?;
                 match &val {
                     Value::Enum {

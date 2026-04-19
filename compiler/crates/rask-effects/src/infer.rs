@@ -294,7 +294,7 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             classify_expr(index, effects, callees);
         }
         ExprKind::Block(stmts) => classify_body(stmts, effects, callees),
-        ExprKind::If { cond, then_branch, else_branch } => {
+        ExprKind::If { cond, then_branch, else_branch, .. } => {
             classify_expr(cond, effects, callees);
             classify_expr(then_branch, effects, callees);
             if let Some(e) = else_branch {
@@ -405,6 +405,7 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Null
+        | ExprKind::None
         | ExprKind::Ident(_) => {}
     }
 }

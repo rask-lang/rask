@@ -219,6 +219,25 @@ impl<'a> MirLowerer<'a> {
                 // Null pointer literal — zero value
                 Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Ptr))
             }
+            ExprKind::None => {
+                // OPT3: `none` — identical lowering to bare `None`.
+                // Niche Option<Handle<T>> uses a sentinel; otherwise tag = 1.
+                if self.is_niche_option_expr(expr) {
+                    Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle))
+                } else {
+                    let option_ty = self.lookup_expr_type(expr)
+                        .filter(|t| matches!(t, MirType::Option(_)))
+                        .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
+                    let result_local = self.builder.alloc_temp(option_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: result_local,
+                        offset: 0,
+                        value: MirOperand::Constant(MirConst::Int(1)), // tag = None
+                        store_size: None,
+                    }));
+                    Ok((MirOperand::Local(result_local), option_ty))
+                }
+            }
 
             // Variable reference (or bare enum variant like None)
             ExprKind::Ident(name) => {
@@ -589,6 +608,7 @@ impl<'a> MirLowerer<'a> {
                 cond,
                 then_branch,
                 else_branch,
+                ..
             } => self.lower_if(cond, then_branch, else_branch.as_deref()),
 
             // Match expression (spec L2)
@@ -1103,6 +1123,36 @@ impl<'a> MirLowerer<'a> {
                         }));
                         return Ok((MirOperand::Local(result_local), ret_ty));
                     }
+                }
+
+                // `x == none` / `x != none`: desugared to x.eq(none) / !(x.eq(none)).
+                // Lower as a tag comparison — emit the option tag and compare to 1 (None).
+                let is_option_none_cmp = (method == "eq" || method == "ne")
+                    && args.len() == 1
+                    && matches!(args[0].expr.kind, ExprKind::None)
+                    && self.ctx.lookup_raw_type(object.id)
+                        .map_or(false, |ty| matches!(ty, rask_types::Type::Option(_)));
+                if is_option_none_cmp {
+                    let is_niche = self.is_niche_option_expr(object);
+                    let tag_local = self.emit_option_tag(&obj_op, is_niche);
+                    let result = self.builder.alloc_temp(MirType::Bool);
+                    // tag == 1 means None; tag == 0 means Some.
+                    // eq(none) → true when None (tag == 1)
+                    // ne(none) → true when Some (tag == 0), i.e. tag != 1
+                    let cmp_op = if method == "eq" {
+                        crate::operand::BinOp::Eq
+                    } else {
+                        crate::operand::BinOp::Ne
+                    };
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: result,
+                        rvalue: MirRValue::BinaryOp {
+                            op: cmp_op,
+                            left: MirOperand::Local(tag_local),
+                            right: MirOperand::Constant(MirConst::Int(1)),
+                        },
+                    }));
+                    return Ok((MirOperand::Local(result), MirType::Bool));
                 }
 
                 // Skip native binop for types that need C runtime calls (strings,

@@ -1386,6 +1386,7 @@ impl<'a> Printer<'a> {
                 let text = self.source_text(expr.span).to_string();
                 self.emit(&text);
             }
+            ExprKind::None => self.emit("none"),
             ExprKind::StringInterp(_) => {
                 let text = self.source_text(expr.span).to_string();
                 self.emit(&text);
@@ -1485,8 +1486,8 @@ impl<'a> Printer<'a> {
                     self.emit("}");
                 }
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
-                self.format_if_expr(cond, then_branch, else_branch);
+            ExprKind::If { cond, then_branch, else_branch, else_binding } => {
+                self.format_if_expr(cond, then_branch, else_branch, else_binding.as_deref());
             }
             ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
                 self.emit("if ");
@@ -1847,7 +1848,13 @@ impl<'a> Printer<'a> {
         }
     }
 
-    fn format_if_expr(&mut self, cond: &Expr, then_branch: &Expr, else_branch: &Option<Box<Expr>>) {
+    fn format_if_expr(
+        &mut self,
+        cond: &Expr,
+        then_branch: &Expr,
+        else_branch: &Option<Box<Expr>>,
+        else_binding: Option<&str>,
+    ) {
         self.emit("if ");
         self.format_expr(cond);
 
@@ -1855,7 +1862,12 @@ impl<'a> Printer<'a> {
             self.emit(": ");
             self.format_expr(then_branch);
             if let Some(ref else_br) = else_branch {
-                self.emit(" else: ");
+                self.emit(" else");
+                if let Some(name) = else_binding {
+                    self.emit(" as ");
+                    self.emit(name);
+                }
+                self.emit(": ");
                 self.format_expr(else_br);
             }
             return;
@@ -1869,6 +1881,10 @@ impl<'a> Printer<'a> {
                 self.format_expr(else_br);
             } else {
                 self.emit(" else");
+                if let Some(name) = else_binding {
+                    self.emit(" as ");
+                    self.emit(name);
+                }
                 self.format_branch(else_br);
             }
         }
@@ -1978,6 +1994,13 @@ impl<'a> Printer<'a> {
                 self.format_expr(start);
                 self.emit("..=");
                 self.format_expr(end);
+            }
+            Pattern::TypePat { ty_name, binding } => {
+                self.emit(ty_name);
+                if let Some(name) = binding {
+                    self.emit(" as ");
+                    self.emit(name);
+                }
             }
         }
     }

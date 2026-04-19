@@ -2253,6 +2253,8 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], &expected_fn, span);
                 self.unify(ret, &self_ty, span)
             }
+            // `x == none` desugars to `x.eq(none)` — presence/absence comparison
+            "eq" if args.len() == 1 => self.unify(ret, &Type::Bool, span),
             _ => Err(TypeError::NoSuchMethod {
                 ty: self_ty,
                 method: method.to_string(),

@@ -34,6 +34,15 @@ public enum JoinError {
     Cancelled,
 }
 
+extend JoinError {
+    public func message(self) -> string {
+        match self {
+            JoinError.Panicked(msg) => return "task panicked: {msg}",
+            JoinError.Cancelled => return "task was cancelled",
+        }
+    }
+}
+
 // --- Multiple tasks ---
 
 /// Wait for all tasks to complete. Returns results in order.
@@ -94,7 +103,41 @@ extend Receiver<T> {
 // --- Channel errors ---
 
 public enum SendError { Closed }
+extend SendError {
+    public func message(self) -> string { return "send on closed channel" }
+}
+
 public enum RecvError { Closed }
+extend RecvError {
+    public func message(self) -> string { return "receive on closed channel" }
+}
+
 public enum CloseError { AlreadyClosed, FlushFailed }
+extend CloseError {
+    public func message(self) -> string {
+        match self {
+            CloseError.AlreadyClosed => return "channel already closed",
+            CloseError.FlushFailed => return "flush failed on close",
+        }
+    }
+}
+
 public enum TrySendError { Full(T), Closed(T) }
+extend TrySendError<T> {
+    public func message(self) -> string {
+        match self {
+            TrySendError.Full(_) => return "channel is full",
+            TrySendError.Closed(_) => return "send on closed channel",
+        }
+    }
+}
+
 public enum TryRecvError { Empty, Closed }
+extend TryRecvError {
+    public func message(self) -> string {
+        match self {
+            TryRecvError.Empty => return "channel is empty",
+            TryRecvError.Closed => return "receive on closed channel",
+        }
+    }
+}

@@ -136,6 +136,7 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
             cond,
             then_branch,
             else_branch,
+            ..
         } => {
             walk_expr_for_unwrap(cond, source, diags);
             walk_expr_for_unwrap(then_branch, source, diags);
@@ -540,7 +541,7 @@ fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mu
         | ExprKind::Loop { body: stmts, .. } => {
             walk_for_large_unsafe(stmts, source, max, diags);
         }
-        ExprKind::If { cond, then_branch, else_branch } => {
+        ExprKind::If { cond, then_branch, else_branch, .. } => {
             check_expr_for_large_unsafe(cond, source, max, diags);
             check_expr_for_large_unsafe(then_branch, source, max, diags);
             if let Some(e) = else_branch {

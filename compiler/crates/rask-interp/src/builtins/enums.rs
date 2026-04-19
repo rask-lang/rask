@@ -171,6 +171,15 @@ impl Interpreter {
                 }),
                 _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
             },
+            // `x == none` desugars to `x.eq(none)` — compare by variant
+            "eq" if args.len() == 1 => {
+                let is_none = variant == "None";
+                let arg_is_none = matches!(
+                    &args[0],
+                    Value::Enum { name, variant: v, .. } if name == "Option" && v == "None"
+                );
+                Ok(Value::Bool(is_none == arg_is_none))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Option".to_string(),
                 method: method.to_string(),

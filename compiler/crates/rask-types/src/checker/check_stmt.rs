@@ -31,6 +31,8 @@ impl TypeChecker {
             StmtKind::Mut { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
+                        // ER3/ER4: validate `T or E` in let annotation.
+                        self.validate_result_types_in(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
                         (init_ty, Some(declared))
                     } else {
@@ -40,8 +42,13 @@ impl TypeChecker {
                     (self.infer_expr(init), None)
                 };
                 let binding_ty = if let Some(declared) = declared_ty {
-                    self.ctx
-                        .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
+                    // OPT6: auto-wrap `T` into `T?`, and `T` or `E` into `T or E`
+                    // at assignment when the annotation is an Option/Result.
+                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                        ret_ty: init_ty,
+                        expected: declared.clone(),
+                        span: stmt.span,
+                    });
                     self.define_local(name.clone(), declared.clone());
                     declared
                 } else {
@@ -58,6 +65,8 @@ impl TypeChecker {
             StmtKind::Const { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
+                        // ER3/ER4: validate `T or E` in const annotation.
+                        self.validate_result_types_in(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
                         (init_ty, Some(declared))
                     } else {
@@ -67,8 +76,12 @@ impl TypeChecker {
                     (self.infer_expr(init), None)
                 };
                 let binding_ty = if let Some(declared) = declared_ty {
-                    self.ctx
-                        .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
+                    // OPT6: auto-wrap at assignment (same as Mut above).
+                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                        ret_ty: init_ty,
+                        expected: declared.clone(),
+                        span: stmt.span,
+                    });
                     self.define_local_read_only(name.clone(), declared.clone());
                     declared
                 } else {
@@ -462,7 +475,7 @@ impl TypeChecker {
                 self.walk_sync_accesses(object, out);
                 self.walk_sync_accesses(index, out);
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.walk_sync_accesses(cond, out);
                 self.walk_sync_accesses(then_branch, out);
                 if let Some(e) = else_branch {

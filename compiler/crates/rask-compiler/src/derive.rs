@@ -118,6 +118,7 @@ fn gen_struct_compare(
                 })))),
             ]))),
             else_branch: None,
+            else_binding: None,
         }))));
 
         // if self.field > other.field { return 1 }
@@ -131,6 +132,7 @@ fn gen_struct_compare(
                 stmt(StmtKind::Return(Some(expr(ExprKind::Int(1, None))))),
             ]))),
             else_branch: None,
+            else_binding: None,
         }))));
     }
 

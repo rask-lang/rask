@@ -242,6 +242,7 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
             cond,
             then_branch,
             else_branch,
+            ..
         } => {
             rewrite_expr(pass, caller, cond);
             rewrite_expr(pass, caller, then_branch);
@@ -366,6 +367,7 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Null
+        | ExprKind::None
         | ExprKind::Ident(_) => {}
     }
 }

@@ -485,7 +485,7 @@ impl<'a> MirLowerer<'a> {
             _ => return Ok(None),
         };
         let (cond, then_branch, else_branch) = match &inner.kind {
-            ExprKind::If { cond, then_branch, else_branch } => (cond, then_branch, else_branch),
+            ExprKind::If { cond, then_branch, else_branch, .. } => (cond, then_branch, else_branch),
             _ => return Ok(None),
         };
 

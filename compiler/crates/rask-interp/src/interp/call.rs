@@ -99,15 +99,31 @@ impl Interpreter {
             .map(|t| t.ends_with('?'))
             .unwrap_or(false);
         if returns_result {
-            match &value {
-                Value::Enum { name, .. } if name == "Result" => Ok(value),
-                _ => Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![value],
-                    variant_index: 0, origin: None,
-                }),
+            // Already a Result: pass through.
+            if matches!(&value, Value::Enum { name, .. } if name == "Result") {
+                return Ok(value);
             }
+            // ER9: pick the branch by the value's runtime type. If the value
+            // matches E (or a variant of a union E), wrap as Err; else Ok.
+            // Disjointness (ER3) makes this unambiguous.
+            let err_names = func.ret_ty.as_ref()
+                .map(|t| extract_result_err_names(t))
+                .unwrap_or_default();
+            let is_err_branch = value_matches_any_type(&value, &err_names);
+            if is_err_branch {
+                return Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Err".to_string(),
+                    fields: vec![value],
+                    variant_index: 1, origin: None,
+                });
+            }
+            return Ok(Value::Enum {
+                name: "Result".to_string(),
+                variant: "Ok".to_string(),
+                fields: vec![value],
+                variant_index: 0, origin: None,
+            });
         } else if returns_option {
             match &value {
                 Value::Enum { name, .. } if name == "Option" => Ok(value),
@@ -242,6 +258,74 @@ impl Interpreter {
             let _ = self.exec_ensure_body(handler);
             self.env.pop_scope();
         }
+    }
+}
+
+/// Extract the E type names from a `Result<T, E>` string. Handles union
+/// errors `Result<T, A | B | C>` by returning each component.
+fn extract_result_err_names(ret_ty: &str) -> Vec<String> {
+    let Some(rest) = ret_ty.strip_prefix("Result<").and_then(|s| s.strip_suffix('>')) else {
+        return Vec::new();
+    };
+    // Split at the top-level comma separating T from E.
+    let mut depth: i32 = 0;
+    let mut split_at: Option<usize> = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
+            ',' if depth == 0 => { split_at = Some(i); break; }
+            _ => {}
+        }
+    }
+    let Some(idx) = split_at else { return Vec::new() };
+    let err_str = rest[idx + 1..].trim();
+    // Strip outer parens if present.
+    let err_str = err_str
+        .strip_prefix('(').and_then(|s| s.strip_suffix(')'))
+        .map(str::trim)
+        .unwrap_or(err_str);
+    // Split by `|` at depth 0 (for union errors).
+    let mut out = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in err_str.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
+            '|' if depth == 0 => {
+                out.push(err_str[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < err_str.len() {
+        out.push(err_str[start..].trim().to_string());
+    }
+    out
+}
+
+/// Does the runtime value match any of the named types?
+fn value_matches_any_type(value: &Value, names: &[String]) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+    let value_type_name: Option<&str> = match value {
+        Value::Enum { name, .. } => Some(name.as_str()),
+        Value::Struct(s) => {
+            let guard = s.lock().unwrap();
+            if names.iter().any(|n| n == &guard.name) {
+                return true;
+            }
+            None
+        }
+        _ => None,
+    };
+    if let Some(vn) = value_type_name {
+        names.iter().any(|n| n == vn)
+    } else {
+        false
     }
 }
 
