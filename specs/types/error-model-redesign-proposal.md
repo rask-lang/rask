@@ -458,7 +458,7 @@ After reading the affected specs, here are the concrete changes each needs:
 
 **Examples and tests:** all `.rk` files using `Result`/`Option`/`Some`/`None`/`Ok`/`Err`.
 
-**Tooling:** `rask fmt --migrate-errors` for mechanical conversion of old code.
+**Tooling:** none. The language isn't in external use — existing `.rk` files are edited in place.
 
 ## Validation criteria
 
@@ -466,7 +466,7 @@ After reading the affected specs, here are the concrete changes each needs:
 - All `examples/*.rk` compile and run under the new model
 - `package_manager.rk` (1248 lines, the biggest example) migrates cleanly
 - LSP works with new patterns
-- Migration tool successfully converts existing Rask code
+- All `.rk` files edited in place to the new surface
 
 ## Out of scope
 
@@ -492,10 +492,9 @@ After reading the affected specs, here are the concrete changes each needs:
 1. Write `specs/types/error-types.md` and `specs/types/optionals.md` (full rewrites against the decisions in this proposal)
 2. Update CORE_DESIGN, SYNTAX, GLOSSARY
 3. Implement compiler changes (parser → types → MIR)
-4. Build migration tool
-5. Migrate stdlib
-6. Migrate examples
-7. Update canonical-patterns; write the prior-art comparison page
+4. Migrate stdlib
+5. Migrate examples
+6. Update canonical-patterns; write the prior-art comparison page
 
 ## What "done" looks like
 
