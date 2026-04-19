@@ -18,8 +18,14 @@ func test_double_colon() {
     const x = Result::Ok(42)
 }
 
+// --- Rust-ism: `let` ---
+// ERROR: 'let' is not a keyword — use 'mut' or 'const'
+func test_let() {
+    let x = 0
+}
+
 // --- Rust-ism: `let mut` ---
-// ERROR: 'mut' is not a keyword, 'let' is already rebindable
+// ERROR: 'let' is not a keyword — use 'mut' directly
 func test_let_mut() {
     let mut x = 0
 }

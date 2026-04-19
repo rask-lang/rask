@@ -198,11 +198,11 @@ for item in vec.take_all() { }   // item: T (consuming iteration)
 
 <!-- test: skip -->
 ```rask
-let scores = [3, 1, 4, 1, 5]
+mut scores = [3, 1, 4, 1, 5]
 scores.sort()
 // [1, 1, 3, 4, 5]
 
-let users = get_users()
+mut users = get_users()
 users.sort_by_key(|u| u.name)
 users.sort_by(|a, b| b.score.compare(a.score))  // descending
 ```
@@ -219,7 +219,7 @@ users.sort_by(|a, b| b.score.compare(a.score))  // descending
 
 <!-- test: skip -->
 ```rask
-let items = [3, 1, 4, 1, 5]
+mut items = [3, 1, 4, 1, 5]
 items.contains(4)             // true
 items.first()                 // Some(3)
 items.last()                  // Some(5)
@@ -290,7 +290,7 @@ struct SliceDescriptor<T> {
 | `handle.slice(range)` | `SliceDescriptor<T>` | Create descriptor |
 | `desc.len()` | `usize` | Length of range |
 | `desc.is_empty()` | `bool` | Range is empty |
-| `for x in desc` | Iterator | Iterate (requires ambient pool) |
+| `for x in desc` | `Sequence<T>` | Iterate (requires ambient pool) |
 
 ## Capacity Introspection
 
@@ -429,4 +429,5 @@ FIX: Use try_push to handle capacity limits:
 
 - `mem.pools` — Handle-based sparse storage for graphs, entity systems
 - `mem.borrowing` — View duration rules
-- `std.iteration` — Iterator modes and adapters
+- `std.iteration` — Collection iteration modes
+- `type.sequence` — Sequence protocol, adapters, terminals

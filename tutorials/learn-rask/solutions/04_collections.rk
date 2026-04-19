@@ -5,7 +5,7 @@ func particle_masses() -> Vec<f64> {
 }
 
 func sum_vec(numbers: Vec<f64>) -> f64 {
-    let total = 0.0
+    mut total = 0.0
     for n in numbers {
         total = total + n
     }
@@ -26,7 +26,7 @@ func periodic_table() -> Map<string, i32> {
 }
 
 func dot_product(a: Vec<f64>, b: Vec<f64>) -> f64 {
-    let sum = 0.0
+    mut sum = 0.0
     for i in 0..a.len() {
         sum = sum + a[i] * b[i]
     }

@@ -11,6 +11,20 @@ Rask's "no storable references" design means user-visible types contain only own
 
 **Honest framing:** This isn't impossible elsewhere. GC'd languages can serialize state too. The unique thing is: systems-level performance with deterministic cleanup, and no pointer fixup step. Rust can achieve similar results but requires manual `#[repr(C)]` layout management and unsafe pointer-to-offset conversions.
 
+## Workflows unlocked by one API
+
+`pool.to_bytes()` / `Pool.from_bytes()` is a single pair of methods. Because handles are integers that survive the round-trip, it backs five distinct workflows without any extra primitives:
+
+| Workflow | How `to_bytes` / `from_bytes` backs it |
+|----------|----------------------------------------|
+| Save / load (game state, app state) | Serialize on shutdown, deserialize on startup |
+| Undo / redo | Push `to_bytes()` to a history stack; `from_bytes()` on undo |
+| Hot reload | Serialize → recompile → deserialize; schema evolution handles additive changes |
+| Process migration | Send bytes over the network; handles remain valid on receiver |
+| Time-travel debugging | Checkpoint state per-tick; rewind by loading a prior checkpoint |
+
+This falls out of the no-storable-references choice (handles are integers, not addresses). It's the most concrete payoff of the "everything is a value" principle: state has no hidden pointers, so state is portable.
+
 ## Relocatability Tiers
 
 Not everything is trivially relocatable. Types fall into three tiers based on their internal structure.
@@ -310,5 +324,8 @@ func receive_migration(stream: TcpStream) -> Pool<Entity> or Error {
 
 - [Pools and Handles](pools.md) — Pool API, handle structure, generation counters (`mem.pools`)
 - [Value Semantics](value-semantics.md) — Copy vs move, 16-byte threshold (`mem.value`)
+- [Linearity](linear.md) — Why linear values are the Tier-3 opaque case (`mem.linear`)
+- [Boxes](boxes.md) — Box types and their relocatability tiers (`mem.boxes`)
+- [Resource Types](resource-types.md) — Why resources are Tier-3 opaque (`mem.resources`)
 - [Encoding](../stdlib/encoding.md) — `Encode`/`Decode` traits, field annotations (`std.encoding`)
 - [Reflect](../stdlib/reflect.md) — `reflect.is_flat<T>()`, comptime type introspection (`std.reflect`)

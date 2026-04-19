@@ -54,7 +54,7 @@ func example_resource() -> () or string {
 //   2. Reserve seat, charge payment
 //   3. Commit if everything worked, rollback if not
 //
-// The compiler won't let you forget step 3. If a Booking goes
+// The compiler won't mut you forget step 3. If a Booking goes
 // out of scope without being committed or rolled back → compile error.
 //
 // Fun fact: this is how databases work internally. PostgreSQL's
@@ -150,7 +150,7 @@ test "booking failure" {
 }
 
 test "booking pattern" {
-    let b = Booking.new(42)
+    mut b = Booking.new(42)
     assert b.is_committed() == false
     b.commit()
     assert b.is_committed() == true

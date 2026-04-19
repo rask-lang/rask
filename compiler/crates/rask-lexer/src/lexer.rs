@@ -14,6 +14,8 @@ enum RawToken {
     Func,
     #[token("let")]
     Let,
+    #[token("mut")]
+    Mut,
     #[token("const")]
     Const,
     #[token("struct")]
@@ -446,6 +448,7 @@ impl<'a> Lexer<'a> {
             // Keywords
             RawToken::Func => TokenKind::Func,
             RawToken::Let => TokenKind::Let,
+            RawToken::Mut => TokenKind::Mut,
             RawToken::Const => TokenKind::Const,
             RawToken::Struct => TokenKind::Struct,
             RawToken::Enum => TokenKind::Enum,

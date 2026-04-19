@@ -220,19 +220,19 @@ impl TypeSubstitutor {
             kind: match &stmt.kind {
                 StmtKind::Expr(e) => StmtKind::Expr(self.clone_expr(e)),
 
-                StmtKind::Let {
+                StmtKind::Mut {
                     name,
                     name_span,
                     ty,
                     init,
-                } => StmtKind::Let {
+                } => StmtKind::Mut {
                     name: name.clone(),
                     name_span: name_span.clone(),
                     ty: ty.as_ref().map(|t| self.substitute_type_string(t)),
                     init: self.clone_expr(init),
                 },
 
-                StmtKind::LetTuple { patterns, init } => StmtKind::LetTuple {
+                StmtKind::MutTuple { patterns, init } => StmtKind::MutTuple {
                     patterns: patterns.clone(),
                     init: self.clone_expr(init),
                 },

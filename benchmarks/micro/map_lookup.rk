@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 func fill_map() -> Map<i64, i64> {
-    let m = Map.new()
-    let i = 0
+    mut m = Map.new()
+    mut i = 0
     while i < 10000 {
         m.insert(i, i * 2)
         i = i + 1
@@ -11,9 +11,9 @@ func fill_map() -> Map<i64, i64> {
 }
 
 benchmark "map lookup 10k" {
-    let m = fill_map()
-    let sum = 0
-    let i = 0
+    mut m = fill_map()
+    mut sum = 0
+    mut i = 0
     while i < 10000 {
         sum = sum + m.get(i)
         i = i + 1

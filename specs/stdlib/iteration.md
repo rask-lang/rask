@@ -1,7 +1,7 @@
 <!-- id: std.iteration -->
 <!-- status: decided -->
 <!-- summary: Iteration modes for Vec, Pool, and Map collections -->
-<!-- depends: stdlib/collections.md, memory/pools.md, control/loops.md, types/iterator-protocol.md -->
+<!-- depends: stdlib/collections.md, memory/pools.md, control/loops.md, types/sequence-protocol.md -->
 
 # Collection Iteration Patterns
 
@@ -388,4 +388,4 @@ const vec = vec.take_all().filter(|item| !item.expired).collect()
 - `std.collections` — Vec, Map APIs
 - `mem.pools` — Pool and Handle types
 - `ctrl.loops` — Loop syntax and desugaring
-- `type.iterator-protocol` — Iterator trait
+- `type.sequence` — Sequence protocol, adapters, terminals

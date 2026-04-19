@@ -12,7 +12,7 @@ func find_positive(n: i32) -> i32? {
 
 test "option some match" {
     const result = find_positive(5)
-    let value = 0
+    mut value = 0
     match result {
         Some(v) => value = v
         None => value = -1
@@ -22,7 +22,7 @@ test "option some match" {
 
 test "option none match" {
     const result = find_positive(-3)
-    let value = 0
+    mut value = 0
     match result {
         Some(v) => value = v
         None => value = -1

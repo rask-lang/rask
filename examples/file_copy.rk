@@ -35,16 +35,16 @@ struct CopyOptions {
 }
 
 func parse_args(take args: Vec<string>) -> CopyOptions or string {
-    let opts = CopyOptions {
+    mut opts = CopyOptions {
         source: "",
         dest: "",
         force: false,
         verbose: false,
     }
 
-    let positional = Vec.new()
+    mut positional = Vec.new()
 
-    let i: usize = 1
+    mut i: usize = 1
     while i < args.len() {
         const arg = args[i]
         match arg {

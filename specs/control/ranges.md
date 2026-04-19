@@ -1,7 +1,7 @@
 <!-- id: ctrl.ranges -->
 <!-- status: decided -->
 <!-- summary: Half-open and inclusive ranges with step, reverse, and infinite iteration -->
-<!-- depends: control/loops.md, types/iterator-protocol.md -->
+<!-- depends: control/loops.md, types/sequence-protocol.md -->
 
 # Range Iteration
 
@@ -82,7 +82,7 @@ for x in (0.0..1.0).step(0.1) { }  // Floats: 0.0, 0.1, ..., 0.9
 
 <!-- test: skip -->
 ```rask
-let vec: Vec<u16> = Vec.new()
+mut vec: Vec<u16> = Vec.new()
 for i in 0..vec.len() { }  // i inferred as usize
 for i in 0..10 { }          // i inferred as i32 (default)
 for i in 0u8..10 { }        // i explicitly u8
@@ -132,16 +132,16 @@ struct RangeInclusive<T> {
     exhausted: bool
 }
 
-extend RangeInclusive<T> with Iterator<T> where T: Int {
-    func next(self) -> Option<T> {
-        if self.exhausted { return None }
-        if self.start == self.end {
-            self.exhausted = true
-            return Some(self.end)
+extend RangeInclusive<T> where T: Int {
+    public func iter(self) -> Sequence<T> {
+        return |yield| {
+            mut cur = self.start
+            loop {
+                if not yield(cur): return
+                if cur == self.end: return
+                cur += 1
+            }
         }
-        const val = self.start
-        self.start += 1
-        Some(val)
     }
 }
 ```
@@ -149,4 +149,4 @@ extend RangeInclusive<T> with Iterator<T> where T: Int {
 ### See Also
 
 - `ctrl.loops` — loop syntax and borrowing
-- `type.iterators` — iterator trait and adapters
+- `type.sequence` — sequence protocol, adapters, terminals

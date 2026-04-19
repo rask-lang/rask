@@ -23,7 +23,7 @@ func load() -> Config or (IoError | ParseError)
 func process() -> Output or (IoError | ParseError | ValidationError)
 
 // Invalid: general unions not allowed
-let x: int | string = ...              // Compile error
+mut x: int | string = ...              // Compile error
 func foo(input: A | B) -> C           // Compile error
 ```
 
@@ -68,10 +68,10 @@ func load() -> Config or (IoError | ParseError) {
 <!-- test: skip -->
 ```rask
 match result {
-    Ok(config) => use(config),
-    Err(IoError.NotFound(p)) => println("not found: {}", p),
-    Err(ParseError.Syntax(l, c)) => println("syntax error at {}:{}", l, c),
-    Err(_) => println("other error"),
+    Config as config => use(config),
+    IoError.NotFound(p) => println("not found: {}", p),
+    ParseError.Syntax(l, c) => println("syntax error at {}:{}", l, c),
+    _ => println("other error"),
 }
 ```
 
@@ -172,9 +172,9 @@ func load_app() -> App or (IoError | ParseError | ValidationError) {
 
 <!-- test: skip -->
 ```rask
-// Instead of: let value: int | string = ...
+// Instead of: mut value: int | string = ...
 enum IntOrString { Int(i32), String(string) }
-let value: IntOrString = IntOrString.Int(42)
+mut value: IntOrString = IntOrString.Int(42)
 ```
 
 Explicit enums are self-documenting (meaningful variant names), extensible (add methods), and clear at call sites.

@@ -24,7 +24,7 @@ extend Vec3 {
 
 func sqrt(x: f64) -> f64 {
     if x <= 0.0 { return 0.0 }
-    let g = x / 2.0
+    mut g = x / 2.0
     for i in 0..30 { g = (g + x / g) / 2.0 }
     return g
 }
@@ -79,7 +79,7 @@ func step(ac: Aircraft, dt: f64) -> Aircraft {
     const f = total_force(ac)
     const accel = f.scale(1.0 / ac.mass)
     const new_vel = ac.velocity.add(accel.scale(dt))
-    let new_pos = ac.position.add(new_vel.scale(dt))
+    mut new_pos = ac.position.add(new_vel.scale(dt))
     if new_pos.z < 0.0 {
         new_pos = Vec3 { x: new_pos.x, y: new_pos.y, z: 0.0 }
     }
@@ -118,7 +118,7 @@ func phase_name(p: Phase) -> string {
 }
 
 func simulate(take ac: Aircraft, dt: f64, n_steps: i32) -> f64 {
-    let current = ac
+    mut current = ac
     for i in 0..n_steps {
         current = step(current, dt)
     }
@@ -214,7 +214,7 @@ test "flight phase" {
 }
 
 test "simulation runs" {
-    let ac = Aircraft {
+    mut ac = Aircraft {
         position: Vec3.zero(),
         velocity: Vec3.new(0.0, 50.0, 0.0),
         mass: 1000.0, thrust_n: 30000.0, wing_area: 20.0,
@@ -225,7 +225,7 @@ test "simulation runs" {
 }
 
 func main() {
-    let ac = Aircraft {
+    mut ac = Aircraft {
         position: Vec3.zero(),
         velocity: Vec3.new(0.0, 70.0, 0.0),
         mass: 2000.0,

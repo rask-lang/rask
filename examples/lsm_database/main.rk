@@ -15,7 +15,7 @@ struct CliArgs {
 }
 
 func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
-    let result = CliArgs {
+    mut result = CliArgs {
         command: "",
         db_dir: "./rask-db",
         key: "",
@@ -25,8 +25,8 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
         prefix: "key",
     }
 
-    let positional = Vec.new()
-    let i = 1
+    mut positional = Vec.new()
+    mut i = 1
 
     while i < args.len() {
         const arg = args[i]
@@ -102,7 +102,7 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
 
     // Sequential writes
     println("Writing {count} keys...")
-    let i = 0
+    mut i = 0
     while i < count {
         const key = "{prefix}_{i:06}"
         const padding = "x".repeat(64)
@@ -114,8 +114,8 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
 
     // Point reads
     println("Reading {count} keys...")
-    let found = 0
-    let missing = 0
+    mut found = 0
+    mut missing = 0
     i = 0
     while i < count {
         const key = "{prefix}_{i:06}"
@@ -136,7 +136,7 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
 
     // Delete every other key
     println("Deleting {count / 2} keys...")
-    let deleted = 0
+    mut deleted = 0
     i = 0
     while i < count {
         if i % 2 == 0 {
@@ -149,8 +149,8 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
 
     // Verify deletes
     println("Verifying deletes...")
-    let still_found = 0
-    let correctly_deleted = 0
+    mut still_found = 0
+    mut correctly_deleted = 0
     i = 0
     while i < count {
         const key = "{prefix}_{i:06}"
@@ -176,7 +176,7 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
 
 func run(args: CliArgs) -> () or DbError {
     const config = DbConfig.default_for(args.db_dir)
-    let db = try Db.open(config)
+    mut db = try Db.open(config)
     ensure db.close() else |_| {}
 
     match args.command {

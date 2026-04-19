@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 benchmark "map insert 10k" {
-    let m = Map.new()
-    let i = 0
+    mut m = Map.new()
+    mut i = 0
     while i < 10000 {
         m.insert(i, i * 2)
         i = i + 1

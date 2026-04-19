@@ -25,7 +25,7 @@ Rask compiles at function granularity. Each monomorphized function is independen
 func sort<T: Comparable>(items: Vec<T>) {
     for i in 1..items.len() {
         const key = items[i]
-        let j = i
+        mut j = i
         while j > 0 and items[j - 1] > key {
             items[j] = items[j - 1]
             j -= 1

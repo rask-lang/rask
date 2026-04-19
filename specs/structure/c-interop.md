@@ -192,9 +192,9 @@ import c "sqlite3.h" as sql
 public struct Database { handle: *sql.sqlite3 }
 
 public func open(path: string) -> Database or Error {
-    let db: *sql.sqlite3 = null
+    mut db: *sql.sqlite3 = null
     unsafe {
-        let rc = sql.sqlite3_open(path.as_c_str(), &db)
+        mut rc = sql.sqlite3_open(path.as_c_str(), &db)
         if rc != sql.SQLITE_OK {
             return Err(Error.new("sqlite open failed"))
         }
@@ -208,7 +208,7 @@ public func open(path: string) -> Database or Error {
 ```rask
 public extern "C" func rask_process(data: *u8, len: c_size) -> c_int {
     unsafe {
-        let slice = slice_from_raw(data, len)
+        mut slice = slice_from_raw(data, len)
         match process(slice) {
             Ok(_) => 0,
             Err(_) => -1,

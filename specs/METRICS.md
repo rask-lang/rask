@@ -1,6 +1,6 @@
 # Holy Grail Language Metrics V2.0
 
-**Goal:** Groundbreaking systems language that eliminates abstraction tax while covering 80%+ of real-world use cases.
+**Goal:** A language that eliminates abstraction tax while covering 80%+ of real-world use cases.
 
 These metrics are how I measure whether the design actually works. If Rask doesn't hit these targets, it's just another language—not worth building.
 

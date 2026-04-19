@@ -42,7 +42,7 @@ Rask uses words where other languages use symbols:
 |---------|------|------------|
 | Error propagation | `try expr` | `expr?` |
 | Ownership transfer | `own value` | implicit move |
-| Pattern check | `x is Some(v)` | `let Some(v) = x` |
+| Pattern check | `if x? as v { … }` | `let Some(v) = x` |
 | Result type | `T or E` | `Result<T, E>` |
 
 Keywords are unambiguous tokens. `try` means one thing in Rask. `?` means different things in different languages. Tools that process multiple languages benefit from unambiguous tokens; developers benefit from readable code.
@@ -150,14 +150,15 @@ func load_config(path: string) -> Config or IoError {
 
 // Handling — react to the specific error
 match fs.read_file(path) {
-    Ok(data) => process(data),
-    Err(e) => log("failed to read {path}: {e}"),
+    Data as data => process(data),
+    IoError as e => log("failed to read {path}: {e.message()}"),
 }
 
 // Guard pattern — early return on error
 func get_user(id: i64) -> User or NotFound {
-    let user = db.find(id) is Ok else { return Err(NotFound {}) }
-    return user
+    const found = db.find(id)
+    if found is NotFound as e { return e }
+    return found!
 }
 ```
 
@@ -188,7 +189,7 @@ const text = try fs.read_file(path) else |e| {
 
 **Anti-patterns:**
 - `x!` in production code — crashes on error. Use `try` or `match`.
-- Long `if result is Err(e)` chains — use `try` for propagation.
+- Long `if result is E as e` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
 - Using `context()` in library code where callers need to match on error types — use typed domain errors with `try...else` instead.
 
@@ -225,11 +226,16 @@ See [control/ensure.md](control/ensure.md), [memory/resource-types.md](memory/re
 
 ## Option Handling
 
-Four patterns, each for a different situation.
+Four patterns, each for a different situation. Option is a builtin status type with an operator-only surface — no `Some`/`None` wrappers, no `match` arms.
 
 ```rask
-// Single check — do something if present
-if opt is Some(v) {
+// Single check — narrow in place (const scrutinee)
+if opt? {
+    use(opt)
+}
+
+// Single check — bind for mut or when renaming reads better
+if opt? as v {
     use(v)
 }
 
@@ -237,18 +243,21 @@ if opt is Some(v) {
 const name = opt ?? "anonymous"
 
 // Guard — early return if absent
-let v = opt is Some else { return None }
+if opt == none { return none }
+use(opt)   // opt: T here (early-exit narrow)
 
-// Full handling — both branches matter
-match opt {
-    Some(v) => process(v),
-    None => handle_missing(),
+// Full handling — both branches matter, use if/else (not match)
+if opt? {
+    process(opt)
+} else {
+    handle_missing()
 }
 ```
 
 **Anti-patterns:**
-- `x!` without checking — crashes on None.
-- Nested `if opt is Some` when `match` is clearer.
+- `x!` without checking — crashes on none.
+- `match` on Option — rejected with a migration diagnostic. Use the operator family.
+- `!x?` — parse error. Use `x == none`.
 
 See [types/optionals.md](types/optionals.md).
 
@@ -303,7 +312,7 @@ Strings are UTF-8. Use `format()` for building, methods for inspecting.
 const msg = format("hello, {name}! you have {count} messages")
 
 // StringBuilder — for loops or many concatenations
-let sb = StringBuilder.new()
+mut sb = StringBuilder.new()
 for item in items {
     sb.append("{item}\n")
 }
@@ -328,6 +337,46 @@ const clean = input.trim()
 - Byte-level indexing when you mean character operations — use `.chars()`.
 
 See [stdlib/strings.md](stdlib/strings.md), [stdlib/fmt.md](stdlib/fmt.md).
+
+---
+
+## Choosing a Box
+
+When a value needs cross-scope access — shared ownership, identity-based references, cross-task mutation — pick a box from the family. The choice is not neutral: it sets the shape of the program. Pick by access discipline, not by habit from another language.
+
+| Need | Pick | Discipline |
+|------|------|------------|
+| One mutable value shared across closures in one task | `Cell<T>` | Exclusive, single-task |
+| Graph / ECS / entity table / anything identity-shaped | `Pool<T>` + `Handle<T>` | Generation-checked, sendable |
+| Read-heavy config / feature flags across tasks | `Shared<T>` | Many readers XOR one writer |
+| Queue / state machine / exclusive mutation across tasks | `Mutex<T>` | Exclusive lock |
+| Recursive types / single-owner heap value | `Owned<T>` | Linear, single consumer |
+| Single primitive read/written atomically | `Atomic*<T>` | Intrinsic ops (not a box) |
+
+**Rule of thumb:** scope grows from left to right. `Cell` stays in one task; `Owned` is linear and moves; `Pool` is identity-durable and sendable; `Shared`/`Mutex` cross task boundaries. Start with the smallest discipline that fits.
+
+**Graph-shaped data is Pool-shaped.** If your program has cycles, parent pointers, entity references, or any "node A knows about node B" relationship that isn't a tree, it routes through `Pool<T>` + `Handle<T>`. There is no storable-reference alternative. A Rask codebase with significant graph state looks structurally different from a Go or Rust equivalent — pool declarations at the root, handles flowing through call graphs, `using Pool<T>` clauses on functions that dereference. This is not a bug; it's the shape.
+
+**Multiple pools of the same element type need nominal separation.** If you have `Pool<Entity>` for live entities and `Pool<Entity>` for archived ones in the same scope, `using Pool<Entity>` is ambiguous at call sites (`mem.context/CC8`). Wrap one or both in a newtype:
+
+```rask
+struct Live(Pool<Entity>)
+struct Archive(Pool<Entity>)
+
+mut live = Live(Pool.new())
+mut archive = Archive(Pool.new())
+
+func damage(h: Handle<Entity>, amount: i32) using Pool<Entity> {
+    // auto-resolves against the pool that's currently in scope
+}
+```
+
+**Anti-patterns:**
+- Reaching for `Shared<T>` when `Cell<T>` or passing a `mutate` parameter would do — adds cross-task machinery for single-task code.
+- Using `Pool<T>` for simple containers where `Vec<T>` suffices — pools are for identity, not storage.
+- Using `Owned<T>` where a plain value works — `Owned` is for recursion or explicit heap placement, not a default.
+
+See [memory/boxes.md](memory/boxes.md), [memory/pools.md](memory/pools.md), [memory/cell.md](memory/cell.md), [concurrency/sync.md](concurrency/sync.md), [memory/owned.md](memory/owned.md).
 
 ---
 
@@ -428,7 +477,7 @@ const data = try file.read_text()
 
 // Buffered I/O
 const reader = BufReader.new(file)
-while try reader.read_line() is Some(line) {
+while (try reader.read_line())? as line {
     process(line)
 }
 ```
@@ -465,7 +514,9 @@ if point is Point { x, y } {
 }
 
 // Guard pattern
-let conn = try_connect() is Ok else { return Err(ConnectFailed {}) }
+const conn = try_connect()
+if conn is ConnectFailed as e { return e }
+use(conn!)   // or narrow via early-exit rule
 ```
 
 **Anti-patterns:**
@@ -507,7 +558,7 @@ const result = items
 - `while` with manual index increment — use `for i in 0..n`.
 - Manual `collect` loops — use `.map()` / `.filter()` / `.fold()`.
 
-See [stdlib/iteration.md](stdlib/iteration.md), [types/iterator-protocol.md](types/iterator-protocol.md).
+See [stdlib/iteration.md](stdlib/iteration.md), [types/sequence-protocol.md](types/sequence-protocol.md).
 
 ---
 

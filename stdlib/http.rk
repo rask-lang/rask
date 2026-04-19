@@ -151,7 +151,7 @@ extend Request {
 
     // All query parameters as a map.
     public func query_params(self) -> Map<string, string> {
-        let result = Map<string, string>.new()
+        mut result = Map<string, string>.new()
         const qpos = self.url.find("?")
         if qpos is None { return result }
 
@@ -192,7 +192,7 @@ extend Response {
     }
 
     public func json(body: string) -> Response {
-        let resp = Response.new(200, body)
+        mut resp = Response.new(200, body)
         resp.headers.set("Content-Type", "application/json")
         return resp
     }
@@ -218,7 +218,7 @@ extend Response {
     }
 
     public func redirect(url: string) -> Response {
-        let resp = Response.new(302, "")
+        mut resp = Response.new(302, "")
         resp.headers.set("Location", url)
         return resp
     }
@@ -284,7 +284,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
     }
 
     // Find end of request line (first \r\n)
-    let line_end: usize = 0
+    mut line_end: usize = 0
     while line_end + 1 < len {
         if raw.byte_at(line_end) == 13 && raw.byte_at(line_end + 1) == 10 {
             break
@@ -294,11 +294,11 @@ func parse_http_request(raw: string) -> Request or HttpError {
     const request_line = raw[0..line_end]
 
     // Parse request line: "METHOD PATH HTTP/1.1"
-    let first_sp: usize = 0
+    mut first_sp: usize = 0
     while first_sp < line_end && raw.byte_at(first_sp) != 32 {
         first_sp += 1
     }
-    let second_sp = first_sp + 1
+    mut second_sp = first_sp + 1
     while second_sp < line_end && raw.byte_at(second_sp) != 32 {
         second_sp += 1
     }
@@ -311,9 +311,9 @@ func parse_http_request(raw: string) -> Request or HttpError {
     }
 
     // Parse headers: starts after first \r\n, ends at \r\n\r\n
-    let headers = Headers.new()
-    let pos = line_end + 2  // skip past \r\n
-    let header_end = pos
+    mut headers = Headers.new()
+    mut pos = line_end + 2  // skip past \r\n
+    mut header_end = pos
 
     while pos + 1 < len {
         if raw.byte_at(pos) == 13 && raw.byte_at(pos + 1) == 10 {
@@ -322,7 +322,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
             break
         }
 
-        let hline_end = pos
+        mut hline_end = pos
         while hline_end + 1 < len {
             if raw.byte_at(hline_end) == 13 && raw.byte_at(hline_end + 1) == 10 {
                 break
@@ -330,7 +330,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
             hline_end += 1
         }
 
-        let colon = pos
+        mut colon = pos
         while colon < hline_end {
             if raw.byte_at(colon) == 58 && colon + 1 < hline_end && raw.byte_at(colon + 1) == 32 {
                 break
@@ -391,7 +391,7 @@ func reason_phrase(status: u16) -> string {
 
 // Format an HTTP/1.1 response into a raw byte string for the wire.
 func format_http_response(resp: Response) -> string {
-    let out = string.new()
+    mut out = string.new()
 
     // Status line
     out.push_str("HTTP/1.1 ")
@@ -436,7 +436,7 @@ func write_raw(conn_fd: i64, data: string) {
 
 // Parse "http://host:port/path" into (host, port, path).
 func parse_url(url: string) -> (string, string, string) or HttpError {
-    let rest = url
+    mut rest = url
 
     // Strip scheme
     if rest.starts_with("http://") {
@@ -446,8 +446,8 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     }
 
     // Split host+port from path at first /
-    let host_port = rest
-    let path = "/"
+    mut host_port = rest
+    mut path = "/"
     const slash = rest.find("/")
     if slash is Some(pos) {
         host_port = rest[0..pos].to_string()
@@ -455,8 +455,8 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     }
 
     // Split host from port at last :
-    let host = host_port
-    let port = "80"
+    mut host = host_port
+    mut port = "80"
     const colon = host_port.find(":")
     if colon is Some(cpos) {
         host = host_port[0..cpos].to_string()
@@ -472,7 +472,7 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
 
 // Format an HTTP/1.1 request for the wire.
 func format_http_request(req: Request, host: string) -> string {
-    let out = string.new()
+    mut out = string.new()
 
     // Request line
     out.push_str(req.method.to_string())
@@ -517,7 +517,7 @@ func parse_http_response(raw: string) -> Response or HttpError {
     }
 
     // Find end of status line
-    let line_end: usize = 0
+    mut line_end: usize = 0
     while line_end + 1 < len {
         if raw.byte_at(line_end) == 13 && raw.byte_at(line_end + 1) == 10 {
             break
@@ -527,11 +527,11 @@ func parse_http_response(raw: string) -> Response or HttpError {
 
     // Parse status line: "HTTP/1.1 200 OK"
     const status_line = raw[0..line_end]
-    let first_sp: usize = 0
+    mut first_sp: usize = 0
     while first_sp < line_end && raw.byte_at(first_sp) != 32 {
         first_sp += 1
     }
-    let second_sp = first_sp + 1
+    mut second_sp = first_sp + 1
     while second_sp < line_end && raw.byte_at(second_sp) != 32 {
         second_sp += 1
     }
@@ -543,15 +543,15 @@ func parse_http_response(raw: string) -> Response or HttpError {
     const status = status_val as u16
 
     // Parse headers
-    let headers = Headers.new()
-    let pos = line_end + 2
+    mut headers = Headers.new()
+    mut pos = line_end + 2
     while pos + 1 < len {
         if raw.byte_at(pos) == 13 && raw.byte_at(pos + 1) == 10 {
             pos += 2
             break
         }
 
-        let hline_end = pos
+        mut hline_end = pos
         while hline_end + 1 < len {
             if raw.byte_at(hline_end) == 13 && raw.byte_at(hline_end + 1) == 10 {
                 break
@@ -559,7 +559,7 @@ func parse_http_response(raw: string) -> Response or HttpError {
             hline_end += 1
         }
 
-        let colon = pos
+        mut colon = pos
         while colon < hline_end {
             if raw.byte_at(colon) == 58 && colon + 1 < hline_end && raw.byte_at(colon + 1) == 32 {
                 break
@@ -603,7 +603,7 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
     }
 
     // Build and send request
-    let req = Request.new(method, path)
+    mut req = Request.new(method, path)
     for (name, value) in extra_headers.entries.iter() {
         req = req.with_header(name, value)
     }

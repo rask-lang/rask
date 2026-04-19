@@ -212,14 +212,14 @@ func process(data: []f32, scale: f32) {
 ```rask
 func sum_array(data: []f32) -> f32 {
     const N = Vec[f32, native].lanes
-    let acc: Vec[f32, native] = [0.0; N]
+    mut acc: Vec[f32, native] = [0.0; N]
     const main_end = (data.len() / N) * N
 
     for i in (0..main_end).step_by(N) {
         acc = acc + Vec[f32, native].load(data[i..])
     }
 
-    let total = acc.sum()
+    mut total = acc.sum()
     for i in main_end..data.len() {
         total += data[i]
     }

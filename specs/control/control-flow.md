@@ -235,7 +235,7 @@ const result = {
 | **CF32: Never coercion** | `Never` coerces to any type |
 
 ```rask
-let x: i32 = if cond { 42 } else { panic("nope") }
+mut x: i32 = if cond { 42 } else { panic("nope") }
 // else branch is Never, coerces to i32
 ```
 
@@ -372,8 +372,8 @@ const point = (10, 20)
 const (x, y) = point
 
 func use_destructuring() {
-    // Mutable destructuring (let requires function scope)
-    let (a, b) = get_pair()
+    // Mutable destructuring (mut requires function scope)
+    mut (a, b) = get_pair()
     a = a + 1
 
     // For loop destructuring
@@ -521,7 +521,7 @@ Some expressions never complete normally:
 `Never` coerces to any type, allowing branches with different control flow:
 
 ```rask
-let x: i32 = if cond { 42 } else { return }
+mut x: i32 = if cond { 42 } else { return }
 // else branch is Never, coerces to i32
 ```
 
@@ -564,7 +564,7 @@ const input = loop {
 <!-- test: skip -->
 ```rask
 func find_first<T: Equal>(items: Vec<T>, target: T) -> Option<usize> {
-    let i = 0
+    mut i = 0
     loop {
         if i >= items.len() {
             break None

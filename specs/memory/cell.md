@@ -141,6 +141,7 @@ PANIC: Cell is exclusively borrowed — recursive access in with block
 
 ### See Also
 
+- [Boxes](boxes.md) — The container family Cell belongs to (`mem.boxes`)
 - [Closures](closures.md) — Mutable capture, closure patterns (`mem.closures`)
 - [Pools](pools.md) — Handle-based collections (`mem.pools`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T>` for cross-task access (`conc.sync`)

@@ -13,7 +13,7 @@ Block-scoped `ensure` statement schedules an expression to run when the enclosin
 | **EN1: Block-scoped** | Executes when enclosing block exits, not function |
 | **EN2: LIFO ordering** | Multiple ensure statements run in reverse order (last scheduled runs first) |
 | **EN3: Linear consumption commitment** | `ensure` on linear resource counts as consumption guarantee |
-| **EN4: Errors ignored by default** | If ensure body returns `Result` and fails, error silently ignored |
+| **EN4: Errors ignored by default** | If ensure body returns `T or E` and fails, error silently ignored |
 | **EN5: try forbidden in ensure** | Cannot use `try` inside ensure body or else handler |
 | **EN6: Explicit consumption cancels ensure** | If value is consumed before scope exit, ensure is void |
 
@@ -86,7 +86,7 @@ func process() -> () or Error {
 
     const data = try file.read()        // Safe to use try now
     try transform(data)
-    Ok(())
+    // implicit unit success at end
 }
 // Compiler accepts: file's consumption is guaranteed
 ```
@@ -277,7 +277,7 @@ Cleaning up pools of linear resources:
 <!-- test: parse -->
 ```rask
 func process_many_files(paths: Vec<string>) -> () or Error {
-    let files: Pool<File> = Pool.new()
+    mut files: Pool<File> = Pool.new()
     ensure files.take_all_with(|f| { f.close(); })
 
     for path in paths {
@@ -297,7 +297,7 @@ Errors during cleanup (e.g., `close()` fails) are ignored by default (ER1). If c
 <!-- test: parse -->
 ```rask
 func process_many_files_careful(paths: Vec<string>) -> () or Error {
-    let files: Pool<File> = Pool.new()
+    mut files: Pool<File> = Pool.new()
 
     for path in paths {
         const file = try File.open(path)
@@ -459,7 +459,7 @@ func modify_database(db: Database) -> () or Error {
 <!-- test: skip -->
 ```rask
 func process_many(paths: Vec<string>) -> () or Error {
-    let resources: Pool<Resource> = Pool.new()
+    mut resources: Pool<Resource> = Pool.new()
     ensure resources.take_all_with(|r| { r.cleanup(); })
 
     for path in paths {

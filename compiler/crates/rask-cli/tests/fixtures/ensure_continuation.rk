@@ -6,7 +6,7 @@
 // not found" when they targeted the post-cleanup continuation.
 
 func run(flag: bool) -> i64 {
-    let counter: i64 = 0
+    mut counter: i64 = 0
     ensure { counter = counter + 10 }
 
     if flag {

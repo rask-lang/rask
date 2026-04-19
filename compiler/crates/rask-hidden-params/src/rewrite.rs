@@ -94,10 +94,10 @@ fn rewrite_stmts(pass: &mut HiddenParamPass, caller: &str, stmts: &mut [Stmt]) {
 fn rewrite_stmt(pass: &mut HiddenParamPass, caller: &str, stmt: &mut Stmt) {
     match &mut stmt.kind {
         StmtKind::Expr(e) => rewrite_expr(pass, caller, e),
-        StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
             rewrite_expr(pass, caller, init);
         }
-        StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
             rewrite_expr(pass, caller, init);
         }
         StmtKind::Assign { target, value } => {

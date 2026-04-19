@@ -64,15 +64,15 @@ pub fn tuple_pats_flat_names(pats: &[TuplePat]) -> Vec<&str> {
 pub enum StmtKind {
     /// Expression statement
     Expr(Expr),
-    /// Let binding (mutable)
-    Let {
+    /// Mut binding (rebindable)
+    Mut {
         name: String,
         name_span: Span,
         ty: Option<String>,
         init: Expr,
     },
-    /// Let tuple destructuring
-    LetTuple {
+    /// Mut tuple destructuring
+    MutTuple {
         patterns: Vec<TuplePat>,
         init: Expr,
     },

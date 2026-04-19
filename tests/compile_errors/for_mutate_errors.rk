@@ -2,7 +2,7 @@
 // ERROR: cannot push during mutable iteration
 
 func test_structural_mutation() {
-    let items = Vec.new<string>()
+    mut items = Vec.new<string>()
     items.push("hello")
 
     for mutate item in items {
@@ -19,7 +19,7 @@ func consume(take s: string) {
 }
 
 func test_take_item() {
-    let items = Vec.new<string>()
+    mut items = Vec.new<string>()
     items.push("hello")
 
     for mutate item in items {

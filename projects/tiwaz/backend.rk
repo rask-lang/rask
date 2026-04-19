@@ -11,7 +11,7 @@ extend BackendPool {
     func next_healthy(self) -> Backend or ProxyError {
         with self.index.lock() as idx {
             const count = self.backends.len()
-            let checked = 0
+            mut checked = 0
             loop {
                 if checked >= count {
                     return Err(ProxyError.UpstreamUnreachable)

@@ -75,7 +75,7 @@ test "break inside with" {
     v.push(2)
     v.push(3)
 
-    let found = -1
+    mut found = -1
     for i in 0..v.len() {
         with v[i] as item {
             if item == 2 {

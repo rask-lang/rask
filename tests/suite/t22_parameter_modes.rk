@@ -36,7 +36,7 @@ func increment(mutate p: Point) {
 }
 
 test "mutate mode modifies caller value" {
-    let p = Point { x: 1, y: 2 }
+    mut p = Point { x: 1, y: 2 }
     increment(p)
     assert p.x == 2
     assert p.y == 3
@@ -66,7 +66,7 @@ func reset(mutate p: Point) {
 }
 
 test "mutate allows reassignment" {
-    let p = Point { x: 99, y: 99 }
+    mut p = Point { x: 99, y: 99 }
     reset(p)
     assert p.x == 0
     assert p.y == 0
@@ -119,7 +119,7 @@ test "self borrow" {
 }
 
 test "mutate self" {
-    let p = Point { x: 1, y: 2 }
+    mut p = Point { x: 1, y: 2 }
     p.translate(10, 20)
     assert p.x == 11
     assert p.y == 22
@@ -143,7 +143,7 @@ func modify_int(mutate x: i32) {
 }
 
 test "mutate on copy type only affects local copy" {
-    let x = 42
+    mut x = 42
     modify_int(x)
     assert x == 42
 }
@@ -157,7 +157,7 @@ func swap_fields(mutate x: i32, mutate y: i32) {
 }
 
 test "disjoint field mutate" {
-    let p = Point { x: 1, y: 2 }
+    mut p = Point { x: 1, y: 2 }
     swap_fields(p.x, p.y)
     assert p.x == 2
     assert p.y == 1

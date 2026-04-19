@@ -52,7 +52,7 @@ extend Document {
         const file = try fs.open(path)
         ensure file.close()
 
-        let doc = Document.new()
+        mut doc = Document.new()
         for line in file.lines() {
             const text = try line
             const h = doc.lines.insert(Line { text: text })
@@ -237,7 +237,7 @@ func print_help() {
 }
 
 func main() -> () or Error {
-    let doc = Document.new()
+    mut doc = Document.new()
 
     println("Simple Text Editor - type 'help' for commands")
 

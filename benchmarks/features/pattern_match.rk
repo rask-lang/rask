@@ -15,10 +15,10 @@ func area(s: Shape) -> i64 {
 }
 
 benchmark "match enum 10M" {
-    let sum = 0
-    let i = 0
+    mut sum = 0
+    mut i = 0
     while i < 10000000 {
-        let s = match i % 3 {
+        mut s = match i % 3 {
             0 => Shape.Circle(i),
             1 => Shape.Rect(i, i + 1),
             _ => Shape.Point,

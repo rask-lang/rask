@@ -215,11 +215,18 @@ mod tests {
     }
 
     #[test]
+    fn rust_syntax_let() {
+        let result = parse("func main() { let counter = 0 }");
+        assert!(!result.is_ok());
+        assert_eq!(result.errors[0].message, "'let' is not a keyword in Rask");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("use 'mut' for rebindable bindings or 'const' for permanent bindings"));
+    }
+
+    #[test]
     fn rust_syntax_let_mut() {
         let result = parse("func main() { let mut counter = 0 }");
         assert!(!result.is_ok());
-        assert_eq!(result.errors[0].message, "unexpected 'mut' keyword");
-        assert_eq!(result.errors[0].hint.as_deref(), Some("'let' is already mutable in Rask. Use 'const' for immutable bindings"));
+        assert_eq!(result.errors[0].message, "'let' is not a keyword in Rask");
     }
 
     #[test]
@@ -1208,6 +1215,52 @@ mod tests {
             assert!(matches!(e.kind, ExprKind::Call { .. }));
         } else {
             panic!("expected return with value");
+        }
+    }
+
+    // mem.closures/CP2: typed mutable-borrow parameter `|mutate x: T|`
+    #[test]
+    fn closure_mutate_param_with_type() {
+        let stmts = parse_body("const f = |mutate x: Item| { x.level += 1 }");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::Closure { ref params, .. } = init.kind {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+                assert!(params[0].is_mutate, "expected is_mutate = true");
+                assert_eq!(params[0].ty.as_deref(), Some("Item"));
+            } else {
+                panic!("expected closure, got {:?}", init.kind);
+            }
+        } else {
+            panic!("expected const binding");
+        }
+    }
+
+    // mem.closures/CP3: `|mutate x|` without type must be rejected as a param form.
+    #[test]
+    fn closure_mutate_param_without_type_errors() {
+        let result = parse_body_err("const f = |mutate x| { x }");
+        assert!(result.errors.iter().any(|e| e.message.contains("'mutate' requires an explicit type")),
+            "expected error about mutate requiring explicit type, got {:?}", result.errors);
+    }
+
+    // Existing untyped closure params still parse as read-only borrows (CP1).
+    #[test]
+    fn closure_untyped_param_still_works() {
+        let stmts = parse_body("const f = |x| x * 2");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::Closure { ref params, .. } = init.kind {
+                assert_eq!(params.len(), 1);
+                assert!(!params[0].is_mutate);
+                assert!(!params[0].is_take);
+                assert!(params[0].ty.is_none());
+            } else {
+                panic!("expected closure");
+            }
+        } else {
+            panic!("expected const binding");
         }
     }
 }

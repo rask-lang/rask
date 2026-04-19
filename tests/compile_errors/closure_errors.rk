@@ -6,7 +6,7 @@
 // --- mutable capture conflict (MC2) ---
 // ERROR: variable 'x' already mutably captured
 func test_double_mutable_capture() {
-    let x = 0
+    mut x = 0
     const a = |mutate x| { x += 1 }
     const b = |mutate x| { x += 2 }   // ERROR: x already captured by a
 }

@@ -28,7 +28,7 @@ const FIBONACCI = comptime {
 // Powers of two
 const POWERS_OF_TWO = comptime {
     const powers = Vec.new()
-    let power = 1
+    mut power = 1
     for i in 0..16 {
         powers.push(power)
         power = power * 2
@@ -41,7 +41,7 @@ const PRIMES = comptime {
     const primes = Vec.new()
 
     for n in 2..50 {
-        let is_prime = true
+        mut is_prime = true
 
         for i in 2..n {
             if i * i > n {

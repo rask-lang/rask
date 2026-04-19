@@ -10,6 +10,8 @@ The breakthrough was realizing that most of Rust's complexity comes from trying 
 
 ## Design Principles
 
+The nine principles below are applications of one meta-principle: **safety through visibility.** Wherever other systems-languages trade safety against ceremony, Rask tries to make safety *visible in source* — as explicit calls, scoped blocks, and named keywords — rather than hide it in destructors, lifetime annotations, or effect types. Cleanup you can see (`ensure file.close()`), aliasing control you can scope (`with`, inline access), mutation you can mark (`mutate`), cost you can spot (`.clone()`, `own`, `spawn`). The compiler still guarantees the invariants; the source still shows the mechanism. This is the thread tying the specific choices together.
+
 ### 1. Safety Without Annotation
 
 I enforce memory safety through the type system and scope rules without requiring lifetime markers, borrow annotations, or ownership syntax at call sites.
@@ -42,7 +44,9 @@ There is no distinction between "value types" and "reference types." Every type 
 
 There's no `Box<T>` because there's no need to distinguish "heap-allocated value" from "value." Some values happen to own heap memory internally — that's an implementation detail, not a type-system concept. The allocation is visible at creation (`Vec.new()`, `Cell.new()`), not in the type's behavior.
 
-**Why this matters:** When everything is a value, the ownership rules apply everywhere identically. Move a `Vec` and the buffer moves. Move a `Cell` and the inner value moves. Move an `any Widget` and the heap data moves. One model, no exceptions.
+**Why this matters:** When everything is a value, the ownership rules apply everywhere identically. Move a `Vec` and the buffer moves. Move a `Cell` and the inner value moves. Move an `any Widget` and the heap data moves. One model for owned data — the uniform rule.
+
+**Honest carve-out: a small fixed set of language primitives with shared semantics.** `string`, `Shared<T>`, `Mutex<T>`, and `Atomic*<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define — they're compiler-privileged. The [Box family](memory/boxes.md) collects them under named disciplines (`Pool`, `Cell`, `Shared`, `Mutex`, `Owned`, plus `Atomic*` as adjacent); consult it when you need cross-scope mutable access. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
 
 **Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Pool`+`Handle` for graphs, disjoint field borrowing for partial borrows, and context clauses for implicit state threading — solutions to problems that pure MVS hits once you go beyond simple value passing.
 
@@ -86,12 +90,12 @@ All compiler analysis is function-local. No whole-program inference, no cross-fu
 - Private function signatures may omit types; the compiler infers them from the function body only — never from callers
 - Changing a public function's implementation cannot break external callers
 - Changing a private function's body may change its inferred signature, breaking internal callers (compiler reports this clearly with smart diagnostics showing what changed, which line caused it, and which callers break)
-- Incremental compilation is straightforward
+- Incremental compilation is *bounded propagation*, not whole-program: a private body change invalidates direct callers whose inferred signatures shift, and transitively only as long as each hop's signature keeps shifting. Most changes stop at the first caller; none walk the whole graph.
 - Compilation speed scales linearly with code size
 
 **Clarification:** Body-local inference for private functions IS local analysis. The compiler examines one function body at a time, solving constraints within that scope. It does not trace through call graphs or analyze callers. See [Gradual Constraints](types/gradual-constraints.md).
 
-**Why this matters:** Rust's borrow checker does global analysis. Change one function and the ripple effects are unpredictable. I want compilation to scale linearly—doubling your codebase should double compile time, not quadruple it. Local-only analysis makes this possible.
+**Why this matters:** Rust's borrow checker does global analysis. Change one function and the ripple effects are unpredictable. I want compilation to scale linearly—doubling your codebase should double compile time, not quadruple it. Local checking plus bounded invalidation makes this possible. The bound matters: "one function = one check" is true, but "one function = one invalidation" is not — we don't claim it.
 
 ### 6. Resource Types
 
@@ -132,6 +136,21 @@ Code should be analyzable by tools — linters, refactoring engines, IDE plugins
 **Why it matters:** Tools that analyze code benefit from the same properties that help developers read it. Local reasoning, explicit intent, consistent patterns — these make static analysis tractable and refactoring safe.
 
 See [Canonical Patterns](canonical-patterns.md) for conventions, naming patterns, and tooling specs.
+
+### 9. Information Without Enforcement
+
+The compiler tracks information the language deliberately keeps out of the type system. That information surfaces through tooling — ghost text, lints, generated docs, warnings — but never becomes a constraint that splits the ecosystem or colors function signatures.
+
+**What this means:**
+- I/O, async, and mutation effects are tracked transitively (`comp.effects`) but don't appear in function signatures and don't color call syntax. A caller of a function that does I/O writes the call the same way as a caller of a pure one.
+- `@pure` is a lint annotation, not a type qualifier. A pure function can call an impure one; the lint warns.
+- IDE ghost annotations show parameter modes, closure captures, inferred types, and pause points — the compiler knows, the source doesn't say.
+
+**Honest carve-out: capabilities do color signatures.** `using` clauses (`using Multitasking`, `using ThreadPool`, `using Pool<T>`) are declared in signatures and propagate up the call graph via `mem.context/CC5`. A library that uses `spawn` internally forces `using Multitasking` on every direct caller, transitively up to the nearest `using Multitasking { ... }` scope. This is scope-level coloring, deliberately traded for uncolored call syntax. See [context-clauses.md](memory/context-clauses.md).
+
+**Why I chose this:** Effect systems and async/await color every call site. Rask keeps effects as metadata (no call-site color) and localizes capability coloring to signatures that actually need a runtime capability. You get `[io]` badges in the IDE and compiler warnings for I/O in tight loops — without `.await` on every line or effect polymorphism in every signature.
+
+This principle is what makes the async model (no `async`/`await` at call sites), the purity story (no effect types), and the IDE experience (ghost annotations everywhere) coherent rather than a list of compromises. The common rule: the compiler knows, tooling shows, call syntax stays clean. Capability requirements remain visible at the signature boundary where policy decisions belong.
 
 ---
 
@@ -183,9 +202,9 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Collections.** `Vec<T>` for sequences, `Map<K,V>` for key-value lookup, `Pool<T>` for handle-based sparse storage (graphs, entities, caches). All growth operations return `Result` — allocation is fallible. `with pool[h] as entity { ... }` for multi-statement element access. See [collections.md](stdlib/collections.md), [pools.md](memory/pools.md).
 
-**Context clauses.** Functions using handles declare pool requirements with `using Pool<T>` clauses. The compiler threads pools as hidden parameters — no runtime registry. Private functions can omit these (inferred from body). See [context-clauses.md](memory/context-clauses.md).
+**Context clauses.** `using` is Rask's ambient-context mechanism, full stop. A function declares its ambient dependencies (`using Pool<T>`, `using Multitasking`, `using ThreadPool`) and the compiler threads them as hidden parameters — no runtime registry, no lookup cost, compile-time checked. Public functions declare their contexts (part of the API contract); private functions can have them inferred. Today `using` threads pool dependencies, the multitasking runtime, and thread pools; the mechanism is general and intentionally so. See [context-clauses.md](memory/context-clauses.md).
 
-**Error handling.** Errors are values: `T or E` result type, `try` for propagation, `T?` for optionals with `??` fallback and `x!` force-unwrap. Error types compose with `A | B` union syntax. Functions returning `T or E` auto-wrap bare returns as `Ok(T)`. No exceptions, no hidden control flow. See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
+**Error handling.** Errors are values: `T or E` is a builtin sum type with type-based branch disambiguation (no `Ok`/`Err` wrappers), `try` for propagation, `T?` for optionals with `??` fallback and `x!` force-unwrap. Error types compose with `A | B` union syntax. `E` must implement `ErrorMessage` (structural `message() -> string`). Disjointness rule (T ≠ E) makes construction unambiguous; newtype is the escape hatch. No exceptions, no hidden control flow. See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
 **Resource cleanup.** `ensure` guarantees cleanup runs when a block exits (normal, early return, `try`). LIFO order, explicit consumption cancels it (transaction pattern). Linear resources must be consumed exactly once — compiler enforces this. See [ensure.md](control/ensure.md), [resource-types.md](memory/resource-types.md).
 
@@ -195,7 +214,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Traits.** Structural matching by default — if a type has the right methods, it satisfies the trait. `explicit trait` requires an `extend` declaration. Runtime polymorphism via `any Trait` for heterogeneous collections. Structural matching and generic constraints are in [generics.md](types/generics.md); `any Trait` runtime dispatch is in [traits.md](types/traits.md).
 
-**Concurrency.** `spawn(|| {})` for green tasks (requires `using Multitasking`), `ThreadPool.spawn(|| {})` for CPU-bound work (requires `using ThreadPool`), `Thread.spawn(|| {})` for raw OS threads. No async/await, no function coloring — I/O pauses the task automatically. Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. Cooperative cancellation via cancel flag checked by I/O operations. See [concurrency/](concurrency/).
+**Concurrency.** `spawn(|| {})` for green tasks (requires `using Multitasking`), `ThreadPool.spawn(|| {})` for CPU-bound work (requires `using ThreadPool`), `Thread.spawn(|| {})` for raw OS threads. Call sites are uncolored — no `async`/`await` — and I/O pauses the task automatically. The cost of invisible suspension: a function reading from a socket may pause mid-call, including with locks held. Lint rules and IDE `[io]` annotations partially recover that visibility; the type system does not. Capability requirements (`using Multitasking` et al.) are declared in signatures and propagate via `mem.context/CC5`. Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. Cooperative cancellation via cancel flag checked by I/O operations. See [concurrency/](concurrency/).
 
 **Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`build.rk`) handle full-language code generation. See [comptime.md](control/comptime.md).
 

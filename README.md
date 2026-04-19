@@ -6,17 +6,19 @@
   </picture>
 </p>
 
-A research language exploring one question: **what if references can't be stored?**
+A programming language I'm building around one question: **what if references can't be stored?**
 
-Rask sits somewhere between Rust and Go — memory safety without lifetime annotations or garbage collection, by making references temporary. They can't be stored in structs or returned from functions.
+Make references temporary — never in structs, never returned from functions — and lifetime annotations stop being necessary. The cost is handles where you'd want shared identity: graphs, entity systems, observers. The benefit is memory safety without annotations, deterministic cleanup without a GC, and function signatures you can read in one pass.
 
-It's a hobby project. I'm figuring out how far this approach can go. **[Why a new language?](WHY_RASK.md)**
+Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremony. Whether the trade actually works out is what I'm trying to find out.
 
-**Status:** Working compiler (Cranelift backend) and interpreter. Simple programs compile natively; validation programs need fixes.
+**[Why a new language?](WHY_RASK.md)**
+
+**Status.** Compiler (Cranelift backend) and interpreter both run programs. Core language works end-to-end. A handful of codegen regressions open — see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
 
 ---
 
-## Quick Look
+## Quick look
 
 ```rask
 func search_file(path: string, pattern: string) -> () or IoError {
@@ -29,205 +31,89 @@ func search_file(path: string, pattern: string) -> () or IoError {
 }
 ```
 
-Full example: [grep_clone.rk](examples/grep_clone.rk)
+Full example: [grep_clone.rk](examples/grep_clone.rk).
 
 ---
 
-**Jump to:**
-- [Getting Started](#getting-started) - Build and run
-- [The Idea](#the-idea) - What I'm trying and why
-- [What This Costs](#what-this-costs) - Tradeoffs
-- [Implementation Status](#implementation-status) - What works today
-- [Design Principles](#design-principles) - Core philosophy
-- [Documentation](#documentation) - Where to look
+## Getting started
 
----
-
-## Getting Started
-
-### Prerequisites
-
-You need the Rust toolchain to build from source. If you don't have it:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-### Build
+Build from source. You'll need a Rust toolchain for now — bootstrapping the compiler in Rask itself is on the list, just not soon.
 
 ```bash
 git clone https://github.com/rask-lang/rask.git
 cd rask/compiler
 cargo build --release
-```
-
-### Add to PATH
-
-```bash
 export PATH="$PWD/target/release:$PATH"
 ```
 
-Add to your shell profile (`~/.bashrc`, `~/.zshrc`) to make it permanent.
-
-### Run
+Then:
 
 ```bash
-cd ..
 rask run examples/hello_world.rk
 ```
 
-### What you can do
+Other commands: `rask check`, `rask lint`, `rask fmt`, `rask test`.
 
-```bash
-rask run <file>       # execute a .rk program
-rask check <file>     # type-check only
-rask lint <file>      # style/idiom check
-rask fmt <file>       # auto-format
-```
-
-### Next steps
-
-- Browse [examples/](examples/) for working programs
-- Try the [tutorials](tutorials/) — hands-on challenges with built-in reference
-- Read the [Language Guide](LANGUAGE_GUIDE.md) for the full explanation
+Next steps: browse [examples/](examples/), try the [tutorials](tutorials/), or read the [Language Guide](LANGUAGE_GUIDE.md).
 
 ---
 
-## The Idea
+## The design
 
-### No Storable References
-The core experiment. You can borrow a value temporarily (for a function call or expression), but you can't store that borrow in a struct or return it. This sounds limiting — and it is — but it sidesteps the need for lifetime annotations entirely. For graphs and complex structures, you use handles (validated indices) instead.
+Three ideas do most of the work.
 
-### No Garbage Collection
-Cleanup happens deterministically when values go out of scope. For I/O resources, the `ensure` keyword guarantees cleanup even on early returns.
+**No storable references.** You can borrow for a call or an expression; you can't store the borrow in a struct, and you can't return it. The whole lifetime system stops being necessary — there's just nothing to track. For graphs and entity systems, you use `Handle<T>`: an integer key into a `Pool<T>`, validated by a generation counter. Each access is a branch or two; the compiler coalesces redundant checks and eliminates them entirely inside `using frozen Pool<T>` contexts.
 
-### Composition Over Inheritance
-Structs hold data, traits define behavior, you extend types with methods. No inheritance hierarchies, no vtable gymnastics unless you explicitly want runtime polymorphism (`any Trait`).
+**Everything is a value.** No reference types. No `Box<T>`/`Rc<T>`/`Arc<T>` distinction. Small values (≤16 bytes) copy, larger ones move, and you `.clone()` when you want to share. More clones than Rust, but the clones are visible in the code, which I think is the right direction.
 
-### What I've Landed On So Far
+**Linearity for I/O.** Files, sockets, and transactions are linear: the compiler makes you consume them exactly once. `ensure file.close()` defers that consumption to scope exit, which is what lets `try` propagate errors without leaking the resource. Three concepts that compose — linearity, deferred consumption, error propagation — and the idiom at the top of this file falls out of them. This is probably the piece of the design I'm happiest with.
 
-| Concept | What It Means |
-|---------|--------------|
-| **Value semantics** | Everything is a value, no hidden sharing |
-| **Single ownership** | Every value has one owner, cleanup is deterministic |
-| **Two-tier borrowing** | "Can it grow?" — fixed sources keep views to block end, collections release at semicolon |
-| **Handles for graphs** | Entity systems and cycles use validated indices. Regular structs stay on the stack |
-| **Context clauses** | Handle functions declare pool needs; compiler threads them implicitly |
-| **Linear resource types** | Files, sockets must be explicitly consumed—can't forget to close them |
-| **No function coloring** | I/O operations just work, no async/await split |
+Full rationale: [specs/CORE_DESIGN.md](specs/CORE_DESIGN.md).
 
 ---
 
-## What This Costs
+## Tradeoffs
 
-I'm not pretending there aren't tradeoffs. Here's what you give up:
+More `.clone()` calls. Some patterns restructure around handles:
+- parent pointers → `Handle<Parent>`
+- string slices in structs → `Span` indices or `StringPool`
+- arbitrary graphs → `Pool<T>`
 
-**Handle overhead:** Accessing through handles costs ~1-2ns (generation check + bounds check, needs actual benchmark proof). In most code this doesn't matter. In tight loops processing millions of items, copy data out and batch process. Compiler coalesces redundant checks; frozen contexts (`using frozen Pool<T>`) enable further elimination during iteration.
-
-**Restructuring some patterns:**
-- Parent pointers → store handles
-- String slices in structs → store indices or use StringPool
-- Arbitrary graphs → use Pool<T> with handles
-
-**More `.clone()` calls:** Collections and large structs require explicit `.clone()` to share. Strings are Copy (no cloning needed), so clones concentrate at API boundaries for collection types. I think that's better than lifetime annotations everywhere.
-
-The upside, if the approach works out:
-- No use-after-free, no dangling pointers, no data races
-- No lifetime annotations
-- No GC pauses
-- Readable function signatures
+That's most of the cost. What you get back: no lifetime annotations in signatures, no GC pauses, no use-after-free, no data races. I think it's a good trade. Some days I'm less sure.
 
 ---
 
-## Implementation Status
+## What works today
 
-**Right now:** Cranelift backend compiles and runs programs natively. Interpreter available as fallback (`rask run --interp`). Some codegen bugs remain — see [issues](https://github.com/rask-lang/rask/issues).
-
-**What works:**
-- Memory model: ownership, moves, borrows, handles
+- Memory model: ownership, moves, borrows, handles, linearity
 - Type system: primitives, structs, enums, generics, traits
-- Control flow: if/match/loops with explicit returns
+- Control flow: if/match/loops
 - Concurrency: spawn/join, channels, thread pools
-- Resource types: files must be closed, linear tracking works
-- Error handling: `T or E` results, `try` propagation
-- Standard types: Vec, Map, Pool, String, Option, Result
-- Native codegen: structs, closures, Vec/Map, threads, channels, file I/O
-- Build system: `rask build`, packages, workspaces, watch mode
-- Tooling: `rask test`, `rask fmt`, `rask lint`, `rask check`, LSP
+- Error handling: `T or E`, `try`, optionals (`T?`, `??`, `!`)
+- Native codegen (Cranelift): structs, closures, Vec/Map, threads, channels, file I/O
+- Build system: packages, workspaces, watch mode
+- Tooling: `rask build/check/lint/fmt/test`, LSP
 
-**What's next:**
-- Fix validation program regressions ([#203](https://github.com/rask-lang/rask/issues/203))
-- Stdlib modules in Rask (HTTP, JSON) — see [ROADMAP.md](ROADMAP.md)
+**Next:** validation-program regressions ([#203](https://github.com/rask-lang/rask/issues/203)); HTTP and JSON stdlib in Rask — see [ROADMAP.md](ROADMAP.md).
+
 ---
-
-## Design Principles
-
-1. **Transparency of Cost** — Major costs visible in code (allocations, locks, I/O)
-2. **Mechanical Safety** — Safety by construction, not runtime checks
-3. **Practical Coverage** — Handle 80%+ of real use cases
-4. **Ergonomic Simplicity** — Common patterns should be low ceremony.
-
-The constant balancing act is keeping ergonomics high without hiding costs. When in doubt, I choose visibility over convenience.
 
 ## Inspiration
 
-Rask borrows ideas from everywhere:
-
-**From Rust:** Ownership, move semantics, Result types, traits. Don't fix what isn't broken.
-
-**From Go:** The focus on simplicity and getting out of the developer's way. If Rask needs 3+ lines where Go needs 1, something's wrong.
-
-**From Zig:** Compile-time execution (`comptime`) and transparency of cost. I want you to see where allocations happen.
-
-**From Jai:** Build scripts as real code. In Rask, `build.rk` files use the actual language, not some separate format.
-
-**From Swift:** `defer` became `ensure` for guaranteed cleanup. When a function can exit early, resources still get freed.
-
-**From Kotlin:** Extension methods (`extend` blocks) and `T?` syntax for optionals. I rejected the implicit scope functions though—Rask uses explicit closure parameters instead.
-
-**From Hylo:** Value semantics rather than pointer chasing. Hylo takes a more formal approach; I'm going for something more pragmatic, but I'm watching their work closely.
-
-**From Vale:** Vale proved that generational references are a valid memory model. I'm trying to limit them to where they're actually needed.
-
-**From Erlang:** Bitmatch and supervision pattern. When you need it, it's irreplaceable.
-
+Rust for ownership, Results, traits. Go for simplicity (if Rask needs three lines where Go needs one, I've probably designed it wrong). Zig for `comptime` and cost transparency. Jai for build scripts as real code. Swift's `defer` is where `ensure` came from. Kotlin for `extend` blocks and `T?`. Hylo for value semantics. Vale for generational references. Erlang for bitmatch.
 
 ---
 
-## Documentation
+## Docs
 
-| Resource | What |
-|----------|------|
-| [Language Guide](LANGUAGE_GUIDE.md) | Full explanation of every feature, jargon-free |
-| [Tutorials](tutorials/) | Hands-on challenges with built-in reference |
-| [Examples](examples/) | Working programs from hello world to grep clone |
-| [Book](https://rask-lang.dev/book) | Online guide (work in progress) |
-| [Specs](specs/) | Formal language specifications |
-
-### Project Structure
-
-```
-├── LANGUAGE_GUIDE.md       # The full language explanation
-├── CORE_DESIGN.md          # Design philosophy and core mechanisms
-├── tutorials/              # Hands-on challenges (5 levels)
-├── examples/               # Working .rk programs
-├── specs/                  # Language specifications
-│   ├── types/              # Type system, generics, traits
-│   ├── memory/             # Ownership, borrowing, resources
-│   ├── control/            # Loops, match, comptime
-│   ├── concurrency/        # Tasks, threads, channels
-│   ├── structure/          # Modules, packages, builds
-│   └── stdlib/             # Standard library APIs
-└── compiler/               # The implementation
-    ├── rask-lexer/         # Tokenization
-    ├── rask-parser/        # AST construction
-    ├── rask-types/         # Type checking
-    ├── rask-interp/        # Interpreter (current execution)
-    └── ...
-```
+- [Language Guide](LANGUAGE_GUIDE.md) — the full explanation, jargon-free
+- [Tutorials](tutorials/) — hands-on challenges
+- [Examples](examples/) — working programs
+- [Specs](specs/) — formal language specifications, starting with [CORE_DESIGN.md](specs/CORE_DESIGN.md)
+- [Book](https://rask-lang.dev/book) — online guide (work in progress)
 
 ---
 
 ## License
 
-Licensed under either of Apache License or MIT license at your option.
+MIT or Apache 2.0, your choice.

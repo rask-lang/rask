@@ -78,7 +78,7 @@ struct Vm {
 extend Vm {
     func new(chunk: Chunk, fuel: i64) -> Vm {
         const regs = Vec.new()
-        let i = 0
+        mut i = 0
         while i < 256 {
             regs.push(Value.None)
             i = i + 1
@@ -126,7 +126,7 @@ extend Vm {
         //   6. CALL, FUNC_REF → function calls (fibonacci!)
         //   7. Everything else
         //
-        let pc = 0
+        mut pc = 0
         const code = self.chunk.main.code
 
         loop {

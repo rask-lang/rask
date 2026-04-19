@@ -188,10 +188,10 @@ fn classify_body(stmts: &[Stmt], effects: &mut Effects, callees: &mut HashSet<St
 fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<String>) {
     match &stmt.kind {
         StmtKind::Expr(e) => classify_expr(e, effects, callees),
-        StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
             classify_expr(init, effects, callees);
         }
-        StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
             classify_expr(init, effects, callees);
         }
         StmtKind::Assign { target, value } => {

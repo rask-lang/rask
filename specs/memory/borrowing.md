@@ -384,7 +384,7 @@ Error messages use value-based framing. No "statement-scoped" or "view released 
 ```
 ERROR [mem.borrowing/E4]: cannot bind non-Copy collection element
    |
-5  |  let entity = pool[h]
+5  |  const entity = pool[h]
    |               ^^^^^^^ Entity is not Copy
 6  |  entity.update()
    |  ^^^^^^ cannot use — element was not copied out
@@ -528,7 +528,7 @@ func parse_header(line: string) -> Option<(string, string)> {
 <!-- test: parse -->
 ```rask
 func update_combat(pool: Pool<Entity>) {
-    let targets: Vec<Handle<Entity>> = find_targets(pool)
+    mut targets: Vec<Handle<Entity>> = find_targets(pool)
 
     for h in targets {
         pool[h].health -= 10             // Inline access (E1)
@@ -610,8 +610,8 @@ struct Token {
 }
 
 func tokenize(input: string) -> Vec<Token> {
-    let tokens = Vec.new()
-    let pos = 0
+    mut tokens = Vec.new()
+    mut pos = 0
     // scan() returns positions — no allocations per token
     for (start, end, kind) in scan(input) {
         tokens.push(Token { kind, span: Span(start, end) })
@@ -670,6 +670,7 @@ Hover information shows the access type, duration, and suggested patterns for th
 
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value-semantics`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)
+- [Boxes](boxes.md) — The container family whose `with` access follows these rules (`mem.boxes`)
 - [Pools](pools.md) — Handle-based indirection (`mem.pools`)
 - [Collections](../stdlib/collections.md) — Vec, Map APIs (`std.collections`)
 - [Cell](cell.md) — Single-value `with` access (`mem.cell`)

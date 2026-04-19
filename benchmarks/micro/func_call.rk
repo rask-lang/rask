@@ -5,8 +5,8 @@ func add(a: i64, b: i64) -> i64 {
 }
 
 benchmark "func call 10M" {
-    let sum = 0
-    let i = 0
+    mut sum = 0
+    mut i = 0
     while i < 10000000 {
         sum = add(sum, i)
         i = i + 1

@@ -67,7 +67,27 @@ const parse = |s| {
 
 `return` inside a closure exits the **closure**, not the enclosing function (`ctrl.flow/CF26`). A closure is an anonymous function — same return semantics apply.
 
-Closure parameters use borrow mode only — no `mutate` or `take`. The `||` list already serves double duty for captures and parameters (e.g., `|item, mutate total|` where `item` is a parameter and `mutate total` is a capture). Adding parameter modes would create ambiguity: `|mutate x|` could mean either "mutable capture of outer `x`" or "parameter `x` by mutable borrow." If a closure needs `mutate` parameters, extract it to a standalone function.
+Closure parameters default to borrow mode. Mutable-borrow parameters are allowed with an explicit type: `|mutate x: T|`. The explicit type distinguishes a parameter from a capture — `|mutate x|` (no type) remains mutable-capture syntax (`mutate total` in the `|item, mutate total|` example below). `take` parameters are not supported; if a closure needs `take` parameters, extract it to a standalone function.
+
+| Rule | Description |
+|------|-------------|
+| **CP1: Borrow by default** | `\|x\|` binds parameter `x` by read-only borrow |
+| **CP2: Mutable parameter with explicit type** | `\|mutate x: T\|` binds parameter `x` by mutable borrow. Explicit type required to distinguish from mutable-capture syntax |
+| **CP3: No untyped mutable parameter** | `\|mutate x\|` without a type is always mutable-capture syntax, never a parameter. Enforced to keep the shorthand `\|mutate var\|` unambiguous |
+| **CP4: No take parameter** | Closures cannot take ownership via a parameter. Use a standalone function |
+
+<!-- test: parse -->
+```rask
+// Borrow parameter (default)
+const print_name = |u: User| print(u.name)
+
+// Mutable-borrow parameter (explicit type required)
+const grow = |mutate item: Item| { item.level += 1 }
+
+// Mutable capture (no type on parameter)
+let total = 0
+items.for_each(|item, mutate total| { total += item.value })
+```
 
 ## Mutable Capture
 
@@ -82,14 +102,14 @@ Closures can borrow mutable locals with explicit `mutate` in the capture:
 
 <!-- test: skip -->
 ```rask
-let count = 0
+mut count = 0
 const inc = |mutate count| { count += 1 }
 inc()
 inc()
 // count == 2
 
 // Iterator example
-let total = 0
+mut total = 0
 items.for_each(|item, mutate total| { total += item.value })
 print(total)  // sees accumulated value
 ```
@@ -98,7 +118,7 @@ Without `mutate`, captured values are copies. The mutation stays inside the clos
 
 <!-- test: skip -->
 ```rask
-let count = 0
+mut count = 0
 const inc = || { count += 1 }  // Captures count by COPY
 inc()
 // count is still 0 — the closure mutated its own copy
@@ -110,7 +130,7 @@ The `mutate` keyword makes the intent visible — you see exactly which variable
 
 <!-- test: skip -->
 ```rask
-let x = 0
+mut x = 0
 const a = |mutate x| { x += 1 }
 const b = |mutate x| { x += 2 }  // ERROR: x already mutably captured by a
 ```
@@ -136,7 +156,7 @@ items.filter(|i| vec[*i].active)
      .collect()
 
 // Mutation in inline context
-let count = 0
+mut count = 0
 items.for_each(|item| { count += 1 })  // inline: direct access, no capture needed
 ```
 
@@ -177,7 +197,7 @@ Note: Copy fields like `string` don't create scope-limited closures — `const n
 
 <!-- test: compile-fail -->
 ```rask
-let outer_closure
+mut outer_closure
 {
     const entity = get_entity()
     const tags = entity.tags
@@ -260,7 +280,7 @@ FIX: Use Cell<T> for shared mutable state:
 ```
 ERROR [mem.closures/IO3]: closure accesses outer scope directly but is stored
    |
-5  |  let f = items.filter(|i| vec[*i].active)
+5  |  const f = items.filter(|i| vec[*i].active)
    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ closure accesses 'vec' without capturing
 
 FIX 1: Consume immediately:
@@ -269,7 +289,7 @@ FIX 1: Consume immediately:
 
 FIX 2: Capture explicitly:
 
-  let active_set = items.filter(|i| vec[*i].active).collect()
+  const active_set = items.filter(|i| vec[*i].active).collect()
 ```
 
 ## Edge Cases
@@ -378,6 +398,9 @@ When the cursor is in a scope-limited closure, the IDE highlights the block boun
 
 - [Value Semantics](value-semantics.md) -- Copy vs move for captured values (`mem.value`)
 - [Borrowing](borrowing.md) -- Block-scoped views and `with`-based access (`mem.borrowing`)
+- [Boxes](boxes.md) -- Cell and Pool as containers for shared mutable state (`mem.boxes`)
 - [Cell](cell.md) -- Single-value mutable container (`mem.cell`)
 - [Pools](pools.md) -- Pool+Handle pattern for shared mutable state (`mem.pools`)
+- [Linearity](linear.md) -- Closures capturing linear values must consume them (`mem.linear`)
+- [Owned Pointers](owned.md) -- Moving an `Owned<T>` into a closure consumes it (`mem.owned`)
 - [Concurrency](../concurrency/sync.md) -- Closures sent cross-task must capture owned values (`conc.sync`)

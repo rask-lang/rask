@@ -36,7 +36,7 @@
 
 func sqrt(x: f64) -> f64 {
     if x <= 0.0 { return 0.0 }
-    let g = x / 2.0
+    mut g = x / 2.0
     for i in 0..30 { g = (g + x / g) / 2.0 }
     return g
 }
@@ -130,7 +130,7 @@ extend Projectile {
 
     // Advance one time step under gravity (0, 0, -9.81) m/s²
     // Return a new Projectile with updated position and velocity.
-    // Don't let z go below 0.
+    // Don't mut z go below 0.
     func step(self, dt: f64) -> Projectile {
         todo()
     }
@@ -213,7 +213,7 @@ test "projectile step" {
 
 test "projectile hits ground" {
     // Launch at 45° with speed 10
-    let p = Projectile.launch(Vec3 { x: 7.07, y: 0.0, z: 7.07 })
+    mut p = Projectile.launch(Vec3 { x: 7.07, y: 0.0, z: 7.07 })
     // Simulate for a while
     for i in 0..200 {
         p = p.step(0.01)
@@ -224,9 +224,9 @@ test "projectile hits ground" {
 
 func main() {
     // Mini simulation you can watch
-    let p = Projectile.launch(Vec3 { x: 50.0, y: 0.0, z: 30.0 })
+    mut p = Projectile.launch(Vec3 { x: 50.0, y: 0.0, z: 30.0 })
     println("=== Projectile Simulation ===")
-    let t = 0.0
+    mut t = 0.0
     while p.is_airborne() {
         println("t={t}s  x={p.position.x}  z={p.position.z}")
         p = p.step(0.5)

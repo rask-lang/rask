@@ -54,7 +54,7 @@ Quick navigation by task or concept:
 | Define interfaces/contracts | [types/traits.md](types/traits.md) |
 | Create a type alias | [types/type-aliases.md](types/type-aliases.md) |
 | Work with tuples | [types/tuples.md](types/tuples.md) |
-| Work with iterators | [types/iterator-protocol.md](types/iterator-protocol.md) |
+| Iterate over things | [types/sequence-protocol.md](types/sequence-protocol.md) |
 
 ### Low-Level
 | "How do I..." | See |
@@ -71,10 +71,12 @@ Quick navigation by task or concept:
 
 | Term | Definition Location |
 |------|---------------------|
+| Linear | [memory/linear.md](memory/linear.md) — Value that must be consumed exactly once |
+| Box | [memory/boxes.md](memory/boxes.md) — Container with `with`-scoped access (Cell, Pool, Shared, Mutex, Owned) |
 | Handle | [memory/pools.md](memory/pools.md) — Opaque identifier into Pool |
 | Borrow | [memory/borrowing.md](memory/borrowing.md) — Temporary read/write access |
 | Take | [memory/parameters.md](memory/parameters.md) — Ownership transfer |
-| Resource type | [memory/resource-types.md](memory/resource-types.md) — Must be consumed exactly once (linear resource) |
+| Resource type | [memory/resource-types.md](memory/resource-types.md) — Struct marked linear with `@resource` |
 | Instant view | [memory/borrowing.md](memory/borrowing.md) — View released at semicolon (growable sources) |
 | Persistent view | [memory/borrowing.md](memory/borrowing.md) — View held until block ends (fixed sources) |
 | ensure | [control/ensure.md](control/ensure.md) — Deferred cleanup at scope exit |
@@ -96,7 +98,7 @@ Quick navigation by task or concept:
 | [generics.md](types/generics.md) | Parametric polymorphism, constraints |
 | [gradual-constraints.md](types/gradual-constraints.md) | Type/bound inference for private functions |
 | [traits.md](types/traits.md) | Trait objects, dynamic dispatch |
-| [iterator-protocol.md](types/iterator-protocol.md) | Iterator trait, adapters |
+| [sequence-protocol.md](types/sequence-protocol.md) | Sequence<T> type, adapters, terminals |
 | [integer-overflow.md](types/integer-overflow.md) | Overflow semantics |
 | [binary.md](types/binary.md) | Binary structs, bit-level layouts |
 | [tuples.md](types/tuples.md) | Anonymous product types, destructuring |
@@ -108,11 +110,15 @@ Quick navigation by task or concept:
 |------|-------------|
 | [ownership.md](memory/ownership.md) | Core ownership rules, cross-task transfer |
 | [value-semantics.md](memory/value-semantics.md) | Copy vs move, 16-byte threshold, move-only types |
+| [linear.md](memory/linear.md) | Consume-exactly-once rules (L1–L6) — shared by `@resource`, `Owned<T>`, `Pool<Linear>` |
+| [boxes.md](memory/boxes.md) | The box family — `with`-scoped access across Cell, Pool, Shared, Mutex, Owned |
 | [borrowing.md](memory/borrowing.md) | Views last as long as source is stable |
-| [parameters.md](memory/parameters.md) | Parameter modes: borrow (default) vs `take` |
-| [resource-types.md](memory/resource-types.md) | Must-consume resources (linear resources), `ensure` integration |
-| [closures.md](memory/closures.md) | Capture rules, scope constraints, Pool+Handle pattern |
+| [parameters.md](memory/parameters.md) | Parameter modes: borrow (default), `mutate`, `take` |
+| [resource-types.md](memory/resource-types.md) | `@resource` annotation — linear struct types |
+| [owned.md](memory/owned.md) | `Owned<T>` — linear heap pointer for recursive types |
+| [closures.md](memory/closures.md) | Capture rules, scope constraints, Cell/Pool patterns |
 | [pools.md](memory/pools.md) | Handle-based indirection, weak handles, cursors, freezing |
+| [cell.md](memory/cell.md) | Single-value mutable box |
 | [unsafe.md](memory/unsafe.md) | Unsafe blocks, raw pointers, FFI |
 | [atomics.md](memory/atomics.md) | Atomic types, memory orderings, lock-free primitives |
 

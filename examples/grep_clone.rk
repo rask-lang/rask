@@ -32,7 +32,7 @@ extend GrepError {
 }
 
 func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
-    let opts = GrepOptions {
+    mut opts = GrepOptions {
         pattern: "",
         files: Vec.new(),
         ignore_case: false,
@@ -41,9 +41,9 @@ func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
         invert_match: false,
     }
 
-    let positional = Vec.new()
+    mut positional = Vec.new()
 
-    let i: usize = 1
+    mut i: usize = 1
     while i < args.len() {
         const arg = args[i]
         match arg {
@@ -96,8 +96,8 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
         else |e| GrepError.FileError(e)
 
     const lines = content.lines()
-    let match_count: i64 = 0
-    let line_num = 0
+    mut match_count: i64 = 0
+    mut line_num = 0
 
     for line in lines {
         line_num = line_num + 1
@@ -126,7 +126,7 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
 
 func main() {
     const args = cli.args()
-    let opts = match parse_args(own args) {
+    mut opts = match parse_args(own args) {
         Ok(o) => o,
         Err(e) => {
             const msg = e.message()
@@ -136,10 +136,10 @@ func main() {
         }
     }
 
-    let total_matches = 0
-    let had_errors = false
+    mut total_matches = 0
+    mut had_errors = false
 
-    let fi: usize = 0
+    mut fi: usize = 0
     while fi < opts.files.len() {
         const file_path = opts.files[fi]
         match grep_file(file_path, opts) {

@@ -32,7 +32,7 @@ Non-public functions may omit parameter types, return types, and bounds. Compile
 <!-- test: skip -->
 ```rask
 func find_best(items, score_fn) {
-    let best = items[0]
+    mut best = items[0]
     for i in 1..items.len() {
         if score_fn(items[i]) > score_fn(best) {
             best = items[i]
@@ -48,7 +48,7 @@ func find_best(items, score_fn) {
 <!-- test: skip -->
 ```rask
 func find_best(items: Vec<Record>, score_fn) -> Record {
-    let best = items[0]
+    mut best = items[0]
     for i in 1..items.len() {
         if score_fn(items[i]) > score_fn(best) {
             best = items[i]
@@ -63,7 +63,7 @@ func find_best(items: Vec<Record>, score_fn) -> Record {
 <!-- test: parse -->
 ```rask
 public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U) -> T {
-    let best = items[0]
+    mut best = items[0]
     for i in 1..items.len() {
         if score_fn(items[i]) > score_fn(best) {
             best = items[i]
@@ -99,7 +99,7 @@ public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U)
 // PascalCase: explicitly name the type parameter
 func identity(x: T) -> T { return x }
 
-// Gradual: omit type, let compiler decide
+// Gradual: omit type, mut compiler decide
 func identity(x) { return x }
 // Inferred: func identity<T>(x: T) -> T
 ```
@@ -145,11 +145,11 @@ ERROR [type.gradual/GC2]: inferred return type changed
 
 ## Error Union Inference
 
-Error return types are inferred like any other return type — the compiler collects error types from all `try` calls and explicit `Err()` returns in the body. Three annotation levels from least to most explicit:
+Error return types are inferred like any other return type — the compiler collects error types from all `try` calls and bare error-typed returns in the body. Three annotation levels from least to most explicit:
 
 | Rule | Description |
 |------|-------------|
-| **GC7: Error union from body** | `try` calls and `Err()` returns contribute to the inferred error union |
+| **GC7: Error union from body** | `try` calls and bare error-typed return expressions contribute to the inferred error union |
 | **GC8: Public errors explicit** | Public functions must declare error types explicitly (same as GC5) |
 
 <!-- test: skip -->
