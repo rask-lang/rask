@@ -220,3 +220,352 @@ const maybe_v = compute().ok()
 ```
 
 Methods removed from the old spec: `.unwrap_or`, `.unwrap_or_else`, `.is_ok`, `.is_err`, `.to_option`, `.to_error`, `.on_err`. Operators and the four surviving methods cover every case; see the [redesign proposal](error-model-redesign-proposal.md) for the full migration map.
+
+## Union Widening and Boxing
+
+| Rule | Description |
+|------|-------------|
+| **ER31: Auto-widen** | `try` succeeds when the expression's error type is a subset of the current function's error union |
+| **ER32: Auto-box to `any Error`** | `try` auto-boxes when the current function's error type is `any Error` — any `E` satisfying `ErrorMessage` widens by boxing |
+
+<!-- test: skip -->
+```rask
+// Library: precise union
+func load() -> Config or (IoError | ParseError) {
+    const content = try read_file(path)   // IoError ⊆ union
+    const config = try parse(content)     // ParseError ⊆ union
+    return config
+}
+
+// Application: boxed any Error
+func start_app() -> App or any Error {
+    const config = try read_config(path)  // IoError | ParseError → boxed
+    const db = try connect(config.db_url) // DbError → boxed
+    return App.new(config, db)
+}
+```
+
+Libraries use union errors (precise, matchable). Applications use `any Error` (ergonomic, sufficient for logging). Downcast with `if r is IoError as e` for recovery.
+
+## Error Origin Tracking
+
+| Rule | Description |
+|------|-------------|
+| **ER33: Origin capture** | `try` records `(file, line)` on the error at the first propagation site, in both debug and release builds |
+| **ER34: Origin access** | All errors expose `.origin` — always available, ~16 bytes |
+
+<!-- test: skip -->
+```rask
+func load_config(path: string) -> Config or (IoError | ParseError) {
+    const content = try read_file(path)    // origin: "config.rk:2"
+    const config = try parse(content)      // origin: "config.rk:3"
+    return config
+}
+
+if start_app() is any Error as e {
+    log("{e.origin}: {e.message()}")
+    // "config.rk:2: file not found: /etc/app.conf"
+}
+```
+
+Cost: ~16 bytes per error (file pointer + line). Negligible on the exceptional path. For full propagation chains, add context with `try … else` at key call sites.
+
+## @message Annotation
+
+`@message` generates the `message()` method from per-variant templates — eliminates the match boilerplate for error enums.
+
+| Rule | Description |
+|------|-------------|
+| **ER35: @message opt-in** | `@message` on an enum generates `func message(self) -> string`. Compile error if the enum already defines `message()` manually |
+| **ER36: Variant template** | `@message("template")` on a variant provides the format string. `{name}` for named payloads, `{0}` / `{1}` for positional |
+| **ER37: Auto-delegate** | A variant with a single payload that itself satisfies `ErrorMessage`, and no `@message` annotation, delegates to `inner.message()` |
+| **ER38: Coverage required** | Every variant must have either an annotation or an auto-delegatable payload. Missing coverage is a compile error |
+
+<!-- test: skip -->
+```rask
+@message
+enum RegistryError {
+    @message("package not found: {name}")
+    PackageNotFound(name: string),
+
+    @message("network error: {0}")
+    NetworkError(string),
+
+    @message("checksum mismatch for {pkg}: expected {expected}, got {got}")
+    ChecksumMismatch(pkg: string, expected: string, got: string),
+}
+
+// Wrapper enum — auto-delegates
+@message
+enum FetchError {
+    Manifest(ManifestError),    // delegates to ManifestError.message()
+    Version(VersionError),      // delegates
+    @message("I/O: {0}")
+    Io(string),                 // needs explicit template
+}
+```
+
+Manual `message()` is always available. `@message` is pure convenience over ER6.
+
+## Inferred Error Unions (Private Functions)
+
+Private functions can omit error return types entirely, or use `or _` to state the success type while letting the compiler infer the error union. Same local-analysis pattern as [Gradual Constraints](gradual-constraints.md).
+
+| Rule | Description |
+|------|-------------|
+| **ER39: Error union inference** | Private functions may omit error types or use `or _`. The compiler computes the union from all error-producing expressions in the body |
+| **ER40: Public must be explicit** | `public` functions must declare error types explicitly — `or _` is rejected (API stability, same as `type.gradual/GC5`) |
+| **ER41: Recursive annotation** | Mutually recursive functions where the error type is ambiguous require annotation on at least one function in the cycle |
+
+Three annotation levels:
+
+<!-- test: skip -->
+```rask
+// 1. Fully omitted — both success and error inferred
+func load_config(path: string) {
+    const text = try read_file(path)       // IoError
+    const config = try parse(text)          // ParseError
+    return config
+}
+// Inferred: -> Config or (IoError | ParseError)
+
+// 2. Partial: `or _` — success explicit, error inferred
+func load_config(path: string) -> Config or _ {
+    const text = try read_file(path)
+    return try parse(text)
+}
+
+// 3. Public — must be explicit
+public func load_config(path: string) -> Config or (IoError | ParseError) {
+    const text = try read_file(path)
+    return try parse(text)
+}
+```
+
+Each `try expr` where `expr` returns `T or E` contributes `E`. Each bare error return in the body contributes that error's type. `try … else |e| transform(e)` contributes the type of `transform(e)`, not the original. The inferred union is deduplicated and sorted alphabetically for deterministic output.
+
+## Linear Resources in Errors
+
+| Rule | Description |
+|------|-------------|
+| **ER42: Linear payloads** | Errors may carry linear resources; both branches of `T or E` must handle the resource |
+| **ER43: Wildcard forbidden on linear** | `_` in a match arm or destructure that would discard a linear payload is a compile error |
+
+<!-- test: skip -->
+```rask
+enum FileError {
+    ReadFailed(file: File, reason: string),
+}
+
+match result {
+    data: Data => process(data),
+    FileError.ReadFailed(file, msg) => {
+        try file.close()   // linear file MUST be consumed
+        log(msg)
+    }
+}
+```
+
+## Development Panics
+
+| Rule | Description |
+|------|-------------|
+| **DP1: todo()** | Panics with "not yet implemented" and source location |
+| **DP2: unreachable()** | Panics with "entered unreachable code" and source location |
+| **DP3: Optional message** | Both accept an optional string: `todo("auth flow")`, `unreachable("invalid state")` |
+| **DP4: Never type** | Both return `Never`, coercible to any type |
+| **DP5: Lint warning** | `rask lint` warns on `todo()` in non-test code |
+
+<!-- test: skip -->
+```rask
+func handle(event: Event) -> Response {
+    match event {
+        Click(pos) => handle_click(pos),
+        Key(k)     => todo("keyboard handling"),
+    }
+}
+```
+
+**`todo()` output:**
+```
+thread panicked at 'not yet implemented: keyboard handling', src/handler.rk:4:19
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| Return bare `T` from `T or E` function | ER9 | Wraps to T branch |
+| Return bare `E` from `T or E` function | ER9 | Wraps to E branch |
+| `const x: T or E = 5` (assignment) | ER11 | Type error — auto-wrap is return-only |
+| `T or T` | ER3 | Compile error; newtype one side |
+| `T or i32` (primitive E) | ER4 | Compile error — E lacks `ErrorMessage` |
+| `try r` in `fn -> T?` | — | Cross-shape, ill-typed. Use `r.ok()` then `try` |
+| `try o` in `fn -> T or E` | — | Cross-shape, ill-typed. Use `o.to_result(err)` then `try` |
+| `try` on narrower E into wider union | ER31 | Auto-widen succeeds |
+| `try` into `any Error` | ER32 | Auto-box succeeds |
+| `r ?? err_value` where `err_value: E` | ER14 | Type error — `??` does not widen. Use `.to_result(err)` or match |
+| `!r?` | ER26 | Parse error suggesting `r is E` |
+| `r? && s?` in condition | ER25 | Legal bool; neither narrows |
+| Wildcard on linear error payload | ER43 | Compile error |
+| `.origin` in release build | ER33 | Always available |
+| Nested `try` in closure | ER16 | Propagates to closure's return, not the enclosing function |
+| `@message` + manual `message()` | ER35 | Compile error — pick one |
+| `@message` variant without template or delegatable payload | ER38 | Compile error |
+
+## Error Messages
+
+**`Ok(v)` / `Err(e)` at construction [migration]:**
+```
+ERROR [type.errors/NO_WRAPPER]: Ok/Err are not valid in Rask
+   |
+3  |  return Ok(config)
+   |         ^^^^^^^^^^ bare value auto-wraps to the success branch at return
+
+FIX: return config    (for success)
+     return MyError.Failed   (for error — type picks the branch)
+```
+
+**Disjointness violation [ER3]:**
+```
+ERROR [type.errors/ER3]: T and E must be distinct in `T or E`
+   |
+2  |  func f() -> i32 or i32
+   |              ^^^^^^^^^^ both branches have the same type
+
+WHY: The compiler picks the branch from the value's type at return.
+     Two branches of the same type are ambiguous.
+
+FIX: Newtype one side:
+     type ParseError = i32 with (…)
+     func f() -> i32 or ParseError
+```
+
+**Missing ErrorMessage [ER4]:**
+```
+ERROR [type.errors/ER4]: i32 cannot be an error type
+   |
+2  |  func f() -> string or i32
+   |                        ^^^ i32 does not implement ErrorMessage
+
+WHY: Every error type must provide `func message(self) -> string`.
+
+FIX: Newtype it and implement message():
+     type StatusCode = i32
+     extend StatusCode {
+         func message(self) -> string { "status {self.value}" }
+     }
+```
+
+**Auto-wrap outside return [ER11]:**
+```
+ERROR [type.errors/ER11]: cannot assign value of type `i32` to `i32 or MyError`
+   |
+3  |  const r: i32 or MyError = 5
+   |                            ^ auto-wrap only fires at `return`
+
+WHY: Construction at assignment hides the branch choice. Only `return`
+     triggers auto-wrap for T or E — elsewhere the value must already
+     have the union type (typically from a function call).
+
+FIX: Construct via a function that returns T or E, or use
+     explicit branch construction helpers.
+```
+
+**Cross-shape try [migration]:**
+```
+ERROR [type.errors/CROSS_SHAPE]: cannot `try` Option in Result-returning function
+   |
+4  |  const x = try maybe_value
+   |            ^^^ maybe_value: T?
+   |
+   |  current function returns T or E
+
+WHY: Cross-shape propagation silently fabricates or drops errors.
+
+FIX: Convert explicitly:
+     const x = try maybe_value.to_result(MyError.NotFound)
+```
+
+**Match on Option [migration]:**
+See [optionals.md#error-messages](optionals.md). Same diagnostic fires for `match x { Some(…) => …, None => … }`.
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**ER1 (builtin sum).** The old spec said `Result<T, E>` was a normal enum with `T or E` as sugar. In practice Result had dedicated sugar, auto-Ok wrapping, `try` propagation, `any Error` boxing, origin tracking, and union widening — more bespoke surface than any user enum. Making `T or E` a builtin lets the spec stop pretending.
+
+**ER3 (disjointness).** Type-based branch disambiguation at construction (no `Ok`/`Err` wrappers) only works if T ≠ E. Rask's existing nominal-vs-alias split gives this for free: nominal types are distinct, aliases are transparent. The escape hatch is newtype, not a wrapper keyword.
+
+**ER4 (ErrorMessage bound).** A minimum bound on E solves three problems at once: (1) `r!` can always produce a useful panic message; (2) primitives can't accidentally be error types, so `i32 or i32` style ambiguities don't arise; (3) richer capabilities (context, codes, stack traces) layer opt-in on top without forcing complexity on simple errors.
+
+**ER9 (auto-wrap return-only).** Auto-wrap at assignment/field/argument positions makes the branch choice invisible at the use site. Restricting it to `return` keeps the error branch visible — you can only produce a `T or E` by returning from a function declared to return one.
+
+**ER14 (no `??` widening).** `??` that widens into `T or E` when the RHS doesn't match T would be a second type rule for one operator. Keeping `??` as strict-extract means one mental model ("fallback to an inner value"). Option→Result lifting uses the explicit `.to_result(err)` method.
+
+**ER31/ER32 (libraries vs applications).** Libraries should expose precise union errors so callers can match and recover. Application code calling 5 libraries shouldn't re-declare every error on every function — `any Error` is the escape hatch, type-erased, with `is` downcast for recovery. Same split as Rust's thiserror + anyhow, built into the language.
+
+**No `match` on Option.** See [optionals.md Appendix](optionals.md). Match for `T or E` is kept because multi-error unions genuinely need multi-arm dispatch; Option doesn't.
+
+**`try … else` over `r ?? |e| f(e)`.** Closure-form `??` overloads one operator on two distinct shapes (value vs. `|E| -> T`). Splitting the two cases — `??` for strict value fallback, `try … else` for error-recovery-with-context — keeps each form's meaning crisp.
+
+### Patterns & Guidance
+
+**Panic vs Error.** Panic for programmer bugs (invariant violations, unreachable branches, unwrap assertions). Return errors for expected failures (I/O, parsing, user input, network). Adding error handling for programmer bugs makes the caller strictly worse; adding panics for user-facing failures makes the app unrecoverable.
+
+| Situation | Mechanism |
+|-----------|-----------|
+| Bug / invariant violation | `panic(…)` |
+| `todo()` / `unreachable()` | panics with source location |
+| I/O, parse, auth, network | return `T or E` |
+| Programmer asserts present | `x!` / `r!` |
+
+**Context chains.** For application-level errors, add string context at each layer boundary:
+
+<!-- test: skip -->
+```rask
+func load_config(path: string) -> Config or ContextError {
+    const text = try fs.read_file(path) else |e| context("reading {path}", e)
+    return try Config.parse(text) else |e| context("parsing {path}", e)
+}
+```
+
+**Typed domain errors.** For library-level errors, wrap in domain-specific types:
+
+<!-- test: skip -->
+```rask
+func load_config(path: string) -> Config or ConfigError {
+    const text = try fs.read_file(path) else |e| ConfigError.Io { path, source: e }
+    return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
+}
+```
+
+**Recovery with downcast.** In application code catching `any Error`:
+
+<!-- test: skip -->
+```rask
+if start_app() is any Error as e {
+    if e is IoError { retry() }
+    else            { log("fatal: {e.origin}: {e.message()}") }
+}
+```
+
+### IDE Integration
+
+- Ghost text shows `→ returns E` after `try` for visibility.
+- Ghost text shows inferred error union inline for `or _` and fully-omitted private functions.
+- Quick action: "Make error type explicit" fills in the inferred union.
+- Quick action: "Make public" adds `public` and the full explicit signature.
+- `.origin` hover shows the capture site.
+
+### See Also
+
+- [Optionals](optionals.md) — `T?`, operator family, narrowing (`type.optionals`)
+- [Union Types](union-types.md) — `A | B` error composition (`type.unions`)
+- [Type Aliases](type-aliases.md) — nominal vs transparent (`type.aliases`)
+- [Gradual Constraints](gradual-constraints.md) — inferred signatures (`type.gradual`)
+- [Ensure](../control/ensure.md) — `ensure … else |e|` pattern (`ctrl.ensure`)
+- [Error Model Redesign Proposal](error-model-redesign-proposal.md) — decision record for the no-wrappers surface
