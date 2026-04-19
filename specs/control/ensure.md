@@ -13,7 +13,7 @@ Block-scoped `ensure` statement schedules an expression to run when the enclosin
 | **EN1: Block-scoped** | Executes when enclosing block exits, not function |
 | **EN2: LIFO ordering** | Multiple ensure statements run in reverse order (last scheduled runs first) |
 | **EN3: Linear consumption commitment** | `ensure` on linear resource counts as consumption guarantee |
-| **EN4: Errors ignored by default** | If ensure body returns `Result` and fails, error silently ignored |
+| **EN4: Errors ignored by default** | If ensure body returns `T or E` and fails, error silently ignored |
 | **EN5: try forbidden in ensure** | Cannot use `try` inside ensure body or else handler |
 | **EN6: Explicit consumption cancels ensure** | If value is consumed before scope exit, ensure is void |
 
@@ -86,7 +86,7 @@ func process() -> () or Error {
 
     const data = try file.read()        // Safe to use try now
     try transform(data)
-    Ok(())
+    // implicit unit success at end
 }
 // Compiler accepts: file's consumption is guaranteed
 ```

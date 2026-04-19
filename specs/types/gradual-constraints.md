@@ -145,11 +145,11 @@ ERROR [type.gradual/GC2]: inferred return type changed
 
 ## Error Union Inference
 
-Error return types are inferred like any other return type — the compiler collects error types from all `try` calls and explicit `Err()` returns in the body. Three annotation levels from least to most explicit:
+Error return types are inferred like any other return type — the compiler collects error types from all `try` calls and bare error-typed returns in the body. Three annotation levels from least to most explicit:
 
 | Rule | Description |
 |------|-------------|
-| **GC7: Error union from body** | `try` calls and `Err()` returns contribute to the inferred error union |
+| **GC7: Error union from body** | `try` calls and bare error-typed return expressions contribute to the inferred error union |
 | **GC8: Public errors explicit** | Public functions must declare error types explicitly (same as GC5) |
 
 <!-- test: skip -->

@@ -68,10 +68,10 @@ func load() -> Config or (IoError | ParseError) {
 <!-- test: skip -->
 ```rask
 match result {
-    Ok(config) => use(config),
-    Err(IoError.NotFound(p)) => println("not found: {}", p),
-    Err(ParseError.Syntax(l, c)) => println("syntax error at {}:{}", l, c),
-    Err(_) => println("other error"),
+    Config as config => use(config),
+    IoError.NotFound(p) => println("not found: {}", p),
+    ParseError.Syntax(l, c) => println("syntax error at {}:{}", l, c),
+    _ => println("other error"),
 }
 ```
 
