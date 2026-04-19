@@ -197,6 +197,12 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
+            // `read` is reserved by the lexer but has no structural role in the grammar.
+            // Allow it anywhere a plain identifier is expected.
+            TokenKind::ReadKw => {
+                self.advance();
+                Ok("read".to_string())
+            }
             _ => Err(ParseError::expected(
                 "a name",
                 self.current_kind(),
@@ -2679,7 +2685,7 @@ impl Parser {
                 | TokenKind::Select | TokenKind::SelectPriority
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
                 | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
-                | TokenKind::None | TokenKind::Null
+                | TokenKind::None | TokenKind::Null | TokenKind::ReadKw
         )
     }
 
@@ -3112,6 +3118,16 @@ impl Parser {
             TokenKind::Own => {
                 self.advance();
                 self.parse_expr_bp(Self::PREFIX_BP)
+            }
+
+            // `read` is reserved as a parameter mode keyword but has no syntactic
+            // role in expressions. Allow it as a plain identifier so user-defined
+            // functions and variables named `read` work correctly.
+            TokenKind::ReadKw => {
+                self.advance();
+                let name = "read".to_string();
+                let end = self.tokens[self.pos - 1].span.end;
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.span(start, end) })
             }
 
             TokenKind::LParen => self.parse_paren_or_tuple(),
