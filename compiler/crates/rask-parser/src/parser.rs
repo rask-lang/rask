@@ -3074,6 +3074,16 @@ impl Parser {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let end = operand.span.end;
+                // OPT17/ER26: `!x?` is forbidden — prefix `!` with suffix `?`
+                // fights the parse. Suggest `x == none` (Option) or `x is E`
+                // (Result) instead. `!` on a plain bool is still fine.
+                if matches!(operand.kind, ExprKind::IsPresent { .. }) {
+                    return Err(ParseError {
+                        span: self.span(start, end),
+                        message: "cannot negate `?` with prefix `!`".to_string(),
+                        hint: Some("use `x == none` for Option or `r is E` for Result".to_string()),
+                    });
+                }
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Not, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Tilde => {
