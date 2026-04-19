@@ -42,7 +42,7 @@ Rask uses words where other languages use symbols:
 |---------|------|------------|
 | Error propagation | `try expr` | `expr?` |
 | Ownership transfer | `own value` | implicit move |
-| Pattern check | `x is Some(v)` | `let Some(v) = x` |
+| Pattern check | `if x? as v { … }` | `let Some(v) = x` |
 | Result type | `T or E` | `Result<T, E>` |
 
 Keywords are unambiguous tokens. `try` means one thing in Rask. `?` means different things in different languages. Tools that process multiple languages benefit from unambiguous tokens; developers benefit from readable code.
@@ -150,14 +150,15 @@ func load_config(path: string) -> Config or IoError {
 
 // Handling — react to the specific error
 match fs.read_file(path) {
-    Ok(data) => process(data),
-    Err(e) => log("failed to read {path}: {e}"),
+    Data as data => process(data),
+    IoError as e => log("failed to read {path}: {e.message()}"),
 }
 
 // Guard pattern — early return on error
 func get_user(id: i64) -> User or NotFound {
-    mut user = db.find(id) is Ok else { return Err(NotFound {}) }
-    return user
+    const found = db.find(id)
+    if found is NotFound as e { return e }
+    return found!
 }
 ```
 
@@ -188,7 +189,7 @@ const text = try fs.read_file(path) else |e| {
 
 **Anti-patterns:**
 - `x!` in production code — crashes on error. Use `try` or `match`.
-- Long `if result is Err(e)` chains — use `try` for propagation.
+- Long `if result is E as e` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
 - Using `context()` in library code where callers need to match on error types — use typed domain errors with `try...else` instead.
 
@@ -225,11 +226,16 @@ See [control/ensure.md](control/ensure.md), [memory/resource-types.md](memory/re
 
 ## Option Handling
 
-Four patterns, each for a different situation.
+Four patterns, each for a different situation. Option is a builtin status type with an operator-only surface — no `Some`/`None` wrappers, no `match` arms.
 
 ```rask
-// Single check — do something if present
-if opt is Some(v) {
+// Single check — narrow in place (const scrutinee)
+if opt? {
+    use(opt)
+}
+
+// Single check — bind for mut or when renaming reads better
+if opt? as v {
     use(v)
 }
 
@@ -237,18 +243,21 @@ if opt is Some(v) {
 const name = opt ?? "anonymous"
 
 // Guard — early return if absent
-mut v = opt is Some else { return None }
+if opt == none { return none }
+use(opt)   // opt: T here (early-exit narrow)
 
-// Full handling — both branches matter
-match opt {
-    Some(v) => process(v),
-    None => handle_missing(),
+// Full handling — both branches matter, use if/else (not match)
+if opt? {
+    process(opt)
+} else {
+    handle_missing()
 }
 ```
 
 **Anti-patterns:**
-- `x!` without checking — crashes on None.
-- Nested `if opt is Some` when `match` is clearer.
+- `x!` without checking — crashes on none.
+- `match` on Option — rejected with a migration diagnostic. Use the operator family.
+- `!x?` — parse error. Use `x == none`.
 
 See [types/optionals.md](types/optionals.md).
 
@@ -428,7 +437,7 @@ const data = try file.read_text()
 
 // Buffered I/O
 const reader = BufReader.new(file)
-while try reader.read_line() is Some(line) {
+while (try reader.read_line())? as line {
     process(line)
 }
 ```
@@ -465,7 +474,9 @@ if point is Point { x, y } {
 }
 
 // Guard pattern
-mut conn = try_connect() is Ok else { return Err(ConnectFailed {}) }
+const conn = try_connect()
+if conn is ConnectFailed as e { return e }
+use(conn!)   // or narrow via early-exit rule
 ```
 
 **Anti-patterns:**
