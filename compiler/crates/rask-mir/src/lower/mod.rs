@@ -1236,7 +1236,7 @@ impl<'a> MirLowerer<'a> {
                     self.walk_free_vars(&arg.expr, bound, seen, free);
                 }
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.walk_free_vars(cond, bound, seen, free);
                 self.walk_free_vars(then_branch, bound, seen, free);
                 if let Some(e) = else_branch {
@@ -1484,6 +1484,11 @@ fn collect_pattern_names(
             if let Some(first) = alts.first() { collect_pattern_names(first, names); }
         }
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
+        Pattern::TypePat { binding, .. } => {
+            if let Some(name) = binding {
+                names.insert(name.clone());
+            }
+        }
     }
 }
 
@@ -1863,6 +1868,7 @@ mod tests {
                 cond: Box::new(cond),
                 then_branch: Box::new(then_br),
                 else_branch: else_br.map(Box::new),
+                else_binding: None,
             },
             span: sp(),
         }

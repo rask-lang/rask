@@ -293,4 +293,19 @@ pub enum TypeError {
         ty: Type,
         span: Span,
     },
+
+    /// ER22: `else as e` requires a `T or E` condition to bind the error
+    #[error("`else as {name}` requires an `if r?` condition on a Result (`T or E`)")]
+    ElseBindingNotResult {
+        name: String,
+        span: Span,
+    },
+
+    /// ER23: `is TypeName as ...` requires the scrutinee to be a Result
+    #[error("type pattern `{ty_name}` requires a Result scrutinee, found `{found}`")]
+    TypePatternNotResult {
+        ty_name: String,
+        found: Type,
+        span: Span,
+    },
 }

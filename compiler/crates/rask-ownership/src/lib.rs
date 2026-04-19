@@ -859,7 +859,7 @@ impl<'a> OwnershipChecker<'a> {
                 // SL1: Record scope limit for the next binding to pick up
                 self.last_closure_scope_limit = scope_limit;
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.check_expr(cond);
                 let pre_branch = self.bindings.clone();
                 self.check_expr(then_branch);
@@ -1592,6 +1592,11 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
+            Pattern::TypePat { binding, .. } => {
+                if let Some(name) = binding {
+                    self.bindings.insert(name.clone(), BindingState::Owned);
+                }
+            }
         }
     }
 
@@ -1695,7 +1700,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.collect_free_vars_inner(object, locals, out, projections);
                 self.collect_free_vars_inner(index, locals, out, projections);
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.collect_free_vars_inner(cond, locals, out, projections);
                 self.collect_free_vars_inner(then_branch, locals, out, projections);
                 if let Some(e) = else_branch { self.collect_free_vars_inner(e, locals, out, projections); }

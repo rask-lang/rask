@@ -688,6 +688,20 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(format!("add `extend {ty} {{ func message(self) -> string {{ ... }} }}`"))
                     .with_why("every error type must provide `func message(self) -> string`; primitives don't qualify — newtype them [type.errors/ER4]")
             }
+            ElseBindingNotResult { name, span } => {
+                Diagnostic::error(format!("`else as {}` requires a Result condition", name))
+                    .with_code("E0345")
+                    .with_primary(*span, "the `if` condition has no error to bind")
+                    .with_help("use `else as e` only when the condition is `if r?` on a `T or E`")
+                    .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
+            }
+            TypePatternNotResult { ty_name, found, span } => {
+                Diagnostic::error(format!("type pattern `{}` needs a Result scrutinee", ty_name))
+                    .with_code("E0346")
+                    .with_primary(*span, format!("found `{}`", found))
+                    .with_help("type patterns narrow the error side of `T or E`; the scrutinee must be a Result")
+                    .with_why("`is Type as name` dispatches on the error branch — not applicable to other types [type.errors/ER23]")
+            }
         }
     }
 }

@@ -237,6 +237,7 @@ impl TypeChecker {
                 cond,
                 then_branch,
                 else_branch,
+                else_binding,
             } => {
                 // Capture and clear the statement-position flag so it doesn't
                 // leak into nested expressions (e.g. const x = if ... { ... }).
@@ -267,19 +268,36 @@ impl TypeChecker {
                     self.pop_scope();
                 }
 
+                // ER22: `else as e` requires a Result cond. Reject otherwise.
+                if let Some(name) = else_binding {
+                    let has_err = matches!(presence_narrowing, Some((_, _, Some(_))));
+                    if !has_err {
+                        self.errors.push(TypeError::ElseBindingNotResult {
+                            name: name.clone(),
+                            span: expr.span,
+                        });
+                    }
+                }
+
                 if let Some(else_branch) = else_branch {
-                    // ER21: narrow the else branch to E for Result scrutinees.
-                    let else_narrowed = matches!(
-                        &presence_narrowing,
-                        Some((_, _, Some(_)))
-                    );
-                    if else_narrowed {
-                        let (var_name, _, else_ty) = presence_narrowing.as_ref().unwrap();
+                    // ER21/ER22: narrow the else branch to E for Result scrutinees.
+                    // `else as e` picks a separate name; otherwise reuse the
+                    // cond's `as v` / scrutinee name.
+                    let else_narrow = match (else_binding, &presence_narrowing) {
+                        (Some(e_name), Some((_, _, Some(err_ty)))) => {
+                            Some((e_name.clone(), err_ty.clone()))
+                        }
+                        (None, Some((var_name, _, Some(err_ty)))) => {
+                            Some((var_name.clone(), err_ty.clone()))
+                        }
+                        _ => None,
+                    };
+                    if let Some((ref name, ref err_ty)) = else_narrow {
                         self.push_scope();
-                        self.define_local(var_name.clone(), else_ty.clone().unwrap());
+                        self.define_local(name.clone(), err_ty.clone());
                     }
                     let else_ty = self.infer_expr(else_branch);
-                    if else_narrowed {
+                    if else_narrow.is_some() {
                         self.pop_scope();
                     }
                     let resolved_then = self.ctx.apply(&then_ty);

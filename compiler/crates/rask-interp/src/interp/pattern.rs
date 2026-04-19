@@ -157,6 +157,42 @@ impl Interpreter {
                 };
                 if in_range { Some(HashMap::new()) } else { None }
             }
+
+            // ER23: `r is TypeName as e` — match the Err branch of a Result,
+            // narrowing to the named error type and binding the payload.
+            Pattern::TypePat { ty_name, binding } => {
+                let Value::Enum { variant, fields, .. } = value else {
+                    return None;
+                };
+                if variant != "Err" {
+                    return None;
+                }
+                let inner = fields.first()?;
+                let inner_name = match inner {
+                    Value::Enum { name, .. } => name.as_str(),
+                    Value::Struct(s) => {
+                        let guard = s.lock().unwrap();
+                        if &guard.name == ty_name {
+                            let mut bindings = HashMap::new();
+                            if let Some(n) = binding {
+                                bindings.insert(n.clone(), inner.clone());
+                            }
+                            return Some(bindings);
+                        }
+                        return None;
+                    }
+                    _ => return None,
+                };
+                if inner_name == ty_name {
+                    let mut bindings = HashMap::new();
+                    if let Some(n) = binding {
+                        bindings.insert(n.clone(), inner.clone());
+                    }
+                    Some(bindings)
+                } else {
+                    None
+                }
+            }
         }
     }
 

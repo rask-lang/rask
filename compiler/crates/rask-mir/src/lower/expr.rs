@@ -589,6 +589,7 @@ impl<'a> MirLowerer<'a> {
                 cond,
                 then_branch,
                 else_branch,
+                ..
             } => self.lower_if(cond, then_branch, else_branch.as_deref()),
 
             // Match expression (spec L2)

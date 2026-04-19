@@ -416,10 +416,12 @@ impl TypeSubstitutor {
                     cond,
                     then_branch,
                     else_branch,
+                    else_binding,
                 } => ExprKind::If {
                     cond: Box::new(self.clone_expr(cond)),
                     then_branch: Box::new(self.clone_expr(then_branch)),
                     else_branch: else_branch.as_ref().map(|e| Box::new(self.clone_expr(e))),
+                    else_binding: else_binding.clone(),
                 },
                 ExprKind::IfLet {
                     expr,
@@ -622,6 +624,10 @@ impl TypeSubstitutor {
             Pattern::Range { start, end } => Pattern::Range {
                 start: start.clone(),
                 end: end.clone(),
+            },
+            Pattern::TypePat { ty_name, binding } => Pattern::TypePat {
+                ty_name: ty_name.clone(),
+                binding: binding.clone(),
             },
         }
     }

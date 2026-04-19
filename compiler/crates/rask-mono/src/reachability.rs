@@ -364,6 +364,7 @@ impl<'a> Monomorphizer<'a> {
                 cond,
                 then_branch,
                 else_branch,
+                ..
             } => {
                 self.visit_expr(cond);
                 self.visit_expr(then_branch);

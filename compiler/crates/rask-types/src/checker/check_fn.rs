@@ -303,7 +303,7 @@ impl TypeChecker {
                 self.check_no_alloc_expr(fn_name, object);
                 self.check_no_alloc_expr(fn_name, index);
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.check_no_alloc_expr(fn_name, cond);
                 self.check_no_alloc_expr(fn_name, then_branch);
                 if let Some(e) = else_branch { self.check_no_alloc_expr(fn_name, e); }

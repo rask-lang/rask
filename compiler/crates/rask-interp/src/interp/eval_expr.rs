@@ -589,17 +589,20 @@ impl Interpreter {
                 cond,
                 then_branch,
                 else_branch,
+                else_binding,
             } => {
-                // OPT19/OPT20 + ER19/ER20/ER21: `if x?` or `if expr? as v`
+                // OPT19/OPT20 + ER19/ER20/ER21/ER22: `if x?` or `if expr? as v`
                 // evaluates the scrutinee once and rebinds the payload as the
-                // narrow name (scrutinee ident for plain, `v` for `as v`).
+                // narrow name (scrutinee ident for plain, `v` for `as v`,
+                // `else as e` for the else branch).
                 if let ExprKind::IsPresent { expr: inner, binding } = &cond.kind {
-                    let narrow_name = match (binding, &inner.kind) {
+                    let then_name = match (binding, &inner.kind) {
                         (Some(v), _) => Some(v.clone()),
                         (None, ExprKind::Ident(n)) => Some(n.clone()),
                         _ => None,
                     };
-                    if let Some(name) = narrow_name {
+                    let else_name = else_binding.clone().or_else(|| then_name.clone());
+                    if then_name.is_some() || else_name.is_some() {
                         let scrutinee_val = self.eval_expr(inner)?;
                         let present = matches!(
                             &scrutinee_val,
@@ -611,7 +614,9 @@ impl Interpreter {
                                 _ => Value::Unit,
                             };
                             self.env.push_scope();
-                            self.env.define(name, payload);
+                            if let Some(name) = then_name {
+                                self.env.define(name, payload);
+                            }
                             let result = self.eval_expr(then_branch);
                             self.env.pop_scope();
                             return result;
@@ -620,7 +625,7 @@ impl Interpreter {
                                 Value::Enum { fields, .. } => fields.first().cloned(),
                                 _ => None,
                             };
-                            if let Some(p) = payload {
+                            if let (Some(name), Some(p)) = (else_name, payload) {
                                 // Result Err branch binds E; Option None has no payload.
                                 self.env.push_scope();
                                 self.env.define(name, p);

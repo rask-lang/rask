@@ -296,7 +296,7 @@ fn expr_accesses_handle_fields(expr: &Expr, handle_names: &[&str]) -> bool {
             expr_accesses_handle_fields(object, handle_names)
                 || expr_accesses_handle_fields(index, handle_names)
         }
-        ExprKind::If { cond, then_branch, else_branch } => {
+        ExprKind::If { cond, then_branch, else_branch, .. } => {
             expr_accesses_handle_fields(cond, handle_names)
                 || expr_accesses_handle_fields(then_branch, handle_names)
                 || else_branch.as_ref().map_or(false, |e| expr_accesses_handle_fields(e, handle_names))

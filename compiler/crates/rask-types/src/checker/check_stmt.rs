@@ -466,7 +466,7 @@ impl TypeChecker {
                 self.walk_sync_accesses(object, out);
                 self.walk_sync_accesses(index, out);
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.walk_sync_accesses(cond, out);
                 self.walk_sync_accesses(then_branch, out);
                 if let Some(e) = else_branch {

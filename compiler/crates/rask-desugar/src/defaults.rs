@@ -427,7 +427,7 @@ impl DefaultDesugarer {
             ExprKind::Block(stmts) => {
                 for s in stmts { self.desugar_stmt(s); }
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.desugar_expr(cond);
                 self.desugar_expr(then_branch);
                 if let Some(e) = else_branch { self.desugar_expr(e); }

@@ -377,6 +377,7 @@ impl Desugarer {
                 cond,
                 then_branch,
                 else_branch,
+                ..
             } => {
                 self.desugar_expr(cond);
                 self.desugar_expr(then_branch);

@@ -210,7 +210,7 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
                 visit_stmt(stmt, index);
             }
         }
-        ExprKind::If { cond, then_branch, else_branch } => {
+        ExprKind::If { cond, then_branch, else_branch, .. } => {
             visit_expr(cond, index);
             visit_expr(then_branch, index);
             if let Some(else_br) = else_branch {

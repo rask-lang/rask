@@ -211,7 +211,7 @@ impl<'a> WarnContext<'a> {
                 self.check_expr(index, warnings);
             }
             ExprKind::Block(stmts) => self.check_stmts(stmts, warnings),
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.check_expr(cond, warnings);
                 self.check_expr(then_branch, warnings);
                 if let Some(e) = else_branch { self.check_expr(e, warnings); }

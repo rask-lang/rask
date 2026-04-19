@@ -124,6 +124,51 @@ impl TypeChecker {
                 vec![]
             }
 
+            // ER23: `is TypeName as binding` — narrows the scrutinee to TypeName.
+            // Scope: two-branch `T or E` where the error side matches TypeName.
+            // Union errors are not supported here yet (ER23 mentions them but
+            // runtime type dispatch for union components lands separately).
+            Pattern::TypePat { ty_name, binding } => {
+                let narrow_ty = match self.types.get_type_id(ty_name) {
+                    Some(id) => Type::Named(id),
+                    None => Type::UnresolvedNamed(ty_name.clone()),
+                };
+                let resolved = self.ctx.apply(scrutinee_ty);
+                match &resolved {
+                    Type::Result { err, .. } => {
+                        let err_applied = self.ctx.apply(err);
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            err_applied,
+                            narrow_ty.clone(),
+                            span,
+                        ));
+                    }
+                    Type::Var(_) => {
+                        let ok_ty = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            scrutinee_ty.clone(),
+                            Type::Result {
+                                ok: Box::new(ok_ty),
+                                err: Box::new(narrow_ty.clone()),
+                            },
+                            span,
+                        ));
+                    }
+                    _ => {
+                        self.errors.push(TypeError::TypePatternNotResult {
+                            ty_name: ty_name.clone(),
+                            found: resolved,
+                            span,
+                        });
+                    }
+                }
+                if let Some(name) = binding {
+                    vec![(name.clone(), narrow_ty)]
+                } else {
+                    vec![]
+                }
+            }
+
             Pattern::Or(alternatives) => {
                 if let Some(first) = alternatives.first() {
                     let bindings = self.check_pattern(first, scrutinee_ty, span);
