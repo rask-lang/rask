@@ -22,7 +22,7 @@ extend BackendPool {
                 with status.read() as s {
                     const healthy = s.get(backend.url)
                     // Treat unknown backends as healthy until a health check runs.
-                    if healthy is None || healthy is Some(true) {
+                    if healthy == none || healthy == true {
                         return backend
                     }
                 }

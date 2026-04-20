@@ -79,7 +79,8 @@ extend Lexer {
     }
 
     func skip_whitespace(self) {
-        while self.peek_char() is Some(c) {
+        while self.peek_char()? {
+            const c = self.peek_char()!
             if !c.is_whitespace(): break
             self.advance()
         }
@@ -111,7 +112,8 @@ extend Lexer {
         const num_str = string.new()
         mut has_dot = false
 
-        while self.peek_char() is Some(c) {
+        while self.peek_char()? {
+            const c = self.peek_char()!
             if c.is_digit() {
                 num_str.push(c)
                 self.advance()

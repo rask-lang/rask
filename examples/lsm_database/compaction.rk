@@ -101,8 +101,8 @@ func spawn_background_compaction(
         tx.send(CompactionMsg.Started(a.id, b.id))
 
         match compact_sstables(a.clone(), b.clone(), new_id, target_level, dir) {
-            Ok(meta) => tx.send(CompactionMsg.Completed(meta, a.id, b.id)),
-            Err(e) => tx.send(CompactionMsg.Failed(e)),
+            SstMeta as meta => tx.send(CompactionMsg.Completed(meta, a.id, b.id)),
+            CompactionError as e => tx.send(CompactionMsg.Failed(e)),
         }
     }).detach()
 }

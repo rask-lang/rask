@@ -11,7 +11,7 @@ benchmark "handle sequential read 1k" {
     mut i = 0
     while i < 1000 {
         mut result = p.insert(i)
-        if result is Ok(h) {
+        if result? as h {
             handles.push(h)
         }
         i = i + 1
@@ -31,7 +31,7 @@ benchmark "handle random read 1k" {
     mut i = 0
     while i < 1000 {
         mut result = p.insert(i)
-        if result is Ok(h) {
+        if result? as h {
             handles.push(h)
         }
         i = i + 1
@@ -54,7 +54,7 @@ benchmark "handle churn remove 1k" {
     mut i = 0
     while i < 1000 {
         mut result = p.insert(i)
-        if result is Ok(h) {
+        if result? as h {
             handles.push(h)
         }
         i = i + 1
@@ -82,7 +82,7 @@ benchmark "handle churn read 800" {
     mut i = 0
     while i < 1000 {
         mut result = p.insert(i)
-        if result is Ok(h) {
+        if result? as h {
             handles.push(h)
         }
         i = i + 1

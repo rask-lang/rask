@@ -123,7 +123,9 @@ extend Lexer {
         if self.pos >= self.source.len(): return none
         const c = self.source.char_at(self.pos)
         self.pos = self.pos + 1
-        if c is Some(cc) && cc == '\n' { self.line = self.line + 1 }
+        if c? as cc {
+            if cc == '\n' { self.line = self.line + 1 }
+        }
         return c
     }
 
@@ -142,7 +144,7 @@ extend Lexer {
 
     // Skip whitespace (spaces and tabs, NOT newlines — those are tokens)
     func skip_whitespace(self) {
-        while self.peek() is Some(c) {
+        while self.peek()? as c {
             if c == ' ' || c == '\t' || c == '\r' {
                 self.advance()
             } else if c == '/' {
@@ -151,7 +153,7 @@ extend Lexer {
                     const next = self.source.char_at(self.pos + 1) is Some else { break }
                     if next == '/' {
                         // Line comment — skip to end of line
-                        while self.peek() is Some(ch) {
+                        while self.peek()? as ch {
                             if ch == '\n': break
                             self.advance()
                         }
@@ -159,7 +161,7 @@ extend Lexer {
                         // Block comment — skip to */
                         self.advance()  // skip /
                         self.advance()  // skip *
-                        while self.peek() is Some(ch) {
+                        while self.peek()? as ch {
                             if ch == '*' {
                                 self.advance()
                                 if self.match_char('/') { break }
@@ -289,7 +291,7 @@ extend Lexer {
         const start = self.pos
         mut frac_start = self.pos
 
-        while self.peek() is Some(c) {
+        while self.peek()? as c {
             match c {
                 '0'..='9' => { self.advance() }
                 '.' => {
@@ -297,8 +299,13 @@ extend Lexer {
                         return LexError.UnexpectedChar('.', self.line)  // second dot in number
                     }
                     self.advance() // consume the dot
-                    if self.peek() is Some(next) && next >= '0' && next <= '9' {
-                        frac_start = self.pos
+                    const peeked = self.peek()
+                    if peeked? as next {
+                        if next >= '0' && next <= '9' {
+                            frac_start = self.pos
+                        } else {
+                            return LexError.UnexpectedChar('.', self.line)  // dot not followed by digits
+                        }
                     } else {
                         return LexError.UnexpectedChar('.', self.line)  // dot not followed by digits
                     }
@@ -337,7 +344,7 @@ extend Lexer {
                 break end_pos
            } else if c == '\\' {
                 self.advance() // skip the backslash
-                if self.peek() is Some(esc) {
+                if self.peek()? as esc {
                     match esc {
                         'n' | 't' | '\\' | '"' => self.advance(), // valid escape, consume it
                         _ => return LexError.UnexpectedChar(esc, self.line) // invalid escape
@@ -357,7 +364,7 @@ extend Lexer {
 
     func read_identifier(self) -> Token or LexError {
         const start = self.pos
-        while self.peek() is Some(c) {
+        while self.peek()? as c {
             if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
                 self.advance()
             } else {

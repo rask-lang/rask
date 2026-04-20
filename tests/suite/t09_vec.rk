@@ -43,7 +43,7 @@ test "vec pop" {
 test "vec pop empty" {
     const v = Vec<i32>.new()
     const popped = v.pop()
-    assert popped is None
+    assert popped == none
 }
 
 test "vec sum via loop" {
@@ -81,9 +81,9 @@ test "vec string read twice" {
 test "vec get returns option" {
     const v = Vec.new()
     v.push(42)
-    assert v.get(0) is Some
+    assert v.get(0)?
     assert v.get(0)! == 42
-    assert v.get(99) is None
+    assert v.get(99) == none
 }
 
 func main() {}

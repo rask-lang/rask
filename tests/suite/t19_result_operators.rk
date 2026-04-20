@@ -42,7 +42,7 @@ func double(x: i32) -> i32 or DivError {
 
 test "auto-wrap at return" {
     const result = double(21)
-    assert result is Ok
+    assert result?
     assert result! == 42
 }
 
@@ -54,7 +54,7 @@ func do_nothing() -> () or DivError {
 
 test "implicit unit success" {
     const result = do_nothing()
-    assert result is Ok
+    assert result?
 }
 
 // --- try propagation (ER16) ---
@@ -71,7 +71,7 @@ test "try extracts present" {
 
 test "try propagates error" {
     const result = compute(10, 0)
-    assert result is Err
+    assert result is DivError
 }
 
 // --- try with method chaining ---
@@ -88,7 +88,7 @@ func parse_and_double(s: string) -> i32 or ParseError {
 
 test "try with chaining" {
     assert parse_and_double("42")! == 84
-    assert parse_and_double("bad") is Err
+    assert parse_and_double("bad") is ParseError
 }
 
 // --- try...else (ER18) ---
@@ -110,7 +110,7 @@ func load_value(s: string) -> i32 or ContextError {
 
 test "try else transforms error" {
     const result = load_value("bad")
-    assert result is Err
+    assert result is ContextError
 }
 
 test "try else passes through" {
@@ -127,7 +127,7 @@ test "map on present" {
 
 test "map on error" {
     const result = safe_div(10, 0).map(|v| v * 3)
-    assert result is Err
+    assert result is DivError
 }
 
 test "ok() lifts to Option (present)" {
@@ -137,7 +137,7 @@ test "ok() lifts to Option (present)" {
 
 test "ok() lifts to Option (absent)" {
     const opt = safe_div(10, 0).ok()
-    assert opt is None
+    assert opt == none
 }
 
 // --- Error union composition (ER31) ---
@@ -153,11 +153,11 @@ test "error union present path" {
 }
 
 test "error union parse error" {
-    assert combined("bad", 2) is Err
+    assert combined("bad", 2) is ParseError
 }
 
 test "error union div error" {
-    assert combined("42", 0) is Err
+    assert combined("42", 0) is DivError
 }
 
 // --- match on Result ---
@@ -165,8 +165,8 @@ test "error union div error" {
 test "match on Result" {
     const result = safe_div(10, 2)
     const value = match result {
-        Ok(v) => v
-        Err(_) => -1
+        i32 as v => v
+        DivError => -1
     }
     assert value == 5
 }

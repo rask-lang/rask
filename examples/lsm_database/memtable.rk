@@ -100,7 +100,7 @@ test "memtable put and get" {
     const b = mt.get("b") is Some else { panic("expected Some") }
     assert b.value == "2"
 
-    assert mt.get("z") is None
+    assert mt.get("z") == none
 }
 
 test "memtable overwrites by key" {

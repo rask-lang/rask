@@ -266,7 +266,7 @@ func main() -> () or Error {
             // Handle input (simulated - would be real input in actual game)
             if frame_count % 30 == 0 {
                 // Fire projectile
-                if state.player is Some(player_h) {
+                if state.player? as player_h {
                     const px = state.entities[player_h].position.x
                     const py = state.entities[player_h].position.y
                     try state.spawn_projectile(px + 20.0f32, py, 300.0f32, 0.0f32)
@@ -292,7 +292,7 @@ func main() -> () or Error {
         if frame_count % 60 == 0 {
             const entity_count = state.entities.len()
             mut player_health = 0
-            if state.player is Some(h) {
+            if state.player? as h {
                 player_health = state.entities[h].health.current
             }
             println("Frame {frame_count}: Entities={entity_count}, Health={player_health}, Score={state.score}")

@@ -105,7 +105,7 @@ extend Db {
 
     func get(mutate self, key: string) -> string or DbError {
         // Memtable first (newest data)
-        if self.memtable.get(key) is Some(kv) {
+        if self.memtable.get(key)? as kv {
             if kv.deleted {
                 return DbError.KeyNotFound(key)
             }
@@ -126,7 +126,7 @@ extend Db {
                 const result = try self.lookup.lookup(meta, key, mutate self.cache)
                     else |e| DbError.Sst(e)
 
-                if result is Some(kv) {
+                if result? as kv {
                     if kv.deleted {
                         return DbError.KeyNotFound(key)
                     }
@@ -290,8 +290,8 @@ extend Db {
             const id = self.next_sst_id
             const entries = self.memtable.take_sorted()
             match write_sstable(id, 0, self.config.dir, entries) {
-                Ok(_) => {}
-                Err(_) => {}
+                SstMeta => {}
+                SstError => {}
             }
         }
         try self.wal.close()

@@ -105,7 +105,7 @@ func main() {
     print(player_ent.health)
     print(")")
 
-    if player_ent.target is Some(target_handle) {
+    if player_ent.target? as target_handle {
         const target = entities.get(target_handle).unwrap()
         print(" -> targets ")
         print(target.name)
@@ -118,7 +118,7 @@ func main() {
     print(e1.health)
     print(")")
 
-    if e1.target is Some(target_handle) {
+    if e1.target? as target_handle {
         const target = entities.get(target_handle).unwrap()
         print(" -> targets ")
         print(target.name)
@@ -131,7 +131,7 @@ func main() {
     print(e2.health)
     print(")")
 
-    if e2.target is Some(target_handle) {
+    if e2.target? as target_handle {
         const target = entities.get(target_handle).unwrap()
         print(" -> targets ")
         print(target.name)

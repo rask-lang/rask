@@ -470,7 +470,7 @@ func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or Regi
     }
 
     mut deps = Vec.new()
-    if m.get("deps")?.as_array() is Some(dep_arr) {
+    if m.get("deps")?.as_array()? as dep_arr {
         for d_val in dep_arr {
             const d_obj = d_val.as_object() is Some(dm) else { continue }
             const dn = d_obj.get("name")?.as_string() ?? ""
@@ -772,7 +772,7 @@ func fetch_packages(
         mut first_error: FetchError? = none
         mut received = 0
         while received < items.len() {
-            if rx.recv() is Ok(result) {
+            if rx.recv()? as result {
                 if result? as msg {
                     println("  {msg}")
                 } else as e {

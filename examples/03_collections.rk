@@ -20,7 +20,7 @@ func main() {
     scores.insert("Charlie", 92)
 
     const alice_score = scores.get("Alice")
-    if alice_score is Some(score) {
+    if alice_score? as score {
         print("Alice's score: ")
         print(score)
         print("\n")

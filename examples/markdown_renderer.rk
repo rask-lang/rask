@@ -159,7 +159,7 @@ func ordered_list_start(line: string) -> i32? {
     if dot_pos + 1 >= line.len() {
         return none
     }
-    if line.char_at(dot_pos + 1) is Some(c) {
+    if line.char_at(dot_pos + 1)? as c {
         if c != ' ' {
             return none
         }
@@ -254,7 +254,8 @@ extend Scanner {
 
     func scan_until_char(self, target: char) -> string? {
         const start = self.pos
-        while self.peek() is Some(c) {
+        while self.peek()? {
+            const c = self.peek()!
             if c == target {
                 const result = self.input[start..self.pos].to_string()
                 self.pos = self.pos + target.len_utf8()
@@ -349,7 +350,7 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
         }
         if scanner.matches("\\") {
             scanner.advance()
-            if scanner.peek() is Some(c) {
+            if scanner.peek()? as c {
                 scanner.advance()
                 text_buf.push_char(c)
                 continue
@@ -594,7 +595,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         }
 
         // Ordered list: 1. item
-        if ordered_list_start(trimmed) is Some(start_num) {
+        if ordered_list_start(trimmed)? as start_num {
             mut items = Vec.new()
             while i < line_count {
                 const il = lines[i]
@@ -606,7 +607,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                     // Continuation
                 }
 
-                if ordered_list_start(it) is Some {
+                if ordered_list_start(it)? {
                     const dot_pos = it.find(".") is Some(pos) else {
                         continue
                     }
@@ -659,7 +660,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
             if pt.starts_with("- ") || pt.starts_with("* ") {
                 break
             }
-            if ordered_list_start(pt) is Some {
+            if ordered_list_start(pt)? {
                 break
             }
             para_lines.push(pl)

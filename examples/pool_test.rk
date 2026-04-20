@@ -52,13 +52,13 @@ func main() {
 
     // Safe get on valid handle
     const maybe = pool.get(h1)
-    if maybe is Some(entity) {
+    if maybe? as entity {
         println("Got h1: {entity.name}")
     }
 
     // Safe get on stale handle (should be None)
     const stale = pool.get(h3)
-    if stale is None {
+    if stale == none {
         println("Correctly got None for stale handle")
     }
 

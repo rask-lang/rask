@@ -74,7 +74,7 @@ extend BlockCache {
             }
         }
 
-        if victim is Some(h) {
+        if victim? as h {
             const key = with self.blocks[h] as block {
                 BlockCache.cache_key(block.sst_id, block.block_id)
             }
@@ -134,7 +134,7 @@ func sst_point_lookup(
     }
 
     // Cache hit path
-    if cache.get(meta.id, target_block) is Some(entries) {
+    if cache.get(meta.id, target_block)? as entries {
         for entry in entries {
             if entry.key == key {
                 return entry
@@ -170,8 +170,8 @@ test "block cache put and get" {
     assert result.len() == 2
     assert result[0].key == "k1"
 
-    assert cache.get(1, 99) is None
-    assert cache.get(99, 0) is None
+    assert cache.get(1, 99) == none
+    assert cache.get(99, 0) == none
 }
 
 test "block cache eviction" {
@@ -199,7 +199,7 @@ test "block cache invalidate" {
 
     cache.invalidate(1)
 
-    assert cache.get(1, 0) is None
-    assert cache.get(1, 1) is None
-    assert cache.get(2, 0) is Some
+    assert cache.get(1, 0) == none
+    assert cache.get(1, 1) == none
+    assert cache.get(2, 0)?
 }

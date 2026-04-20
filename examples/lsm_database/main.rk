@@ -120,8 +120,8 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
     while i < count {
         const key = "{prefix}_{i:06}"
         match db.get(key) {
-            Ok(_) => found += 1,
-            Err(_) => missing += 1,
+            string => found += 1,
+            DbError => missing += 1,
         }
         i += 1
     }
@@ -155,8 +155,8 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
     while i < count {
         const key = "{prefix}_{i:06}"
         match db.get(key) {
-            Ok(_) => still_found += 1,
-            Err(_) => correctly_deleted += 1,
+            string => still_found += 1,
+            DbError => correctly_deleted += 1,
         }
         i += 1
     }
@@ -244,19 +244,19 @@ func run(args: CliArgs) -> () or DbError {
 func main() {
     const args = cli.args()
     const cli_args = match parse_cli_args(args) {
-        Ok(a) => a,
-        Err(e) => {
+        CliArgs as a => a,
+        DbError as e => {
             println("rask-db: {e.message()}")
             print_usage()
             std.exit(1)
         }
     }
 
-    match run(cli_args) {
-        Ok(()) => {}
-        Err(e) => {
-            println("error: {e.message()}")
-            std.exit(1)
-        }
+    const run_result = run(cli_args)
+    if run_result? {
+        // success
+    } else as e {
+        println("error: {e.message()}")
+        std.exit(1)
     }
 }

@@ -29,13 +29,15 @@ func main() -> () or Error {
                 }
 
                 const matched_route = match_route(request.path(), all_routes)
-                if matched_route is Some(route) {
+                if matched_route? as route {
                     const route_and_forward = |request: Request| -> Response {
-                        const backend = route.pool.next_healthy() is Ok else {
+                        const healthy = route.pool.next_healthy()
+                        if healthy is ProxyError {
                             return Response.internal_error("no healthy backends")
                         }
+                        const backend = healthy!
                         const result = forward(request, backend.url, route.path)
-                        if result is Ok(response) {
+                        if result? as response {
                             return response
                         }
                         println("error forwarding request")

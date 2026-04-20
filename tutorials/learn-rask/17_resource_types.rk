@@ -141,12 +141,12 @@ func process_flights(flights: Vec<string>) -> i32 or string {
 
 test "booking commit" {
     const result = book_flight(1, "Besse")
-    assert result is Ok
+    assert result?
 }
 
 test "booking failure" {
     const result = book_flight(2, "FAIL")
-    assert result is Err
+    assert result is string
 }
 
 test "booking pattern" {

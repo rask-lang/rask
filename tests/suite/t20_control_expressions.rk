@@ -157,7 +157,7 @@ test "is pattern with combined condition" {
 
 test "is Some implicit unwrap" {
     const opt: i32? = 42
-    if opt is Some {
+    if opt? {
         // Per OPT10/CF12, `opt` is rebound to the inner value
         assert opt == 42
     } else {
@@ -179,7 +179,7 @@ test "while is pattern" {
     mut sum = 0
     mut idx = 0
     while idx < items.len() {
-        if items[idx] is Some(v) {
+        if items[idx]? as v {
             sum += v
         }
         idx += 1
@@ -190,8 +190,8 @@ test "while is pattern" {
 // --- guard pattern: mut...is...else (CF13-CF15) ---
 
 func extract_or_zero(opt: i32?) -> i32 {
-    mut value = opt is Some else { return 0 }
-    return value * 2
+    if opt? as value { return value * 2 }
+    return 0
 }
 
 test "guard pattern Some" {
@@ -221,8 +221,8 @@ func err_result() -> i32 or GuardError {
 }
 
 func extract_ok(result: i32 or GuardError) -> i32 {
-    mut value = result is Ok else { return -1 }
-    return value
+    if result? as value { return value }
+    return -1
 }
 
 test "guard pattern Ok" {

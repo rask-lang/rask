@@ -12,10 +12,10 @@ func returns_none() -> i32? {
 
 test "none literal" {
     const x: i32? = none
-    assert x is None
+    assert x == none
 
     const y = returns_none()
-    assert y is None
+    assert y == none
 }
 
 // --- force unwrap x! (OPT14) ---
@@ -69,21 +69,21 @@ func get_user(has_profile: bool) -> User? {
 test "optional chaining present path" {
     const user = get_user(true)
     const name = user?.profile?.name
-    assert name is Some
+    assert name?
     assert name! == "Alice"
 }
 
 test "optional chaining absent short-circuits" {
     const user = get_user(false)
     const name = user?.profile?.name
-    assert name is None
+    assert name == none
 }
 
 test "optional chaining on none field" {
     const p: Profile? = none
     const user: User? = User { profile: p }
     const name = user?.profile?.name
-    assert name is None
+    assert name == none
 }
 
 // --- auto-wrap T to T? (OPT5) ---
@@ -94,7 +94,7 @@ func maybe_value() -> i32? {
 
 test "auto-wrap T to T?" {
     const x = maybe_value()
-    assert x is Some
+    assert x?
     assert x! == 42
 }
 
@@ -116,13 +116,13 @@ func try_propagates_none() -> i32? {
 
 test "try on Option extracts" {
     const result = outer_option()
-    assert result is Some
+    assert result?
     assert result! == 20
 }
 
 test "try on Option propagates none" {
     const result = try_propagates_none()
-    assert result is None
+    assert result == none
 }
 
 // --- Option methods from spec ---
@@ -136,7 +136,7 @@ test "map on present" {
 test "map on absent" {
     const x: i32? = none
     const y = x.map(|v| v * 2)
-    assert y is None
+    assert y == none
 }
 
 test "filter keeps matching" {
@@ -148,14 +148,14 @@ test "filter keeps matching" {
 test "filter rejects non-matching" {
     const x: i32? = 3
     const y = x.filter(|v| v > 5)
-    assert y is None
+    assert y == none
 }
 
 // --- is-patterns and narrowing (OPT19-OPT20) ---
 
 test "is Some with implicit narrowing" {
     const opt: i32? = 42
-    if opt is Some {
+    if opt? {
         assert opt == 42
     } else {
         assert false, "expected present"

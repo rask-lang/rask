@@ -37,7 +37,7 @@ func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
     const counts = Map.new()
     for item in items {
         const existing = counts.get(item)
-        if existing is Some(c) {
+        if existing? as c {
             counts.insert(item, c + 1)
         } else {
             counts.insert(item, 1)
@@ -62,10 +62,10 @@ test "sum vec" {
 
 test "periodic table" {
     const table = periodic_table()
-    assert table.get("H") is Some(1)
-    assert table.get("He") is Some(2)
-    assert table.get("C") is Some(6)
-    assert table.get("O") is Some(8)
+    assert table.get("H")! == 1
+    assert table.get("He")! == 2
+    assert table.get("C")! == 6
+    assert table.get("O")! == 8
 }
 
 test "dot product" {
@@ -75,9 +75,9 @@ test "dot product" {
 
 test "count occurrences" {
     const counts = count_occurrences(Vec.from([1, 2, 1, 3, 2, 1]))
-    assert counts.get(1) is Some(3)
-    assert counts.get(2) is Some(2)
-    assert counts.get(3) is Some(1)
+    assert counts.get(1)! == 3
+    assert counts.get(2)! == 2
+    assert counts.get(3)! == 1
 }
 
 func main() {

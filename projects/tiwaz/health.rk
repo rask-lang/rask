@@ -9,7 +9,7 @@ const health_check_interval = 10 // seconds
 func health_checker(backends : Vec<Backend>) -> () {
     loop {
         const result = check_health(backends)
-        if result is Err(e) {
+        if result is HttpError as e {
             // Log the error and continue with the next check.
             println("health check error: {e}")
         }

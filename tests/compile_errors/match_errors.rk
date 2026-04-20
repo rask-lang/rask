@@ -24,8 +24,8 @@ struct File { fd: i32 }
 func test_wildcard_linear() {
     const result: File or GuardError = File { fd: 1 }
     match result {
-        Ok(_) => {},        // ERROR: _ discards linear File
-        Err(e) => {},
+        File => {},        // ERROR: _ discards linear File
+        GuardError as e => {},
     }
 }
 
@@ -67,8 +67,8 @@ func close(take f: File) {}
 func test_partial_consume() {
     const result: File or GuardError = File { fd: 1 }
     match result {
-        Ok(file) => close(file),   // consumed here
-        Err(e) => {},              // but what if there was a File?
+        File as file => close(file),   // consumed here
+        GuardError as e => {},         // but what if there was a File?
     }
     // Actually this is fine — the success and error branches are disjoint.
     // The real error is consuming in only *one* branch of the *same* variant.

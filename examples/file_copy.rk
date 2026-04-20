@@ -106,7 +106,7 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
         else |e| CopyError.ReadError(e)
     const dst_canonical = fs.canonicalize(opts.dest).ok()
 
-    if dst_canonical is Some(dst) {
+    if dst_canonical? as dst {
         if src_canonical == dst {
             return CopyError.SameFile
         }

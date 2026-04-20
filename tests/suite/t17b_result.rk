@@ -24,8 +24,8 @@ test "result ok match" {
     const r = divide(10, 2)
     mut value = 0
     match r {
-        Ok(v) => value = v
-        Err(_) => value = -1
+        i32 as v => value = v
+        DivError => value = -1
     }
     assert value == 5
 }
@@ -34,8 +34,8 @@ test "result err match" {
     const r = divide(10, 0)
     mut is_err = false
     match r {
-        Ok(_) => is_err = false
-        Err(_) => is_err = true
+        i32 => is_err = false
+        DivError => is_err = true
     }
     assert is_err
 }
@@ -50,8 +50,8 @@ test "try propagates error" {
     const r = compute()
     mut got_err = false
     match r {
-        Ok(_) => got_err = false
-        Err(_) => got_err = true
+        i32 => got_err = false
+        DivError => got_err = true
     }
     assert got_err
 }
@@ -66,8 +66,8 @@ test "try passes through ok" {
     const r = compute_ok()
     mut value = 0
     match r {
-        Ok(v) => value = v
-        Err(_) => value = -1
+        i32 as v => value = v
+        DivError => value = -1
     }
     assert value == 7
 }
@@ -80,8 +80,8 @@ test "auto-wrap at return" {
     const r = always_ok(21)
     mut value = 0
     match r {
-        Ok(v) => value = v
-        Err(_) => value = -1
+        i32 as v => value = v
+        DivError => value = -1
     }
     assert value == 42
 }

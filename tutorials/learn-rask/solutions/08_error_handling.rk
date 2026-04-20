@@ -84,14 +84,14 @@ test "average with invalid reading" {
 
 test "safe get in bounds" {
     const v = Vec.from([10, 20, 30])
-    assert safe_get(v, 0) is Some(10)
-    assert safe_get(v, 2) is Some(30)
+    assert safe_get(v, 0)! == 10
+    assert safe_get(v, 2)! == 30
 }
 
 test "safe get out of bounds" {
     const v = Vec.from([10, 20, 30])
-    assert safe_get(v, 5) is None
-    assert safe_get(v, -1) is None
+    assert safe_get(v, 5) == none
+    assert safe_get(v, -1) == none
 }
 
 func main() { println("All solutions for lesson 08") }
