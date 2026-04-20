@@ -39,7 +39,7 @@ func write_sstable(
     entries: Vec<KeyValue>,
 ) -> SstMeta or SstError {
     if entries.is_empty() {
-        return Err(SstError.WriteFailure("cannot write empty SSTable"))
+        return SstError.WriteFailure("cannot write empty SSTable")
     }
 
     const path = "{dir}/L{level}_{id}.sst"
@@ -98,7 +98,7 @@ func write_sstable(
     const min_key = entries[0].key
     const max_key = entries[entries.len() - 1].key
 
-    return Ok(SstMeta {
+    return SstMeta {
         id: id,
         level: level,
         path: path,
@@ -106,7 +106,7 @@ func write_sstable(
         max_key: max_key,
         entry_count: entries.len() as i32,
         bloom: bloom,
-    })
+    }
 }
 
 // ─── Read ───────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or Sst
         else |e| SstError.ReadFailure("cannot read {path}: {e}")
 
     const sep_pos = content.find("---\n") is Some(pos) else {
-        return Err(SstError.IndexCorrupt("missing data separator in {path}"))
+        return SstError.IndexCorrupt("missing data separator in {path}")
     }
     const data = content[sep_pos + 4..].to_string()
 
@@ -141,18 +141,18 @@ func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or Sst
         return parse_block_lines(block_lines, block_offset)
     }
 
-    return Err(SstError.BlockCorrupt(block_offset, "block not found in {path}"))
+    return SstError.BlockCorrupt(block_offset, "block not found in {path}")
 }
 
 func parse_block_lines(lines: Vec<string>, block_id: i32) -> Vec<KeyValue> or SstError {
     mut entries = Vec.new()
     for line in lines {
         const kv = decode_kv(line) is Ok(entry) else {
-            return Err(SstError.BlockCorrupt(block_id, "corrupt entry"))
+            return SstError.BlockCorrupt(block_id, "corrupt entry")
         }
         entries.push(kv)
     }
-    return Ok(entries)
+    return entries
 }
 
 func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
@@ -178,7 +178,7 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
             count: count as i32,
         })
     }
-    return Ok(index)
+    return index
 }
 
 func read_sstable_bloom(path: string) -> BloomFilter or SstError {
@@ -193,7 +193,7 @@ func read_sstable_bloom(path: string) -> BloomFilter or SstError {
         }
         if trimmed == "---" { break }
     }
-    return Err(SstError.BloomFilterCorrupt("no bloom filter in {path}"))
+    return SstError.BloomFilterCorrupt("no bloom filter in {path}")
 }
 
 func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
@@ -201,7 +201,7 @@ func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
         else |e| SstError.ReadFailure("cannot read {path}: {e}")
 
     const sep_pos = content.find("---\n") is Some(pos) else {
-        return Err(SstError.IndexCorrupt("missing data separator in {path}"))
+        return SstError.IndexCorrupt("missing data separator in {path}")
     }
     const data = content[sep_pos + 4..].to_string()
 
@@ -213,7 +213,7 @@ func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
         const kv = decode_kv(trimmed) is Ok(entry) else { continue }
         entries.push(kv)
     }
-    return Ok(entries)
+    return entries
 }
 
 // ─── Index Lookup ───────────────────────────────────────────────────
@@ -221,12 +221,12 @@ func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
 func find_block_for_key(index: Vec<BlockIndex>, key: string) -> i32? {
     mut lo: usize = 0
     mut hi: usize = index.len()
-    mut result: i32? = None
+    mut result: i32? = none
 
     while lo < hi {
         const mid = lo + (hi - lo) / 2
         if index[mid].first_key <= key {
-            result = Some(index[mid].offset)
+            result = index[mid].offset
             lo = mid + 1
         } else {
             hi = mid
@@ -295,8 +295,8 @@ test "find block for key" {
         BlockIndex { first_key: "zzz", offset: 2, count: 32 },
     ])
 
-    assert find_block_for_key(index, "abc") == Some(0)
-    assert find_block_for_key(index, "nnn") == Some(1)
-    assert find_block_for_key(index, "zzz") == Some(2)
-    assert find_block_for_key(index, "000") is None
+    assert find_block_for_key(index, "abc")! == 0
+    assert find_block_for_key(index, "nnn")! == 1
+    assert find_block_for_key(index, "zzz")! == 2
+    assert find_block_for_key(index, "000") == none
 }

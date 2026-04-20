@@ -101,10 +101,11 @@ func get_user(id: i64) -> Response {
         })
     }
 
-    return match user {
-        Some(u) => Response.json(json.encode(u)),
-        None => Response.json(json.encode(ErrorResponse { error: "user not found" }))
-            .with_status(404),
+    if user? as u {
+        return Response.json(json.encode(u))
+    } else {
+        return Response.json(json.encode(ErrorResponse { error: "user not found" }))
+            .with_status(404)
     }
 }
 
@@ -129,10 +130,11 @@ func create_user(body: string) -> Response {
 func delete_user(id: i64) -> Response {
     const removed = db.write().users.remove(id)
 
-    return match removed {
-        Some(_) => Response.no_content(),
-        None => Response.json(json.encode(ErrorResponse { error: "user not found" }))
-            .with_status(404),
+    if removed? {
+        return Response.no_content()
+    } else {
+        return Response.json(json.encode(ErrorResponse { error: "user not found" }))
+            .with_status(404)
     }
 }
 

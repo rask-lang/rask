@@ -39,7 +39,7 @@ struct Db {
 extend Db {
     func open(config: DbConfig) -> Db or DbError {
         try fs.create_dir_all(config.dir)
-            else |e| DbError.Io("cannot create directory: {config.dir}: {e}")
+            else |e| DbError.Io("cannot create directory: {config.dir}: {e.message()}")
 
         mut wal = try Wal.open(config.wal_path)
             else |e| DbError.Wal(e)
@@ -73,7 +73,7 @@ extend Db {
             }
         }
 
-        return Ok(Db {
+        return Db {
             config: config,
             memtable: memtable,
             wal: wal,
@@ -82,7 +82,7 @@ extend Db {
             next_sst_id: next_sst_id,
             next_seq: max_seq + 1,
             lookup: DefaultLookup {},
-        })
+        }
     }
 
     func put(mutate self, key: string, value: string) -> () or DbError {
@@ -100,16 +100,16 @@ extend Db {
             try self.flush()
         }
 
-        return Ok(())
+        return ()
     }
 
     func get(mutate self, key: string) -> string or DbError {
         // Memtable first (newest data)
         if self.memtable.get(key) is Some(kv) {
             if kv.deleted {
-                return Err(DbError.KeyNotFound(key))
+                return DbError.KeyNotFound(key)
             }
-            return Ok(kv.value)
+            return kv.value
         }
 
         // Search levels from newest to oldest
@@ -128,15 +128,15 @@ extend Db {
 
                 if result is Some(kv) {
                     if kv.deleted {
-                        return Err(DbError.KeyNotFound(key))
+                        return DbError.KeyNotFound(key)
                     }
-                    return Ok(kv.value)
+                    return kv.value
                 }
             }
             level_idx += 1
         }
 
-        return Err(DbError.KeyNotFound(key))
+        return DbError.KeyNotFound(key)
     }
 
     func delete(mutate self, key: string) -> () or DbError {
@@ -154,7 +154,7 @@ extend Db {
             try self.flush()
         }
 
-        return Ok(())
+        return ()
     }
 
     func scan(mutate self, start: string, end: string) -> Vec<KeyValue> or DbError {
@@ -196,11 +196,11 @@ extend Db {
             }
         }
 
-        return Ok(deduped)
+        return deduped
     }
 
     func flush(mutate self) -> () or DbError {
-        if self.memtable.is_empty() { return Ok(()) }
+        if self.memtable.is_empty() { return () }
 
         const id = self.next_sst_id
         self.next_sst_id += 1
@@ -223,13 +223,13 @@ extend Db {
             try self.compact_level(0)
         }
 
-        return Ok(())
+        return ()
     }
 
     func compact_level(mutate self, level: i32) -> () or DbError {
         const level_idx = level as usize
-        if self.levels[level_idx].len() < 2 { return Ok(()) }
-        if level >= MAX_LEVELS - 1 { return Ok(()) }
+        if self.levels[level_idx].len() < 2 { return () }
+        if level >= MAX_LEVELS - 1 { return () }
 
         const a = self.levels[level_idx][0].clone()
         const b = self.levels[level_idx][1].clone()
@@ -253,7 +253,7 @@ extend Db {
             ssts.push(merged)
         }
 
-        return Ok(())
+        return ()
     }
 
     func stats(self) -> DbStats {
@@ -282,7 +282,7 @@ extend Db {
             try self.compact_level(level)
             level += 1
         }
-        return Ok(())
+        return ()
     }
 
     func close(take self) -> () or DbError {
@@ -296,7 +296,7 @@ extend Db {
         }
         try self.wal.close()
             else |e| DbError.Wal(e)
-        return Ok(())
+        return ()
     }
 }
 
@@ -347,5 +347,5 @@ func execute_batch(mutate db: Db, entries: Vec<BatchEntry>) -> i32 or DbError {
         }
         success_count += 1
     }
-    return Ok(success_count)
+    return success_count
 }

@@ -41,7 +41,7 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
                 i += 1
                 if i < args.len() {
                     const n = args[i].parse_int() is Ok(v) else {
-                        return Err(DbError.Io("invalid count: {args[i]}"))
+                        return DbError.Io("invalid count: {args[i]}")
                     }
                     result.count = n as i32
                 }
@@ -62,14 +62,14 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
     }
 
     if positional.is_empty() {
-        return Err(DbError.Io("no command specified"))
+        return DbError.Io("no command specified")
     }
     result.command = positional[0].to_string()
     if positional.len() > 1 { result.key = positional[1].to_string() }
     if positional.len() > 2 { result.value = positional[2].to_string() }
     if positional.len() > 3 { result.end_key = positional[3].to_string() }
 
-    return Ok(result)
+    return result
 }
 
 func print_usage() {
@@ -169,7 +169,7 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
     println("")
     println("Benchmark complete.")
 
-    return Ok(())
+    return ()
 }
 
 // ─── Main ───────────────────────────────────────────────────────────
@@ -182,28 +182,28 @@ func run(args: CliArgs) -> () or DbError {
     match args.command {
         "put" => {
             if args.key.is_empty() || args.value.is_empty() {
-                return Err(DbError.Io("put requires <key> <value>"))
+                return DbError.Io("put requires <key> <value>")
             }
             try db.put(args.key, args.value)
             println("OK")
         }
         "get" => {
             if args.key.is_empty() {
-                return Err(DbError.Io("get requires <key>"))
+                return DbError.Io("get requires <key>")
             }
             const value = try db.get(args.key)
             println("{value}")
         }
         "delete" => {
             if args.key.is_empty() {
-                return Err(DbError.Io("delete requires <key>"))
+                return DbError.Io("delete requires <key>")
             }
             try db.delete(args.key)
             println("OK")
         }
         "scan" => {
             if args.key.is_empty() {
-                return Err(DbError.Io("scan requires <start> <end>"))
+                return DbError.Io("scan requires <start> <end>")
             }
             const end = if args.value.is_empty(): "{args.key}\u{FF}" else: args.value
             const results = try db.scan(args.key, end)
@@ -238,7 +238,7 @@ func run(args: CliArgs) -> () or DbError {
         }
     }
 
-    return Ok(())
+    return ()
 }
 
 func main() {

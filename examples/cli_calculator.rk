@@ -409,7 +409,7 @@ test "division by zero" {
 }
 
 test "invalid input" {
-    assert !calc("2 +")?
+    assert calc("2 +") is CalcError
     assert calc("") is CalcError.EmptyExpression
-    assert !calc("@")?
+    assert calc("@") is CalcError
 }

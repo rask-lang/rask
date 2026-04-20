@@ -15,22 +15,21 @@ enum GrepResult {
 func grep_file(pattern: string, path: string) -> GrepResult {
     const lines_result = fs.read_lines(path)
 
-    match lines_result {
-        Ok(lines) => {
-            mut match_count = 0
-            mut line_num = 0
+    if lines_result? as lines {
+        mut match_count = 0
+        mut line_num = 0
 
-            for line in lines {
-                line_num = line_num + 1
-                if line.contains(pattern) {
-                    match_count = match_count + 1
-                    println("{line_num}: {line}")
-                }
+        for line in lines {
+            line_num = line_num + 1
+            if line.contains(pattern) {
+                match_count = match_count + 1
+                println("{line_num}: {line}")
             }
-
-            return GrepResult.Ok(match_count)
         }
-        Err(e) => return GrepResult.Err(e)
+
+        return GrepResult.Ok(match_count)
+    } else as e {
+        return GrepResult.Err(e.message())
     }
 }
 

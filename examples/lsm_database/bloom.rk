@@ -70,9 +70,9 @@ func encode_bloom(filter: BloomFilter) -> string {
 func decode_bloom(data: string) -> BloomFilter or SstError {
     const parts = data.split(",").collect()
     if parts.len() != BLOOM_BITS {
-        return Err(SstError.BloomFilterCorrupt(
+        return SstError.BloomFilterCorrupt(
             "expected {BLOOM_BITS} bits, got {parts.len()}"
-        ))
+        )
     }
     mut bits = Vec.new()
     mut count = 0
@@ -81,7 +81,7 @@ func decode_bloom(data: string) -> BloomFilter or SstError {
         bits.push(val)
         if val { count += 1 }
     }
-    return Ok(BloomFilter { bits: bits, count: count })
+    return BloomFilter { bits: bits, count: count }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────

@@ -42,9 +42,9 @@ extend Memtable {
     func get(self, key: string) -> KeyValue? {
         const pos = self.find_pos(key)
         if pos < self.entries.len() && self.entries[pos].key == key {
-            return Some(self.entries[pos].clone())
+            return self.entries[pos].clone()
         }
-        return None
+        return none
     }
 
     func should_flush(self) -> bool {

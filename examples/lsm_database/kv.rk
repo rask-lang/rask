@@ -29,18 +29,18 @@ func encode_kv(kv: KeyValue) -> string {
 func decode_kv(line: string) -> KeyValue or WalError {
     const parts = line.split("\t").collect()
     if parts.len() < 4 {
-        return Err(WalError.CorruptEntry(0, "expected 4 tab-separated fields"))
+        return WalError.CorruptEntry(0, "expected 4 tab-separated fields")
     }
     const seq = parts[2].parse_int() is Ok(v) else {
-        return Err(WalError.CorruptEntry(0, "invalid sequence number: {parts[2]}"))
+        return WalError.CorruptEntry(0, "invalid sequence number: {parts[2]}")
     }
     const deleted = parts[3].trim() == "1"
-    return Ok(KeyValue {
+    return KeyValue {
         key: parts[0].to_string(),
         value: parts[1].to_string(),
         seq: seq as i64,
         deleted: deleted,
-    })
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────

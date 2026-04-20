@@ -43,7 +43,7 @@ test "divide success" {
 }
 
 test "divide by zero" {
-    assert !divide(1.0, 0.0)?
+    assert divide(1.0, 0.0) is DivideError
 }
 
 test "check gathers all failures" {

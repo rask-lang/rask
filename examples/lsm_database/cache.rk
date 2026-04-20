@@ -35,13 +35,13 @@ extend BlockCache {
 
     func get(mutate self, sst_id: i32, block_id: i32) -> Vec<KeyValue>? {
         const key = BlockCache.cache_key(sst_id, block_id)
-        const handle = self.by_key.get(key) is Some(h) else { return None }
+        const handle = self.by_key.get(key) is Some(h) else { return none }
         const handle = handle.clone()
 
         self.access_counter += 1
         with self.blocks[handle] as block {
             block.access_count = self.access_counter
-            return Some(block.entries.clone())
+            return block.entries.clone()
         }
     }
 
@@ -65,12 +65,12 @@ extend BlockCache {
 
     func evict_one(mutate self) {
         mut min_access: i64 = i64.MAX
-        mut victim: Handle<CacheBlock>? = None
+        mut victim: Handle<CacheBlock>? = none
 
         for handle in self.blocks {
             if self.blocks[handle].access_count < min_access {
                 min_access = self.blocks[handle].access_count
-                victim = Some(handle)
+                victim = handle
             }
         }
 
@@ -125,22 +125,22 @@ func sst_point_lookup(
     mutate cache: BlockCache,
 ) -> KeyValue? or SstError {
     if !meta.bloom.may_contain(key) {
-        return Ok(None)
+        return none
     }
 
     const index = try read_sstable_index(meta.path)
     const target_block = find_block_for_key(index, key) is Some(idx) else {
-        return Ok(None)
+        return none
     }
 
     // Cache hit path
     if cache.get(meta.id, target_block) is Some(entries) {
         for entry in entries {
             if entry.key == key {
-                return Ok(Some(entry))
+                return entry
             }
         }
-        return Ok(None)
+        return none
     }
 
     // Cache miss — read from disk, populate cache
@@ -149,10 +149,10 @@ func sst_point_lookup(
 
     for entry in entries {
         if entry.key == key {
-            return Ok(Some(entry))
+            return entry
         }
     }
-    return Ok(None)
+    return none
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────
