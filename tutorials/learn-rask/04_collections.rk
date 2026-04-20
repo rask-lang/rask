@@ -19,16 +19,19 @@
 //
 // IMPORTANT — Map.get() and the Option type:
 //   In Python, dict["key"] crashes if the key is missing.
-//   In Rask, map.get("key") returns an Option — a value that is
-//   either Some(value) if found, or None if missing.
+//   In Rask, map.get("key") returns an Option (written `T?`) — a value
+//   that is either present, or the sentinel `none` if missing.
 //
-//   const result = scores.get("alice")  // result is Some(95)
-//   const result = scores.get("bob")    // result is None
+//   const result = scores.get("alice")  // result is a bare value
+//   const result = scores.get("bob")    // result is none
 //
-//   To use the value inside, use `if ... is Some`:
-//     if result is Some(score) {
+//   To use the value inside, narrow with `if x? as v`:
+//     if result? as score {
 //         println("got {score}")
 //     }
+//
+//   Or pattern-test with `is Some(v)` / `is None`:
+//     if result is Some(score) { println("got {score}") }
 //
 //   This forces you to handle the missing case. No more KeyError crashes.
 //   We'll cover Option in depth in lesson 08. For now, just know it exists.
@@ -52,9 +55,9 @@ func example_map() {
     elements.insert("He", 2)
     elements.insert("Li", 3)
 
-    // .get() returns Option — Some(value) or None
+    // .get() returns Option — a bare value or `none`
     const h = elements.get("H")
-    if h is Some(num) {
+    if h? as num {
         println("Hydrogen: atomic number {num}")
     }
 }
@@ -110,9 +113,9 @@ func dot_product(a: Vec<f64>, b: Vec<f64>) -> f64 {
 //   [1, 2, 1, 3, 2, 1] → {1: 3, 2: 2, 3: 1}
 //
 // Hint: use .get() to check if a key exists. Remember, .get() returns
-// an Option — either Some(count) or None.
+// an Option — a bare count when present, else `none`.
 //
-//   if existing is Some(c) {
+//   if existing? as c {
 //       map.insert(item, c + 1)
 //   } else {
 //       map.insert(item, 1)

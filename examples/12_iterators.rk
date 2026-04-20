@@ -123,13 +123,12 @@ func main() {
     const first_large = numbers.iter()
         .find(|n| n > 7)
 
-    match first_large {
-        Some(n) => {
-            print("First number > 7: ")
-            print(n)
-            print("\n")
-        }
-        None => print("Not found\n")
+    if first_large? as n {
+        print("First number > 7: ")
+        print(n)
+        print("\n")
+    } else {
+        print("Not found\n")
     }
 
     // Any/all predicates

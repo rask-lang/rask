@@ -49,7 +49,7 @@ func parse_header(line: string) -> Option<(string, string)> {
     const colon = try line.find(':')
     const key = line[0..colon].trim().to_string()        // borrow -> owned
     const value = line[colon+1..].trim().to_string()     // borrow -> owned
-    return Some((key, value))
+    return (key, value)
 }
 
 func main() {}

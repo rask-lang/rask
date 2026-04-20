@@ -1,5 +1,14 @@
 // Solution: Lesson 17
 
+enum BookingError { Msg(string) }
+extend BookingError {
+    func message(self) -> string {
+        match self {
+            BookingError.Msg(m) => return m,
+        }
+    }
+}
+
 struct Booking {
     id: i32
     committed: bool
@@ -19,11 +28,11 @@ extend Booking {
     }
 }
 
-func book_flight(id: i32, passenger: string) -> i32 or string {
+func book_flight(id: i32, passenger: string) -> i32 or BookingError {
     mut booking = Booking.new(id)
 
     if passenger == "FAIL" {
-        return Err("payment failed")
+        return BookingError.Msg("payment failed")
     }
 
     booking.commit()
@@ -47,18 +56,18 @@ func two_bookings() -> BookingStatus {
     }
 }
 
-func process_flights(flights: Vec<string>) -> i32 or string {
+func process_flights(flights: Vec<string>) -> i32 or BookingError {
     return flights.len()
 }
 
 test "booking commit" {
     const result = book_flight(1, "Besse")
-    assert result.is_ok()
+    assert result?
 }
 
 test "booking failure" {
     const result = book_flight(2, "FAIL")
-    assert result.is_err()
+    assert result is BookingError
 }
 
 test "booking pattern" {

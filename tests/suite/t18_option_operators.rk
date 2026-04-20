@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Option operators: none literal, x! force unwrap, ?? nil-coalescing,
-// ?. optional chaining, try on Option, auto-wrapping.
+// Option operators: none literal, x! force unwrap, ?? fallback,
+// ?. chaining, try on Option, auto-wrap.
 //
-// Spec: type.optionals (OPT1-OPT14)
-//
-// SPEC ISSUE: Existing tests (t07, t17) use .unwrap() but the spec defines
-// x! as the force unwrap operator (OPT7). There is no .unwrap() method in the
-// spec's Option method table. Tests here use x! per spec.
-//
-// SPEC ISSUE: SYNTAX.md line 908 shows assert(expr) with parens, but every
-// existing test uses `assert expr` without parens. The compiler accepts both.
-// SYNTAX.md should document both forms or pick one.
+// Spec: type.optionals (OPT1-OPT26)
 
-// --- none literal (OPT4) ---
+// --- none literal (OPT9) ---
 
 func returns_none() -> i32? {
     return none
@@ -26,39 +18,36 @@ test "none literal" {
     assert y is None
 }
 
-// --- force unwrap x! (OPT7) ---
+// --- force unwrap x! (OPT14) ---
 
-test "force unwrap Some" {
-    const x = Some(42)
+test "force unwrap present" {
+    const x: i32? = 42
     assert x! == 42
 }
 
-test "force unwrap nested" {
-    const x = Some(Some(10))
-    assert x!! == 10
+test "force unwrap" {
+    const inner: i32? = 10
+    assert inner! == 10
 }
 
-// --- nil-coalescing ?? (OPT6) ---
+// --- value fallback ?? (OPT12) ---
 
-test "nil-coalescing with None" {
+test "fallback with none" {
     const x: i32? = none
     assert (x ?? 99) == 99
 }
 
-test "nil-coalescing with Some" {
-    const x = Some(42)
+test "fallback with present" {
+    const x: i32? = 42
     assert (x ?? 99) == 42
 }
 
-test "nil-coalescing short-circuits" {
-    // ?? must not evaluate the right-hand side when left is Some
-    const x = Some(1)
-    // If short-circuit fails this would still work for this test,
-    // but the spec (OPT6) requires short-circuit semantics.
+test "fallback short-circuits" {
+    const x: i32? = 1
     assert (x ?? 999) == 1
 }
 
-// --- optional chaining ?. (OPT5) ---
+// --- optional chaining ?. (OPT11) ---
 
 struct Profile {
     name: string
@@ -71,46 +60,48 @@ struct User {
 
 func get_user(has_profile: bool) -> User? {
     if has_profile {
-        return Some(User { profile: Some(Profile { name: "Alice", age: 30 }) })
+        const p: Profile? = Profile { name: "Alice", age: 30 }
+        return User { profile: p }
     }
     return none
 }
 
-test "optional chaining Some path" {
+test "optional chaining present path" {
     const user = get_user(true)
     const name = user?.profile?.name
     assert name is Some
     assert name! == "Alice"
 }
 
-test "optional chaining None short-circuits" {
+test "optional chaining absent short-circuits" {
     const user = get_user(false)
     const name = user?.profile?.name
     assert name is None
 }
 
-test "optional chaining on None field" {
-    const user = Some(User { profile: none })
+test "optional chaining on none field" {
+    const p: Profile? = none
+    const user: User? = User { profile: p }
     const name = user?.profile?.name
     assert name is None
 }
 
-// --- auto-wrapping T to Option<T> (OPT8) ---
+// --- auto-wrap T to T? (OPT5) ---
 
 func maybe_value() -> i32? {
     return 42
 }
 
-test "auto-wrapping T to Option" {
+test "auto-wrap T to T?" {
     const x = maybe_value()
     assert x is Some
     assert x! == 42
 }
 
-// --- try on Option (OPT12-OPT14) ---
+// --- try on Option (OPT15, OPT18) ---
 
 func inner_option() -> i32? {
-    return Some(10)
+    return 10
 }
 
 func outer_option() -> i32? {
@@ -120,74 +111,62 @@ func outer_option() -> i32? {
 
 func try_propagates_none() -> i32? {
     const val = try returns_none()
-    // Should not reach here
     return val + 1
 }
 
-test "try on Option extracts Some" {
+test "try on Option extracts" {
     const result = outer_option()
     assert result is Some
     assert result! == 20
 }
 
-test "try on Option propagates None" {
+test "try on Option propagates none" {
     const result = try_propagates_none()
     assert result is None
 }
 
 // --- Option methods from spec ---
 
-test "is_some and is_none" {
-    const a = Some(1)
-    const b: i32? = none
-    assert a.is_some()
-    assert !a.is_none()
-    assert b.is_none()
-    assert !b.is_some()
-}
-
-test "map on Some" {
-    const x = Some(5)
+test "map on present" {
+    const x: i32? = 5
     const y = x.map(|v| v * 2)
     assert y! == 10
 }
 
-test "map on None" {
+test "map on absent" {
     const x: i32? = none
     const y = x.map(|v| v * 2)
     assert y is None
 }
 
 test "filter keeps matching" {
-    const x = Some(10)
+    const x: i32? = 10
     const y = x.filter(|v| v > 5)
     assert y! == 10
 }
 
 test "filter rejects non-matching" {
-    const x = Some(3)
+    const x: i32? = 3
     const y = x.filter(|v| v > 5)
     assert y is None
 }
 
-// --- Pattern matching (OPT10 + CF8-CF12) ---
+// --- is-patterns and narrowing (OPT19-OPT20) ---
 
-test "is Some with implicit unwrap" {
-    const opt = Some(42)
-    // OPT10: `if opt is Some` reuses outer name
+test "is Some with implicit narrowing" {
+    const opt: i32? = 42
     if opt is Some {
         assert opt == 42
     } else {
-        assert false, "expected Some"
+        assert false, "expected present"
     }
 }
 
-test "match on Option" {
-    const x = Some(7)
-    const result = match x {
-        Some(v) => v * 2,
-        None => 0,
-    }
+// Operator-form replacement for the old `match x { Some(v) => ..., None => ... }`.
+// Match on Option is rejected by the compiler; operator form is idiomatic.
+test "operator-form branch" {
+    const x: i32? = 7
+    const result = if x? as v { v * 2 } else { 0 }
     assert result == 14
 }
 

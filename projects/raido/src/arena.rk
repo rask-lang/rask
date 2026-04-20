@@ -61,11 +61,11 @@ extend Arena {
     func alloc(self, kind: ObjectKind, body_size: i64) -> i64 or ArenaError {
         // --- Internal allocation ---
         if body_size > MAX_BODY {
-            return Err(ArenaError.ObjectTooLarge)
+            return ArenaError.ObjectTooLarge
         }
         const aligned = (HEADER_SIZE + body_size + 3) / 4 * 4
         if self.top + aligned > self.capacity {
-            return Err(ArenaError.Exhausted)
+            return ArenaError.Exhausted
         }
         ensure_size(self.buf, self.top + aligned)
         const offset = self.top
@@ -208,7 +208,7 @@ extend Arena {
         const body = offset + HEADER_SIZE
         const cap = read_u32le(self.buf, body + 4)
         if cap == 0 {
-            return None
+            return none
         }
         const idx_start = body + 8
         const entries_start = idx_start + cap * 4
@@ -216,15 +216,15 @@ extend Arena {
         for _ in 0..cap {
             const entry_idx = read_u32le(self.buf, idx_start + slot * 4)
             if entry_idx == EMPTY_SLOT {
-                return None
+                return none
             }
             const entry_base = entries_start + entry_idx * MAP_ENTRY_SIZE
             if read_i64le(self.buf, entry_base) == key {
-                return Some(read_i64le(self.buf, entry_base + 8))
+                return read_i64le(self.buf, entry_base + 8)
             }
             slot = (slot + 1) % cap
         }
-        return None
+        return none
     }
 
     func map_set(self, offset: i64, key: i64, hash: i64, val: i64) -> i64 or ArenaError {
@@ -268,7 +268,7 @@ extend Arena {
             }
             slot = (slot + 1) % cap
         }
-        return Err(ArenaError.Exhausted)
+        return ArenaError.Exhausted
 
         // Re-insert all entries in insertion order
     }

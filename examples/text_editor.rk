@@ -58,17 +58,17 @@ extend Document {
             const h = doc.lines.insert(Line { text: text })
             doc.line_order.push(h)
         }
-        return Ok(doc)
+        return doc
     }
 
     func line_count(self) -> i32 {
         return self.line_order.len() as i32
     }
 
-    func get_line(self, index: i32) -> Option<string> {
-        if index < 0 || index >= self.line_count(): return None
+    func get_line(self, index: i32) -> string? {
+        if index < 0 || index >= self.line_count(): return none
         const h = self.line_order[index as usize]
-        return Some(self.lines[h].text)
+        return self.lines[h].text
     }
 
     // Insert a new line after the given index (-1 for beginning)
@@ -86,7 +86,7 @@ extend Document {
 
     // Delete a line at the given index
     func delete_line(self, at: i32) -> () or Error {
-        if at < 0 || at >= self.line_count(): return Err(Error.IndexOutOfBounds)
+        if at < 0 || at >= self.line_count(): return Error.IndexOutOfBounds
 
         const h = self.line_order.remove(at as i64)
         const deleted = self.lines.remove(h).unwrap()
@@ -99,7 +99,7 @@ extend Document {
 
     // Modify text at the given line
     func modify_line(self, at: i32, new_text: string) -> () or Error {
-        if at < 0 || at >= self.line_count(): return Err(Error.IndexOutOfBounds)
+        if at < 0 || at >= self.line_count(): return Error.IndexOutOfBounds
 
         const h = self.line_order[at as usize]
         const old_text = self.lines[h].text
@@ -113,28 +113,24 @@ extend Document {
 
     // Undo the last edit
     func undo(self) -> bool or Error {
-        const cmd = match self.undo_stack.pop() {
-            Some(c) => c,
-            None => return Ok(false),
-        }
+        const popped = self.undo_stack.pop()
+        const cmd = if popped? as c { c } else { return false }
 
         // Apply inverse without recording to undo stack
         try self.apply_command_silent(cmd.inverse())
         self.redo_stack.push(cmd)
-        return Ok(true)
+        return true
     }
 
     // Redo the last undone edit
     func redo(self) -> bool or Error {
-        const cmd = match self.redo_stack.pop() {
-            Some(c) => c,
-            None => return Ok(false),
-        }
+        const popped = self.redo_stack.pop()
+        const cmd = if popped? as c { c } else { return false }
 
         // Apply command without recording to undo stack
         try self.apply_command_silent(cmd.clone())
         self.undo_stack.push(cmd)
-        return Ok(true)
+        return true
     }
 
     // Apply a command without recording it
@@ -166,7 +162,7 @@ extend Document {
         }
 
         self.modified = false
-        return Ok(())
+        return ()
     }
 
     // Display the document
@@ -191,35 +187,35 @@ enum EditorCommand {
     Help,
 }
 
-func parse_command(input: string) -> Option<EditorCommand> {
+func parse_command(input: string) -> EditorCommand? {
     const parts: Vec<string> = Vec.new()
     for part in input.trim().split_whitespace() {
         parts.push(part.to_owned())
     }
-    if parts.is_empty(): return None
+    if parts.is_empty(): return none
 
     return match parts[0] {
         "i" | "insert" if parts.len() >= 3 => {
             const after = try parts[1].parse<i32>().ok()
             const text = parts[2..].join(" ")
-            Some(EditorCommand.Insert(after: after, text: text))
+            EditorCommand.Insert(after: after, text: text)
         }
         "d" | "delete" if parts.len() >= 2 => {
             const line = try parts[1].parse<i32>().ok()
-            Some(EditorCommand.Delete(line: line))
+            EditorCommand.Delete(line: line)
         }
         "e" | "edit" if parts.len() >= 3 => {
             const line = try parts[1].parse<i32>().ok()
             const text = parts[2..].join(" ")
-            Some(EditorCommand.Edit(line: line, text: text))
+            EditorCommand.Edit(line: line, text: text)
         }
-        "u" | "undo" => Some(EditorCommand.Undo),
-        "r" | "redo" => Some(EditorCommand.Redo),
-        "w" | "save" if parts.len() >= 2 => Some(EditorCommand.Save(path: parts[1])),
-        "p" | "print" => Some(EditorCommand.Print),
-        "q" | "quit" => Some(EditorCommand.Quit),
-        "h" | "help" => Some(EditorCommand.Help),
-        _ => None,
+        "u" | "undo" => EditorCommand.Undo,
+        "r" | "redo" => EditorCommand.Redo,
+        "w" | "save" if parts.len() >= 2 => EditorCommand.Save(path: parts[1]),
+        "p" | "print" => EditorCommand.Print,
+        "q" | "quit" => EditorCommand.Quit,
+        "h" | "help" => EditorCommand.Help,
+        _ => none,
     }
 }
 
@@ -245,12 +241,12 @@ func main() -> () or Error {
         print("> ")
         const input = try io.read_line()
 
-        const cmd = match parse_command(input) {
-            Some(c) => c,
-            None => {
-                println("Unknown command. Type 'help' for usage.")
-                continue
-            }
+        const parsed = parse_command(input)
+        const cmd = if parsed? as c {
+            c
+        } else {
+            println("Unknown command. Type 'help' for usage.")
+            continue
         }
 
         match cmd {
@@ -287,5 +283,5 @@ func main() -> () or Error {
         }
     }
 
-    return Ok(())
+    return ()
 }

@@ -4,7 +4,7 @@
 //
 //   1. h.join()! — panic if task panicked (simplest, good for tests)
 //   2. try h.join() — propagate JoinError (function must return or JoinError)
-//   3. match h.join() { Ok(v) => ..., Err(e) => ... } — explicit handling
+//   3. match h.join() { T as v => ..., JoinError as e => ... } — explicit handling
 //
 import async.spawn
 import sync.AtomicI64
@@ -111,10 +111,10 @@ test "shared config update" {
 //       return result
 //   }
 //
-// Approach 3: Explicit match
+// Approach 3: Explicit match or narrowing
 //   const result = h.join()
-//   if result is Ok(val) { use(val) }
-//   else if result is Err(e) { handle(e) }
+//   if result? as val { use(val) }
+//   else if result is JoinError as e { handle(e) }
 
 func main() {
     println("All solutions for lesson 16")

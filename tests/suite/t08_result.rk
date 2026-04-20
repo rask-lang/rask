@@ -1,22 +1,32 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Result type, try propagation, error handling.
+// Result type: auto-wrap, try propagation, match.
 
-func divide(a: i32, b: i32) -> i32 or string {
-    if b == 0 {
-        return Err("division by zero")
+enum DivError { ByZero }
+
+extend DivError {
+    func message(self) -> string {
+        match self {
+            DivError.ByZero => return "division by zero",
+        }
     }
-    return Ok(a / b)
 }
 
-func double_divide(a: i32, b: i32) -> i32 or string {
+func divide(a: i32, b: i32) -> i32 or DivError {
+    if b == 0 {
+        return DivError.ByZero
+    }
+    return a / b
+}
+
+func double_divide(a: i32, b: i32) -> i32 or DivError {
     const result = try divide(a, b)
-    return Ok(result * 2)
+    return result * 2
 }
 
-func chained(a: i32, b: i32, c: i32) -> i32 or string {
+func chained(a: i32, b: i32, c: i32) -> i32 or DivError {
     const x = try divide(a, b)
     const y = try divide(x, c)
-    return Ok(y)
+    return y
 }
 
 test "Ok result" {

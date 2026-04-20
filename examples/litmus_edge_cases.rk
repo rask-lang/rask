@@ -94,10 +94,25 @@ test "Vec.get unwrap matches expected value" {
 enum InnerError {
     BadInput(string),
 }
+extend InnerError {
+    func message(self) -> string {
+        match self {
+            InnerError.BadInput(m) => return m,
+        }
+    }
+}
 
 enum OuterError {
     Wrapped(InnerError),
     Other(string),
+}
+extend OuterError {
+    func message(self) -> string {
+        match self {
+            OuterError.Wrapped(e) => return e.message(),
+            OuterError.Other(m) => return m,
+        }
+    }
 }
 
 struct Validator {
@@ -107,21 +122,21 @@ struct Validator {
 extend Validator {
     func check(self, value: i32) -> i32 or InnerError {
         if value < self.threshold {
-            return Err(InnerError.BadInput("below threshold"))
+            return InnerError.BadInput("below threshold")
         }
-        return Ok(value * 2)
+        return value * 2
     }
 }
 
 func use_validator(v: Validator, x: i32) -> i32 or OuterError {
     const result = try v.check(x) else |e| OuterError.Wrapped(e)
-    return Ok(result)
+    return result
 }
 
 func use_validator_multiline(v: Validator, x: i32) -> i32 or OuterError {
     const result = try v.check(x)
         else |e| OuterError.Wrapped(e)
-    return Ok(result)
+    return result
 }
 
 test "try-else with method call — success" {
@@ -153,10 +168,25 @@ test "try-else multiline with method call — error transforms" {
 enum ParseError {
     InvalidFormat(string),
 }
+extend ParseError {
+    func message(self) -> string {
+        match self {
+            ParseError.InvalidFormat(m) => return m,
+        }
+    }
+}
 
 enum ProcessError {
     Parse(ParseError),
     Logic(string),
+}
+extend ProcessError {
+    func message(self) -> string {
+        match self {
+            ProcessError.Parse(e) => return e.message(),
+            ProcessError.Logic(m) => return m,
+        }
+    }
 }
 
 trait Parser {
@@ -168,22 +198,22 @@ struct StrictParser {}
 extend StrictParser with Parser {
     func parse(self, input: string) -> i32 or ParseError {
         if input == "42" {
-            return Ok(42)
+            return 42
         }
-        return Err(ParseError.InvalidFormat("not 42"))
+        return ParseError.InvalidFormat("not 42")
     }
 }
 
 func process_with_parser(p: any Parser, input: string) -> i32 or ProcessError {
     const val = try p.parse(input) else |e| ProcessError.Parse(e)
-    return Ok(val * 2)
+    return val * 2
 }
 
 test "try-else with trait object — success" {
     const p = StrictParser {}
     const result = process_with_parser(p, "42")
-    assert result is Ok
-    assert result.unwrap() == 84
+    assert result?
+    assert result! == 84
 }
 
 test "try-else with trait object — error transforms" {
@@ -290,7 +320,7 @@ test "try-else — error value is correctly transformed" {
     const v = Validator { threshold: 10 }
     const result = use_validator(v, 3)
     match result {
-        Err(OuterError.Wrapped(InnerError.BadInput(msg))) => {
+        OuterError.Wrapped(InnerError.BadInput(msg)) => {
             assert msg == "below threshold"
         }
         _ => assert false, "expected Wrapped(BadInput)"
@@ -303,39 +333,56 @@ enum ChainError {
     Step1(string),
     Step2(string),
 }
-
-func step1(x: i32) -> i32 or string {
-    if x < 0 { return Err("negative") }
-    return Ok(x + 1)
+extend ChainError {
+    func message(self) -> string {
+        match self {
+            ChainError.Step1(m) => return m,
+            ChainError.Step2(m) => return m,
+        }
+    }
 }
 
-func step2(x: i32) -> i32 or string {
-    if x > 100 { return Err("too large") }
-    return Ok(x * 2)
+enum StepError { Msg(string) }
+extend StepError {
+    func message(self) -> string {
+        match self {
+            StepError.Msg(m) => return m,
+        }
+    }
+}
+
+func step1(x: i32) -> i32 or StepError {
+    if x < 0 { return StepError.Msg("negative") }
+    return x + 1
+}
+
+func step2(x: i32) -> i32 or StepError {
+    if x > 100 { return StepError.Msg("too large") }
+    return x * 2
 }
 
 func chained(x: i32) -> i32 or ChainError {
-    const a = try step1(x) else |e| ChainError.Step1(e)
-    const b = try step2(a) else |e| ChainError.Step2(e)
-    return Ok(b)
+    const a = try step1(x) else |e| ChainError.Step1(e.message())
+    const b = try step2(a) else |e| ChainError.Step2(e.message())
+    return b
 }
 
 test "chained try-else — all succeed" {
     const result = chained(5)
-    assert result is Ok
-    assert result.unwrap() == 12
+    assert result?
+    assert result! == 12
 }
 
 test "chained try-else — first fails" {
     const result = chained(-1)
-    assert result is Err(ChainError.Step1(_))
+    assert result is ChainError.Step1(_)
 }
 
 test "chained try-else — second fails" {
     const result = chained(99)
     const result2 = chained(200)
-    assert result is Ok
-    assert result2 is Err(ChainError.Step2(_))
+    assert result?
+    assert result2 is ChainError.Step2(_)
 }
 
 // ─── HTTP types (Response constructors, Request.path) ───────────
@@ -389,11 +436,12 @@ test "fs write and read round-trip" {
 test "fs read_lines returns correct line count" {
     const path = "/tmp/rask_test_litmus2.txt"
     fs.write_file(path, "line1\nline2\nline3\n")
-    const lines = fs.read_lines(path) is Ok(l) else {
+    const r = fs.read_lines(path)
+    if r? as lines {
+        assert lines.len() == 3
+    } else {
         assert false, "failed to read lines"
-        return
     }
-    assert lines.len() == 3
 }
 
 // ─── Entry point ────────────────────────────────────────────────

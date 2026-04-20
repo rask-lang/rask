@@ -20,7 +20,7 @@ func process_data() -> () or Error {
     // COMPILE ERROR: 'file' is a resource that must be consumed
     // We forgot to close it!
 
-    Ok(())
+    // implicit unit success (ER10)
 }
 
 // Why this is an error:
@@ -39,7 +39,7 @@ func process_data_v1() -> () or Error {
     const data = try file.read_all()
     process(data)
     try file.close()  // Consumes the resource
-    Ok(())
+    // implicit unit success (ER10)
 }
 
 // Option 2: Use 'ensure' for automatic cleanup
@@ -51,10 +51,10 @@ func process_data_v2() -> () or Error {
     process(data)
 
     if data.is_empty() {
-        return Err(Error.new("empty file"))  // ensure still runs!
+        return Error.new("empty file")  // ensure still runs!
     }
 
-    Ok(())
+    // implicit unit success (ER10)
 }
 
 // Option 3: Scoped resource pattern
@@ -62,7 +62,7 @@ func process_data_v3() -> () or Error {
     (try fs.open("data.txt")).use(|file| {
         const data = try file.read_all()
         process(data)
-        Ok(())
+        // implicit unit success (ER10)
     })
 }
 
@@ -75,7 +75,7 @@ func conditional_leak(flag: bool) -> () or Error {
     }
     // COMPILE ERROR: 'file' may not be consumed (false branch doesn't close)
 
-    Ok(())
+    // implicit unit success (ER10)
 }
 
 // THE FIX: All branches must consume
@@ -90,7 +90,7 @@ func conditional_fixed(flag: bool) -> () or Error {
         try file.close()  // Must close in both branches
     }
 
-    Ok(())
+    // implicit unit success (ER10)
 }
 
 func process(data: string) {
@@ -103,5 +103,5 @@ func main() -> () or Error {
     try process_data()
     try process_data_v1()
     try process_data_v2()
-    Ok(())
+    // implicit unit success (ER10)
 }

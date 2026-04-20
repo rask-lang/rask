@@ -17,17 +17,17 @@ func main() {
     print("\n")
 
     // Pattern matching with Option
-    const maybe = Some(42)
+    const maybe: i32? = 42
 
-    if maybe is Some(value) {
+    if maybe? as value {
         print("Got value: ")
         print(value)
         print("\n")
     }
 
-    const nothing = None
+    const nothing: i32? = none
 
-    if nothing is None {
+    if nothing == none {
         print("Got nothing\n")
     }
 }

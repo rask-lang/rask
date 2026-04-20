@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Optional types, Some/None, pattern matching.
+// Optional types: auto-wrap, none literal, operators, is-patterns.
 
 func find(items: Vec<i32>, target: i32) -> i32? {
     for i in 0..items.len() {
         if items[i] == target {
-            return Some(items[i])
+            return items[i]
         }
     }
     return none
@@ -12,11 +12,11 @@ func find(items: Vec<i32>, target: i32) -> i32? {
 
 func safe_div(a: i32, b: i32) -> i32? {
     if b == 0 { return none }
-    return Some(a / b)
+    return a / b
 }
 
-test "Some construction" {
-    const x = Some(42)
+test "present value auto-wraps" {
+    const x: i32? = 42
     assert x is Some
 }
 
@@ -25,17 +25,17 @@ test "none construction" {
     assert x is None
 }
 
-test "unwrap Some" {
-    const x = Some(42)
+test "force unwrap present" {
+    const x: i32? = 42
     assert x! == 42
 }
 
 test "is Some with binding" {
-    const x = Some(10)
+    const x: i32? = 10
     if x is Some(val) {
         assert val == 10
     } else {
-        assert false, "expected Some"
+        assert false, "expected present"
     }
 }
 
@@ -43,7 +43,7 @@ test "is None" {
     const x: i32? = none
     assert x is None
     if x is Some {
-        assert false, "expected None"
+        assert false, "expected none"
     }
 }
 

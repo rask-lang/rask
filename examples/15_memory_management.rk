@@ -31,33 +31,33 @@ func main() {
 
     print("Creating linked list with handles:\n")
 
-    // Allocate nodes in the pool — alloc returns Result<Handle>
+    // Allocate nodes in the pool — alloc returns Handle or Error
     const first = node_pool.alloc(Node {
         value: 1,
-        next: None,
-    }).unwrap()
+        next: none,
+    })!
 
     const second = node_pool.alloc(Node {
         value: 2,
-        next: None,
-    }).unwrap()
+        next: none,
+    })!
 
     const third = node_pool.alloc(Node {
         value: 3,
-        next: None,
-    }).unwrap()
+        next: none,
+    })!
 
     // Link nodes using handles (pool indexing with handle)
-    node_pool[first].next = Some(second)
-    node_pool[second].next = Some(third)
+    node_pool[first].next = second
+    node_pool[second].next = third
 
     // Traverse the list using handles
     print("List values: ")
-    mut current = Some(first)
+    mut current: Handle<Node>? = first
 
     loop {
-        if current is Some(handle) {
-            const node = node_pool.get(handle).unwrap()
+        if current? as handle {
+            const node = node_pool.get(handle)!
             print(node.value)
             print(" -> ")
             current = node.next

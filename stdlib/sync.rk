@@ -13,10 +13,10 @@ extend Shared<T> {
     /// Expression-scoped write lock.
     public func write(self) -> T { }
 
-    /// Non-blocking read. Returns None if contended.
+    /// Non-blocking read. Returns none if contended.
     public func try_read(self, f: func(T)) -> Option<T> { }
 
-    /// Non-blocking write. Returns None if contended.
+    /// Non-blocking write. Returns none if contended.
     public func try_write(self, f: func(T)) -> Option<T> { }
 }
 
@@ -30,6 +30,6 @@ extend Mutex<T> {
     /// Expression-scoped exclusive lock.
     public func lock(self) -> T { }
 
-    /// Non-blocking lock. Returns None if held.
+    /// Non-blocking lock. Returns none if held.
     public func try_lock(self, f: func(T)) -> Option<T> { }
 }

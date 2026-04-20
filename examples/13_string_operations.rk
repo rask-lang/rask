@@ -117,32 +117,26 @@ func main() {
     const num_str = "42"
     const parsed = num_str.parse<i32>()
 
-    match parsed {
-        Ok(num) => {
-            print("Parsed number: ")
-            print(num)
-            print("\n")
-        }
-        Err(e) => {
-            print("Parse error: ")
-            print(e)
-            print("\n")
-        }
+    if parsed? as num {
+        print("Parsed number: ")
+        print(num)
+        print("\n")
+    } else as e {
+        print("Parse error: ")
+        print(e.message())
+        print("\n")
     }
 
     // Parsing with error handling
     const bad_str = "not a number"
     const bad_parsed = bad_str.parse<i32>()
 
-    match bad_parsed {
-        Ok(num) => {
-            print("This shouldn't happen\n")
-        }
-        Err(e) => {
-            print("Expected error: ")
-            print(e)
-            print("\n")
-        }
+    if bad_parsed? as num {
+        print("This shouldn't happen\n")
+    } else as e {
+        print("Expected error: ")
+        print(e.message())
+        print("\n")
     }
 
     print("\n")

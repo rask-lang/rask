@@ -31,16 +31,25 @@ extend MarkdownError {
     }
 }
 
+enum IoMsg { Msg(string) }
+extend IoMsg {
+    func message(self) -> string {
+        match self {
+            IoMsg.Msg(m) => return m,
+        }
+    }
+}
+
 enum RenderError {
     Parse(MarkdownError)
-    Io(string)
+    Io(IoMsg)
 }
 
 extend RenderError {
     func message(self) -> string {
         match self {
             Parse(e) => return "parse error: {e.message()}"
-            Io(msg) => return "I/O error: {msg}"
+            Io(e) => return "I/O error: {e.message()}"
         }
     }
 }
@@ -142,32 +151,32 @@ func is_hr_line(line: string) -> bool {
 
 func ordered_list_start(line: string) -> i32? {
     const dot_pos = line.find(".") is Some(p) else {
-        return None
+        return none
     }
     if dot_pos == 0 {
-        return None
+        return none
     }
     if dot_pos + 1 >= line.len() {
-        return None
+        return none
     }
     if line.char_at(dot_pos + 1) is Some(c) {
         if c != ' ' {
-            return None
+            return none
         }
     } else {
-        return None
+        return none
     }
 
     const num_slice = line[0..dot_pos]
     for ch in num_slice.chars() {
         if !ch.is_digit() {
-            return None
+            return none
         }
     }
     const n = num_slice.parse_int() is Ok(v) else {
-        return None
+        return none
     }
-    return Some(n as i32)
+    return n as i32
 }
 
 // ─── Scanner ────────────────────────────────────────────────────────
@@ -191,7 +200,7 @@ extend Scanner {
 
     func peek(self) -> char? {
         if self.is_done() {
-            return None
+            return none
         }
         return self.input.char_at(self.pos)
     }
@@ -199,17 +208,17 @@ extend Scanner {
     func peek_at(self, offset: usize) -> char? {
         const idx = self.pos + offset
         if idx >= self.input.len() {
-            return None
+            return none
         }
         return self.input.char_at(idx)
     }
 
     func advance(self) -> char? {
         const c = self.peek() is Some else {
-            return None
+            return none
         }
         self.pos = self.pos + c.len_utf8()
-        return Some(c)
+        return c
     }
 
     func matches(self, s: string) -> bool {
@@ -233,14 +242,14 @@ extend Scanner {
             if self.matches(target) {
                 const result = self.input[start..self.pos].to_string()
                 self.pos = self.pos + target.len()
-                return Some(result)
+                return result
             }
             const c = self.peek() is Some else {
                 break
             }
             self.pos = self.pos + c.len_utf8()
         }
-        return None
+        return none
     }
 
     func scan_until_char(self, target: char) -> string? {
@@ -249,11 +258,11 @@ extend Scanner {
             if c == target {
                 const result = self.input[start..self.pos].to_string()
                 self.pos = self.pos + target.len_utf8()
-                return Some(result)
+                return result
             }
             self.pos = self.pos + c.len_utf8()
         }
-        return None
+        return none
     }
 
     func remaining(self) -> string {
@@ -336,7 +345,7 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
         if !stop.is_empty() && scanner.matches(stop) {
             scanner.consume(stop)
             flush_text(mutate result, mutate text_buf)
-            return Ok(result)
+            return result
         }
         if scanner.matches("\\") {
             scanner.advance()
@@ -442,10 +451,10 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
 
     flush_text(mutate result, mutate text_buf)
     if !stop.is_empty() {
-        return Err(MarkdownError.UnexpectedEnd("expected closing '{stop}'"))
+        return MarkdownError.UnexpectedEnd("expected closing '{stop}'")
     }
 
-    return Ok(result)
+    return result
 }
 
 // ─── Block Parser ───────────────────────────────────────────────────
@@ -664,7 +673,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         }
     }
 
-    return Ok(blocks)
+    return blocks
 }
 
 func join_lines(lines: Vec<string>) -> string {
@@ -808,7 +817,7 @@ func render_markdown(input: string) -> string or RenderError {
 
     mut out = string.new()
     render_children(blocks, mutate out, refs)
-    return Ok(out)
+    return out
 }
 
 func render_full_page(input: string) -> string or RenderError {
@@ -826,7 +835,7 @@ func render_full_page(input: string) -> string or RenderError {
 """)
     out.push_str(body)
     out.push_str("</body>\n</html>\n")
-    return Ok(out)
+    return out
 }
 
 // ─── CLI ────────────────────────────────────────────────────────────
@@ -885,12 +894,12 @@ func main() {
         std.exit(1)
     }
 
-    const content = match fs.read_file(input_path) {
-        Ok(c) => c
-        Err(e) => {
-            println("Error: cannot read {input_path}: {e}")
-            std.exit(1)
-        }
+    const read_result = fs.read_file(input_path)
+    const content = if read_result? as c {
+        c
+    } else as e {
+        println("Error: cannot read {input_path}: {e.message()}")
+        std.exit(1)
     }
 
     const result = if fragment {
@@ -899,12 +908,11 @@ func main() {
         render_full_page(content)
     }
 
-    const html = match result {
-        Ok(h) => h
-        Err(e) => {
-            println("Error: {e.message()}")
-            std.exit(1)
-        }
+    const html = if result? as h {
+        h
+    } else as e {
+        println("Error: {e.message()}")
+        std.exit(1)
     }
 
     if use_stdout {
@@ -918,12 +926,12 @@ func main() {
             }
         }
 
-        match fs.write_file(output_path, html) {
-            Ok(()) => println("Written: {output_path}")
-            Err(e) => {
-                println("Error: cannot write {output_path}: {e}")
-                std.exit(1)
-            }
+        const write_result = fs.write_file(output_path, html)
+        if write_result? {
+            println("Written: {output_path}")
+        } else as e {
+            println("Error: cannot write {output_path}: {e.message()}")
+            std.exit(1)
         }
     }
 }

@@ -9,9 +9,18 @@ func add(a: i32, b: i32) -> i32 {
     return a + b
 }
 
-func divide(a: f64, b: f64) -> f64 or string {
+enum DivideError { Msg(string) }
+extend DivideError {
+    func message(self) -> string {
+        match self {
+            DivideError.Msg(m) => return m,
+        }
+    }
+}
+
+func divide(a: f64, b: f64) -> f64 or DivideError {
     if b == 0.0 {
-        return Err("division by zero")
+        return DivideError.Msg("division by zero")
     }
     return a / b
 }
@@ -29,12 +38,12 @@ test "add negative" {
 }
 
 test "divide success" {
-    assert divide(10.0, 2.0).is_ok()
-    assert divide(6.0, 3.0).is_ok()
+    assert divide(10.0, 2.0)?
+    assert divide(6.0, 3.0)?
 }
 
 test "divide by zero" {
-    assert divide(1.0, 0.0).is_err()
+    assert !divide(1.0, 0.0)?
 }
 
 test "check gathers all failures" {

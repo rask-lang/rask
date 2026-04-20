@@ -126,7 +126,7 @@ func manual_close() {
     // ensure won't run because conn was already closed
 }
 
-func demonstrate_file_resources() -> () or string {
+func demonstrate_file_resources() -> () or IoError {
     // File handles are also linear resources
     const file = try fs.create("test.txt")
     ensure {
@@ -157,9 +157,9 @@ func main() {
 
     // Demonstrate file resources (returns Result)
     const result = demonstrate_file_resources()
-    if result is Err(e) {
+    if result is IoError as e {
         print("Error: ")
-        print(e)
+        print(e.message())
         print("\n")
     }
 

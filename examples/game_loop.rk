@@ -76,12 +76,12 @@ extend GameState {
             entity_type: EntityType.Player,
         })
 
-        return Ok(GameState {
+        return GameState {
             entities: entities,
-            player: Some(player_handle),
+            player: player_handle,
             score: 0,
             game_over: false,
-        })
+        }
     }
 
     func spawn_enemy(self, x: f32, y: f32) -> Handle<Entity> or Error {

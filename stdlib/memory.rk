@@ -8,14 +8,14 @@ public struct Pool<T> { }
 public struct Handle<T> { }
 
 /// Non-owning reference into a Pool. May become invalid if the element is removed.
-/// Use `upgrade()` to convert back to a Handle (returns None if invalidated).
+/// Use `upgrade()` to convert back to a Handle (returns none if invalidated).
 public struct WeakHandle<T> { }
 
 extend WeakHandle<T> {
     /// Check if the weak handle is still valid (element hasn't been removed).
     public func valid(self) -> bool { }
 
-    /// Attempt to convert back to a strong Handle. Returns None if the element
+    /// Attempt to convert back to a strong Handle. Returns none if the element
     /// was removed since the weak handle was created.
     public func upgrade(self) -> Handle<T>? { }
 }
@@ -66,7 +66,7 @@ extend Pool<T> {
     /// Iterate over elements only.
     public func values(self) -> Iterator<T> { }
 
-    /// Try to insert, returning None if at capacity.
+    /// Try to insert, returning none if at capacity.
     public func try_insert(mutate self, value: T) -> Handle<T>? { }
 
     /// Remove all elements, returning them as a Vec.

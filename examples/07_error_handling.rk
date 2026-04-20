@@ -1,55 +1,58 @@
-// Learn: Error handling with Result and try
+// Learn: Error handling with T or E and try
+
+enum DivError { Msg(string) }
+extend DivError {
+    func message(self) -> string {
+        match self {
+            DivError.Msg(m) => return m,
+        }
+    }
+}
 
 func main() {
-    // Handling Result with match
+    // Handling T or E with narrowing
     const result = divide(10, 2)
 
-    match result {
-        Ok(value) => {
-            print("10 / 2 = ")
-            print(value)
-            print("\n")
-        }
-        Err(msg) => {
-            print("Error: ")
-            print(msg)
-            print("\n")
-        }
+    if result? as value {
+        print("10 / 2 = ")
+        print(value)
+        print("\n")
+    } else as e {
+        print("Error: ")
+        print(e.message())
+        print("\n")
     }
 
     // Division by zero
     const bad = divide(10, 0)
 
-    match bad {
-        Ok(value) => {
-            print("Result: ")
-            print(value)
-            print("\n")
-        }
-        Err(msg) => {
-            print("Error: ")
-            print(msg)
-            print("\n")
-        }
+    if bad? as value {
+        print("Result: ")
+        print(value)
+        print("\n")
+    } else as e {
+        print("Error: ")
+        print(e.message())
+        print("\n")
     }
 
-    // Using try operator
+    // Using narrowing
     const safe = safe_calc()
     print("Safe calc result: ")
     print(safe)
     print("\n")
 }
 
-func divide(a: i32, b: i32) -> i32 or string {
+func divide(a: i32, b: i32) -> i32 or DivError {
     if b == 0 {
-        return Err("Cannot divide by zero")
+        return DivError.Msg("Cannot divide by zero")
     }
-    return Ok(a / b)
+    return a / b
 }
 
 func safe_calc() -> i32 {
     const x = divide(20, 4)
-    if x is Ok(val) {
+    if x? as val {
         return val * 2
     }
     return 0

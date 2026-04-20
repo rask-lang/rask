@@ -14,7 +14,7 @@ extend BackendPool {
             mut checked = 0
             loop {
                 if checked >= count {
-                    return Err(ProxyError.UpstreamUnreachable)
+                    return ProxyError.UpstreamUnreachable
                 }
                 const backend = self.backends[idx]
                 idx = (idx + 1) % count

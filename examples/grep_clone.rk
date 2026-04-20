@@ -61,13 +61,13 @@ func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
         i = i + 1
     }
 
-    if positional.is_empty(): return Err(GrepError.NoPattern)
-    if positional.len() < 2: return Err(GrepError.NoFiles)
+    if positional.is_empty(): return GrepError.NoPattern
+    if positional.len() < 2: return GrepError.NoFiles
 
     opts.pattern = positional.remove(0)
     opts.files = positional
 
-    return Ok(opts)
+    return opts
 }
 
 func print_usage() {
@@ -121,19 +121,19 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
         println("{match_count}")
     }
 
-    return Ok(match_count)
+    return match_count
 }
 
 func main() {
     const args = cli.args()
-    mut opts = match parse_args(own args) {
-        Ok(o) => o,
-        Err(e) => {
-            const msg = e.message()
-            println("rgrep: {msg}")
-            print_usage()
-            std.exit(1)
-        }
+    const parsed = parse_args(own args)
+    mut opts = if parsed? as o {
+        o
+    } else as e {
+        const msg = e.message()
+        println("rgrep: {msg}")
+        print_usage()
+        std.exit(1)
     }
 
     mut total_matches = 0
@@ -142,13 +142,13 @@ func main() {
     mut fi: usize = 0
     while fi < opts.files.len() {
         const file_path = opts.files[fi]
-        match grep_file(file_path, opts) {
-            Ok(count) => total_matches = total_matches + count,
-            Err(e) => {
-                const msg = e.message()
-                println("rgrep: {msg}")
-                had_errors = true
-            }
+        const r = grep_file(file_path, opts)
+        if r? as count {
+            total_matches = total_matches + count
+        } else as e {
+            const msg = e.message()
+            println("rgrep: {msg}")
+            had_errors = true
         }
         fi = fi + 1
     }

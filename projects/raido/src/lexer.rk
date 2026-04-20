@@ -112,15 +112,15 @@ extend Lexer {
     }
 
     // Look at the current character without consuming it.
-    // Returns None if we're at the end of source.
+    // Returns none if we're at the end of source.
     func peek(self) -> char? {
-        if self.pos >= self.source.len(): return None
+        if self.pos >= self.source.len(): return none
         return self.source.char_at(self.pos)
     }
 
     // Consume the current character and advance.
     func advance(self) -> char? {
-        if self.pos >= self.source.len(): return None
+        if self.pos >= self.source.len(): return none
         const c = self.source.char_at(self.pos)
         self.pos = self.pos + 1
         if c is Some(cc) && cc == '\n' { self.line = self.line + 1 }
@@ -129,15 +129,14 @@ extend Lexer {
 
     // Check if current char matches expected, and consume it if so.
     func match_char(self, expected: char) -> bool {
-        match self.peek() {
-            Some(c) => {
-                if c == expected {
-                    self.advance()
-                    return true
-                }
-                return false
+        if self.peek()? as c {
+            if c == expected {
+                self.advance()
+                return true
             }
-            None => return false,
+            return false
+        } else {
+            return false
         }
     }
 
@@ -267,7 +266,7 @@ extend Lexer {
                 if self.match_char('&') {
                     return Token.AmpAmp
                 } else {
-                    return Err(LexError.UnexpectedChar('&', self.line))
+                    return LexError.UnexpectedChar('&', self.line)
                 }
             }
             '|' => {
@@ -280,7 +279,7 @@ extend Lexer {
             }
             c => {
                 self.advance()
-                return Err(LexError.UnexpectedChar(c, self.line))
+                return LexError.UnexpectedChar(c, self.line)
             }
         }
     }
@@ -295,13 +294,13 @@ extend Lexer {
                 '0'..='9' => { self.advance() }
                 '.' => {
                     if is_num_lit {
-                        return Err(LexError.UnexpectedChar('.', self.line))  // second dot in number
+                        return LexError.UnexpectedChar('.', self.line)  // second dot in number
                     }
                     self.advance() // consume the dot
                     if self.peek() is Some(next) && next >= '0' && next <= '9' {
                         frac_start = self.pos
                     } else {
-                        return Err(LexError.UnexpectedChar('.', self.line))  // dot not followed by digits
+                        return LexError.UnexpectedChar('.', self.line)  // dot not followed by digits
                     }
                     is_num_lit = true
                 }
@@ -311,17 +310,17 @@ extend Lexer {
         if is_num_lit {
             
             const int_part = self.source.substring(start, frac_start - 1).parse_i64() is Some else {
-                return Err(LexError.UnexpectedChar('.', self.line))  // invalid integer part
+                return LexError.UnexpectedChar('.', self.line)  // invalid integer part
             }
             const frac_part = self.source.substring(frac_start, self.pos).parse_i64() is Some else {
-                return Err(LexError.UnexpectedChar('.', self.line))  // invalid fractional part
+                return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
             }
             const frac_digits = self.pos - frac_start
             const raw = (int_part << 32) + (frac_part << 32) / i64.pow(10, frac_digits)
             return Token.NumLit(raw)
         } else {
             const value = self.source.substring(start, self.pos).parse_i64() is Some else {
-                return Err(LexError.UnexpectedChar('.', self.line))  // invalid integer
+                return LexError.UnexpectedChar('.', self.line)  // invalid integer
             }
             return Token.IntLit(value)
         }
@@ -331,7 +330,7 @@ extend Lexer {
         self.advance()  // skip opening quote
         const start = self.pos
         const end = loop {
-           const c = self.peek() is Some else { return Err(LexError.UnterminatedString(self.line)) }
+           const c = self.peek() is Some else { return LexError.UnterminatedString(self.line) }
            if c == '"' {
                 const end_pos = self.pos
                 self.advance() // consume the ending quote
@@ -341,13 +340,13 @@ extend Lexer {
                 if self.peek() is Some(esc) {
                     match esc {
                         'n' | 't' | '\\' | '"' => self.advance(), // valid escape, consume it
-                        _ => return Err(LexError.UnexpectedChar(esc, self.line)) // invalid escape
+                        _ => return LexError.UnexpectedChar(esc, self.line) // invalid escape
                     }
                 } else {
-                    return Err(LexError.UnterminatedString(self.line)) // string ends with a backslash
+                    return LexError.UnterminatedString(self.line) // string ends with a backslash
                 }
             } else if c == '\n' || c == '\r' {
-                return Err(LexError.UnterminatedString(self.line)) // strings cannot contain newlines
+                return LexError.UnterminatedString(self.line) // strings cannot contain newlines
             } else {
                 self.advance() // consume regular character
             }
