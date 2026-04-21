@@ -31,7 +31,7 @@ func decode_kv(line: string) -> KeyValue or WalError {
     if parts.len() < 4 {
         return WalError.CorruptEntry(0, "expected 4 tab-separated fields")
     }
-    const seq = parts[2].parse_int() is Ok(v) else {
+    const seq = parts[2].parse_int() is i64 as v else {
         return WalError.CorruptEntry(0, "invalid sequence number: {parts[2]}")
     }
     const deleted = parts[3].trim() == "1"

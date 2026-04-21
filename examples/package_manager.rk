@@ -33,13 +33,13 @@ extend Version {
             return VersionError.InvalidFormat("expected MAJOR.MINOR.PATCH, got: {s}")
         }
 
-        const major = parts[0].trim().parse_int() is Ok(v) else {
+        const major = parts[0].trim().parse_int() is i64 as v else {
             return VersionError.InvalidFormat("bad major version in: {s}")
         }
-        const minor = parts[1].trim().parse_int() is Ok(v) else {
+        const minor = parts[1].trim().parse_int() is i64 as v else {
             return VersionError.InvalidFormat("bad minor version in: {s}")
         }
-        const patch = parts[2].trim().parse_int() is Ok(v) else {
+        const patch = parts[2].trim().parse_int() is i64 as v else {
             return VersionError.InvalidFormat("bad patch version in: {s}")
         }
 
@@ -405,7 +405,7 @@ extend LocalRegistry with Registry {
 func local_available(root: string, name: string) -> Vec<PackageMeta> or RegistryError {
     // Read index file listing available versions
     const index_path = "{root}/{name}/index.json"
-    const index_content = fs.read_file(index_path) is Ok(c) else {
+    const index_content = fs.read_file(index_path) is string as c else {
         return RegistryError.PackageNotFound(name)
     }
 
@@ -420,7 +420,7 @@ func local_available(root: string, name: string) -> Vec<PackageMeta> or Registry
     for entry in version_list {
         const ver_str = entry.as_string() is Some(s) else { continue }
         const meta_path = "{root}/{name}/{ver_str}/meta.json"
-        const meta = load_package_meta(meta_path) is Ok(m) else { continue }
+        const meta = load_package_meta(meta_path) is PackageMeta as m else { continue }
         versions.push(meta)
     }
 
@@ -442,7 +442,7 @@ func local_fetch(root: string, name: string, version: Version) -> string or Regi
 // ─── Package Meta Loader ────────────────────────────────────────────
 
 func load_package_meta(path: string) -> PackageMeta or RegistryError {
-    const content = fs.read_file(path) is Ok(c) else {
+    const content = fs.read_file(path) is string as c else {
         return RegistryError.IoError("cannot read {path}")
     }
     const parsed = json.parse(content) is Ok(v) else {
@@ -527,7 +527,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
 
     mut versions = Vec.new()
     for entry in arr {
-        const meta = parse_meta_from_json(entry, name) is Ok(m) else { continue }
+        const meta = parse_meta_from_json(entry, name) is PackageMeta as m else { continue }
         versions.push(meta)
     }
 
@@ -801,7 +801,7 @@ func fetch_one(item: FetchItem, registry: any Registry) -> string or FetchError 
 
     // Verify checksum if present
     if !item.checksum.is_empty() {
-        const content = fs.read_file("{pkg_path}/meta.json") is Ok(c) else {
+        const content = fs.read_file("{pkg_path}/meta.json") is string as c else {
             return "fetch   {item.name}@{item.version.to_string()}"
         }
         try verify_checksum(content, item.checksum, item.name)
@@ -875,7 +875,7 @@ func write_lockfile(graph: DepGraph, path: string) -> () or FetchError {
 func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
     mut packages = Map.new()
 
-    const content = fs.read_file(path) is Ok(c) else {
+    const content = fs.read_file(path) is string as c else {
         // No lock file yet — that's fine
         return packages
     }

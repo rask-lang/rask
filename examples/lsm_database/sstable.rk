@@ -147,7 +147,7 @@ func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or Sst
 func parse_block_lines(lines: Vec<string>, block_id: i32) -> Vec<KeyValue> or SstError {
     mut entries = Vec.new()
     for line in lines {
-        const kv = decode_kv(line) is Ok(entry) else {
+        const kv = decode_kv(line) is KeyValue as entry else {
             return SstError.BlockCorrupt(block_id, "corrupt entry")
         }
         entries.push(kv)
@@ -169,8 +169,8 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
         const parts = entry.split("\t").collect()
         if parts.len() < 3 { continue }
 
-        const offset = parts[1].trim().parse_int() is Ok(v) else { continue }
-        const count = parts[2].trim().parse_int() is Ok(v) else { continue }
+        const offset = parts[1].trim().parse_int() is i64 as v else { continue }
+        const count = parts[2].trim().parse_int() is i64 as v else { continue }
 
         index.push(BlockIndex {
             first_key: parts[0].to_string(),
@@ -210,7 +210,7 @@ func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
         const trimmed = line.trim()
         if trimmed.is_empty() { continue }
         if trimmed == "===" { continue }
-        const kv = decode_kv(trimmed) is Ok(entry) else { continue }
+        const kv = decode_kv(trimmed) is KeyValue as entry else { continue }
         entries.push(kv)
     }
     return entries
@@ -249,12 +249,12 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         if !stem.starts_with("L") { continue }
 
         const underscore = stem.find("_") is Some(pos) else { continue }
-        const level = stem[1..underscore].parse_int() is Ok(v) else { continue }
-        const id = stem[underscore + 1..].parse_int() is Ok(v) else { continue }
+        const level = stem[1..underscore].parse_int() is i64 as v else { continue }
+        const id = stem[underscore + 1..].parse_int() is i64 as v else { continue }
 
         const path = "{dir}/{file}"
 
-        const bloom = read_sstable_bloom(path) is Ok(b) else { continue }
+        const bloom = read_sstable_bloom(path) is BloomFilter as b else { continue }
         const index = read_sstable_index(path) is Ok(idx) else { continue }
         if index.is_empty() { continue }
 
