@@ -2885,7 +2885,15 @@ impl Parser {
 
                 if self.check(&TokenKind::QuestionQuestion) {
                     self.advance();
-                    let default = self.parse_expr_bp(r_bp)?;
+                    // OPT13: diverging RHS — `x ?? return y`, `?? break`, `?? continue`.
+                    // Wrap the statement in a Block expression; block type is Never.
+                    let rhs_start = self.current().span.start;
+                    let default = match self.current_kind() {
+                        TokenKind::Return | TokenKind::Break | TokenKind::Continue => {
+                            self.parse_inline_block(rhs_start)?
+                        }
+                        _ => self.parse_expr_bp(r_bp)?,
+                    };
                     let end = default.span.end;
                     lhs = Expr {
                         id: self.next_id(),
@@ -3220,7 +3228,14 @@ impl Parser {
                     self.expect(&TokenKind::Pipe)?;
                     let error_binding = self.expect_ident()?;
                     self.expect(&TokenKind::Pipe)?;
-                    let body = self.parse_expr()?;
+                    // ER18: diverging body — `else |e| return e`, `break`, `continue`.
+                    let body_start = self.current().span.start;
+                    let body = match self.current_kind() {
+                        TokenKind::Return | TokenKind::Break | TokenKind::Continue => {
+                            self.parse_inline_block(body_start)?
+                        }
+                        _ => self.parse_expr()?,
+                    };
                     end = body.span.end;
                     Some(rask_ast::expr::TryElse {
                         error_binding,
@@ -4364,12 +4379,35 @@ impl Parser {
                 self.advance();
 
                 // Handle qualified paths: Enum.Variant or Enum.Variant(args) or Enum.Variant { fields }
-                let name = if self.match_token(&TokenKind::Dot) {
+                let mut name = if self.match_token(&TokenKind::Dot) {
                     let variant = self.expect_ident()?;
                     format!("{}.{}", name, variant)
                 } else {
                     name
                 };
+
+                // rask#217: generic type patterns — `is Vec<i32>`, `is Map<K, V>`.
+                // After `is`, `<` can't be a comparison, so consume generic args.
+                if self.check(&TokenKind::Lt) {
+                    self.advance();
+                    name.push('<');
+                    loop {
+                        if let TokenKind::Int(n, _) = self.current_kind().clone() {
+                            self.advance();
+                            name.push_str(&n.to_string());
+                        } else {
+                            name.push_str(&self.parse_type_name()?);
+                        }
+                        if self.pending_gt { break; }
+                        if self.match_token(&TokenKind::Comma) {
+                            name.push_str(", ");
+                        } else {
+                            break;
+                        }
+                    }
+                    self.expect_gt_in_generic()?;
+                    name.push('>');
+                }
 
                 if self.match_token(&TokenKind::LParen) {
                     // Constructor pattern: Name(patterns...) or Enum.Variant(patterns...)

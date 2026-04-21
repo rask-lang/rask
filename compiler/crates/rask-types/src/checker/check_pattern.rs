@@ -186,15 +186,17 @@ impl TypeChecker {
                         }
                     }
                     Type::Var(_) => {
-                        let ok_ty = self.ctx.fresh_var();
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            scrutinee_ty.clone(),
-                            Type::Result {
-                                ok: Box::new(ok_ty),
-                                err: Box::new(narrow_ty.clone()),
-                            },
+                        // Defer the ok-vs-err decision until the scrutinee
+                        // resolves (e.g. a method-call return type finishes
+                        // unifying). Pinning narrow_ty to err here would
+                        // wrongly unify ok == narrow_ty when narrow_ty is
+                        // actually the ok-branch type.
+                        self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                            scrutinee: scrutinee_ty.clone(),
+                            narrow_ty: narrow_ty.clone(),
+                            ty_name: ty_name.clone(),
                             span,
-                        ));
+                        });
                     }
                     _ => {
                         self.errors.push(TypeError::TypePatternNotResult {

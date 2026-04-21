@@ -130,6 +130,68 @@ impl TypeChecker {
                 expected,
                 span,
             } => self.resolve_return_value(ret_ty, expected, span),
+            TypeConstraint::TypePatternMatches {
+                scrutinee,
+                narrow_ty,
+                ty_name,
+                span,
+            } => self.resolve_type_pattern(scrutinee, narrow_ty, ty_name, span),
+        }
+    }
+
+    /// ER27: verify that `narrow_ty` matches either the ok or err branch of
+    /// the scrutinee's `T or E` type. Defer if scrutinee is still unresolved.
+    fn resolve_type_pattern(
+        &mut self,
+        scrutinee: Type,
+        narrow_ty: Type,
+        ty_name: String,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let resolved = self.ctx.apply(&scrutinee);
+        let narrow_applied = self.ctx.apply(&narrow_ty);
+        match &resolved {
+            Type::Result { ok, err } => {
+                let ok_applied = self.ctx.apply(ok);
+                let err_applied = self.ctx.apply(err);
+                let matches_ok = ok_applied == narrow_applied;
+                let matches_err = match &err_applied {
+                    Type::Union(variants) => variants.contains(&narrow_applied),
+                    other => other == &narrow_applied,
+                };
+                if !matches_ok && !matches_err {
+                    if matches!(&err_applied, Type::Union(_)) {
+                        Err(TypeError::TypePatternNotInUnion {
+                            ty_name,
+                            union: err_applied,
+                            span,
+                        })
+                    } else {
+                        Err(TypeError::TypePatternNotResult {
+                            ty_name,
+                            found: resolved,
+                            span,
+                        })
+                    }
+                } else {
+                    Ok(true)
+                }
+            }
+            Type::Var(_) => {
+                // Still unresolved — re-queue and try again later.
+                self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                    scrutinee,
+                    narrow_ty,
+                    ty_name,
+                    span,
+                });
+                Ok(false)
+            }
+            _ => Err(TypeError::TypePatternNotResult {
+                ty_name,
+                found: resolved,
+                span,
+            }),
         }
     }
 
