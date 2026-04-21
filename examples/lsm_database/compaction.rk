@@ -53,10 +53,10 @@ func compact_sstables(
     target_level: i32,
     dir: string,
 ) -> SstMeta or CompactionError {
-    const entries_a = read_all_sstable_entries(a.path) is Ok(e) else {
+    const entries_a = read_all_sstable_entries(a.path) is Vec<KeyValue> as e else {
         return CompactionError.MergeConflict("cannot read SSTable {a.id}")
     }
-    const entries_b = read_all_sstable_entries(b.path) is Ok(e) else {
+    const entries_b = read_all_sstable_entries(b.path) is Vec<KeyValue> as e else {
         return CompactionError.MergeConflict("cannot read SSTable {b.id}")
     }
 

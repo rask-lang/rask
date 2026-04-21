@@ -327,7 +327,7 @@ func parse_manifest(content: string) -> Manifest or ManifestError {
         return ManifestError.MissingField("package name")
     }
 
-    const version = Version.parse(version_str) is Ok(v) else {
+    const version = Version.parse(version_str) is Version as v else {
         return ManifestError.InvalidConstraint("bad package version: {version_str}")
     }
 
@@ -362,7 +362,7 @@ func parse_package_line(line: string, line_num: i32) -> (string, string) or Mani
 func parse_dep_line(line: string, line_num: i32) -> Dependency or ManifestError {
     const name = try extract_nth_quoted(line, 0, line_num, "dep name")
     const constraint_str = try extract_nth_quoted(line, 1, line_num, "constraint")
-    const constraint = Constraint.parse(constraint_str) is Ok(c) else {
+    const constraint = Constraint.parse(constraint_str) is Constraint as c else {
         return ManifestError.InvalidConstraint(constraint_str)
     }
     return Dependency { name: name, constraint: constraint }
@@ -405,7 +405,7 @@ func local_available(root: string, name: string) -> Vec<PackageMeta> or Registry
         return RegistryError.PackageNotFound(name)
     }
 
-    const parsed = json.parse(index_content) is Ok(v) else {
+    const parsed = json.parse(index_content) is JsonValue as v else {
         return RegistryError.IoError("invalid JSON in {index_path}")
     }
     const version_list = parsed.as_array() ?? return RegistryError.IoError("expected array in {index_path}")
@@ -439,7 +439,7 @@ func load_package_meta(path: string) -> PackageMeta or RegistryError {
     const content = fs.read_file(path) is string as c else {
         return RegistryError.IoError("cannot read {path}")
     }
-    const parsed = json.parse(content) is Ok(v) else {
+    const parsed = json.parse(content) is JsonValue as v else {
         return RegistryError.IoError("invalid JSON in {path}")
     }
     return parse_meta_from_json(parsed, path)
@@ -453,7 +453,7 @@ func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or Regi
     const name = m.get("name")?.as_string() ?? return RegistryError.IoError("missing 'name' in {source}")
     const ver_str = m.get("version")?.as_string() ?? return RegistryError.IoError("missing 'version' in {source}")
     const checksum = m.get("checksum")?.as_string() ?? ""
-    const version = Version.parse(ver_str) is Ok(v) else {
+    const version = Version.parse(ver_str) is Version as v else {
         return RegistryError.IoError("bad version in {source}: {ver_str}")
     }
 
@@ -464,7 +464,7 @@ func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or Regi
             const dn = d_obj.get("name")?.as_string() ?? ""
             const dc = d_obj.get("constraint")?.as_string() ?? ""
             if dn.is_empty() || dc.is_empty() { continue }
-            const constraint = Constraint.parse(dc) is Ok(c) else { continue }
+            const constraint = Constraint.parse(dc) is Constraint as c else { continue }
             deps.push(Dependency { name: dn, constraint: constraint })
         }
     }
@@ -495,7 +495,7 @@ extend HttpRegistry with Registry {
 
 func http_available(base_url: string, name: string) -> Vec<PackageMeta> or RegistryError {
     const url = "{base_url}/packages/{name}"
-    const resp = http.get(url) is Ok(r) else {
+    const resp = http.get(url) is Response as r else {
         return RegistryError.NetworkError("failed to fetch {url}")
     }
 
@@ -506,7 +506,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
         return RegistryError.NetworkError("registry returned {resp.status} for {name}")
     }
 
-    const parsed = json.parse(resp.body) is Ok(v) else {
+    const parsed = json.parse(resp.body) is JsonValue as v else {
         return RegistryError.NetworkError("invalid JSON from registry for {name}")
     }
     const arr = parsed.as_array() ?? return RegistryError.NetworkError("expected array from registry for {name}")
@@ -526,7 +526,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
 func http_fetch(base_url: string, name: string, version: Version) -> string or RegistryError {
     const ver_str = version.to_string()
     const url = "{base_url}/packages/{name}/{ver_str}/download"
-    const resp = http.get(url) is Ok(r) else {
+    const resp = http.get(url) is Response as r else {
         return RegistryError.NetworkError("failed to download {name}@{ver_str}")
     }
 

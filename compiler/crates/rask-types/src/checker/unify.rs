@@ -149,11 +149,20 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved = self.ctx.apply(&scrutinee);
-        let narrow_applied = self.ctx.apply(&narrow_ty);
+        let narrow_applied = super::check_pattern::normalize_type(
+            &self.ctx.apply(&narrow_ty),
+            &self.types,
+        );
         match &resolved {
             Type::Result { ok, err } => {
-                let ok_applied = self.ctx.apply(ok);
-                let err_applied = self.ctx.apply(err);
+                let ok_applied = super::check_pattern::normalize_type(
+                    &self.ctx.apply(ok),
+                    &self.types,
+                );
+                let err_applied = super::check_pattern::normalize_type(
+                    &self.ctx.apply(err),
+                    &self.types,
+                );
                 let matches_ok = ok_applied == narrow_applied;
                 let matches_err = match &err_applied {
                     Type::Union(variants) => variants.contains(&narrow_applied),

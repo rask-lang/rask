@@ -11,7 +11,69 @@ use super::type_defs::TypeDef;
 use super::type_table::TypeTable;
 use super::TypeChecker;
 
-use crate::types::Type;
+use crate::types::{GenericArg, Type};
+
+/// Recursively resolve `UnresolvedNamed` and `UnresolvedGeneric` to `Named`
+/// and `Generic` where the type table knows the name. Matches `resolve_named`
+/// but walks into `Option`, `Result`, `Generic`, `Tuple`, `Slice`, `Array`,
+/// `Fn`, and `Union` so two types built from different sources compare equal.
+pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
+    match ty {
+        Type::UnresolvedNamed(name) => {
+            if let Some(id) = types.get_type_id(name) {
+                return Type::Named(id);
+            }
+            // Stub parsers store generic forms ("Vec<string>") as UnresolvedNamed.
+            // Re-parse so they compare equal with properly-parsed Generic types.
+            if name.contains('<') {
+                if let Ok(parsed) = parse_type_string(name, types) {
+                    if parsed != *ty {
+                        return normalize_type(&parsed, types);
+                    }
+                }
+            }
+            ty.clone()
+        }
+        Type::UnresolvedGeneric { name, args } => {
+            let normalized_args: Vec<GenericArg> = args
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(Box::new(normalize_type(t, types))),
+                    other => other.clone(),
+                })
+                .collect();
+            if let Some(id) = types.get_type_id(name) {
+                Type::Generic { base: id, args: normalized_args }
+            } else {
+                Type::UnresolvedGeneric { name: name.clone(), args: normalized_args }
+            }
+        }
+        Type::Option(inner) => Type::Option(Box::new(normalize_type(inner, types))),
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(normalize_type(ok, types)),
+            err: Box::new(normalize_type(err, types)),
+        },
+        Type::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args.iter().map(|a| match a {
+                GenericArg::Type(t) => GenericArg::Type(Box::new(normalize_type(t, types))),
+                other => other.clone(),
+            }).collect(),
+        },
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| normalize_type(e, types)).collect()),
+        Type::Slice(elem) => Type::Slice(Box::new(normalize_type(elem, types))),
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(normalize_type(elem, types)),
+            len: *len,
+        },
+        Type::Fn { params, ret } => Type::Fn {
+            params: params.iter().map(|p| normalize_type(p, types)).collect(),
+            ret: Box::new(normalize_type(ret, types)),
+        },
+        Type::Union(variants) => Type::Union(variants.iter().map(|v| normalize_type(v, types)).collect()),
+        _ => ty.clone(),
+    }
+}
 
 /// Resolve a bare type name to a Type.
 /// Returns UnresolvedNamed when the name isn't a known primitive or user type.
@@ -156,12 +218,12 @@ impl TypeChecker {
             // Result by type. In `if r is E as e`, typically the err side.
             // Union `E = A | B | ...`: accept if TypeName is a union component.
             Pattern::TypePat { ty_name, binding } => {
-                let narrow_ty = resolve_type_name(ty_name, &self.types);
+                let narrow_ty = normalize_type(&resolve_type_name(ty_name, &self.types), &self.types);
                 let resolved = self.ctx.apply(scrutinee_ty);
                 match &resolved {
                     Type::Result { ok, err } => {
-                        let ok_applied = self.ctx.apply(ok);
-                        let err_applied = self.ctx.apply(err);
+                        let ok_applied = normalize_type(&self.ctx.apply(ok), &self.types);
+                        let err_applied = normalize_type(&self.ctx.apply(err), &self.types);
                         let matches_ok = ok_applied == narrow_ty;
                         let matches_err = match &err_applied {
                             Type::Union(variants) => variants.contains(&narrow_ty),

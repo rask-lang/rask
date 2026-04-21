@@ -169,7 +169,7 @@ func ordered_list_start(line: string) -> i32? {
             return none
         }
     }
-    const n = num_slice.parse_int() is Ok(v) else {
+    const n = num_slice.parse_int() is i64 as v else {
         return none
     }
     return n as i32

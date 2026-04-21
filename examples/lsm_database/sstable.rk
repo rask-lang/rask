@@ -236,7 +236,7 @@ func find_block_for_key(index: Vec<BlockIndex>, key: string) -> i32? {
 func discover_sstables(dir: string) -> Vec<SstMeta> {
     mut metas = Vec.new()
 
-    const files = fs.list_dir(dir) is Ok(f) else { return metas }
+    const files = fs.list_dir(dir) is Vec<string> as f else { return metas }
 
     for file in files {
         if !file.ends_with(".sst") { continue }
@@ -251,13 +251,13 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         const path = "{dir}/{file}"
 
         const bloom = read_sstable_bloom(path) is BloomFilter as b else { continue }
-        const index = read_sstable_index(path) is Ok(idx) else { continue }
+        const index = read_sstable_index(path) is Vec<BlockIndex> as idx else { continue }
         if index.is_empty() { continue }
 
         const min_key = index[0].first_key
 
         const last_block_offset = index[index.len() - 1].offset
-        const last_entries = read_sstable_block(path, last_block_offset) is Ok(e) else {
+        const last_entries = read_sstable_block(path, last_block_offset) is Vec<KeyValue> as e else {
             continue
         }
         if last_entries.is_empty() { continue }

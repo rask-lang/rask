@@ -40,7 +40,7 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
             "--count" => {
                 i += 1
                 if i < args.len() {
-                    const n = args[i].parse_int() is Ok(v) else {
+                    const n = args[i].parse_int() is i64 as v else {
                         return DbError.Io("invalid count: {args[i]}")
                     }
                     result.count = n as i32
