@@ -139,13 +139,9 @@ extend Vm {
                 return Value.None
             }
 
-            const instr = code.get(pc) is Some else {
-                return VmError.ScriptError("pc out of bounds: {pc}")
-            }
+            const instr = code.get(pc) ?? return VmError.ScriptError("pc out of bounds: {pc}")
             pc = pc + 1
-            const op = decode_opcode(instr) is Some else {
-                return VmError.ScriptError("unknown opcode: {decode_op(instr)}")
-            }
+            const op = decode_opcode(instr) ?? return VmError.ScriptError("unknown opcode: {decode_op(instr)}")
 
             match op {
                 Opcode.LOAD_TRUE => {
@@ -169,7 +165,7 @@ extend Vm {
                 Opcode.LOAD_CONST => {
                     const a = decode_a(instr)
                     const bx = decode_bx(instr)
-                    const val = self.chunk.main.constants.get(bx) is Some else { continue }
+                    const val = self.chunk.main.constants.get(bx) ?? continue
                     self.set_reg(a, val)
                 }
                 Opcode.LOAD_NONE => {

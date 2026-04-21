@@ -35,7 +35,7 @@ extend BlockCache {
 
     func get(mutate self, sst_id: i32, block_id: i32) -> Vec<KeyValue>? {
         const key = BlockCache.cache_key(sst_id, block_id)
-        const handle = self.by_key.get(key) is Some(h) else { return none }
+        const handle = self.by_key.get(key) ?? return none
         const handle = handle.clone()
 
         self.access_counter += 1
@@ -129,9 +129,7 @@ func sst_point_lookup(
     }
 
     const index = try read_sstable_index(meta.path)
-    const target_block = find_block_for_key(index, key) is Some(idx) else {
-        return none
-    }
+    const target_block = find_block_for_key(index, key) ?? return none
 
     // Cache hit path
     if cache.get(meta.id, target_block)? as entries {
@@ -166,7 +164,7 @@ test "block cache put and get" {
 
     cache.put(1, 0, entries.clone())
 
-    const result = cache.get(1, 0) is Some else { panic("expected Some") }
+    const result = cache.get(1, 0) ?? panic("expected Some")
     assert result.len() == 2
     assert result[0].key == "k1"
 

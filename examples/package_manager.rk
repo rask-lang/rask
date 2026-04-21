@@ -339,13 +339,9 @@ func extract_nth_quoted(line: string, n: i32, line_num: i32, label: string) -> s
     mut pos = 0
     mut found = 0
     while found <= n {
-        const open = line[pos..].find("\"") is Some(idx) else {
-            return ManifestError.ParseError(line_num, "expected quoted {label}")
-        }
+        const open = line[pos..].find("\"") ?? return ManifestError.ParseError(line_num, "expected quoted {label}")
         const start = pos + open + 1
-        const close = line[start..].find("\"") is Some(idx) else {
-            return ManifestError.ParseError(line_num, "unterminated {label}")
-        }
+        const close = line[start..].find("\"") ?? return ManifestError.ParseError(line_num, "unterminated {label}")
         if found == n {
             return line[start..start + close].to_string()
         }
@@ -412,13 +408,11 @@ func local_available(root: string, name: string) -> Vec<PackageMeta> or Registry
     const parsed = json.parse(index_content) is Ok(v) else {
         return RegistryError.IoError("invalid JSON in {index_path}")
     }
-    const version_list = parsed.as_array() is Some(arr) else {
-        return RegistryError.IoError("expected array in {index_path}")
-    }
+    const version_list = parsed.as_array() ?? return RegistryError.IoError("expected array in {index_path}")
 
     mut versions = Vec.new()
     for entry in version_list {
-        const ver_str = entry.as_string() is Some(s) else { continue }
+        const ver_str = entry.as_string() ?? continue
         const meta_path = "{root}/{name}/{ver_str}/meta.json"
         const meta = load_package_meta(meta_path) is PackageMeta as m else { continue }
         versions.push(meta)
@@ -454,16 +448,10 @@ func load_package_meta(path: string) -> PackageMeta or RegistryError {
 // Shared JSON→PackageMeta extraction — used by both local and HTTP registries.
 // Takes the parsed JSON object value, avoiding type duplication.
 func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or RegistryError {
-    const m = obj.as_object() is Some(o) else {
-        return RegistryError.IoError("expected object in {source}")
-    }
+    const m = obj.as_object() ?? return RegistryError.IoError("expected object in {source}")
 
-    const name = m.get("name")?.as_string() is Some else {
-        return RegistryError.IoError("missing 'name' in {source}")
-    }
-    const ver_str = m.get("version")?.as_string() is Some else {
-        return RegistryError.IoError("missing 'version' in {source}")
-    }
+    const name = m.get("name")?.as_string() ?? return RegistryError.IoError("missing 'name' in {source}")
+    const ver_str = m.get("version")?.as_string() ?? return RegistryError.IoError("missing 'version' in {source}")
     const checksum = m.get("checksum")?.as_string() ?? ""
     const version = Version.parse(ver_str) is Ok(v) else {
         return RegistryError.IoError("bad version in {source}: {ver_str}")
@@ -472,7 +460,7 @@ func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or Regi
     mut deps = Vec.new()
     if m.get("deps")?.as_array()? as dep_arr {
         for d_val in dep_arr {
-            const d_obj = d_val.as_object() is Some(dm) else { continue }
+            const d_obj = d_val.as_object() ?? continue
             const dn = d_obj.get("name")?.as_string() ?? ""
             const dc = d_obj.get("constraint")?.as_string() ?? ""
             if dn.is_empty() || dc.is_empty() { continue }
@@ -521,9 +509,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
     const parsed = json.parse(resp.body) is Ok(v) else {
         return RegistryError.NetworkError("invalid JSON from registry for {name}")
     }
-    const arr = parsed.as_array() is Some(a) else {
-        return RegistryError.NetworkError("expected array from registry for {name}")
-    }
+    const arr = parsed.as_array() ?? return RegistryError.NetworkError("expected array from registry for {name}")
 
     mut versions = Vec.new()
     for entry in arr {
@@ -618,9 +604,7 @@ func resolve_one(
 
     // Already resolved? Check compatibility.
     if state.by_name.contains_key(name) {
-        const existing_handle = state.by_name.get(name) is Some(h) else {
-            return FetchError.Io(IoErrorMsg.Msg("impossible: key exists but get failed"))
-        }
+        const existing_handle = state.by_name.get(name) ?? return FetchError.Io(IoErrorMsg.Msg("impossible: key exists but get failed"))
         const existing_handle = existing_handle.clone()
 
         with state.packages[existing_handle] as existing {
@@ -645,10 +629,7 @@ func resolve_one(
     mut candidates = versions.filter(|m| constraint.satisfies(m.version))
     candidates.sort_by(|a, b| b.version.compare(a.version))
 
-    const meta = candidates.first() is Some else {
-        const con_str = constraint.to_string()
-        return FetchError.Resolve(ResolveError.NoMatch(name, con_str))
-    }
+    const meta = candidates.first() ?? return FetchError.Resolve(ResolveError.NoMatch(name, constraint.to_string()))
 
     const handle = state.packages.insert(ResolvedPkg {
         meta: PackageMeta {
@@ -929,9 +910,9 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
 }
 
 func extract_quoted_value(line: string) -> string {
-    const first = line.find("\"") is Some(pos) else { return "" }
+    const first = line.find("\"") ?? return ""
     const rest = first + 1
-    const second = line[rest..].find("\"") is Some(pos) else { return "" }
+    const second = line[rest..].find("\"") ?? return ""
     return line[rest..rest + second].to_string()
 }
 
@@ -1005,7 +986,7 @@ func print_lock_diff(old_lock: Map<string, LockedPackage>, graph: DepGraph) {
             const ver = pkg.meta.version.to_string()
 
             if old_lock.contains_key(pkg.meta.name) {
-                const locked = old_lock.get(pkg.meta.name) is Some(l) else { continue }
+                const locked = old_lock.get(pkg.meta.name) ?? continue
                 if locked.version == ver {
                     unchanged += 1
                 } else {
@@ -1203,9 +1184,7 @@ func run(args: CliArgs) -> () or FetchError {
                     const ver = pkg.meta.version.to_string()
 
                     if old_lock.contains_key(pkg.meta.name) {
-                        const locked = old_lock.get(pkg.meta.name) is Some(l) else {
-                            continue
-                        }
+                        const locked = old_lock.get(pkg.meta.name) ?? continue
                         if locked.version != ver {
                             println("  DRIFT {pkg.meta.name}: locked={locked.version}, resolved={ver}")
                             drift = true

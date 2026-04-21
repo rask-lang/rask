@@ -131,9 +131,7 @@ func is_hr_line(line: string) -> bool {
     if trimmed.len() < 3 {
         return false
     }
-    const first = trimmed.char_at(0) is Some(c) else {
-        return false
-    }
+    const first = trimmed.char_at(0) ?? return false
     if first != '-' && first != '*' && first != '_' {
         return false
     }
@@ -150,9 +148,7 @@ func is_hr_line(line: string) -> bool {
 }
 
 func ordered_list_start(line: string) -> i32? {
-    const dot_pos = line.find(".") is Some(p) else {
-        return none
-    }
+    const dot_pos = line.find(".") ?? return none
     if dot_pos == 0 {
         return none
     }
@@ -214,9 +210,7 @@ extend Scanner {
     }
 
     func advance(self) -> char? {
-        const c = self.peek() is Some else {
-            return none
-        }
+        const c = self.peek() ?? return none
         self.pos = self.pos + c.len_utf8()
         return c
     }
@@ -244,9 +238,7 @@ extend Scanner {
                 self.pos = self.pos + target.len()
                 return result
             }
-            const c = self.peek() is Some else {
-                break
-            }
+            const c = self.peek() ?? break
             self.pos = self.pos + c.len_utf8()
         }
         return none
@@ -290,9 +282,7 @@ func parse_references(input: string) -> Map<string, string> {
             continue
         }
 
-        const close = trimmed.find("]:") is Some(pos) else {
-            continue
-        }
+        const close = trimmed.find("]:") ?? continue
         const id = trimmed[1..close].to_string().to_lowercase()
         if id.is_empty() {
             continue
@@ -314,9 +304,7 @@ func is_reference_def(line: string) -> bool {
     if !trimmed.starts_with("[") {
         return false
     }
-    const close = trimmed.find("]:") is Some else {
-        return false
-    }
+    const close = trimmed.find("]:") ?? return false
     return true
 }
 
@@ -444,9 +432,7 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
             result.push(Inline.LineBreak)
             continue
         }
-        const ch = scanner.advance() is Some else {
-            break
-        }
+        const ch = scanner.advance() ?? break
         text_buf.push_char(ch)
     }
 
@@ -608,9 +594,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                 }
 
                 if ordered_list_start(it)? {
-                    const dot_pos = it.find(".") is Some(pos) else {
-                        continue
-                    }
+                    const dot_pos = it.find(".") ?? continue
                     const item_text = it[dot_pos + 2..].to_string()
                     const item_inlines = try parse_inline(item_text)
                     items.push(ListItem {

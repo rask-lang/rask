@@ -310,7 +310,7 @@ test "Vec.get — pattern match None" {
 test "Vec.get — guard pattern" {
     const v = Vec.new()
     v.push(42)
-    const val = v.get(0) is Some else { panic("missing") }
+    const val = v.get(0) ?? panic("missing")
     assert val == 42
 }
 

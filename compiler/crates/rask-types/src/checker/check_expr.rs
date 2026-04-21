@@ -1080,12 +1080,25 @@ impl TypeChecker {
             ExprKind::NullCoalesce { value, default } => {
                 let val_ty = self.infer_expr(value);
                 let def_ty = self.infer_expr(default);
-                self.ctx.add_constraint(TypeConstraint::Equal(
-                    val_ty,
-                    Type::Option(Box::new(def_ty.clone())),
-                    expr.span,
-                ));
-                def_ty
+                let resolved_def = self.ctx.apply(&def_ty);
+                // OPT13: diverging default (`?? return y`, `?? break`, `?? continue`,
+                // `?? panic(…)`) unwraps the scrutinee and yields the inner type.
+                if matches!(resolved_def, Type::Never) {
+                    let inner = self.ctx.fresh_var();
+                    self.ctx.add_constraint(TypeConstraint::Equal(
+                        val_ty,
+                        Type::Option(Box::new(inner.clone())),
+                        expr.span,
+                    ));
+                    inner
+                } else {
+                    self.ctx.add_constraint(TypeConstraint::Equal(
+                        val_ty,
+                        Type::Option(Box::new(def_ty.clone())),
+                        expr.span,
+                    ));
+                    def_ty
+                }
             }
 
             ExprKind::OptionalField { object, field } => {

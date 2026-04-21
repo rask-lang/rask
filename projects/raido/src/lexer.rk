@@ -150,7 +150,7 @@ extend Lexer {
             } else if c == '/' {
                 // Check for comments
                 if self.pos + 1 < self.source.len() {
-                    const next = self.source.char_at(self.pos + 1) is Some else { break }
+                    const next = self.source.char_at(self.pos + 1) ?? break
                     if next == '/' {
                         // Line comment — skip to end of line
                         while self.peek()? as ch {
@@ -215,7 +215,7 @@ extend Lexer {
 
     func next_token(self) -> Token or LexError {
         self.skip_whitespace()
-        const c = self.peek() is Some else { return Token.Eof }
+        const c = self.peek() ?? return Token.Eof
         match c {
             '\n' => {self.advance(); return Token.Newline}
             '0'..='9' => {
@@ -316,19 +316,13 @@ extend Lexer {
         }
         if is_num_lit {
             
-            const int_part = self.source.substring(start, frac_start - 1).parse_i64() is Some else {
-                return LexError.UnexpectedChar('.', self.line)  // invalid integer part
-            }
-            const frac_part = self.source.substring(frac_start, self.pos).parse_i64() is Some else {
-                return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
-            }
+            const int_part = self.source.substring(start, frac_start - 1).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid integer part
+            const frac_part = self.source.substring(frac_start, self.pos).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
             const frac_digits = self.pos - frac_start
             const raw = (int_part << 32) + (frac_part << 32) / i64.pow(10, frac_digits)
             return Token.NumLit(raw)
         } else {
-            const value = self.source.substring(start, self.pos).parse_i64() is Some else {
-                return LexError.UnexpectedChar('.', self.line)  // invalid integer
-            }
+            const value = self.source.substring(start, self.pos).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid integer
             return Token.IntLit(value)
         }
     }
@@ -337,7 +331,7 @@ extend Lexer {
         self.advance()  // skip opening quote
         const start = self.pos
         const end = loop {
-           const c = self.peek() is Some else { return LexError.UnterminatedString(self.line) }
+           const c = self.peek() ?? return LexError.UnterminatedString(self.line)
            if c == '"' {
                 const end_pos = self.pos
                 self.advance() // consume the ending quote

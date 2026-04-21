@@ -159,9 +159,7 @@ func decode_sbx(instr: u32) -> i64 {
 // Prints a human-readable representation of a single instruction
 
 func disassemble_instr(instr: u32, offset: i64) -> string {
-    const op = decode_opcode(instr) is Some else {
-        return "{offset}: UNKNOWN"
-    }
+    const op = decode_opcode(instr) ?? return "{offset}: UNKNOWN"
     const a = decode_a(instr)
     const name = op.name()
 
