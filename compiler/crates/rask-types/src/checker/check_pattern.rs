@@ -95,9 +95,19 @@ impl TypeChecker {
                 if name.contains('.') {
                     return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
                 }
-                // Bare constructors (Ok, Err, Some, None) without parens — match, don't bind
+                // OPT2/ER2: reject `Ok`/`Err`/`Some`/`None` when the scrutinee
+                // is Result/Option. Allow them as user-enum variant names
+                // (e.g. `enum GrepResult { Ok(i32), Err(string) }`).
                 if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") {
-                    return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
+                    let applied = self.ctx.apply(scrutinee_ty);
+                    if matches!(applied, Type::Result { .. } | Type::Option(_)) {
+                        self.errors.push(TypeError::LegacyWrapperPattern {
+                            name: name.clone(),
+                            with_binding: false,
+                            span,
+                        });
+                        return vec![];
+                    }
                 }
                 // ER27: bare `Type` in a Result match is a type pattern.
                 // Recognize when `name` resolves to a type matching the ok or
@@ -132,6 +142,20 @@ impl TypeChecker {
             }
 
             Pattern::Constructor { name, fields } => {
+                // OPT2/ER2: reject `Ok(v)` / `Err(e)` / `Some(v)` / `None(..)`
+                // when the scrutinee is Result/Option. User enums with these
+                // variant names (e.g. simple_grep.rk's `GrepResult`) are fine.
+                if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") {
+                    let applied = self.ctx.apply(scrutinee_ty);
+                    if matches!(applied, Type::Result { .. } | Type::Option(_)) {
+                        self.errors.push(TypeError::LegacyWrapperPattern {
+                            name: name.clone(),
+                            with_binding: !fields.is_empty(),
+                            span,
+                        });
+                        return vec![];
+                    }
+                }
                 self.check_constructor_pattern(name, fields, scrutinee_ty, span)
             }
 

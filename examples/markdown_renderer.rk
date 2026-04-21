@@ -361,68 +361,65 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
         if scanner.matches("`") {
             flush_text(mutate result, mutate text_buf)
             scanner.advance()
-            const code = scanner.scan_until_char('`') is Some(s) else {
+            if scanner.scan_until_char('`')? as code {
+                result.push(Inline.Code(code))
+            } else {
                 text_buf.push_char('`')
-                continue
             }
-            result.push(Inline.Code(code))
             continue
         }
         if scanner.matches("![") {
             flush_text(mutate result, mutate text_buf)
             scanner.consume("![")
-            const alt = scanner.scan_until_char(']') is Some(s) else {
+            if scanner.scan_until_char(']')? as alt {
+                if !scanner.consume("(") {
+                    text_buf.push_str("![")
+                    text_buf.push_str(alt)
+                    text_buf.push_char(']')
+                } else if scanner.scan_until_char(')')? as url {
+                    result.push(Inline.Image(url, alt))
+                } else {
+                    text_buf.push_str("![")
+                    text_buf.push_str(alt)
+                    text_buf.push_str("](")
+                }
+            } else {
                 text_buf.push_str("![")
-                continue
             }
-            if !scanner.consume("(") {
-                text_buf.push_str("![")
-                text_buf.push_str(alt)
-                text_buf.push_char(']')
-                continue
-            }
-            const url = scanner.scan_until_char(')') is Some(s) else {
-                text_buf.push_str("![")
-                text_buf.push_str(alt)
-                text_buf.push_str("](")
-                continue
-            }
-            result.push(Inline.Image(url, alt))
             continue
         }
         if scanner.matches("[") {
             flush_text(mutate result, mutate text_buf)
             scanner.advance()
             const link_start = scanner.pos
-            const text_content = scanner.scan_until_char(']') is Some(s) else {
-                text_buf.push_char('[')
-                continue
-            }
-
-            if scanner.matches("(") {
-                scanner.advance()
-                const url = scanner.scan_until_char(')') is Some(s) else {
+            if scanner.scan_until_char(']')? as text_content {
+                if scanner.matches("(") {
+                    scanner.advance()
+                    if scanner.scan_until_char(')')? as url {
+                        const link_inlines = try parse_inline(text_content)
+                        result.push(Inline.Link(url, link_inlines))
+                    } else {
+                        text_buf.push_char('[')
+                        text_buf.push_str(text_content)
+                        text_buf.push_str("](")
+                    }
+                } else if scanner.matches("[") {
+                    scanner.advance()
+                    if scanner.scan_until_char(']')? as ref_id {
+                        const link_inlines = try parse_inline(text_content)
+                        result.push(Inline.RefLink(ref_id.to_lowercase(), link_inlines))
+                    } else {
+                        text_buf.push_char('[')
+                        text_buf.push_str(text_content)
+                        text_buf.push_str("][")
+                    }
+                } else {
                     text_buf.push_char('[')
                     text_buf.push_str(text_content)
-                    text_buf.push_str("](")
-                    continue
+                    text_buf.push_char(']')
                 }
-                const link_inlines = try parse_inline(text_content)
-                result.push(Inline.Link(url, link_inlines))
-            } else if scanner.matches("[") {
-                scanner.advance()
-                const ref_id = scanner.scan_until_char(']') is Some(s) else {
-                    text_buf.push_char('[')
-                    text_buf.push_str(text_content)
-                    text_buf.push_str("][")
-                    continue
-                }
-                const link_inlines = try parse_inline(text_content)
-                result.push(Inline.RefLink(ref_id.to_lowercase(), link_inlines))
             } else {
                 text_buf.push_char('[')
-                text_buf.push_str(text_content)
-                text_buf.push_char(']')
             }
             continue
         }
