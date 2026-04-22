@@ -26,7 +26,7 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 | **A2: Blocking I/O** | All I/O blocks the calling thread. No reactor, no parking |
 | **A3: Real channels** | Channels use a ring buffer + mutex/condvar (`channel.c`). Blocking send/recv |
 | **A4: Affine handles** | `TaskHandle` wraps a refcounted `TaskState*`. Runtime panic on drop (same as interpreter) |
-| **A5: Context parameter threaded** | `using Multitasking` still desugars to hidden `__ctx` parameter — but context is a marker, not a scheduler handle |
+| **A5: Block installs process-global slot** | `using Multitasking { ... }` fills the process-global runtime slot (`conc.runtime/R1`) even in Phase A — implementations ignore the slot's contents and block threads for I/O, but the CC1/CC2 scope check and C1 single-active-block invariant are enforced |
 | **A6: ThreadPool real** | `ThreadPool` uses a real bounded thread pool |
 
 ### What `using Multitasking` does in Phase A
@@ -46,7 +46,7 @@ RaskTaskHandle h = rask_spawn(work_fn, arg_ptr);  // thread.c: pthread_create
 int64_t result = rask_join(h);                     // thread.c: pthread_join
 ```
 
-The `using Multitasking` block is a scope marker — the compiler uses it to permit `spawn()` calls and to insert `rask_block_wait()` on block exit for any non-detached handles. No scheduler handle is threaded as a hidden parameter at runtime; the context clause affects compilation only.
+The `using Multitasking` block installs the process-global runtime slot on entry, inserts `rask_block_wait()` on exit to drain all non-detached handles, and clears the slot. No hidden parameters anywhere — `spawn` and stdlib I/O read the slot directly.
 
 ### Phase A runtime files
 
@@ -63,7 +63,7 @@ All C files live in `compiler/runtime/`.
 ### What this validates
 
 - Full `conc.async` API surface (S1-S4, H1-H4, C1-C4, CH1-CH4, CN1-CN3)
-- Hidden parameter desugaring (`conc.strategy/A5`)
+- Process-global runtime slot install/uninstall (`conc.strategy/A5`, `conc.runtime/R1-R2`)
 - Affine handle enforcement (runtime)
 - Channel semantics (buffered, unbuffered, close-on-drop)
 - `select` statement compilation
@@ -151,7 +151,7 @@ FIX: Reduce concurrent tasks, or wait for Phase B (green tasks).
 
 **RS4 (no feature gating):** Deferring features creates two languages. If Phase A skips `select` or channels, programs written against Phase A won't exercise the full API. Then Phase B ships with untested surface area.
 
-**A5 (hidden parameter even in Phase A):** Threading `__ctx` even when it's just a marker validates the desugaring pass. If we skip it in Phase A and add it in Phase B, we're debugging desugaring and runtime simultaneously.
+**A5 (slot install even in Phase A):** Installing the process-global slot in Phase A validates the CC1/CC2 scope check and the block lifecycle (R1-R2). Phase A implementations ignore the slot's contents for I/O behavior (they always block), but the slot is still present so Phase B can drop in without changing any lowering.
 
 ### Implementation order within Phase A
 

@@ -1,18 +1,20 @@
 <!-- id: comp.hidden-params -->
 <!-- status: decided -->
-<!-- summary: Compiler pass that inserts hidden context parameters for using clauses -->
-<!-- depends: memory/context-clauses.md, concurrency/io-context.md, concurrency/async.md -->
+<!-- summary: Compiler pass that inserts hidden context parameters for Pool using clauses -->
+<!-- depends: memory/context-clauses.md -->
 
 # Hidden Parameter Compiler Pass
 
-Compiler pass that desugars `using` clauses into hidden function parameters. Runs after type checking, before MIR lowering. Handles both `Pool<T>` contexts (`mem.context`) and `RuntimeContext` (`conc.io-context`).
+Compiler pass that desugars `using Pool<T>` clauses into hidden function parameters. Runs after type checking, before MIR lowering. Scoped to `Pool<T>` contexts only.
+
+**Not in this pass:** `using Multitasking` and `using ThreadPool` do NOT thread hidden parameters. They lower directly into process-global slot install/uninstall calls (`conc.runtime`). Functions do not declare `using Multitasking` on signatures — the compiler instead infers which functions transitively reach `spawn` and enforces the scope at call sites.
 
 ## Pass Overview
 
 | Rule | Description |
 |------|-------------|
 | **HP1: Position in pipeline** | Runs after type checking, before monomorphization and MIR lowering |
-| **HP2: Two context families** | Pool contexts (`using Pool<T>`) and runtime contexts (`using Multitasking`) follow the same desugaring mechanism |
+| **HP2: Pool contexts only** | Only `using Pool<T>` (and named/frozen variants) desugar through this pass. Runtime/ThreadPool contexts use the process-global slot model in `conc.runtime` |
 | **HP3: Three operations** | The pass does three things: (1) rewrite function signatures, (2) rewrite call sites, (3) propagate through closures |
 | **HP4: Idempotent** | Running the pass twice produces the same output. No double-insertion of parameters |
 
@@ -24,15 +26,15 @@ Source → Lexer → Parser → AST
 ## Pass Inputs and Outputs
 
 **Input:** Typed AST with:
-- Functions annotated with `using` clauses (CC1-CC3 from `mem.context`)
-- `using Multitasking { }` and `using ThreadPool { }` blocks (C1-C3 from `conc.async`)
+- Functions annotated with `using Pool<T>` clauses (CC1-CC3 from `mem.context`)
 - Type information for all expressions (needed for context resolution)
 
 **Output:** Desugared AST where:
-- `using` clauses replaced with explicit hidden parameters
+- Pool `using` clauses replaced with explicit hidden parameters
 - Call sites have hidden arguments inserted
-- `using` blocks replaced with context construction + teardown
-- Closures capture contexts appropriately
+- Closures capture pool contexts appropriately
+
+`using Multitasking { ... }` and `using ThreadPool { ... }` blocks are NOT rewritten by this pass. They are lowered directly by MIR lowering to install/uninstall calls against the process-global runtime slot — see `conc.runtime`.
 
 ## Step 1: Rewrite Function Signatures
 
@@ -41,9 +43,8 @@ Source → Lexer → Parser → AST
 | **SIG1: Pool context → parameter** | `func f() using Pool<T>` becomes `func f(__ctx_pool_T: &Pool<T>)` |
 | **SIG2: Named pool → parameter** | `func f() using players: Pool<T>` becomes `func f(__ctx_players: &Pool<T>)` with local alias |
 | **SIG3: Frozen pool → const ref** | `func f() using frozen Pool<T>` becomes `func f(__ctx_pool_T: &Pool<T>)` (read-only enforced by type checker) |
-| **SIG4: Runtime context → parameter** | Functions called inside `using Multitasking` gain `__ctx_runtime: RuntimeContext?` |
-| **SIG5: Multiple contexts** | Each `using` clause becomes one hidden parameter. Order: pools first, runtime last |
-| **SIG6: Hidden param naming** | `__ctx_` prefix marks hidden params. Debugger hides these by default (`conc.runtime/HP2.1`) |
+| **SIG5: Multiple pool contexts** | Each `using Pool<T>` clause becomes one hidden parameter |
+| **SIG6: Hidden param naming** | `__ctx_` prefix marks hidden params |
 
 ### Examples
 
@@ -76,31 +77,15 @@ func award_bonus(h: Handle<Player>, amount: i32, __ctx_players: &Pool<Player>) {
 }
 ```
 
-<!-- test: skip -->
-```rask
-// Before: runtime context (inside using Multitasking block)
-func process_file(path: string) -> Data or IoError {
-    const file = try File.open(path)
-    const data = try file.read_text()
-    return parse(data)
-}
-
-// After: hidden runtime parameter (if called from async context)
-func process_file(path: string, __ctx_runtime: RuntimeContext?) -> Data or IoError {
-    const file = try File.open(path, __ctx_runtime)
-    const data = try file.read_text(__ctx_runtime)
-    return parse(data)
-}
-```
-
-### Parameter optionality
+### Parameter typing
 
 | Context type | Parameter type | Rationale |
 |-------------|---------------|-----------|
 | `using Pool<T>` | `&Pool<T>` (required) | Pool must exist — compile error if not available |
-| `using Multitasking` | `RuntimeContext?` (optional) | Function works in both sync and async contexts (`conc.io-context/IO1`) |
 
-Pool contexts are required because `Handle<T>` field access doesn't work without a pool. Runtime context is optional because the same function should work in both sync and async modes — sync just blocks.
+Pool contexts are required because `Handle<T>` field access doesn't work without a pool.
+
+**Runtime context** is NOT threaded as a hidden parameter. Functions that perform I/O or `spawn` read from the process-global runtime slot (installed by `using Multitasking { ... }`) at the call site. See `conc.runtime` for the slot model and `conc.async/CC1-CC3` for the static scope check.
 
 ## Step 2: Rewrite Call Sites
 
@@ -111,7 +96,6 @@ Pool contexts are required because `Handle<T>` field access doesn't work without
 | **CALL3: Insert hidden argument** | Append resolved context value as hidden argument at call site |
 | **CALL4: Propagation** | If the caller also has a `using` clause for the same type, its hidden parameter satisfies the callee's requirement (`mem.context/CC5`) |
 | **CALL5: Ambiguity is error** | Multiple pools of same type in scope → compile error (`mem.context/CC8`) |
-| **CALL6: Runtime context forwarding** | If caller has `__ctx_runtime`, forward to all callees that accept it |
 
 ### Resolution algorithm
 
@@ -176,88 +160,33 @@ func update_player(h: Handle<Player>, __ctx_pool_Player: &Pool<Player>) {
 }
 ```
 
-## Step 3: Rewrite `using` Blocks
+## Step 3: `using Multitasking` / `using ThreadPool` Blocks
 
-| Rule | Description |
-|------|-------------|
-| **BLK1: Block creates context** | `using Multitasking { body }` desugars to context construction + body + teardown |
-| **BLK2: Body inherits context** | All calls inside the block have `__ctx_runtime` available for forwarding |
-| **BLK3: Block exit waits** | Teardown waits for all non-detached tasks (`conc.async/C4`) |
-| **BLK4: Nested blocks illegal** | Compile error for nested `using Multitasking` blocks |
+These blocks are NOT handled by this pass. They are lowered by MIR lowering (see `conc.runtime`) into direct install/uninstall calls against a process-global slot:
 
-### Desugaring
-
-<!-- test: skip -->
 ```rask
-// Before:
-func main() -> () or Error {
-    using Multitasking {
-        const h = spawn(|| { work() })
-        try h.join()
-    }
-}
-
-// After:
-func main() -> () or Error {
-    const __ctx_runtime = RuntimeContext.__new(ContextMode.ThreadBacked)
-    {
-        const h = spawn(|| { work() }, __ctx_runtime)
-        try h.join(__ctx_runtime)
-    }
-    __ctx_runtime.__shutdown()  // Waits for tasks, releases resources
-}
-```
-
-<!-- test: skip -->
-```rask
-// Before: with configuration
+// Source:
 using Multitasking(workers: 4) {
-    // ...
+    body
 }
 
-// After:
-const __ctx_runtime = RuntimeContext.__new_with(
-    ContextMode.ThreadBacked,
-    RuntimeConfig { workers: 4 }
-)
+// Lowered (conceptual):
+__runtime_enter(RuntimeConfig { workers: 4 })  // panics if a block is already active
 {
-    // ...
+    body
 }
-__ctx_runtime.__shutdown()
+__runtime_exit()  // drains all tasks, clears the slot
 ```
 
-## Step 4: Closure Context Capture
+No hidden parameters, no propagation through callees. `spawn()` and stdlib I/O read the slot directly when invoked.
+
+## Step 4: Closure Pool Context Capture
 
 | Rule | Description |
 |------|-------------|
-| **CL1: Immediate closures inherit** | Expression-scoped closures (iterator callbacks, immediate callbacks) capture context by reference (`mem.context/CC9`) |
-| **CL2: Spawn closures capture** | `spawn(|| { })` closures capture `__ctx_runtime` (needed for I/O inside spawned tasks) |
-| **CL3: Storable closures exclude** | Storable closures cannot capture context implicitly (`mem.context/CC10`) |
-| **CL4: Pool context in spawn** | Spawn closures can capture pool contexts if the pool is `Send + Sync` |
-
-### Spawn closure desugaring
-
-<!-- test: skip -->
-```rask
-// Before:
-using Multitasking {
-    spawn(|| {
-        const data = try File.read("input.txt")
-        process(data)
-    }).detach()
-}
-
-// After:
-const __ctx_runtime = RuntimeContext.__new(ContextMode.ThreadBacked)
-{
-    spawn(|| {
-        // __ctx_runtime captured by the closure
-        const data = try File.read("input.txt", __ctx_runtime)
-        process(data)
-    }, __ctx_runtime).detach(__ctx_runtime)
-}
-__ctx_runtime.__shutdown()
-```
+| **CL1: Immediate closures inherit** | Expression-scoped closures (iterator callbacks, immediate callbacks) capture pool contexts by reference (`mem.context/CC9`) |
+| **CL3: Storable closures exclude** | Storable closures cannot capture pool contexts implicitly (`mem.context/CC10`) |
+| **CL4: Pool context in spawn** | Spawn closures can capture pool contexts if the pool is `Send + Sync`. Runtime context is NOT captured — spawn'd tasks read the process-global slot when they execute on a worker thread (see `conc.runtime`) |
 
 ### Iterator closure desugaring
 
@@ -290,8 +219,8 @@ struct HiddenParamPass {
 }
 
 struct HiddenParam {
-    name: String,          // __ctx_pool_Player, __ctx_runtime
-    param_type: Type,      // &Pool<Player>, RuntimeContext?
+    name: String,          // __ctx_pool_Player, __ctx_players
+    param_type: Type,      // &Pool<Player>
     source: ContextSource, // Where it comes from at call sites
 }
 
@@ -433,7 +362,7 @@ FIX: Pass the pool as an explicit parameter.
 | `comptime` function with `using Pool<T>` | Compile error (no pools at comptime) | `ctrl.comptime/CT20` |
 | Generic function with `using Pool<T>` | Hidden param is generic, specialized at monomorphization | MONO2 |
 | Closure captures two different pool contexts | Two hidden captures, ordered same as enclosing function | CL1, SIG5 |
-| `using Multitasking` in non-main function | Works — any function can create a runtime context | BLK1 |
+| `using Multitasking` inside another `using Multitasking` | Runtime panic (second enter aborts) | `conc.async/C1` |
 
 ---
 
@@ -443,7 +372,7 @@ FIX: Pass the pool as an explicit parameter.
 
 **HP1 (after type checking):** The pass needs type information to resolve contexts (know which variables are `Pool<Player>` vs `Pool<Enemy>`). Running before monomorphization means we handle generics once, not per-instantiation.
 
-**HP2 (unified mechanism):** Pool contexts and runtime contexts follow the same pattern: declare in signature, thread as hidden param, resolve at call sites. Having one pass handle both prevents divergence. If we add other context types later (allocator contexts, logger contexts), the same pass extends naturally.
+**HP2 (pool contexts only):** Pool contexts must thread as hidden params because they are value references that callees actually use. Runtime contexts (`Multitasking`, `ThreadPool`) live in a process-global slot instead — there is one per process by design, every thread sees it, and adding a hidden parameter for it would color every function that transitively reaches `spawn`, violating Principle 5. See `conc.runtime`.
 
 **PUB1 (public functions declare):** Without this rule, adding a private helper that needs a pool could silently change a public function's ABI. Requiring explicit declaration on public functions means ABI changes are intentional and visible in diffs.
 
@@ -457,24 +386,15 @@ $ rask check --explicit-context game.rk
 func damage(h: Handle<Player>, amount: i32)
   + hidden: __ctx_pool_Player: &Pool<Player>
   resolved from: local variable 'players' at game.rk:5
-
-func process_file(path: string)
-  + hidden: __ctx_runtime: RuntimeContext?
-  resolved from: using Multitasking block at game.rk:20
 ```
 
-This helps programmers understand context flow when debugging unexpected behavior.
+This helps programmers understand pool context flow when debugging unexpected behavior.
 
-### Alternative: thread-local contexts
+### Why hidden params for pools but a process-global slot for runtime
 
-I considered using thread-local storage instead of hidden parameters. Thread-locals are simpler (no compiler pass needed) but have problems:
+Pool contexts are values the callee dereferences (`pool[handle].field`) — they must be passed as real references. Threading them as hidden parameters keeps the value flow explicit in the IR and enables the compiler to prove liveness.
 
-1. **Not composable** — can't have two runtimes in one thread
-2. **Not explicit** — dependency on global state is invisible
-3. **Inconsistent** — pool contexts already use hidden params (`mem.context`); using a different mechanism for runtime contexts would be confusing
-4. **Migration-hostile** — green tasks can migrate between threads; thread-local context would be lost after migration
-
-Hidden parameters are more work but produce a cleaner, more predictable system.
+Runtime contexts are different: `spawn` and stdlib I/O want to find "the current runtime" — a singleton resource per process. Threading it as a hidden parameter would make every function that transitively reaches `spawn` take an extra argument, coloring signatures up the call graph. The process-global slot (see `conc.runtime`) avoids that: there's exactly one slot, every thread reads it, and functions carry no annotation.
 
 ### See Also
 

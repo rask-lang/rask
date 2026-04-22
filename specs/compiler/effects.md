@@ -21,7 +21,7 @@ Effects don't restrict what you can call. A function without IO effects can call
 
 | Rule | Description |
 |------|-------------|
-| **IO1: Source functions** | Ground truth: stdlib functions that accept `__ctx: RuntimeContext?` (see `conc.io-context` lines 117-129) |
+| **IO1: Source functions** | Ground truth: stdlib functions that read the process-global runtime slot for async-capable I/O (see `conc.io-context` "Which functions need the runtime") |
 | **IO2: Transitive** | Any function that transitively calls an IO source has the IO effect |
 | **IO3: Unsafe I/O** | `unsafe` blocks that call C functions with I/O semantics are conservatively marked IO |
 
@@ -273,7 +273,7 @@ This is deliberately less powerful than Koka, Scala 3's capture checking, or Fra
 | `T or E` | Tracks errors in types | Not an effect — already handled by the type system |
 | `using Pool<T>` | Threads pool as hidden param | Mutation effect tracks Grow/Shrink from `comp.advanced/EF1-EF6` |
 | `using frozen Pool<T>` | Restricts to Access-only | Already enforced at type level — effects confirm it |
-| `using Multitasking` | Provides RuntimeContext | IO/Async effects track which functions need it |
+| `using Multitasking { ... }` block | Installs process-global runtime | IO/Async effects track which functions need it; the CC2 reachability check is a separate pass |
 | `comptime func` | Restricts to pure computation | Purity (PU2) gives vocabulary for what comptime already enforces |
 | Hidden params pass | Threads contexts | Effect inference reuses the same transitive propagation mechanism |
 

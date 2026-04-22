@@ -722,7 +722,8 @@ struct http { }
 
 extend http {
     /// One-line HTTP server. Spawns a green task per request.
-    /// Requires `using Multitasking`.
+    /// Requires an active `using Multitasking { ... }` scope in the process
+    /// (transitively reaches `spawn`).
     public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> () or HttpError
     {
         const server = if HttpServer.listen(addr)? as s { s } else {

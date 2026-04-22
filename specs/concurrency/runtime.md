@@ -20,8 +20,8 @@ Rask's async runtime is an **M:N green task scheduler** with transparent I/O pau
 - **Green tasks**: Lightweight tasks (stackless state machines) multiplexed on OS threads
 - **Work-stealing scheduler**: Per-thread FIFO queues with random victim stealing for load balance
 - **Event loop**: Central reactor (epoll/kqueue) for I/O multiplexing
-- **Context-aware I/O**: Stdlib functions detect `using Multitasking` context via hidden parameters
-- **No async/await split**: Same function works in async and sync contexts (no "function coloring")
+- **Context-aware I/O**: Stdlib functions read the runtime from a process-global slot installed by `using Multitasking { ... }`
+- **No async/await split**: Same function works in async and sync contexts (no "function coloring", no signature annotations)
 - **Must-use handles**: Must join or detach (runtime panic if dropped)
 
 **Current interpreter:** Uses OS threads for spawn(), not green tasks. No M:N scheduler or event loop. Full runtime planned for compiled version. See [§15](#implementation-notes-for-interpreter) for details.
@@ -188,18 +188,21 @@ WorkerThread {
 }
 ```
 
-**Initialization (C1 - `using Multitasking` block entry):**
-1. Create Runtime instance
+**Initialization (C1-C3 - `using Multitasking` block entry):**
+1. Compare-and-swap the process-global runtime slot from `None` to a fresh `Arc<Runtime>` — abort with a runtime panic if the slot was already occupied (C1: single active runtime, C6: libraries don't install)
 2. Spawn N worker threads (N = num_cores or `Multitasking(workers: N)`)
-3. Set context parameter `__multitasking_ctx` to Runtime handle
-4. Workers enter main loop (see S2)
+3. Workers enter main loop (see S2)
+4. Execute the block body
 
-**Shutdown (C4 - block exit waits for tasks):**
+**Shutdown (C4 - block exit drains all tasks):**
 1. Track active tasks via `Arc<Task>` ref count
-2. Block exit waits until all non-detached tasks complete
+2. Block exit waits until all tasks (including detached) complete
 3. Send shutdown signal to workers
 4. Workers drain local queues, then exit
 5. Reactor thread shuts down
+6. Clear the process-global runtime slot
+
+**Panic unwind:** If the block body panics, drain is skipped; pending tasks receive cancellation signals and the slot is cleared before unwinding continues.
 
 ### Worker Main Loop (S2)
 
@@ -284,9 +287,11 @@ fn poll_task(task: Arc<Task>, ctx: RuntimeContext) {
 
 ```rust
 func spawn<T>(closure: || -> T) -> TaskHandle<T> {
-    // Check context (S1: spawn requires using Multitasking)
-    const ctx = CONTEXT.get() else {
-        panic!("spawn() requires 'using Multitasking' context")
+    // Read process-global runtime slot. Runtime panic if no block is active
+    // (CC3 fallback: most missing-scope cases are caught at compile time by
+    // CC1/CC2, this panic covers the cases static analysis cannot prove).
+    const ctx = RUNTIME_SLOT.read() else {
+        panic!("spawn() called with no active 'using Multitasking' scope")
     }
 
     // Transform closure to state machine (T3)
@@ -329,59 +334,70 @@ func spawn<T>(closure: || -> T) -> TaskHandle<T> {
 
 ## I/O Integration
 
-### Context Detection via Hidden Parameters (IO1, IO2)
+### Runtime Discovery via Process-Global Slot (IO1, IO2)
 
-I chose hidden parameters over thread-locals because it's explicit in the type system and consistent with `using Pool<T>` (mem.context-clauses).
+Stdlib I/O functions discover the active runtime by reading a process-global slot installed by `using Multitasking { ... }`. No hidden parameters, no signature annotations — the runtime lives in one place, visible to every thread.
 
 **Mechanism:**
 
-`using Multitasking { }` desugars to threading a hidden `RuntimeContext` parameter through all function calls within the block:
+```rust
+// One per process
+static RUNTIME_SLOT: RwLock<Option<Arc<Runtime>>> = RwLock::new(None)
 
-```rask
-using Multitasking {
-    const file = try File.open("data.txt")
+// Block entry
+fn enter_multitasking(config: Config) {
+    let runtime = Arc::new(Runtime::new(config))
+    let mut slot = RUNTIME_SLOT.write().unwrap()
+    if slot.is_some() {
+        panic!("another `using Multitasking` block is already active")
+    }
+    *slot = Some(runtime)
 }
 
-// Desugars to:
-with_runtime_context(RuntimeContext::new(), || {
-    const file = try File.open("data.txt", __ctx: RuntimeContext)
-})
+// Block exit
+fn exit_multitasking() {
+    let runtime = RUNTIME_SLOT.write().unwrap().take().unwrap()
+    runtime.drain_and_shutdown()
+}
 ```
 
-**Stdlib I/O functions accept optional context parameter:**
+**Stdlib I/O functions have no extra parameters:**
 
 ```rust
-func File::open(path: string, __ctx?: RuntimeContext) -> File or Error {
-    if __ctx is Some(ctx) {
-        // Async path: register with reactor, park task
-        return ctx.runtime.register_io(
-            || blocking_open(path),  // Syscall to execute when ready
-            Interest::Readable,
-        )
-    } else {
-        // Sync path: blocking syscall
-        return blocking_open(path)
+func File::open(path: string) -> File or Error {
+    match RUNTIME_SLOT.read() {
+        Some(runtime) => {
+            // Async path: register with reactor, park task
+            runtime.register_io(
+                || blocking_open(path),
+                Interest::Readable,
+            )
+        }
+        None => {
+            // Sync path: blocking syscall (IO2)
+            blocking_open(path)
+        }
     }
 }
 ```
 
-**Key insight:** Same function, two paths. Context parameter presence determines behavior. This realizes conc.async/IO1 (transparent pausing) and IO2 (sync fallback) without function coloring.
+**Key insight:** Same function, two paths. Runtime presence determines behavior. This realizes conc.async/IO1 (transparent pausing) and IO2 (sync fallback) without function coloring and without hidden parameters.
 
-**Compared to thread-locals:** This approach is cleaner because:
-1. Context is explicit in function signatures (type-safe)
-2. No hidden global state
-3. Consistent with existing `using` clause mechanism (CC1-CC5 in mem.context-clauses)
-4. Enables future extensions (multiple runtime contexts, migration)
+**Compared to hidden-parameter threading (previous design):**
+1. No `__ctx_runtime` threaded through every function — no signature coloring
+2. No `using Multitasking` on function signatures — no propagation up call graphs
+3. All threads share one runtime naturally (process-global slot)
+4. Simpler compiler pass — `using Multitasking` block lowers to install/uninstall calls, no signature rewrites
 
-**Tradeoff:** All stdlib I/O functions need to accept this parameter. I think that's acceptable because it's hidden from programmers (desugaring) and makes the contract explicit.
+**Tradeoff:** Global mutable state is something systems languages usually avoid. I accept it here because (1) there's exactly one slot per process by design, (2) access is behind a `RwLock`, and (3) the alternative — threading the runtime as a hidden parameter — is function coloring, which violates Principle 5.
 
 ### Async I/O Flow (IO3)
 
 **Example:** `const file = try File.open("data.txt")` in `using Multitasking` block
 
 **Flow:**
-1. `File.open` receives `__ctx: RuntimeContext`
-2. Detects async context (parameter is Some)
+1. `File.open` reads the process-global runtime slot
+2. Slot is `Some(runtime)` → async path
 3. Initiates non-blocking open syscall (O_NONBLOCK)
 4. If syscall returns EAGAIN (not ready):
    - Register FD with reactor (`reactor.register(fd, Interest::Readable, current_task_waker)`)
@@ -475,27 +491,29 @@ impl Wake for TaskWaker {
 **I/O call registers interest:**
 
 ```rust
-func TcpConnection::read(self, buf: &mut [u8], __ctx?: RuntimeContext) -> usize or Error {
-    if __ctx is Some(ctx) {
-        // Non-blocking read
-        match blocking_read_nonblocking(self.fd, buf) {
-            Ok(n) => return Ok(n),
-            Err(EAGAIN) => {
-                // Register with reactor
-                ctx.runtime.reactor.register(
-                    self.fd,
-                    Interest::Readable,
-                    current_task_waker(),
-                );
-
-                // Park task
-                return Poll::Pending;
+func TcpConnection::read(self, buf: &mut [u8]) -> usize or Error {
+    match RUNTIME_SLOT.read() {
+        Some(runtime) => {
+            // Non-blocking read
+            match blocking_read_nonblocking(self.fd, buf) {
+                Ok(n) => return Ok(n),
+                Err(EAGAIN) => {
+                    // Register with reactor
+                    runtime.reactor.register(
+                        self.fd,
+                        Interest::Readable,
+                        current_task_waker(),
+                    );
+                    // Park task
+                    return Poll::Pending;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
         }
-    } else {
-        // Blocking read
-        return blocking_read(self.fd, buf)
+        None => {
+            // Blocking read (IO2 sync fallback)
+            return blocking_read(self.fd, buf)
+        }
     }
 }
 ```
@@ -506,212 +524,65 @@ func TcpConnection::read(self, buf: &mut [u8], __ctx?: RuntimeContext) -> usize 
 
 ---
 
-## Hidden Parameter Debuggability
+## Process-Global Runtime Slot Debuggability
 
-### The Challenge (HP1)
+### The Design (HP1)
 
-The hidden `__ctx: RuntimeContext` parameter achieves "no function coloring" but creates debuggability issues:
+The runtime lives in a single process-global slot installed by `using Multitasking { ... }`. Function signatures and stack frames have nothing extra — no hidden parameters, no `__ctx_runtime`. Debuggability is therefore straightforward: stack traces look exactly like the source.
 
-**Problems:**
-1. **Stack traces show invisible parameters** - `File.open(path, __ctx)` but user wrote `File.open(path)`
-2. **Mental model mismatch** - Function signatures appear different than they are
-3. **Error messages confusing** - "missing parameter __ctx" when user didn't write that parameter
-4. **Third-party tools blind** - gdb/lldb don't understand hidden parameters
+**Where tooling still helps:**
+1. IDE hover on I/O calls shows whether the call is in sync (blocking) or async (task-pausing) mode, determined by whether a `using Multitasking` block lexically encloses the call.
+2. Error messages for missing-scope cases must point at both the offending callsite AND the function in the call graph that reaches `spawn`.
+3. Linters warn about I/O in tight loops and CPU-heavy work in async tasks (unchanged from before).
 
-**Trade-off accepted:** Some "magic" in exchange for no function coloring. Make the magic as visible as possible through tooling.
+**Trade-off:** The runtime is global state. This is acceptable because exactly one slot exists per process by design (C1), and the alternative — threading `__ctx_runtime` through every function — was function coloring.
 
 ### Tooling Requirements (HP2)
 
-To make hidden parameters acceptable, Rask tooling MUST provide excellent support:
+#### LSP/IDE hover on I/O calls
 
-#### 1. Debugger Integration (HP2.1)
+**Inside an active `using Multitasking` block:**
 
-**Stack trace rendering:**
-- Hide `__ctx` parameter by default in stack traces
-- Show "async frame" markers instead:
-```
-Frame 0: process_request(conn)  ⟨async⟩
-Frame 1: handle_connection(addr)  ⟨async⟩
-Frame 2: main()
-```
-
-**Verbose mode (opt-in):**
-```
-Frame 0: process_request(conn, __ctx: RuntimeContext)
-Frame 1: handle_connection(addr, __ctx: RuntimeContext)
-Frame 2: main()
-```
-
-**GDB/LLDB integration:**
-- Debug symbols mark hidden parameters with special attribute
-- Custom pretty-printers for stack frames
-- `info async` command shows task tree
-
-**Implementation:** DWARF debug info extension + debugger plugin
-
-#### 2. LSP/IDE Support (HP2.2)
-
-**Hover on function call:**
-```rask
-using Multitasking {
-    const file = try File.open("data.txt")
-    //               ^^^^^^^^^^
-}
-```
-
-Hover shows:
 ```
 func File.open(path: string) -> File or Error
-
-Context: Multitasking (async)
 ⟨pauses task on I/O⟩
-
-Note: In async context, this function may pause the current task.
-I/O operations register with reactor and yield to scheduler.
 ```
 
-**Outside async context:**
-```rask
-func main() {
-    const file = try File.open("data.txt")
-    //               ^^^^^^^^^^
-}
-```
+**Outside any block:**
 
-Hover shows:
 ```
 func File.open(path: string) -> File or Error
-
-Context: Sync (blocking)
 ⟨blocks thread on I/O⟩
-
-Note: In sync context, this function blocks the thread.
-Consider using Multitasking { } for concurrent I/O.
 ```
 
-**Signature help:** Show both contexts in signature popup
-```
-File.open(path: string) -> File or Error
-  Context-aware: blocks in sync context, pauses in async context
-```
+Determined from the call site's lexical scope, not from signatures.
 
-**Go-to-definition:** Jump to function, show both implementations:
-```rask
-func File.open(path: string, __ctx?: RuntimeContext) -> File or Error {
-    if __ctx is Some(ctx) {
-        // Async path (pauses task)
-        ...
-    } else {
-        // Sync path (blocks thread)
-        ...
-    }
-}
-```
+#### Compiler diagnostics
 
-#### 3. Compiler Diagnostics (HP2.3)
+Compile errors for missing scope (CC1, CC2 in conc.async) must point at both the callsite and the path by which the callee reaches `spawn`:
 
-**Explicit context flag (--explicit-context):**
 ```
-$ rask check --explicit-context main.rk
-```
-
-Makes hidden parameters visible in error messages:
-```
-error: function File.open requires RuntimeContext parameter
-  --> main.rk:10:11
+error [conc.async/CC2]: calling `fetch_page` requires a Multitasking scope
+  --> main.rk:10:5
    |
-10 |     const file = try File.open("data.txt")
-   |                      ^^^^^^^^^^
+10 |     fetch_page(url)
+   |     ^^^^^^^^^^ transitively requires `spawn` (reaches spawn via stdlib/http.rk:42)
    |
-note: missing 'using Multitasking' context
-help: wrap in 'using Multitasking { }' block to provide context
+help: wrap the caller chain in `using Multitasking { ... }`.
 ```
 
-**Standard mode:**
-```
-error: function File.open requires async context
-  --> main.rk:10:11
-   |
-10 |     const file = try File.open("data.txt")
-   |                      ^^^^^^^^^^
-   |
-help: wrap in 'using Multitasking { }' block for async I/O
-```
+Runtime panic for CC3 cases has a similar shape but runs at execution time.
 
-#### 4. Linter Rules (HP2.4)
+#### Linter rules
 
-**Warn on I/O in tight loops:**
-```rask
-using Multitasking {
-    for i in 0..1000 {
-        const file = try File.open("data_{i}.txt")  // Warning
-        process(file)
-    }
-}
-
-warning: I/O operation in tight loop may cause scheduler thrashing
-  --> main.rk:15:22
-   |
-15 |         const file = try File.open("data_{i}.txt")
-   |                          ^^^^^^^^^
-   |
-note: each I/O call pauses task and switches context
-help: consider batching operations or using ThreadPool for parallel file access
-```
-
-**Suggest ThreadPool for CPU work:**
-```rask
-using Multitasking {
-    spawn(|| {
-        for i in 0..1000000 {  // Warning
-            compute_heavy(i)
-        }
-    })
-}
-
-warning: long-running CPU computation in async context
-  --> main.rk:10:9
-   |
-10 |         for i in 0..1000000 {
-   |         ^^^
-   |
-note: async tasks should yield frequently (I/O or cancellation checks)
-help: consider using ThreadPool for CPU-bound work:
-      using ThreadPool {
-          ThreadPool.spawn(|| { ... })
-      }
-```
-
-#### 5. Documentation (HP2.5)
-
-**Spec requirement:** The language specification MUST explicitly document hidden parameters:
-
-**In reference manual:**
-> ### Context Parameters
->
-> Functions that interact with runtime systems (I/O, async, pools) accept hidden context parameters. These parameters are automatically provided by `using` blocks and are invisible in function calls.
->
-> Example: `File.open(path: string)` has hidden signature:
-> ```rask
-> func File.open(path: string, __ctx?: RuntimeContext) -> File or Error
-> ```
->
-> The `__ctx` parameter is provided by `using Multitasking { }` blocks.
-
-**In tutorial:**
-> Rask uses "context parameters" to achieve zero-cost abstraction over sync/async. You don't see these parameters in your code, but they control how functions behave. Your IDE and debugger understand these hidden parameters and show helpful hints.
+Unchanged from before: warn on I/O in tight loops, and on long-running CPU work inside async tasks (suggest `using ThreadPool`).
 
 ### Implementation Checklist (HP3)
 
-For Rask v1.0, the following MUST be implemented:
-
-- [ ] Debugger support (stack trace hiding, async frame markers)
-- [ ] LSP hover hints (show both sync/async contexts)
-- [ ] Compiler flag `--explicit-context` for debugging
+- [ ] LSP hover hints (sync vs async based on lexical scope)
+- [ ] CC1/CC2 compile-error diagnostics with call-path traces
+- [ ] CC3 runtime-panic message format
 - [ ] Linter rules (I/O in loops, CPU in async)
-- [ ] Documentation (reference manual, tutorial, spec)
-
-**Partial completion unacceptable:** Without tooling, hidden parameters are just confusing magic. The language cannot ship without these tools.
 
 ---
 
@@ -826,33 +697,30 @@ func TaskHandle::cancel(mut self) -> T or JoinError {
 **Check points in stdlib:**
 
 ```rust
-func File::read(self, buf: &mut [u8], __ctx?: RuntimeContext) -> usize or Error {
-    if __ctx is Some(ctx) {
+func File::read(self, buf: &mut [u8]) -> usize or Error {
+    if let Some(runtime) = RUNTIME_SLOT.read() {
         // Check cancel flag before I/O
-        if ctx.current_task().cancel_flag.load(Relaxed) {
+        if runtime.current_task().cancel_flag.load(Relaxed) {
             return Err(JoinError::Cancelled)
         }
-
         // Proceed with I/O...
     }
     // ...
 }
 
-func Channel::send<T>(self, value: T, __ctx?: RuntimeContext) -> () or Error {
-    if __ctx is Some(ctx) {
-        if ctx.current_task().cancel_flag.load(Relaxed) {
+func Channel::send<T>(self, value: T) -> () or Error {
+    if let Some(runtime) = RUNTIME_SLOT.read() {
+        if runtime.current_task().cancel_flag.load(Relaxed) {
             return Err(JoinError::Cancelled)
         }
     }
-
     // Proceed with send...
 }
 
-public func cancelled(__ctx?: RuntimeContext) -> bool {
-    if __ctx is Some(ctx) {
-        return ctx.current_task().cancel_flag.load(Relaxed)
-    }
-    return false
+public func cancelled() -> bool {
+    RUNTIME_SLOT.read()
+        .map(|r| r.current_task().cancel_flag.load(Relaxed))
+        .unwrap_or(false)
 }
 ```
 
@@ -1390,10 +1258,11 @@ Channel<T> {
 ### Send Flow (CH2, CH4)
 
 ```rust
-func Sender::send(self, value: T, __ctx?: RuntimeContext) -> () or SendError {
-    if __ctx is Some(ctx) {
+func Sender::send(self, value: T) -> () or SendError {
+    let runtime = RUNTIME_SLOT.read();
+    if let Some(r) = &runtime {
         // Check cancel flag first (CN3)
-        if ctx.current_task().cancel_flag.load(Relaxed) {
+        if r.current_task().cancel_flag.load(Relaxed) {
             return Err(SendError::Cancelled)
         }
     }
@@ -1410,11 +1279,11 @@ func Sender::send(self, value: T, __ctx?: RuntimeContext) -> () or SendError {
         }
 
         return Ok(())
-    } else if __ctx is Some(ctx) {
+    } else if let Some(r) = runtime {
         // Buffer full, async context: park task
         drop(buf);  // Release lock before parking
 
-        let waker = current_task_waker(ctx);
+        let waker = current_task_waker(&r);
         self.channel.send_wakers.lock().unwrap().push_back(waker);
 
         return Poll::Pending;  // Scheduler marks task as Waiting
@@ -1424,7 +1293,7 @@ func Sender::send(self, value: T, __ctx?: RuntimeContext) -> () or SendError {
         let _guard = cvar.wait(buf);  // Wait on condvar
 
         // Retry (recursive call)
-        return self.send(value, __ctx)
+        return self.send(value)
     }
 }
 ```
@@ -1436,9 +1305,10 @@ func Sender::send(self, value: T, __ctx?: RuntimeContext) -> () or SendError {
 ### Receive Flow (CH3)
 
 ```rust
-func Receiver::recv(self, __ctx?: RuntimeContext) -> T or RecvError {
-    if __ctx is Some(ctx) {
-        if ctx.current_task().cancel_flag.load(Relaxed) {
+func Receiver::recv(self) -> T or RecvError {
+    let runtime = RUNTIME_SLOT.read();
+    if let Some(r) = &runtime {
+        if r.current_task().cancel_flag.load(Relaxed) {
             return Err(RecvError::Cancelled)
         }
     }
@@ -1525,9 +1395,12 @@ type Job = Box<dyn FnOnce() -> Value + Send>;
 ### ThreadPool Spawn Flow (TP1)
 
 ```rust
-func ThreadPool::spawn<T>(closure: || -> T, __ctx?: ThreadPoolContext) -> ThreadPoolHandle<T> {
-    const ctx = __ctx else {
-        panic!("ThreadPool.spawn() requires 'using ThreadPool' context")
+func ThreadPool::spawn<T>(closure: || -> T) -> ThreadPoolHandle<T> {
+    // Read from process-global ThreadPool slot (analogous to RUNTIME_SLOT).
+    // Compile-time check (CC1/CC2 analog) catches most missing-scope cases;
+    // this panic is the CC3 runtime fallback.
+    const pool = THREADPOOL_SLOT.read() else {
+        panic!("ThreadPool.spawn() called with no active 'using ThreadPool' scope")
     }
 
     // Package closure as Box<FnOnce>
@@ -1540,10 +1413,10 @@ func ThreadPool::spawn<T>(closure: || -> T, __ctx?: ThreadPoolContext) -> Thread
     });
 
     // Push to global queue
-    ctx.thread_pool.work_queue.push(job);
+    pool.work_queue.push(job);
 
     // Wake one worker
-    ctx.thread_pool.notify_one();
+    pool.notify_one();
 
     // Return handle
     return ThreadPoolHandle {
@@ -1908,17 +1781,19 @@ const data = comptime {
 
 ## Edge Cases
 
-### Spawn Outside Context (E1 - realizes conc.async/S1)
+### Spawn Outside Scope (E1 - realizes conc.async/CC1-CC3)
 
 ```rask
 func main() {
-    spawn(|| { work() })  // Panic: no 'using Multitasking' context
+    spawn(|| { work() })  // Compile error (CC1): direct spawn outside a block
 }
 ```
 
-**Error:** Runtime panic (interpreter) or compile error (compiled version with static context tracking).
+**Preferred:** Compile error at CC1 (direct) or CC2 (transitive via call graph).
 
-**Message:** `"spawn() requires 'using Multitasking' context"`
+**Fallback:** Runtime panic at CC3 for higher-order/dynamic cases that static analysis can't prove.
+
+**Runtime message:** `"spawn() called with no active 'using Multitasking' scope"`
 
 ### Handle Dropped Without Consume (E2 - realizes conc.async/H1)
 
