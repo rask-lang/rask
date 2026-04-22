@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Error/Option narrowing and spec operators not covered by t07/t08/t17-t20.
+//
+// Spec: type.optionals (OPT13, OPT19-OPT22), type.errors (ER23, ER24, ER27)
+
+// --- E0350: Ok/Err/Some/None rejected as patterns ---
+// Covered as compile-error tests; here we confirm the *correct* forms compile.
+
+// --- OPT13: diverging fallback (?? return / break / continue) ---
+
+func opt() -> i32? { return 42 }
+
+func use_return() -> i32 {
+    const v = opt() ?? return -1
+    return v + 1
+}
+
+test "?? return unwraps present" {
+    assert use_return() == 43
+}
+
+func accum() -> i32 {
+    const xs: Vec<i32?> = Vec.new()
+    const a: i32? = 1
+    const absent: i32? = none
+    const c: i32? = 3
+    xs.push(a)
+    xs.push(absent)
+    xs.push(c)
+
+    mut total = 0
+    for x in xs {
+        const v = x ?? continue
+        total = total + v
+    }
+    return total
+}
+
+test "?? continue skips absent" {
+    assert accum() == 4
+}
+
+// --- OPT13 via block fallback (?? { ...; return }) ---
+
+func use_block() -> i32 {
+    const v = opt() ?? {
+        println("absent")
+        return -1
+    }
+    return v * 2
+}
+
+test "?? { return } unwraps present" {
+    assert use_block() == 84
+}
+
+// --- ER18: try expr else |e| return (diverging handler) ---
+
+enum FetchError { NotFound }
+extend FetchError {
+    func message(self) -> string {
+        match self {
+            FetchError.NotFound => return "not found",
+        }
+    }
+}
+
+func inner() -> i32 or FetchError { return 10 }
+
+func try_else_return() -> i32 {
+    const v = try inner() else |e| return -1
+    return v
+}
+
+test "try expr else |e| return unwraps present" {
+    assert try_else_return() == 10
+}
+
+// --- ER23 / ER27: type pattern in guard (is <T> as v else) ---
+
+func use_type_pattern() -> i32 {
+    const v = inner() is i32 as v else { return -1 }
+    return v + 5
+}
+
+test "is T as v else binds the success type" {
+    assert use_type_pattern() == 15
+}
+
+// --- ER24: early-exit narrowing on is ErrType ---
+
+struct Cfg { port: i32 }
+
+enum CfgError { BadPort }
+extend CfgError {
+    func message(self) -> string {
+        match self {
+            CfgError.BadPort => return "bad port",
+        }
+    }
+}
+
+func load_cfg() -> Cfg or CfgError { return Cfg { port: 8080 } }
+
+func cfg_port() -> i32 {
+    const c = load_cfg()
+    if c is CfgError {
+        return -1
+    }
+    // ER24: c is narrowed to Cfg here
+    return c.port
+}
+
+test "early-exit narrows c to ok after is ErrType diverges" {
+    assert cfg_port() == 8080
+}
+
+// --- ER24 via if x == none { return } ---
+
+func opt_source() -> i32? { return 7 }
+
+func narrow_via_none() -> i32 {
+    const x = opt_source()
+    if x == none {
+        return -1
+    }
+    // Early-exit narrow: x is i32 here
+    return x + 100
+}
+
+test "early-exit narrows x after x == none diverges" {
+    assert narrow_via_none() == 107
+}
+
+// --- rask#217: generic type patterns parse ---
+
+func make_vec() -> Vec<i32> or CfgError {
+    const v: Vec<i32> = Vec.new()
+    v.push(1)
+    v.push(2)
+    return v
+}
+
+func generic_guard() -> i32 {
+    const v = make_vec() is Vec<i32> as v else { return -1 }
+    return v.len() as i32
+}
+
+test "generic type pattern in is ... else guard" {
+    assert generic_guard() == 2
+}
+
+func main() {}

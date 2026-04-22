@@ -42,9 +42,9 @@ extend Memtable {
     func get(self, key: string) -> KeyValue? {
         const pos = self.find_pos(key)
         if pos < self.entries.len() && self.entries[pos].key == key {
-            return Some(self.entries[pos].clone())
+            return self.entries[pos].clone()
         }
-        return None
+        return none
     }
 
     func should_flush(self) -> bool {
@@ -94,13 +94,13 @@ test "memtable put and get" {
     mt.put(KeyValue.new("a", "1", 2))
     mt.put(KeyValue.new("c", "3", 3))
 
-    const a = mt.get("a") is Some else { panic("expected Some") }
+    const a = mt.get("a") ?? panic("expected Some")
     assert a.value == "1"
 
-    const b = mt.get("b") is Some else { panic("expected Some") }
+    const b = mt.get("b") ?? panic("expected Some")
     assert b.value == "2"
 
-    assert mt.get("z") is None
+    assert mt.get("z") == none
 }
 
 test "memtable overwrites by key" {
@@ -108,7 +108,7 @@ test "memtable overwrites by key" {
     mt.put(KeyValue.new("k", "old", 1))
     mt.put(KeyValue.new("k", "new", 2))
 
-    const kv = mt.get("k") is Some else { panic("expected Some") }
+    const kv = mt.get("k") ?? panic("expected Some")
     assert kv.value == "new"
     assert kv.seq == 2
     assert mt.entries.len() == 1

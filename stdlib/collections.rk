@@ -133,7 +133,7 @@ extend Vec<T> {
     /// Reduce to a single value using an accumulator.
     public func fold(self, init: U, f: func(U, T) -> U) -> U { }
 
-    /// Reduce without initial value. Returns None if empty.
+    /// Reduce without initial value. Returns none if empty.
     public func reduce(self, f: func(T, T) -> T) -> Option<T> { }
 
     /// Yield (index, element) pairs.

@@ -27,6 +27,15 @@ extend CopyError {
     }
 }
 
+enum ArgError { Msg(string) }
+extend ArgError {
+    func message(self) -> string {
+        match self {
+            ArgError.Msg(m) => return m,
+        }
+    }
+}
+
 struct CopyOptions {
     source: string
     dest: string
@@ -34,7 +43,7 @@ struct CopyOptions {
     verbose: bool
 }
 
-func parse_args(take args: Vec<string>) -> CopyOptions or string {
+func parse_args(take args: Vec<string>) -> CopyOptions or ArgError {
     mut opts = CopyOptions {
         source: "",
         dest: "",
@@ -60,13 +69,13 @@ func parse_args(take args: Vec<string>) -> CopyOptions or string {
     }
 
     if positional.len() < 2 {
-        return Err("usage: rcopy [-fv] SOURCE DEST")
+        return ArgError.Msg("usage: rcopy [-fv] SOURCE DEST")
     }
 
     opts.source = positional.remove(0)
     opts.dest = positional.remove(0)
 
-    return Ok(opts)
+    return opts
 }
 
 func print_usage() {
@@ -83,12 +92,12 @@ func print_usage() {
 func copy_file(opts: CopyOptions) -> u64 or CopyError {
     // O3 borrows opts — fs calls borrow the fields, only error enums need owned strings
     if !fs.exists(opts.source) {
-        return Err(CopyError.SourceNotFound(opts.source))
+        return CopyError.SourceNotFound(opts.source)
     }
 
     if fs.exists(opts.dest) {
         if !opts.force {
-            return Err(CopyError.DestinationExists(opts.dest))
+            return CopyError.DestinationExists(opts.dest)
         }
     }
 
@@ -97,9 +106,9 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
         else |e| CopyError.ReadError(e)
     const dst_canonical = fs.canonicalize(opts.dest).ok()
 
-    if dst_canonical is Some(dst) {
-        if src_canonical == dst {
-            return Err(CopyError.SameFile)
+    if dst_canonical? {
+        if src_canonical == dst_canonical {
+            return CopyError.SameFile
         }
     }
 
@@ -107,7 +116,7 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
     const bytes = try fs.copy(opts.source, opts.dest)
         else |e| CopyError.WriteError(e)
 
-    return Ok(bytes)
+    return bytes
 }
 
 func format_size(bytes: u64) -> string {
@@ -125,29 +134,27 @@ func format_size(bytes: u64) -> string {
 func main() {
     const args = cli.args()
 
-    const opts = match parse_args(own args) {
-        Ok(o) => o,
-        Err(msg) => {
-            println("rcopy: {msg}")
-            std.exit(1)
-        }
+    const parsed = parse_args(own args)
+    const opts = if parsed? {
+        parsed
+    } else as e {
+        println("rcopy: {e.message()}")
+        std.exit(1)
     }
 
     if opts.verbose {
         println("Copying '{opts.source}' to '{opts.dest}'...")
     }
 
-    match copy_file(opts) {
-        Ok(bytes) => {
-            if opts.verbose {
-                const size = format_size(bytes)
-                println("Copied {size}")
-            }
+    const result = copy_file(opts)
+    if result? {
+        if opts.verbose {
+            const size = format_size(result)
+            println("Copied {size}")
         }
-        Err(e) => {
-            const msg = e.message()
-            println("rcopy: {msg}")
-            std.exit(1)
-        }
+    } else as e {
+        const msg = e.message()
+        println("rcopy: {msg}")
+        std.exit(1)
     }
 }

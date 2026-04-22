@@ -155,11 +155,11 @@ extend Compiler {
         const prev = self.current
         self.previous = prev
         match self.lexer.next_token() {
-            Ok(tok) => self.current = tok
-            Err(e) => return Err(CompileError.LexError(e))
+            Token as tok => self.current = tok
+            LexError as e => return CompileError.LexError(e)
         }
         self.current_line = self.lexer.line
-        return Ok(())
+        return ()
     }
 
     func expect(self, expected: string) -> () or CompileError {
@@ -245,9 +245,9 @@ extend Compiler {
         mut i = self.scope.locals.len() - 1
         while i >= 0 {
             const local = self.scope.locals.get(i as i64)
-            if local is Some(l) {
-                if l.name == name {
-                    return l.reg
+            if local? {
+                if local.name == name {
+                    return local.reg
                 }
             }
             i = i - 1
@@ -294,7 +294,7 @@ extend Compiler {
         // Emit implicit return None at end
         self.emit_abx(Opcode.RETURN, 255, 0)
 
-        return Ok(Chunk.new(self.proto))
+        return Chunk.new(self.proto)
     }
 
     func compile_statement(self) -> () or CompileError {
@@ -309,7 +309,7 @@ extend Compiler {
         //
         // TODO: match self.current to decide which kind of statement
         // Start with just: expression statements (compile_expression + discard result)
-        return Ok(())
+        return ()
     }
 
     func compile_expression(self, min_bp: i64) -> i64 or CompileError {
@@ -335,7 +335,7 @@ extend Compiler {
         //   Ident(name) → resolve_local(name), return register
         //   True/False → emit LOAD_TRUE/FALSE, return register
 
-        return Err(CompileError.UnexpectedToken("not implemented", self.current_line))
+        return CompileError.UnexpectedToken("not implemented", self.current_line)
     }
 }
 

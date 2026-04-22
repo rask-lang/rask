@@ -11,7 +11,69 @@ use super::type_defs::TypeDef;
 use super::type_table::TypeTable;
 use super::TypeChecker;
 
-use crate::types::Type;
+use crate::types::{GenericArg, Type};
+
+/// Recursively resolve `UnresolvedNamed` and `UnresolvedGeneric` to `Named`
+/// and `Generic` where the type table knows the name. Matches `resolve_named`
+/// but walks into `Option`, `Result`, `Generic`, `Tuple`, `Slice`, `Array`,
+/// `Fn`, and `Union` so two types built from different sources compare equal.
+pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
+    match ty {
+        Type::UnresolvedNamed(name) => {
+            if let Some(id) = types.get_type_id(name) {
+                return Type::Named(id);
+            }
+            // Stub parsers store generic forms ("Vec<string>") as UnresolvedNamed.
+            // Re-parse so they compare equal with properly-parsed Generic types.
+            if name.contains('<') {
+                if let Ok(parsed) = parse_type_string(name, types) {
+                    if parsed != *ty {
+                        return normalize_type(&parsed, types);
+                    }
+                }
+            }
+            ty.clone()
+        }
+        Type::UnresolvedGeneric { name, args } => {
+            let normalized_args: Vec<GenericArg> = args
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(Box::new(normalize_type(t, types))),
+                    other => other.clone(),
+                })
+                .collect();
+            if let Some(id) = types.get_type_id(name) {
+                Type::Generic { base: id, args: normalized_args }
+            } else {
+                Type::UnresolvedGeneric { name: name.clone(), args: normalized_args }
+            }
+        }
+        Type::Option(inner) => Type::Option(Box::new(normalize_type(inner, types))),
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(normalize_type(ok, types)),
+            err: Box::new(normalize_type(err, types)),
+        },
+        Type::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args.iter().map(|a| match a {
+                GenericArg::Type(t) => GenericArg::Type(Box::new(normalize_type(t, types))),
+                other => other.clone(),
+            }).collect(),
+        },
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| normalize_type(e, types)).collect()),
+        Type::Slice(elem) => Type::Slice(Box::new(normalize_type(elem, types))),
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(normalize_type(elem, types)),
+            len: *len,
+        },
+        Type::Fn { params, ret } => Type::Fn {
+            params: params.iter().map(|p| normalize_type(p, types)).collect(),
+            ret: Box::new(normalize_type(ret, types)),
+        },
+        Type::Union(variants) => Type::Union(variants.iter().map(|v| normalize_type(v, types)).collect()),
+        _ => ty.clone(),
+    }
+}
 
 /// Resolve a bare type name to a Type.
 /// Returns UnresolvedNamed when the name isn't a known primitive or user type.
@@ -33,9 +95,19 @@ impl TypeChecker {
                 if name.contains('.') {
                     return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
                 }
-                // Bare constructors (Ok, Err, Some, None) without parens — match, don't bind
+                // OPT2/ER2: reject `Ok`/`Err`/`Some`/`None` when the scrutinee
+                // is Result/Option. Allow them as user-enum variant names
+                // (e.g. `enum GrepResult { Ok(i32), Err(string) }`).
                 if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") {
-                    return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
+                    let applied = self.ctx.apply(scrutinee_ty);
+                    if matches!(applied, Type::Result { .. } | Type::Option(_)) {
+                        self.errors.push(TypeError::LegacyWrapperPattern {
+                            name: name.clone(),
+                            with_binding: false,
+                            span,
+                        });
+                        return vec![];
+                    }
                 }
                 // ER27: bare `Type` in a Result match is a type pattern.
                 // Recognize when `name` resolves to a type matching the ok or
@@ -70,6 +142,20 @@ impl TypeChecker {
             }
 
             Pattern::Constructor { name, fields } => {
+                // OPT2/ER2: reject `Ok(v)` / `Err(e)` / `Some(v)` / `None(..)`
+                // when the scrutinee is Result/Option. User enums with these
+                // variant names (e.g. simple_grep.rk's `GrepResult`) are fine.
+                if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") {
+                    let applied = self.ctx.apply(scrutinee_ty);
+                    if matches!(applied, Type::Result { .. } | Type::Option(_)) {
+                        self.errors.push(TypeError::LegacyWrapperPattern {
+                            name: name.clone(),
+                            with_binding: !fields.is_empty(),
+                            span,
+                        });
+                        return vec![];
+                    }
+                }
                 self.check_constructor_pattern(name, fields, scrutinee_ty, span)
             }
 
@@ -156,12 +242,12 @@ impl TypeChecker {
             // Result by type. In `if r is E as e`, typically the err side.
             // Union `E = A | B | ...`: accept if TypeName is a union component.
             Pattern::TypePat { ty_name, binding } => {
-                let narrow_ty = resolve_type_name(ty_name, &self.types);
+                let narrow_ty = normalize_type(&resolve_type_name(ty_name, &self.types), &self.types);
                 let resolved = self.ctx.apply(scrutinee_ty);
                 match &resolved {
                     Type::Result { ok, err } => {
-                        let ok_applied = self.ctx.apply(ok);
-                        let err_applied = self.ctx.apply(err);
+                        let ok_applied = normalize_type(&self.ctx.apply(ok), &self.types);
+                        let err_applied = normalize_type(&self.ctx.apply(err), &self.types);
                         let matches_ok = ok_applied == narrow_ty;
                         let matches_err = match &err_applied {
                             Type::Union(variants) => variants.contains(&narrow_ty),
@@ -186,15 +272,17 @@ impl TypeChecker {
                         }
                     }
                     Type::Var(_) => {
-                        let ok_ty = self.ctx.fresh_var();
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            scrutinee_ty.clone(),
-                            Type::Result {
-                                ok: Box::new(ok_ty),
-                                err: Box::new(narrow_ty.clone()),
-                            },
+                        // Defer the ok-vs-err decision until the scrutinee
+                        // resolves (e.g. a method-call return type finishes
+                        // unifying). Pinning narrow_ty to err here would
+                        // wrongly unify ok == narrow_ty when narrow_ty is
+                        // actually the ok-branch type.
+                        self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                            scrutinee: scrutinee_ty.clone(),
+                            narrow_ty: narrow_ty.clone(),
+                            ty_name: ty_name.clone(),
                             span,
-                        ));
+                        });
                     }
                     _ => {
                         self.errors.push(TypeError::TypePatternNotResult {

@@ -76,7 +76,7 @@ extend Prototype {
         mut out = "== {self.name} (regs={self.num_registers}, args={self.arity}) ==\n"
         mut i = 0
         while i < self.code.len() {
-            const instr = self.code.get(i) is Some else { break }
+            const instr = self.code.get(i) ?? break
             out = "{out}{disassemble_instr(instr, i)}\n"
             i = i + 1
         }

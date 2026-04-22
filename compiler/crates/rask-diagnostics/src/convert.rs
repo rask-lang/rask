@@ -738,6 +738,23 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("use the ?-operator family: `if x? { ... } else { ... }`, `x?.field ?? default`, or `if x == none { return }`")
                     .with_why("Option has two states — the operator family covers both more concisely [type.optionals/NO_MATCH]")
             }
+            LegacyWrapperPattern { name, with_binding, span } => {
+                let fix = match name.as_str() {
+                    "Some" if *with_binding => "use the operator form: `if x? as v { ... }`, or `const v = x ?? return none` in guard position",
+                    "Some" => "use the operator form: `if x? { ... }`, `x?`, or `x != none`",
+                    "None" => "use `x == none` for the absent check",
+                    "Ok" if *with_binding => "use the operator form: `if r? as v { ... }`, or a type pattern: `r is <T> as v else { ... }`",
+                    "Ok" => "use `r?` for the present check",
+                    "Err" if *with_binding => "use a type pattern: `if r is <ErrType> as e { ... }`, `match r { ... <ErrType> as e => ... }`",
+                    "Err" => "use `r is <ErrType>` with the function's actual error type",
+                    _ => "use the operator form or a type pattern",
+                };
+                Diagnostic::error(format!("`{}` is not a pattern name", name))
+                    .with_code("E0350")
+                    .with_primary(*span, format!("`{}` is not a pattern", name))
+                    .with_help(fix)
+                    .with_why("Option/Result have no Some/None/Ok/Err constructors or patterns — operators and type patterns cover all cases [type.optionals/OPT2, type.errors/ER2]")
+            }
         }
     }
 }

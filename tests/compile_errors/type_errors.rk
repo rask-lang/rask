@@ -50,14 +50,14 @@ func test_float_compare() {
 // --- Option<T> does not auto-unwrap (OPT9) ---
 // ERROR: expected i32, found i32?
 func test_option_no_auto_unwrap() {
-    const opt: i32? = Some(42)
+    const opt: i32? = 42
     const x: i32 = opt
 }
 
 // --- try in non-Option function (OPT13) ---
 // ERROR: cannot use try on Option in non-Option function
 func test_try_option_wrong_return() -> i32 {
-    const opt: i32? = Some(42)
+    const opt: i32? = 42
     const x = try opt
     return x
 }
@@ -86,7 +86,7 @@ func load() -> i32 or IoError {
 // --- wrong number of type arguments ---
 // ERROR: Option takes 1 type argument, found 2
 func test_wrong_type_args() {
-    const x: Option<i32, string> = Some(42)
+    const x: Option<i32, string> = 42
 }
 
 // --- branch type mismatch in if expression (CF6) ---

@@ -156,27 +156,30 @@ test "is pattern with combined condition" {
 // --- is Some implicit unwrap (CF12, OPT10) ---
 
 test "is Some implicit unwrap" {
-    const opt = Some(42)
-    if opt is Some {
+    const opt: i32? = 42
+    if opt? {
         // Per OPT10/CF12, `opt` is rebound to the inner value
         assert opt == 42
     } else {
-        assert false, "expected Some"
+        assert false, "expected present"
     }
 }
 
 // --- while...is pattern (CF8) ---
 
 test "while is pattern" {
-    const items = Vec.new()
-    items.push(Some(1))
-    items.push(Some(2))
-    items.push(Some(3))
+    const items: Vec<i32?> = Vec.new()
+    const a: i32? = 1
+    const b: i32? = 2
+    const c: i32? = 3
+    items.push(a)
+    items.push(b)
+    items.push(c)
 
     mut sum = 0
     mut idx = 0
     while idx < items.len() {
-        if items[idx] is Some(v) {
+        if items[idx]? as v {
             sum += v
         }
         idx += 1
@@ -187,29 +190,47 @@ test "while is pattern" {
 // --- guard pattern: mut...is...else (CF13-CF15) ---
 
 func extract_or_zero(opt: i32?) -> i32 {
-    mut value = opt is Some else { return 0 }
-    return value * 2
+    if opt? as value { return value * 2 }
+    return 0
 }
 
 test "guard pattern Some" {
-    assert extract_or_zero(Some(5)) == 10
+    const x: i32? = 5
+    assert extract_or_zero(x) == 10
 }
 
 test "guard pattern None diverges" {
     assert extract_or_zero(none) == 0
 }
 
-func extract_ok(result: i32 or string) -> i32 {
-    mut value = result is Ok else { return -1 }
-    return value
+enum GuardError { Fail }
+extend GuardError {
+    func message(self) -> string {
+        match self {
+            GuardError.Fail => return "fail",
+        }
+    }
+}
+
+func ok_result(v: i32) -> i32 or GuardError {
+    return v
+}
+
+func err_result() -> i32 or GuardError {
+    return GuardError.Fail
+}
+
+func extract_ok(result: i32 or GuardError) -> i32 {
+    if result? as value { return value }
+    return -1
 }
 
 test "guard pattern Ok" {
-    assert extract_ok(Ok(42)) == 42
+    assert extract_ok(ok_result(42)) == 42
 }
 
 test "guard pattern Err diverges" {
-    assert extract_ok(Err("fail")) == -1
+    assert extract_ok(err_result()) == -1
 }
 
 // --- inline colon syntax (CF5) ---

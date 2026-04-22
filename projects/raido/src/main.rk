@@ -38,7 +38,7 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
         const instr = code_get(code, pc)
         pc = pc + 1
 
-        const op = decode_opcode(instr) is Some else {
+        const op = decode_opcode(instr) ?? {
             print("UNKNOWN OPCODE: {decode_op(instr)}\n")
             return Value.None
         }

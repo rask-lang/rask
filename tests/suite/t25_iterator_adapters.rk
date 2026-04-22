@@ -113,7 +113,7 @@ test "find existing" {
     v.push(3)
 
     const found = v.find(|x| x == 2)
-    assert found is Some
+    assert found?
     assert found! == 2
 }
 
@@ -123,7 +123,7 @@ test "find missing" {
     v.push(2)
 
     const found = v.find(|x| x == 99)
-    assert found is None
+    assert found == none
 }
 
 // --- any / all ---

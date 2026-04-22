@@ -1,64 +1,74 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Result type, try propagation, error handling.
+// Result type: auto-wrap, try propagation, match.
 
-func divide(a: i32, b: i32) -> i32 or string {
-    if b == 0 {
-        return Err("division by zero")
+enum DivError { ByZero }
+
+extend DivError {
+    func message(self) -> string {
+        match self {
+            DivError.ByZero => return "division by zero",
+        }
     }
-    return Ok(a / b)
 }
 
-func double_divide(a: i32, b: i32) -> i32 or string {
+func divide(a: i32, b: i32) -> i32 or DivError {
+    if b == 0 {
+        return DivError.ByZero
+    }
+    return a / b
+}
+
+func double_divide(a: i32, b: i32) -> i32 or DivError {
     const result = try divide(a, b)
-    return Ok(result * 2)
+    return result * 2
 }
 
-func chained(a: i32, b: i32, c: i32) -> i32 or string {
+func chained(a: i32, b: i32, c: i32) -> i32 or DivError {
     const x = try divide(a, b)
     const y = try divide(x, c)
-    return Ok(y)
+    return y
 }
 
 test "Ok result" {
     const r = divide(10, 2)
-    assert r is Ok
+    assert r?
     assert r! == 5
 }
 
 test "Err result" {
     const r = divide(10, 0)
-    assert r is Err
+    assert r is DivError
 }
 
 test "match on result" {
     const r = divide(10, 2)
     match r {
-        Ok(v) => assert v == 5
-        Err(_) => assert false, "expected Ok"
+        i32 as v => assert v == 5
+        DivError => assert false, "expected Ok"
     }
 }
 
 test "try propagation success" {
     const r = double_divide(10, 2)
-    assert r is Ok
+    assert r?
     assert r! == 10
 }
 
 test "try propagation failure" {
     const r = double_divide(10, 0)
-    assert r is Err
+    assert r is DivError
 }
 
 test "chained try" {
     const r1 = chained(100, 2, 5)
-    assert r1 is Ok
+    assert r1?
     assert r1! == 10
 
     const r2 = chained(100, 0, 5)
-    assert r2 is Err
+    assert r2 is DivError
 
     const r3 = chained(100, 2, 0)
-    assert r3 is Err
+    assert r3 is DivError
 }
 
 func main() {}

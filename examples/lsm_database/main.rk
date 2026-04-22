@@ -40,8 +40,8 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
             "--count" => {
                 i += 1
                 if i < args.len() {
-                    const n = args[i].parse_int() is Ok(v) else {
-                        return Err(DbError.Io("invalid count: {args[i]}"))
+                    const n = args[i].parse_int() is i64 as v else {
+                        return DbError.Io("invalid count: {args[i]}")
                     }
                     result.count = n as i32
                 }
@@ -62,14 +62,14 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
     }
 
     if positional.is_empty() {
-        return Err(DbError.Io("no command specified"))
+        return DbError.Io("no command specified")
     }
     result.command = positional[0].to_string()
     if positional.len() > 1 { result.key = positional[1].to_string() }
     if positional.len() > 2 { result.value = positional[2].to_string() }
     if positional.len() > 3 { result.end_key = positional[3].to_string() }
 
-    return Ok(result)
+    return result
 }
 
 func print_usage() {
@@ -120,8 +120,8 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
     while i < count {
         const key = "{prefix}_{i:06}"
         match db.get(key) {
-            Ok(_) => found += 1,
-            Err(_) => missing += 1,
+            string => found += 1,
+            DbError => missing += 1,
         }
         i += 1
     }
@@ -155,8 +155,8 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
     while i < count {
         const key = "{prefix}_{i:06}"
         match db.get(key) {
-            Ok(_) => still_found += 1,
-            Err(_) => correctly_deleted += 1,
+            string => still_found += 1,
+            DbError => correctly_deleted += 1,
         }
         i += 1
     }
@@ -169,7 +169,7 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
     println("")
     println("Benchmark complete.")
 
-    return Ok(())
+    return ()
 }
 
 // ─── Main ───────────────────────────────────────────────────────────
@@ -182,28 +182,28 @@ func run(args: CliArgs) -> () or DbError {
     match args.command {
         "put" => {
             if args.key.is_empty() || args.value.is_empty() {
-                return Err(DbError.Io("put requires <key> <value>"))
+                return DbError.Io("put requires <key> <value>")
             }
             try db.put(args.key, args.value)
             println("OK")
         }
         "get" => {
             if args.key.is_empty() {
-                return Err(DbError.Io("get requires <key>"))
+                return DbError.Io("get requires <key>")
             }
             const value = try db.get(args.key)
             println("{value}")
         }
         "delete" => {
             if args.key.is_empty() {
-                return Err(DbError.Io("delete requires <key>"))
+                return DbError.Io("delete requires <key>")
             }
             try db.delete(args.key)
             println("OK")
         }
         "scan" => {
             if args.key.is_empty() {
-                return Err(DbError.Io("scan requires <start> <end>"))
+                return DbError.Io("scan requires <start> <end>")
             }
             const end = if args.value.is_empty(): "{args.key}\u{FF}" else: args.value
             const results = try db.scan(args.key, end)
@@ -238,25 +238,25 @@ func run(args: CliArgs) -> () or DbError {
         }
     }
 
-    return Ok(())
+    return ()
 }
 
 func main() {
     const args = cli.args()
     const cli_args = match parse_cli_args(args) {
-        Ok(a) => a,
-        Err(e) => {
+        CliArgs as a => a,
+        DbError as e => {
             println("rask-db: {e.message()}")
             print_usage()
             std.exit(1)
         }
     }
 
-    match run(cli_args) {
-        Ok(()) => {}
-        Err(e) => {
-            println("error: {e.message()}")
-            std.exit(1)
-        }
+    const run_result = run(cli_args)
+    if run_result? {
+        // success
+    } else as e {
+        println("error: {e.message()}")
+        std.exit(1)
     }
 }

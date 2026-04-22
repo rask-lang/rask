@@ -36,6 +36,15 @@ pub enum TypeConstraint {
         expected: Type,
         span: Span,
     },
+    /// ER27: scrutinee is a `T or E`, and `narrow_ty` must match either `T`
+    /// or a component of `E`. Deferred so method-call return types can
+    /// resolve before the pattern side is decided.
+    TypePatternMatches {
+        scrutinee: Type,
+        narrow_ty: Type,
+        ty_name: String,
+        span: Span,
+    },
 }
 
 /// Kind of unsuffixed literal (for deferred defaulting).

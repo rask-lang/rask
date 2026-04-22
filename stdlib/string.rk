@@ -43,18 +43,18 @@ extend string {
 
     // ── Character and byte access ───────────────────────────
 
-    /// Byte at byte index. Returns None if out of bounds.
+    /// Byte at byte index. Returns none if out of bounds.
     public func byte_at(self, idx: usize) -> u8? { }
 
-    /// Unicode scalar at char index (not byte index). Returns None if out of bounds.
+    /// Unicode scalar at char index (not byte index). Returns none if out of bounds.
     public func char_at(self, idx: usize) -> char? { }
 
     // ── Searching ───────────────────────────────────────────
 
-    /// Byte index of first occurrence. None if not found.
+    /// Byte index of first occurrence. none if not found.
     public func find(self, pat: string) -> usize? { }
 
-    /// Byte index of last occurrence. None if not found.
+    /// Byte index of last occurrence. none if not found.
     public func rfind(self, pat: string) -> usize? { }
 
     /// True if the string contains the substring.
@@ -221,7 +221,7 @@ extend StringPool {
     /// Create a validated slice from a handle and byte indices.
     public func slice(self, h: Handle<string>, start: usize, end: usize) -> StringSlice or Error { }
 
-    /// Safe access — returns None on invalid handle/slice.
+    /// Safe access — returns none on invalid handle/slice.
     public func get(self, slice: StringSlice) -> string? { }
 
     /// Remove string by handle, returning ownership.

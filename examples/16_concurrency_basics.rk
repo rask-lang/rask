@@ -22,7 +22,16 @@ func worker(id: i32, iterations: i32) -> i32 {
     return sum
 }
 
-func main() -> () or string {
+enum MainError { Msg(string) }
+extend MainError {
+    func message(self) -> string {
+        match self {
+            MainError.Msg(m) => return m,
+        }
+    }
+}
+
+func main() -> () or MainError {
     print("=== Basic Threading ===\n\n")
 
     // Spawn a thread with Thread.spawn(|| {})
@@ -142,29 +151,23 @@ func main() -> () or string {
     // Try to receive
     const maybe_msg = test_channel.receiver.try_recv()
 
-    match maybe_msg {
-        Ok(value) => {
-            print("Got message: ")
-            print(value)
-            print("\n")
-        }
-        Err(e) => {
-            print("No message available\n")
-        }
+    if maybe_msg? {
+        print("Got message: ")
+        print(maybe_msg)
+        print("\n")
+    } else {
+        print("No message available\n")
     }
 
     // Try to receive again (should fail, channel empty)
     const no_msg = test_channel.receiver.try_recv()
 
-    match no_msg {
-        Ok(value) => {
-            print("Got message: ")
-            print(value)
-            print("\n")
-        }
-        Err(e) => {
-            print("Channel empty (expected)\n")
-        }
+    if no_msg? {
+        print("Got message: ")
+        print(no_msg)
+        print("\n")
+    } else {
+        print("Channel empty (expected)\n")
     }
 
     print("\n")
@@ -204,5 +207,5 @@ func main() -> () or string {
     print("- No data races - compiler enforces safety\n")
     print("- No function coloring - threads are first-class\n")
 
-    return Ok(())
+    return ()
 }

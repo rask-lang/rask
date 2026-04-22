@@ -43,13 +43,12 @@ func main() {
     const first = numbers.iter().find(|x| x > 0)
     const last = numbers.iter().find(|x| x == 5)
 
-    match first {
-        Some(n) => {
-            print("First: ")
-            print(n)
-            print("\n")
-        }
-        None => print("No first\n")
+    if first? {
+        print("First: ")
+        print(first)
+        print("\n")
+    } else {
+        print("No first\n")
     }
 
     // Block-scoped views with structs

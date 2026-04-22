@@ -8,43 +8,44 @@
 // In Rask, errors are values. A function that might fail says so in its
 // return type with `T or E`:
 //
-//   func divide(a: f64, b: f64) -> f64 or string {
-//       if b == 0.0 { return Err("division by zero") }
-//       return a / b    // automatically wrapped in Ok
+//   func divide(a: f64, b: f64) -> f64 or DivError {
+//       if b == 0.0 { return DivError.Msg("division by zero") }
+//       return a / b    // bare T auto-wraps to the success branch at return
 //   }
 //
 // `T or E` means:
 //   - T is the success type (what you return on success)
 //   - E is the error type (what you return on failure)
-//   - `f64 or string` = success gives f64, failure gives string
+//   - `f64 or DivError` = success gives f64, failure gives DivError
 //
-// Under the hood, `T or E` is sugar for `Result<T, E>`, but the
-// `or` syntax reads more naturally.
+// Error types must implement `func message(self) -> string`. Primitives
+// (string, i32, …) don't qualify — give your error its own enum.
 //
-// The caller MUST handle the result:
+// The caller can match on the result — types name the branches, no
+// Ok/Err wrappers:
 //
 //   match divide(10.0, 0.0) {
-//       Ok(val)  => println("got {val}"),
-//       Err(msg) => println("error: {msg}"),
+//       f64 as v      => println("got {v}"),
+//       DivError as e => println("error: {e.message()}"),
 //   }
 //
-// Or propagate the error with `try` — if the result is Err, the
-// current function returns immediately with that error:
+// Or propagate the error with `try` — if the result is the error branch,
+// the current function returns immediately with that error:
 //
-//   func calc() -> f64 or string {
-//       const val = try divide(10.0, 3.0)   // unwraps Ok, or returns Err
+//   func calc() -> f64 or DivError {
+//       const val = try divide(10.0, 3.0)   // unwraps T, or returns E
 //       return val * 2.0
 //   }
 //
-// Remember Option from lesson 04? It's the same idea:
-//   Some(value) or None — for "might not exist"
-//   Ok(value) or Err(e) — for "might fail"
+// Remember Option from lesson 04? It's the same idea, but simpler:
+//   a bare value or `none` — for "might not exist"
+//   a bare value or an error value — for "might fail"
 //
 // Quick shortcuts:
-//   result.is_ok()     → true if Ok
-//   result.is_err()    → true if Err
-//   option ?? default  → unwrap Option, use default if None
-//   result!            → unwraps Ok, panics if Err
+//   r?                 → true if success branch
+//   r is MyError       → true if error branch
+//   option ?? default  → unwrap Option, use default if none
+//   r!                 → unwraps success, panics with e.message() if error
 //
 // === Panic vs Error ===
 //
@@ -54,7 +55,7 @@
 //   const config = load_config()!   // if this fails, we can't continue
 //   const x = items[0]!              // we know items is non-empty here
 //
-// **Error (`try`)** — the function returns an Err. Use for expected failures:
+// **Error (`try`)** — the function returns the error. Use for expected failures:
 //   const temp = try validate_temperature(reading)  // sensor might fail
 //   const user = try authenticate(token)             // token might be invalid
 //
@@ -63,33 +64,42 @@
 //   - Is this a bug in the code? Use `panic()` or `!`
 //
 // In Python, everything is an exception. Rask separates:
-//   - Errors = values you handle (Ok/Err)
+//   - Errors = values you handle (typed, with .message())
 //   - Panics = bugs you don't (crash)
 //
 
 // --- Examples ---
 
-func safe_divide(a: f64, b: f64) -> f64 or string {
+enum SensorError { Msg(string) }
+extend SensorError {
+    func message(self) -> string {
+        match self {
+            SensorError.Msg(m) => return m,
+        }
+    }
+}
+
+func safe_divide(a: f64, b: f64) -> f64 or SensorError {
     if b == 0.0 {
-        return Err("division by zero")
+        return SensorError.Msg("division by zero")
     }
     return a / b
 }
 
 func example_error_handling() {
     match safe_divide(10.0, 3.0) {
-        Ok(val) => println("10 / 3 = {val}"),
-        Err(msg) => println("Error: {msg}"),
+        f64 as v         => println("10 / 3 = {v}"),
+        SensorError as e => println("Error: {e.message()}"),
     }
 
     match safe_divide(10.0, 0.0) {
-        Ok(val) => println("10 / 0 = {val}"),
-        Err(msg) => println("Error: {msg}"),
+        f64 as v         => println("10 / 0 = {v}"),
+        SensorError as e => println("Error: {e.message()}"),
     }
 }
 
 // Using try to chain operations
-func calc() -> f64 or string {
+func calc() -> f64 or SensorError {
     const a = try safe_divide(100.0, 4.0)    // 25.0
     const b = try safe_divide(a, 5.0)         // 5.0
     return b
@@ -110,27 +120,27 @@ func sqrt(x: f64) -> f64 {
 
 // --- Puzzle 1: Validate sensor reading ---
 // A temperature sensor should read between -40.0 and 150.0 °C.
-// Return the reading if valid, or an error string if out of range.
+// Return the reading if valid, or a SensorError if out of range.
 //
 // Sensors fail all the time in the real world. The Mars Climate Orbiter
 // was lost because one team used pounds and another used newtons.
 // Validating inputs is boring but saves missions.
-func validate_temperature(reading: f64) -> f64 or string {
+func validate_temperature(reading: f64) -> f64 or SensorError {
     todo()
 }
 
 // --- Puzzle 2: Parse altitude ---
 // Parse a string like "35000" into an i32 altitude.
-// Return Err if the string is empty.
-// Return Err if the altitude is negative.
+// Return a SensorError if the string is empty.
+// Return a SensorError if the altitude is negative.
 //
 // In a real system, you'd also validate against the aircraft's service
 // ceiling. The Boeing 737 MAX can go to 41,000 ft. The Concorde
 // cruised at 60,000 ft — pilots could see the curvature of Earth.
 //
 // For this puzzle: just check empty and negative.
-// Hint: use string.parse_i32() which returns `i32 or string`
-func parse_altitude(s: string) -> i32 or string {
+// Hint: use string.parse_i32() which returns `i32 or ParseIntError`
+func parse_altitude(s: string) -> i32 or SensorError {
     todo()
 }
 
@@ -149,15 +159,15 @@ func parse_altitude(s: string) -> i32 or string {
 //       ...
 //
 // In Rask, the `try` keyword does the same but at each step:
-func average_readings(r1: f64, r2: f64, r3: f64) -> f64 or string {
+func average_readings(r1: f64, r2: f64, r3: f64) -> f64 or SensorError {
     todo()
 }
 
 // --- Puzzle 4: Option — safe Vec access ---
-// Return the element at index i, or None if out of bounds.
+// Return the element at index i, or none if out of bounds.
 //
-// The return type `i32?` is shorthand for `Option<i32>`.
-// Return Some(value) or None.
+// The return type `i32?` is the builtin Option — a bare i32 when
+// present, `none` when absent. No Some/None wrappers.
 func safe_get(v: Vec<i32>, i: i32) -> i32? {
     todo()
 }
@@ -166,62 +176,64 @@ func safe_get(v: Vec<i32>, i: i32) -> i32? {
 
 test "valid temperature" {
     const r = validate_temperature(20.0)
-    assert r.is_ok()
+    assert r?
 }
 
 test "temperature too high" {
-    assert validate_temperature(200.0).is_err()
+    assert validate_temperature(200.0) is SensorError
 }
 
 test "temperature too low" {
-    assert validate_temperature(-50.0).is_err()
+    assert validate_temperature(-50.0) is SensorError
 }
 
 test "temperature at boundary" {
-    assert validate_temperature(-40.0).is_ok()
-    assert validate_temperature(150.0).is_ok()
+    assert validate_temperature(-40.0)?
+    assert validate_temperature(150.0)?
 }
 
 test "parse altitude" {
     const r = parse_altitude("35000")
-    assert r.is_ok()
-    match r {
-        Ok(alt) => assert alt == 35000
-        Err(_) => assert false
+    assert r?
+    if r? {
+        assert r == 35000
+    } else {
+        assert false
     }
 }
 
 test "parse negative altitude" {
-    assert parse_altitude("-100").is_err()
+    assert parse_altitude("-100") is SensorError
 }
 
 test "parse empty altitude" {
-    assert parse_altitude("").is_err()
+    assert parse_altitude("") is SensorError
 }
 
 test "average valid readings" {
     const r = average_readings(20.0, 22.0, 21.0)
-    assert r.is_ok()
-    match r {
-        Ok(avg) => assert avg == 21.0
-        Err(_) => assert false
+    assert r?
+    if r? {
+        assert r == 21.0
+    } else {
+        assert false
     }
 }
 
 test "average with invalid reading" {
-    assert average_readings(20.0, 200.0, 21.0).is_err()
+    assert average_readings(20.0, 200.0, 21.0) is SensorError
 }
 
 test "safe get in bounds" {
     const v = Vec.from([10, 20, 30])
-    assert safe_get(v, 0) is Some(10)
-    assert safe_get(v, 2) is Some(30)
+    if safe_get(v, 0)? as x { assert x == 10 } else { assert false }
+    if safe_get(v, 2)? as x { assert x == 30 } else { assert false }
 }
 
 test "safe get out of bounds" {
     const v = Vec.from([10, 20, 30])
-    assert safe_get(v, 5) is None
-    assert safe_get(v, -1) is None
+    assert safe_get(v, 5) == none
+    assert safe_get(v, -1) == none
 }
 
 func main() {

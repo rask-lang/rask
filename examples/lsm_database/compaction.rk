@@ -53,11 +53,11 @@ func compact_sstables(
     target_level: i32,
     dir: string,
 ) -> SstMeta or CompactionError {
-    const entries_a = read_all_sstable_entries(a.path) is Ok(e) else {
-        return Err(CompactionError.MergeConflict("cannot read SSTable {a.id}"))
+    const entries_a = read_all_sstable_entries(a.path) is Vec<KeyValue> as e else {
+        return CompactionError.MergeConflict("cannot read SSTable {a.id}")
     }
-    const entries_b = read_all_sstable_entries(b.path) is Ok(e) else {
-        return Err(CompactionError.MergeConflict("cannot read SSTable {b.id}"))
+    const entries_b = read_all_sstable_entries(b.path) is Vec<KeyValue> as e else {
+        return CompactionError.MergeConflict("cannot read SSTable {b.id}")
     }
 
     mut merged = merge_entries(entries_a, entries_b)
@@ -68,17 +68,17 @@ func compact_sstables(
     }
 
     if merged.is_empty() {
-        return Err(CompactionError.MergeConflict("merge produced empty result"))
+        return CompactionError.MergeConflict("merge produced empty result")
     }
 
-    const meta = write_sstable(new_id, target_level, dir, merged) is Ok(m) else {
-        return Err(CompactionError.OutputFailure("failed to write merged SSTable"))
+    const meta = write_sstable(new_id, target_level, dir, merged) is SstMeta as m else {
+        return CompactionError.OutputFailure("failed to write merged SSTable")
     }
 
     fs.remove(a.path)
     fs.remove(b.path)
 
-    return Ok(meta)
+    return meta
 }
 
 // ─── Background Compaction ──────────────────────────────────────────
@@ -101,8 +101,8 @@ func spawn_background_compaction(
         tx.send(CompactionMsg.Started(a.id, b.id))
 
         match compact_sstables(a.clone(), b.clone(), new_id, target_level, dir) {
-            Ok(meta) => tx.send(CompactionMsg.Completed(meta, a.id, b.id)),
-            Err(e) => tx.send(CompactionMsg.Failed(e)),
+            SstMeta as meta => tx.send(CompactionMsg.Completed(meta, a.id, b.id)),
+            CompactionError as e => tx.send(CompactionMsg.Failed(e)),
         }
     }).detach()
 }

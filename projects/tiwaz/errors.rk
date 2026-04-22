@@ -6,6 +6,15 @@ enum ProxyError {
 }
 
 extend ProxyError {
+    public func message(self) -> string {
+        match self {
+            ProxyError.UpstreamUnreachable => return "upstream unreachable",
+            ProxyError.UpstreamTimeout    => return "upstream timeout",
+            ProxyError.BadResponse        => return "bad response from upstream",
+            ProxyError.NoMatchingRoute    => return "no matching route",
+        }
+    }
+
     public func to_http_error(self) -> HttpError {
         return match self {
             ProxyError.UpstreamUnreachable => HttpError.InternalServerError("upstream unreachable".to_string())

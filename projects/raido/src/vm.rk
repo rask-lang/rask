@@ -131,21 +131,17 @@ extend Vm {
 
         loop {
             if self.fuel <= 0 {
-                return Err(VmError.FuelExhausted)
+                return VmError.FuelExhausted
             }
             self.fuel = self.fuel - 1
 
             if pc >= code.len() {
-                return Ok(Value.None)
+                return Value.None
             }
 
-            const instr = code.get(pc) is Some else {
-                return Err(VmError.ScriptError("pc out of bounds: {pc}"))
-            }
+            const instr = code.get(pc) ?? return VmError.ScriptError("pc out of bounds: {pc}")
             pc = pc + 1
-            const op = decode_opcode(instr) is Some else {
-                return Err(VmError.ScriptError("unknown opcode: {decode_op(instr)}"))
-            }
+            const op = decode_opcode(instr) ?? return VmError.ScriptError("unknown opcode: {decode_op(instr)}")
 
             match op {
                 Opcode.LOAD_TRUE => {
@@ -169,7 +165,7 @@ extend Vm {
                 Opcode.LOAD_CONST => {
                     const a = decode_a(instr)
                     const bx = decode_bx(instr)
-                    const val = self.chunk.main.constants.get(bx) is Some else { continue }
+                    const val = self.chunk.main.constants.get(bx) ?? continue
                     self.set_reg(a, val)
                 }
                 Opcode.LOAD_NONE => {
@@ -179,11 +175,11 @@ extend Vm {
                 Opcode.RETURN => {
                     const a = decode_a(instr)
                     if a == 255 {
-                        return Ok(Value.None)
+                        return Value.None
                     }
-                    return Ok(self.get_reg(a))
+                    return self.get_reg(a)
                 }
-                _ => return Err(VmError.ScriptError("unimplemented opcode: {op.name()}"))
+                _ => return VmError.ScriptError("unimplemented opcode: {op.name()}")
             }
         }
     }

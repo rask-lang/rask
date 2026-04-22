@@ -7,8 +7,8 @@ func match_route(path: string, routes: Vec<Route>) -> MatchedRoute? {
     for route in routes {
         if path.starts_with(route.prefix) {
             const stripped = path.substring(route.prefix.len(), path.len())
-            return Some(MatchedRoute { path: stripped, pool: route.pool })
+            return MatchedRoute { path: stripped, pool: route.pool }
         }
     }
-    return None
+    return none
 }

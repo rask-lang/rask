@@ -1,31 +1,33 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Option type: Some, None, pattern matching.
+// Option: auto-wrap, none literal, operator form.
 // Spec: type.optionals (OPT1-OPT9)
-// BUG: Option match arm assignment broken in native codegen (Some arm doesn't execute)
+// BUG: Option narrowing + native codegen interaction can misfire.
 
 func find_positive(n: i32) -> i32? {
     if n > 0 {
-        return Some(n)
+        return n
     }
     return none
 }
 
-test "option some match" {
+test "option present operator form" {
     const result = find_positive(5)
     mut value = 0
-    match result {
-        Some(v) => value = v
-        None => value = -1
+    if result? {
+        value = result
+    } else {
+        value = -1
     }
     assert value == 5
 }
 
-test "option none match" {
+test "option absent operator form" {
     const result = find_positive(-3)
     mut value = 0
-    match result {
-        Some(v) => value = v
-        None => value = -1
+    if result? {
+        value = result
+    } else {
+        value = -1
     }
     assert value == -1
 }

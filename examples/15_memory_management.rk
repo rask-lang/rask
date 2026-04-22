@@ -31,33 +31,33 @@ func main() {
 
     print("Creating linked list with handles:\n")
 
-    // Allocate nodes in the pool — alloc returns Result<Handle>
+    // Allocate nodes in the pool — alloc returns Handle or Error
     const first = node_pool.alloc(Node {
         value: 1,
-        next: None,
-    }).unwrap()
+        next: none,
+    })!
 
     const second = node_pool.alloc(Node {
         value: 2,
-        next: None,
-    }).unwrap()
+        next: none,
+    })!
 
     const third = node_pool.alloc(Node {
         value: 3,
-        next: None,
-    }).unwrap()
+        next: none,
+    })!
 
     // Link nodes using handles (pool indexing with handle)
-    node_pool[first].next = Some(second)
-    node_pool[second].next = Some(third)
+    node_pool[first].next = second
+    node_pool[second].next = third
 
     // Traverse the list using handles
     print("List values: ")
-    mut current = Some(first)
+    mut current: Handle<Node>? = first
 
     loop {
-        if current is Some(handle) {
-            const node = node_pool.get(handle).unwrap()
+        if current? as handle {
+            const node = node_pool.get(handle)!
             print(node.value)
             print(" -> ")
             current = node.next
@@ -76,25 +76,25 @@ func main() {
         id: 1,
         name: "Player",
         health: 100,
-        target: None,
-    }).unwrap()
+        target: none,
+    })!
 
     const enemy1 = entities.alloc(Entity {
         id: 2,
         name: "Goblin",
         health: 50,
-        target: Some(player),  // Enemy targets player
-    }).unwrap()
+        target: player,  // Enemy targets player
+    })!
 
     const enemy2 = entities.alloc(Entity {
         id: 3,
         name: "Orc",
         health: 80,
-        target: Some(player),
-    }).unwrap()
+        target: player,
+    })!
 
     // Player targets first enemy
-    entities[player].target = Some(enemy1)
+    entities[player].target = enemy1
 
     // Display entity relationships
     print("\nEntity relationships:\n")
@@ -105,7 +105,7 @@ func main() {
     print(player_ent.health)
     print(")")
 
-    if player_ent.target is Some(target_handle) {
+    if player_ent.target? as target_handle {
         const target = entities.get(target_handle).unwrap()
         print(" -> targets ")
         print(target.name)
@@ -118,7 +118,7 @@ func main() {
     print(e1.health)
     print(")")
 
-    if e1.target is Some(target_handle) {
+    if e1.target? as target_handle {
         const target = entities.get(target_handle).unwrap()
         print(" -> targets ")
         print(target.name)
@@ -131,7 +131,7 @@ func main() {
     print(e2.health)
     print(")")
 
-    if e2.target is Some(target_handle) {
+    if e2.target? as target_handle {
         const target = entities.get(target_handle).unwrap()
         print(" -> targets ")
         print(target.name)

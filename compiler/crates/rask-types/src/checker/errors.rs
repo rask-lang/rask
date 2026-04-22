@@ -324,6 +324,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// OPT2/ER2: legacy `Ok`/`Err`/`Some`/`None` pattern — migration error.
+    /// `Ok`/`Err`/`Some`/`None` are not pattern names in the no-wrapper spec.
+    #[error("`{name}` is not a pattern — use the operator or type-pattern form")]
+    LegacyWrapperPattern {
+        name: String,
+        /// True if the pattern had parens (e.g. `Ok(v)` vs bare `Ok`).
+        with_binding: bool,
+        span: Span,
+    },
+
     /// OPT NO_MATCH: match on `T?` is rejected — migration error
     #[error("match on an Option is not supported — use the `?`-operator family")]
     MatchOnOption {

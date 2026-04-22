@@ -64,7 +64,7 @@ func handle(req: Request) -> Response {
         (Method.Get, "/users") => list_users(),
         (Method.Get, path) if path.starts_with("/users/") => {
             const id_str = path[7..]
-            const id = id_str.parse<i64>() is Ok else {
+            const id = id_str.parse<i64>() is i64 else {
                 return Response.bad_request("invalid user id")
             }
             get_user(id)
@@ -72,7 +72,7 @@ func handle(req: Request) -> Response {
         (Method.Post, "/users") => create_user(req.body),
         (Method.Delete, path) if path.starts_with("/users/") => {
             const id_str = path[7..]
-            const id = id_str.parse<i64>() is Ok else {
+            const id = id_str.parse<i64>() is i64 else {
                 return Response.bad_request("invalid user id")
             }
             delete_user(id)
@@ -101,15 +101,16 @@ func get_user(id: i64) -> Response {
         })
     }
 
-    return match user {
-        Some(u) => Response.json(json.encode(u)),
-        None => Response.json(json.encode(ErrorResponse { error: "user not found" }))
-            .with_status(404),
+    if user? {
+        return Response.json(json.encode(user))
+    } else {
+        return Response.json(json.encode(ErrorResponse { error: "user not found" }))
+            .with_status(404)
     }
 }
 
 func create_user(body: string) -> Response {
-    const req = json.decode<CreateUserRequest>(body) is Ok else {
+    const req = json.decode<CreateUserRequest>(body) is CreateUserRequest else {
         return Response.bad_request(json.encode(ErrorResponse {
             error: "invalid JSON"
         }))
@@ -129,10 +130,11 @@ func create_user(body: string) -> Response {
 func delete_user(id: i64) -> Response {
     const removed = db.write().users.remove(id)
 
-    return match removed {
-        Some(_) => Response.no_content(),
-        None => Response.json(json.encode(ErrorResponse { error: "user not found" }))
-            .with_status(404),
+    if removed? {
+        return Response.no_content()
+    } else {
+        return Response.json(json.encode(ErrorResponse { error: "user not found" }))
+            .with_status(404)
     }
 }
 

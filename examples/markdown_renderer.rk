@@ -31,16 +31,25 @@ extend MarkdownError {
     }
 }
 
+enum IoMsg { Msg(string) }
+extend IoMsg {
+    func message(self) -> string {
+        match self {
+            IoMsg.Msg(m) => return m,
+        }
+    }
+}
+
 enum RenderError {
     Parse(MarkdownError)
-    Io(string)
+    Io(IoMsg)
 }
 
 extend RenderError {
     func message(self) -> string {
         match self {
             Parse(e) => return "parse error: {e.message()}"
-            Io(msg) => return "I/O error: {msg}"
+            Io(e) => return "I/O error: {e.message()}"
         }
     }
 }
@@ -122,9 +131,7 @@ func is_hr_line(line: string) -> bool {
     if trimmed.len() < 3 {
         return false
     }
-    const first = trimmed.char_at(0) is Some(c) else {
-        return false
-    }
+    const first = trimmed.char_at(0) ?? return false
     if first != '-' && first != '*' && first != '_' {
         return false
     }
@@ -141,33 +148,31 @@ func is_hr_line(line: string) -> bool {
 }
 
 func ordered_list_start(line: string) -> i32? {
-    const dot_pos = line.find(".") is Some(p) else {
-        return None
-    }
+    const dot_pos = line.find(".") ?? return none
     if dot_pos == 0 {
-        return None
+        return none
     }
     if dot_pos + 1 >= line.len() {
-        return None
+        return none
     }
-    if line.char_at(dot_pos + 1) is Some(c) {
+    if line.char_at(dot_pos + 1)? as c {
         if c != ' ' {
-            return None
+            return none
         }
     } else {
-        return None
+        return none
     }
 
     const num_slice = line[0..dot_pos]
     for ch in num_slice.chars() {
         if !ch.is_digit() {
-            return None
+            return none
         }
     }
-    const n = num_slice.parse_int() is Ok(v) else {
-        return None
+    const n = num_slice.parse_int() is i64 as v else {
+        return none
     }
-    return Some(n as i32)
+    return n as i32
 }
 
 // ─── Scanner ────────────────────────────────────────────────────────
@@ -191,7 +196,7 @@ extend Scanner {
 
     func peek(self) -> char? {
         if self.is_done() {
-            return None
+            return none
         }
         return self.input.char_at(self.pos)
     }
@@ -199,17 +204,15 @@ extend Scanner {
     func peek_at(self, offset: usize) -> char? {
         const idx = self.pos + offset
         if idx >= self.input.len() {
-            return None
+            return none
         }
         return self.input.char_at(idx)
     }
 
     func advance(self) -> char? {
-        const c = self.peek() is Some else {
-            return None
-        }
+        const c = self.peek() ?? return none
         self.pos = self.pos + c.len_utf8()
-        return Some(c)
+        return c
     }
 
     func matches(self, s: string) -> bool {
@@ -233,27 +236,26 @@ extend Scanner {
             if self.matches(target) {
                 const result = self.input[start..self.pos].to_string()
                 self.pos = self.pos + target.len()
-                return Some(result)
+                return result
             }
-            const c = self.peek() is Some else {
-                break
-            }
+            const c = self.peek() ?? break
             self.pos = self.pos + c.len_utf8()
         }
-        return None
+        return none
     }
 
     func scan_until_char(self, target: char) -> string? {
         const start = self.pos
-        while self.peek() is Some(c) {
+        while self.peek()? {
+            const c = self.peek()!
             if c == target {
                 const result = self.input[start..self.pos].to_string()
                 self.pos = self.pos + target.len_utf8()
-                return Some(result)
+                return result
             }
             self.pos = self.pos + c.len_utf8()
         }
-        return None
+        return none
     }
 
     func remaining(self) -> string {
@@ -280,9 +282,7 @@ func parse_references(input: string) -> Map<string, string> {
             continue
         }
 
-        const close = trimmed.find("]:") is Some(pos) else {
-            continue
-        }
+        const close = trimmed.find("]:") ?? continue
         const id = trimmed[1..close].to_string().to_lowercase()
         if id.is_empty() {
             continue
@@ -304,9 +304,7 @@ func is_reference_def(line: string) -> bool {
     if !trimmed.starts_with("[") {
         return false
     }
-    const close = trimmed.find("]:") is Some else {
-        return false
-    }
+    const close = trimmed.find("]:") ?? return false
     return true
 }
 
@@ -336,11 +334,11 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
         if !stop.is_empty() && scanner.matches(stop) {
             scanner.consume(stop)
             flush_text(mutate result, mutate text_buf)
-            return Ok(result)
+            return result
         }
         if scanner.matches("\\") {
             scanner.advance()
-            if scanner.peek() is Some(c) {
+            if scanner.peek()? as c {
                 scanner.advance()
                 text_buf.push_char(c)
                 continue
@@ -363,68 +361,65 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
         if scanner.matches("`") {
             flush_text(mutate result, mutate text_buf)
             scanner.advance()
-            const code = scanner.scan_until_char('`') is Some(s) else {
+            if scanner.scan_until_char('`')? as code {
+                result.push(Inline.Code(code))
+            } else {
                 text_buf.push_char('`')
-                continue
             }
-            result.push(Inline.Code(code))
             continue
         }
         if scanner.matches("![") {
             flush_text(mutate result, mutate text_buf)
             scanner.consume("![")
-            const alt = scanner.scan_until_char(']') is Some(s) else {
+            if scanner.scan_until_char(']')? as alt {
+                if !scanner.consume("(") {
+                    text_buf.push_str("![")
+                    text_buf.push_str(alt)
+                    text_buf.push_char(']')
+                } else if scanner.scan_until_char(')')? as url {
+                    result.push(Inline.Image(url, alt))
+                } else {
+                    text_buf.push_str("![")
+                    text_buf.push_str(alt)
+                    text_buf.push_str("](")
+                }
+            } else {
                 text_buf.push_str("![")
-                continue
             }
-            if !scanner.consume("(") {
-                text_buf.push_str("![")
-                text_buf.push_str(alt)
-                text_buf.push_char(']')
-                continue
-            }
-            const url = scanner.scan_until_char(')') is Some(s) else {
-                text_buf.push_str("![")
-                text_buf.push_str(alt)
-                text_buf.push_str("](")
-                continue
-            }
-            result.push(Inline.Image(url, alt))
             continue
         }
         if scanner.matches("[") {
             flush_text(mutate result, mutate text_buf)
             scanner.advance()
             const link_start = scanner.pos
-            const text_content = scanner.scan_until_char(']') is Some(s) else {
-                text_buf.push_char('[')
-                continue
-            }
-
-            if scanner.matches("(") {
-                scanner.advance()
-                const url = scanner.scan_until_char(')') is Some(s) else {
+            if scanner.scan_until_char(']')? as text_content {
+                if scanner.matches("(") {
+                    scanner.advance()
+                    if scanner.scan_until_char(')')? as url {
+                        const link_inlines = try parse_inline(text_content)
+                        result.push(Inline.Link(url, link_inlines))
+                    } else {
+                        text_buf.push_char('[')
+                        text_buf.push_str(text_content)
+                        text_buf.push_str("](")
+                    }
+                } else if scanner.matches("[") {
+                    scanner.advance()
+                    if scanner.scan_until_char(']')? as ref_id {
+                        const link_inlines = try parse_inline(text_content)
+                        result.push(Inline.RefLink(ref_id.to_lowercase(), link_inlines))
+                    } else {
+                        text_buf.push_char('[')
+                        text_buf.push_str(text_content)
+                        text_buf.push_str("][")
+                    }
+                } else {
                     text_buf.push_char('[')
                     text_buf.push_str(text_content)
-                    text_buf.push_str("](")
-                    continue
+                    text_buf.push_char(']')
                 }
-                const link_inlines = try parse_inline(text_content)
-                result.push(Inline.Link(url, link_inlines))
-            } else if scanner.matches("[") {
-                scanner.advance()
-                const ref_id = scanner.scan_until_char(']') is Some(s) else {
-                    text_buf.push_char('[')
-                    text_buf.push_str(text_content)
-                    text_buf.push_str("][")
-                    continue
-                }
-                const link_inlines = try parse_inline(text_content)
-                result.push(Inline.RefLink(ref_id.to_lowercase(), link_inlines))
             } else {
                 text_buf.push_char('[')
-                text_buf.push_str(text_content)
-                text_buf.push_char(']')
             }
             continue
         }
@@ -434,18 +429,16 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
             result.push(Inline.LineBreak)
             continue
         }
-        const ch = scanner.advance() is Some else {
-            break
-        }
+        const ch = scanner.advance() ?? break
         text_buf.push_char(ch)
     }
 
     flush_text(mutate result, mutate text_buf)
     if !stop.is_empty() {
-        return Err(MarkdownError.UnexpectedEnd("expected closing '{stop}'"))
+        return MarkdownError.UnexpectedEnd("expected closing '{stop}'")
     }
 
-    return Ok(result)
+    return result
 }
 
 // ─── Block Parser ───────────────────────────────────────────────────
@@ -585,7 +578,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         }
 
         // Ordered list: 1. item
-        if ordered_list_start(trimmed) is Some(start_num) {
+        if ordered_list_start(trimmed)? as start_num {
             mut items = Vec.new()
             while i < line_count {
                 const il = lines[i]
@@ -597,10 +590,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                     // Continuation
                 }
 
-                if ordered_list_start(it) is Some {
-                    const dot_pos = it.find(".") is Some(pos) else {
-                        continue
-                    }
+                if ordered_list_start(it)? {
+                    const dot_pos = it.find(".") ?? continue
                     const item_text = it[dot_pos + 2..].to_string()
                     const item_inlines = try parse_inline(item_text)
                     items.push(ListItem {
@@ -650,7 +641,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
             if pt.starts_with("- ") || pt.starts_with("* ") {
                 break
             }
-            if ordered_list_start(pt) is Some {
+            if ordered_list_start(pt)? {
                 break
             }
             para_lines.push(pl)
@@ -664,7 +655,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         }
     }
 
-    return Ok(blocks)
+    return blocks
 }
 
 func join_lines(lines: Vec<string>) -> string {
@@ -808,7 +799,7 @@ func render_markdown(input: string) -> string or RenderError {
 
     mut out = string.new()
     render_children(blocks, mutate out, refs)
-    return Ok(out)
+    return out
 }
 
 func render_full_page(input: string) -> string or RenderError {
@@ -826,7 +817,7 @@ func render_full_page(input: string) -> string or RenderError {
 """)
     out.push_str(body)
     out.push_str("</body>\n</html>\n")
-    return Ok(out)
+    return out
 }
 
 // ─── CLI ────────────────────────────────────────────────────────────
@@ -885,12 +876,12 @@ func main() {
         std.exit(1)
     }
 
-    const content = match fs.read_file(input_path) {
-        Ok(c) => c
-        Err(e) => {
-            println("Error: cannot read {input_path}: {e}")
-            std.exit(1)
-        }
+    const read_result = fs.read_file(input_path)
+    const content = if read_result? {
+        read_result
+    } else as e {
+        println("Error: cannot read {input_path}: {e.message()}")
+        std.exit(1)
     }
 
     const result = if fragment {
@@ -899,12 +890,11 @@ func main() {
         render_full_page(content)
     }
 
-    const html = match result {
-        Ok(h) => h
-        Err(e) => {
-            println("Error: {e.message()}")
-            std.exit(1)
-        }
+    const html = if result? {
+        result
+    } else as e {
+        println("Error: {e.message()}")
+        std.exit(1)
     }
 
     if use_stdout {
@@ -918,12 +908,12 @@ func main() {
             }
         }
 
-        match fs.write_file(output_path, html) {
-            Ok(()) => println("Written: {output_path}")
-            Err(e) => {
-                println("Error: cannot write {output_path}: {e}")
-                std.exit(1)
-            }
+        const write_result = fs.write_file(output_path, html)
+        if write_result? {
+            println("Written: {output_path}")
+        } else as e {
+            println("Error: cannot write {output_path}: {e.message()}")
+            std.exit(1)
         }
     }
 }

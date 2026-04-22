@@ -29,14 +29,16 @@ func main() -> () or Error {
                 }
 
                 const matched_route = match_route(request.path(), all_routes)
-                if matched_route is Some(route) {
+                if matched_route? as route {
                     const route_and_forward = |request: Request| -> Response {
-                        const backend = route.pool.next_healthy() is Ok else {
+                        const healthy = route.pool.next_healthy()
+                        if healthy is ProxyError {
                             return Response.internal_error("no healthy backends")
                         }
-                        const result = forward(request, backend.url, route.path)
-                        if result is Ok(response) {
-                            return response
+                        // ER24: early-exit narrow — `healthy` is the success type here
+                        const result = forward(request, healthy.url, route.path)
+                        if result? {
+                            return result
                         }
                         println("error forwarding request")
                         return Response.internal_error("upstream error")

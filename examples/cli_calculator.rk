@@ -68,18 +68,19 @@ extend Lexer {
     }
 
     func peek_char(self) -> char? {
-        if self.pos >= self.input.len(): return None
+        if self.pos >= self.input.len(): return none
         return self.input.char_at(self.pos)
     }
 
     func advance(self) -> char? {
         const c = try self.peek_char()
         self.pos += 1
-        return Some(c)
+        return c
     }
 
     func skip_whitespace(self) {
-        while self.peek_char() is Some(c) {
+        while self.peek_char()? {
+            const c = self.peek_char()!
             if !c.is_whitespace(): break
             self.advance()
         }
@@ -88,10 +89,7 @@ extend Lexer {
     func next_token(self) -> Token or CalcError {
         self.skip_whitespace()
 
-        const c = match self.peek_char() {
-            Some(c) => c,
-            None => return Ok(Token.Eof),
-        }
+        const c = if self.peek_char()? as ch { ch } else { return Token.Eof }
 
         // Single-character tokens
         const token = match c {
@@ -104,7 +102,7 @@ extend Lexer {
             '(' => { self.advance(); Token.LParen }
             ')' => { self.advance(); Token.RParen }
             _ if c.is_digit() || c == '.' => try self.read_number(),
-            _ => return Err(CalcError.UnexpectedChar(c)),
+            _ => return CalcError.UnexpectedChar(c),
         }
 
         return token
@@ -114,7 +112,8 @@ extend Lexer {
         const num_str = string.new()
         mut has_dot = false
 
-        while self.peek_char() is Some(c) {
+        while self.peek_char()? {
+            const c = self.peek_char()!
             if c.is_digit() {
                 num_str.push(c)
                 self.advance()
@@ -153,8 +152,8 @@ extend Parser {
         const expr = try self.parse_expression()
 
         match self.current {
-            Eof => return Ok(expr),
-            _ => return Err(CalcError.UnexpectedToken(self.token_string())),
+            Eof => return expr,
+            _ => return CalcError.UnexpectedToken(self.token_string()),
         }
     }
     
@@ -250,11 +249,11 @@ extend Parser {
                         try self.advance()
                         return expr
                     }
-                    _ => return Err(CalcError.UnexpectedToken("expected ')'".to_string())),
+                    _ => return CalcError.UnexpectedToken("expected ')'".to_string()),
                 }
             }
-            Eof => return Err(CalcError.EmptyExpression),
-            _ => return Err(CalcError.UnexpectedToken(self.token_string())),
+            Eof => return CalcError.EmptyExpression,
+            _ => return CalcError.UnexpectedToken(self.token_string()),
         }
     }
 }
@@ -277,11 +276,11 @@ func evaluate(expr: Expr) -> f64 or CalcError {
                 Sub => return l - r,
                 Mul => return l * r,
                 Div => {
-                    if r == 0.0: return Err(CalcError.DivisionByZero)
+                    if r == 0.0: return CalcError.DivisionByZero
                     return l / r
                 }
                 Mod => {
-                    if r == 0.0: return Err(CalcError.DivisionByZero)
+                    if r == 0.0: return CalcError.DivisionByZero
                     return l % r
                 }
                 Pow => return l.powf(r),
@@ -331,9 +330,11 @@ func main() -> () or Error {
             "quit" | "exit" | "q" => break,
             "help" | "h" | "?" => print_help(),
             _ => {
-                match calc(input.to_string()) {
-                    Ok(result) => println("= {result}"),
-                    Err(e) => println("Error: {e.message()}"),
+                const r = calc(input.to_string())
+                if r? {
+                    println("= {r}")
+                } else as e {
+                    println("Error: {e.message()}")
                 }
             }
         }
@@ -347,70 +348,70 @@ func main() -> () or Error {
 // ============================================================================
 
 test "addition" {
-    assert calc("2 + 3") == Ok(5.0)
-    assert calc("10 + 20 + 30") == Ok(60.0)
+    assert calc("2 + 3")! == 5.0
+    assert calc("10 + 20 + 30")! == 60.0
 }
 
 test "subtraction" {
-    assert calc("10 - 3") == Ok(7.0)
-    assert calc("5 - 10") == Ok(-5.0)
+    assert calc("10 - 3")! == 7.0
+    assert calc("5 - 10")! == -5.0
 }
 
 test "multiplication" {
-    assert calc("4 * 5") == Ok(20.0)
-    assert calc("2 * 3 * 4") == Ok(24.0)
+    assert calc("4 * 5")! == 20.0
+    assert calc("2 * 3 * 4")! == 24.0
 }
 
 test "division" {
-    assert calc("20 / 4") == Ok(5.0)
-    assert calc("7 / 2") == Ok(3.5)
+    assert calc("20 / 4")! == 5.0
+    assert calc("7 / 2")! == 3.5
 }
 
 test "precedence" {
     // Multiplication before addition
-    assert calc("2 + 3 * 4") == Ok(14.0)
-    assert calc("2 * 3 + 4") == Ok(10.0)
+    assert calc("2 + 3 * 4")! == 14.0
+    assert calc("2 * 3 + 4")! == 10.0
 
     // Division before subtraction
-    assert calc("10 - 6 / 2") == Ok(7.0)
+    assert calc("10 - 6 / 2")! == 7.0
 }
 
 test "parentheses" {
-    assert calc("(2 + 3) * 4") == Ok(20.0)
-    assert calc("2 * (3 + 4)") == Ok(14.0)
-    assert calc("((1 + 2) * (3 + 4))") == Ok(21.0)
+    assert calc("(2 + 3) * 4")! == 20.0
+    assert calc("2 * (3 + 4)")! == 14.0
+    assert calc("((1 + 2) * (3 + 4))")! == 21.0
 }
 
 test "power right associative" {
     // 2^3^2 = 2^(3^2) = 2^9 = 512, not (2^3)^2 = 64
-    assert calc("2 ^ 3 ^ 2") == Ok(512.0)
-    assert calc("2 ^ 3") == Ok(8.0)
+    assert calc("2 ^ 3 ^ 2")! == 512.0
+    assert calc("2 ^ 3")! == 8.0
 }
 
 test "unary negation" {
-    assert calc("-5") == Ok(-5.0)
-    assert calc("-5 + 3") == Ok(-2.0)
-    assert calc("--5") == Ok(5.0)  // Double negation
-    assert calc("3 * -2") == Ok(-6.0)
+    assert calc("-5")! == -5.0
+    assert calc("-5 + 3")! == -2.0
+    assert calc("--5")! == 5.0  // Double negation
+    assert calc("3 * -2")! == -6.0
 }
 
 test "modulo" {
-    assert calc("10 % 3") == Ok(1.0)
-    assert calc("15 % 4") == Ok(3.0)
+    assert calc("10 % 3")! == 1.0
+    assert calc("15 % 4")! == 3.0
 }
 
 test "floating point" {
-    assert calc("3.14 * 2") == Ok(6.28)
-    assert calc("1.5 + 2.5") == Ok(4.0)
+    assert calc("3.14 * 2")! == 6.28
+    assert calc("1.5 + 2.5")! == 4.0
 }
 
 test "division by zero" {
-    assert calc("5 / 0") == Err(CalcError.DivisionByZero)
-    assert calc("10 % 0") == Err(CalcError.DivisionByZero)
+    assert calc("5 / 0") is CalcError.DivisionByZero
+    assert calc("10 % 0") is CalcError.DivisionByZero
 }
 
 test "invalid input" {
-    assert calc("2 +").is_err()
-    assert calc("") == Err(CalcError.EmptyExpression)
-    assert calc("@").is_err()
+    assert calc("2 +") is CalcError
+    assert calc("") is CalcError.EmptyExpression
+    assert calc("@") is CalcError
 }
