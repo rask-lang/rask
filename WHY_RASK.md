@@ -205,23 +205,20 @@ This is a narrow audience. Most developers don't need a new language. If Go or p
 
 ### Clone calls
 
-You can't return a reference to something inside a collection. When you need a non-Copy value outside its scope, you clone it.
-
-Strings are Copy — they just work. The remaining clones are for collections and large structs at API boundaries:
+Types ≤16 bytes with all-Copy fields copy implicitly. Larger types move on assignment. When you need a copy of a moved type, you write `.clone()`.
 
 ```rask
-// Strings copy freely — no clone needed
-const names = Vec.new()
-for entry in entries {
-    if entry.active: names.push(entry.name)
-}
+// Strings (16 bytes, Copy) — implicit
+const name = user.name
 
-// Structs >16 bytes need explicit clone
+// User struct (>16 bytes) — explicit
 const user_copy = user.clone()
 db.insert(id, user_copy)
 ```
 
-In practice, clone calls concentrate at collection API boundaries — roughly 1-2% of lines, not spread through the code. I think that's better than lifetime annotations, and with Copy strings it's rarely visible in everyday code.
+This is deliberate. For types above the copy threshold, `.clone()` marks a decision: you're choosing to duplicate data rather than transfer ownership. Even when the clone is cheap (a struct of Copy fields is just a memcpy + refcount bumps), the explicit call keeps the cost visible. The 16-byte threshold matches register-passable size on most ABIs — below that, copies are genuinely free.
+
+Clone calls concentrate at collection API boundaries, roughly 1-2% of lines. With Copy strings, everyday code rarely needs them.
 
 ### Handle indirection
 

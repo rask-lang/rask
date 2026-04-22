@@ -6,6 +6,10 @@ Prefer long term proper fixes over quick-fixes.
 
 Choose simple over easy
 
+## Settled design decisions — don't re-litigate
+
+- **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
+
 # Working relationship
 
 - No sycophancy.
