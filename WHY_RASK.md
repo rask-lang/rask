@@ -145,7 +145,7 @@ Rust needs `fs::read(path).map_err(|e| ...)?`.
 
 | Capability | Rust | Rask |
 |---|---|---|
-| Short borrowed strings | `&str` with `'a` | — |
+| Short borrowed strings | `&str` with `'a` | not needed — `string` is Copy |
 | Long-lived strings | `String` (owned) | `string` (Copy, refcounted, 16 bytes) |
 | Graphs / cycles | `Rc<RefCell<T>>` | `Pool<T>` + `Handle<T>` (generation-checked, builtin) |
 | Cleanup | `Drop` (implicit, can't error) | `@resource` + `ensure` (explicit, composes with errors) |
@@ -153,9 +153,10 @@ Rust needs `fs::read(path).map_err(|e| ...)?`.
 | Implicit state | thread-locals or params | `using Pool<T>`, `using Allocator` (context clauses) |
 | Custom allocators | type parameter (`Vec<T, A>`) | `using Allocator` context (zero-sized default) |
 | Concurrency | `async`/`await` (call-site coloring) | green tasks, `using` signature coloring, must-use handles |
-| Zero-copy parsing | lifetime-generic | not supported — use copies or handles |
+| Zero-copy returns | lifetime-generic | not supported — return owned values or work within `with` scope |
+| Zero-cost access | lifetime-generic borrows | `read`/`mutate` params, `with` blocks, expression-scoped borrows |
 
-Rust is more powerful for library-writing — lifetime-generic code, zero-copy APIs, trait system depth. Rask is more ergonomic for application-writing — no wrappers, Copy strings, context clauses, compiler-threaded pools.
+Rust can return borrowed data through lifetime-generic APIs — zero-copy parsers, borrowed iterators, view types. Rask can't return borrows, but gets zero-cost access through scoping: `with` blocks, parameter modes, and expression-scoped borrows cover the common cases without lifetime annotations.
 
 **Honest caveat:** Pragmatic Rust narrows this gap. If you use `String` everywhere, `Arc` for sharing, `anyhow` for errors, and avoid lifetime-heavy APIs — the day-to-day experience is less painful than the table above suggests. The remaining gap is real (wrappers, function coloring, `Rc<RefCell<T>>` for graphs, `Pin` for async state) but smaller than comparing textbook Rust to Rask.
 
@@ -234,11 +235,18 @@ struct TreeNode {
 
 Each handle access validates a generation counter. The overhead is estimated at ~1-2ns per access but hasn't been benchmarked in the current runtime — the real number could be higher with cache misses on pool metadata. In application code (web services, CLIs, game logic outside hot loops) this is likely invisible. In tight inner loops processing thousands of entities per frame, it's a real concern. The workaround — copy data out, batch-process, write back — is exactly the kind of restructuring that adds friction.
 
-### Architectural restructuring
+### No zero-copy returns
 
-Some patterns that work naturally with references need rethinking. String slices stored in structs become indices or owned copies. Observer patterns need explicit handle registration. Iterators that yield references become iterators that yield copies or handles.
+You can't return a reference to data inside a container. Functions that extract data return owned values — copies for Copy types, clones for the rest.
 
-This isn't always more code — sometimes the handle-based version is clearer. But it's different, and the restructuring has a learning cost.
+In practice, this costs less than it sounds. Strings are Copy (16 bytes, refcount bump). Primitives are Copy. Most function returns in application code are already owned values. The cost concentrates on extracting large non-Copy structs from collections — and that's where `.clone()` makes the cost visible.
+
+What IS zero-cost in Rask:
+- `read`/`mutate` parameter modes — functions borrow without copying
+- `with` blocks — scoped mutable access to container internals, no copy
+- Iterator chains in a single expression — compiler inlines, no intermediate allocations
+- Monomorphization — generics compiled to specialized code, no vtable
+- Comptime — abstraction eliminated at compile time
 
 ---
 
