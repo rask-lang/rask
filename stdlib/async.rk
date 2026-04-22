@@ -3,7 +3,9 @@
 // --- Task spawning ---
 
 /// Spawn a green task on the current scheduler.
-/// Requires `using Multitasking`.
+/// Requires an active `using Multitasking { ... }` scope in the process.
+/// Compile error if called outside any scope (directly or transitively);
+/// runtime panic for higher-order/trait-object cases the compiler can't prove.
 public func spawn(f: func()) -> TaskHandle<()> { }
 
 /// Check if the current task has been cancelled.

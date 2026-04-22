@@ -5,16 +5,16 @@
 
 # I/O Context Integration
 
-Stdlib I/O functions accept a hidden `RuntimeContext` parameter. When present, I/O is non-blocking (task parks). When absent, I/O blocks the thread. Same function, two code paths, no async/await split.
+Stdlib I/O functions discover the active runtime by reading a process-global slot installed by `using Multitasking { ... }`. When the slot is `Some`, I/O is non-blocking (task parks). When it is `None`, I/O blocks the thread. Same function, two code paths, no async/await split, no hidden parameters, no signature coloring.
 
-## RuntimeContext Type
+## Runtime Discovery
 
 | Rule | Description |
 |------|-------------|
-| **CTX1: Opaque handle** | `RuntimeContext` is an opaque type — programmers never construct or inspect it |
-| **CTX2: Provided by `using`** | `using Multitasking { }` creates a `RuntimeContext` and threads it through all calls in the block |
-| **CTX3: Optional parameter** | Stdlib I/O functions accept `__ctx?: RuntimeContext` — present in async context, absent in sync |
-| **CTX4: Not a trait** | `RuntimeContext` is a concrete type, not a trait. No dynamic dispatch on context detection |
+| **CTX1: Process-global slot** | The runtime lives in one slot per process (see `conc.runtime`). Programmers never construct or inspect it |
+| **CTX2: Installed by `using`** | `using Multitasking { }` fills the slot on entry, clears it on exit (`conc.runtime/R1-R2`) |
+| **CTX3: No signature parameter** | Stdlib I/O functions have clean signatures — they call into the runtime via the slot at execution time |
+| **CTX4: Concrete type** | The slot holds a concrete `Arc<Runtime>`. No dynamic dispatch on context detection |
 
 <!-- test: skip -->
 ```rask
@@ -25,55 +25,20 @@ using Multitasking {
 }
 
 // What the compiler generates (conceptual):
-const __ctx = RuntimeContext.__new()
-const file = try File.open("data.txt", __ctx)
-const data = try file.read_text(__ctx)
-__ctx.__shutdown()
-```
-
-## Context Structure
-
-### Phase A (OS threads, `conc.strategy/A1`)
-
-<!-- test: parse -->
-```rask
-// Minimal marker — enough to thread through call chains
-struct RuntimeContext {
-    mode: ContextMode
-}
-
-enum ContextMode {
-    ThreadBacked    // Phase A: OS threads, blocking I/O
-}
-```
-
-In Phase A, `RuntimeContext` is a marker. I/O functions receive it but ignore it — all I/O blocks the calling thread regardless. The value of threading it now is validating the desugaring pass (`conc.strategy/A5`).
-
-### Phase B (M:N green tasks, `conc.runtime`)
-
-<!-- test: parse -->
-```rask
-struct RuntimeContext {
-    mode: ContextMode
-    scheduler: Scheduler      // Work-stealing scheduler handle
-    reactor: Reactor          // I/O event loop handle
-    current_task: Task        // Currently executing task
-}
-
-enum ContextMode {
-    ThreadBacked    // Fallback
-    GreenTask       // Phase B: non-blocking I/O, task parking
-}
+__runtime_enter(default_config)            // fills RUNTIME_SLOT (panics if already full)
+const file = try File.open("data.txt")      // reads RUNTIME_SLOT at call time
+const data = try file.read_text()           // same
+__runtime_exit()                            // drains tasks, clears RUNTIME_SLOT
 ```
 
 ## I/O Function Pattern
 
 | Rule | Description |
 |------|-------------|
-| **IO1: Dual-path implementation** | Every I/O function has a blocking path and an async path, selected by `__ctx` presence |
-| **IO2: Blocking is default** | Without context, I/O functions call blocking syscalls directly |
-| **IO3: Async registers with reactor** | With context (Phase B), non-blocking syscall → EAGAIN → register FD with reactor → park task |
-| **IO4: Phase A ignores context** | With context but in Phase A (`ThreadBacked`), I/O blocks the thread (same as no context) |
+| **IO1: Dual-path implementation** | Every I/O function has a blocking path and an async path, selected by reading RUNTIME_SLOT |
+| **IO2: Blocking is fallback** | When the slot is empty (no block active), I/O functions call blocking syscalls directly |
+| **IO3: Async registers with reactor** | When the slot is full, non-blocking syscall → EAGAIN → register FD with reactor → park task |
+| **IO4: Phase A ignores the slot contents** | Phase A uses OS threads per spawn — I/O blocks the thread even when the slot is full, because there's no reactor |
 
 ### Concrete implementation pattern
 
@@ -81,27 +46,24 @@ Every I/O function in `rask-rt` follows this template:
 
 ```rust
 // rask-rt implementation (Rust)
-pub fn rask_file_read(
-    file: &File,
-    buf: &mut [u8],
-    ctx: Option<&RuntimeContext>,
-) -> Result<usize, IoError> {
-    match ctx {
+pub fn rask_file_read(file: &File, buf: &mut [u8]) -> Result<usize, IoError> {
+    match RUNTIME_SLOT.read().as_deref() {
         None => {
-            // Sync path: blocking read
+            // Sync path: blocking read (IO2)
             blocking_read(file.fd(), buf)
         }
-        Some(ctx) if ctx.mode == ContextMode::ThreadBacked => {
-            // Phase A: still blocking, context is just a marker
+        Some(runtime) if runtime.phase == Phase::A => {
+            // Phase A: still blocking, runtime has no reactor
             blocking_read(file.fd(), buf)
         }
-        Some(ctx) => {
+        Some(runtime) => {
             // Phase B: non-blocking + reactor
             match nonblocking_read(file.fd(), buf) {
                 Ok(n) => Ok(n),
                 Err(EAGAIN) => {
-                    ctx.reactor.register(file.fd(), Interest::Readable, ctx.current_task.waker());
-                    ctx.current_task.park();  // Yield to scheduler
+                    let task = runtime.current_task();
+                    runtime.reactor.register(file.fd(), Interest::Readable, task.waker());
+                    task.park();  // Yield to scheduler
                     // Re-polled when I/O ready
                     nonblocking_read(file.fd(), buf)
                 }
@@ -141,13 +103,11 @@ pub fn rask_file_read(
 ```rask
 // Cancellation check woven into I/O
 func File.read(self, buf: []u8) -> usize or IoError {
-    // Check cancel before doing work
-    if __ctx is Some(ctx) {
-        if ctx.current_task.cancel_flag.load() {
+    if let Some(runtime) = RUNTIME_SLOT.read() {
+        if runtime.current_task().cancel_flag.load() {
             return Err(IoError.Cancelled)
         }
     }
-
     // Proceed with actual I/O...
 }
 ```
@@ -156,41 +116,36 @@ func File.read(self, buf: []u8) -> usize or IoError {
 
 | Rule | Description |
 |------|-------------|
-| **IO7: Traits don't mention context** | `Reader` and `Writer` trait signatures stay clean — no `__ctx` parameter |
-| **IO8: Implementors receive context** | Concrete implementations (File, TcpConnection) receive `__ctx` via compiler desugaring |
-| **IO9: Generic I/O propagates** | `io.copy(reader, writer)` threads `__ctx` to both `reader.read()` and `writer.write()` calls |
+| **IO7: Clean trait signatures** | `Reader` and `Writer` signatures carry no runtime annotation — true for traits AND concrete implementations |
+| **IO8: Implementations read the slot directly** | Concrete implementations (File, TcpConnection) read RUNTIME_SLOT when they run |
+| **IO9: Generic I/O stays clean** | `io.copy(reader, writer)` is a plain generic call — no hidden parameter propagation |
 
 <!-- test: skip -->
 ```rask
-// Trait signature — no context visible
 trait Reader {
     func read(self, buf: []u8) -> usize or IoError
 }
 
-// File implements Reader — compiler adds __ctx
 extend File with Reader {
     func read(self, buf: []u8) -> usize or IoError {
-        // Compiler desugars to: read(self, buf, __ctx?)
-        // __ctx available if caller is in async context
+        // Reads RUNTIME_SLOT at execution time
     }
 }
 
-// Generic function — context threads through
 func io.copy(reader: any Reader, writer: any Writer) -> usize or IoError {
-    // Compiler desugars to: io.copy(reader, writer, __ctx?)
     const buf = [0u8; 8192]
     mut total = 0
     loop {
-        const n = try reader.read(buf)   // __ctx forwarded
+        const n = try reader.read(buf)
         if n == 0 { break }
-        try writer.write_all(buf[..n])    // __ctx forwarded
+        try writer.write_all(buf[..n])
         total += n
     }
     return total
 }
 ```
 
-The key insight: trait dispatch and context threading are orthogonal. The compiler inserts `__ctx` at every call site that has one available. Trait implementations receive it like any other function.
+The key insight: trait dispatch and runtime discovery are orthogonal. Signatures stay the same whether I/O is sync or async; the runtime slot decides at call time.
 
 ## Error Types
 
@@ -212,27 +167,12 @@ enum IoError {
 ## Error Messages
 
 ```
-ERROR [conc.io-context/CTX2]: I/O outside async context
+ERROR [conc.async/CC1]: spawn requires a Multitasking scope
    |
 5  |  spawn(|| { File.open("x.txt") })
-   |              ^^^^^^^^^ spawn() requires 'using Multitasking'
+   |  ^^^^^ no `using Multitasking { ... }` block encloses this call
    |
-WHY: spawn() needs a runtime context to manage the spawned task.
-
-FIX: Wrap in using Multitasking { spawn(|| { ... }) }
-```
-
-```
-ERROR [conc.io-context/IO7]: trait method cannot declare context parameter
-   |
-3  |  trait Reader {
-4  |      func read(self, buf: []u8, ctx: RuntimeContext) -> usize or IoError
-   |                                 ^^^^^^^^^^^^^^^^^^^^ context is implicit
-   |
-WHY: Trait signatures must not include RuntimeContext. The compiler threads
-     context automatically through implementations.
-
-FIX: Remove the context parameter from the trait signature.
+FIX: wrap the caller chain in `using Multitasking { ... }`, typically near main.
 ```
 
 ## Edge Cases
@@ -253,11 +193,11 @@ FIX: Remove the context parameter from the trait signature.
 
 ### Rationale
 
-**CTX4 (not a trait):** I considered making `RuntimeContext` a trait so Phase A and Phase B could be different implementations behind dynamic dispatch. But that adds vtable overhead on every I/O call, and the context type is known at compile time. Concrete type with a `mode` discriminant is simpler and zero-cost once the branch is predictable.
+**CTX1 (process-global slot):** The earlier design threaded `RuntimeContext` as a hidden parameter through every function transitively reachable from a `using Multitasking` block. That colored every such signature and propagated a requirement through the call graph. The process-global slot avoids the coloring: exactly one slot exists per process by design (`conc.async/C1`), every thread reads it, and signatures stay clean.
 
-**IO7 (traits don't mention context):** Putting `__ctx` in `Reader` would infect every generic function that uses `Reader`. The whole point of hidden parameters is that they're hidden. Traits define the programmer-visible contract; context is a compiler implementation detail.
+**IO7 (clean trait signatures):** Because runtime discovery is global-slot-based, trait signatures never need to mention a runtime context — for traits or implementations. Generic I/O stays uncolored.
 
-**IO4 (Phase A ignores context):** This means Phase A programs behave identically whether `using Multitasking` is present or not — I/O always blocks. That's correct: Phase A's `using Multitasking` creates real threads per spawn, and each thread can block independently. The scaling limit (~10k) comes from OS thread count, not from blocking I/O.
+**IO4 (Phase A ignores the slot contents):** Phase A creates real OS threads per spawn; each thread blocks independently on I/O. The scaling limit (~10k) comes from OS thread count, not from missing async I/O.
 
 ### I/O in ThreadPool context
 
@@ -301,14 +241,14 @@ using Multitasking {
 }
 ```
 
-The annotation appears on any call where `__ctx` is threaded to an I/O function. Pure computation calls (json, math, collections) never show the annotation.
+The annotation appears on any call that can read RUNTIME_SLOT and park a task. Pure computation calls (json, math, collections) never show the annotation.
 
 ### See Also
 
 - `conc.async/IO1-IO2` — Transparent pausing and sync fallback semantics
 - `conc.runtime/IO1-IO3` — Async I/O flow, reactor registration protocol
 - `conc.strategy` — Phase A vs Phase B runtime implementation
-- `conc.hidden-params` — Compiler pass that inserts `__ctx` parameters
+- `conc.hidden-params` — Hidden-parameter compiler pass (scoped to Pool contexts)
 - `std.io` — Reader/Writer traits, IoError
 - `std.fs` — File type and convenience functions
 - `std.net` — TcpListener, TcpConnection

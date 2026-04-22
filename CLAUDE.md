@@ -195,6 +195,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Macros/attributes | Not specified |
 | Frontend caching | LSP works, incremental check caching not yet implemented |
 | Parallel compilation | Semantic hashing done, rayon parallelism not yet implemented |
+| Phase B fiber implementation | Decided: stackful fibers with mmap'd virtual stacks, pluggable reactor (io_uring/epoll/kqueue/IOCP), signal-based preemption. Still to prototype: `fiber_switch` assembly, safe-point instrumentation, reactor backends |
 
 See [TODO.md](TODO.md) for full list.
 

@@ -5,41 +5,39 @@
 
 # Phase B Compiler Transforms
 
-Phase B upgrades the runtime from OS threads to M:N green tasks (`conc.strategy/B1-B4`). The programmer-facing API doesn't change. What changes is how the compiler handles indirect calls, state machine generation, cross-module boundaries, and foreign code.
+Phase B upgrades the runtime from OS threads to M:N stackful fibers (`conc.strategy/B1-B4`, `conc.runtime`). The programmer-facing API doesn't change, and — because Rask uses stackful fibers instead of stackless state machines — the codegen story is almost unchanged too. Function bodies, vtables, function pointers, and closures compile exactly as in sync code. Parking happens via context switches performed by stdlib I/O functions, not via state-machine enums built at compile time.
 
-Four problems that the happy-path specs don't address:
+What Phase B actually needs from the compiler:
 
-1. **Trait objects:** Vtable function pointers have the wrong arity for `__ctx` threading
-2. **Function pointers/closures:** Indirect calls can't be statically analyzed for pause points
-3. **Separate compilation:** Cross-module pause-point detection
-4. **FFI:** Foreign code can't participate in cooperative scheduling
+1. **Cross-module "reaches spawn" metadata** for the `conc.async/CC2` scope check
+2. **FFI boundaries** where foreign code can't participate in fiber scheduling
+3. **Preemption safe-point instrumentation** in function prologues (see `conc.runtime/P3`)
+
+There are NO state-machine transforms, NO wide ABIs, NO pause-point enumeration at compile time. The stackful model pushes all of this into the runtime.
 
 ## Vtable ABI
 
 | Rule | Description |
 |------|-------------|
-| **VT1: Wide vtable entries** | All vtable method entries include `__ctx: RuntimeContext?` as the final parameter, regardless of whether the trait or implementation uses I/O |
-| **VT2: Implementations compile to wide signature** | Vtable entry functions for all trait implementations accept `__ctx` — implementations that don't need it ignore the parameter |
-| **VT3: Call sites pass __ctx when available** | Trait object method calls pass `__ctx` if in async context, `None` if in sync context |
-| **VT4: Trait object calls are potential pause points** | Inside spawn closures, every trait object method call generates a state machine yield variant |
+| **VT1: Clean vtable entries** | Vtable method entries have exactly the trait's declared signature. No hidden runtime parameter |
+| **VT2: Implementations read the slot** | Any implementation that performs async-capable I/O reads the process-global runtime slot at call time |
+| **VT3: Trait object calls are potential pause points** | Inside spawn closures, trait object method calls to implementations that may read the runtime slot generate state machine yield variants |
 
-The trait signature stays clean (`conc.io-context/IO7`). The wide ABI is a codegen detail — hidden from programmers, visible in vtables.
+The runtime lives in a process-global slot (`conc.runtime`), so vtable ABI never needs to carry it. Trait signatures and vtable layouts stay clean.
 
 <!-- test: skip -->
 ```rask
-// What the programmer writes — no __ctx anywhere
 trait Reader {
     func read(self, buf: []u8) -> usize or IoError
 }
 
-// What the vtable entry looks like at ABI level:
-// fn(data: *u8, buf: []u8, __ctx: RuntimeContext?) -> usize or IoError
-//                          ^^^^^^^^^^^^^^^^^^^^^^^^ added by compiler
+// Vtable entry at ABI level:
+// fn(data: *u8, buf: []u8) -> usize or IoError
 ```
 
-### Vtable layout change
+### Vtable layout
 
-The vtable layout from `compiler.layout/V1-V5` extends naturally. Each method slot points to a function with the wide signature:
+Unchanged from `compiler.layout/V1-V5`:
 
 ```
 // Reader vtable for File (does I/O)
@@ -47,25 +45,21 @@ File_Reader_vtable:
   [0]  size: 32
   [8]  align: 8
   [16] drop: &File_drop
-  [24] read: &File_read_wide     // uses __ctx for non-blocking I/O
+  [24] read: &File_read           // reads RUNTIME_SLOT internally if async-capable
 
 // Reader vtable for Buffer (in-memory)
 Buffer_Reader_vtable:
   [0]  size: 48
   [8]  align: 8
   [16] drop: null
-  [24] read: &Buffer_read_wide   // ignores __ctx, pure memory copy
+  [24] read: &Buffer_read         // pure memory copy, ignores slot
 ```
 
-Both vtable entries have identical function signatures. Call site doesn't need to know which implementation is behind the pointer.
+Both vtable entries have identical signatures. Call site doesn't need to know which implementation is behind the pointer.
 
 ### Cost
 
-One extra register argument per trait object method call. On x86-64, `__ctx` occupies one register slot (typically RCX or R8 depending on position). For `None`, the register is zeroed.
-
-- Memory: zero (register, not stack)
-- CPU: negligible (one register write per call)
-- Vtable size: unchanged (same number of entries, same pointer size)
+Zero ABI overhead vs. sync code. Implementations that need the runtime pay a single `RUNTIME_SLOT.read()` on entry; non-async implementations pay nothing.
 
 ### State machine impact
 
@@ -96,48 +90,46 @@ For in-memory implementations (Buffer), `io_future.poll()` returns Ready immedia
 
 | Rule | Description |
 |------|-------------|
-| **FP1: Storable closures use wide ABI** | All storable closures and function pointer types include `__ctx: RuntimeContext?` as a hidden final parameter |
-| **FP2: Immediate closures use narrow ABI** | Inline closures consumed at their creation site (`mem.closures/IO1`) are monomorphized — the compiler handles `__ctx` threading statically |
-| **FP3: Indirect calls are potential pause points** | Inside spawn closures, calls through function pointers or storable closures generate state machine yield variants |
+| **FP1: Clean function-pointer ABI** | Storable closure and function-pointer types carry only their declared parameters. No hidden runtime parameter |
+| **FP2: Runtime discovery is internal** | Any closure that performs async-capable I/O reads `RUNTIME_SLOT` at execution time, no caller cooperation needed |
+| **FP3: Indirect calls are potential pause points** | Inside spawn closures, calls through function pointers or storable closures generate state machine yield variants (if the callee might read the slot) |
 
 The function pointer type `Func([]u8) -> usize or IoError` has the ABI signature:
 
 ```
-fn(env: *u8, buf: []u8, __ctx: RuntimeContext?) -> usize or IoError
+fn(env: *u8, buf: []u8) -> usize or IoError
 ```
 
-This matches vtable entries (VT1). All indirect calls use the same wide convention.
+Matches vtable entries (VT1). All indirect calls use the same convention.
 
-### What doesn't become a state machine
+### No special handling for spawn closures
 
-Only `spawn(|| { ... })` closures are transformed into state machines (`conc.runtime/T3`). Inner closures within a spawn closure — iterator callbacks, stored callbacks, event handlers — are captured data in the state machine, not transformed themselves.
+The spawn closure body is compiled exactly like any other function. It runs on the fiber's stack. I/O calls inside park the fiber via context switch (handled by the I/O stdlib) and resume when ready. Inner closures (iterator callbacks, event handlers) are ordinary closures, stored as values like anywhere else.
 
 <!-- test: skip -->
 ```rask
 spawn(|| {
-    // This spawn closure → state machine
-    const data = try File.read("input.txt")  // yield point
+    const data = try File.read("input.txt")   // parks fiber if reactor says EAGAIN
 
-    // This inner closure is NOT a state machine — it's captured data
     const items = data.lines().filter(|line| line.starts_with("#"))
 
     for item in items {
-        try File.write("out.txt", item)      // yield point
+        try File.write("out.txt", item)        // parks fiber on backpressure
     }
 })
 ```
 
-State machine variants correspond to yield points in the spawn closure's control flow. The `.filter(|line| ...)` closure is just a value held in a state machine variant.
+Parking is a runtime operation (`fiber_switch`), not a compile-time transform. The compiler does not need to know which call sites might park.
 
 ## Separate Compilation
 
 | Rule | Description |
 |------|-------------|
-| **SC1: Module metadata includes __ctx acceptance** | Compiled module metadata stores whether each public function accepts `__ctx: RuntimeContext?` |
+| **SC1: Module metadata includes "reaches spawn" bit** | Compiled module metadata stores whether each public function transitively reaches `spawn` (used by `conc.async/CC2` scope check at cross-module call sites) |
 | **SC2: Effect bits determine pause-point status** | The 3-bit effect mask from `comp.effects/INF3` (IO \| Async \| Mutation) stored per function. IO or Async → potential pause point |
-| **SC3: Public API stability** | A public function's `using` clause is part of its signature (`comp.hidden-params/PUB1`). Private functions gaining `__ctx` through propagation don't change the public interface |
+| **SC3: Public API stability** | Public function signatures carry no runtime-context annotation. Adding a `spawn` call deep in a private helper can propagate the "reaches spawn" bit upward; this is observable to callers only as a CC2 scope requirement |
 
-This section makes explicit what existing specs already imply. The `__ctx` parameter is part of the compiled function signature, stored in module metadata like any other type information. Cross-module calls resolve it the same way they resolve regular parameters.
+No `__ctx` parameter exists. Stdlib functions read the process-global runtime slot directly at execution time (see `conc.runtime`). Module metadata stores effect bits for codegen (state-machine transforms) and the "reaches spawn" bit for the `conc.async/CC2` scope check across crate boundaries.
 
 **SC4: Generic functions store conservative effects.** A generic public function `func process<T: Handler>(h: T)` might have different effects depending on `T`. Module metadata stores the union of effects across the generic body plus a "may vary by type parameter" flag. Post-monomorphization, effects are precise per instantiation (`comp.effects` edge case: "Effects inferred per monomorphized instance"). The state machine transform uses the conservative metadata for cross-module generics, precise data for local monomorphizations.
 
@@ -145,23 +137,26 @@ This section makes explicit what existing specs already imply. The `__ctx` param
 
 ```
 Module B (compiled first):
-  public func process_file(path: string) using Multitasking → metadata: { __ctx: yes, effects: IO }
-  public func parse_header(raw: string)                     → metadata: { __ctx: no,  effects: pure }
+  public func process_file(path: string) → metadata: { reaches_spawn: no,  effects: IO }
+  public func run_server()               → metadata: { reaches_spawn: yes, effects: IO | Async }
+  public func parse_header(raw: string)  → metadata: { reaches_spawn: no,  effects: pure }
 
 Module A (compiled second, imports B):
   using Multitasking {
-      process_file("x.txt")    // compiler reads metadata → passes __ctx
-      parse_header(raw)        // compiler reads metadata → no __ctx
+      process_file("x.txt")    // CC2 not applicable; state-machine sees IO bit → yield point
+      run_server()             // CC2 scope check satisfied by enclosing block
   }
+
+  run_server()                 // CC2 error: transitively reaches spawn, no block in scope
 ```
 
-The state machine transform in module A checks effect bits from module B's metadata. `process_file` has IO → yield point generated. `parse_header` is pure → no yield point.
+The state machine transform in module A checks effect bits from module B's metadata. `process_file` has IO → yield point generated. `parse_header` is pure → no yield point. The `reaches_spawn` bit drives the CC2 compile-time scope check; it does not affect codegen.
 
 ## FFI Boundary
 
 | Rule | Description |
 |------|-------------|
-| **FFI1: No __ctx for extern functions** | Foreign functions never receive `RuntimeContext`. C code can't participate in cooperative scheduling |
+| **FFI1: Extern functions cannot pause tasks** | Foreign functions don't read the process-global runtime slot. C code can't participate in cooperative scheduling |
 | **FFI2: Blocking is accepted** | FFI calls that block I/O block the worker thread. Scheduler runs remaining tasks on N-1 workers |
 | **FFI3: Compile-time warning** | Extern function calls inside `using Multitasking` context trigger a suppressible warning |
 | **FFI4: Runtime worker compensation** | If a worker thread is blocked in FFI for >1ms, the scheduler spawns a temporary replacement worker |
@@ -235,27 +230,18 @@ using Multitasking, ThreadPool {
 
 | Case | Rule | Behavior |
 |------|------|----------|
-| Trait with no I/O methods (e.g., `Display`) | VT1 | Vtable has __ctx slot. All implementations ignore it. One wasted register per call |
-| `any Reader` in non-async context | VT3 | __ctx = None passed. Blocking path used |
-| Pure closure stored in variable, called in spawn | FP1, FP3 | Wide ABI, yield point generated. Poll returns Ready immediately |
-| Cross-module function gains `__ctx` internally | SC3 | Not a breaking change if function is private. Public functions require explicit `using` clause |
+| Trait with no I/O methods (e.g., `Display`) | VT1 | Clean vtable, implementations never touch RUNTIME_SLOT, zero cost |
+| `any Reader` in non-async context | VT2 | Implementation reads RUNTIME_SLOT, finds `None`, takes blocking path |
+| Pure closure stored in variable, called in spawn | FP1, FP3 | Clean ABI, yield point generated conservatively. Poll returns Ready immediately |
+| Cross-module function gains `spawn` internally | SC3 | Caller sees a new CC2 scope requirement. Source-level breakage, same as any API change |
 | Cross-module generic with type-dependent effects | SC4 | Conservative metadata (union of effects). Precise after monomorphization |
 | FFI call returns in <1ms | FFI4 | No compensation thread, zero overhead |
 | Many concurrent blocking FFI calls | FFI4 | Scheduler grows temporarily. Bounded by OS thread limits |
-| FFI callback into Rask code | FFI1 | Runs on FFI's OS thread. No __ctx. Blocking behavior |
-| `compile_rust()` interop (`struct.build`) | FFI1 | Same rules as C FFI — no __ctx, blocks worker |
-| Nested trait object call (e.g., `io.copy(any Reader, any Writer)`) | VT4 | Two yield points per loop iteration. Two state machine variants. Acceptable — this is the I/O copy hot path, pausing is expected |
+| FFI callback into Rask code | FFI1 | Runs on FFI's OS thread. If no `using Multitasking` block is active, `spawn` in the callback is a CC3 runtime panic |
+| `compile_rust()` interop (`struct.build`) | FFI1 | Same rules as C FFI |
+| Nested trait object call (e.g., `io.copy(any Reader, any Writer)`) | VT3 | Two potential yield points per loop iteration. Two state machine variants. Acceptable — this is the I/O copy hot path |
 
 ## Error Messages
-
-```
-ERROR [conc.phase-b/VT1]: trait object method has wrong ABI
-   |
-   | (internal compiler error — this should never surface to users)
-   |
-WHY: Vtable entry function was generated without __ctx parameter slot.
-     This indicates a codegen bug in the hidden-params pass.
-```
 
 ```
 WARNING [conc.phase-b/FFI3]: extern call in async context may block worker thread
@@ -276,29 +262,33 @@ FIX: Wrap in ThreadPool.spawn for blocking FFI:
 
 ### Rationale
 
-**VT1 (wide vtable entries):** I considered three alternatives: (a) two vtables per trait (sync/async), (b) whole-program analysis to track which implementations do I/O, (c) always-wide entries. Option (a) doubles vtable count and requires runtime vtable selection. Option (b) breaks Rask's "local analysis only" principle and doesn't work with separate compilation. Option (c) costs one register per call — negligible on modern CPUs where function call overhead is dominated by branch prediction and cache effects, not register setup. One register is the right price for simplicity.
+**Clean vtable and fn-pointer ABIs (VT1, FP1):** With stackful fibers, runtime discovery happens inside the callee (via `RUNTIME_SLOT`) rather than through a parameter threaded by the caller. Indirect calls therefore don't need wide ABIs. Trait signatures match their vtable entries exactly.
 
-**VT4 (trait object calls as pause points):** This means "dead" state machine variants for in-memory trait implementations. I think that's acceptable. The alternative — tracking which concrete types are behind a trait object — requires whole-program devirtualization, which is an optimization, not something the correctness of state machine generation should depend on. Dead variants poll as Ready, the scheduler never parks, no observable cost beyond a few bytes in the enum.
+**FFI warnings (FFI3):** The effects system already marks extern functions as conservatively IO (`comp.effects/INF5`). Detecting "extern call in async context" is a subset of the existing IO-in-ThreadPool warning (`comp.effects/CW1`). Same infrastructure, same suppressibility. Warning rather than error because fast FFI calls (crypto, compression, math) are common and harmless. `@allow(ffi_in_async)` makes suppression visible and auditable.
 
-**FP1 (wide ABI for storable closures):** Consistency with VT1. All indirect calls — vtable dispatch, function pointers, storable closures — use the same calling convention. One rule to remember, one codegen path to maintain.
-
-**FFI3 (compile-time warning):** The effects system already marks extern functions as conservatively IO (`comp.effects/INF5`). Detecting "extern call in async context" is a subset of the existing IO-in-ThreadPool warning (`comp.effects/CW1`). Same infrastructure, same suppressibility. I chose a warning over an error because fast FFI calls (crypto, compression, math) are common and harmless. The `@allow` annotation makes the suppression visible and auditable.
-
-**FFI4 (runtime compensation):** Go does this for cgo and it works well in practice. The 1ms threshold avoids thread churn for fast FFI while catching blocking I/O. I thought about making the threshold configurable but decided against it — 1ms is a good default, and tuning knobs invite premature optimization. If profiling shows a different threshold is better, it can be changed in a point release without API changes.
+**FFI worker compensation (FFI4):** Go does this for cgo and it works well in practice. The 1 ms threshold avoids thread churn for fast FFI while catching blocking I/O.
 
 ### Alternatives Considered
 
-**Per-trait vtable specialization:** Generate wide vtable entries only for traits whose methods could plausibly do I/O (traits with `[]u8` buffer parameters, traits returning `or IoError`, etc.). Rejected: heuristic-based, fragile, and a custom `trait Processor { func process(self) }` could do I/O internally. The heuristic would need constant updating.
+**Stackless state machines (previously speced):** Transform every `spawn` closure into a state-machine enum; treat every I/O call and indirect call as a potential yield variant. Cheaper memory per task (~120 bytes vs ~1 MiB virtual), but:
+- Forces a wide ABI (`__ctx` on every vtable entry, every fn pointer)
+- Requires cross-crate pause-point detection via metadata bits
+- Makes "reaches spawn" observable to callers via signature-level coloring pressure
+- Violates Principle 5 indirectly by forcing library signatures to carry runtime plumbing
 
-**Thread-local __ctx instead of parameter threading:** Thread-local storage avoids the vtable ABI question entirely — implementations read __ctx from TLS. Rejected for the reasons already documented in `comp.hidden-params` appendix: not composable, not explicit, breaks on green task migration between worker threads.
+Rejected in favor of stackful fibers. See `conc.runtime` §Design Rationale.
 
-**Stackful coroutines instead of state machines:** Allocate a small stack per green task (like Go's goroutines). Avoids the state machine transform entirely — function calls just work, including through trait objects. Rejected because: (a) stack overflow detection is complex, (b) stack size tuning is a footgun (Go's goroutines start at 8KB, grow to 1MB — segmented stacks have real overhead), (c) state machines have predictable memory cost (sum of live variables at each yield point). I think the state machine approach is more Rask — costs are transparent and mechanical.
+**Thread-local runtime instead of process-global slot:** Thread-local storage breaks when fibers migrate between workers — a fiber that reads TLS on worker A and gets stolen to worker B would see B's TLS, not its original runtime. Process-global works because there's exactly one runtime per process by design (`conc.async/C1`).
+
+**Go-style copying stacks:** Start small (2 KiB), copy to a larger stack on growth, rewrite pointers. Requires GC to find pointers-into-stack during copy. Rask has no GC (ownership-based memory), so copying isn't viable. Loom-style virtual-reservation stacks avoid the issue entirely.
+
+**Per-trait vtable specialization:** Generate different vtable shapes for "pure" vs "potentially pausing" traits. Rejected as heuristic-based and fragile. With stackful fibers, the ABI is uniform anyway.
 
 ### See Also
 
 - `conc.strategy` — Phase A/B implementation strategy
-- `conc.runtime/T1-T3` — Task structure and state machine transform
-- `conc.io-context/IO7-IO9` — Trait signature / context threading orthogonality
+- `conc.runtime` — Task structure, pluggable reactor, preemption, process-global slot
+- `conc.io-context` — Runtime discovery via process-global slot
 - `comp.hidden-params` — Hidden parameter compiler pass
 - `comp.effects` — Effect tracking (IO/Async/Mutation metadata)
 - `compiler.layout/V1-V5` — Vtable memory layout

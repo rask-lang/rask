@@ -11,10 +11,12 @@ Green tasks with must-use handles. No async/await split — the same function wo
 
 | Rule | Description |
 |------|-------------|
-| **S1: Green task** | `spawn(|| {})` creates a green task; requires `using Multitasking` |
-| **S2: Pooled thread** | `ThreadPool.spawn(|| {})` runs on thread pool; requires `using ThreadPool` |
-| **S3: Raw thread** | `Thread.spawn(|| {})` creates OS thread; no context required |
+| **S1: Green task** | `spawn(|| {})` creates a green task; must run with an active `using Multitasking` block in the process |
+| **S2: Pooled thread** | `ThreadPool.spawn(|| {})` runs on thread pool; must run with an active `using ThreadPool` block |
+| **S3: Raw thread** | `Thread.spawn(|| {})` creates OS thread; no runtime required |
 | **S4: Must-use handle** | All spawn forms return handles that must be joined or detached — dropping one is a compile error |
+
+Spawn functions do not appear in signatures. No function declares `using Multitasking` — the compiler infers which functions (transitively) need a runtime and checks callers against the current lexical scope. See [Runtime Scope](#runtime-scope) below.
 
 ```rask
 func main() -> () or Error {
@@ -107,36 +109,50 @@ for url in urls {
 const results = try group.join_all()
 ```
 
-## Context Resources
+## Runtime Scope
+
+`using Multitasking(config) { ... }` is a block that opts the program into concurrency. It does not appear on function signatures — only as a block, typically near the top of `main`.
 
 | Rule | Description |
 |------|-------------|
-| **C1: Multitasking** | `using Multitasking { }` provides M:N green task scheduler + I/O event loop |
-| **C2: ThreadPool** | `using ThreadPool { }` provides thread pool for CPU-bound work |
-| **C3: Composable** | `using Multitasking, ThreadPool { }` enables both (desugars to nested blocks) |
-| **C4: Block exit** | Exiting a `using` block waits for non-detached tasks |
+| **C1: Single active runtime** | At most one `using Multitasking` block is active in the process at any time. Entering a second while one is active is an error |
+| **C2: Process-global visibility** | While the block is active, every thread in the process can `spawn()` — the runtime lives in a process-global slot |
+| **C3: Block-scoped lifetime** | The runtime starts on block entry and shuts down on block exit. No refcounting, no persistence across blocks |
+| **C4: Drain on exit** | Normal block exit waits for all tasks (including detached ones) to finish before returning. Panic-unwinding the block aborts remaining tasks |
+| **C5: Sequential blocks OK** | After one block exits cleanly, another may be opened (new runtime, possibly different config). Non-overlapping only |
+| **C6: Libraries don't install runtimes** | Only application code opens `using Multitasking`. Libraries call `spawn()` assuming the caller already did. Violation triggers C1's nesting error |
+
+`using ThreadPool(config) { ... }` works the same way for CPU-bound pools. The two can be combined with `using Multitasking, ThreadPool { }` (installs both; teardown in reverse order on block exit).
 
 <!-- test: parse -->
 ```rask
-using Multitasking(workers: 4) { }
-using ThreadPool(workers: 8) { }
-using Multitasking, ThreadPool { }
+func main() {
+    using Multitasking(workers: 4) {
+        // all spawn() calls below, on any thread, use this runtime
+        ...
+    }
+    // block exit: all spawned tasks drained, runtime shut down
+}
 ```
 
-**C3 desugaring:** `using A, B { body }` desugars to `using A { using B { body } }`. Each context gets its own scope and cleanup. LIFO: B shuts down before A.
+### Compile-time checking
 
-| Setup | Green Tasks | Thread Pool | Use Case |
-|-------|-------------|-------------|----------|
-| `using Multitasking` | Yes | No | I/O-heavy servers |
-| `using ThreadPool` | No | Yes | CLI tools, batch processing |
-| `using Multitasking, ThreadPool` | Yes | Yes | Full-featured applications |
+The compiler infers which functions transitively require a runtime (reach `spawn` through their call graph). This inference is **internal compiler metadata** — users write no annotations on signatures.
+
+| Rule | Description |
+|------|-------------|
+| **CC1: Direct spawn check** | A lexical `spawn()` call outside any `using Multitasking` block → compile error |
+| **CC2: Inferred-requirement check** | A call to any function inferred as requiring the runtime, lexically outside any block → compile error |
+| **CC3: Runtime fallback** | Cases the compiler cannot prove statically — closures stored and called across block boundaries, trait-object dispatch, FFI — fall through to a runtime panic with a clear message |
+
+Inference is invisible in source: writing or reading a function's body never involves Multitasking annotations. Users see the compile error at the **call site** ("calling `X` requires a `using Multitasking` scope; `X` needs it because it calls `spawn` at `f.rk:42`"), not at the definition.
 
 ## I/O Model
 
 | Rule | Description |
 |------|-------------|
 | **IO1: Transparent pausing** | Stdlib I/O pauses the task, not the thread — no `.await` needed |
-| **IO2: Sync fallback** | Without `using Multitasking`, I/O blocks the calling thread |
+| **IO2: Sync fallback** | Outside any `using Multitasking` block, I/O blocks the calling thread |
 
 ```rask
 func process_file(path: string) -> Data or Error {
@@ -248,23 +264,54 @@ ERROR [conc.async/H1]: unused TaskHandle
 ```
 
 ```
-ERROR [conc.async/S1]: spawn requires Multitasking context
+ERROR [conc.async/CC1]: spawn requires a Multitasking scope
    |
 5  |  spawn(|| { fetch(url) })
-   |  ^^^^^ no `using Multitasking` in scope
+   |  ^^^^^ no `using Multitasking { ... }` block encloses this call
 
-FIX: using Multitasking { spawn(|| { fetch(url) }).detach() }
+FIX: wrap the caller chain in `using Multitasking { ... }`, typically near main:
+
+    func main() {
+        using Multitasking {
+            spawn(|| { fetch(url) }).detach()
+        }
+    }
+```
+
+```
+ERROR [conc.async/CC2]: calling `fetch_page` requires a Multitasking scope
+   |
+12 |  fetch_page(url)
+   |  ^^^^^^^^^^ this function transitively requires a runtime
+   |
+NOTE: `fetch_page` reaches `spawn` at stdlib/http.rk:42
+
+FIX: wrap the caller chain in `using Multitasking { ... }`.
+```
+
+```
+RUNTIME PANIC: spawn() called with no active `using Multitasking` scope
+
+This can happen when:
+  - A closure containing spawn is stored and called outside a block
+  - A trait object dispatches to an impl that spawns
+  - FFI calls back into Rask outside any scope
+
+Install a `using Multitasking { ... }` block that encloses the call.
 ```
 
 ## Edge Cases
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Spawn outside `using Multitasking` | S1 | Compile error |
+| Direct `spawn` outside any block | CC1 | Compile error |
+| Call to function transitively reaching `spawn`, outside any block | CC2 | Compile error |
+| Closure stored / trait object dispatch reaches `spawn` outside a block | CC3 | Runtime panic |
 | `.join()` on cancelled task | H2, CN1 | Returns `Err(Cancelled)` |
 | Channel send after all receivers closed | CH3 | Returns `Err(Closed)` |
-| Nested `using Multitasking` blocks | C1 | Compile error — one scheduler per program |
-| Detached task outlives `using` block | C4 | Detached tasks run to completion independently |
+| Nested `using Multitasking` blocks | C1 | Error — second `enter` aborts (compile error if lexically nested, runtime panic otherwise) |
+| Library opens `using Multitasking` while app already did | C6 | Falls under C1 — runtime panic |
+| Detached task outlives `using` block body | C4 | Block exit still drains detached tasks. Truly outliving the block is impossible |
 
 ---
 
@@ -315,7 +362,7 @@ enum TryRecvError { Empty, Closed }
 
 | Metric | Target | This Design |
 |--------|--------|-------------|
-| TC (Transparency) | >= 0.90 | `using Multitasking`, `using ThreadPool`, spawns all visible |
+| TC (Transparency) | >= 0.90 | `using Multitasking { ... }` block visible at application entry; spawns visible at callsite |
 | ED (Ergonomic Delta) | <= 1.2 | Close to Go ergonomics |
 | SN (Syntactic Noise) | <= 0.30 | No `.await`, no boilerplate |
 | MC (Mechanical Correctness) | >= 0.90 | Must-use handles catch forgotten tasks |
