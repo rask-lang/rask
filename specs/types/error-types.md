@@ -249,26 +249,48 @@ Libraries use union errors (precise, matchable). Applications use `any Error` (e
 
 ## Error Origin Tracking
 
+Origin tracking is **opt-in** — typed errors carry no metadata unless annotated. `any Error` boxes always track origin because they're already heap-allocated.
+
 | Rule | Description |
 |------|-------------|
-| **ER33: Origin capture** | `try` records `(file, line)` on the error at the first propagation site, in both debug and release builds |
-| **ER34: Origin access** | All errors expose `.origin` — always available, ~16 bytes |
+| **ER33: Default no origin** | Typed errors (`IoError`, `ParseError`, user unions) carry no origin metadata. Zero overhead on the error value |
+| **ER34: @traced opt-in** | `@traced` on an error type enables origin capture — `try` records `(file, line)` at the first propagation site. Adds ~16 bytes to the error value |
+| **ER34a: any Error always tracks** | `any Error` carries origin unconditionally (already heap-boxed; the 16-byte cost is marginal relative to the box) |
+| **ER34b: .origin access** | `.origin` is available on `@traced` types and on `any Error`. Accessing `.origin` on a non-traced typed error is a compile error |
 
 <!-- test: skip -->
 ```rask
-func load_config(path: string) -> Config or (IoError | ParseError) {
-    const content = try read_file(path)    // origin: "config.rk:2"
-    const config = try parse(content)      // origin: "config.rk:3"
-    return config
+// Typed error — no origin, zero overhead
+enum DivError { ByZero, Overflow }
+extend DivError {
+    func message(self) -> string { match self { … } }
+}
+// sizeof(DivError) = 1 byte (tag only)
+
+// Traced error — opt-in, carries 16 bytes
+@traced
+@message
+enum ConfigError {
+    @message("not found: {0}") NotFound(string),
+    @message("parse error at {line}") Parse(line: i32),
+}
+// sizeof(ConfigError) = sizeof(payload) + 16 bytes origin
+
+func load_config(path: string) -> Config or ConfigError {
+    const text = try fs.read_file(path)     // ConfigError.NotFound captures origin
+    return try Config.parse(text)            // ConfigError.Parse captures origin
 }
 
-if start_app() is any Error as e {
-    log("{e.origin}: {e.message()}")
-    // "config.rk:2: file not found: /etc/app.conf"
+if load_config(path) is ConfigError as e {
+    log("{e.origin}: {e.message()}")         // "config.rk:42: not found: app.conf"
+}
+
+// any Error — origin always available
+func start_app() -> App or any Error {
+    const config = try load_config(path)     // IoError auto-boxes, gets origin
+    return App.new(config)
 }
 ```
-
-Cost: ~16 bytes per error (file pointer + line). Negligible on the exceptional path. For full propagation chains, add context with `try … else` at key call sites.
 
 ## @message Annotation
 
@@ -408,7 +430,9 @@ thread panicked at 'not yet implemented: keyboard handling', src/handler.rk:4:19
 | `!r?` | ER26 | Parse error suggesting `r is E` |
 | `r? && s?` in condition | ER25 | Legal bool; neither narrows |
 | Wildcard on linear error payload | ER43 | Compile error |
-| `.origin` in release build | ER33 | Always available |
+| `.origin` on `@traced` error | ER34/ER34b | Available in debug and release |
+| `.origin` on non-traced typed error | ER34b | Compile error |
+| `.origin` on `any Error` | ER34a | Always available |
 | Nested `try` in closure | ER16 | Propagates to closure's return, not the enclosing function |
 | `@message` + manual `message()` | ER35 | Compile error — pick one |
 | `@message` variant without template or delegatable payload | ER38 | Compile error |
@@ -508,6 +532,8 @@ See [optionals.md#error-messages](optionals.md). Same diagnostic fires for `matc
 
 **ER31/ER32 (libraries vs applications).** Libraries should expose precise union errors so callers can match and recover. Application code calling 5 libraries shouldn't re-declare every error on every function — `any Error` is the escape hatch, type-erased, with `is` downcast for recovery. Same split as Rust's thiserror + anyhow, built into the language.
 
+**ER33/ER34 (origin opt-in).** Forcing 16 bytes of origin metadata on every error value violates transparency of cost — an error as small as `enum DivError { ByZero }` (1 byte) would become 17 bytes with always-on tracking. The overhead is paid on the error path, but also shows up in the size of any `T or E` union, cache lines, and return ABI. Making `@traced` opt-in means library authors decide per-type. `any Error` is already heap-boxed, so tracking origin there is marginal and the ergonomic payoff (application-level diagnostics) is highest.
+
 **No `match` on Option.** See [optionals.md Appendix](optionals.md). Match for `T or E` is kept because multi-error unions genuinely need multi-arm dispatch; Option doesn't.
 
 **`try … else` over `r ?? |e| f(e)`.** Closure-form `??` overloads one operator on two distinct shapes (value vs. `|E| -> T`). Splitting the two cases — `??` for strict value fallback, `try … else` for error-recovery-with-context — keeps each form's meaning crisp.
@@ -559,7 +585,8 @@ if start_app() is any Error as e {
 - Ghost text shows inferred error union inline for `or _` and fully-omitted private functions.
 - Quick action: "Make error type explicit" fills in the inferred union.
 - Quick action: "Make public" adds `public` and the full explicit signature.
-- `.origin` hover shows the capture site.
+- `.origin` hover shows the capture site (on `@traced` types and `any Error`).
+- Ghost text shows `[traced: N bytes]` on `@traced` error types to make the overhead visible.
 
 ### See Also
 
