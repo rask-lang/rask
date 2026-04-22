@@ -10,6 +10,7 @@ Open work, grouped by theme. Bugs are tracked as [GitHub issues](https://github.
 - [ ] **Debug info — partial DWARF** — Source locations tracked but DWARF generation is minimal.
 - [ ] **Single target — x86-64 only** — Cranelift supports ARM/WASM, compiler doesn't configure them.
 - [ ] **Linear resource commitment (L1–L3)** — Ownership checker tracks it, codegen doesn't enforce.
+- [ ] **Origin tracking opt-in (ER33/ER34)** — Compiler currently tracks origin on every error (always-on). Spec revised to opt-in via `@traced` + `any Error`. Codegen and runtime need to gate origin capture on the annotation, drop the 16-byte field from non-traced types.
 
 ## Build
 

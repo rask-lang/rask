@@ -85,9 +85,79 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 - **Immutable refcounted strings** — `string` is Copy (16 bytes), immutable, atomically refcounted. Copies like a primitive. The compiler elides refcount ops in most cases (`comp.string-refcount-elision`). Go's string ergonomics without GC
 - **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly. Same mechanism for custom allocators: `using Allocator` threads an arena or fixed-buffer allocator without polluting every function signature
 - **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
-- **Union error types** — `T or (IoError | ParseError)` with automatic widening. `try...else` chains error context inline: `try read(path) else |e| context("reading {path}", e)`. Private functions can use `or _` to let the compiler infer the error union from the body
+- **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `try ... else |e|` chains transformation with propagation. See below
+- **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `== none`, `try`). Match on `T?` is a compile error. Flow narrowing on `const` bindings. Kotlin/TypeScript nullable typing, not Rust Option
 - **Must-use task handles** — `spawn(|| { work() })` returns a handle that must be joined or detached. Forgetting is a compile error
 - **No function coloring** — I/O pauses green tasks transparently. One concurrency model, no async/sync split
+
+### Rask vs. Rust
+
+Rask shares a lot of surface with Rust: move semantics, `T or E`, `try`, structural traits, explicit ownership. The thing I hear most often is "this is just Rust with syntax sugar and no lifetimes — which makes it less powerful." The syntax similarity is real. The underlying mechanics are not.
+
+**Errors don't use wrappers.** Rust forces `Ok(x)` / `Err(e)` because `Result` is an ordinary enum. Rask made `T or E` a builtin specifically to drop the wrappers — you return bare values, the compiler picks the branch by type.
+
+```rask
+func divide(a: f64, b: f64) -> f64 or DivError {
+    if b == 0.0 { return DivError.ByZero }  // E branch, by type
+    return a / b                             // T branch, by type
+}
+```
+
+The disjointness rule (T ≠ E) is the price — enforced via Rask's nominal-vs-alias split. No wrapper keyword, no variant constructors, no `unwrap()`.
+
+**Option isn't an enum.** Rust's `Option<T>` is literally `enum { Some(T), None }` — you `match` or `if let`. In Rask, `T?` is a builtin status type with an operator-only surface. `match` on `T?` is a compile error.
+
+```rask
+const name = user?.profile?.display_name ?? "Anonymous"
+if user == none { return default() }
+if user? as u { greet(u) }
+```
+
+This is closer to Kotlin's `T?` or TypeScript's `T | undefined` than Rust's `Option`.
+
+**Narrowing is flow typing, not pattern matching.** `if x? { use(x) }` narrows `x` to `T` inside the block because `const` bindings can't be reassigned. No destructuring pattern. The compiler uses a fact it already knows (constness) to refine types in branches.
+
+**Errors are bounded.** Every `E` in `T or E` must implement `ErrorMessage` — a structural trait requiring `func message(self) -> string`. Primitives can't be errors. `r!` always produces a useful panic message. Rust has no equivalent constraint; any type can be a `Result` error.
+
+**`@message` is builtin.** Rask generates the `message()` method from per-variant templates:
+
+```rask
+@message
+enum FetchError {
+    @message("not found: {pkg}") NotFound(pkg: string),
+    @message("checksum mismatch") Checksum,
+}
+```
+
+No `thiserror` macro, no hand-written match.
+
+**`try ... else |e|` block form.** Propagate and transform in one step:
+
+```rask
+const data = try fs.read(path) else |e| context("reading {path}", e)
+```
+
+Rust needs `fs::read(path).map_err(|e| ...)?`.
+
+**Linear resources in errors.** If an error variant carries a linear resource (file handle, socket), both branches of `T or E` must consume it. Rust's `Drop` runs automatically but can't return errors during cleanup — Rask's explicit consumption lets you `try file.close()` in the error arm and propagate if it fails.
+
+**Beyond errors:**
+
+| Capability | Rust | Rask |
+|---|---|---|
+| Short borrowed strings | `&str` with `'a` | — |
+| Long-lived strings | `String` (owned) | `string` (Copy, refcounted, 16 bytes) |
+| Graphs / cycles | `Rc<RefCell<T>>` | `Pool<T>` + `Handle<T>` (generation-checked, builtin) |
+| Cleanup | `Drop` (implicit, can't error) | `@resource` + `ensure` (explicit, composes with errors) |
+| Scoped mutation | closure-based | `with` block (real control flow) |
+| Implicit state | thread-locals or params | `using Pool<T>`, `using Allocator` (context clauses) |
+| Custom allocators | type parameter (`Vec<T, A>`) | `using Allocator` context (zero-sized default) |
+| Concurrency | `async`/`await` (coloring) | green tasks, no coloring, must-use handles |
+| Zero-copy parsing | lifetime-generic | not supported — use copies or handles |
+
+Rust is more powerful for library-writing — lifetime-generic code, zero-copy APIs, trait system depth. Rask is more ergonomic for application-writing — no wrappers, Copy strings, context clauses, compiler-threaded pools.
+
+It's a different point in the design space, not a subset of Rust.
 
 ### Rask vs. Hylo
 
