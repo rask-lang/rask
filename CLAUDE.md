@@ -195,6 +195,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Macros/attributes | Not specified |
 | Frontend caching | LSP works, incremental check caching not yet implemented |
 | Parallel compilation | Semantic hashing done, rayon parallelism not yet implemented |
+| Phase B task codegen | Stackless state machines vs. stackful fibers (Go/Loom-style) — user-facing semantics are fixed, codegen strategy is still open. Current spec assumes stackless; stackful is a serious alternative worth benchmarking before committing |
 
 See [TODO.md](TODO.md) for full list.
 
