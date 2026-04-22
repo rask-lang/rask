@@ -126,11 +126,11 @@ extend Db {
                 const result = try self.lookup.lookup(meta, key, mutate self.cache)
                     else |e| DbError.Sst(e)
 
-                if result? as kv {
-                    if kv.deleted {
+                if result? {
+                    if result.deleted {
                         return DbError.KeyNotFound(key)
                     }
-                    return kv.value
+                    return result.value
                 }
             }
             level_idx += 1

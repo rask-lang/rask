@@ -151,9 +151,9 @@ func main() -> () or MainError {
     // Try to receive
     const maybe_msg = test_channel.receiver.try_recv()
 
-    if maybe_msg? as value {
+    if maybe_msg? {
         print("Got message: ")
-        print(value)
+        print(maybe_msg)
         print("\n")
     } else {
         print("No message available\n")
@@ -162,9 +162,9 @@ func main() -> () or MainError {
     // Try to receive again (should fail, channel empty)
     const no_msg = test_channel.receiver.try_recv()
 
-    if no_msg? as value {
+    if no_msg? {
         print("Got message: ")
-        print(value)
+        print(no_msg)
         print("\n")
     } else {
         print("Channel empty (expected)\n")

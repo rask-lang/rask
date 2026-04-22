@@ -57,8 +57,8 @@ func example_map() {
 
     // .get() returns Option — a bare value or `none`
     const h = elements.get("H")
-    if h? as num {
-        println("Hydrogen: atomic number {num}")
+    if h? {
+        println("Hydrogen: atomic number {h}")
     }
 }
 

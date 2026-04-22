@@ -52,8 +52,8 @@ func main() {
 
     // Safe get on valid handle
     const maybe = pool.get(h1)
-    if maybe? as entity {
-        println("Got h1: {entity.name}")
+    if maybe? {
+        println("Got h1: {maybe.name}")
     }
 
     // Safe get on stale handle (should be None)

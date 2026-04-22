@@ -195,8 +195,8 @@ test "temperature at boundary" {
 test "parse altitude" {
     const r = parse_altitude("35000")
     assert r?
-    if r? as alt {
-        assert alt == 35000
+    if r? {
+        assert r == 35000
     } else {
         assert false
     }
@@ -213,8 +213,8 @@ test "parse empty altitude" {
 test "average valid readings" {
     const r = average_readings(20.0, 22.0, 21.0)
     assert r?
-    if r? as avg {
-        assert avg == 21.0
+    if r? {
+        assert r == 21.0
     } else {
         assert false
     }

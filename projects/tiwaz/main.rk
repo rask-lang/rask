@@ -37,8 +37,8 @@ func main() -> () or Error {
                         }
                         // ER24: early-exit narrow — `healthy` is the success type here
                         const result = forward(request, healthy.url, route.path)
-                        if result? as response {
-                            return response
+                        if result? {
+                            return result
                         }
                         println("error forwarding request")
                         return Response.internal_error("upstream error")

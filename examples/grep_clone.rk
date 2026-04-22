@@ -127,8 +127,8 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
 func main() {
     const args = cli.args()
     const parsed = parse_args(own args)
-    mut opts = if parsed? as o {
-        o
+    mut opts = if parsed? {
+        parsed
     } else as e {
         const msg = e.message()
         println("rgrep: {msg}")
@@ -143,8 +143,8 @@ func main() {
     while fi < opts.files.len() {
         const file_path = opts.files[fi]
         const r = grep_file(file_path, opts)
-        if r? as count {
-            total_matches = total_matches + count
+        if r? {
+            total_matches = total_matches + r
         } else as e {
             const msg = e.message()
             println("rgrep: {msg}")

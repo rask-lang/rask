@@ -101,8 +101,8 @@ func get_user(id: i64) -> Response {
         })
     }
 
-    if user? as u {
-        return Response.json(json.encode(u))
+    if user? {
+        return Response.json(json.encode(user))
     } else {
         return Response.json(json.encode(ErrorResponse { error: "user not found" }))
             .with_status(404)

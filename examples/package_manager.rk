@@ -740,7 +740,7 @@ func fetch_packages(
             const item_counter = counter.clone()
             spawn(|| {
                 const result = fetch_one(item, registry)
-                if result? as msg {
+                if result? {
                     with item_counter as c { c += 1 }
                     item_tx.send(result)
                 } else {
@@ -754,8 +754,8 @@ func fetch_packages(
         mut received = 0
         while received < items.len() {
             if rx.recv()? as result {
-                if result? as msg {
-                    println("  {msg}")
+                if result? {
+                    println("  {result}")
                 } else as e {
                     if first_error == none {
                         first_error = e
@@ -1216,8 +1216,8 @@ func run(args: CliArgs) -> () or FetchError {
 func main() {
     const args = cli.args()
     const parsed = parse_cli_args(args)
-    const cli_args = if parsed? as a {
-        a
+    const cli_args = if parsed? {
+        parsed
     } else as e {
         println("rask-fetch: {e.message()}")
         print_usage()

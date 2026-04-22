@@ -13,8 +13,8 @@ func find_positive(n: i32) -> i32? {
 test "option present operator form" {
     const result = find_positive(5)
     mut value = 0
-    if result? as v {
-        value = v
+    if result? {
+        value = result
     } else {
         value = -1
     }
@@ -24,8 +24,8 @@ test "option present operator form" {
 test "option absent operator form" {
     const result = find_positive(-3)
     mut value = 0
-    if result? as v {
-        value = v
+    if result? {
+        value = result
     } else {
         value = -1
     }

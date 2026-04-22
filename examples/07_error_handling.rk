@@ -13,9 +13,9 @@ func main() {
     // Handling T or E with narrowing
     const result = divide(10, 2)
 
-    if result? as value {
+    if result? {
         print("10 / 2 = ")
-        print(value)
+        print(result)
         print("\n")
     } else as e {
         print("Error: ")
@@ -26,9 +26,9 @@ func main() {
     // Division by zero
     const bad = divide(10, 0)
 
-    if bad? as value {
+    if bad? {
         print("Result: ")
-        print(value)
+        print(bad)
         print("\n")
     } else as e {
         print("Error: ")
@@ -52,8 +52,8 @@ func divide(a: i32, b: i32) -> i32 or DivError {
 
 func safe_calc() -> i32 {
     const x = divide(20, 4)
-    if x? as val {
-        return val * 2
+    if x? {
+        return x * 2
     }
     return 0
 }

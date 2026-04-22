@@ -106,8 +106,8 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
         else |e| CopyError.ReadError(e)
     const dst_canonical = fs.canonicalize(opts.dest).ok()
 
-    if dst_canonical? as dst {
-        if src_canonical == dst {
+    if dst_canonical? {
+        if src_canonical == dst_canonical {
             return CopyError.SameFile
         }
     }
@@ -135,8 +135,8 @@ func main() {
     const args = cli.args()
 
     const parsed = parse_args(own args)
-    const opts = if parsed? as o {
-        o
+    const opts = if parsed? {
+        parsed
     } else as e {
         println("rcopy: {e.message()}")
         std.exit(1)
@@ -147,9 +147,9 @@ func main() {
     }
 
     const result = copy_file(opts)
-    if result? as bytes {
+    if result? {
         if opts.verbose {
-            const size = format_size(bytes)
+            const size = format_size(result)
             println("Copied {size}")
         }
     } else as e {

@@ -32,8 +32,8 @@ test "force unwrap present" {
 
 test "is Some with binding" {
     const x: i32? = 10
-    if x? as val {
-        assert val == 10
+    if x? {
+        assert x == 10
     } else {
         assert false, "expected present"
     }

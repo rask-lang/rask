@@ -166,7 +166,7 @@ test "is Some with implicit narrowing" {
 // Match on Option is rejected by the compiler; operator form is idiomatic.
 test "operator-form branch" {
     const x: i32? = 7
-    const result = if x? as v { v * 2 } else { 0 }
+    const result = if x? { x * 2 } else { 0 }
     assert result == 14
 }
 

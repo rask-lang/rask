@@ -437,8 +437,8 @@ test "fs read_lines returns correct line count" {
     const path = "/tmp/rask_test_litmus2.txt"
     fs.write_file(path, "line1\nline2\nline3\n")
     const r = fs.read_lines(path)
-    if r? as lines {
-        assert lines.len() == 3
+    if r? {
+        assert r.len() == 3
     } else {
         assert false, "failed to read lines"
     }

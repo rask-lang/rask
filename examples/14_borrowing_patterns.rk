@@ -43,9 +43,9 @@ func main() {
     const first = numbers.iter().find(|x| x > 0)
     const last = numbers.iter().find(|x| x == 5)
 
-    if first? as n {
+    if first? {
         print("First: ")
-        print(n)
+        print(first)
         print("\n")
     } else {
         print("No first\n")

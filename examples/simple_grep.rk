@@ -15,11 +15,11 @@ enum GrepResult {
 func grep_file(pattern: string, path: string) -> GrepResult {
     const lines_result = fs.read_lines(path)
 
-    if lines_result? as lines {
+    if lines_result? {
         mut match_count = 0
         mut line_num = 0
 
-        for line in lines {
+        for line in lines_result {
             line_num = line_num + 1
             if line.contains(pattern) {
                 match_count = match_count + 1

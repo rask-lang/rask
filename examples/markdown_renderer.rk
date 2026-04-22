@@ -877,8 +877,8 @@ func main() {
     }
 
     const read_result = fs.read_file(input_path)
-    const content = if read_result? as c {
-        c
+    const content = if read_result? {
+        read_result
     } else as e {
         println("Error: cannot read {input_path}: {e.message()}")
         std.exit(1)
@@ -890,8 +890,8 @@ func main() {
         render_full_page(content)
     }
 
-    const html = if result? as h {
-        h
+    const html = if result? {
+        result
     } else as e {
         println("Error: {e.message()}")
         std.exit(1)
