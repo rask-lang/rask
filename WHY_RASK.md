@@ -346,72 +346,63 @@ All analysis is function-local. No whole-program inference. Changing a function 
 
 ## Side by Side
 
-The core loop of a grep clone. Same program, different languages.
+Importing users from a CSV file. Same task, same structure, different languages.
 
 **Rask:**
 ```rask
-func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
-    const content = try fs.read_file(path)
-        else |e| GrepError.FileError(e)
+func import_users(path: string, mutate db: Database) -> i64 or ImportError {
+    const file = try fs.open(path)
+        else |e| ImportError.FileError(path, e)
+    ensure file.close()
 
-    const lines = content.lines()
-    let match_count: i64 = 0
-    let line_num = 0
-
-    for line in lines {
-        line_num = line_num + 1
-        const matches = line_matches(line, opts.pattern, opts.ignore_case)
-        const show = if opts.invert_match: !matches else: matches
-
-        if show {
-            match_count = match_count + 1
-            if !opts.count_only {
-                if opts.line_numbers {
-                    println("{line_num}:{line}")
-                } else {
-                    println("{line}")
-                }
-            }
+    let imported = 0
+    for line in file.lines() {
+        const text = try line else |e| ImportError.ReadError(e)
+        const parts = text.split(",")
+        if parts.len() != 2 {
+            return ImportError.BadFormat("expected name,email on line {imported + 1}")
         }
+        db.add_user(parts[0].trim(), parts[1].trim())
+        imported += 1
     }
-
-    if opts.count_only: println("{match_count}")
-    return Ok(match_count)
+    return imported
 }
 ```
 
-**Rust equivalent:**
+**Rust:**
 ```rust
-fn grep_file(path: &str, opts: &GrepOptions) -> Result<i64, GrepError> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| GrepError::FileError(e.to_string()))?;
+fn import_users(path: &str, db: &mut Database) -> Result<i64, ImportError> {
+    let file = File::open(path)
+        .map_err(|e| ImportError::FileError(path.to_string(), e))?;
+    let reader = BufReader::new(file);
+    // file closed by Drop — close errors silently dropped
 
-    let mut match_count: i64 = 0;
-
-    for (line_num, line) in content.lines().enumerate() {
-        let matches = line_matches(line, &opts.pattern, opts.ignore_case);
-        let show = if opts.invert_match { !matches } else { matches };
-
-        if show {
-            match_count += 1;
-            if !opts.count_only {
-                if opts.line_numbers {
-                    println!("{}:{}", line_num + 1, line);
-                } else {
-                    println!("{}", line);
-                }
-            }
+    let mut imported: i64 = 0;
+    for line in reader.lines() {
+        let text = line.map_err(|e| ImportError::ReadError(e))?;
+        let parts: Vec<&str> = text.split(',').collect();
+        if parts.len() != 2 {
+            return Err(ImportError::BadFormat(
+                format!("expected name,email on line {}", imported + 1),
+            ));
         }
+        db.add_user(parts[0].trim().to_string(), parts[1].trim().to_string());
+        imported += 1;
     }
-
-    if opts.count_only { println!("{}", match_count); }
-    Ok(match_count)
+    Ok(imported)
 }
 ```
 
-They're roughly the same length. The Rust version has `&str`, `&GrepOptions`, `Result<>`, `?`, `::`, `&`, semicolons. The Rask version has `try`, `else |e|`, `const`/`let`, string interpolation. Neither is dramatically shorter.
+No single line is revolutionary. The differences are incremental:
 
-Note: this is a case where pragmatic Rust is already clean — `&str` and `&GrepOptions` are simple borrows, no lifetime annotations needed. The Rask version wins on string interpolation and no-wrapper error construction, but it's not a dramatic difference. The gap widens in code with graphs, cross-references, or complex error handling — cases where Rust reaches for `Rc<RefCell<T>>` or nested `Result` combinators.
+- `try ... else |e|` vs `.map_err(|e| ...)?` — same idea, less nesting
+- `return ImportError.BadFormat(...)` vs `return Err(ImportError::BadFormat(...))` — no wrapper
+- `return imported` vs `Ok(imported)` — no wrapper
+- `parts[0].trim()` vs `parts[0].trim().to_string()` — Copy strings
+- `"line {imported + 1}"` vs `format!("line {}", imported + 1)` — string interpolation
+- `ensure file.close()` vs implicit Drop — Rask propagates close errors; Rust silently drops them
+
+These compound. The Rask version has less noise on every line, and `ensure` is actually safer — Rust's `Drop` can't return errors, so a failing close is invisible. Using `anyhow` in Rust would shorten the error handling but lose the typed error variants that Rask keeps for free.
 
 ---
 
