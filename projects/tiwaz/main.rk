@@ -35,8 +35,8 @@ func main() -> () or Error {
                         if healthy is ProxyError {
                             return Response.internal_error("no healthy backends")
                         }
-                        const backend = healthy!
-                        const result = forward(request, backend.url, route.path)
+                        // ER24: early-exit narrow — `healthy` is the success type here
+                        const result = forward(request, healthy.url, route.path)
                         if result? as response {
                             return response
                         }

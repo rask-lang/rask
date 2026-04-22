@@ -2,7 +2,7 @@
 //! Expression type inference and specific type checks.
 
 use rask_ast::expr::{BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern};
-use rask_ast::stmt::StmtKind;
+use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
@@ -452,6 +452,11 @@ impl TypeChecker {
                 self.push_scope();
                 for stmt in stmts {
                     self.check_stmt(stmt);
+                    // ER24 / CF22 — early-exit narrowing. Solve constraints
+                    // first so method-call return types are resolved before
+                    // we inspect the scrutinee type.
+                    self.solve_constraints();
+                    self.apply_early_exit_narrowing(stmt);
                 }
                 let result = if let Some(last) = stmts.last() {
                     match &last.kind {
@@ -2162,6 +2167,130 @@ impl TypeChecker {
             Type::Option(inner_ty) => Some((narrow_name, *inner_ty, None)),
             Type::Result { ok, err } => Some((narrow_name, *ok, Some(*err))),
             _ => None,
+        }
+    }
+
+    /// ER24/CF22 — early-exit narrowing. If `stmt` is `if cond { diverges }`
+    /// (no else, or else is non-diverging), narrow the scrutinee to the
+    /// opposite variant for the rest of the enclosing block.
+    ///
+    /// Supported cond shapes:
+    /// - `r is ErrType` (or `r is ErrType as e`) where scrutinee is `T or E` —
+    ///   narrows `r` to `T` after the if.
+    /// - `x == none` where scrutinee is `T?` — narrows `x` to `T` after.
+    /// - `!r?` is a parse error already, so not handled here.
+    /// True when `expr` always diverges — i.e. the last statement in its
+    /// block is `return` / `break` / `continue`, or the expression is
+    /// itself a bare divergent keyword. Approximate; doesn't chase every
+    /// control-flow path, which is good enough for ER24 early-exit.
+    fn block_diverges(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Block(stmts) => match stmts.last().map(|s| &s.kind) {
+                Some(StmtKind::Return(_))
+                | Some(StmtKind::Break { .. })
+                | Some(StmtKind::Continue(_)) => true,
+                Some(StmtKind::Expr(inner)) => matches!(
+                    inner.kind,
+                    ExprKind::Call { .. }
+                ) && Self::is_panic_call(inner) || Self::block_diverges(inner),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn is_panic_call(expr: &Expr) -> bool {
+        if let ExprKind::Call { func, .. } = &expr.kind {
+            if let ExprKind::Ident(name) = &func.kind {
+                return matches!(name.as_str(), "panic" | "todo" | "unreachable");
+            }
+        }
+        false
+    }
+
+    pub(super) fn apply_early_exit_narrowing(&mut self, stmt: &Stmt) {
+        let expr = match &stmt.kind {
+            StmtKind::Expr(e) => e,
+            _ => return,
+        };
+
+        // `if <IsPattern/==none> { diverge }` — the parser lowers `is`
+        // patterns into IfLet; `== none` stays as If with a Binary cond.
+        match &expr.kind {
+            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
+                if !Self::block_diverges(then_branch) { return; }
+                if let Some(else_b) = else_branch {
+                    if Self::block_diverges(else_b) { return; }
+                }
+                self.narrow_result_from_err_pattern(scrutinee, pattern);
+            }
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
+                if !Self::block_diverges(then_branch) { return; }
+                if let Some(else_b) = else_branch {
+                    if Self::block_diverges(else_b) { return; }
+                }
+                // After desugar, `x == none` is `x.eq(none)`.
+                let scrutinee_opt = match &cond.kind {
+                    ExprKind::Binary { op, left, right } if matches!(op, rask_ast::expr::BinOp::Eq) => {
+                        match (&left.kind, &right.kind) {
+                            (_, ExprKind::None) => Some(left.as_ref()),
+                            (ExprKind::None, _) => Some(right.as_ref()),
+                            _ => None,
+                        }
+                    }
+                    ExprKind::MethodCall { object, method, args, .. } if method == "eq" && args.len() == 1 => {
+                        match &args[0].expr.kind {
+                            ExprKind::None => Some(object.as_ref()),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(scrutinee) = scrutinee_opt {
+                    let name = match &scrutinee.kind {
+                        ExprKind::Ident(n) if self.is_local_read_only(n) => n.clone(),
+                        _ => return,
+                    };
+                    let scrutinee_ty = match self.node_types.get(&scrutinee.id).cloned() {
+                        Some(t) => self.ctx.apply(&t),
+                        None => return,
+                    };
+                    if let Type::Option(inner) = scrutinee_ty {
+                        self.define_local_read_only(name, *inner);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn narrow_result_from_err_pattern(&mut self, scrutinee: &Expr, pattern: &rask_ast::expr::Pattern) {
+        let name = match &scrutinee.kind {
+            ExprKind::Ident(n) if self.is_local_read_only(n) => n.clone(),
+            _ => return,
+        };
+        let scrutinee_ty = match self.node_types.get(&scrutinee.id).cloned() {
+            Some(t) => self.ctx.apply(&t),
+            None => return,
+        };
+        let Type::Result { ok, err } = scrutinee_ty else { return };
+        let pattern_ty_name = match pattern {
+            rask_ast::expr::Pattern::TypePat { ty_name, .. } => ty_name.clone(),
+            rask_ast::expr::Pattern::Ident(ty_name) => ty_name.clone(),
+            _ => return,
+        };
+        let narrow_ty = super::check_pattern::normalize_type(
+            &super::parse_type::parse_type_string(&pattern_ty_name, &self.types)
+                .unwrap_or(Type::Error),
+            &self.types,
+        );
+        let err_applied = super::check_pattern::normalize_type(&self.ctx.apply(&err), &self.types);
+        let matches_err = match &err_applied {
+            Type::Union(variants) => variants.contains(&narrow_ty),
+            other => other == &narrow_ty,
+        };
+        if matches_err {
+            self.define_local_read_only(name, *ok);
         }
     }
 }
