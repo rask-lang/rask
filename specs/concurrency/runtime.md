@@ -1,6 +1,6 @@
 <!-- id: conc.runtime -->
 <!-- status: decided -->
-<!-- summary: Async runtime implementation model - M:N scheduler, reactor, task state machines -->
+<!-- summary: Async runtime implementation model - M:N scheduler, pluggable reactor, stackful fibers -->
 <!-- depends: concurrency/async.md, memory/context-clauses.md, memory/resource-types.md -->
 
 # Async Runtime Implementation Model
@@ -9,22 +9,25 @@ This document specifies the runtime mechanisms that implement the async semantic
 
 **Target audience:** Compiler engineers, runtime implementers, performance engineers
 
-**Relationship to async.md:** async.md defines the rules (S1-S4, H1-H4, C1-C4, etc.). This spec explains the data structures, algorithms, and protocols that enforce those rules.
+**Relationship to async.md:** async.md defines the rules (S1-S4, H1-H4, C1-C6, CC1-CC3). This spec explains the data structures, algorithms, and protocols that enforce those rules.
 
 ---
 
 ## Overview
 
-Rask's async runtime is an **M:N green task scheduler** with transparent I/O pausing. Key properties:
+Rask's async runtime is an **M:N stackful-fiber scheduler** with transparent I/O pausing. Key properties:
 
-- **Green tasks**: Lightweight tasks (stackless state machines) multiplexed on OS threads
+- **Green tasks**: Stackful fibers with `mmap`'d virtual stacks, multiplexed on OS threads
 - **Work-stealing scheduler**: Per-thread FIFO queues with random victim stealing for load balance
-- **Event loop**: Central reactor (epoll/kqueue) for I/O multiplexing
+- **Pluggable reactor**: io_uring on Linux 5.1+, epoll/kqueue/IOCP as fallbacks
+- **Signal-based preemption**: Tasks are preempted at safe points — no "CPU hogs worker" footgun
 - **Context-aware I/O**: Stdlib functions read the runtime from a process-global slot installed by `using Multitasking { ... }`
-- **No async/await split**: Same function works in async and sync contexts (no "function coloring", no signature annotations)
+- **No async/await split**: Same function works in async and sync contexts. No state-machine transform, no signature annotations, no ABI changes
 - **Must-use handles**: Must join or detach (runtime panic if dropped)
 
-**Current interpreter:** Uses OS threads for spawn(), not green tasks. No M:N scheduler or event loop. Full runtime planned for compiled version. See [§15](#implementation-notes-for-interpreter) for details.
+**Current interpreter:** Uses OS threads for spawn(), not green tasks. No M:N scheduler or event loop. Full runtime planned for compiled version. See [§Implementation Notes for Interpreter](#implementation-notes-for-interpreter).
+
+**Codegen choice:** Rask uses **stackful fibers, not stackless state machines.** Rationale at [§Design Rationale](#design-rationale). The user-facing language is unaffected either way — this is purely an implementation decision.
 
 ---
 
@@ -39,8 +42,22 @@ Task<T> {
     waker: Mutex<Option<Waker>>,        // Reactor wake-up handle
     cancel_flag: AtomicBool,            // Cooperative cancellation (CN1)
     ensure_hooks: Mutex<Vec<EnsureHook>>, // Resource cleanup (mem.resources/R4)
-    future: Box<dyn Future<Output = T>>,  // State machine — no Pin needed (see T3-NOTE)
+    stack: FiberStack,                  // mmap'd virtual stack (see T3)
+    context: SavedContext,              // Callee-saved regs + rsp/rbp when parked
+    entry: Box<dyn FnOnce() -> T>,      // Fiber body (consumed on first run)
     spawn_location: (&'static str, u32), // (file, line) for debug traces
+}
+
+struct FiberStack {
+    base: *mut u8,      // mmap'd region, demand-paged
+    size: usize,        // Reservation size, default 1 MiB
+    guard_page: *mut u8,  // PROT_NONE page at top for overflow detection
+}
+
+struct SavedContext {
+    rsp: u64,           // Stack pointer when parked
+    rbp: u64,           // Frame pointer
+    callee_saved: [u64; 6], // rbx, r12-r15 (System V AMD64 ABI)
 }
 ```
 
@@ -53,12 +70,20 @@ Task<T> {
 | `waker` | Event loop writes this when I/O ready | 16 bytes |
 | `cancel_flag` | Set by cancel(), checked at safe points | 1 byte |
 | `ensure_hooks` | Cleanup functions run on unwind | 24 bytes (Vec overhead) |
-| `future` | Compiled closure state machine | Variable (closure captures) |
+| `stack` | Virtual stack reservation (physical = RSS on demand) | 16 bytes struct, 1 MiB virtual |
+| `context` | Register snapshot when parked | 64 bytes |
+| `entry` | Fiber body closure (freed once entered) | Variable captures |
 | `spawn_location` | Debug info for stack traces | 16 bytes |
 
-**Total base cost:** ~120 bytes + closure captures
+**Total base cost:** ~150 bytes struct + 1 MiB virtual + physical proportional to stack depth.
 
-**Example:** `spawn(\|\| { process_request(conn) })` captures `conn` (typically 16-32 bytes), so total task cost ~150 bytes. 100k concurrent tasks = 15MB (acceptable).
+**Memory model:** The 1 MiB stack is virtual address space, not physical memory. Physical pages are allocated on first touch (demand paging). A fiber whose deepest call uses 4 KiB consumes 4 KiB of RSS. 100 k fibers average 4 KiB deep = ~400 MiB RSS, ~100 GiB virtual — fine on 64-bit (256 TiB address space).
+
+**Guard page:** A `PROT_NONE` page at the top of each stack catches stack overflow as a SIGSEGV, converted to a Rask panic with a clear message.
+
+**Spawn cost:** Stack regions are pooled. First spawn mmaps a fresh region (~1 µs); subsequent spawns reuse freed regions (~100 ns).
+
+**Comparison to stackless state machines** (the rejected alternative): state machines cost 120 bytes + closure captures per task, no stack. Cheaper in memory, but require compile-time transformation, wide ABI for indirect calls, and user-visible coloring pressure. See [§Design Rationale](#design-rationale).
 
 ### Task State Machine (T2)
 
@@ -103,9 +128,9 @@ Task<T> {
 - Result is written before state transitions to Complete (Release ordering)
 - Only one thread polls a task at a time (queue ownership ensures this)
 
-### Closure to State Machine Transform (T3)
+### Fiber Execution Model (T3)
 
-**Compiler transformation:** Closure → state machine at pause points (I/O calls, channel ops).
+**No closure transformation.** Spawned closures run directly on the fiber's stack. When the fiber hits an I/O call or channel op that would block, the I/O function parks the fiber via a context switch — no compile-time rewriting, no state-machine enum, no `Pin`, no `Future` trait.
 
 **Example:**
 ```rask
@@ -116,55 +141,18 @@ spawn(|| {
 })
 ```
 
-**Desugars to state machine:**
-```rust
-enum State {
-    Start { },
-    AwaitingOpen { open_future: IoFuture<File> },
-    AwaitingRead { file: File, read_future: IoFuture<Vec<u8>> },
-    Processing { data: Vec<u8> },
-    Complete { result: Result<(), Error> },
-}
+**What actually runs:** the closure body executes as ordinary machine code on the fiber's mmap'd stack. Local variables (`file`, `data`) live on that stack exactly like in any sync function. When `File.open` parks (reactor registration, stack pointer saved in `SavedContext`), the worker thread context-switches to another ready fiber. When the reactor wakes this fiber, a worker switches back onto its stack and the function resumes right after the I/O call. From the closure's perspective, `File.open` simply returned — no yield machinery is visible in source or compiled code.
 
-impl Future for State {
-    fn poll(&mut self, cx: &mut Context) -> Poll<Result<(), Error>> {
-        loop {
-            match self {
-                Start => {
-                    let fut = File::open("data.txt");
-                    *self = AwaitingOpen { open_future: fut };
-                }
-                AwaitingOpen { open_future } => {
-                    match open_future.poll(cx) {
-                        Poll::Ready(Ok(file)) => {
-                            let fut = file.read_all();
-                            *self = AwaitingRead { file, read_future: fut };
-                        }
-                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                        Poll::Pending => return Poll::Pending,
-                    }
-                }
-                AwaitingRead { file, read_future } => {
-                    match read_future.poll(cx) {
-                        Poll::Ready(Ok(data)) => {
-                            *self = Processing { data };
-                        }
-                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                        Poll::Pending => return Poll::Pending,
-                    }
-                }
-                Processing { data } => {
-                    let result = process(data);
-                    return Poll::Ready(Ok(result));
-                }
-                Complete { result } => unreachable!(),
-            }
-        }
-    }
-}
-```
+**Context switch primitive:** `fiber_switch(from: &mut SavedContext, to: &SavedContext)` — an assembly routine that saves rsp/rbp/callee-saved regs to `from`, loads them from `to`, and returns into the other fiber's stack. One switch is ~50 ns on modern x86-64 (similar cost to a function call with spilled registers).
 
-> **T3-NOTE: No Pin required.** Rask's "no storable references" rule (CORE_DESIGN.md §3) means state machine variants only hold owned values — `IoFuture<File>`, `File`, `Vec<u8>` in the example above. No self-referential pointers. In Rust, `Pin` exists because async state machines can hold references to their own fields. Rask closures passed to `spawn` can only capture owned or Copy values (mem.closures/SL2), so the generated state machine can never reference itself. The `future` field in T1 is a plain `Box`, not `Pin<Box>`.
+**Why this is simpler than state machines:**
+- No per-function codegen variation — `File.open` compiles the same way whether called from inside a fiber or from sync code.
+- No ABI implications — function pointers, trait objects, and closures all have their declared signatures.
+- Recursion, deeply nested calls, and higher-order dispatch all work without special handling.
+- Stack traces are real stack traces.
+- No need to track pause points at compile time — any function call site is potentially a park point, but the runtime handles it transparently.
+
+**No `Pin` required.** Rask's "no storable references" rule (CORE_DESIGN.md §3) already prevented self-referential state-machine patterns. With stackful fibers, the question is moot — there is no state machine.
 
 **Current interpreter:** No state machine transform. Closures execute on real OS thread stacks. Full transform planned for compiled version.
 
@@ -240,32 +228,33 @@ fn worker_loop(ctx: RuntimeContext) {
     }
 }
 
-fn poll_task(task: Arc<Task>, ctx: RuntimeContext) {
+fn run_task(task: Arc<Task>, worker: &Worker) {
     task.state.store(Running, SeqCst);
 
-    let waker = waker_for_task(task.clone());
-    let mut cx = Context::from_waker(&waker);
+    // Context switch onto the fiber's stack.
+    // If the fiber was previously parked, this resumes exactly where it left off
+    // (just after the I/O call that parked it). If fresh, it begins at the
+    // closure's entry point.
+    fiber_switch(&mut worker.scheduler_context, &task.context);
 
-    match task.future.poll(&mut cx) {
-        Poll::Ready(result) => {
-            task.result.lock().unwrap().replace(result);
-            task.state.store(Complete, Release);  // Release ensures result visible
-            task.notify_waiters();
-        }
-        Poll::Pending => {
-            task.state.store(Waiting, SeqCst);
-            // Task parked, waker registered with reactor
-        }
-    }
+    // We return here when the fiber either:
+    //   (a) calls into an I/O stdlib function that decides to park it — in
+    //       which case the I/O function performs `fiber_switch` back to the
+    //       worker, leaving task.state = Waiting.
+    //   (b) completes — in which case the fiber's entry routine stored the
+    //       result and transitioned task.state to Complete before switching
+    //       back to the scheduler.
+    //   (c) hits a preemption safe point after exhausting its budget — in
+    //       which case it re-queues itself as Ready.
 }
 ```
 
 **Performance:**
-- Local queue pop: ~10ns (lock-free fast path)
-- Steal attempt: ~200ns (CAS on victim's deque)
-- Global queue: ~50ns (lock-free injection queue)
-- Reactor poll: ~1µs (epoll_wait syscall)
-- Task poll: ~50ns (state machine transition)
+- Local queue pop: ~10 ns (lock-free fast path)
+- Steal attempt: ~200 ns (CAS on victim's deque)
+- Global queue: ~50 ns (lock-free injection queue)
+- Reactor poll: ~1 µs (epoll_wait/io_uring syscall)
+- Context switch: ~50 ns (save/restore 8 regs + stack swap)
 
 ### Work Stealing Protocol (S3)
 
@@ -290,12 +279,12 @@ func spawn<T>(closure: || -> T) -> TaskHandle<T> {
     // Read process-global runtime slot. Runtime panic if no block is active
     // (CC3 fallback: most missing-scope cases are caught at compile time by
     // CC1/CC2, this panic covers the cases static analysis cannot prove).
-    const ctx = RUNTIME_SLOT.read() else {
+    const runtime = RUNTIME_SLOT.read() else {
         panic!("spawn() called with no active 'using Multitasking' scope")
     }
 
-    // Transform closure to state machine (T3)
-    const future = closure_to_state_machine(closure)
+    // Acquire a stack region (pooled; mmap a fresh 1 MiB if pool is empty).
+    const stack = runtime.stack_pool.acquire()
 
     // Allocate Task on heap
     const task = Arc::new(Task {
@@ -304,7 +293,9 @@ func spawn<T>(closure: || -> T) -> TaskHandle<T> {
         waker: Mutex::new(None),
         cancel_flag: AtomicBool::new(false),
         ensure_hooks: Mutex::new(Vec::new()),
-        future: Box::pin(future),
+        stack,
+        context: SavedContext::initial(stack, fiber_entry::<T>),
+        entry: Box::new(closure),
         spawn_location: (file!(), line!()),
     })
 
@@ -324,11 +315,63 @@ func spawn<T>(closure: || -> T) -> TaskHandle<T> {
         consumed: false,
     }
 }
+
+// Trampoline that runs on the fiber's stack the first time it's scheduled.
+fn fiber_entry<T>(task: &Task<T>) -> ! {
+    let closure = task.entry.take().expect("entry consumed");
+    let result = catch_unwind(|| closure());
+    store_result(task, result);
+    task.state.store(Complete, Release);
+    // Switch back to scheduler; worker sees Complete and notifies waiters.
+    fiber_switch(&mut task.context, &scheduler_context());
+    unreachable!("resumed a completed fiber")
+}
 ```
 
-**Cost:** ~100ns (Arc allocation + queue push)
+**Cost:** ~100 ns with warm stack pool; ~1 µs cold (first spawn triggers mmap).
 
-**Current interpreter:** Creates OS thread via `std::thread::spawn`, not green task. No state machine. Returns `ThreadHandle` wrapping `JoinHandle`.
+**Stack pool:** Per-runtime pool of freed stack regions. On fiber completion, its region returns to the pool (marked `MADV_FREE` or `madvise(DONTNEED)` so the OS can reclaim physical pages while the virtual reservation stays cheap).
+
+**Current interpreter:** Creates OS thread via `std::thread::spawn`, not a fiber. No pool, no context switching. Returns `ThreadHandle` wrapping `JoinHandle`.
+
+---
+
+## Preemption
+
+### Why preempt (P1)
+
+Cooperative-only scheduling has a well-known footgun: a fiber that runs a CPU-bound loop with no I/O blocks its worker thread until it finishes. 100 such fibers × N workers → starvation. The historical mitigation (a linter that warns about "CPU in async context") is a workaround, not a fix.
+
+Rask preempts fibers at safe points, like Go since 1.14. No CW1-style linter warning is needed.
+
+### Mechanism (P2)
+
+| Rule | Description |
+|------|-------------|
+| **P2.1: Budget per fiber** | Each fiber starts with a budget (default 10 ms of wall time). When budget expires, preemption is requested |
+| **P2.2: Safe points at function calls** | Function prologues check a per-fiber preemption flag. If set, the function yields back to the scheduler via `fiber_switch` before executing |
+| **P2.3: Signal preemption for tight loops** | If a fiber runs 50 ms past its budget without hitting a safe point, the runtime delivers SIGURG to the carrier thread. The signal handler parks the fiber at the signal site |
+| **P2.4: No unsafe preemption points** | Signal handlers check a per-worker "preemption allowed" flag, disabled during FFI calls, unsafe blocks, and codegen'd sections that hold internal locks |
+
+### Safe-point instrumentation (P3)
+
+The compiler inserts a preemption check into every function prologue:
+
+```
+func_prologue:
+    mov     rax, [current_task + OFFSET_PREEMPT_FLAG]
+    test    rax, rax
+    jnz     yield_back_to_scheduler
+    ; ... normal prologue ...
+```
+
+Cost per function call: one cache-resident load + test + conditional branch. Modern branch predictors handle this for free in the common case.
+
+### Rationale
+
+**Why not Go's approach exactly?** Go uses a GC-pre-existing "stack growth" check at prologues for preemption. Rask doesn't have stack growth (demand-paged fixed reservation), so the check piggybacks on a different mechanism — but the cost is identical.
+
+**Why SIGURG?** Matches Go since 1.14. SIGURG is "urgent condition on socket" in POSIX but nothing uses it in practice; reusing it avoids conflicts with user-chosen signal handlers.
 
 ---
 
@@ -438,6 +481,23 @@ Reactor {
 **Bottleneck:** At very high I/O rates (>100k ops/sec), reactor becomes contention point. I think that's acceptable for initial implementation. Can upgrade to per-thread reactors if profiling shows this is a bottleneck in real workloads.
 
 **Alternative considered (per-thread reactors):** Each worker owns an epoll/kqueue. Scales better but requires task→reactor affinity (tasks can't migrate between workers). Adds complexity for edge cases (task woken on different thread). Decided against for simplicity.
+
+### Pluggable Reactor Backends (R1.1)
+
+The `Reactor` abstracts over several kernel APIs. The runtime picks the best available backend at startup:
+
+| Backend | Platform | Model | Notes |
+|---------|----------|-------|-------|
+| **io_uring** | Linux 5.1+ | Completion-based | Preferred on modern Linux. Supports async disk I/O (epoll never did). Batched syscalls. Zero-copy path via `IORING_OP_READ_FIXED` |
+| **epoll** | Linux < 5.1 | Readiness-based | Fallback for older kernels. Limited to socket/pipe I/O |
+| **kqueue** | macOS, BSD | Readiness-based | Primary reactor on Apple platforms |
+| **IOCP** | Windows | Completion-based | Windows native completion ports |
+
+**Backend selection:** probe at startup via `uname`/`getpid` + feature check. Prefer io_uring on Linux if the running kernel supports `IORING_OP_CLOSE` (indicates 5.11+, the practical "io_uring is stable" floor). Otherwise epoll.
+
+**Interface:** each backend implements a common `Poller` trait with `register(fd, interest, waker)`, `poll(timeout) -> Events`, and `submit(op) -> CompletionFuture` (for completion-based backends). Completion-based backends expose the same readiness-style API for code that doesn't need the completion semantics.
+
+**Tradeoff:** completion-based backends let us avoid the EAGAIN dance (R3) entirely for file I/O. Readiness-based backends keep the existing protocol. Stdlib I/O functions branch on the backend type, but the user-visible API is identical.
 
 ### Reactor Integration with Scheduler (R2)
 
@@ -1473,20 +1533,22 @@ fn thread_pool_worker(pool: Arc<ThreadPool>) {
 
 ### Memory Costs (P2)
 
-| Structure | Size | Notes |
-|-----------|------|-------|
-| Task | 120 bytes | Base (no captures) |
-| Task with captures | 120 + N bytes | N = closure capture size |
-| TaskHandle | 16 bytes | Arc + bool |
-| Channel | 64 bytes | + capacity * sizeof(T) |
-| Sender/Receiver | 16 bytes each | Arc to channel |
-| Runtime | ~8KB | Workers + reactor + queues |
+| Structure | Virtual | Physical (typical) | Notes |
+|-----------|---------|--------------------|-------|
+| Task struct | 150 bytes | 150 bytes | Control block (state, context, metadata) |
+| Fiber stack | 1 MiB (mmap) | ~4 KiB | Demand-paged; physical = pages actually touched |
+| TaskHandle | 16 bytes | 16 bytes | Arc + consumed bool |
+| Channel | 64 bytes | 64 bytes | + capacity * sizeof(T) |
+| Sender/Receiver | 16 bytes each | 16 bytes each | Arc to channel |
+| Runtime | ~8 KiB | ~8 KiB | Workers + reactor + queues + stack pool |
 
 **Example calculations:**
 
-- 100k concurrent tasks (no captures): 100k * 120 = 12MB
-- 1M tasks: 120MB (starts to matter)
-- 10k channels (capacity 100, 32-byte items): 10k * (64 + 100*32) = ~32MB
+- 100 k fibers averaging 4 KiB stack depth: ~400 MiB physical, ~100 GiB virtual (fine on 64-bit; 0.04% of 256 TiB address space).
+- 1 M fibers averaging 4 KiB: ~4 GiB physical, ~1 TiB virtual. Memory-bound but feasible.
+- 10 k channels (capacity 100, 32-byte items): 10k * (64 + 100*32) = ~32 MiB
+
+**Comparison to stackless state machines:** state machines win by ~10-100× on task memory (120 bytes + captures vs 1 MiB virtual / 4 KiB physical). Stackful pays that memory to avoid the compile-time transform and user-visible coloring. See [§Design Rationale](#design-rationale).
 
 ### Scalability Limits (P3)
 
@@ -2015,7 +2077,7 @@ using Multitasking {
 
 **Why the gap?**
 
-Interpreter is an MVP for validating language semantics, not full runtime. Building M:N scheduler, reactor, and state machine transform is a multi-month project best suited for compiled version.
+Interpreter is an MVP for validating language semantics, not a full runtime. Building the M:N scheduler, fiber context switching, and pluggable reactor is a multi-month project best suited for the compiled version.
 
 **What works:**
 - ThreadPool (correct implementation, uses OS thread pool)
@@ -2027,16 +2089,17 @@ Interpreter is an MVP for validating language semantics, not full runtime. Build
 - Scalability: 100k concurrent connections would create 100k OS threads (crash)
 - Transparent I/O pausing: I/O blocks the entire OS thread
 - Cancellation: No cancel flag, no ensure hook execution
-- True "no function coloring": Same code but not truly async (just threaded)
+- Preemption: OS thread preemption only (no per-fiber budget)
 
 **Path to full runtime:**
 
 Planned for compiled version:
-1. Closure → state machine transform (compiler pass)
+1. Stackful fiber implementation (mmap stack pool, `fiber_switch` in assembly)
 2. M:N scheduler implementation (work-stealing queues)
-3. Reactor (mio integration)
-4. Context parameter desugaring (similar to Pool<T>)
-5. Static must-use handle checking (must-consume types in type system)
+3. Pluggable reactor (io_uring on Linux 5.1+, epoll/kqueue/IOCP fallbacks)
+4. Signal-based preemption (safe-point instrumentation + SIGURG handler)
+5. Process-global runtime slot install/uninstall for `using Multitasking` blocks
+6. Static must-use handle checking (must-consume types in type system)
 
 Interpreter remains as-is (OS threads) for semantics validation and examples.
 
@@ -2066,11 +2129,15 @@ Interpreter remains as-is (OS threads) for semantics validation and examples.
 - Overflow to global handles bursts gracefully
 - Backpressure on spawn is unacceptable (surprising behavior)
 
-**Stackless over stackful tasks:**
-- Stackful is simpler (no compiler transform) but expensive
-- 8KB stack * 100k tasks = 800MB (unacceptable)
-- Stackless: 120 bytes * 100k = 12MB (acceptable)
-- Requires compiler but that's planned anyway
+**Stackful fibers over stackless state machines:**
+- Stackless state machines are cheaper per-task (~120 bytes vs ~1 MiB virtual), but force:
+  - Compile-time state-machine transform on every spawn closure
+  - Wide ABI for trait objects, fn pointers, stored closures
+  - Cross-crate "reaches spawn" metadata + the CC2 reachability check
+  - User-visible coloring pressure that chronically leaks through libraries
+- Stackful fibers avoid all of that. The per-task memory arithmetic is "bad" only if you use fixed physical stacks. With mmap'd virtual reservations + demand paging, 100 k fibers averaging 4 KiB deep cost ~400 MiB physical (fine), ~100 GiB virtual (fine on 64-bit).
+- Rask has no GC, so Go's stack-copying approach (which needs GC to rewrite pointers) is not viable. Pre-allocated virtual reservations with guard pages are simpler and don't need copying.
+- Proven at scale: Java Loom (production in JDK 21), Go goroutines, Erlang processes. All stackful, all uncolored.
 
 **Lock-protected channels over lock-free:**
 - Lock-free is faster under contention but much more complex
@@ -2079,12 +2146,15 @@ Interpreter remains as-is (OS threads) for semantics validation and examples.
 - I think that's rare; most programs use multiple channels
 - Can upgrade to lock-free (crossbeam) if profiling shows need
 
-**Hidden parameter over thread-local:**
-- Thread-local is faster (~1ns) and simpler
-- Hidden parameter is cleaner (explicit in type system)
-- Consistent with existing `using Pool<T>` mechanism
-- Enables future extensions (task migration, multiple runtimes)
-- User chose this approach despite complexity
+**Process-global runtime slot over thread-local or hidden parameter:**
+- Hidden parameter threaded through signatures = function coloring. Rejected per Principle 5.
+- Thread-local breaks on fiber migration between workers — a fiber reads its original worker's TLS, not the new one's.
+- Process-global slot works for all cases: one runtime per process by design (`conc.async/C1`), every thread sees the same slot. See `conc.runtime` install/uninstall in [§I/O Integration](#io-integration).
+
+**Signal-based preemption over cooperative-only:**
+- Cooperative-only makes "CPU in async" a footgun that needs a linter warning
+- Signal preemption (Go 1.14+ style) eliminates the footgun entirely at ~1 instruction per function call
+- Complexity is contained: signals only deliver at pre-instrumented safe points
 
 ### Tradeoffs Accepted (DR2)
 
@@ -2104,19 +2174,17 @@ I prioritize understandable, correct implementations over exotic optimizations. 
 
 ### Comparison with Other Runtimes (DR3)
 
-| Aspect | Rask (this spec) | tokio (Rust) | Go runtime |
-|--------|------------------|--------------|-----------|
-| Task repr | Stackless state machine | Stackless (async/await) | Stackful (2KB) |
-| Scheduler | Per-thread FIFO + random steal | Multi-layer sharded queues | Per-P FIFO, no steal |
-| Queue type | Bounded (1024) with overflow | Unbounded | Unbounded |
-| Reactor | Single central | Per-thread (io-uring optional) | Single netpoller |
-| Context detection | Hidden parameter | Explicit async fn | Implicit (runtime checks) |
-| Affine handles | Must join/detach (panic) | Must .await (compile error) | No enforcement (leak OK) |
-| Cancellation | Cooperative flag | Drop future (immediate) | Context.Cancel (cooperative) |
-| Channel impl | Lock-protected ring buffer | Lock-free crossbeam | Lock-free hchan |
-| Work distribution | Good (stealing) | Excellent (sophisticated) | Fair (no stealing) |
-| Complexity | Low | High (7 queue types) | Medium |
-| Target use case | 80% of workloads | High-performance async | General concurrency |
+| Aspect | Rask (this spec) | tokio (Rust) | Go runtime | Java Loom |
+|--------|------------------|--------------|-----------|-----------|
+| Task repr | Stackful fiber (mmap virtual stack) | Stackless (async/await) | Stackful (2 KiB copying) | Stackful (heap-chunked) |
+| Scheduler | M:N, per-thread FIFO + random steal | Multi-layer sharded queues | M:N, per-P FIFO + steal | M:N on carrier threads |
+| Preemption | Signal-based at safe points | Cooperative (explicit `.await`) | Signal-based (since 1.14) | Cooperative (pre-emption planned) |
+| Reactor | Pluggable (io_uring / epoll / kqueue / IOCP) | epoll + io_uring opt-in | netpoller (epoll/kqueue) | Varies by JVM |
+| Function coloring | None (Principle 5) | `async fn` colored | None | None |
+| Affine handles | Must join/detach (panic) | Must `.await` (compile error) | No enforcement | No enforcement |
+| Cancellation | Cooperative flag | Drop future (immediate) | `Context.Cancel` (cooperative) | Thread.interrupt |
+| GC requirement | None (ownership-based) | None | Required (stack copying) | Required (JVM) |
+| Target use case | 80% of workloads | High-performance async | General concurrency | General JVM apps |
 
 **Summary:**
 - Rask is simpler than tokio (fewer queue types, single reactor)
@@ -2191,10 +2259,11 @@ These items need future resolution:
 This spec defines the **M:N green task runtime** that realizes Rask's async semantics (conc.async).
 
 **Key mechanisms:**
-- Tasks: Stackless state machines (120 bytes)
-- Scheduler: Work-stealing FIFO queues
-- Reactor: Single central epoll/kqueue (Phase 1 prototype)
-- I/O: Context-aware via hidden parameters (with tooling requirements)
+- Tasks: Stackful fibers with mmap'd virtual stacks (~150 B struct + 1 MiB virtual, demand-paged)
+- Scheduler: Work-stealing FIFO queues, M:N on OS workers
+- Preemption: Signal-based at safe points (no "CPU in async" footgun)
+- Reactor: Pluggable (io_uring on Linux 5.1+, epoll/kqueue/IOCP as fallbacks)
+- Runtime discovery: Process-global slot installed by `using Multitasking { ... }` (no signature coloring)
 - Handles: Affine (compile-time checking via linear types)
 - Cancellation: Cooperative flag + ensure hooks
 - Channels: Lock-protected ring buffers

@@ -16,7 +16,7 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 | **RS3: Performance boundary** | Phase A handles ~10k concurrent tasks. Phase B targets 100k+ (per `conc.runtime/P3`) |
 | **RS4: No feature gating** | Phase A implements everything in `conc.async` — no deferred features. Only implementation strategy differs |
 
-**Why not jump straight to M:N?** Building a closure-to-state-machine compiler transform, work-stealing scheduler, and reactor simultaneously is a recipe for debugging three things at once. OS threads let us validate the full concurrency API with a thin C runtime.
+**Why not jump straight to M:N?** Building the `fiber_switch` assembly routines, work-stealing scheduler, pluggable reactor, and preemption machinery simultaneously is a recipe for debugging four things at once. OS threads let us validate the full concurrency API with a thin C runtime first.
 
 ## Phase A: OS Threads (1:1)
 
@@ -72,21 +72,21 @@ All C files live in `compiler/runtime/`.
 
 ### What this defers
 
-- Green tasks / stackless state machines (runtime.md/T1-T3) — `green.c` is a stub
+- Stackful fibers (runtime.md/T1-T3) — `green.c` stubbed, `fiber_switch` assembly not written
 - Work-stealing scheduler (runtime.md/S1-S4) — `green.c` has the skeleton
 - Reactor / epoll / io_uring (runtime.md/R1-R3) — `io_epoll_engine.c` and `io_uring_engine.c` exist but aren't wired
 - Transparent I/O pausing (tasks block their OS thread instead)
 - Timer wheel (uses `clock_nanosleep` for now)
 - 100k+ concurrent task scalability
 
-## Phase B: M:N Green Tasks
+## Phase B: M:N Stackful Fibers
 
 | Rule | Description |
 |------|-------------|
-| **B1: Full runtime.md** | Implements everything in `conc.runtime` — scheduler, reactor, state machines |
-| **B2: State machine transform** | Compiler pass converts closures to stackless state machines at pause points |
-| **B3: Swap runtime internals** | `rask_spawn` switches from `pthread_create` to scheduler queue push. API unchanged |
-| **B4: Trigger** | Upgrade when: (a) Cranelift backend handles full control flow, and (b) real programs hit the ~10k thread ceiling |
+| **B1: Full runtime.md** | Implements everything in `conc.runtime` — work-stealing scheduler, pluggable reactor, stackful fibers, signal-based preemption |
+| **B2: Stackful fiber codegen** | No state-machine transform. Function bodies compile the same as in Phase A. Parking happens via `fiber_switch` calls inside stdlib I/O functions |
+| **B3: Swap runtime internals** | `rask_spawn` switches from `pthread_create` to fiber allocation + queue push. API unchanged |
+| **B4: Trigger** | Upgrade when: (a) Cranelift backend handles full control flow, (b) `fiber_switch` assembly routines are ready for the supported targets, and (c) real programs hit the ~10k thread ceiling |
 
 ### Migration path
 
@@ -94,19 +94,21 @@ No source changes. The C runtime files swap internals:
 
 | Function | Phase A (current) | Phase B |
 |----------|-------------------|---------|
-| `rask_spawn` | `pthread_create` (`thread.c`) | Allocate `Task`, push to worker queue |
-| `rask_join` | `pthread_join` + `TaskState` (`thread.c`) | Park task or block thread (J1) |
-| I/O calls | Blocking syscall | Non-blocking + reactor registration |
-| `rask_channel_send` | Ring buffer + mutex (`channel.c`) | Lock-free ring buffer + waker (runtime.md/CH2) |
+| `rask_spawn` | `pthread_create` (`thread.c`) | Allocate fiber stack from pool, `Task` struct, push to worker queue |
+| `rask_join` | `pthread_join` + `TaskState` (`thread.c`) | Park fiber via `fiber_switch` or block thread (J1) |
+| I/O calls | Blocking syscall | Non-blocking + reactor registration + fiber_switch on EAGAIN |
+| `rask_channel_send` | Ring buffer + mutex (`channel.c`) | Ring buffer + waker (runtime.md/CH2); parks fiber when full |
 | `rask_sleep` | `clock_nanosleep` (`thread.c`) | Timer wheel registration (runtime.md/TM3) |
 
 ### New compiler requirements for Phase B
 
 | Requirement | Description | Spec reference |
 |-------------|-------------|---------------|
-| State machine transform | Closure → enum with `poll()` method | `conc.runtime/T3` |
-| Pause point detection | Identify I/O calls, channel ops, sleep | `conc.io-context` (new spec) |
-| Context parameter insertion | Already done in Phase A | `conc.strategy/A5` |
+| Preemption safe-point instrumentation | Insert a flag check in every function prologue | `conc.runtime/P3` |
+| Cross-crate "reaches spawn" metadata | Per-public-function bit for CC2 scope check | `conc.phase-b/SC1` |
+| Process-global slot install/uninstall | Already done in Phase A | `conc.strategy/A5` |
+
+No state-machine codegen pass, no pause-point enumeration, no wide ABIs for indirect calls. The stackful-fiber model keeps Phase B's compiler additions minimal.
 
 ## What doesn't change between phases
 
@@ -147,7 +149,7 @@ FIX: Reduce concurrent tasks, or wait for Phase B (green tasks).
 
 ### Rationale
 
-**RS1 (two-phase):** The interpreter already proves OS threads work for semantics validation. The compiled version needs a working backend before it can do state machine transforms. Building them in sequence avoids coupling backend bugs with runtime bugs.
+**RS1 (two-phase):** The interpreter already proves OS threads work for semantics validation. The compiled version needs a working backend before it can run fibers with context switches. Building them in sequence avoids coupling backend bugs with runtime bugs.
 
 **RS4 (no feature gating):** Deferring features creates two languages. If Phase A skips `select` or channels, programs written against Phase A won't exercise the full API. Then Phase B ships with untested surface area.
 
