@@ -16,8 +16,8 @@
 | **PL2: Create bounded** | `Pool.with_capacity(n)` | `Pool<T>` | Create bounded pool |
 | **PL3: Insert** | `pool.insert(v)` | `Handle<T>` | Insert, get handle (panics on failure) |
 | **PL4: Index access** | `pool[h]` | `&T` or `&mut T` | Access (panics if invalid) |
-| **PL5: Safe access** | `pool.get(h)` | `Option<T>` | Safe access (T: Copy) |
-| **PL6: Remove** | `pool.remove(h)` | `Option<T>` | Remove and return |
+| **PL5: Safe access** | `pool.get(h)` | `T?` | Safe access (T: Copy) |
+| **PL6: Remove** | `pool.remove(h)` | `T?` | Remove and return |
 | **PL7: Iterate** | `pool.handles()` | `Iterator<Handle<T>>` | Iterate all valid handles |
 
 ```rask
@@ -67,7 +67,7 @@ Every access validates the handle.
 
 **Safe access (no panic):**
 ```rask
-pool.get(h)   // Returns Option<T> (T: Copy)
+pool.get(h)   // Returns T? (T: Copy)
 ```
 
 **Generation overflow:** Saturating semantics. When a slot's generation reaches max, the slot becomes permanently unusable. Practically never happens (~4B cycles per slot with default u32). For extreme high-churn: `Pool<T, Gen=u64>`.
@@ -207,7 +207,7 @@ for entity in pool.drain() {
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `weak.valid()` | `bool` | True if underlying data still exists |
-| `weak.upgrade()` | `Option<Handle<T>>` | Convert to strong handle if valid |
+| `weak.upgrade()` | `Handle<T>?` | Convert to strong handle if valid |
 
 Automatically invalidated when the element is removed, the pool is cleared, or the pool goes out of scope.
 
@@ -353,12 +353,12 @@ ensure files.take_all_with(|f| { f.close(); })
 
 | Rule | Description |
 |------|-------------|
-| **PL8: Insert panics on failure** | `insert()` returns `Handle<T>`, panics if bounded pool is full. Fallible `try_insert()` returns `Result<Handle<T>, InsertError<T>>` |
+| **PL8: Insert panics on failure** | `insert()` returns `Handle<T>`, panics if bounded pool is full. Fallible `try_insert()` returns `Handle<T> or InsertError<T>` |
 | **PL9: Handle stability** | Handles remain valid when pools grow (index-based, not pointer-based) |
 
 ```rask
 const h = pool.insert(x)           // Handle<T> — panics if full
-const h = try pool.try_insert(x)   // Result<Handle<T>, InsertError<T>>
+const h = try pool.try_insert(x)   // Handle<T> or InsertError<T>
 
 enum InsertError<T> {
     Full(T),   // Bounded pool at capacity
@@ -369,8 +369,8 @@ enum InsertError<T> {
 | Method | Returns | Semantics |
 |--------|---------|-----------|
 | `pool.len()` | `usize` | Current element count |
-| `pool.capacity()` | `Option<usize>` | `None` = unbounded |
-| `pool.remaining()` | `Option<usize>` | Slots available |
+| `pool.capacity()` | `usize?` | `none` = unbounded |
+| `pool.remaining()` | `usize?` | Slots available |
 
 | Pool type | Growth | Use case |
 |-----------|--------|----------|
@@ -385,8 +385,8 @@ Validates once at entry, then provides unchecked access inside the closure.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `pool.with_valid(h, f)` | `(Handle<T>, \|T\| -> R) -> Option<R>` | One check, then read |
-| `pool.with_valid_mut(h, f)` | `(Handle<T>, \|T\| -> R) -> Option<R>` | One check, then write |
+| `pool.with_valid(h, f)` | `(Handle<T>, \|T\| -> R) -> R?` | One check, then read |
+| `pool.with_valid_mut(h, f)` | `(Handle<T>, \|T\| -> R) -> R?` | One check, then write |
 
 ### Unsafe: Unchecked Access
 
@@ -413,7 +413,7 @@ WHY: Handles are validated by generation counter. After removal, the slot's
 
 FIX: Check validity before access:
 
-  if pool.get(h) is Some(val) {
+  if pool.get(h)? as val {
       // handle is still valid
   }
 ```
@@ -456,13 +456,13 @@ FIX: Remove the frozen annotation if mutation is needed:
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Stale handle access | PL4 | Panic on `pool[h]`, None on `pool.get(h)` |
-| Wrong-pool handle | PL4 | Panic on `pool[h]`, None on `pool.get(h)` |
+| Stale handle access | PL4 | Panic on `pool[h]`, `none` on `pool.get(h)` |
+| Wrong-pool handle | PL4 | Panic on `pool[h]`, `none` on `pool.get(h)` |
 | `with pool[h] as e1, pool[h] as e2` | W3 | Panic (duplicate handle) |
 | Generation overflow | PH1 | Slot becomes permanently dead |
 | Pool ID overflow | PH1 | Panic (runtime error) |
 | Panic inside `with` | — | Pool left in valid state |
-| Empty pool cursor | PF1 | `next()` returns None immediately |
+| Empty pool cursor | PF1 | `next()` returns `none` immediately |
 | Nested cursors | — | Compile error (pool already borrowed) |
 | Drop Pool<Resource> while non-empty | R5 | Runtime panic |
 | `clear()` on Pool<Resource> | — | Compile error (would abandon resources) |
@@ -506,7 +506,7 @@ func build_graph() -> Pool<Node> or Error {
     nodes[a].edges.push(c)
     nodes[b].edges.push(c)
 
-    Ok(nodes)
+    return nodes
 }
 ```
 
@@ -591,14 +591,14 @@ with pool[h1] as e1, pool[h2] as e2 {
 
 **Self-referential patterns:** Doubly-linked lists, trees with parent pointers, graphs with cycles, and arena-allocated ASTs all use the pool+handle pattern. Key guidance:
 - Use `pool.values()` or `pool.entries()` for read-only traversal
-- Follow stored handles with `pool.get(h)` (checked, returns Option)
+- Follow stored handles with `pool.get(h)` (checked, returns `T?`)
 - Use `using frozen Pool<T>` functions for analysis passes that shouldn't mutate
 
 **Shared state:** Share handles, not data. Handles are 12-byte copyable values that can be sent anywhere. The pool stays in one thread; commands flow back to it.
 
 **Emergent capabilities:**
 - **Relocatable state:** Handles are integers — no pointer fixup. Pools can be serialized to bytes (`pool.to_bytes()`), memory-mapped for flat types (`pool.to_mmap()`), and restored with handles still valid. See `mem.relocatable` for the full specification.
-- **Plugin isolation:** Dropping a pool invalidates all its handles. Stale handles fail safely (panic or `None`), never undefined behavior.
+- **Plugin isolation:** Dropping a pool invalidates all its handles. Stale handles fail safely (panic or `none`), never undefined behavior.
 
 **Handle filtering (manual partitioning):**
 
@@ -628,7 +628,7 @@ func process_by_type(mut entities: Pool<Entity>) {
 | Operation | Cost | Notes |
 |-----------|------|-------|
 | `pool[h]` | ~1 ns | Generation check + index |
-| `pool.get(h)` | ~1 ns | Same + Option wrap |
+| `pool.get(h)` | ~1 ns | Same + `?` wrap |
 | `insert()` | Amortized O(1) | May allocate (unbounded) |
 | `remove()` | O(1) | Bumps generation |
 | `cursor()` iteration | O(capacity) | Scans all slots |
@@ -648,7 +648,7 @@ extend Observable<T> {
     func set(self, value: T, pool: Pool<Observer>) {
         self.value = value
         self.observers.retain(|weak| {
-            if weak.upgrade() is Some(h) {
+            if weak.upgrade()? as h {
                 pool[h].notify(self.value);
                 true
             } else {

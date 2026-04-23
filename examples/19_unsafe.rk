@@ -144,7 +144,7 @@ func main() {
     print("  unsafe { ptr.offset(5) }  // Caller must ensure safety\n")
     print("\n")
     print("Create a safe API:\n")
-    print("  vec.get(5)  // Returns Option<T>, bounds-checked\n")
+    print("  vec.get(5)  // Returns T?, bounds-checked\n")
     print("\n")
     print("The unsafe code is contained within the implementation,\n")
     print("and users get a safe interface.\n")

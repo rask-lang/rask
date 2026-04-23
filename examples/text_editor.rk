@@ -89,7 +89,7 @@ extend Document {
         if at < 0 || at >= self.line_count(): return Error.IndexOutOfBounds
 
         const h = self.line_order.remove(at as i64)
-        const deleted = self.lines.remove(h).unwrap()
+        const deleted = self.lines.remove(h)!
 
         // Record for undo
         self.undo_stack.push(EditCommand.DeleteLine(at: at, deleted_text: deleted.text))
@@ -168,7 +168,7 @@ extend Document {
     // Display the document
     func display(self) {
         for i in 0..self.line_count() {
-            const line = self.get_line(i).unwrap()
+            const line = self.get_line(i)!
             println("{i + 1}: {line}")
         }
     }

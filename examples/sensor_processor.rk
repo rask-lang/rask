@@ -29,8 +29,8 @@ func crc8(data: Vec<i64>, table: Vec<i64>) -> i64 {
     mut crc: i64 = 0
     const n = data.len()
     for i in 0..n {
-        const byte = data.get(i).unwrap()
-        crc = table.get((crc ^ byte) & 255).unwrap()
+        const byte = data.get(i)!
+        crc = table.get((crc ^ byte) & 255)!
     }
     return crc
 }
@@ -179,9 +179,9 @@ extend ProcessorState {
         mut pres_sum = 0.0
         mut hum_sum = 0.0
         for i in 0..self.history_count {
-            temp_sum += self.temp_history.get(i).unwrap()
-            pres_sum += self.pressure_history.get(i).unwrap()
-            hum_sum += self.humidity_history.get(i).unwrap()
+            temp_sum += self.temp_history.get(i)!
+            pres_sum += self.pressure_history.get(i)!
+            hum_sum += self.humidity_history.get(i)!
         }
 
         const n = self.history_count as f64
@@ -270,8 +270,8 @@ func main() {
 
         // Drain available samples — each reading is 3 consecutive i64s
         while read_idx + 2 < readings.len() {
-            const sensor_id = readings.get(read_idx).unwrap()
-            const value_bits = readings.get(read_idx + 1).unwrap()
+            const sensor_id = readings.get(read_idx)!
+            const value_bits = readings.get(read_idx + 1)!
             const value = value_bits as f64
             read_idx += 3
             state.process_reading(sensor_id, value)

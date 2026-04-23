@@ -78,7 +78,7 @@ For shortening generic types and function signatures. The alias and underlying t
 ```rask
 type alias Matrix = Vec<Vec<f64>>
 type alias Callback<T> = func(T) -> bool
-type alias Result<T> = T or AppError
+type alias AppResult<T> = T or AppError
 type alias Handler = func(i32) -> string
 ```
 
@@ -206,7 +206,7 @@ type Email = string with (Equal, Hashable, Debug)
 
 extend Email {
     func parse(raw: string) -> Email or ValidationError {
-        if !raw.contains("@"): return Err(ValidationError.invalid("email", raw))
+        if !raw.contains("@"): return ValidationError.invalid("email", raw)
         return Email(raw)
     }
 }

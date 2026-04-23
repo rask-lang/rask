@@ -118,11 +118,8 @@ Each stage is independently shippable and testable.
       public func stream(take self) -> Sequence<T> {
           return |yield| {
               loop {
-                  const msg = match self.recv() {
-                      Ok(m) => m,
-                      Err(_) => break,
-                  }
-                  if not yield(msg): break
+                  const r = self.recv()
+                  if r? as msg { if not yield(msg): break } else { break }
               }
           }
       }

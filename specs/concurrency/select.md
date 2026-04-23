@@ -68,9 +68,9 @@ result = select {
 
 | Rule | Description |
 |------|-------------|
-| **CL1: All closed** | If all recv channels closed, immediate return with `Err(Closed)` |
+| **CL1: All closed** | If all recv channels closed, immediate return with `Closed` error |
 | **CL2: Some closed** | Skip closed channels, wait on remaining |
-| **CL3: Send closed** | Send arm returns `Err(Closed)` |
+| **CL3: Send closed** | Send arm returns `Closed` error |
 
 ## Timer
 
@@ -101,7 +101,7 @@ ERROR [conc.select/P3]: select requires at least one arm
 | Case | Rule | Handling |
 |------|------|----------|
 | Select with 0 arms | P3 | Compile error |
-| All channels closed | CL1 | Returns immediately with `Err(Closed)` |
+| All channels closed | CL1 | Returns immediately with `Closed` error |
 | Timer in select | A1 | Regular receive arm — `Timer.after()` returns `Receiver<()>` |
 | Non-selected send value | OW2 | Value returned to caller, not consumed |
 
@@ -121,8 +121,8 @@ ERROR [conc.select/P3]: select requires at least one arm
 <!-- test: skip -->
 ```rask
 result = select {
-    rx -> v: Ok(v),
-    Timer.after(5.seconds) -> _: Err(Timeout),
+    rx -> v: v,
+    Timer.after(5.seconds) -> _: Timeout,
 }
 ```
 

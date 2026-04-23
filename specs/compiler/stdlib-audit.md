@@ -12,10 +12,10 @@ Comparison of interpreter builtins implementation against spec requirements. Tra
 
 | Method | Status | Notes |
 |--------|--------|-------|
-| `push(item)` | ✓ Implemented | Returns `()`, panics on failure. `try_push` returns Result |
-| `pop()` | ✓ Implemented | Returns `Option<T>` |
+| `push(item)` | ✓ Implemented | Returns `()`, panics on failure. `try_push` returns `() or PushError` |
+| `pop()` | ✓ Implemented | Returns `T?` |
 | `len()` | ✓ Implemented | Returns count |
-| `get(i)` | ✓ Implemented | Returns `Option<T>` (copies) |
+| `get(i)` | ✓ Implemented | Returns `T?` (copies) |
 | `is_empty()` | ✓ Implemented | Returns bool |
 | `clear()` | ✓ Implemented | Empties vec |
 | `reverse()` | ✓ Implemented | In-place reversal |
@@ -26,8 +26,8 @@ Comparison of interpreter builtins implementation against spec requirements. Tra
 | `clone()` | ✓ Implemented | Deep copy |
 | `insert(idx, item)` | ✓ Implemented | Insert at position |
 | `remove(idx)` | ✓ Implemented | Remove at position |
-| `first()` | ✓ Implemented | Returns `Option<T>` |
-| `last()` | ✓ Implemented | Returns `Option<T>` |
+| `first()` | ✓ Implemented | Returns `T?` |
+| `last()` | ✓ Implemented | Returns `T?` |
 
 ### Iterator Methods (Implemented)
 
@@ -88,9 +88,9 @@ These are compile-target features, not needed for interpreter MVP:
 
 | Method | Status | Notes |
 |--------|--------|-------|
-| `insert(k, v)` | ✓ Implemented | Returns `Option<V>` (previous value) |
-| `get(k)` | ✓ Implemented | Returns `Option<V>` |
-| `remove(k)` | ✓ Implemented | Returns `Option<V>` |
+| `insert(k, v)` | ✓ Implemented | Returns `V?` (previous value) |
+| `get(k)` | ✓ Implemented | Returns `V?` |
+| `remove(k)` | ✓ Implemented | Returns `V?` |
 | `len()` | ✓ Implemented | Returns count |
 | `is_empty()` | ✓ Implemented | Returns bool |
 | `contains(k)` | ✓ Implemented | Check key exists |
@@ -185,21 +185,21 @@ To complete value-first iteration:
 
 ## Error Handling
 
-Current interpreter returns Rust `Result<Value, RuntimeError>` but doesn't wrap in Rask `Result<Ok, Err>` enum values consistently.
+Current interpreter returns Rust `Result<Value, RuntimeError>` but doesn't wrap in Rask `T or E` sum values consistently.
 
 ### Growth Operations
 
 Per spec (C2), default growth operations panic on failure:
 - `vec.push(x)` → `()` (panics on OOM/full)
-- `map.insert(k, v)` → `Option<V>` (panics on OOM/full)
+- `map.insert(k, v)` → `V?` (panics on OOM/full)
 - `vec.reserve(n)` → `()` (panics on OOM)
 
-Fallible `try_` variants return Result:
+Fallible `try_` variants return an error union:
 - `vec.try_push(x)` → `() or PushError<T>`
-- `map.try_insert(k, v)` → `Option<V> or InsertError<V>`
+- `map.try_insert(k, v)` → `V? or InsertError<V>`
 - `vec.try_reserve(n)` → `() or AllocError`
 
-Current interpreter matches: panics on allocation failure (Rust default), `try_push` wraps in Result.
+Current interpreter matches: panics on allocation failure (Rust default), `try_push` wraps in error union.
 
 ## Priority Fixes
 

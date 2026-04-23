@@ -111,7 +111,7 @@ func walk<T>(
     h: Handle<Node<T>>?,
     yield: |Node<T>| -> bool,
 ) -> bool {
-    if h is Some(handle) {
+    if h? as handle {
         if not walk(nodes, nodes[handle].left, yield): return false
         if not yield(nodes[handle]): return false
         if not walk(nodes, nodes[handle].right, yield): return false
@@ -135,15 +135,15 @@ struct Node<T> {
 extend Tree<T> {
     public func in_order(self) -> Sequence<Node<T>> {
         return |yield| {
-            if self.root is Some(r): walk(*r, yield)
+            if self.root? as r: walk(*r, yield)
         }
     }
 }
 
 func walk<T>(node: Node<T>, yield: |Node<T>| -> bool) -> bool {
-    if node.left is Some(l): if not walk(*l, yield): return false
+    if node.left? as l: if not walk(*l, yield): return false
     if not yield(node): return false
-    if node.right is Some(r): if not walk(*r, yield): return false
+    if node.right? as r: if not walk(*r, yield): return false
     return true
 }
 ```
@@ -158,11 +158,11 @@ extend Receiver<T> {
     public func stream(take self) -> Sequence<T> {
         return |yield| {
             loop {
-                const msg = match self.recv() {
-                    Ok(m) => m,
-                    Err(_) => break,
+                if self.recv()? as msg {
+                    if not yield(msg): break
+                } else {
+                    break
                 }
-                if not yield(msg): break
             }
         }
     }
@@ -219,7 +219,7 @@ Terminals drive the chain to completion (or short-circuit) and produce a value.
 | `collect()` | Materialize into a `Vec<T>` | `Vec<T>` |
 | `collect<C>()` | Materialize into `C: FromSequence<T>` | `C` |
 | `fold(init, f)` | Reduce with initial | `A` |
-| `reduce(f)` | Reduce without initial | `T?` (None if empty) |
+| `reduce(f)` | Reduce without initial | `T?` (`none` if empty) |
 | `sum()` | Sum items | `T where T: Numeric` |
 | `product()` | Multiply items | `T where T: Numeric` |
 | `count()` | Count items | `usize` |
@@ -251,20 +251,24 @@ const active = users.iter().filter(|u| u.active).collect()
 
 <!-- test: parse -->
 ```rask
-// Indexable (common case, zero-cost)
-for i in 0..min(a.len(), b.len()) {
-    process(a[i], b[i])
+func zip_indexable(a: Vec<i32>, b: Vec<i32>) {
+    // Indexable (common case, zero-cost)
+    for i in 0..min(a.len(), b.len()) {
+        process(a[i], b[i])
+    }
 }
 
-// Non-indexable (rare — explicit buffer shows the cost)
-const a_items = tree_a.in_order().collect()
-mut idx = 0
-tree_b.in_order()(|b_node| {
-    if idx >= a_items.len(): return false
-    process(a_items[idx], b_node)
-    idx += 1
-    return true
-})
+func zip_buffered(tree_a: Tree<Node>, tree_b: Tree<Node>) {
+    // Non-indexable (rare — explicit buffer shows the cost)
+    const a_items = tree_a.in_order().collect()
+    mut idx = 0
+    tree_b.in_order()(|b_node| {
+        if idx >= a_items.len(): return false
+        process(a_items[idx], b_node)
+        idx += 1
+        return true
+    })
+}
 ```
 
 ## Zero-Cost Contract
@@ -369,9 +373,9 @@ FIX: Use find() or capture via a local:
   const result = seq.find(|x| matches(x))
 
   // or
-  mut found: T? = None
+  mut found: T? = none
   for x in seq {
-      if matches(x) { found = Some(x); break }
+      if matches(x) { found = x; break }
   }
 ```
 
@@ -391,8 +395,8 @@ FIX: Use find() or capture via a local:
 | Sending a Sequence cross-task | SEQ-scope | Same rule as sending a closure (`mem.closures`) |
 | Infinite sequence with `.take(n)` | SEQ10 | Terminates after n yields |
 | Empty chain with `.sum()` | — | Zero value for the type |
-| Empty chain with `.reduce()` | — | None |
-| Empty chain with `.min()`/`.max()` | — | None |
+| Empty chain with `.reduce()` | — | `none` |
+| Empty chain with `.min()`/`.max()` | — | `none` |
 
 ---
 

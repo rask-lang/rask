@@ -102,7 +102,7 @@ test "bloom filter encode/decode roundtrip" {
     bloom.insert("key3")
 
     const encoded = encode_bloom(bloom)
-    const decoded = decode_bloom(encoded).unwrap()
+    const decoded = decode_bloom(encoded)!
     assert decoded.may_contain("key1")
     assert decoded.may_contain("key2")
     assert decoded.may_contain("key3")

@@ -15,7 +15,7 @@ Tagged unions with positional or named payloads. Compiler infers binding modes. 
 enum Name { A, B }                    // Simple tag-only
 enum Name { A(T), B(U, V) }           // Positional payloads
 enum Name { A { x: T, y: U } }       // Named payloads
-enum Name<T> { Some(T), None }        // Generic enum
+enum Maybe<T> { Present(T), Missing } // Generic enum
 enum Name: u8 { A = 0, B = 1 }       // Explicit discriminants (E14-E18)
 ```
 
@@ -120,11 +120,11 @@ No mode annotations in source. IDE shows inferred mode as ghost text.
 
 **Borrow (inferred when bindings only borrowed):**
 ```rask
-match result {                      // IDE ghost: [borrows]
-    Ok(value) => println(value),    // value: borrowed (inferred read)
-    Err(error) => log(error)        // error: borrowed (inferred read)
+match msg {                         // IDE ghost: [borrows]
+    Data(value) => println(value),  // value: borrowed (inferred read)
+    Fault(error) => log(error)      // error: borrowed (inferred read)
 }
-// result still valid
+// msg still valid
 ```
 
 **Borrow + mutate (inferred when any binding mutated):**
@@ -138,11 +138,11 @@ match connection {                          // IDE ghost: [mutates]
 
 **Take (inferred when any binding passed to `take` parameter):**
 ```rask
-match result {                      // IDE ghost: [takes]
-    Ok(value) => consume(value),    // value: taken (inferred)
-    Err(error) => handle(error)     // error: taken (inferred)
+match msg {                         // IDE ghost: [takes]
+    Data(value) => consume(value),  // value: taken (inferred)
+    Fault(error) => handle(error)   // error: taken (inferred)
 }
-// result is consumed, invalid here
+// msg is consumed, invalid here
 ```
 
 ## Exhaustiveness Checking
@@ -162,9 +162,9 @@ Conditional matching requires explicit catch-all. No hidden gaps.
 
 ```rask
 match response {
-    Ok(body) if body.len() > 0: process(body),
-    Ok(body) => default(body),  // REQUIRED: catches guard failure
-    Err(e) => handle(e)
+    Loaded(body) if body.len() > 0: process(body),
+    Loaded(body) => default(body),  // REQUIRED: catches guard failure
+    Failed(e) => handle(e)
 }
 ```
 
@@ -176,8 +176,8 @@ match response {
 ```rask
 // ❌ INVALID: guard may fail with no fallback
 match response {
-    Ok(body) if body.len() > 0: process(body),
-    Err(e) => handle(e)
+    Loaded(body) if body.len() > 0: process(body),
+    Failed(e) => handle(e)
 }
 ```
 
@@ -211,9 +211,9 @@ Or-patterns can be nested and work with guards: `A(x) | B(x) if x > 0 => ...`
 
 **With payloads:**
 ```rask
-match result {
-    Ok(0) | Err(0) => println("zero"),
-    Ok(n) | Err(n) => println("value: {n}"),
+match msg {
+    Data(0) | Fault(0) => println("zero"),
+    Data(n) | Fault(n) => println("value: {n}"),
 }
 ```
 
@@ -226,24 +226,26 @@ Enums may contain linear payloads (File, Socket, etc.).
 | **PM5: Wildcards forbidden for linear** | `_` on linear payload is compile error |
 | **PM6: All arms must bind** | Each arm must name linear values; bound value must be consumed |
 
+User enum `FileOpen { Opened(File), Failed(IoError) }`:
+
 ```rask
 // ✅ VALID: linear value consumed in each arm
-match file_result {                 // IDE ghost: [consumes]
-    Ok(file) => try file.close(),    // file transferred to close()
-    Err(e) => return Err(e)
+match file_result {                      // IDE ghost: [consumes]
+    Opened(file) => try file.close(),    // file transferred to close()
+    Failed(e) => return e
 }
 
 // ❌ INVALID: wildcard discards linear File
 match file_result {
-    Ok(_) => {},
-    Err(e) => {}
+    Opened(_) => {},
+    Failed(e) => {}
 }
 // Error: "wildcard pattern discards linear resource `File`"
 
 // ❌ INVALID: read-only usage of linear resource
 match file_result {
-    Ok(file) => println(file.path),  // Only reads file
-    Err(e) => log(e)
+    Opened(file) => println(file.path),  // Only reads file
+    Failed(e) => log(e)
 }
 // Error: "linear resource `file` must be consumed, not just read"
 ```
@@ -252,8 +254,8 @@ match file_result {
 
 ```rask
 match file_result {
-    Ok(file) | Recovered(file) => file.close(),
-    Err(e) => log(e)
+    Opened(file) | Recovered(file) => file.close(),
+    Failed(e) => log(e)
 }
 ```
 
@@ -262,22 +264,22 @@ match file_result {
 ```rask
 // ✅ VALID: guard with linear resource — both arms consume
 match file_result {
-    Ok(file) if file.size() > 1000: process(file),  // Large files: process
-    Ok(file) => try file.close(),                     // Small files: still must close
-    Err(e) => log(e)
+    Opened(file) if file.size() > 1000: process(file),  // Large files: process
+    Opened(file) => try file.close(),                    // Small files: still must close
+    Failed(e) => log(e)
 }
 
 // ❌ INVALID: wildcard catch-all discards linear resource
 match file_result {
-    Ok(file) if file.size() > 1000: process(file),
-    Ok(_) => {},                                     // Error: discards linear File
-    Err(e) => log(e)
+    Opened(file) if file.size() > 1000: process(file),
+    Opened(_) => {},                                     // Error: discards linear File
+    Failed(e) => log(e)
 }
 ```
 
 ## Error Propagation and Linear Resources
 
-`try` extracts Ok or returns early with Err.
+`try` extracts the success branch or returns early with the error.
 
 **Rule:** All linear resources in scope must be resolved before `try`.
 
@@ -295,7 +297,6 @@ func process(file1: File, file2: File) -> () or Error {
     const result2 = file2.close()
     const data = try result1
     try result2
-    Ok(())
 }
 ```
 
@@ -305,7 +306,6 @@ func process(file1: File, file2: File) -> () or Error {
     ensure file1.close()  // Guaranteed at scope exit
     ensure file2.close()  // Runs on any exit
     const data = try file1.read()  // ✅ Safe: ensure registered
-    Ok(())
 }
 ```
 
@@ -313,27 +313,29 @@ func process(file1: File, file2: File) -> () or Error {
 
 Methods in `extend` blocks, separate from definition. Default to non-consuming (borrow `self`).
 
+> Note: builtin `T?` (Option) cannot be pattern-matched and isn't a user enum; use its operator surface (`?`, `!`, `??`). See [optionals.md](optionals.md). The example below defines a user enum with a similar shape.
+
 <!-- test: parse -->
 ```rask
-enum Option<T> {
-    Some(T),
-    None,
+enum Maybe<T> {
+    Present(T),
+    Missing,
 }
 
-extend Option<T> {
+extend Maybe<T> {
     // Default: borrows self (compiler infers read vs mutate)
-    func is_some(self) -> bool {
+    func has_value(self) -> bool {
         match self {               // IDE ghost: [reads] (inferred from wildcard-only usage)
-            Some(_) => true,
-            None => false
+            Present(_) => true,
+            Missing => false
         }
     }
 
-    // Explicitly consuming — prefer x! operator over calling this directly
+    // Explicitly consuming
     func force(take self) -> T {
         match self {               // IDE ghost: [consumes] (inferred from returning v)
-            Some(v) => v,
-            None => panic("force on None")
+            Present(v) => v,
+            Missing => panic("force on Missing")
         }
     }
 }
@@ -418,7 +420,7 @@ For enums with explicit backing types (E14), the return type matches the backing
 
 | Attribute | Behavior |
 |-----------|----------|
-| None | Compiler MAY reorder variants for size optimization |
+| (none) | Compiler MAY reorder variants for size optimization |
 | `@layout(ordered)` | Discriminant values locked to declaration order |
 | `@layout(C)` | C-compatible layout, no niche optimization |
 
@@ -426,8 +428,8 @@ For enums with explicit backing types (E14), the return type matches the backing
 
 | Type | Representation |
 |------|----------------|
-| `Option<Owned<T>>` | Null = None, non-null = Some |
-| `Option<Handle<T>>` | generation=0 = None, else Some |
+| `Owned<T>?` | null pointer = absent, non-null = present |
+| `Handle<T>?` | generation=0 = absent, else present |
 
 ## Explicit Discriminants
 
@@ -487,8 +489,8 @@ When a backing type is specified, variant reordering is disabled (implies `@layo
 
 <!-- test: skip -->
 ```rask
-const kind: ObjectKind? = ObjectKind.from_value(1)  // Some(ObjectKind.String)
-const bad: ObjectKind? = ObjectKind.from_value(99)   // none
+const kind: ObjectKind? = ObjectKind.from_value(1)  // ObjectKind.String
+const bad: ObjectKind? = ObjectKind.from_value(99)  // none
 ```
 
 `from_value` is auto-generated for all fieldless enums. Returns optional — invalid values produce `none`.
@@ -509,10 +511,10 @@ enum Never {}  // Cannot be constructed
 | Size | 0 bytes |
 | Construction | Impossible (no variants) |
 | Pattern match | No arms needed |
-| `Result<T, Never>` | Err arm unreachable, compiler optimizes |
+| `T or Never` | error branch uninhabited, compiler optimizes |
 
 ```rask
-func infallible() -> i32 or Never { Ok(42) }
+func infallible() -> i32 or Never { return 42 }
 
 const value = infallible()!  // Cannot panic (compiler knows)
 ```
@@ -528,10 +530,10 @@ const value = infallible()!  // Cannot panic (compiler knows)
 | Single-variant enum | E2 | Valid, discriminant may be optimized away |
 | Zero-sized payload | E1 | `enum Foo { A(()), B }` — unit optimized to `{ A, B }` |
 | >65536 variants | E3 | Compile error: "enum exceeds variant limit" |
-| Nested linear | PM6 | `Result<File, Error(File)>` — both arms bind linear, both must consume |
+| Nested linear | PM6 | `File or FileError(File)` — both arms bind linear, both must consume |
 | Enum in Vec | E5 | Allowed if non-linear |
 | Enum in Pool | E5 | Allowed; linear payloads require explicit `remove()` + consume |
-| Option\<File\> in Pool | PM5 | Error: "Pool cannot contain linear payloads" |
+| `File?` in Pool | PM5 | Error: "Pool cannot contain linear payloads" |
 | Generic constraints | E4 | `enum Foo<T: Clone>` — constraint applies to ALL variants uniformly |
 | Match on Copy type | E4 | Copies enum, mutations in arm affect copy not original |
 
@@ -551,9 +553,9 @@ extend Connection {
     func step(take self) -> Connection {
         match self {                    // IDE ghost: [consumes]
             Idle => Connecting(resolve_address()),
-            Connecting(addr) => match try_connect(addr) {
-                Ok(sock) => Connected(sock),
-                Err(e) => Failed(e)
+            Connecting(addr) => {
+                const attempt = try_connect(addr)
+                if attempt? as sock { Connected(sock) } else as e { Failed(e) }
             },
             Connected(sock) => {
                 sock.send(heartbeat())
@@ -572,11 +574,11 @@ extend Connection {
 }
 ```
 
-### Option Methods
+### Option
 ```rask
-const opt = Some(5)
-if opt.is_some() {          // ✅ opt still valid (borrows self)
-    const val = opt!  // ✅ opt consumed (force unwrap)
+const opt: i32? = 5
+if opt? {           // ✅ opt still valid, narrowed to i32 in block
+    const val = opt!   // ✅ force-extract
 }
 ```
 
@@ -600,9 +602,9 @@ Enums follow the same ownership rules as structs. Compiler infers whether bindin
 
 Use explicit `discard` to silence:
 ```rask
-match result {
-    Ok(discard) => {},  // Explicit acknowledgment
-    Err(e) => handle(e)
+match msg {
+    Data(discard) => {},  // Explicit acknowledgment
+    Fault(e) => handle(e)
 }
 ```
 

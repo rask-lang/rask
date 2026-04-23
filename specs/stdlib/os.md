@@ -222,7 +222,7 @@ FIX: Remove unreachable code or move os.exit() to end of block.
 
 | Case | Rule | Handling |
 |------|------|----------|
-| `os.env("MISSING")` | E1 | Returns `None` |
+| `os.env("MISSING")` | E1 | Returns `none` |
 | `os.args()` with no args | A1 | Vec contains at least program name |
 | `os.exit(0)` in defer | P1 | Exits immediately, remaining defers skipped |
 | Process not consumed | C4 | Compile error |

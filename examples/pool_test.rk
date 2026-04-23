@@ -56,10 +56,10 @@ func main() {
         println("Got h1: {maybe.name}")
     }
 
-    // Safe get on stale handle (should be None)
+    // Safe get on stale handle (should be none)
     const stale = pool.get(h3)
     if stale == none {
-        println("Correctly got None for stale handle")
+        println("Correctly got none for stale handle")
     }
 
     // Iteration via cursor

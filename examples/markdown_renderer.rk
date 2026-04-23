@@ -108,7 +108,7 @@ func html_escape(input: string) -> string {
     return builder
 
     // All same char: '-' or '*' or '_', ignoring spaces
-    // Returns start number if line matches "N. " pattern, else None
+    // Returns start number if line matches "N. " pattern, else none
 }
 
 func count_leading(line: string, ch: char) -> i32 {
@@ -929,51 +929,51 @@ test "html escaping" {
 }
 
 test "headings" {
-    const result = render_markdown("# Hello").unwrap()
+    const result = render_markdown("# Hello")!
     assert result.contains("<h1>Hello</h1>")
 
     const result2 = render_markdown("""
 ## Sub
 ### Third
-""").unwrap()
+""")!
     assert result2.contains("<h2>Sub</h2>")
     assert result2.contains("<h3>Third</h3>")
 }
 
 test "paragraphs" {
-    const result = render_markdown("Hello world").unwrap()
+    const result = render_markdown("Hello world")!
     assert result.contains("<p>Hello world</p>")
 
     const result2 = render_markdown("""
 Line one
 Line two
-""").unwrap()
+""")!
     assert result2.contains("<p>Line one\nLine two</p>")
 }
 
 test "bold and italic" {
-    const result = render_markdown("**bold** and *italic*").unwrap()
+    const result = render_markdown("**bold** and *italic*")!
     assert result.contains("<strong>bold</strong>")
     assert result.contains("<em>italic</em>")
 }
 
 test "nested bold italic" {
-    const result = render_markdown("**bold *and italic***").unwrap()
+    const result = render_markdown("**bold *and italic***")!
     assert result.contains("<strong>bold <em>and italic</em></strong>")
 }
 
 test "inline code" {
-    const result = render_markdown("use `println` here").unwrap()
+    const result = render_markdown("use `println` here")!
     assert result.contains("<code>println</code>")
 }
 
 test "links" {
-    const result = render_markdown("[click](http://example.com)").unwrap()
+    const result = render_markdown("[click](http://example.com)")!
     assert result.contains("<a href=\"http://example.com\">click</a>")
 }
 
 test "images" {
-    const result = render_markdown("![alt text](img.png)").unwrap()
+    const result = render_markdown("![alt text](img.png)")!
     assert result.contains("<img src=\"img.png\" alt=\"alt text\">")
 }
 
@@ -983,7 +983,7 @@ test "code blocks" {
 fn main() {}
 ```
 """
-    const result = render_markdown(input).unwrap()
+    const result = render_markdown(input)!
     assert result.contains("<pre><code class=\"language-rust\">")
     assert result.contains("fn main() {}")
 }
@@ -994,12 +994,12 @@ test "code block no language" {
 plain code
 ```
 """
-    const result = render_markdown(input).unwrap()
+    const result = render_markdown(input)!
     assert result.contains("<pre><code>plain code</code></pre>")
 }
 
 test "blockquotes" {
-    const result = render_markdown("> quoted text").unwrap()
+    const result = render_markdown("> quoted text")!
     assert result.contains("<blockquote>")
     assert result.contains("<p>quoted text</p>")
     assert result.contains("</blockquote>")
@@ -1011,7 +1011,7 @@ test "unordered lists" {
 - two
 - three
 """
-    const result = render_markdown(input).unwrap()
+    const result = render_markdown(input)!
     assert result.contains("<ul>")
     assert result.contains("<li>one</li>")
     assert result.contains("<li>two</li>")
@@ -1025,7 +1025,7 @@ test "ordered lists" {
 2. second
 3. third
 """
-    const result = render_markdown(input).unwrap()
+    const result = render_markdown(input)!
     assert result.contains("<ol>")
     assert result.contains("<li>first</li>")
     assert result.contains("<li>second</li>")
@@ -1033,9 +1033,9 @@ test "ordered lists" {
 }
 
 test "horizontal rules" {
-    assert render_markdown("---").unwrap().contains("<hr>")
-    assert render_markdown("***").unwrap().contains("<hr>")
-    assert render_markdown("___").unwrap().contains("<hr>")
+    assert render_markdown("---")!.contains("<hr>")
+    assert render_markdown("***")!.contains("<hr>")
+    assert render_markdown("___")!.contains("<hr>")
 }
 
 test "reference links" {
@@ -1044,12 +1044,12 @@ See [the site][ex] for details.
 
 [ex]: http://example.com
 """
-    const result = render_markdown(input).unwrap()
+    const result = render_markdown(input)!
     assert result.contains("<a href=\"http://example.com\">the site</a>")
 }
 
 test "escaped characters" {
-    const result = render_markdown("not \\*italic\\*").unwrap()
+    const result = render_markdown("not \\*italic\\*")!
     assert result.contains("not *italic*")
     assert !result.contains("<em>")
 }
@@ -1067,7 +1067,7 @@ A **bold** paragraph.
 
 > quote
 """
-    const result = render_markdown(input).unwrap()
+    const result = render_markdown(input)!
     assert result.contains("<h1>Title</h1>")
     assert result.contains("<strong>bold</strong>")
     assert result.contains("<ul>")
@@ -1081,22 +1081,22 @@ test "html escape in code blocks" {
 <div class="x">&</div>
 ```
 """
-    const result = render_markdown(input).unwrap()
+    const result = render_markdown(input)!
     assert result.contains("&lt;div class=&quot;x&quot;&gt;&amp;&lt;/div&gt;")
 }
 
 test "link with formatted text" {
-    const result = render_markdown("[**bold link**](url)").unwrap()
+    const result = render_markdown("[**bold link**](url)")!
     assert result.contains("<a href=\"url\"><strong>bold link</strong></a>")
 }
 
 test "empty document" {
-    const result = render_markdown("").unwrap()
+    const result = render_markdown("")!
     assert result == ""
 }
 
 test "full page output" {
-    const result = render_full_page("# Hello").unwrap()
+    const result = render_full_page("# Hello")!
     assert result.contains("<!DOCTYPE html>")
     assert result.contains("<h1>Hello</h1>")
     assert result.contains("</body>")
