@@ -48,7 +48,7 @@ func decode_kv(line: string) -> KeyValue or WalError {
 test "kv encode/decode roundtrip" {
     const kv = KeyValue.new("test_key", "test_value", 42)
     const encoded = encode_kv(kv)
-    const decoded = decode_kv(encoded).unwrap()
+    const decoded = decode_kv(encoded)!
 
     assert decoded.key == "test_key"
     assert decoded.value == "test_value"
@@ -59,7 +59,7 @@ test "kv encode/decode roundtrip" {
 test "kv tombstone encode/decode" {
     const kv = KeyValue.tombstone("deleted_key", 99)
     const encoded = encode_kv(kv)
-    const decoded = decode_kv(encoded).unwrap()
+    const decoded = decode_kv(encoded)!
 
     assert decoded.key == "deleted_key"
     assert decoded.deleted

@@ -164,7 +164,7 @@ test "block cache put and get" {
 
     cache.put(1, 0, entries.clone())
 
-    const result = cache.get(1, 0) ?? panic("expected Some")
+    const result = cache.get(1, 0) ?? panic("expected present")
     assert result.len() == 2
     assert result[0].key == "k1"
 

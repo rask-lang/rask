@@ -2,7 +2,7 @@
 // Edge case tests discovered during litmus program validation.
 //
 // Tests: string Copy semantics, try-else with method calls, Vec.get() returning
-// Option<T>, and basic type system features.
+// T?, and basic type system features.
 //
 // Run: rask test examples/litmus_edge_cases.rk
 
@@ -58,9 +58,9 @@ test "string Copy — assign from struct field" {
     assert n2 == "Alice"
 }
 
-// ─── Vec.get() returns Option<T> (collections/V3) ───────────────
+// ─── Vec.get() returns T? (collections/V3) ──────────────────────
 
-test "Vec.get returns Some for valid index" {
+test "Vec.get — present for valid index" {
     const v = Vec.new()
     v.push(10)
     v.push(20)
@@ -69,11 +69,11 @@ test "Vec.get returns Some for valid index" {
     const first = v.get(0)
     assert first?
 
-    const second = v.get(1).unwrap()
+    const second = v.get(1)!
     assert second == 20
 }
 
-test "Vec.get returns None for out of bounds" {
+test "Vec.get — none for out of bounds" {
     const v = Vec.new()
     v.push(42)
 
@@ -81,12 +81,12 @@ test "Vec.get returns None for out of bounds" {
     assert out == none
 }
 
-test "Vec.get unwrap matches expected value" {
+test "Vec.get — force-extract matches expected value" {
     const v = Vec.new()
     v.push(100)
     v.push(200)
-    assert v.get(0).unwrap() == 100
-    assert v.get(1).unwrap() == 200
+    assert v.get(0)! == 100
+    assert v.get(1)! == 200
 }
 
 // ─── try-else with method calls ────────────────────────────────
@@ -287,23 +287,23 @@ test "Pool — modify non-string field after reading string" {
     assert pool[h].health == 50
 }
 
-// ─── Vec.get with pattern matching ──────────────────────────────
+// ─── Vec.get with narrowing ─────────────────────────────────────
 
-test "Vec.get — pattern match Some" {
+test "Vec.get — narrow on present" {
     const v = Vec.new()
     v.push("hello")
     if v.get(0)? as val {
         assert val == "hello"
     } else {
-        assert false, "expected Some"
+        assert false, "expected present"
     }
 }
 
-test "Vec.get — pattern match None" {
+test "Vec.get — else branch on absent" {
     const v = Vec.new()
     v.push(1)
     if v.get(99)? {
-        assert false, "expected None"
+        assert false, "expected none"
     }
 }
 
