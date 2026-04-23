@@ -167,8 +167,8 @@ ERROR [struct.modules/IM7]: unused import
 ```
 ERROR [struct.modules/PS3]: mutable global
    |
-5  |  let counter: i32 = 0
-   |  ^^^^^^^^^^^^^^^^^^^^^ package-level `let` not allowed; use Atomic or Shared
+5  |  mut counter: i32 = 0
+   |  ^^^^^^^^^^^^^^^^^^^^ package-level `mut` not allowed; use Atomic or Shared
 ```
 
 ## Edge Cases

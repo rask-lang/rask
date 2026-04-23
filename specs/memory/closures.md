@@ -78,15 +78,18 @@ Closure parameters default to borrow mode. Mutable-borrow parameters are allowed
 
 <!-- test: parse -->
 ```rask
-// Borrow parameter (default)
-const print_name = |u: User| print(u.name)
+func sum_values(items: Vec<Item>) -> i32 {
+    // Borrow parameter (default)
+    const print_name = |u: User| print(u.name)
 
-// Mutable-borrow parameter (explicit type required)
-const grow = |mutate item: Item| { item.level += 1 }
+    // Mutable-borrow parameter (explicit type required)
+    const grow = |mutate item: Item| { item.level += 1 }
 
-// Mutable capture (no type on parameter)
-let total = 0
-items.for_each(|item, mutate total| { total += item.value })
+    // Mutable capture (no type on parameter)
+    mut total = 0
+    items.for_each(|item, mutate total| { total += item.value })
+    return total
+}
 ```
 
 ## Mutable Capture

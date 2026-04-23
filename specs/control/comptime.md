@@ -12,7 +12,7 @@ Explicit `comptime` keyword marks compile-time evaluation. Restricted subset: pu
 
 | Rule | Form | Syntax | Meaning |
 |------|------|--------|---------|
-| **CT1: Comptime variable** | Variable | `comptime let x = expr` | Expression evaluated at compile time |
+| **CT1: Comptime variable** | Variable | `comptime mut x = expr` | Expression evaluated at compile time |
 | **CT2: Comptime constant** | Constant | `const X = comptime expr` | Constant initialized at compile time |
 | **CT3: Comptime function** | Function | `comptime func name() -> T { ... }` | Function can only be called at compile time |
 | **CT4: Comptime parameter** | Parameter | `func f<comptime N: usize>() { ... }` | Generic parameter must be compile-time known |

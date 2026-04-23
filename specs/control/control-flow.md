@@ -76,16 +76,17 @@ if state is Connected(sock) {
 }
 
 // Implicit unwrap for single-payload variants
-if user is Some {
-    process(user)  // user unwrapped, same name
+if event is Tick {
+    process(event)  // event unwrapped, same name
 }
 
-if result is Ok {
-    use(result)  // result unwrapped
+// Status types use `?` predicate + `as` binding
+if user? as u {
+    process(u)
 }
 
-// Loop while pattern matches
-while reader.next() is Some(line) {
+// Loop while status holds a value
+while reader.next()? as line {
     process(line)
 }
 
@@ -105,11 +106,11 @@ if state is Connected(sock) && sock.is_ready() {
 
 ```rask
 // Early return on error
-const value = result is Ok else { return Err(e) }
+const value = result? else as e { return e }
 // value available here
 
-// Break from loop on None
-const item = queue.pop() is Some else { break }
+// Break from loop when queue empty
+const item = queue.pop()? else { break }
 // item available here
 ```
 

@@ -88,7 +88,7 @@ Plain indices for lightweight stored references — the span type for parsers, t
 |-----------|--------|-------|
 | `Span(i, j)` | `Span` | Create view (just start, end indices) |
 | `source[span]` | expression-scoped slice | Panics if out of bounds |
-| `source.get(span)` | `Option<expression-scoped slice>` | Safe bounds check |
+| `source.get(span)` | `(expression-scoped slice)?` | Safe bounds check |
 | `view.to_string(source)` | `string` | Allocates copy (panics if OOB) |
 | `view.start`, `view.end` | `usize` | Read indices |
 | `view.len()` | `usize` | `end - start` |
@@ -100,21 +100,21 @@ Validated stored references using handles (parsers, tokenizers, ASTs). Follows `
 | Operation | Return | Notes |
 |-----------|--------|-------|
 | `StringPool.new()` | `StringPool` | Empty pool |
-| `pool.insert(s)` | `Result<Handle<string>, InsertError>` | Add string, get handle |
-| `pool.slice(h, i, j)` | `Result<StringSlice, Error>` | Create validated slice |
+| `pool.insert(s)` | `Handle<string> or InsertError` | Add string, get handle |
+| `pool.slice(h, i, j)` | `StringSlice or Error` | Create validated slice |
 | `pool[slice]` | inline access (expression-scoped) | Panics if invalid |
-| `pool.get(slice)` | `Option<inline access>` | Safe access |
+| `pool.get(slice)` | `(inline access)?` | Safe access |
 | `with pool[slice] as s { ... }` | block value | Multi-statement access |
-| `pool.remove(h)` | `Option<string>` | Remove and return ownership |
+| `pool.remove(h)` | `string?` | Remove and return ownership |
 
-Handle validation: pool_id + index + generation. Wrong pool or stale handle returns `None`.
+Handle validation: pool_id + index + generation. Wrong pool or stale handle returns `none`.
 
 ## UTF-8 Validation
 
 | Operation | Return Type | Validation Cost |
 |-----------|-------------|-----------------|
 | `"literal"` | `string` | Compile-time |
-| `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Runtime O(n), one-time |
+| `string.from_utf8(bytes)` | `string or utf8_error` | Runtime O(n), one-time |
 | `string.from_utf8_unchecked(bytes)` | `string` | None (unsafe block only) |
 
 ## Iteration
@@ -144,7 +144,7 @@ Iterators borrow for expression scope only. Cannot be stored.
 | Operation | Return Type | Notes |
 |-----------|-------------|-------|
 | `"literal"` | `string` | Compile-time validated. ≤ 15 bytes → SSO (inline, no allocation). > 15 bytes → static storage, sentinel refcount (never freed) |
-| `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Validates bytes |
+| `string.from_utf8(bytes)` | `string or utf8_error` | Validates bytes |
 | `string.from_char(c)` | `string` | Single-char string |
 | `string.repeat(s, n)` or `s.repeat(n)` | `string` | `s` repeated `n` times, allocates |
 | `slice.to_string()` | `string` | Copy slice bytes into new independent string (allocates) |
@@ -193,8 +193,8 @@ const csv = headers.join(",")      // CSV header row
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.find(pat)` or `s.index_of(pat)` | `Option<usize>` | Byte index of first match |
-| `s.rfind(pat)` | `Option<usize>` | Byte index of last match |
+| `s.find(pat)` or `s.index_of(pat)` | `usize?` | Byte index of first match |
+| `s.rfind(pat)` | `usize?` | Byte index of last match |
 | `s.contains(pat)` | `bool` | Substring check |
 | `s.starts_with(pat)` | `bool` | Prefix check |
 | `s.ends_with(pat)` | `bool` | Suffix check |
@@ -219,8 +219,8 @@ const csv = headers.join(",")      // CSV header row
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.char_at(idx)` | `Option<char>` | Get Unicode scalar at char index (not byte index) |
-| `s.byte_at(idx)` | `Option<u8>` | Get byte at byte index |
+| `s.char_at(idx)` | `char?` | Get Unicode scalar at char index (not byte index) |
+| `s.byte_at(idx)` | `u8?` | Get byte at byte index |
 
 ## Substring Extraction
 
@@ -232,8 +232,8 @@ const csv = headers.join(",")      // CSV header row
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.parse_int()` or `s.parse()` | `Result<i64, string>` | Parse to integer, trims whitespace |
-| `s.parse_float()` | `Result<f64, string>` | Parse to floating point, trims whitespace |
+| `s.parse_int()` or `s.parse()` | `i64 or string` | Parse to integer, trims whitespace |
+| `s.parse_float()` | `f64 or string` | Parse to floating point, trims whitespace |
 
 ## String Manipulation
 
@@ -256,10 +256,10 @@ const csv = headers.join(",")      // CSV header row
 |----------------|-------------|
 | `cstring` | Owned null-terminated string |
 | `c"literal"` | Null-terminated string literal |
-| `s.to_cstring()` | `Result<cstring, null_byte_error>` (fails if `\0` present) |
+| `s.to_cstring()` | `cstring or null_byte_error` (fails if `\0` present) |
 | `cstring.as_ptr()` | `*u8` (unsafe context only) |
 | `cstring.from_ptr(ptr)` | `cstring` (unsafe, takes ownership) |
-| `cstring.to_string()` | `Result<string, utf8_error>` |
+| `cstring.to_string()` | `string or utf8_error` |
 
 <!-- test: skip -->
 ```rask
@@ -311,7 +311,7 @@ ERROR [std.strings/S7]: cannot mutate string
 WHY: Use StringBuilder for construction.
 
 FIX:
-  let b = StringBuilder.new()
+  mut b = StringBuilder.new()
   b.append(s)
   b.append("x")
   const result = b.build()
@@ -325,14 +325,14 @@ FIX:
 | Out-of-bounds slice `s[0..999]` | S5 | Panic at runtime |
 | Slice not on char boundary | S5 | Panic at runtime |
 | Embedded `\0` in string | — | Valid; `to_cstring()` returns error |
-| Allocation failure | — | Returns `Result` error |
+| Allocation failure | — | Returns `T or E` error |
 | String literal ≤ 15 bytes | S8 | SSO — inline value, no heap, no refcount |
 | String literal > 15 bytes | S6 | Sentinel refcount, never freed/decremented |
 | Short string (≤ 15 bytes) | S8 | SSO — pure value copy, no atomic ops |
 | `Span` of freed source | — | Undefined behavior (user's responsibility) |
-| `Span` out of bounds | — | Panic on `s[span]`, `None` on `s.get(span)` |
-| `StringSlice` with stale handle | — | `pool.get(slice)` returns `None` |
-| `StringSlice` wrong pool | — | `pool.get(slice)` returns `None` |
+| `Span` out of bounds | — | Panic on `s[span]`, `none` on `s.get(span)` |
+| `StringSlice` with stale handle | — | `pool.get(slice)` returns `none` |
+| `StringSlice` wrong pool | — | `pool.get(slice)` returns `none` |
 | Refcount overflow | S6 | Panic (practically unreachable — requires ~4 billion live copies) |
 | Multiple simultaneous iterators | — | Allowed (string is immutable) |
 
@@ -479,7 +479,7 @@ func tokenize(source: string) -> (StringPool, Vec<Token>) or Error {
         tokens.push(Token { text: slice, kind })
     }
 
-    return Ok((pool, tokens))
+    return (pool, tokens)
 }
 ```
 

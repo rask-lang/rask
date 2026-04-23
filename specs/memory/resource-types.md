@@ -64,7 +64,7 @@ func process() -> () or Error {
     const data = try file.read_all()
     try process_data(data)
     try file.close()                          // Consumed
-    Ok(())
+    return
 }
 ```
 
@@ -78,22 +78,22 @@ struct DbConn {
 
 extend DbConn {
     func open(path: string) -> DbConn or Error {
-        return Ok(DbConn { handle: 1 })
+        return DbConn { handle: 1 }
     }
 
     func read_all(self) -> string or Error {
-        return Ok("data")
+        return "data"
     }
 
     func close(take self) -> () or Error {
-        return Ok(())
+        return
     }
 }
 
 func bad() -> () or Error {
     const conn = try DbConn.open("data.txt")
     const data = try conn.read_all()
-    Ok(())
+    return
     // ERROR: conn not consumed before scope exit
 }
 ```
@@ -108,11 +108,11 @@ struct DbConn {
 
 extend DbConn {
     func open(path: string) -> DbConn or Error {
-        return Ok(DbConn { handle: 1 })
+        return DbConn { handle: 1 }
     }
 
     func close(take self) -> () or Error {
-        return Ok(())
+        return
     }
 }
 
@@ -120,7 +120,7 @@ func also_bad() -> () or Error {
     const conn = try DbConn.open("data.txt")
     try conn.close()
     try conn.close()    // ERROR: conn already consumed
-    Ok(())
+    return
 }
 ```
 
@@ -146,12 +146,12 @@ func process() -> () or Error {
     const body = try file.read_body()
     try transform(body)
 
-    Ok(())
+    return
     // ensure runs: file.close() called
 }
 ```
 
-**Error handling in `ensure`:** If the ensured operation returns `Result`, errors are logged (debug mode), accumulated if multiple ensures fail, and returned as the scope's error if no explicit return.
+**Error handling in `ensure`:** If the ensured operation returns `T or E`, errors are logged (debug mode), accumulated if multiple ensures fail, and returned as the scope's error if no explicit return.
 
 <!-- test: parse -->
 ```rask
@@ -161,7 +161,7 @@ func risky() -> () or Error {
 
     try risky_operation()         // If this fails, ensure still runs
 
-    Ok(())
+    return
 }
 // If risky_operation() fails: file.close() runs, then try propagates
 // If file.close() fails: that error is returned
@@ -179,11 +179,11 @@ func process(path: string) -> Data or Error {
 
     const header = try file.read_header()  // Early return? ensure runs
     if !header.valid {
-        return Err(InvalidHeader)      // ensure runs, file closed
+        return InvalidHeader      // ensure runs, file closed
     }
 
     const data = try file.read_body()      // Early return? ensure runs
-    Ok(data)                           // Normal exit: ensure runs
+    return data                           // Normal exit: ensure runs
 }
 ```
 
@@ -199,14 +199,13 @@ enum FileError {
 }
 
 func read_config(file: File) -> Config or FileError {
-    const data = match file.read_all() {
-        Ok(d) => d,
-        Err(reason) => return Err(FileError.ReadFailed { file, reason }),
+    const data = if file.read_all() ? as d { d } else as reason {
+        return FileError.ReadFailed { file, reason }
     }
 
     const config = try parse(data)
     try file.close()
-    Ok(config)
+    return config
 }
 ```
 
@@ -223,7 +222,7 @@ func read_config(file: File) -> Config or FileError {
 | **RC1** | `Vec<Resource>` | No | Vec drop would need to consume each element |
 | **RC2** | `Pool<Resource>` | Yes | Explicit removal required anyway |
 | **RC3** | `Map<K, Resource>` | No | Map drop same problem as Vec |
-| **RC4** | `Option<Resource>` | Yes | Must match and consume |
+| **RC4** | `Resource?` | Yes | Must match and consume |
 
 **Pool pattern for resources:**
 <!-- test: skip -->
@@ -311,7 +310,7 @@ func conditional(file: File, keep_open: bool) -> () or Error {
         try file.close()             // Consumes by close
     }
     // Both branches consume
-    Ok(())
+    return
 }
 ```
 
@@ -327,7 +326,7 @@ func process_file(path: string) -> Data or Error {
     const header = try file.read_header()
     const data = try file.read_body()
 
-    Ok(data)
+    return data
 }
 ```
 
@@ -344,7 +343,7 @@ func update_user(db: Database, user_id: u64) -> () or Error {
 
     try txn.commit()             // Explicit commit consumes txn
                               // ensure no longer needed (already consumed)
-    Ok(())
+    return
 }
 ```
 
@@ -372,7 +371,7 @@ func handle_connections(pool: Pool<Connection>) -> () or Error {
         try conn.close()
     }
 
-    Ok(())
+    return
 }
 ```
 
@@ -422,11 +421,11 @@ extend FileError {
         match self {
             FileError.ReadFailed { file, reason } => {
                 try file.close()
-                Ok(Error.Read(reason))
+                return Error.Read(reason)
             }
             FileError.WriteFailed { file, reason } => {
                 try file.close()
-                Ok(Error.Write(reason))
+                return Error.Write(reason)
             }
         }
     }
@@ -453,7 +452,7 @@ func process_files(paths: Vec<string>) -> () or Error {
         try process(file)
     }
 
-    Ok(())
+    return
     // All ensures run in reverse order
 }
 ```
