@@ -26,7 +26,7 @@ test "closure using struct field inline" {
 // --- SL1: Scope-limited closures can be used within their scope ---
 
 test "scope-limited closure used in same scope" {
-    const items = Vec<string>.new()
+    mut items = Vec<string>.new()
     items.push("hello")
     items.push("world")
     const count = || items.len()

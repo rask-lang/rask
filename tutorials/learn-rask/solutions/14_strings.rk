@@ -39,7 +39,7 @@ func callsign_prefix(callsign: string) -> string {
 }
 
 func parse_csv(input: string) -> Vec<Vec<string>> {
-    const rows = Vec.new()
+    mut rows = Vec.new()
     const lines = input.split("\n")
     for line in lines {
         rows.push(line.split(","))
@@ -79,7 +79,7 @@ test "callsign prefix" {
 }
 
 test "parse csv" {
-    const rows = parse_csv("a,b,c\n1,2,3")
+    mut rows = parse_csv("a,b,c\n1,2,3")
     assert rows.len() == 2
     assert rows[0].len() == 3
     assert rows[0][0] == "a"

@@ -23,7 +23,7 @@ func apply_twice(f: |i32| -> i32, x: i32) -> i32 {
 
 // Function that filters a vector based on a predicate
 func filter_vec(vec: Vec<i32>, predicate: |i32| -> bool) -> Vec<i32> {
-    const result = Vec.new()
+    mut result = Vec.new()
     for item in vec.iter() {
         if predicate(item) {
             result.push(item)

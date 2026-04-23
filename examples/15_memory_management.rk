@@ -27,7 +27,7 @@ func main() {
     // Handles remain valid even if pool reorganizes memory
 
     // Create a pool for nodes
-    const node_pool = Pool<Node>.new()
+    mut node_pool = Pool<Node>.new()
 
     print("Creating linked list with handles:\n")
 
@@ -68,7 +68,7 @@ func main() {
     }
 
     // Create entity pool for game-like scenario
-    const entities = Pool<Entity>.new()
+    mut entities = Pool<Entity>.new()
 
     print("Creating game entities:\n")
 

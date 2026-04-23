@@ -2,7 +2,7 @@
 // Vec operations: push, pop, index, length, iteration.
 
 test "vec push and len" {
-    const v = Vec.new()
+    mut v = Vec.new()
     assert v.len() == 0
     v.push(1)
     assert v.len() == 1
@@ -12,7 +12,7 @@ test "vec push and len" {
 }
 
 test "vec index access" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(10)
     v.push(20)
     v.push(30)
@@ -22,7 +22,7 @@ test "vec index access" {
 }
 
 test "vec index assign" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v[0] = 99
@@ -31,7 +31,7 @@ test "vec index assign" {
 }
 
 test "vec pop" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(10)
     v.push(20)
     const popped = v.pop()
@@ -41,13 +41,13 @@ test "vec pop" {
 }
 
 test "vec pop empty" {
-    const v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     const popped = v.pop()
     assert popped == none
 }
 
 test "vec sum via loop" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -61,7 +61,7 @@ test "vec sum via loop" {
 }
 
 test "vec of strings" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push("hello")
     v.push("world")
     assert v.len() == 2
@@ -70,7 +70,7 @@ test "vec of strings" {
 }
 
 test "vec string read twice" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push("test")
     const a = v[0]
     const b = v[0]
@@ -79,7 +79,7 @@ test "vec string read twice" {
 }
 
 test "vec get returns option" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(42)
     assert v.get(0)?
     assert v.get(0)! == 42

@@ -82,10 +82,10 @@ impl TypeChecker {
                         expected: declared.clone(),
                         span: stmt.span,
                     });
-                    self.define_local_read_only(name.clone(), declared.clone());
+                    self.define_local_const(name.clone(), declared.clone());
                     declared
                 } else {
-                    self.define_local_read_only(name.clone(), init_ty.clone());
+                    self.define_local_const(name.clone(), init_ty.clone());
                     init_ty
                 };
                 self.span_types.insert((name_span.start, name_span.end, name_span.file_id), binding_ty);
@@ -106,19 +106,24 @@ impl TypeChecker {
                         });
                     }
                 }
-                // Reject mutation of read-only parameters (default params are read-only).
-                // Exception: index assignment on collection types (Vec, Map, Pool)
-                // is interior mutation, not rebinding — allowed on const bindings.
+                // Reject mutation of read-only bindings (const) and read-only
+                // parameters (default params). `const` is deep: rebinding,
+                // index/field assign, and mutating method calls all forbidden.
                 if let Some(root) = Self::root_ident_name(target) {
-                    // Index assignment (v[i] = x) is interior mutation — allowed
-                    // on const bindings. Collections (Vec, Map) are heap-allocated;
-                    // index assignment doesn't rebind the variable.
-                    let is_index_assign = matches!(&target.kind, rask_ast::expr::ExprKind::Index { .. });
-                    if self.is_local_read_only(&root) && !is_index_assign {
-                        self.errors.push(TypeError::MutateReadOnlyParam {
-                            name: root.clone(),
-                            span: stmt.span,
-                        });
+                    match self.lookup_binding_kind(&root) {
+                        Some(super::BindingKind::Const) => {
+                            self.errors.push(TypeError::MutateConst {
+                                name: root.clone(),
+                                span: stmt.span,
+                            });
+                        }
+                        Some(super::BindingKind::Param) => {
+                            self.errors.push(TypeError::MutateReadOnlyParam {
+                                name: root.clone(),
+                                span: stmt.span,
+                            });
+                        }
+                        _ => {}
                     }
                     // ESAD Phase 2: Reject mutation of persistently borrowed sources
                     if let Some(borrow) = self.check_persistent_borrow_conflict(&root) {
@@ -310,7 +315,7 @@ impl TypeChecker {
                 match pat {
                     TuplePat::Name(name) => {
                         if is_const {
-                            self.define_local_read_only(name.clone(), elem_ty);
+                            self.define_local_const(name.clone(), elem_ty);
                         } else {
                             self.define_local(name.clone(), elem_ty);
                         }
@@ -332,7 +337,7 @@ impl TypeChecker {
                 match pat {
                     TuplePat::Name(name) => {
                         if is_const {
-                            self.define_local_read_only(name.clone(), var);
+                            self.define_local_const(name.clone(), var);
                         } else {
                             self.define_local(name.clone(), var);
                         }

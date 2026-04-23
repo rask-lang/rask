@@ -44,7 +44,7 @@ test "for range single element" {
 // on Vec also produces wrong values natively.
 
 test "for-in vec sums elements" {
-    const v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -56,7 +56,7 @@ test "for-in vec sums elements" {
 }
 
 test "for-in vec counts elements" {
-    const v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     v.push(10)
     v.push(20)
     mut count = 0
@@ -67,7 +67,7 @@ test "for-in vec counts elements" {
 }
 
 test "for-in empty vec" {
-    const v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     mut count = 0
     for item in v {
         count = count + 1
@@ -78,7 +78,7 @@ test "for-in empty vec" {
 // --- Range-based Vec access (workaround for for-in bug) ---
 
 test "range-based vec iteration" {
-    const v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     v.push(10)
     v.push(20)
     v.push(30)

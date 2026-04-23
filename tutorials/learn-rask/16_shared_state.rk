@@ -36,7 +36,7 @@ import sync.AtomicI64
 
 func example_shared() -> () or Error {
     using Multitasking {
-        const counter = Shared.new(0)
+        mut counter = Shared.new(0)
 
         const h1 = spawn(|| {
             for i in 0..1000 {

@@ -10,7 +10,7 @@ import time
 // ============================================================================
 
 func build_crc8_table() -> Vec<i64> {
-    const table = Vec.new()
+    mut table = Vec.new()
     for i in 0..256 {
         mut crc = i
         for j in 0..8 {
@@ -112,7 +112,7 @@ func isqrt(n: i64) -> i64 {
 // Pushes sensor readings into a shared Vec. The Vec handle is heap-allocated,
 // so the main thread sees appended data via its own copy of the handle.
 func interrupt_handler(
-    readings: Vec<i64>,
+    mutate readings: Vec<i64>,
     start_time: time.Instant,
     sample_rate_hz: i64
 ) {
@@ -214,11 +214,11 @@ func main() {
 
     // Shared buffer: interrupt handler appends, main thread reads.
     // Vec handles are heap-allocated — both threads see the same data.
-    const readings = Vec.new()
+    mut readings = Vec.new()
 
-    const temp_hist = Vec.new()
-    const pres_hist = Vec.new()
-    const hum_hist = Vec.new()
+    mut temp_hist = Vec.new()
+    mut pres_hist = Vec.new()
+    mut hum_hist = Vec.new()
     for i in 0..64 {
         temp_hist.push(0.0)
         pres_hist.push(0.0)
@@ -236,7 +236,7 @@ func main() {
         samples_processed: 0,
     }
 
-    const timing_samples = Vec.new()
+    mut timing_samples = Vec.new()
     for i in 0..256 {
         timing_samples.push(0)
     }

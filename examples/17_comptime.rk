@@ -3,7 +3,7 @@
 
 // Compute squares at compile time
 const SQUARES = comptime {
-    const arr = Vec.new()
+    mut arr = Vec.new()
     for i in 0..20 {
         arr.push(i * i)
     }
@@ -12,7 +12,7 @@ const SQUARES = comptime {
 
 // Fibonacci lookup table
 const FIBONACCI = comptime {
-    const fib = Vec.new()
+    mut fib = Vec.new()
     fib.push(0)
     fib.push(1)
 
@@ -27,7 +27,7 @@ const FIBONACCI = comptime {
 
 // Powers of two
 const POWERS_OF_TWO = comptime {
-    const powers = Vec.new()
+    mut powers = Vec.new()
     mut power = 1
     for i in 0..16 {
         powers.push(power)
@@ -38,7 +38,7 @@ const POWERS_OF_TWO = comptime {
 
 // Prime numbers up to 50
 const PRIMES = comptime {
-    const primes = Vec.new()
+    mut primes = Vec.new()
 
     for n in 2..50 {
         mut is_prime = true

@@ -61,6 +61,11 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
+    #[error("cannot mutate `{name}` — declared `const`")]
+    MutateConst {
+        name: String,
+        span: Span,
+    },
     #[error("string slices are temporary — cannot store `{view_var}`")]
     StringSliceStored {
         source_var: String,

@@ -42,7 +42,7 @@ func flight_time(log: Vec<LogEntry>) -> i32 {
 enum Token { Num(f64), Plus, Minus, Times, Divide }
 
 func eval_postfix(tokens: Vec<Token>) -> f64 {
-    const stack = Vec.new()
+    mut stack = Vec.new()
     for token in tokens {
         match token {
             Num(x) => stack.push(x),

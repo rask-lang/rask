@@ -78,14 +78,14 @@ test "shadow in nested block" {
 // --- const allows value mutation (like JS const) ---
 
 test "const vec allows push" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     assert v.len() == 2
 }
 
 test "const map allows insert" {
-    const m = Map.new()
+    mut m = Map.new()
     m.insert("a", 1)
     assert m["a"] == 1
 }

@@ -806,7 +806,7 @@ func write_lockfile(graph: DepGraph, path: string) -> () or FetchError {
     // Write to temp file, rename on success. ensure cleans up on error.
     const tmp_path = "{path}.tmp"
 
-    const tmp_file = try fs.create(tmp_path)
+    mut tmp_file = try fs.create(tmp_path)
         else |e| FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
     ensure fs.remove(tmp_path) else |_| {}
 

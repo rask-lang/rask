@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 func main() {
-    const v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     v.push(10)
     v.push(20)
     v.push(30)

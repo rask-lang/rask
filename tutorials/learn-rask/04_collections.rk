@@ -50,7 +50,7 @@ func example_vec() {
 }
 
 func example_map() {
-    const elements = Map.new()
+    mut elements = Map.new()
     elements.insert("H", 1)
     elements.insert("He", 2)
     elements.insert("Li", 3)

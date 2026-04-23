@@ -495,14 +495,14 @@ fn check_succeeds(source: &str) -> bool {
 #[test]
 fn discover_vec_push_len() {
     assert!(check_succeeds(
-        "func main() {\n    const v = Vec<i32>.new()\n    v.push(1)\n    println(v.len().to_string())\n}"
+        "func main() {\n    mut v = Vec<i32>.new()\n    v.push(1)\n    println(v.len().to_string())\n}"
     ), "Vec.new/push/len should pass type check");
 }
 
 #[test]
 fn discover_vec_pop() {
     assert!(check_succeeds(
-        "func main() {\n    const v = Vec<i32>.new()\n    v.push(1)\n    v.pop()\n}"
+        "func main() {\n    mut v = Vec<i32>.new()\n    v.push(1)\n    v.pop()\n}"
     ), "Vec.pop should pass type check");
 }
 
@@ -524,14 +524,14 @@ fn discover_string_trim() {
 #[test]
 fn discover_map_insert_len() {
     assert!(check_succeeds(
-        "func main() {\n    const m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    println(m.len().to_string())\n}"
+        "func main() {\n    mut m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    println(m.len().to_string())\n}"
     ), "Map.new/insert/len should pass type check");
 }
 
 #[test]
 fn discover_map_contains_key() {
     assert!(check_succeeds(
-        "func main() {\n    const m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    m.contains_key(\"a\")\n}"
+        "func main() {\n    mut m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    m.contains_key(\"a\")\n}"
     ), "Map.contains_key should pass type check");
 }
 

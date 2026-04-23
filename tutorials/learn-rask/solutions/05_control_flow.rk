@@ -8,7 +8,7 @@ func next_departure(arrival_minute: i32) -> i32 {
 }
 
 func collatz(start: i32) -> Vec<i32> {
-    const seq = Vec.new()
+    mut seq = Vec.new()
     mut n = start
     seq.push(n)
     while n != 1 {
@@ -66,7 +66,7 @@ test "next shinkansen departure" {
 }
 
 test "collatz sequence" {
-    const seq = collatz(6)
+    mut seq = collatz(6)
     assert seq[0] == 6
     assert seq[seq.len() - 1] == 1
     assert seq.len() == 9

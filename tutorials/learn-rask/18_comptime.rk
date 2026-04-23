@@ -38,7 +38,7 @@
 
 // Pre-compute squares at compile time
 const SQUARES = comptime {
-    const v = Vec.new()
+    mut v = Vec.new()
     for i in 0..20 {
         v.push(i * i)
     }

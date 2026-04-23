@@ -370,6 +370,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("parameters are read-only by default — add `mutate` to indicate the function modifies this value")
             }
 
+            MutateConst { name, span } => {
+                Diagnostic::error(format!("cannot mutate `{}` — declared `const`", name))
+                    .with_code("E0322")
+                    .with_primary(*span, format!("`{}` is const — immutable", name))
+                    .with_help(format!("change `const {}` to `mut {}` to allow mutation", name, name))
+                    .with_fix(format!("replace `const {}` with `mut {}`", name, name))
+                    .with_why("`const` bindings forbid rebinding and mutation. Use `mut` when you need to modify the value or call mutating methods.")
+            }
+
             StringSliceStored { source_var, view_var, slice_span, store_span } => {
                 Diagnostic::error(format!("string slice `{}` cannot be stored", view_var))
                     .with_code("E0324")

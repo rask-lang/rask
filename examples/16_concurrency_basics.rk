@@ -176,7 +176,7 @@ func main() -> () or MainError {
     print("=== Thread Pool ===\n\n")
 
     using ThreadPool(workers: 4) {
-        const handles = Vec.new()
+        mut handles = Vec.new()
 
         for i in 0..8 {
             const h = ThreadPool.spawn(|| {

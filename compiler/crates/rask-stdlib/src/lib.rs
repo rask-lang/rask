@@ -11,7 +11,7 @@ pub mod stubs;
 pub mod mir_metadata;
 
 pub use builtins::{Builtin, BuiltinKind};
-pub use types::{MethodStub, has_method, lookup_method, methods_for};
+pub use types::{MethodStub, any_builtin_method_mutates, has_method, lookup_method, methods_for};
 pub use stubs::StubRegistry;
 pub use registry::{
     type_method_names, module_method_names, has_type_method, has_module_method,

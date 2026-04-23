@@ -76,13 +76,22 @@ impl TypeChecker {
 
     pub(super) fn define_local(&mut self, name: String, ty: Type) {
         if let Some(scope) = self.local_types.last_mut() {
-            scope.insert(name, (ty, false));
+            scope.insert(name, (ty, super::BindingKind::Mut));
         }
     }
 
-    pub(super) fn define_local_read_only(&mut self, name: String, ty: Type) {
+    /// Define a default (read-only) parameter. Use `define_local` for `mutate`/`take` params.
+    pub(super) fn define_local_param(&mut self, name: String, ty: Type) {
         if let Some(scope) = self.local_types.last_mut() {
-            scope.insert(name, (ty, true));
+            scope.insert(name, (ty, super::BindingKind::Param));
+        }
+    }
+
+    /// Define a `const` binding. Deep-immutable: rebinding, index/field assign,
+    /// and mutating method calls all forbidden.
+    pub(super) fn define_local_const(&mut self, name: String, ty: Type) {
+        if let Some(scope) = self.local_types.last_mut() {
+            scope.insert(name, (ty, super::BindingKind::Const));
         }
     }
 
@@ -95,14 +104,19 @@ impl TypeChecker {
         None
     }
 
-    /// Check if a local variable is read-only (default params are read-only; `mutate` params are not).
-    pub(super) fn is_local_read_only(&self, name: &str) -> bool {
+    /// Look up the binding kind for a local.
+    pub(super) fn lookup_binding_kind(&self, name: &str) -> Option<super::BindingKind> {
         for scope in self.local_types.iter().rev() {
-            if let Some((_, read_only)) = scope.get(name) {
-                return *read_only;
+            if let Some((_, kind)) = scope.get(name) {
+                return Some(*kind);
             }
         }
-        false
+        None
+    }
+
+    /// Check if a local variable is read-only (const binding or default parameter).
+    pub(super) fn is_local_read_only(&self, name: &str) -> bool {
+        self.lookup_binding_kind(name).map_or(false, |k| k.is_read_only())
     }
 
     /// Extract the root identifier name from an assignment target expression.
@@ -278,6 +292,48 @@ impl TypeChecker {
     /// Check if mutating a variable conflicts with active persistent borrows.
     pub(super) fn check_persistent_borrow_conflict(&self, var_name: &str) -> Option<&PersistentBorrow> {
         self.persistent_borrows.iter().rev().find(|b| b.source_var == var_name)
+    }
+
+    /// True if the method mutates its receiver (`mutate self`). `take self`
+    /// consumes — not mutates — and is allowed on const bindings.
+    /// Falls back to the union of mutating method names across stdlib stubs
+    /// when the receiver's type isn't resolved yet (catches
+    /// `const v = Vec.new(); v.push(1)` before constraint solving runs).
+    pub(super) fn method_mutates_self(&self, var_name: &str, method_name: &str) -> bool {
+        let Some(ty) = self.lookup_local(var_name) else { return false };
+        let resolved = self.resolve_named(&self.ctx.apply(&ty));
+        let type_id = match &resolved {
+            Type::Named(id) => Some(*id),
+            Type::Generic { base, .. } => Some(*base),
+            _ => None,
+        };
+
+        if let Some(id) = type_id {
+            // User-defined types: check the internal method table.
+            let methods = match self.types.get(id) {
+                Some(TypeDef::Struct { methods, .. }) |
+                Some(TypeDef::Enum { methods, .. }) => Some(methods),
+                _ => None,
+            };
+            if let Some(methods) = methods {
+                if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
+                    return matches!(sig.self_param, SelfParam::Mutate);
+                }
+            }
+
+            // Builtin types (Vec, Map, string, ...): check the stdlib stubs.
+            let type_name = self.types.type_name(id);
+            if let Some(stub) = rask_stdlib::lookup_method(&type_name, method_name) {
+                return stub.mutate_self;
+            }
+
+            return false;
+        }
+
+        // Receiver type unresolved: fall back to the set of method names that
+        // are `mutate self` across all stdlib stubs. `add`/`mul`/`eq` aren't
+        // in the set, so desugared arithmetic/comparison don't false-positive.
+        rask_stdlib::any_builtin_method_mutates(method_name)
     }
 
     /// Determine borrow mode for a method call by looking up the method signature.

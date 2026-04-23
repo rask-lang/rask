@@ -219,7 +219,7 @@ ERROR [mem.parameters/PM3]: value used after being taken
 
 **PM2 (mutate):** `mutate` marks intent: "I will change this parameter." This includes field-level modification AND full reassignment — there's no half-mutable state. A `mutate` parameter gives you unrestricted write access to the value; the constraint is that the caller keeps ownership after the call.
 
-Note the interaction with `const` bindings: `const player = Player.new()` prevents reassigning the *name* `player`, but passing it as a `mutate` argument still works — the function modifies the *value*, not the binding. `const`/`let` controls whether a name can be rebound; `mutate` controls whether a function can modify what the name refers to.
+Note the interaction with `const` bindings: `const` is deep — you cannot pass a `const` binding as a `mutate` argument, call a `mutate self` method on it, or assign through an index/field. Rebinding and all forms of mutation through the binding name are rejected. If you need to pass a value to a `mutate` parameter, bind it with `mut`. Moving a const-bound value to a `take` parameter is allowed — ownership transfer is not mutation.
 
 **PM3 (take):** The rare case. Ownership transfer only when you need to store, send, or consume.
 

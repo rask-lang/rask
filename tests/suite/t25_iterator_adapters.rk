@@ -15,7 +15,7 @@
 // --- filter ---
 
 test "filter even numbers" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -31,7 +31,7 @@ test "filter even numbers" {
 // --- map ---
 
 test "map doubles" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -46,7 +46,7 @@ test "map doubles" {
 // --- filter + map chain ---
 
 test "filter then map" {
-    const v = Vec.new()
+    mut v = Vec.new()
     for i in 1..6 {
         v.push(i)
     }
@@ -61,7 +61,7 @@ test "filter then map" {
 // --- fold ---
 
 test "fold sum" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -72,7 +72,7 @@ test "fold sum" {
 }
 
 test "fold product" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -85,7 +85,7 @@ test "fold product" {
 // --- sum ---
 
 test "sum" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(10)
     v.push(20)
     v.push(30)
@@ -96,7 +96,7 @@ test "sum" {
 // --- count ---
 
 test "count" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -107,7 +107,7 @@ test "count" {
 // --- find ---
 
 test "find existing" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -118,7 +118,7 @@ test "find existing" {
 }
 
 test "find missing" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
 
@@ -129,7 +129,7 @@ test "find missing" {
 // --- any / all ---
 
 test "any true" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -138,7 +138,7 @@ test "any true" {
 }
 
 test "any false" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
 
@@ -146,7 +146,7 @@ test "any false" {
 }
 
 test "all true" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(2)
     v.push(4)
     v.push(6)
@@ -155,7 +155,7 @@ test "all true" {
 }
 
 test "all false" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(2)
     v.push(3)
     v.push(4)
@@ -166,7 +166,7 @@ test "all false" {
 // --- enumerate ---
 
 test "enumerate" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push("a")
     v.push("b")
     v.push("c")
@@ -184,7 +184,7 @@ test "enumerate" {
 // --- take ---
 
 test "take first n" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(10)
     v.push(20)
     v.push(30)
@@ -199,7 +199,7 @@ test "take first n" {
 // --- skip ---
 
 test "skip first n" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(10)
     v.push(20)
     v.push(30)
@@ -224,7 +224,7 @@ test "range iteration" {
 // --- for (k, v) in map (DS1, LP desugaring) ---
 
 test "map iteration with destructuring" {
-    const m = Map.new()
+    mut m = Map.new()
     m.insert("a", 1)
     m.insert("b", 2)
 
@@ -239,7 +239,7 @@ test "map iteration with destructuring" {
 // BUG: parser doesn't support `for mutate` yet
 
 test "for mutate doubles in place" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -256,7 +256,7 @@ test "for mutate doubles in place" {
 // --- take_all consuming iteration (I3) ---
 
 test "take_all consumes vec" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(10)
     v.push(20)
     v.push(30)

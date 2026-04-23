@@ -14,7 +14,7 @@ func main() {
     print("\n")
 
     // Map - key-value pairs
-    const scores = Map.new()
+    mut scores = Map.new()
     scores.insert("Alice", 95)
     scores.insert("Bob", 87)
     scores.insert("Charlie", 92)
