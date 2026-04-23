@@ -95,8 +95,8 @@ Always available without import:
 
 | Type | Description |
 |------|-------------|
-| `Option<T>` | Optional value (`some(v)` or `none`) |
-| `Result<T, E>` | Success or error |
+| `T?` | Optional value (present or `none`) |
+| `T or E` | Success value or error |
 | `Error` | Error trait |
 
 ### Collections
@@ -454,10 +454,10 @@ URL parsing (RFC 3986).
 struct Url {
     scheme: string,      // "https"
     host: string,        // "example.com"
-    port: Option<u16>,   // 443
+    port: u16?,          // 443
     path: string,        // "/api/users"
-    query: Option<string>, // "page=1&limit=10"
-    fragment: Option<string>, // "section"
+    query: string?,      // "page=1&limit=10"
+    fragment: string?,   // "section"
 }
 ```
 
@@ -470,16 +470,16 @@ const u = try url.parse("https://example.com:8080/path?query=1")
 
 u.scheme    // "https"
 u.host      // "example.com"
-u.port      // Some(8080)
+u.port      // 8080 (present)
 u.path      // "/path"
-u.query     // Some("query=1")
+u.query     // "query=1" (present)
 ```
 
 ### Query Parameters
 
 ```rask
 const params = try url.parse_query("name=Alice&age=30")
-params["name"]  // Some("Alice")
+params["name"]  // "Alice" (present)
 
 const query = url.encode_query([("name", "Alice"), ("age", "30")])
 // "name=Alice&age=30"
@@ -586,8 +586,8 @@ if terminal.is_tty() {
     print("plain")
 }
 
-terminal.width()   // -> Option<u16>
-terminal.height()  // -> Option<u16>
+terminal.width()   // -> u16?
+terminal.height()  // -> u16?
 ```
 
 **Status:** Planned — detailed specification TODO.

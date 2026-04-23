@@ -20,7 +20,7 @@ One `Rng` type plus module-level convenience functions. Explicit generator for r
 |------|-------------|
 | **M1: Typed generation** | `rng.u64()`, `rng.i64()`, `rng.f64()`, `rng.f32()`, `rng.bool()` generate typed random values |
 | **M2: Range** | `rng.range(lo, hi)` returns value in `[lo, hi)` — panics if `lo >= hi` |
-| **M3: Collections** | `rng.shuffle(vec)` does in-place Fisher-Yates; `rng.choice(vec)` returns `T?` (None if empty) |
+| **M3: Collections** | `rng.shuffle(vec)` does in-place Fisher-Yates; `rng.choice(vec)` returns `T?` (`none` if empty) |
 
 <!-- test: skip -->
 ```rask
@@ -63,7 +63,7 @@ FIX: Use rng.range(5, 6) for a single value.
 | Case | Rule | Handling |
 |------|------|----------|
 | `range(5, 5)` | M2 | Panics (empty range) |
-| `choice(empty_vec)` | M3 | Returns `None` |
+| `choice(empty_vec)` | M3 | Returns `none` |
 | `shuffle(single_element)` | M3 | No-op |
 | `Rng.from_seed(0)` | R3 | Valid, deterministic (seed 0 not special) |
 

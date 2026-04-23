@@ -34,10 +34,10 @@ Path.from(s: string) -> Path        // alias for new
 
 <!-- test: skip -->
 ```rask
-path.parent() -> Path?              // "/home/user/file.txt" -> Some("/home/user")
-path.file_name() -> string?         // "/home/user/file.txt" -> Some("file.txt")
-path.extension() -> string?         // "/home/user/file.txt" -> Some("txt")
-path.stem() -> string?              // "/home/user/file.txt" -> Some("file")
+path.parent() -> Path?              // "/home/user/file.txt" -> "/home/user"
+path.file_name() -> string?         // "/home/user/file.txt" -> "file.txt"
+path.extension() -> string?         // "/home/user/file.txt" -> "txt"
+path.stem() -> string?              // "/home/user/file.txt" -> "file"
 path.components() -> Vec<string>    // "/home/user" -> ["home", "user"]
 ```
 
@@ -90,11 +90,11 @@ WHY: Rask paths are UTF-8. Non-UTF-8 filenames are lossy-converted at the system
 
 | Case | Rule | Handling |
 |------|------|----------|
-| `Path.new("")` | — | Empty path; `parent()` and `file_name()` return `None` |
-| `Path.new("/")` | — | Root; `parent()` and `file_name()` return `None` |
-| `Path.new("file.tar.gz")` | — | `extension()` -> `Some("gz")`, `stem()` -> `Some("file.tar")` |
-| `Path.new(".gitignore")` | — | `extension()` -> `None`, `stem()` -> `Some(".gitignore")` (dotfiles are stems) |
-| `Path.new("no_ext")` | — | `extension()` -> `None` |
+| `Path.new("")` | — | Empty path; `parent()` and `file_name()` return `none` |
+| `Path.new("/")` | — | Root; `parent()` and `file_name()` return `none` |
+| `Path.new("file.tar.gz")` | — | `extension()` -> `"gz"`, `stem()` -> `"file.tar"` |
+| `Path.new(".gitignore")` | — | `extension()` -> `none`, `stem()` -> `".gitignore"` (dotfiles are stems) |
+| `Path.new("no_ext")` | — | `extension()` -> `none` |
 | Trailing slash `"/home/user/"` | P2 | Normalized to `"/home/user"` |
 | Double separators `"/home//user"` | P2 | Normalized to `"/home/user"` |
 | Non-UTF-8 filenames on Unix | P3 | Lossy replacement (`\uFFFD`), affects <0.01% of real paths |

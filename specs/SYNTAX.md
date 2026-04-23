@@ -311,7 +311,7 @@ extend File {
 
 ### Enums (Sum Types)
 
-`Option<T>` (`T?`) and `Result<T, E>` (`T or E`) are builtin tagged unions, not user enums. See [types/optionals.md](types/optionals.md) and [types/error-types.md](types/error-types.md). User enums cover everything else:
+Option (`T?`) and the error union (`T or E`) are builtin tagged unions, not user enums — no `Some`/`None` or `Ok`/`Err` constructors. See [types/optionals.md](types/optionals.md) and [types/error-types.md](types/error-types.md). User enums cover everything else:
 
 ```rask
 // Positional payloads — clean for wrappers and simple cases
@@ -665,7 +665,7 @@ Match a single pattern in `if` or `while` with automatic binding:
 // Check enum variant with binding
 if state is Connected(sock): sock.send(data)
 
-if result is Ok(value) {
+if result? as value {
     process(value)
 } else {
     handle_error()
@@ -815,15 +815,15 @@ Pool access, `ensure` cleanup, and `@resource` types are shown in the sections a
 ```rask
 // Option shorthand — bare value auto-wraps
 const x: i32? = 42
-const name = user?.profile?.name    // None if any step is None
+const name = user?.profile?.name    // `none` if any step is `none`
 const port = config.port ?? 8080
 const must_exist = optional!
 
-// Result
+// Error union
 func load_config() -> Config or (IoError | ParseError) {
     const content = try read_file("config.json")
     const config = try parse_json(content)
-    return config                                   // Auto-wrapped in Ok
+    return config                                   // Bare T — auto-wraps to success branch
 }
 ```
 
@@ -1117,8 +1117,8 @@ println("{sum}")
 | Rebindable | `mut x = ...` | Can reassign |
 | Mutable | `mutate param` | Explicit mutable borrow |
 | Ownership | `take param` | Explicit when consuming |
-| Optional | `T?` | Type and chaining |
-| Result | `T or E` | Same as `Result<T, E>` |
+| Optional | `T?` | Type and chaining; bare value + `none`, no `Some`/`None` |
+| Error union | `T or E` | No `Ok`/`Err` — bare T auto-wraps at return; E is its own type |
 | Error prop | `try expr` | Prefix keyword |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |

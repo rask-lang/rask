@@ -212,7 +212,7 @@ func encode_value<T: Encode>(value: T, w: mutate Writer) -> () or Error {
             try encode_value(value.(field.name), mutate w)
         }
     } else if reflect.is_optional<T>() {
-        if value is Some(v) { try encode_value(v, mutate w) }
+        if value? as v { try encode_value(v, mutate w) }
     }
 }
 ```

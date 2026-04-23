@@ -91,8 +91,8 @@ func transform<T, E>(result: T or E) -> U or (E | TransformError)
 ```
 ERROR [type.unions/U1]: union types only allowed in error position
    |
-3  |  let x: int | string = ...
-   |         ^^^^^^^^^^^^ use an explicit enum for data modeling
+3  |  const x: int | string = ...
+   |           ^^^^^^^^^^^^ use an explicit enum for data modeling
 
 WHY: General union types add subtyping complexity. Use enums instead.
 

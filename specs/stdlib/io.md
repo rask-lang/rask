@@ -220,7 +220,7 @@ WHY: read_text() requires valid UTF-8. Use read_all() for raw bytes.
 | `BufWriter` flush on drop fails | Error silently discarded | B2 |
 | `Stdout` not closed | Compile error | S1 |
 | `Buffer` overflow | Grows like `Vec` (fallible allocation) | B4 |
-| Zero-length read/write | Returns `Ok(0)`, no-op | R1, W1 |
+| Zero-length read/write | Returns `0`, no-op | R1, W1 |
 
 ---
 

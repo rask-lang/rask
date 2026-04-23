@@ -196,10 +196,10 @@ public func open(path: string) -> Database or Error {
     unsafe {
         mut rc = sql.sqlite3_open(path.as_c_str(), &db)
         if rc != sql.SQLITE_OK {
-            return Err(Error.new("sqlite open failed"))
+            return Error.new("sqlite open failed")
         }
     }
-    Ok(Database { handle: db })
+    return Database { handle: db }
 }
 ```
 
@@ -210,8 +210,8 @@ public extern "C" func rask_process(data: *u8, len: c_size) -> c_int {
     unsafe {
         mut slice = slice_from_raw(data, len)
         match process(slice) {
-            Ok(_) => 0,
-            Err(_) => -1,
+            Success as _ => 0,
+            Error as _ => -1,
         }
     }
 }

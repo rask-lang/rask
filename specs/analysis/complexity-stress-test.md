@@ -123,7 +123,7 @@ func update_entities(mutate world: GameWorld) -> () or Error {
         body.close(world.physics)
     }
 
-    return Ok(())
+    return
 }
 ```
 
@@ -141,7 +141,7 @@ func render_frame(world: GameWorld) {
 
 func render_entities(world: GameWorld) using frozen Pool<Entity>, frozen Pool<Mesh> {
     for (h, entity) in world.entities.entries() {
-        if world.meshes.get(entity.mesh) is Some(mesh) {
+        if world.meshes.get(entity.mesh)? as mesh {
             draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
         }
     }
@@ -162,7 +162,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
 
     const render_handle = ThreadPool.spawn(|| {
         for (h, entity) in entity_snap.entries() {
-            if mesh_snap.get(entity.mesh) is Some(mesh) {
+            if mesh_snap.get(entity.mesh)? as mesh {
                 draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
             }
         }
@@ -177,7 +177,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
     sync_physics(world)
     try update_entities(world)
 
-    return Ok(())
+    return
 }
 ```
 

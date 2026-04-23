@@ -51,7 +51,7 @@ func bad_example() using Pool<Player> {
 |-----------|--------------|-------------|--------------|
 | `h = pool.insert(x)` | — | Fresh | None (new handle) |
 | `pool[h]` access | Any | Valid | Unchanged |
-| `pool.get(h) is Some` | Any | Valid (true branch) | Unchanged |
+| `pool.get(h)?` narrow | Any | Valid (true branch) | Unchanged |
 | `pool.remove(h)` | Any | Invalid | All become Invalid |
 | `pool.insert(x)` | Unknown/Valid | Unknown | Unchanged |
 | `h2 = h1` | s | s | h2 aliases h1 |
@@ -81,7 +81,7 @@ func alias_example() using Pool<Player> {
 
 | Rule | Description |
 |------|-------------|
-| **FN1: Check narrows** | Successful `pool.get(h) is Some` narrows h to Valid in the true branch |
+| **FN1: Check narrows** | Successful `pool.get(h)?` predicate narrows h to Valid in the true branch |
 | **FN2: Access narrows** | `pool[h]` access narrows h to Valid for subsequent uses in same basic block |
 | **FN3: Mutation widens** | Pool structural mutation (insert/remove of other handles) widens to Unknown |
 | **FN4: Loop reset** | Each loop iteration resets to pre-loop state |
@@ -90,7 +90,7 @@ func alias_example() using Pool<Player> {
 ```rask
 func safe_access(h: Handle<Player>) using Pool<Player> {
     // h: Unknown (parameter)
-    if pool.get(h) is None {
+    if pool.get(h) == none {
         return  // h: Invalid here (narrowed in false continuation)
     }
     // h: Valid here (narrowed by check)
