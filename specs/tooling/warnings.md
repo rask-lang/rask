@@ -83,7 +83,7 @@ func scratch() {
 extend Server {
     func start(take self) -> () or Error {
         try self.listener.bind(self.addr)
-        return Ok(())
+        return
     }
 }
 ```

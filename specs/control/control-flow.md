@@ -96,7 +96,7 @@ if state is Connected(sock) && sock.is_ready() {
 }
 ```
 
-## Guard Pattern: let...is...else
+## Guard Pattern: const...is...else
 
 | Rule | Description |
 |------|-------------|
@@ -105,13 +105,13 @@ if state is Connected(sock) && sock.is_ready() {
 | **CF15: Linear in else** | Pattern fails, value available in `else` for cleanup |
 
 ```rask
-// Early return on error
-const value = result? else as e { return e }
-// value available here
+// Early return on non-matching variant
+const sock = state is Connected else { return }
+// sock available here
 
-// Break from loop when queue empty
-const item = queue.pop()? else { break }
-// item available here
+// Break from loop when task missing
+const task = event is Ready else { break }
+// task available here
 ```
 
 ## Infinite Loop: loop
@@ -167,10 +167,10 @@ outer: for i in rows {
 search: loop {
     for i in 0..n {
         if found(i) {
-            break search Some(i)
+            break search i
         }
     }
-    break None
+    break none
 }
 ```
 
@@ -203,7 +203,7 @@ func process_items(items: Vec<Item>) -> Vec<string> {
 func process(file: File) -> Data or Error {
     ensure file.close()
     const data = try file.read()   // try may return early
-    Ok(transform(data))
+    return transform(data)
 }
 ```
 
@@ -315,15 +315,15 @@ FIX: Ensure all break expressions match:
 ```
 ERROR [ctrl.flow/CF13]: else block must diverge
    |
-3  |  const x = opt is Some else { None }
-   |                               ^^^^ doesn't diverge
+3  |  const x = event is Tick else { 0 }
+   |                               ^ doesn't diverge
 
-WHY: let...is...else requires the else block to exit via return,
+WHY: const...is...else requires the else block to exit via return,
      break, continue, or panic.
 
 FIX: Use if is instead:
 
-  const x = if opt is Some(v) { v } else { default_value }
+  const x = if event is Tick(v) { v } else { default_value }
 ```
 
 **Linear resource consumed only in one branch [CF11]:**
@@ -359,12 +359,12 @@ FIX: Consume in both branches or use ensure:
 | Rule | Description |
 |------|-------------|
 | **DS1: Const destructuring** | `const (a, b) = expr` binds tuple elements as immutable |
-| **DS2: Let destructuring** | `let (a, b) = expr` binds tuple elements as mutable |
+| **DS2: Mut destructuring** | `mut (a, b) = expr` binds tuple elements as rebindable |
 | **DS3: For destructuring** | `for (k, v) in iter` destructures each iteration element |
 | **DS4: Arity match** | Number of bindings must match tuple length (compile error otherwise) |
 | **DS5: Nested** | `const (a, (b, c)) = expr` destructures nested tuples |
 | **DS6: Wildcard** | `_` discards an element: `const (_, b) = pair` |
-| **DS7: Guard pattern** | `const (a, b) = expr is Ok else { return }` combines destructuring with pattern matching |
+| **DS7: Guard pattern** | `const (a, b) = expr is Paired else { return }` combines destructuring with pattern matching on a user enum variant |
 
 <!-- test: parse -->
 ```rask
@@ -422,7 +422,7 @@ FIX: Match the number of bindings, use _ to discard:
 
 The diverging `else` requirement (CF13) ensures the binding is always valid after the statement.
 
-**CF12 (implicit unwrap):** For single-payload variants like `Some(T)` or `Ok(T)`, omitting the binding in `if x is Some` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring.
+**CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Status types (`T?`, `T or E`) use dedicated operators (`?`, `? as v`, `??`, `try`), not `is`.
 
 **CF22-25 (labels):** Labels enable breaking/continuing outer loops without extra flags or state. The `label:` syntax is clear and unambiguous.
 
@@ -437,7 +437,7 @@ The diverging `else` requirement (CF13) ensures the binding is always valid afte
 | Value from repeated checks | `const x = loop { break ... }` | Clear exit |
 | Side effect conditional | `if c { f() }` | No value needed |
 | Check other enum variant | `if x is Variant` | Pattern match |
-| Early exit on error | `let v = x is Ok else { return }` | Guard |
+| Early exit on error | `if r? as v { … } else as e { return e }` | Guard |
 | Loop over iterator | `for x in iter` | Standard |
 | Loop until condition | `while cond { ... }` | Clear intent |
 | Infinite loop | `loop { ... }` | Explicit |
@@ -540,10 +540,10 @@ const color = match status {
 // Inline if
 const sign = if x > 0: "+" else: "-"
 
-// Match with block arms
+// Match with block arms on error union
 const opts = match parse_args(args) {
-    Ok(o) => o,
-    Err(e) => {
+    Args as o => o,
+    ParseError as e => {
         println("error: {e}")
         std.exit(1)
     }
@@ -564,14 +564,14 @@ const input = loop {
 **Search pattern:**
 <!-- test: skip -->
 ```rask
-func find_first<T: Equal>(items: Vec<T>, target: T) -> Option<usize> {
+func find_first<T: Equal>(items: Vec<T>, target: T) -> usize? {
     mut i = 0
     loop {
         if i >= items.len() {
-            break None
+            break none
         }
         if items[i] == target {
-            break Some(i)
+            break i
         }
         i += 1
     }
@@ -580,16 +580,16 @@ func find_first<T: Equal>(items: Vec<T>, target: T) -> Option<usize> {
 
 **Labeled break with value:**
 ```rask
-func find_in_matrix<T: Equal>(matrix: Vec<Vec<T>>, target: T) -> Option<(usize, usize)> {
+func find_in_matrix<T: Equal>(matrix: Vec<Vec<T>>, target: T) -> (usize, usize)? {
     search: loop {
         for i in 0..matrix.len() {
             for j in 0..matrix[i].len() {
                 if matrix[i][j] == target {
-                    break search Some((i, j))
+                    break search (i, j)
                 }
             }
         }
-        break None
+        break none
     }
 }
 ```
@@ -626,13 +626,13 @@ if state is Connected(sock) {
     sock.send(data)
 }
 
-// Loop while pattern matches
-while reader.next() is Some(line) {
+// Loop while optional has a value
+while reader.next()? as line {
     process(line)
 }
 
-// With else
-if result is Ok(value) {
+// With else on error union
+if result? as value {
     use(value)
 } else {
     handle_error()
@@ -650,13 +650,11 @@ func process_file(path: string) -> () or Error {
     const file = try open(path)
     ensure file.close()
 
-    const line = file.read_line() is Some else { return Ok(()) }
-    // line available here
-
-    const value = parse(line) is Ok else { return Err("invalid") }
-    // value available here
-
-    Ok(())
+    if file.read_line()? as line {
+        const value = try parse(line)
+        use(value)
+    }
+    return
 }
 ```
 

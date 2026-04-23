@@ -59,9 +59,9 @@ h.join()!
 // Handle explicitly
 const h = spawn(|| { fallible_work() })
 match h.join() {
-    Ok(val) => process(val),
-    Err(JoinError.Panicked(msg)) => println("task panicked: {msg}"),
-    Err(JoinError.Cancelled) => println("task was cancelled"),
+    T as val                   => process(val),
+    JoinError.Panicked(msg)    => println("task panicked: {msg}"),
+    JoinError.Cancelled        => println("task was cancelled"),
 }
 
 spawn(|| { background_work() }).detach()
@@ -188,7 +188,7 @@ match h.join() { }    // explicit handling
 |------|-------------|
 | **CN1: Cooperative** | Cancellation sets a flag; task checks `cancelled()` |
 | **CN2: Ensure runs** | `ensure` blocks always run, even on cancellation |
-| **CN3: I/O checks** | I/O operations check cancel flag and return `Err(Cancelled)` if set |
+| **CN3: I/O checks** | I/O operations check cancel flag and return `Cancelled` error if set |
 
 <!-- test: skip -->
 ```rask
@@ -226,10 +226,11 @@ const producer = spawn(|| {
 }
 
 const consumer = spawn(|| {
-    while rx.recv() is Ok(msg) {
-        process(msg)
-    })
-}
+    loop {
+        const r = rx.recv()
+        if r? as msg { process(msg) } else { break }
+    }
+})
 
 try join_all(producer, consumer)
 ```
@@ -252,7 +253,7 @@ try join_all(producer, consumer)
 | Sender closed, buffer has items | Items remain — receivers can drain |
 | All senders closed | Channel closed for writing, readable until empty |
 | Receiver closed, buffer has items | Items discarded (lost) |
-| All receivers closed | Senders get `Err(Closed)` on next send |
+| All receivers closed | Senders get a `Closed` error on next send |
 
 ## Error Messages
 
@@ -307,8 +308,8 @@ Install a `using Multitasking { ... }` block that encloses the call.
 | Direct `spawn` outside any block | CC1 | Compile error |
 | Call to function transitively reaching `spawn`, outside any block | CC2 | Compile error |
 | Closure stored / trait object dispatch reaches `spawn` outside a block | CC3 | Runtime panic |
-| `.join()` on cancelled task | H2, CN1 | Returns `Err(Cancelled)` |
-| Channel send after all receivers closed | CH3 | Returns `Err(Closed)` |
+| `.join()` on cancelled task | H2, CN1 | Returns `Cancelled` error |
+| Channel send after all receivers closed | CH3 | Returns `Closed` error |
 | Nested `using Multitasking` blocks | C1 | Error — second `enter` aborts (compile error if lexically nested, runtime panic otherwise) |
 | Library opens `using Multitasking` while app already did | C6 | Falls under C1 — runtime panic |
 | Detached task outlives `using` block body | C4 | Block exit still drains detached tasks. Truly outliving the block is impossible |

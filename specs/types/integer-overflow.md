@@ -67,10 +67,10 @@ const s = Saturating(255u8) + Saturating(1)     // Saturating(255)
 | `.saturating_add(b)` | `T` | Saturating add |
 | `.saturating_sub(b)` | `T` | Saturating subtract |
 | `.saturating_mul(b)` | `T` | Saturating multiply |
-| `.checked_add(b)` | `Option<T>` | `None` on overflow |
-| `.checked_sub(b)` | `Option<T>` | `None` on overflow |
-| `.checked_mul(b)` | `Option<T>` | `None` on overflow |
-| `.checked_div(b)` | `Option<T>` | `None` on zero |
+| `.checked_add(b)` | `T?` | `none` on overflow |
+| `.checked_sub(b)` | `T?` | `none` on overflow |
+| `.checked_mul(b)` | `T?` | `none` on overflow |
+| `.checked_div(b)` | `T?` | `none` on zero |
 | `.overflowing_add(b)` | `(T, bool)` | Result + overflow flag |
 | `.overflowing_sub(b)` | `(T, bool)` | Result + overflow flag |
 | `.overflowing_mul(b)` | `(T, bool)` | Result + overflow flag |

@@ -61,7 +61,7 @@ const double = |x| x * 2
 // Block body — explicit return required (same as functions)
 const parse = |s| {
     if s == "" { return none }
-    return Some(parse_inner(s))
+    return parse_inner(s)
 }
 ```
 
@@ -78,18 +78,20 @@ Closure parameters default to borrow mode. Mutable-borrow parameters are allowed
 
 <!-- test: parse -->
 ```rask
-func sum_values(items: Vec<Item>) -> i32 {
+func run(items: Vec<Item>) {
     // Borrow parameter (default)
     const print_name = |u: User| print(u.name)
 
     // Mutable-borrow parameter (explicit type required)
     const grow = |mutate item: Item| { item.level += 1 }
-
-    // Mutable capture (no type on parameter)
-    mut total = 0
-    items.for_each(|item, mutate total| { total += item.value })
-    return total
 }
+```
+
+<!-- test: skip -->
+```rask
+// Mutable capture (no type on parameter) — see CP3 + Mutable Capture below
+mut total = 0
+items.for_each(|item, mutate total| { total += item.value })
 ```
 
 ## Mutable Capture

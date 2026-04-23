@@ -30,7 +30,7 @@ Cross-task shared state when channels aren't enough.
 | **R1: Read** | `with shared.read() as v { ... }` — shared read lock; multiple readers concurrent. Mutation through binding is a compile error |
 | **R2: Write** | `with shared.write() as v { ... }` — exclusive write lock; blocks until readers finish |
 | **R2a: Unused write warning** | Compiler warns when `.write()` used but binding never mutated — suggests `.read()` |
-| **R3: Try variants** | `try_read(f)` / `try_write(f)` — non-blocking closures, return `None` if contended |
+| **R3: Try variants** | `try_read(f)` / `try_write(f)` — non-blocking closures, return `none` if contended |
 | **R4: Bare access forbidden** | `with shared as v { ... }` is a compile error — must use `.read()` or `.write()` |
 | **R5: Inline access** | `shared.read().chain` and `shared.write().chain` — expression-scoped lock for single-expression access. Follows `mem.borrowing/E5` rules. Standalone `.read()`/`.write()` without chaining is a compile error |
 
@@ -64,15 +64,15 @@ extend Shared<T> {
     func new(value: T) -> Shared<T>
     func read(self) -> T             // inline access (R5) — expression-scoped read lock
     func write(self) -> T            // inline access (R5) — expression-scoped write lock
-    func try_read<R>(self, f: |T| -> R) -> Option<R>
-    func try_write<R>(self, f: |T| -> R) -> Option<R>
+    func try_read<R>(self, f: |T| -> R) -> R?
+    func try_write<R>(self, f: |T| -> R) -> R?
 }
 ```
 
 Three access patterns:
 - **Inline:** `shared.read().field` / `shared.write().field = x` — single-expression access, lock scoped to expression
 - **`with` block:** `with shared.read() as v { ... }` / `with shared.write() as v { ... }` — multi-statement access
-- **Non-blocking closures:** `try_read(f)` / `try_write(f)` — return `None` if contended
+- **Non-blocking closures:** `try_read(f)` / `try_write(f)` — return `none` if contended
 
 Bare `with shared as v` is a compile error — the lock type must be explicit.
 
@@ -81,7 +81,7 @@ Bare `with shared as v` is a compile error — the lock type must be explicit.
 | Rule | Description |
 |------|-------------|
 | **MX1: Lock** | `with mutex as v { ... }` — exclusive lock; blocks until available |
-| **MX2: Try lock** | `try_lock(f)` — non-blocking closure, returns `None` if held |
+| **MX2: Try lock** | `try_lock(f)` — non-blocking closure, returns `none` if held |
 | **MX3: Inline access** | `mutex.lock().chain` — expression-scoped exclusive lock for single-expression access. Follows `mem.borrowing/E5` rules |
 
 <!-- test: skip -->
@@ -108,14 +108,14 @@ struct Mutex<T> { }
 extend Mutex<T> {
     func new(value: T) -> Mutex<T>
     func lock(self) -> T             // inline access (MX3) — expression-scoped exclusive lock
-    func try_lock<R>(self, f: |T| -> R) -> Option<R>
+    func try_lock<R>(self, f: |T| -> R) -> R?
 }
 ```
 
 Three access patterns:
 - **Inline:** `mutex.lock().field` — single-expression access, lock scoped to expression
 - **`with` block:** `with mutex as v { ... }` — multi-statement access
-- **Non-blocking closure:** `try_lock(f)` — returns `None` if held
+- **Non-blocking closure:** `try_lock(f)` — returns `none` if held
 
 ## `with`-Based Access
 

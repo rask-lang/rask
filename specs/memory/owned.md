@@ -113,12 +113,12 @@ func main() {
 
 | Rule | Description |
 |------|-------------|
-| **OW7: Null optimization** | `Option<Owned<T>>` uses null-pointer optimization — same size as `Owned<T>` (8 bytes) |
+| **OW7: Null optimization** | `Owned<T>?` uses null-pointer optimization — same size as `Owned<T>` (8 bytes) |
 
 | Value | Representation |
 |-------|----------------|
-| `None` | Null pointer (0x0) |
-| `Some(ptr)` | Non-null pointer |
+| `none` | Null pointer (0x0) |
+| present | Non-null pointer |
 
 ## Recursive Types
 
@@ -268,7 +268,7 @@ FIX: Use the new binding instead:
 
 **OW6 (context allocator):** `own` uses the context allocator so arena allocation works without changing call sites. Build a tree with the system allocator, or build it in an arena — same code.
 
-**OW7 (null optimization):** `Option<Owned<T>>` is the natural way to express optional tree children. Null-pointer optimization keeps it at 8 bytes — same as a raw pointer.
+**OW7 (null optimization):** `Owned<T>?` is the natural way to express optional tree children. Null-pointer optimization keeps it at 8 bytes — same as a raw pointer.
 
 ### Patterns & Guidance
 

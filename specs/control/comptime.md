@@ -273,17 +273,22 @@ const CONFIG: Config = comptime parse_config(@embed_file("config.toml"))
 
 | Rule | Description |
 |------|-------------|
-| **CT45: Result support** | Comptime functions can use `Result` and `try` |
+| **CT45: Error-type support** | Comptime functions can use `T or E` and `try` |
 | **CT46: Panics as compile errors** | Comptime panics become compile errors with call stack |
 | **CT47: Error propagation** | Errors propagate to compile error with context |
 
 <!-- test: parse -->
 ```rask
-comptime func safe_divide(a: i32, b: i32) -> i32 or string {
+enum DivError { ByZero }
+extend DivError {
+    func message(self) -> string { "Division by zero" }
+}
+
+comptime func safe_divide(a: i32, b: i32) -> i32 or DivError {
     if b == 0 {
-        return Err("Division by zero")
+        return DivError.ByZero
     }
-    return Ok(a / b)
+    return a / b
 }
 
 const X = try comptime safe_divide(10, 2)  // OK: unwraps to 5
@@ -440,9 +445,9 @@ func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> [u8; MAX_SIZE] or 
     const buffer = [0u8; MAX_SIZE]
     const n = try socket.read(buffer[..])
     if n > MAX_SIZE {
-        return Err(Error.new("Packet too large"))
+        return Error.new("Packet too large")
     }
-    return Ok(buffer)
+    return buffer
 }
 
 // Usage with different sizes
@@ -465,7 +470,7 @@ func process(data: []u8) -> () or Error {
         comptime if DEBUG_MODE {
             // Validation only in debug builds
             if byte > 127 {
-                return Err(Error.new("Invalid byte"))
+                return Error.new("Invalid byte")
             }
         }
 

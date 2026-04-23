@@ -26,10 +26,10 @@ Package-visible default for items and fields, `private` keyword for extend-only 
 
 | Rule | Description |
 |------|-------------|
-| **BI1: Always available** | Primitives, `string`, `Vec`, `Map`, `Set`, `Result`, `Option`, `Error`, `Channel`, `Ok`, `Err`, `Some`, `None` |
+| **BI1: Always available** | Primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel`, `none`. Status types `T?` and `T or E` are builtin sugar — no nominal name |
 | **BI2: Fixed set** | Can't be extended by users or projects |
 | **BI3: No shadowing** | Defining local type with built-in name is a compile error |
-| **BI4: Qualified fallback** | `core.Result` always works regardless of local names |
+| **BI4: Qualified fallback** | `core.Error` always works regardless of local names |
 
 ## Built-in Functions
 
@@ -234,7 +234,7 @@ extend Printer with ast.Visitor {
 ```rask
 struct Node {
     value: i32
-    parent: Option<Handle<Node>>
+    parent: Handle<Node>?
     children: Vec<Handle<Node>>
 }
 ```

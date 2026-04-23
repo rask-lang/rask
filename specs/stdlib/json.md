@@ -67,7 +67,7 @@ json.stringify_pretty(value: JsonValue) -> string
 | **J6: Auto-encode** | Any struct satisfying `Encode` can be encoded without manual implementation. Uses `comptime for` + field access (`std.encoding/E1`–`E3`) |
 | **J7: Compatible types** | `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `string`, `Vec<T>`, `Map<string, T>`, `T?`, nested structs |
 | **J8: Field mapping** | Struct field `serial_name` = JSON key. Defaults to field name (snake_case). Override with `@rename` (`std.encoding/E18`) |
-| **J9: Optional fields** | `T?` fields decode `null` or missing as `None`; missing required fields produce `MissingField`. `@default` fields (`std.encoding/E20`) also tolerate missing keys |
+| **J9: Optional fields** | `T?` fields decode `null` or missing as `none`; missing required fields produce `MissingField`. `@default` fields (`std.encoding/E20`) also tolerate missing keys |
 | **J10: Extra keys ignored** | JSON keys not matching any struct field are silently skipped |
 
 <!-- test: skip -->
@@ -145,7 +145,7 @@ WHY: Only primitive, collection, optional, and nested-struct types can be encode
 | Large integers (>2^53) | Precision loss in f64 | J2 |
 | Duplicate keys in object | Last value wins | J5 |
 | JSON has extra keys not in struct | Ignored | J10 |
-| Struct has extra fields not in JSON | Required fields error; optional fields get `None` | J9 |
+| Struct has extra fields not in JSON | Required fields error; optional fields get `none` | J9 |
 
 ---
 

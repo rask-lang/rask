@@ -75,8 +75,8 @@ myapp.net.http  → 5myapp3net4http
 | `i32` | `i32` | `_Gi32` |
 | `Vec<i32>` | `Vec[i32]` | `_GVec[i32]` |
 | `Map<string, User>` | `Map[string,4User]` | `_GMap[string,4User]` |
-| `Option<T>` | `Option[T]` | `_GOption[T]` |
-| `Result<T, HttpError>` | `Result[T,9HttpError]` | `_GResult[T,9HttpError]` |
+| `T?` | `Opt[T]` | `_GOpt[T]` |
+| `T or HttpError` | `Or[T,9HttpError]` | `_GOr[T,9HttpError]` |
 
 **Encoding rules:**
 - **Primitives:** No length prefix (i32, u64, bool, str, f32, f64)
@@ -241,21 +241,21 @@ C-compatible types:
 
 **Not C-compatible** (compile error if used with `@export`):
 - `string` (use `*u8` + `usize` or `.as_c_str()`)
-- `Result<T, E>` (use return codes + out params)
-- `Option<T>` (use nullable pointers or sentinel values)
+- `T or E` (use return codes + out params)
+- `T?` (use nullable pointers or sentinel values)
 - `Vec<T>`, `Map<K,V>` (use `*T` + `usize`)
 - Trait objects `any Trait`
 
 Example error:
 ```rask
 @export("process_data")
-public func process(data: string) -> Result<(), Error>  // ERROR
+public func process(data: string) -> () or Error  // ERROR
 ```
 ```
 ERROR [compiler.mangling/CV2]: @export function uses non-C-compatible types
   |
-3 | public func process(data: string) -> Result<(), Error>
-  |                           ^^^^^^    ^^^^^^^^^^^^^^^^^^^
+3 | public func process(data: string) -> () or Error
+  |                           ^^^^^^    ^^^^^^^^^^^^^
   |
 WHY: Functions exported to C must use only C-compatible types.
      See struct.c-interop/TM1 for type mapping.
@@ -289,7 +289,7 @@ Built-in runtime functions use reserved prefix `_Rrt`:
 ```rask
 // package: myapp.api.handlers.user.profile
 public func get_profile<T>(user: User, opts: Options<T>)
-    using Database using Logger -> Result<Profile<T>, Error>
+    using Database using Logger -> Profile<T> or Error
 ```
 
 Full symbol (>200 chars):

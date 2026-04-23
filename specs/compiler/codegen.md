@@ -58,7 +58,7 @@ All MIR types have known sizes. No generics remain.
 | **T1: Concrete only** | All types fully resolved before MIR lowering |
 | **T2: Field ordering** | Struct fields sorted by alignment (largest first) to minimize padding |
 | **T3: C layout override** | `@layout(C)` forces declaration order for C interop |
-| **T4: Niche optimization** | `Option<Ptr>` uses null as `None`; `Option<Handle>` uses sentinel generation `0` |
+| **T4: Niche optimization** | `Ptr?` uses null as `none`; `Handle?` uses sentinel generation `0` |
 
 ```
 MirType:
@@ -219,7 +219,7 @@ rask build main.rk -o myapp
 
 | Case | Handling | Rule |
 |------|---------|------|
-| Niche optimization for Option | `Option<Ptr>` uses null as None, no tag needed | T4 |
+| Niche optimization for optional | `Ptr?` uses null as `none`, no tag needed | T4 |
 | `@layout(C)` structs | Declaration order preserved, no field reordering | T3 |
 | Storable closures | Copy/move captured values into env struct at creation | L6 |
 | Expression-scoped closures | Take pointer to enclosing stack frame | L6 |

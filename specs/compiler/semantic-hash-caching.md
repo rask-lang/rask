@@ -26,7 +26,7 @@ The compiler creates a fingerprint (hash) of each function's simplified code tre
 | Type annotations | `: i32`, `-> string` |
 | Parameter modes | `take x: File` |
 | Field names | `.health`, `.position` |
-| Pattern structure | `Some(x)`, `Point { x, y }` |
+| Pattern structure | `Point { x, y }`, `Variant(x)` |
 | Attributes | `@inline`, `@unsafe` |
 
 | Excluded | Why |

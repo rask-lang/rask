@@ -74,7 +74,7 @@ func validate(input: string) -> bool {
 @pure
 func parse(input: string) -> Config or ParseError {
     // P4: returning errors is fine — errors are values
-    if input.is_empty() { return Err(ParseError.Empty) }
+    if input.is_empty() { return ParseError.Empty }
     return Config { value: input }
 }
 
