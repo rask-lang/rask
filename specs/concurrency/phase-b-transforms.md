@@ -231,7 +231,7 @@ using Multitasking, ThreadPool {
 | Case | Rule | Behavior |
 |------|------|----------|
 | Trait with no I/O methods (e.g., `Display`) | VT1 | Clean vtable, implementations never touch RUNTIME_SLOT, zero cost |
-| `any Reader` in non-async context | VT2 | Implementation reads RUNTIME_SLOT, finds `None`, takes blocking path |
+| `any Reader` in non-async context | VT2 | Implementation reads RUNTIME_SLOT, finds `none`, takes blocking path |
 | Pure closure stored in variable, called in spawn | FP1, FP3 | Clean ABI, yield point generated conservatively. Poll returns Ready immediately |
 | Cross-module function gains `spawn` internally | SC3 | Caller sees a new CC2 scope requirement. Source-level breakage, same as any API change |
 | Cross-module generic with type-dependent effects | SC4 | Conservative metadata (union of effects). Precise after monomorphization |

@@ -66,7 +66,7 @@ public func main(args: Args) {
 | Rule | Description |
 |------|-------------|
 | **EX1: Normal return** | `main` returning → status 0 |
-| **EX2: Error return** | `main` returning `Err(e)` → status 1, error to stderr |
+| **EX2: Error return** | `main` returning an error → status 1, error to stderr |
 | **EX3: Explicit exit** | `sys.exit(n)` → immediate, no cleanup |
 | **EX4: Panic** | Panic → status 101, message to stderr |
 | **EX5: Ensure runs** | `ensure` blocks run before exit (unless `sys.exit()`) |

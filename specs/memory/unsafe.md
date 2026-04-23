@@ -438,15 +438,15 @@ extend SafeBuffer {
     public func new(size: usize) -> SafeBuffer or AllocError {
         unsafe {
             const ptr = try alloc(size)
-            return Ok(SafeBuffer { ptr, len: size })
+            return SafeBuffer { ptr, len: size }
         }
     }
 
-    public func get(self, index: usize) -> Option<u8> {
+    public func get(self, index: usize) -> u8? {
         if index >= self.len {
-            return None
+            return none
         }
-        return unsafe { Some(*self.ptr.add(index)) }
+        return unsafe { *self.ptr.add(index) }
     }
 
     func close(take self) {
@@ -475,11 +475,11 @@ extend<T> FastBuffer<T> {
         return *self.data.add(index)
     }
 
-    public func get(self, index: usize) -> Option<T> {
+    public func get(self, index: usize) -> T? {
         if index < self.len {
-            return unsafe { Some(self.get_unchecked(index)) }
+            return unsafe { self.get_unchecked(index) }
         }
-        return None
+        return none
     }
 }
 ```

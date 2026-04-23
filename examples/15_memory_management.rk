@@ -99,40 +99,40 @@ func main() {
     // Display entity relationships
     print("\nEntity relationships:\n")
 
-    const player_ent = entities.get(player).unwrap()
+    const player_ent = entities.get(player)!
     print(player_ent.name)
     print(" (HP: ")
     print(player_ent.health)
     print(")")
 
     if player_ent.target? as target_handle {
-        const target = entities.get(target_handle).unwrap()
+        const target = entities.get(target_handle)!
         print(" -> targets ")
         print(target.name)
     }
     print("\n")
 
-    const e1 = entities.get(enemy1).unwrap()
+    const e1 = entities.get(enemy1)!
     print(e1.name)
     print(" (HP: ")
     print(e1.health)
     print(")")
 
     if e1.target? as target_handle {
-        const target = entities.get(target_handle).unwrap()
+        const target = entities.get(target_handle)!
         print(" -> targets ")
         print(target.name)
     }
     print("\n")
 
-    const e2 = entities.get(enemy2).unwrap()
+    const e2 = entities.get(enemy2)!
     print(e2.name)
     print(" (HP: ")
     print(e2.health)
     print(")")
 
     if e2.target? as target_handle {
-        const target = entities.get(target_handle).unwrap()
+        const target = entities.get(target_handle)!
         print(" -> targets ")
         print(target.name)
     }
@@ -141,14 +141,14 @@ func main() {
     // Modify entities through handles
     print("Applying damage:\n")
 
-    entities[enemy1].health = entities.get(enemy1).unwrap().health - 20
+    entities[enemy1].health = entities.get(enemy1)!.health - 20
     print("Goblin health: ")
-    print(entities.get(enemy1).unwrap().health)
+    print(entities.get(enemy1)!.health)
     print("\n")
 
-    entities[player].health = entities.get(player).unwrap().health - 10
+    entities[player].health = entities.get(player)!.health - 10
     print("Player health: ")
-    print(entities.get(player).unwrap().health)
+    print(entities.get(player)!.health)
     print("\n\n")
 
     // Handle invalidation - removing entities

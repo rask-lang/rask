@@ -261,7 +261,7 @@ FIX: Add a using clause:
 | Multiple allocators in scope | CC8 (reused) | Compile error — use named context (AL8) to disambiguate |
 | `using Allocator` + `using Pool<T>` on same function | AL20 | Both contexts threaded independently |
 | Arena-backed Pool, handle sent via channel | AL13 | Compile error — handle type includes arena scope |
-| `try_push` on FixedBuffer-backed Vec | AL3 | Returns Err(PushError) when buffer full |
+| `try_push` on FixedBuffer-backed Vec | AL3 | Returns `PushError` when buffer full |
 | Comptime allocations | — | Use compiler arena (CT17), not runtime allocators |
 
 ---

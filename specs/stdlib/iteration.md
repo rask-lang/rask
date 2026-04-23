@@ -309,7 +309,7 @@ FIX: Use index mode for structural mutation, or collect changes first:
   }
 
   // Option 2: collect first
-  let to_add = Vec.new()
+  mut to_add = Vec.new()
   for mutate entity in entities {
       if entity.should_split {
           to_add.push(entity.split())

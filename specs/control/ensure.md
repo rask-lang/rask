@@ -113,7 +113,7 @@ Cleanup actions may fail. Errors are ignored by default; opt-in handling with `e
 
 | Rule | Description |
 |------|-------------|
-| **ER1: Default ignore** | If ensure body returns `Err(e)`, error silently ignored |
+| **ER1: Default ignore** | If ensure body returns an error, error silently ignored |
 | **ER2: Opt-in else clause** | `ensure expr else \|e\| handler` passes error to handler |
 | **ER3: Infallible handler** | `else` handler must not use `try`—nowhere to propagate |
 | **ER4: try forbidden** | Cannot use `try` inside ensure body |
@@ -146,7 +146,7 @@ func process() -> void or Error {
     ensure c.close() else |e| log("c close failed: {e}")
 
     try do_work()
-    Ok(())
+    return
 }
 // If do_work() fails with WorkError:
 //   1. c.close() runs — if it fails, logs and continues
@@ -165,7 +165,7 @@ func write_important(data: Data) -> void or Error {
     const file = try create("important.txt")
     try file.write(data)
     try file.close()                 // Explicit: propagate close error
-    Ok(())
+    return
 }
 ```
 
@@ -187,7 +187,7 @@ func process() -> void or Error {
 
     // file is already closed, config still available
     log(config.summary)
-    Ok(())
+    return
 }
 ```
 
@@ -245,7 +245,7 @@ ensure tx.rollback()    // Scheduled
 // ... operations ...
 
 tx.commit()             // Consumes tx, cancels ensure (C1)
-Ok(())
+return
 ```
 
 **Transaction pattern:** Ensure the unhappy path (rollback), explicitly handle the happy path (commit).
@@ -258,7 +258,7 @@ func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> void
 
     const from_balance = try tx.get_balance(from)
     if from_balance < amount {
-        return Err(InsufficientFunds)  // ensure runs: rollback
+        return InsufficientFunds  // ensure runs: rollback
     }
 
     try tx.set_balance(from, from_balance - amount)
@@ -266,7 +266,7 @@ func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> void
     try tx.set_balance(to, to_balance + amount)
 
     tx.commit()               // Consumes tx, cancels ensure (C1)
-    Ok(())
+    return
 }
 ```
 
@@ -288,7 +288,7 @@ func process_many_files(paths: Vec<string>) -> void or Error {
 
     // Normal exit: ensure takes and closes all files
     // Early return (error): ensure still takes and closes all files
-    Ok(())
+    return
 }
 ```
 
@@ -309,7 +309,7 @@ func process_many_files_careful(paths: Vec<string>) -> void or Error {
     for file in files.take_all() {
         try file.close()
     }
-    Ok(())
+    return
 }
 ```
 
@@ -385,7 +385,7 @@ FIX: Use ensure to guarantee cleanup:
 NOTE [ctrl.ensure/ER1]: ensure result ignored
    |
 5  |  ensure file.close()
-   |         ^^^^^^^^^^^^ returns Result<(), Error>, error will be ignored
+   |         ^^^^^^^^^^^^ returns `() or Error`, error will be ignored
 
 WHY: Ensure errors are silently ignored by default.
 
@@ -432,7 +432,7 @@ func copy_file(src: string, dst: string) -> void or Error {
 
     const data = try input.read_all()
     try output.write_all(data)
-    Ok(())
+    return
 }
 ```
 
@@ -450,7 +450,7 @@ func modify_database(db: Database) -> void or Error {
     try tx.execute("INSERT ...")
 
     tx.commit()             // Happy path: consumes tx, cancels ensure
-    Ok(())
+    return
 }
 ```
 
@@ -468,7 +468,7 @@ func process_many(paths: Vec<string>) -> void or Error {
     }
 
     // Process resources...
-    Ok(())
+    return
 }
 ```
 

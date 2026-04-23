@@ -187,7 +187,7 @@ const tomorrow = now + time.Duration.seconds(86400)
 | Duration overflow | Wraps (u64 nanoseconds) | D4 |
 | Duration divide by zero | Panic | A4 |
 | `SystemTime` before UNIX epoch | Negative `unix_secs()` | W2 |
-| `SystemTime` NTP adjustment backward | `duration_since` returns `Err(TimeError.Backwards)` | W1 |
+| `SystemTime` NTP adjustment backward | `duration_since` returns `TimeError.Backwards` | W1 |
 | `SystemTime` serialization | Use `unix_secs()` or `unix_millis()` | W2 |
 | `SystemTime` comparison across machines | Only meaningful if clocks are synchronized | W1 |
 

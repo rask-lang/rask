@@ -67,9 +67,10 @@ Layout:
 ### Enums with Payloads
 
 ```rask
-enum Result<T, E> {
-    Ok(T),      // variant 0
-    Err(E),     // variant 1
+// `T or E` is a builtin sum; layout matches a two-variant enum
+T or E {
+    T,      // variant 0 (success value, bare)
+    E,      // variant 1 (error value, bare)
 }
 ```
 
@@ -87,15 +88,15 @@ Layout structure:
 | **E5: Enum alignment** | Alignment = max(discriminant_align, max variant alignment) |
 | **E6: Padding after tag** | Discriminant padded to alignment of largest variant |
 
-Example: `Result<i32, string>`
+Example: `i32 or string`
 
 ```
-Result<i32, string>:
+i32 or string:
   discriminant: u8 at offset 0
   padding: 7 bytes (to align to 8-byte string)
   payload union at offset 8:
-    - Ok variant: i32 (4 bytes)
-    - Err variant: string (16 bytes: tagged union, see String section)
+    - ok variant: i32 (4 bytes)
+    - err variant: string (16 bytes: tagged union, see String section)
 
 Total size: 8 (discriminant+padding) + 16 (union) = 24 bytes
 Alignment: 8 bytes (string's alignment)
@@ -119,15 +120,15 @@ Certain types have unused bit patterns that can encode enum discriminants withou
 
 | Rule | Description |
 |------|-------------|
-| **N1: Handle niche** | `Option<Handle<T>>` uses generation=0 to represent None (8 bytes, not 16) |
-| **N2: Reference niche** | `Option<&T>` uses null pointer for None (8 bytes, not 16) |
-| **N3: NonZero types** | Future: `Option<NonZeroU32>` etc. use zero as None |
+| **N1: Handle niche** | `Handle<T>?` uses generation=0 to represent `none` (8 bytes, not 16) |
+| **N2: Reference niche** | `(&T)?` uses null pointer for `none` (8 bytes, not 16) |
+| **N3: NonZero types** | Future: `NonZeroU32?` etc. use zero as `none` |
 
-**Option<Handle<T>> Layout:**
+**Handle<T>? Layout:**
 ```
 // Without niche (naive):       16 bytes = [tag: u8][pad: 7][Handle: 8]
 // With niche (optimized):        8 bytes = [index: u32][generation: u32]
-//   where generation=0 means None, generation>0 means Some
+//   where generation=0 means `none`, generation>0 means present
 ```
 
 **Priority:** Handle niche optimization MUST be implemented before ABI stabilization. This is critical for graph algorithms using Pool handles.

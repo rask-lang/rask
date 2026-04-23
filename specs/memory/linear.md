@@ -60,7 +60,7 @@ func process(path: string) -> Data or Error {
 
     const header = try file.read_header()  // try is safe after ensure
     const body = try file.read_body()
-    Ok(body)
+    return body
 }
 ```
 
@@ -82,7 +82,7 @@ func transfer(db: Database) -> void or Error {
     try tx.execute("INSERT ...")
 
     tx.commit()              // Consumes tx, cancels ensure (L6)
-    Ok(())
+    return
 }
 ```
 
@@ -97,7 +97,7 @@ Ensure the unhappy path, explicitly consume the happy path.
 | `Vec<T>` | No | Drop would need to consume each element |
 | `Map<K, V>` | No | Same as Vec |
 | `Pool<T>` | Yes | Explicit removal required; runtime panic if dropped non-empty |
-| `Option<T>` | Yes | Must pattern-match and consume the `Some` case |
+| `T?` | Yes | Must narrow (`? as v`) and consume the present case |
 
 See `mem.pools/PL9` and `mem.resources/R5` for the Pool<Linear> cleanup semantics.
 

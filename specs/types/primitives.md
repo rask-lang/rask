@@ -53,7 +53,7 @@ const x: i8 = big_val as i8           // CV2: ERROR, narrowing
 |------|-----------|----------|
 | **CV5: Truncate** | `truncate to T` | Wrapping/bitwise truncation |
 | **CV6: Saturate** | `saturate to T` | Clamp to target range |
-| **CV7: Try convert** | `try convert to T` | `Option<T>`, `None` if out of range |
+| **CV7: Try convert** | `try convert to T` | `T?`, `none` if out of range |
 
 **Float to int:**
 
@@ -61,7 +61,7 @@ const x: i8 = big_val as i8           // CV2: ERROR, narrowing
 |------|-----------|----------|
 | **CV8: Float truncate** | `float to int T` | Truncate toward zero, panic on NaN/infinity |
 | **CV9: Float saturate** | `float to int T (saturating)` | Clamp to T.MIN/T.MAX, NaN → 0 |
-| **CV10: Float try** | `try float to int T` | `Option<T>` |
+| **CV10: Float try** | `try float to int T` | `T?` |
 
 ## `char` Type
 
@@ -71,7 +71,7 @@ const x: i8 = big_val as i8           // CV2: ERROR, narrowing
 |------|-------------|
 | **CH1: Valid range** | Code point in 0x0000–0xD7FF or 0xE000–0x10FFFF; surrogates excluded |
 | **CH2: Literal validation** | `'a'`, `'\n'`, `'\u{1F600}'` — compile-time validated |
-| **CH3: Runtime construction** | `char.from_u32(n)` returns `Option<char>` — `None` if invalid |
+| **CH3: Runtime construction** | `char.from_u32(n)` returns `char?` — `none` if invalid |
 | **CH4: Lossless to u32** | `c as u32` always succeeds |
 | **CH5: No direct cast from u32** | `n as char` is a compile error — use `char.from_u32(n)` |
 
@@ -171,7 +171,7 @@ mut port: u16 = header.port   // Native u16
 | Integer literal out of range | L1/L3 | Compile error |
 | Unsuffixed literal ambiguous | L1/L4 | Defaults to `i32` or `f64` |
 | `n as char` | CH5 | Compile error — use `char.from_u32(n)` |
-| Surrogate code point via `char.from_u32` | CH1/CH3 | Returns `None` |
+| Surrogate code point via `char.from_u32` | CH1/CH3 | Returns `none` |
 | `char.from_u32_unchecked` with invalid | CH1 | Unsafe — undefined behavior |
 | NaN in comparison | F2 | `NaN == NaN` is `false`, `NaN < x` is `false` |
 | Float-to-int with NaN | CV8 | Panics (use CV9 or CV10 for safe alternatives) |
@@ -193,7 +193,7 @@ FIX: Use an explicit conversion:
 
   const x: i8 = big_val truncate to i8    // wraps
   const x: i8 = big_val saturate to i8    // clamps
-  const x = try big_val convert to i8     // Option<i8>
+  const x = try big_val convert to i8     // i8?
 ```
 
 **Direct u32-to-char cast [CH5]:**
@@ -205,7 +205,7 @@ ERROR [type.primitives/CH5]: cannot cast u32 to char with `as`
 
 WHY: char must be a valid Unicode scalar value. Use runtime validation.
 
-FIX: const c = char.from_u32(n)   // returns Option<char>
+FIX: const c = char.from_u32(n)   // returns char?
 ```
 
 **Implicit int↔bool [BL3]:**
@@ -228,7 +228,7 @@ FIX: const flag: bool = n != 0
 
 **CV1–CV4 (as = lossless only):** `as` being lossless-only means you can read `x as i64` and know nothing was lost. Lossy conversions use named operations (`truncate`, `saturate`, `try convert`) that document intent. Consistent with the overflow philosophy in `type.integer-overflow`.
 
-**CH3 (runtime construction returns Option):** `char.from_u32(n)` returning `Option<char>` forces handling of invalid code points. The unsafe `char.from_u32_unchecked(n)` exists for performance-critical paths where validity is known.
+**CH3 (runtime construction returns `T?`):** `char.from_u32(n)` returning `char?` forces handling of invalid code points. The unsafe `char.from_u32_unchecked(n)` exists for performance-critical paths where validity is known.
 
 **E1–E3 (endian types):** Endian-explicit types make byte order visible in struct definitions without runtime overhead. The type system handles conversion at parse/build boundaries, so application code works with native types.
 

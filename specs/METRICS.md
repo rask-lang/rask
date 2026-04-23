@@ -137,7 +137,7 @@ Logic: actual computation, data transformation, control flow
 
 **Examples:**
 - ✅ `users.get(id)?.name` — minimal ceremony
-- ❌ `users.get(id) or { return None }.name or { return None }` — ceremony dominates
+- ❌ `users.get(id) or { return none }.name or { return none }` — ceremony dominates
 - ✅ `for user in users { ... }` — clean iteration
 - ❌ `users.lock(ref) { |user| ... } or continue` — nested callback noise
 

@@ -238,7 +238,7 @@ The compiler auto-derives Default where all fields have a known default value.
 | `string` | `""` (empty string) |
 | `Vec<T>` | Empty vec |
 | `Map<K, V>` | Empty map |
-| `T?` (Option) | `None` |
+| `T?` (optional) | `none` |
 | Struct with all Default fields | Field-wise default |
 | Enum | NOT auto-derived |
 
@@ -265,14 +265,14 @@ Errors if lengths differ, inference ambiguous, or non-literal const without expl
 
 ## Must-Consume Types in Traits
 
-Must-consume resource types (`@resource`) can be generic parameters. Pattern matching on `Option<Resource>` must bind the value — wildcards are forbidden because that would silently drop the resource.
+Must-consume resource types (`@resource`) can be generic parameters. Narrowing over a `Resource?` must bind the value — wildcards are forbidden because that would silently drop the resource.
 
 | Pattern | Resource content | Valid |
 |---------|-----------------|-------|
-| `Some(f)` | Binds f | Yes, f must be consumed |
-| `Some(_)` | Wildcard | No, compile error |
-| `None` | No value | Yes, nothing to consume |
-| `Ok(f)` | Binds f | Yes, f must be consumed |
+| `if opt? as f` | Binds f | Yes, f must be consumed |
+| `if opt?` (no bind, single-payload implicit) | Wildcard | No, compile error |
+| `opt == none` branch | No value | Yes, nothing to consume |
+| `if r? as f` on `Resource or E` | Binds f | Yes, f must be consumed |
 
 ## Trait Composition
 

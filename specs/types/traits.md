@@ -173,10 +173,10 @@ extend Router {
     }
 
     func dispatch(self, req: Request) -> Response {
-        match self.routes.get(req.path) {
-            Some(handler) => handler.handle(req),
-            None => Response.not_found(),
+        if self.routes.get(req.path)? as handler {
+            return handler.handle(req)
         }
+        return Response.not_found()
     }
 }
 ```

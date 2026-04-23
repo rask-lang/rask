@@ -535,7 +535,7 @@ const result = try ctx.run(Command {
     args: ["--rask_out=.rk-gen/", "api.proto"],
 })
 if result.status != 0 {
-    return Err(Error.new("protoc failed: {}", result.stderr))
+    return Error.new("protoc failed: {}", result.stderr)
 }
 
 // Proposed (concise)

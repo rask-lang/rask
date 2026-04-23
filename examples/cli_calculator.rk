@@ -126,7 +126,7 @@ extend Lexer {
             }
         }
 
-        const value: f64 = num_str.parse().unwrap()
+        const value: f64 = num_str.parse()!
         return Token.Number(value)
     }
 }

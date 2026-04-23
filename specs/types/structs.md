@@ -163,7 +163,7 @@ public struct Connection {
 extend Connection {
     public func new(addr: string) -> Connection or Error {
         const socket = try connect(addr)
-        Ok(Connection { socket, state: State.Connected })  // OK: inside extend block
+        return Connection { socket, state: State.Connected }  // OK: inside extend block
     }
 }
 ```
@@ -292,8 +292,8 @@ public struct User {
 
 extend User {
     func validate(self) -> void or Error {
-        if self.email.contains("@") { Ok(()) }
-        else { Err(Error.invalid("email")) }
+        if self.email.contains("@") { return }
+        return Error.invalid("email")
     }
 }
 ```
@@ -332,13 +332,13 @@ struct FileHandle {
 extend FileHandle {
     func open(path: string) -> FileHandle or Error {
         const fd = unsafe { libc.open(path.cstr(), O_RDONLY) }
-        if fd < 0 { return Err(Error.io()) }
-        Ok(FileHandle { fd })
+        if fd < 0 { return Error.io() }
+        return FileHandle { fd }
     }
 
     func close(take self) -> void or Error {
         unsafe { libc.close(self.fd) }
-        Ok(())
+        return
     }
 }
 ```

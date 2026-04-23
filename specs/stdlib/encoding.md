@@ -107,9 +107,7 @@ extend DateTime {
     }
 
     public func from_json(value: JsonValue) -> DateTime or JsonError {
-        const s = value.as_string() is Some else {
-            return Err(JsonError.TypeError("expected string for DateTime"))
-        }
+        const s = value.as_string() ?? return JsonError.TypeError("expected string for DateTime")
         return try DateTime.parse_iso8601(s)
     }
 }
@@ -133,7 +131,7 @@ extend DateTime {
 | `i8`–`i64`, `u8`–`u64` | `0` |
 | `f32`, `f64` | `0.0` |
 | `string` | `""` (empty) |
-| `T?` (optionals) | `None` |
+| `T?` (optionals) | `none` |
 | `Vec<T>` | empty vec |
 | `Map<K,V>` | empty map |
 | Structs, enums, other types | **No zero value** — `@skip` requires `@default(expr)` or compile error |
@@ -233,7 +231,7 @@ func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> void or JsonErro
     } else if reflect.is_float<T>() {
         return w.write_number(value)
     } else if reflect.is_optional<T>() {
-        if value is Some(v) {
+        if value? as v {
             return encode_value(v, mutate w)
         } else {
             return w.write_null()
@@ -288,9 +286,9 @@ func decode_value<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
     } else if reflect.is_optional<T>() {
         if parser.peek_null() {
             parser.skip()
-            return None
+            return none
         }
-        return Some(try decode_value(parser))
+        return try decode_value(parser)
     } else if reflect.is_vec<T>() {
         mut result = Vec.new()
         try parser.begin_array()
@@ -315,15 +313,14 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
         comptime for field in reflect.fields<T>() {
             comptime if !field.is_skipped {
                 (field.name): comptime if field.has_default {
-                    match fields.get(field.serial_name) {
-                        Some(v) => try decode_from_value(v),
-                        None => field.default_value,
+                    if fields.get(field.serial_name)? as v {
+                        try decode_from_value(v)
+                    } else {
+                        field.default_value
                     }
                 } else {
                     try decode_from_value(
-                        fields.get(field.serial_name) is Some else {
-                            return Err(JsonError.MissingField(field.serial_name))
-                        }
+                        fields.get(field.serial_name) ?? return JsonError.MissingField(field.serial_name)
                     )
                 },
             }
@@ -460,12 +457,12 @@ func encode_value<T: Encode>(value: T, w: mutate TomlWriter, key: string?) -> vo
         try w.begin_table(key)
         comptime for field in reflect.fields<T>() {
             comptime if !field.is_skipped {
-                try encode_value(value.(field.name), mutate w, Some(field.serial_name))
+                try encode_value(value.(field.name), mutate w, field.serial_name)
             }
         }
         return w.end_table()
     }
-    // TOML has no null — optionals with None are omitted
+    // TOML has no null — optionals that are `none` are omitted
     // TOML arrays, inline tables, etc.
 }
 ```

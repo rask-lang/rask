@@ -229,7 +229,7 @@ with vec[i] as item {
 ```rask
 with pool[h] as entity {
     entity.health -= pool[other_h].bonus    // OK: inline read of other element
-    pool[other_h].last_attacker = Some(h)   // OK: inline write to other element
+    pool[other_h].last_attacker = h         // OK: inline write to other element
 
     // Pool-specific: insert and remove(other) are allowed
     const ally = pool.insert(new_ally)  // OK: re-resolves entity binding  [re-resolved]
@@ -516,11 +516,13 @@ FIX: Move the removal outside the with block:
 ### String Parsing
 <!-- test: parse -->
 ```rask
-func parse_header(line: string) -> Option<(string, string)> {
+type alias Header = (string, string)
+
+func parse_header(line: string) -> Header? {
     const colon = try line.find(':')
     const key = line[0..colon].trim().to_string()      // Copy out (B2)
     const value = line[colon+1..].trim().to_string()   // Copy out (B2)
-    Some((key, value))
+    return (key, value)
 }
 ```
 

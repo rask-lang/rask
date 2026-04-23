@@ -47,7 +47,7 @@ func transfer_item(
     item_h: Handle<Item>
 ) using players: Pool<Player>, items: Pool<Item> {
     player_h.inventory.push(item_h)
-    item_h.owner = Some(player_h)
+    item_h.owner = player_h
 }
 ```
 

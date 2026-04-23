@@ -109,7 +109,7 @@ const old = counter.swap(new_value, AcqRel)
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `compare_exchange(current, new, success, fail)` | `self, T, T, Ordering, Ordering -> T or T` | If value == current, set to new. Ok(old) on success, Err(actual) on failure |
+| `compare_exchange(current, new, success, fail)` | `self, T, T, Ordering, Ordering -> T or CasFailed<T>` | If value == current, set to new. Returns old on success, `CasFailed(actual)` on failure |
 | `compare_exchange_weak(current, new, success, fail)` | Same | May spuriously fail. Use in loops |
 
 - `compare_exchange`: Must succeed if value matches. Use for single-attempt operations.
@@ -123,8 +123,8 @@ loop {
         break
     }
     match counter.compare_exchange_weak(current, current + 1, AcqRel, Relaxed) {
-        Ok(_) => break,
-        Err(_) => continue,
+        u64 as _ => break,
+        CasFailed as _ => continue,
     }
 }
 ```
@@ -167,7 +167,7 @@ unsafe {
 | Rule | Description |
 |------|-------------|
 | **AH1: Packing** | Handle fields packed into `AtomicU64` (≤8 byte handles) or `AtomicU128` (≤16 byte, requires `target.has_atomic128`) |
-| **AH2: Nullable** | Holds `Handle<T>?` — `None` is a sentinel bit pattern distinct from any valid handle |
+| **AH2: Nullable** | Holds `Handle<T>?` — `none` is a sentinel bit pattern distinct from any valid handle |
 | **AH3: ABA protection** | Generation counter in the handle prevents ABA — a reused slot gets a different generation, so CAS on a recycled handle correctly fails |
 | **AH4: Pool validation** | Atomicity guarantees a consistent load, not that the handle is live. Validate with `pool.get(h)` before access |
 
@@ -178,7 +178,7 @@ unsafe {
 | `load(order)` | `self, Ordering -> Handle<T>?` | Atomically read |
 | `store(h, order)` | `self, Handle<T>?, Ordering` | Atomically write |
 | `swap(h, order)` | `self, Handle<T>?, Ordering -> Handle<T>?` | Replace, return old |
-| `compare_exchange(cur, new, succ, fail)` | `self, Handle<T>?, Handle<T>?, Ordering, Ordering -> Handle<T>? or Handle<T>?` | CAS |
+| `compare_exchange(cur, new, succ, fail)` | `self, Handle<T>?, Handle<T>?, Ordering, Ordering -> Handle<T>? or CasFailed<Handle<T>?>` | CAS |
 | `compare_exchange_weak(cur, new, succ, fail)` | Same | May spuriously fail |
 
 **Handle size:** Default `Handle<T>` is 12 bytes — requires `AtomicU128` (x86-64, ARM64). Compact handles (`Pool<T, PoolId=u16, Index=u16, Gen=u32>`) are 8 bytes — work everywhere via `AtomicU64`. Compile error if handle exceeds the available atomic word size.
@@ -190,15 +190,15 @@ const latest: AtomicHandle<Reading> = AtomicHandle.none()
 
 func publish(mutate pool: Pool<Reading>, value: Reading) {
     const h = pool.insert(value)
-    const prev = latest.swap(Some(h), Release)
-    if prev is Some(old_h) {
+    const prev = latest.swap(h, Release)
+    if prev? as old_h {
         pool.remove(old_h)
     }
 }
 
 func read_latest(pool: Pool<Reading>) -> Reading? {
-    const h = latest.load(Acquire) ?? return None
-    pool.get(h)   // None if writer just swapped and removed
+    const h = latest.load(Acquire) ?? return none
+    return pool.get(h)   // none if writer just swapped and removed
 }
 ```
 
@@ -354,7 +354,7 @@ FIX 2: Use comptime if target.has_atomic128 { ... } for platform-specific paths.
 | Handle too large for atomic word | AH1 | Compile error — use compact pool config or platform with `AtomicU128` |
 | `AtomicHandle.load` then `pool[h]` | AH4 | Handle may be stale — use `pool.get(h)` for safe validation |
 | CAS on handle to recycled slot | AH3 | Correctly fails — generation mismatch in packed word |
-| `AtomicHandle.none()` in CAS expected | AH2 | Works — `None` is a valid bit pattern for comparison |
+| `AtomicHandle.none()` in CAS expected | AH2 | Works — `none` is a valid bit pattern for comparison |
 
 ---
 
@@ -372,7 +372,7 @@ FIX 2: Use comptime if target.has_atomic128 { ... } for platform-specific paths.
 
 **AH3 (ABA protection):** Traditional lock-free algorithms need separate ABA mitigation — tagged pointers, hazard pointers, or epoch-based reclamation. Handle generation counters provide this structurally: when a pool slot is reused, the generation increments. A stale handle packed into an `AtomicHandle` has a different bit pattern than the new occupant's handle, so CAS correctly rejects it. This doesn't eliminate all concurrency hazards (safe reclamation is still needed), but it removes the most common source of subtle lock-free bugs for free.
 
-**AH4 (pool validation):** AtomicHandle guarantees you loaded a consistent handle value. It does NOT guarantee the handle is still live — another thread may have removed it between your load and your pool access. Always use `pool.get(h)` (returns `Option`) rather than `pool[h]` (panics on stale handle) after loading from an AtomicHandle.
+**AH4 (pool validation):** AtomicHandle guarantees you loaded a consistent handle value. It does NOT guarantee the handle is still live — another thread may have removed it between your load and your pool access. Always use `pool.get(h)` (returns `T?`) rather than `pool[h]` (panics on stale handle) after loading from an AtomicHandle.
 
 ### Patterns & Guidance
 
@@ -446,8 +446,8 @@ func increment_if_below(counter: AtomicU64, max: u64) -> bool {
             return false
         }
         match counter.compare_exchange_weak(current, current + 1, AcqRel, Relaxed) {
-            Ok(_) => return true,
-            Err(_) => continue,
+            u64 as _ => return true,
+            CasFailed as _ => continue,
         }
     }
 }
@@ -492,7 +492,7 @@ func spin_acquire<T>(lock: *SpinLockInner<T>) {
     unsafe {
         while (*lock).locked.compare_exchange_weak(
             false, true, Acquire, Relaxed
-        ).is_err() {
+        ) is CasFailed {
             while (*lock).locked.load(Relaxed) {
                 spin_hint()
             }
@@ -532,13 +532,13 @@ extend LockFreeStack<T> {
     }
 
     func push(mutate self, value: T) {
-        const node = self.pool.insert(Node { data: value, next: None })
+        const node = self.pool.insert(Node { data: value, next: none })
         loop {
             const current = self.head.load(Acquire)
             self.pool[node].next = current
-            match self.head.compare_exchange_weak(current, Some(node), Release, Relaxed) {
-                Ok(_) => break,
-                Err(_) => continue,
+            match self.head.compare_exchange_weak(current, node, Release, Relaxed) {
+                Handle as _ => break,
+                CasFailed as _ => continue,
             }
         }
     }

@@ -25,24 +25,24 @@ Vec and Map with optional capacity constraints, inline element access, fallible 
 
 | Rule | Description |
 |------|-------------|
-| **CP1: Unbounded** | `capacity() == None`, grows indefinitely |
-| **CP2: Bounded** | `capacity() == Some(n)`, cannot exceed `n` elements |
+| **CP1: Unbounded** | `capacity() == none`, grows indefinitely |
+| **CP2: Bounded** | `capacity()` present with value `n`, cannot exceed `n` elements |
 | **CP3: Fixed** | Bounded + pre-allocated at creation |
 
 ## Allocation
 
-Growth operations panic on failure (C2). Fallible `try_` variants return `Result` with the rejected value for code that needs to handle allocation failure — bounded collections, embedded, or OOM-aware paths.
+Growth operations panic on failure (C2). Fallible `try_` variants return `T or E` with the rejected value for code that needs to handle allocation failure — bounded collections, embedded, or OOM-aware paths.
 
 | Operation | Returns | On failure |
 |-----------|---------|------------|
-| `vec.push(x)` | `()` | Panics |
-| `vec.try_push(x)` | `void or PushError<T>` | Returns `Err(Full(T))` or `Err(Alloc(T))` |
-| `vec.extend(iter)` | `()` | Panics |
+| `vec.push(x)` | `void` | Panics |
+| `vec.try_push(x)` | `void or PushError<T>` | Returns `PushError.Full(T)` or `PushError.Alloc(T)` |
+| `vec.extend(iter)` | `void` | Panics |
 | `vec.try_extend(iter)` | `void or ExtendError<T>` | Returns first rejected item |
-| `vec.reserve(n)` | `()` | Panics |
+| `vec.reserve(n)` | `void` | Panics |
 | `vec.try_reserve(n)` | `void or AllocError` | Returns error |
-| `map.insert(k, v)` | `Option<V>` | Panics |
-| `map.try_insert(k, v)` | `Option<V> or InsertError<V>` | Returns `Err(Full(V))` or `Err(Alloc(V))` |
+| `map.insert(k, v)` | `V?` | Panics |
+| `map.try_insert(k, v)` | `V? or InsertError<V>` | Returns `InsertError.Full(V)` or `InsertError.Alloc(V)` |
 
 <!-- test: parse -->
 ```rask
@@ -79,18 +79,18 @@ const users = Map.from([
 |------|-------------|
 | **V1: Copy out** | `vec[i]` copies T when T: Copy. Panics on OOB |
 | **V2: Expression borrow** | `vec[i].field` borrows for expression, released at `;` |
-| **V3: Safe get** | `vec.get(i)` returns `Option<T>` (T: Copy), no panic |
+| **V3: Safe get** | `vec.get(i)` returns `T?` (T: Copy), no panic |
 
 | Method | Returns | Constraint | Panics |
 |--------|---------|------------|--------|
 | `vec[i]` | `T` | `T: Copy` | Yes (OOB) |
-| `vec[i].field` | inline access (expression-scoped) | None | Yes (OOB) |
-| `vec.get(i)` | `Option<T>` | `T: Copy` | No |
-| `vec.get_clone(i)` | `Option<T>` | `T: Cloneable` | No |
-| `with vec[i] as v { ... }` | block value (mutable) | None | Yes (OOB) |
-| `vec.insert(i, x)` | `()` | None | Yes (OOB or alloc) |
-| `vec.remove(i)` | `T` | None | Yes (OOB) |
-| `vec.pop()` | `T?` | None | No |
+| `vec[i].field` | inline access (expression-scoped) | none | Yes (OOB) |
+| `vec.get(i)` | `T?` | `T: Copy` | No |
+| `vec.get_clone(i)` | `T?` | `T: Cloneable` | No |
+| `with vec[i] as v { ... }` | block value (mutable) | none | Yes (OOB) |
+| `vec.insert(i, x)` | `()` | none | Yes (OOB or alloc) |
+| `vec.remove(i)` | `T` | none | Yes (OOB) |
+| `vec.pop()` | `T?` | none | No |
 
 ### Positional Insert/Remove
 
@@ -98,7 +98,7 @@ const users = Map.from([
 |------|-------------|
 | **V4: Insert at index** | `vec.insert(i, x)` inserts before position `i`, shifting later elements right. Panics on `i > len()` or alloc failure |
 | **V5: Remove at index** | `vec.remove(i)` removes and returns the element at `i`, shifting later elements left. Panics on `i >= len()` |
-| **V6: Pop last** | `vec.pop()` removes and returns the last element as `Option<T>`. Returns `none` on empty vec |
+| **V6: Pop last** | `vec.pop()` removes and returns the last element as `T?`. Returns `none` on empty vec |
 
 <!-- test: skip -->
 ```rask
@@ -131,10 +131,10 @@ const name = with vec[i] as v { v.name.clone() }
 |--------|---------|-----------|
 | `map[k]` | `V` | Panics if missing (V: Copy) |
 | `map[k].field` | inline access (expression-scoped) | Panics if missing |
-| `map.get(k)` | `Option<V>` | Copy out (V: Copy) |
-| `map.get_clone(k)` | `Option<V>` | Clone out (V: Cloneable) |
+| `map.get(k)` | `V?` | Copy out (V: Copy) |
+| `map.get_clone(k)` | `V?` | Clone out (V: Cloneable) |
 | `with map[k] as v { ... }` | block value (mutable) | Panics if missing |
-| `map.remove(k)` | `Option<V>` | Remove and return |
+| `map.remove(k)` | `V?` | Remove and return |
 
 ### Entry API
 
@@ -161,7 +161,7 @@ map.ensure_modify(user_id, || User.new(user_id), |u| {
 | Operation | Signature | Semantics |
 |-----------|-----------|-----------|
 | `vec.swap(i, j)` | `()` | Swap two indices (panics if equal) |
-| `vec.modify_many([i, j, k], \|[a, b, c]\| R)` | `Option<R>` | Mutate multiple (panics if duplicates) |
+| `vec.modify_many([i, j, k], \|[a, b, c]\| R)` | `R?` | Mutate multiple (panics if duplicates) |
 
 ## Iteration
 
@@ -212,17 +212,17 @@ users.sort_by(|a, b| b.score.compare(a.score))  // descending
 | Method | Signature | Trait Required | Notes |
 |--------|-----------|----------------|-------|
 | `vec.contains(item)` | `(T) -> bool` | `T: Equal` | Linear scan |
-| `vec.first()` | `() -> T?` | `T: Copy` | First element or None |
-| `vec.last()` | `() -> T?` | `T: Copy` | Last element or None |
-| `vec.reverse()` | `(mutate self)` | None | In-place reversal |
+| `vec.first()` | `() -> T?` | `T: Copy` | First element or `none` |
+| `vec.last()` | `() -> T?` | `T: Copy` | Last element or `none` |
+| `vec.reverse()` | `(mutate self)` | none | In-place reversal |
 | `vec.dedup()` | `(mutate self)` | `T: Equal` | Remove consecutive duplicates |
 
 <!-- test: skip -->
 ```rask
 mut items = [3, 1, 4, 1, 5]
 items.contains(4)             // true
-items.first()                 // Some(3)
-items.last()                  // Some(5)
+items.first()                 // 3
+items.last()                  // 5
 items.reverse()               // [5, 1, 4, 1, 3]
 
 items.sort()                  // [1, 1, 3, 4, 5]
@@ -297,9 +297,9 @@ struct SliceDescriptor<T> {
 | Method | Returns | Semantics |
 |--------|---------|-----------|
 | `vec.len()` | `usize` | Current element count |
-| `vec.capacity()` | `Option<usize>` | `None` = unbounded, `Some(n)` = max capacity |
-| `vec.is_bounded()` | `bool` | `capacity().is_some()` |
-| `vec.remaining()` | `Option<usize>` | `None` = unbounded, `Some(n)` = slots available |
+| `vec.capacity()` | `usize?` | `none` = unbounded, value = max capacity |
+| `vec.is_bounded()` | `bool` | `capacity()?` |
+| `vec.remaining()` | `usize?` | `none` = unbounded, value = slots available |
 | `vec.allocated()` | `usize` | Current allocation size (may exceed len) |
 
 ## Comptime Collections with Freeze
@@ -351,11 +351,11 @@ Vec.from_raw_parts(ptr, len, cap) -> Vec<T>  // unsafe
 ```
 ERROR [std.collections/C4]: linear resource type in Vec
    |
-3  |  let files: Vec<File> = Vec.new()
-   |             ^^^^^^^^^ File is a linear resource
+3  |  const files: Vec<File> = Vec.new()
+   |               ^^^^^^^^^ File is a linear resource
 
 WHY: Collection drop calls T.drop() for each element, but linear resource
-     drop can fail (returns Result), and collection drop can't propagate errors.
+     drop can fail (returns an error type), and collection drop can't propagate errors.
 
 FIX: Use Pool<File> with explicit consumption:
 
@@ -370,9 +370,8 @@ PANIC [std.collections/C2]: push failed — collection at capacity
 
 FIX: Use try_push to handle capacity limits:
 
-  match vec.try_push(item) {
-      Ok(()) => {},
-      Err(PushError.Full(item)) => process_overflow(item),
+  if vec.try_push(item) is PushError.Full(overflow) {
+      process_overflow(overflow)
   }
 ```
 
@@ -381,7 +380,7 @@ FIX: Use try_push to handle capacity limits:
 | Case | Rule | Handling |
 |------|------|----------|
 | `vec[usize.MAX]` | V1 | Panic (bounds check) |
-| `vec.get(usize.MAX)` | V3 | Returns `None` |
+| `vec.get(usize.MAX)` | V3 | Returns `none` |
 | `Vec.fixed(0).push(x)` | C2 | Panics (capacity 0). Use `try_push` to handle |
 | OOM on unbounded `push()` | C2 | Panics. Use `try_push` for OOM-aware code |
 | `vec.insert(n, x)` where `n > len()` | V4 | Panic (bounds check) |
