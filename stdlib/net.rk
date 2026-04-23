@@ -30,7 +30,7 @@ extend TcpConnection {
     public func read_all(self) -> string or Error { }
 
     /// Write a string to the connection.
-    public func write_all(self, data: string) -> () or Error { }
+    public func write_all(self, data: string) -> void or Error { }
 
     /// Get the remote address as "ip:port".
     public func remote_addr(self) -> string { }
@@ -39,7 +39,7 @@ extend TcpConnection {
     public func read_http_request(self) -> Request or Error { }
 
     /// Write an HTTP response to the connection.
-    public func write_http_response(self, response: Response) -> () or Error { }
+    public func write_http_response(self, response: Response) -> void or Error { }
 
     /// Close the connection.
     public func close(self) { }

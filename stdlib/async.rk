@@ -6,7 +6,7 @@
 /// Requires an active `using Multitasking { ... }` scope in the process.
 /// Compile error if called outside any scope (directly or transitively);
 /// runtime panic for higher-order/trait-object cases the compiler can't prove.
-public func spawn(f: func()) -> TaskHandle<()> { }
+public func spawn(f: func()) -> TaskHandle<void> { }
 
 /// Check if the current task has been cancelled.
 /// Returns true if cancel was requested. Use in long-running loops.
@@ -80,13 +80,13 @@ public struct Sender<T> { }
 
 extend Sender<T> {
     /// Send a value. Pauses/blocks if buffer full.
-    public func send(self, value: T) -> () or SendError { }
+    public func send(self, value: T) -> void or SendError { }
 
     /// Non-blocking send. Returns error if full or closed.
-    public func try_send(self, value: T) -> () or TrySendError { }
+    public func try_send(self, value: T) -> void or TrySendError { }
 
     /// Explicitly close the sender.
-    public func close(self) -> () or CloseError { }
+    public func close(self) -> void or CloseError { }
 }
 
 public struct Receiver<T> { }
@@ -99,7 +99,7 @@ extend Receiver<T> {
     public func try_recv(self) -> T or TryRecvError { }
 
     /// Explicitly close the receiver.
-    public func close(self) -> () or CloseError { }
+    public func close(self) -> void or CloseError { }
 }
 
 // --- Channel errors ---

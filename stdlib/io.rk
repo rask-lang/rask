@@ -77,13 +77,13 @@ extend Stdout {
     public func write(self, data: Vec<u8>) -> i64 or IoError { }
 
     /// Write all bytes, retrying partial writes.
-    public func write_all(self, data: Vec<u8>) -> () or IoError { }
+    public func write_all(self, data: Vec<u8>) -> void or IoError { }
 
     /// Write a string.
-    public func write_str(self, s: string) -> () or IoError { }
+    public func write_str(self, s: string) -> void or IoError { }
 
     /// Flush buffered output.
-    public func flush(self) -> () or IoError { }
+    public func flush(self) -> void or IoError { }
 
     /// Close the handle.
     public func close(mutate self) { }
@@ -98,13 +98,13 @@ extend Stderr {
     public func write(self, data: Vec<u8>) -> i64 or IoError { }
 
     /// Write all bytes, retrying partial writes.
-    public func write_all(self, data: Vec<u8>) -> () or IoError { }
+    public func write_all(self, data: Vec<u8>) -> void or IoError { }
 
     /// Write a string.
-    public func write_str(self, s: string) -> () or IoError { }
+    public func write_str(self, s: string) -> void or IoError { }
 
     /// Flush buffered output.
-    public func flush(self) -> () or IoError { }
+    public func flush(self) -> void or IoError { }
 
     /// Close the handle.
     public func close(mutate self) { }
@@ -133,7 +133,7 @@ extend Buffer {
     public func write(mutate self, data: Vec<u8>) -> i64 or IoError { }
 
     /// Write all bytes.
-    public func write_all(mutate self, data: Vec<u8>) -> () or IoError { }
+    public func write_all(mutate self, data: Vec<u8>) -> void or IoError { }
 
     /// View all written bytes.
     public func as_bytes(self) -> Vec<u8> { }
@@ -156,10 +156,10 @@ extend File {
     public func read_text(self) -> string or IoError { }
 
     /// Write a string to the file.
-    public func write(mutate self, data: string) -> () or IoError { }
+    public func write(mutate self, data: string) -> void or IoError { }
 
     /// Write a string followed by a newline.
-    public func write_line(mutate self, data: string) -> () or IoError { }
+    public func write_line(mutate self, data: string) -> void or IoError { }
 
     /// Read all lines into a vector.
     public func lines(self) -> Vec<string> or IoError { }

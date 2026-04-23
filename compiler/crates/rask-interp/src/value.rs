@@ -561,7 +561,7 @@ impl Value {
     /// Get the type name for error messages.
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::Unit => "()",
+            Value::Unit => "void",
             Value::Bool(_) => "bool",
             Value::Int(_) => "i64",
             Value::Int128(_) => "i128",

@@ -82,7 +82,7 @@ extend Headers {
         return self.entries.get(name.to_lowercase())
     }
 
-    public func set(mutate self, name: string, value: string) -> () {
+    public func set(mutate self, name: string, value: string) -> void {
         self.entries.insert(name.to_lowercase(), value)
     }
 
@@ -433,7 +433,7 @@ extern "C" {
     func rask_io_write_string(fd: i64, s: i64) -> i64
     func rask_io_read_until_close(fd: i64, max: i64) -> i64
     func rask_net_tcp_connect(addr: i64) -> i64
-    func rask_io_close_fd(fd: i64) -> ()
+    func rask_io_close_fd(fd: i64) -> void
 }
 
 // Read raw bytes from a TCP connection (up to max_bytes).
@@ -710,7 +710,7 @@ struct Responder {
 }
 
 extend Responder {
-    public func respond(take self, response: Response) -> () or HttpError {
+    public func respond(take self, response: Response) -> void or HttpError {
         const raw = format_http_response(response)
         write_raw(self.conn_fd, raw)
     }
@@ -724,7 +724,7 @@ extend http {
     /// One-line HTTP server. Spawns a green task per request.
     /// Requires an active `using Multitasking { ... }` scope in the process
     /// (transitively reaches `spawn`).
-    public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> () or HttpError
+    public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> void or HttpError
     {
         const server = if HttpServer.listen(addr)? as s { s } else {
             return HttpError.Io("listen failed")

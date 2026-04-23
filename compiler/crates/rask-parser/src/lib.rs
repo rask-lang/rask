@@ -318,9 +318,31 @@ mod tests {
 
     #[test]
     fn parse_result_type_in_func() {
-        // () or E return type
-        let result = parse("extend Foo {\n    public func push(mutate self, v: T) -> () or PushError<T> { }\n}");
+        // void or E return type
+        let result = parse("extend Foo {\n    public func push(mutate self, v: T) -> void or PushError<T> { }\n}");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_rejects_paren_unit_type() {
+        // () in type position is an error (type.primitives/P6)
+        let result = parse("func f() -> () { }");
+        assert!(!result.errors.is_empty(), "Expected parse error for `()` in type position");
+        assert!(
+            result.errors[0].message.contains("`()`"),
+            "Expected '()' mention, got: {}", result.errors[0].message
+        );
+    }
+
+    #[test]
+    fn parse_rejects_one_tuple_type() {
+        // (T,) 1-tuples are not supported (type.tuples/TU3)
+        let result = parse("func f() -> (i32,) { }");
+        assert!(!result.errors.is_empty(), "Expected parse error for 1-tuple");
+        assert!(
+            result.errors[0].message.contains("1-tuples"),
+            "Expected '1-tuples' mention, got: {}", result.errors[0].message
+        );
     }
 
     #[test]

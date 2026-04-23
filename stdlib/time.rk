@@ -5,7 +5,7 @@ struct time { }
 
 extend time {
     /// Sleep for the given duration.
-    public func sleep(duration: Duration) -> () or Error { }
+    public func sleep(duration: Duration) -> void or Error { }
 }
 
 /// A span of time.
@@ -72,9 +72,9 @@ public struct Timer { }
 extend Timer {
     /// Create a one-shot timer that fires after the given duration.
     /// Returns a Receiver that will receive () when the timer fires.
-    public func after(duration: Duration) -> Receiver<()> { }
+    public func after(duration: Duration) -> Receiver<void> { }
 
     /// Create a periodic timer that fires at the given interval.
     /// Returns a Receiver that receives () on each tick.
-    public func interval(duration: Duration) -> Receiver<()> { }
+    public func interval(duration: Duration) -> Receiver<void> { }
 }

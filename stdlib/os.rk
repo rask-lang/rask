@@ -110,7 +110,7 @@ extend Process {
     public func id(self) -> i64 { }
 
     /// Write data to the process stdin (requires Stdio.Piped).
-    public func write_stdin(self, data: string) -> () or IoError { }
+    public func write_stdin(self, data: string) -> void or IoError { }
 
     /// Read from the process stdout (requires Stdio.Piped).
     public func read_stdout(self) -> string or IoError { }
