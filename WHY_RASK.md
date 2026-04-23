@@ -51,7 +51,7 @@ The same thing in Rask:
 
 ```rask
 func process_entries(entries: Vec<Entry>, filter: string) -> Vec<string> {
-    const result = Vec.new()
+    mut result = Vec.new()
     for entry in entries {
         if entry.tag == filter: result.push(entry.name)
     }
@@ -300,7 +300,7 @@ func handle_request(req: Request) -> Response {
 Values are freed when their owner goes out of scope. I/O resources use `ensure` for guaranteed cleanup. No GC pauses, no unpredictable latency.
 
 ```rask
-func process(path: string) -> () or IoError {
+func process(path: string) -> void or IoError {
     const file = try fs.open(path)
     ensure file.close()           // runs on every exit path
     // ...work with file...
@@ -337,7 +337,7 @@ func load_config(path: string) -> Config or _ {
 Files, sockets, and connections are linear types — the compiler rejects code that forgets to consume them.
 
 ```rask
-func broken(path: string) -> () or IoError {
+func broken(path: string) -> void or IoError {
     const file = try fs.open(path)
     // compile error: `file` must be consumed (closed, passed, or ensured)
 }
@@ -360,7 +360,7 @@ func import_users(path: string, mutate db: Database) -> i64 or ImportError {
         else |e| ImportError.FileError(path, e)
     ensure file.close()
 
-    let imported = 0
+    mut imported = 0
     for line in file.lines() {
         const text = try line else |e| ImportError.ReadError(e)
         const parts = text.split(",")
