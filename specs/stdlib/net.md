@@ -60,7 +60,7 @@ loop {
 ```rask
 extend TcpConnection {
     func read_all(self) -> string or IoError
-    func write_all(self, data: string) -> () or IoError
+    func write_all(self, data: string) -> void or IoError
     func remote_addr(self) -> string
     func close(take self)
 }
@@ -97,7 +97,7 @@ net.udp_bind(addr: string) -> UdpSocket or IoError
 extend UdpSocket {
     func send_to(self, data: []u8, addr: string) -> usize or IoError
     func recv_from(self, buf: []u8) -> (usize, string) or IoError
-    func connect(self, addr: string) -> () or IoError
+    func connect(self, addr: string) -> void or IoError
     func send(self, data: []u8) -> usize or IoError     // to connected peer
     func recv(self, buf: []u8) -> usize or IoError      // from connected peer
     func local_addr(self) -> string
@@ -144,7 +144,7 @@ const addrs = try net.resolve("example.com")
 
 <!-- test: skip -->
 ```rask
-func handle(conn: TcpConnection) -> () or IoError {
+func handle(conn: TcpConnection) -> void or IoError {
     ensure conn.close()
     const data = try conn.read_all()
     try conn.write_all(process(data))

@@ -105,7 +105,7 @@ func sync_physics(mutate world: GameWorld) {
 
 <!-- test: skip -->
 ```rask
-func update_entities(mutate world: GameWorld) -> () or Error {
+func update_entities(mutate world: GameWorld) -> void or Error {
     mut doomed: Vec<Handle<Entity>> = Vec.new()
 
     for h in world.entities.cursor() {
@@ -154,7 +154,7 @@ func render_entities(world: GameWorld) using frozen Pool<Entity>, frozen Pool<Me
 
 <!-- test: skip -->
 ```rask
-func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
+func game_loop_parallel(mutate world: GameWorld, dt: f32) -> void or Error
     using ThreadPool
 {
     const (entity_snap, _) = world.entities.snapshot()

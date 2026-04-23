@@ -188,7 +188,7 @@ extend HttpServer {
 struct Responder { }
 
 extend Responder {
-    func respond(take self, response: Response) -> () or HttpError
+    func respond(take self, response: Response) -> void or HttpError
 }
 ```
 
@@ -196,7 +196,7 @@ extend Responder {
 ```rask
 import http
 
-func main() -> () or Error {
+func main() -> void or Error {
     using Multitasking {
         const server = try HttpServer.listen("0.0.0.0:8080")
         ensure server.close()
@@ -224,14 +224,14 @@ func main() -> () or Error {
 http.listen_and_serve(
     addr: string,
     handler: func(Request) -> Response,
-) -> () or HttpError
+) -> void or HttpError
 ```
 
 <!-- test: skip -->
 ```rask
 import http
 
-func main() -> () or Error {
+func main() -> void or Error {
     using Multitasking {
         try http.listen_and_serve("0.0.0.0:8080", handle)
     }
@@ -350,7 +350,7 @@ struct User {
     public email: string
 }
 
-func main() -> () or Error {
+func main() -> void or Error {
     using Multitasking {
         try http.listen_and_serve("0.0.0.0:8080", handle)
     }

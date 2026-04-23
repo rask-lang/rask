@@ -85,7 +85,7 @@ All require unsafe except `is_null()`.
 |-----------|-----------|-------------|
 | `*ptr` | Read/write | Dereference (undefined if invalid) |
 | `ptr.read()` | `*T -> T` | Copy value from pointer |
-| `ptr.write(v)` | `*T, T -> ()` | Write value to pointer |
+| `ptr.write(v)` | `*T, T -> void` | Write value to pointer |
 | `ptr.add(n)` | `*T, usize -> *T` | Offset by n elements |
 | `ptr.sub(n)` | `*T, usize -> *T` | Offset back by n elements |
 | `ptr.offset(n)` | `*T, isize -> *T` | Signed offset |

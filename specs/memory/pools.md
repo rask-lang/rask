@@ -133,7 +133,7 @@ with pool[h] as entity {
 `return`, `try`, `break`, and `continue` work naturally inside `with` blocks:
 <!-- test: skip -->
 ```rask
-func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
+func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
     with pool[h] as entity {
         entity.strength += 10
         try log_buff_applied(entity.id)   // propagates to function

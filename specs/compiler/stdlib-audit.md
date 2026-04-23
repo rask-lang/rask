@@ -195,9 +195,9 @@ Per spec (C2), default growth operations panic on failure:
 - `vec.reserve(n)` → `()` (panics on OOM)
 
 Fallible `try_` variants return Result:
-- `vec.try_push(x)` → `() or PushError<T>`
+- `vec.try_push(x)` → `void or PushError<T>`
 - `map.try_insert(k, v)` → `Option<V> or InsertError<V>`
-- `vec.try_reserve(n)` → `() or AllocError`
+- `vec.try_reserve(n)` → `void or AllocError`
 
 Current interpreter matches: panics on allocation failure (Rust default), `try_push` wraps in Result.
 

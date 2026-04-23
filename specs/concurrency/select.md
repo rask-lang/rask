@@ -85,7 +85,7 @@ select {
 }
 ```
 
-Properties: returns `Receiver<()>`, single-shot (fires once, then closes), cancellable (drop receiver to cancel).
+Properties: returns `Receiver<void>`, single-shot (fires once, then closes), cancellable (drop receiver to cancel).
 
 ## Error Messages
 
@@ -102,7 +102,7 @@ ERROR [conc.select/P3]: select requires at least one arm
 |------|------|----------|
 | Select with 0 arms | P3 | Compile error |
 | All channels closed | CL1 | Returns immediately with `Err(Closed)` |
-| Timer in select | A1 | Regular receive arm — `Timer.after()` returns `Receiver<()>` |
+| Timer in select | A1 | Regular receive arm — `Timer.after()` returns `Receiver<void>` |
 | Non-selected send value | OW2 | Value returned to caller, not consumed |
 
 ---

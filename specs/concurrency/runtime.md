@@ -768,7 +768,7 @@ func File::read(self, buf: &mut [u8]) -> usize or Error {
     // ...
 }
 
-func Channel::send<T>(self, value: T) -> () or Error {
+func Channel::send<T>(self, value: T) -> void or Error {
     if let Some(runtime) = RUNTIME_SLOT.read() {
         if runtime.current_task().cancel_flag.load(Relaxed) {
             return Err(JoinError::Cancelled)
@@ -1059,7 +1059,7 @@ Timers are fundamental async primitives. Every async runtime needs:
 
 ```rask
 // In stdlib async module
-public func sleep(duration: Duration) -> ()
+public func sleep(duration: Duration) -> void
 public func timeout<T>(duration: Duration, operation: || -> T) -> T or TimedOut
 
 // Timer struct for periodic ticks
@@ -1069,7 +1069,7 @@ public struct Timer {
 }
 
 public struct TimerReceiver {
-    func recv() -> () or RecvError  // Blocks until timer fires
+    func recv() -> void or RecvError  // Blocks until timer fires
 }
 ```
 
@@ -1318,7 +1318,7 @@ Channel<T> {
 ### Send Flow (CH2, CH4)
 
 ```rust
-func Sender::send(self, value: T) -> () or SendError {
+func Sender::send(self, value: T) -> void or SendError {
     let runtime = RUNTIME_SLOT.read();
     if let Some(r) = &runtime {
         // Check cancel flag first (CN3)
@@ -1434,7 +1434,7 @@ ThreadPool is simpler than Multitasking because it's CPU-bound (no I/O reactor n
 
 ```rust
 ThreadPool {
-    workers: Vec<JoinHandle<()>>,           // N OS threads
+    workers: Vec<JoinHandle<void>>,           // N OS threads
     work_queue: ArrayQueue<Job>,            // Lock-free bounded queue
     shutdown: AtomicBool,
 }

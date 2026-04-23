@@ -136,7 +136,7 @@ func load_state(bytes: Vec<u8>) -> Pool<Player> or DecodeError {
 
 <!-- test: skip -->
 ```rask
-func test_handle_roundtrip() -> () or Error {
+func test_handle_roundtrip() -> void or Error {
     const pool = Pool.new()
     const h = pool.insert(Player { id: 1, health: 100, score: 0 })
 
@@ -191,7 +191,7 @@ struct Particle {
     public life: f32
 }
 
-func save_particles(pool: Pool<Particle>) -> () or IoError {
+func save_particles(pool: Pool<Particle>) -> void or IoError {
     try pool.to_mmap("particles.bin")
 }
 
@@ -274,7 +274,7 @@ struct UndoStack<T: Encode + Decode> {
 }
 
 extend UndoStack<T: Encode + Decode> {
-    func push(self, pool: Pool<T>) -> () or EncodeError {
+    func push(self, pool: Pool<T>) -> void or EncodeError {
         if self.history.len() >= self.max_entries {
             self.history.remove(0)
         }
@@ -309,7 +309,7 @@ Send `to_bytes()` over the network. Handles are valid on the receiving end becau
 
 <!-- test: skip -->
 ```rask
-func migrate_to(pool: Pool<Entity>, target: TcpStream) -> () or Error {
+func migrate_to(pool: Pool<Entity>, target: TcpStream) -> void or Error {
     const bytes = try pool.to_bytes()
     try target.write_all(bytes)
 }

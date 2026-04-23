@@ -43,7 +43,7 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 
 | Rule | Description |
 |------|-------------|
-| **CA1: Evaluates to unit** | `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` evaluate to `()` |
+| **CA1: Evaluates to void** | `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` evaluate to `void` |
 
 ## Equality Trait
 

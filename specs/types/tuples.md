@@ -12,19 +12,15 @@ Anonymous product types. Use when naming fields adds nothing — function return
 
 | Rule | Description |
 |------|-------------|
-| **TU1: Type syntax** | `(T1, T2, ..., Tn)` denotes a tuple type |
-| **TU2: Literal syntax** | `(v1, v2, ..., vn)` constructs a tuple value |
-| **TU3: Unit** | `()` is the empty tuple, equivalent to the unit type |
-| **TU4: Single-element** | `(T,)` with trailing comma is a 1-tuple; `(T)` without comma is parenthesized expression |
+| **TU1: Type syntax** | `(T1, T2, ..., Tn)` denotes a tuple type (arity ≥ 2) |
+| **TU2: Literal syntax** | `(v1, v2, ..., vn)` constructs a tuple value (arity ≥ 2) |
+| **TU3: No empty or 1-tuples** | `()` is not a tuple — it's call syntax. For the zero-sized type, use `void` (`type.primitives/P6`). `(T)` is a parenthesized expression, not a 1-tuple |
 
 <!-- test: parse -->
 ```rask
 const pair: (i32, string) = (42, "hello")
-const unit: () = ()
 const nested: ((i32, i32), string) = ((1, 2), "point")
 ```
-
-Single-element tuple with trailing comma (`(i32,)`) — not yet implemented in parser.
 
 ## Element Access
 
@@ -61,8 +57,8 @@ const (x, y) = point
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Empty tuple `()` | TU3 | Unit type |
-| Single without comma `(x)` | TU4 | Parenthesized expression, not a tuple |
+| `()` in type position | TU3 | Error: use `void` for the zero-sized type |
+| Single without comma `(x)` | TU3 | Parenthesized expression, not a tuple |
 | Named field access on tuple `.name` | TU5 | Error: tuples use positional access |
 | Index out of range `.3` on 2-tuple | TU6 | Compile error |
 
@@ -84,7 +80,7 @@ FIX: Valid indices are .0 and .1.
 
 ### Rationale
 
-**TU1–TU4 (syntax):** Parenthesized, comma-separated — same convention as Python, Rust, Swift. The trailing comma rule for single-element tuples prevents ambiguity with grouping parentheses. I could have gone with a different delimiter but `()` is universally understood.
+**TU1–TU3 (syntax):** Parenthesized, comma-separated — same convention as Python, Rust, Swift. Tuples are arity ≥ 2 only: 0-tuples and 1-tuples are degenerate and confuse `()` (call syntax) and `(x)` (grouping). The zero-sized type is `void`, a keyword (`type.primitives/P6`), not an empty tuple — I don't need the ML-style empty-product unification to cover a case users never write.
 
 **TU5 (positional access):** `.0`, `.1` instead of named fields. If you need names, use a struct — `type.structs/S1` requires named fields precisely because tuples fill the anonymous gap. Two tools, clear boundary.
 

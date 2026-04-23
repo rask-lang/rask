@@ -206,7 +206,7 @@ comptime func assert_all_public<T>() {
 
 <!-- test: skip -->
 ```rask
-func encode_value<T: Encode>(value: T, w: mutate Writer) -> () or Error {
+func encode_value<T: Encode>(value: T, w: mutate Writer) -> void or Error {
     comptime if reflect.is_struct<T>() {
         comptime for field in reflect.fields<T>() {
             try encode_value(value.(field.name), mutate w)

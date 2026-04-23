@@ -121,7 +121,7 @@ code generation steps (protobuf + schema + C compilation), it's wasteful.
 ### Step API
 
 ```rask
-func build(ctx: BuildContext) -> () or Error {
+func build(ctx: BuildContext) -> void or Error {
     // Step 1: only re-runs when schema.json changes
     try ctx.step("codegen", inputs: ["schema.json"], || {
         const schema = try fs.read_file("schema.json")

@@ -23,7 +23,7 @@ Libraries use union errors (`T or (A | B | C)`), applications use `any Error` (t
 ```rask
 func read_file(path: string) -> string or IoError        // two-branch
 func load() -> Config or (IoError | ParseError)          // union error
-func save(data: Data) -> () or IoError                   // unit success
+func save(data: Data) -> void or IoError                   // unit success
 ```
 
 `T or E` is valid in return types, bindings (inferred or explicit), fields, generics — same positions as any type.
@@ -61,7 +61,7 @@ extend NotFound {
 | Rule | Description |
 |------|-------------|
 | **ER9: Auto-wrap at return only** | In a function returning `T or E`, a `return` with a value of type `T` wraps to the success branch; a value of type `E` wraps to the error branch. The branch is picked by type; disjointness makes this unambiguous |
-| **ER10: Implicit unit success** | In a function returning `() or E` reaching the end without explicit `return`, the unit success path is implied |
+| **ER10: Implicit unit success** | In a function returning `void or E` reaching the end without explicit `return`, the unit success path is implied |
 | **ER11: No auto-wrap elsewhere** | Assignment, field initialisers, function arguments, and collection literals do **not** auto-wrap into `T or E`. The value must already have the union type (typically from a function call) |
 
 <!-- test: skip -->
@@ -71,7 +71,7 @@ func divide(a: f64, b: f64) -> f64 or DivError {
     return a / b                                // T branch, by type
 }
 
-func save(data: Data) -> () or IoError {
+func save(data: Data) -> void or IoError {
     try file.write(data)
     // implicit unit success at end
 }

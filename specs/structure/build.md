@@ -220,7 +220,7 @@ profile "embedded" {
 | **BL3: No self-import** | Can't import the package being built — circular dependency error |
 
 ```rask
-func build(ctx: BuildContext) -> () or Error {
+func build(ctx: BuildContext) -> void or Error {
     try ctx.declare_dependency("schema.json")
     const schema = try fs.read_file("schema.json")
     try ctx.write_source("types.rk", generate_types(schema))
@@ -277,7 +277,7 @@ struct BuildContext {
 | **ST6: Backwards compatible** | `declare_dependency()` still works — single implicit step covering the whole `build()` function |
 
 ```rask
-func build(ctx: BuildContext) -> () or Error {
+func build(ctx: BuildContext) -> void or Error {
     try ctx.step("codegen", inputs: ["schema.json"], || {
         const schema = try fs.read_file("schema.json")
         try ctx.write_source("types.rk", generate_types(schema))
@@ -677,7 +677,7 @@ Rust crates exporting C ABI functions can be compiled and linked via `compile_ru
 
 <!-- test: skip -->
 ```rask
-func build(ctx: BuildContext) -> () or Error {
+func build(ctx: BuildContext) -> void or Error {
     try ctx.compile_rust(RustCrateOptions {
         path: "vendor/fast-hash",
         cbindgen: true,
@@ -721,7 +721,7 @@ package "my-api" "1.0.0" {
     profile "staging" { inherits: "release", debug_info: true }
 }
 
-func build(ctx: BuildContext) -> () or Error {
+func build(ctx: BuildContext) -> void or Error {
     try ctx.step("protobuf", inputs: ["api.proto"], || {
         try ctx.exec("protoc", ["--rask_out=.rk-gen/", "api.proto"])
     })

@@ -176,7 +176,7 @@ struct Closure_greet {
 // Total: 32 bytes
 ```
 
-Function signature: `fn(Closure_greet*, string) -> ()`
+Function signature: `fn(Closure_greet*, string) -> void`
 
 ### Immediate Closures
 
@@ -431,7 +431,7 @@ struct Unit {}
 |------|-------------|
 | **Z1: No allocation** | ZSTs never allocated on heap |
 | **Z2: Distinct addresses** | Each instance may have distinct address (unspecified) |
-| **Z3: Vec optimization** | `Vec<()>` stores only length, no pointer/capacity |
+| **Z3: Vec optimization** | `Vec<void>` stores only length, no pointer/capacity |
 
 ## Padding and Size Examples
 

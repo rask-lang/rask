@@ -164,7 +164,7 @@ mut x = "shadow"              // Shadowing allowed (IDE shows ghost annotation)
 ### Functions
 
 ```rask
-func greet(name: string) {
+func greet(name: string) {           // Returns void — no arrow needed
     println("Hello, {name}")
 }
 
@@ -178,6 +178,18 @@ func divide(a: f64, b: f64) -> f64 or Error {
 }
 ```
 
+**Unit return (`void`):** `void` is the zero-sized type for "nothing returned" (`type.primitives/P6`). Elide the arrow when the function returns `void` and has no `or` clause. Write it explicitly when combined with an error:
+
+```rask
+func greet(name: string)                     // Returns void (elided)
+func save(data: Data) -> void or Error       // Explicit when or is present
+func compute() -> i32                        // Non-void: always explicit
+```
+
+Rule: `or E` attaches to an explicit return type. `func foo() or Error` is a parse error — write `-> void or Error`.
+
+**`return` without a value:** Valid only when the function's return type is `void`. Otherwise write `return expr`.
+
 **Private functions — types optional (gradual constraints):**
 It is possible to gradually introduce type constrains in private functions. This makes it easier to write prototype code, but is discouraged in production code. Public functions must declare types.
 
@@ -186,17 +198,17 @@ func double(x) {
     return x * 2          // Inferred: func double<T: Numeric>(x: T) -> T
 }
 func greet(name) {
-    println("Hi, {name}")  // Inferred: func greet(name: string) -> ()
+    println("Hi, {name}")  // Inferred: func greet(name: string) (returns void)
 }
 
 // Partial annotation — mix explicit and inferred
-func process(data: Vec<Record>, handler) -> () or Error {
+func process(data: Vec<Record>, handler) -> void or Error {
     try handler(data)
 }
 // handler type inferred from usage
 
 // Public: MUST have full types
-public func serve(port: i32) -> () or Error { ... }
+public func serve(port: i32) -> void or Error { ... }
 ```
 
 **Parameter modes:**
@@ -296,7 +308,7 @@ struct File {
 }
 
 extend File {
-    func close(take self) -> () or Error {
+    func close(take self) -> void or Error {
         // ...
     }
 }
@@ -999,7 +1011,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 **Rask:**
 ```rask
-func handler(w: ResponseWriter, r: Request) -> () or HttpError {
+func handler(w: ResponseWriter, r: Request) -> void or HttpError {
     const body = try r.body.read_all()
     const req = try json.parse<Request>(body)
     const result = try process(req)

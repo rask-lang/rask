@@ -62,7 +62,7 @@ instant.elapsed() -> Duration
 
 <!-- test: skip -->
 ```rask
-time.sleep(duration: Duration) -> () or string
+time.sleep(duration: Duration) -> void or string
 ```
 
 <!-- test: skip -->

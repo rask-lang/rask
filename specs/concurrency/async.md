@@ -19,7 +19,7 @@ Green tasks with must-use handles. No async/await split — the same function wo
 Spawn functions do not appear in signatures. No function declares `using Multitasking` — the compiler infers which functions (transitively) need a runtime and checks callers against the current lexical scope. See [Runtime Scope](#runtime-scope) below.
 
 ```rask
-func main() -> () or Error {
+func main() -> void or Error {
     using Multitasking {
         const listener = try TcpListener.bind("0.0.0.0:8080")
 
@@ -30,7 +30,7 @@ func main() -> () or Error {
     }
 }
 
-func handle_connection(conn: TcpConnection) -> () or Error {
+func handle_connection(conn: TcpConnection) -> void or Error {
     const request = try conn.read()
     const user = try fetch_user(request.id)
     try conn.write(user.to_json())
@@ -238,11 +238,11 @@ try join_all(producer, consumer)
 
 | Operation | Returns | Description |
 |-----------|---------|-------------|
-| `tx.send(val)` | `() or SendError` | Send value, pauses/blocks if full |
+| `tx.send(val)` | `void or SendError` | Send value, pauses/blocks if full |
 | `rx.recv()` | `T or RecvError` | Receive value, pauses/blocks if empty |
-| `tx.close()` | `() or CloseError` | Explicit close with error handling |
-| `rx.close()` | `() or CloseError` | Explicit close with error handling |
-| `tx.try_send(val)` | `() or TrySendError` | Non-blocking send |
+| `tx.close()` | `void or CloseError` | Explicit close with error handling |
+| `rx.close()` | `void or CloseError` | Explicit close with error handling |
+| `tx.try_send(val)` | `void or TrySendError` | Non-blocking send |
 | `rx.try_recv()` | `T or TryRecvError` | Non-blocking receive |
 
 ### Buffered Items on Close

@@ -442,7 +442,7 @@ After reading the affected specs, here are the concrete changes each needs:
 - GC7 says "try calls and `Err()` returns contribute to the inferred error union." Rewrite: "try calls and bare error values in return position contribute." Example code needs `Err(…)` → bare error removed.
 
 **`ensure.md`** — examples need updating:
-- Function signature `() or Error` stays, but the `Ok(())` return becomes implicit (bare success path auto-wraps). Specifically `return Ok(())` / final `Ok(())` becomes `return` or nothing (depending on whether Rask's empty-return works in a `() or E` function).
+- Function signature `void or Error` stays, but the `Ok(())` return becomes implicit (bare success path auto-wraps). Specifically `return Ok(())` / final `Ok(())` becomes `return` or nothing (depending on whether Rask's empty-return works in a `void or E` function).
 - EN4 (errors ignored in ensure body) references `Result` — rewrite as `T or E`.
 - EN5 (try forbidden in ensure) carries through unchanged.
 

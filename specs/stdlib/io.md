@@ -43,7 +43,7 @@ trait Reader {
     func read(self, buf: []u8) -> usize or IoError
     func read_all(self) -> []u8 or IoError
     func read_text(self) -> string or IoError
-    func read_exact(self, buf: []u8) -> () or IoError
+    func read_exact(self, buf: []u8) -> void or IoError
 }
 ```
 
@@ -59,8 +59,8 @@ trait Reader {
 ```rask
 trait Writer {
     func write(self, data: []u8) -> usize or IoError
-    func write_all(self, data: []u8) -> () or IoError
-    func flush(self) -> () or IoError
+    func write_all(self, data: []u8) -> void or IoError
+    func flush(self) -> void or IoError
 }
 ```
 
