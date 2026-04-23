@@ -49,7 +49,7 @@ extend Document {
     }
 
     func from_file(path: string) -> Document or fs.IoError {
-        const file = try fs.open(path)
+        mut file = try fs.open(path)
         ensure file.close()
 
         mut doc = Document.new()
@@ -154,7 +154,7 @@ extend Document {
 
     // Save document to file
     func save(self, path: string) -> () or fs.IoError {
-        const file = try fs.create(path)
+        mut file = try fs.create(path)
         ensure file.close()
 
         for h in self.line_order.iter() {
@@ -188,7 +188,7 @@ enum EditorCommand {
 }
 
 func parse_command(input: string) -> EditorCommand? {
-    const parts: Vec<string> = Vec.new()
+    mut parts: Vec<string> = Vec.new()
     for part in input.trim().split_whitespace() {
         parts.push(part.to_owned())
     }

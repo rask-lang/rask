@@ -153,9 +153,27 @@ mut x = "shadow"              // Shadowing allowed (IDE shows ghost annotation)
 | `mut x = v` | Rebindable — `x` can be reassigned |
 | `x = v` | Reassignment (variable must exist) |
 
-**`const` controls the binding, not the value.** `const v = Vec.new()` means `v` always refers to this Vec — you can't write `v = other_vec`. But `v.push(1)` works fine because the Vec itself is mutable. This is the JavaScript/Go model, not C++/Rust `const`. The name is fixed; the contents aren't.
+**`const` is deep.** `const v = Vec.new()` forbids:
+- Rebinding: `v = other`
+- Index/field assign: `v[0] = x`, `v.field = x`
+- Mutating method calls: `v.push(1)`, `v.sort()`
+- Passing as a `mutate` parameter: `f(v)` where `f(mutate x)`
 
-**Why `const`/`mut`:** `const` for permanent bindings, `mut` for rebindable. No `let`. Rust users writing `let x = 5` get a clear parse error pointing to `mut` or `const` — better than silent semantic inversion.
+Use `mut` when the value needs to change. Moving/consuming is still fine on a `const` binding (`take self` methods, passing as `take` parameter) — transfer of ownership is not mutation.
+
+In practice, most collections bind with `mut` since building usually involves mutation. `const` is for values that are complete at creation: function returns, literals, frozen comptime data, or an already-built value that won't be modified further.
+
+```rask
+const xs = [1, 2, 3]            // fine — complete at creation
+const sum = xs.sum()            // fine — non-mutating method
+mut v = Vec.new()               // needs mut to push
+v.push(1)
+
+const v2 = Vec.new()
+v2.push(1)                      // ERROR: cannot mutate `v2` — declared `const`
+```
+
+**Why `const`/`mut`:** `const` for constant bindings, `mut` for mutable ones — both describe semantics, not grammar. Rust users writing `let x = 5` get a clear parse error pointing to `mut` or `const`.
 
 ---
 

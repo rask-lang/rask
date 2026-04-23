@@ -43,6 +43,10 @@ const STUB_SOURCES: &[(&str, &str)] = &[
 pub struct MethodStub {
     pub name: String,
     pub takes_self: bool,
+    /// True if declared `mutate self` — method mutates the receiver.
+    pub mutate_self: bool,
+    /// True if declared `take self` — method consumes the receiver.
+    pub take_self: bool,
     pub params: Vec<(String, String)>, // (name, type)
     pub ret_ty: String,
     pub doc: Option<String>,
@@ -369,7 +373,10 @@ impl StubRegistry {
 
 /// Convert a FnDecl to a MethodStub with span.
 fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span) -> MethodStub {
-    let takes_self = f.params.iter().any(|p| p.name == "self");
+    let self_param = f.params.iter().find(|p| p.name == "self");
+    let takes_self = self_param.is_some();
+    let mutate_self = self_param.map_or(false, |p| p.is_mutate);
+    let take_self = self_param.map_or(false, |p| p.is_take);
     let params: Vec<(String, String)> = f.params.iter()
         .filter(|p| p.name != "self")
         .map(|p| (p.name.clone(), p.ty.clone()))
@@ -380,6 +387,8 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
     MethodStub {
         name: f.name.clone(),
         takes_self,
+        mutate_self,
+        take_self,
         params,
         ret_ty: f.ret_ty.clone().unwrap_or_default(),
         doc: f.doc.clone(),

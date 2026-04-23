@@ -63,20 +63,20 @@ test "small struct survives function pass" {
 // NOTE: Use-after-move (O3) is not yet enforced by the ownership checker.
 
 test "vec move to new binding" {
-    const v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     v.push(1)
     v.push(2)
-    const v2 = v
+    mut v2 = v
     assert v2.len() == 2
 }
 
 // --- Clone creates independent copy ---
 
 test "vec clone is independent" {
-    const v1 = Vec<i32>.new()
+    mut v1 = Vec<i32>.new()
     v1.push(10)
     v1.push(20)
-    const v2 = v1.clone()
+    mut v2 = v1.clone()
     v2.push(30)
     assert v1.len() == 2
     assert v2.len() == 3

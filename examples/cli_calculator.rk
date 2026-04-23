@@ -109,7 +109,7 @@ extend Lexer {
     }
 
     func read_number(self) -> Token or CalcError {
-        const num_str = string.new()
+        mut num_str = string.new()
         mut has_dot = false
 
         while self.peek_char()? {
@@ -139,7 +139,7 @@ struct Parser {
 
 extend Parser {
     func new(input: string) -> Parser or CalcError {
-        const lexer = Lexer.new(input)
+        mut lexer = Lexer.new(input)
         const current = try lexer.next_token()
         return Parser { lexer: lexer, current: current }
     }
@@ -290,7 +290,7 @@ func evaluate(expr: Expr) -> f64 or CalcError {
 }
 
 func calc(input: string) -> f64 or CalcError {
-    const parser = try Parser.new(input)
+    mut parser = try Parser.new(input)
     const expr = try parser.parse()
     return evaluate(expr)
 }

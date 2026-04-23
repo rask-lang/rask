@@ -11,7 +11,7 @@
 func opt() -> i32? { return 42 }
 
 func use_return() -> i32 {
-    const v = opt() ?? return -1
+    mut v = opt() ?? return -1
     return v + 1
 }
 
@@ -20,7 +20,7 @@ test "?? return unwraps present" {
 }
 
 func accum() -> i32 {
-    const xs: Vec<i32?> = Vec.new()
+    mut xs: Vec<i32?> = Vec.new()
     const a: i32? = 1
     const absent: i32? = none
     const c: i32? = 3
@@ -30,7 +30,7 @@ func accum() -> i32 {
 
     mut total = 0
     for x in xs {
-        const v = x ?? continue
+        mut v = x ?? continue
         total = total + v
     }
     return total
@@ -43,7 +43,7 @@ test "?? continue skips absent" {
 // --- OPT13 via block fallback (?? { ...; return }) ---
 
 func use_block() -> i32 {
-    const v = opt() ?? {
+    mut v = opt() ?? {
         println("absent")
         return -1
     }
@@ -68,7 +68,7 @@ extend FetchError {
 func inner() -> i32 or FetchError { return 10 }
 
 func try_else_return() -> i32 {
-    const v = try inner() else |e| return -1
+    mut v = try inner() else |e| return -1
     return v
 }
 
@@ -79,7 +79,7 @@ test "try expr else |e| return unwraps present" {
 // --- ER23 / ER27: type pattern in guard (is <T> as v else) ---
 
 func use_type_pattern() -> i32 {
-    const v = inner() is i32 as v else { return -1 }
+    mut v = inner() is i32 as v else { return -1 }
     return v + 5
 }
 
@@ -135,14 +135,14 @@ test "early-exit narrows x after x == none diverges" {
 // --- rask#217: generic type patterns parse ---
 
 func make_vec() -> Vec<i32> or CfgError {
-    const v: Vec<i32> = Vec.new()
+    mut v: Vec<i32> = Vec.new()
     v.push(1)
     v.push(2)
     return v
 }
 
 func generic_guard() -> i32 {
-    const v = make_vec() is Vec<i32> as v else { return -1 }
+    mut v = make_vec() is Vec<i32> as v else { return -1 }
     return v.len() as i32
 }
 

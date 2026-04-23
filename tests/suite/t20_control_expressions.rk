@@ -168,7 +168,7 @@ test "is Some implicit unwrap" {
 // --- while...is pattern (CF8) ---
 
 test "while is pattern" {
-    const items: Vec<i32?> = Vec.new()
+    mut items: Vec<i32?> = Vec.new()
     const a: i32? = 1
     const b: i32? = 2
     const c: i32? = 3

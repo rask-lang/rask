@@ -115,7 +115,7 @@ impl TypeChecker {
                     if inferred_self_mutate || param.is_mutate || param.is_take {
                         self.define_local("self".to_string(), self_ty.clone());
                     } else {
-                        self.define_local_read_only("self".to_string(), self_ty.clone());
+                        self.define_local_param("self".to_string(), self_ty.clone());
                     }
                     self.span_types.insert((param.name_span.start, param.name_span.end, param.name_span.file_id), self_ty);
                 }
@@ -141,7 +141,7 @@ impl TypeChecker {
             if param.is_mutate || param.is_take {
                 self.define_local(param.name.clone(), ty.clone());
             } else {
-                self.define_local_read_only(param.name.clone(), ty.clone());
+                self.define_local_param(param.name.clone(), ty.clone());
             }
             self.span_types.insert((param.name_span.start, param.name_span.end, param.name_span.file_id), ty);
         }
@@ -381,8 +381,18 @@ impl TypeChecker {
 
     fn stmt_writes_self(stmt: &Stmt) -> bool {
         match &stmt.kind {
-            StmtKind::Assign { target, .. } => Self::expr_targets_self(target),
+            StmtKind::Assign { target, value } => {
+                Self::expr_targets_self(target) || Self::expr_writes_self(value)
+            }
             StmtKind::Expr(e) => Self::expr_writes_self(e),
+            StmtKind::Const { init, .. } | StmtKind::Mut { init, .. } => {
+                Self::expr_writes_self(init)
+            }
+            StmtKind::ConstTuple { init, .. } | StmtKind::MutTuple { init, .. } => {
+                Self::expr_writes_self(init)
+            }
+            StmtKind::Return(Some(e)) => Self::expr_writes_self(e),
+            StmtKind::Break { value: Some(v), .. } => Self::expr_writes_self(v),
             StmtKind::While { body, .. } | StmtKind::For { body, .. }
             | StmtKind::Loop { body, .. } | StmtKind::WhileLet { body, .. } => {
                 Self::body_writes_self(body)
@@ -405,23 +415,36 @@ impl TypeChecker {
     fn expr_writes_self(expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::MethodCall { object, .. } => {
+                // Conservative: a direct method call on self (`self.foo()`)
+                // is assumed to mutate. Without a second pass over all
+                // declarations we can't know whether `foo` is `self` or
+                // `mutate self`. Marking the enclosing private method as
+                // mutate is safe — it's inference for the common case.
                 if let ExprKind::Ident(name) = &object.kind {
                     if name == "self" {
-                        // Conservative: method calls on self could mutate
-                        // Precise check would need type info we don't have yet
-                        return false;
+                        return true;
                     }
                 }
                 false
             }
             ExprKind::Block(stmts) => Self::body_writes_self(stmts),
-            ExprKind::If { then_branch, else_branch, .. } => {
+            ExprKind::If { then_branch, else_branch, .. }
+            | ExprKind::IfLet { then_branch, else_branch, .. } => {
                 Self::expr_writes_self(then_branch)
                     || else_branch.as_ref().map_or(false, |e| Self::expr_writes_self(e))
             }
+            ExprKind::GuardPattern { else_branch, .. } => Self::expr_writes_self(else_branch),
             ExprKind::Match { arms, .. } => {
                 arms.iter().any(|arm| Self::expr_writes_self(&arm.body))
             }
+            ExprKind::Try { expr, .. } => Self::expr_writes_self(expr),
+            ExprKind::Unwrap { expr, .. } | ExprKind::IsPresent { expr, .. } => {
+                Self::expr_writes_self(expr)
+            }
+            ExprKind::Unsafe { body } | ExprKind::Comptime { body } => {
+                Self::body_writes_self(body)
+            }
+            ExprKind::Loop { body, .. } => Self::body_writes_self(body),
             _ => false,
         }
     }

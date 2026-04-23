@@ -15,7 +15,7 @@
 // --- with block for Vec element mutation (W5) ---
 
 test "with mutates vec element" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(10)
     v.push(20)
     v.push(30)
@@ -27,7 +27,7 @@ test "with mutates vec element" {
 }
 
 test "with mutates multiple elements sequentially" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -44,7 +44,7 @@ test "with mutates multiple elements sequentially" {
 // --- with block on Map (W1, E5) ---
 
 test "with mutates map value" {
-    const m = Map.new()
+    mut m = Map.new()
     m.insert("score", 0)
 
     with m["score"] as val {
@@ -64,13 +64,13 @@ func find_and_double(v: Vec<i32>, idx: i32) -> i32 {
 }
 
 test "return inside with" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(5)
     assert find_and_double(v, 0) == 10
 }
 
 test "break inside with" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)
@@ -90,7 +90,7 @@ test "break inside with" {
 // --- with produces a value (W6) ---
 
 test "with as expression" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(42)
 
     const doubled = with v[0] as item {
@@ -105,7 +105,7 @@ test "with as expression" {
 // Here we just verify normal element access works.
 
 test "read other elements during with" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(10)
     v.push(20)
     v.push(30)
@@ -122,7 +122,7 @@ test "read other elements during with" {
 // BUG: parser doesn't support `with...as...: expr` colon shorthand yet
 
 test "with one-liner" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(5)
     with v[0] as item: item = item * 3
     assert v[0] == 15
@@ -136,7 +136,7 @@ struct Player {
 }
 
 test "with on vec of structs" {
-    const players = Vec.new()
+    mut players = Vec.new()
     players.push(Player { name: "Alice", score: 0 })
     players.push(Player { name: "Bob", score: 0 })
 

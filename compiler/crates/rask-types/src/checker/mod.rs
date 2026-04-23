@@ -34,6 +34,24 @@ pub use parse_type::parse_type_string;
 
 use borrow::{ActiveBorrow, PersistentBorrow};
 
+/// Binding mutability and origin — used to pick the right error message
+/// when a read-only binding is mutated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingKind {
+    /// `mut x` — rebindable, mutable
+    Mut,
+    /// `const x` — deep-immutable local binding
+    Const,
+    /// Default parameter (read-only; use `mutate` to allow mutation)
+    Param,
+}
+
+impl BindingKind {
+    pub fn is_read_only(&self) -> bool {
+        matches!(self, BindingKind::Const | BindingKind::Param)
+    }
+}
+
 /// Classification of unsafe operations for auditing and tooling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnsafeCategory {
@@ -65,8 +83,8 @@ pub struct TypeChecker {
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
     /// Scope stack for local variable types (innermost scope last).
-    /// Tuple: (type, is_read_only). Default params are read-only; `mutate` params are not.
-    pub(super) local_types: Vec<HashMap<String, (Type, bool)>>,
+    /// Tuple: (type, binding kind). Const bindings and default params are read-only.
+    pub(super) local_types: Vec<HashMap<String, (Type, BindingKind)>>,
     /// Active borrows for aliasing detection (ESAD Phase 1).
     pub(super) borrow_stack: Vec<ActiveBorrow>,
     /// Persistent borrows across statements within a scope (ESAD Phase 2).

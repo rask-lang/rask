@@ -1,7 +1,7 @@
 // Solution: Lesson 18
 
 const SQUARES = comptime {
-    const v = Vec.new()
+    mut v = Vec.new()
     for i in 0..20 {
         v.push(i * i)
     }
@@ -9,7 +9,7 @@ const SQUARES = comptime {
 }
 
 const FACTORIALS = comptime {
-    const v = Vec.new()
+    mut v = Vec.new()
     mut f: i64 = 1
     v.push(f)
     for i in 1..13 {
@@ -20,7 +20,7 @@ const FACTORIALS = comptime {
 }
 
 const STD_ATMOSPHERE = comptime {
-    const v = Vec.new()
+    mut v = Vec.new()
     for alt in 0..21 {
         const altitude_m = alt * 1000
         if altitude_m <= 11000 {
@@ -38,7 +38,7 @@ func std_temperature(altitude_m: i32) -> f64 {
 }
 
 const IS_UPPER = comptime {
-    const v = Vec.new()
+    mut v = Vec.new()
     for i in 0..128 {
         v.push(i >= 65 && i <= 90)
     }

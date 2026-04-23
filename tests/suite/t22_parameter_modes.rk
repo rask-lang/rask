@@ -49,7 +49,7 @@ func double_all(mutate v: Vec<i32>) {
 }
 
 test "mutate mode on vec" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     v.push(2)
     v.push(3)

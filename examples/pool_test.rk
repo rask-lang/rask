@@ -7,7 +7,7 @@ struct Entity {
 
 func main() {
     // Basic pool operations
-    const pool = Pool.new()
+    mut pool = Pool.new()
 
     const h1 = pool.insert(Entity { name: "Alice", health: 100, active: true })
     const h2 = pool.insert(Entity { name: "Bob", health: 80, active: true })

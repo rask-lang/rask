@@ -8,7 +8,7 @@ func sqrt(x: f64) -> f64 {
 }
 
 func flight_altitudes() -> Vec<i32> {
-    const log = Vec.new()
+    mut log = Vec.new()
     log.push(0)
     log.push(5000)
     log.push(15000)
@@ -50,7 +50,7 @@ func std_dev(data: Vec<f64>) -> f64 {
 }
 
 func altitudes_above(log: Vec<i32>, threshold: i32) -> Vec<i32> {
-    const result = Vec.new()
+    mut result = Vec.new()
     for alt in log {
         if alt > threshold {
             result.push(alt)
@@ -60,7 +60,7 @@ func altitudes_above(log: Vec<i32>, threshold: i32) -> Vec<i32> {
 }
 
 test "flight altitudes" {
-    const log = flight_altitudes()
+    mut log = flight_altitudes()
     assert log.len() == 5
     assert log[0] == 0
     assert log[4] == 35000
@@ -76,7 +76,7 @@ test "record altitude" {
 }
 
 test "max altitude" {
-    const log = Vec.from([0, 5000, 35000, 25000, 15000])
+    mut log = Vec.from([0, 5000, 35000, 25000, 15000])
     assert max_altitude(log) == 35000
     assert log.len() == 5
 }
@@ -95,7 +95,7 @@ test "std dev" {
 }
 
 test "altitudes above" {
-    const log = Vec.from([0, 5000, 15000, 25000, 35000])
+    mut log = Vec.from([0, 5000, 15000, 25000, 35000])
     const high = altitudes_above(log, 20000)
     assert high.len() == 2
     assert log.len() == 5

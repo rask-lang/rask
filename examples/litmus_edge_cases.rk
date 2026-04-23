@@ -61,7 +61,7 @@ test "string Copy — assign from struct field" {
 // ─── Vec.get() returns T? (collections/V3) ──────────────────────
 
 test "Vec.get — present for valid index" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(10)
     v.push(20)
     v.push(30)
@@ -74,7 +74,7 @@ test "Vec.get — present for valid index" {
 }
 
 test "Vec.get — none for out of bounds" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(42)
 
     const out = v.get(5)
@@ -82,7 +82,7 @@ test "Vec.get — none for out of bounds" {
 }
 
 test "Vec.get — force-extract matches expected value" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(100)
     v.push(200)
     assert v.get(0)! == 100
@@ -140,25 +140,25 @@ func use_validator_multiline(v: Validator, x: i32) -> i32 or OuterError {
 }
 
 test "try-else with method call — success" {
-    const v = Validator { threshold: 5 }
+    mut v = Validator { threshold: 5 }
     const result = use_validator(v, 10)
     assert result?
 }
 
 test "try-else with method call — error transforms" {
-    const v = Validator { threshold: 5 }
+    mut v = Validator { threshold: 5 }
     const result = use_validator(v, 3)
     assert result is OuterError
 }
 
 test "try-else multiline with method call — success" {
-    const v = Validator { threshold: 5 }
+    mut v = Validator { threshold: 5 }
     const result = use_validator_multiline(v, 10)
     assert result?
 }
 
 test "try-else multiline with method call — error transforms" {
-    const v = Validator { threshold: 5 }
+    mut v = Validator { threshold: 5 }
     const result = use_validator_multiline(v, 3)
     assert result is OuterError
 }
@@ -225,7 +225,7 @@ test "try-else with trait object — error transforms" {
 // ─── String Copy in collections ─────────────────────────────────
 
 test "string Copy — Vec of strings, read multiple" {
-    const names = Vec.new()
+    mut names = Vec.new()
     names.push("Alice")
     names.push("Bob")
     names.push("Charlie")
@@ -238,7 +238,7 @@ test "string Copy — Vec of strings, read multiple" {
 }
 
 test "string Copy — Map with string keys and values" {
-    const m = Map.new()
+    mut m = Map.new()
     m.insert("key1", "value1")
     m.insert("key2", "value2")
     const v1 = m["key1"]
@@ -266,7 +266,7 @@ struct Entity {
 }
 
 test "Pool — string fields Copy correctly" {
-    const pool = Pool.new()
+    mut pool = Pool.new()
     const h = pool.insert(Entity { name: "Hero", health: 100 })
     // Read string field — should be Copy, not move
     const name1 = pool[h].name
@@ -277,7 +277,7 @@ test "Pool — string fields Copy correctly" {
 }
 
 test "Pool — modify non-string field after reading string" {
-    const pool = Pool.new()
+    mut pool = Pool.new()
     const h = pool.insert(Entity { name: "Hero", health: 100 })
     const name = pool[h].name
     with pool[h] as e {
@@ -290,7 +290,7 @@ test "Pool — modify non-string field after reading string" {
 // ─── Vec.get with narrowing ─────────────────────────────────────
 
 test "Vec.get — narrow on present" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push("hello")
     if v.get(0)? as val {
         assert val == "hello"
@@ -300,7 +300,7 @@ test "Vec.get — narrow on present" {
 }
 
 test "Vec.get — else branch on absent" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(1)
     if v.get(99)? {
         assert false, "expected none"
@@ -308,7 +308,7 @@ test "Vec.get — else branch on absent" {
 }
 
 test "Vec.get — guard pattern" {
-    const v = Vec.new()
+    mut v = Vec.new()
     v.push(42)
     const val = v.get(0) ?? panic("missing")
     assert val == 42
@@ -317,7 +317,7 @@ test "Vec.get — guard pattern" {
 // ─── try-else error value verification ──────────────────────────
 
 test "try-else — error value is correctly transformed" {
-    const v = Validator { threshold: 10 }
+    mut v = Validator { threshold: 10 }
     const result = use_validator(v, 3)
     match result {
         OuterError.Wrapped(InnerError.BadInput(msg)) => {

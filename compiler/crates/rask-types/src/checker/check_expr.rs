@@ -616,7 +616,7 @@ impl TypeChecker {
                             .unwrap_or_else(|| self.ctx.fresh_var());
                         self.push_scope();
                         if let Some(scope) = self.local_types.last_mut() {
-                            scope.insert(ec.error_binding.clone(), (err_ty, true));
+                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Const));
                         }
                         let handler_ty = self.infer_expr(&ec.body);
                         self.pop_scope();
@@ -649,7 +649,7 @@ impl TypeChecker {
                             // function's error return type
                             self.push_scope();
                             if let Some(scope) = self.local_types.last_mut() {
-                                scope.insert(ec.error_binding.clone(), (*err.clone(), true));
+                                scope.insert(ec.error_binding.clone(), (*err.clone(), super::BindingKind::Const));
                             }
                             let handler_ty = self.infer_expr(&ec.body);
                             self.pop_scope();
@@ -716,7 +716,7 @@ impl TypeChecker {
                                         // unify handler type with function's error return type
                                         self.push_scope();
                                         if let Some(scope) = self.local_types.last_mut() {
-                                            scope.insert(ec.error_binding.clone(), (err_ty, true));
+                                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Const));
                                         }
                                         let handler_ty = self.infer_expr(&ec.body);
                                         self.pop_scope();
@@ -747,7 +747,7 @@ impl TypeChecker {
                                         // try...else with both types unresolved
                                         self.push_scope();
                                         if let Some(scope) = self.local_types.last_mut() {
-                                            scope.insert(ec.error_binding.clone(), (err_ty, true));
+                                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Const));
                                         }
                                         let handler_ty = self.infer_expr(&ec.body);
                                         self.pop_scope();
@@ -1452,6 +1452,29 @@ impl TypeChecker {
 
             let param_name = &param_sym.name;
 
+            // Deep const: passing a const binding to a `mutate` parameter is
+            // rejected. `take` (ownership transfer) is still allowed — moving
+            // a value is not mutation.
+            if is_mutate && !is_take {
+                if let ExprKind::Ident(arg_name) = &arg.expr.kind {
+                    match self.lookup_binding_kind(arg_name) {
+                        Some(super::BindingKind::Const) => {
+                            self.errors.push(TypeError::MutateConst {
+                                name: arg_name.clone(),
+                                span: arg.expr.span,
+                            });
+                        }
+                        Some(super::BindingKind::Param) => {
+                            self.errors.push(TypeError::MutateReadOnlyParam {
+                                name: arg_name.clone(),
+                                span: arg.expr.span,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             match (&arg.mode, is_take, is_mutate) {
                 // Missing annotations are OK — call-site markers are optional.
                 // IDE shows ghost annotations for visibility (spec decision).
@@ -1586,6 +1609,26 @@ impl TypeChecker {
         // ESAD Phase 1: Push borrow for the object being called
         if let ExprKind::Ident(var_name) = &object.kind {
             let mode = self.method_borrow_mode(var_name, method);
+
+            // Deep const: reject `mutate self` methods on const bindings and read-only params.
+            // `take self` is allowed — it consumes the value, not mutates it.
+            if self.method_mutates_self(var_name, method) {
+                match self.lookup_binding_kind(var_name) {
+                    Some(super::BindingKind::Const) => {
+                        self.errors.push(TypeError::MutateConst {
+                            name: var_name.clone(),
+                            span: object.span,
+                        });
+                    }
+                    Some(super::BindingKind::Param) => {
+                        self.errors.push(TypeError::MutateReadOnlyParam {
+                            name: var_name.clone(),
+                            span: object.span,
+                        });
+                    }
+                    _ => {}
+                }
+            }
 
             // ESAD Phase 2: Check persistent borrow conflict for exclusive methods
             if matches!(mode, BorrowMode::Exclusive) {
@@ -2247,8 +2290,11 @@ impl TypeChecker {
                     _ => None,
                 };
                 if let Some(scrutinee) = scrutinee_opt {
-                    let name = match &scrutinee.kind {
-                        ExprKind::Ident(n) if self.is_local_read_only(n) => n.clone(),
+                    let (name, kind) = match &scrutinee.kind {
+                        ExprKind::Ident(n) => match self.lookup_binding_kind(n) {
+                            Some(k) if k.is_read_only() => (n.clone(), k),
+                            _ => return,
+                        },
                         _ => return,
                     };
                     let scrutinee_ty = match self.node_types.get(&scrutinee.id).cloned() {
@@ -2256,7 +2302,11 @@ impl TypeChecker {
                         None => return,
                     };
                     if let Type::Option(inner) = scrutinee_ty {
-                        self.define_local_read_only(name, *inner);
+                        match kind {
+                            super::BindingKind::Const => self.define_local_const(name, *inner),
+                            super::BindingKind::Param => self.define_local_param(name, *inner),
+                            super::BindingKind::Mut => self.define_local(name, *inner),
+                        }
                     }
                 }
             }
@@ -2265,8 +2315,11 @@ impl TypeChecker {
     }
 
     fn narrow_result_from_err_pattern(&mut self, scrutinee: &Expr, pattern: &rask_ast::expr::Pattern) {
-        let name = match &scrutinee.kind {
-            ExprKind::Ident(n) if self.is_local_read_only(n) => n.clone(),
+        let (name, kind) = match &scrutinee.kind {
+            ExprKind::Ident(n) => match self.lookup_binding_kind(n) {
+                Some(k) if k.is_read_only() => (n.clone(), k),
+                _ => return,
+            },
             _ => return,
         };
         let scrutinee_ty = match self.node_types.get(&scrutinee.id).cloned() {
@@ -2290,7 +2343,11 @@ impl TypeChecker {
             other => other == &narrow_ty,
         };
         if matches_err {
-            self.define_local_read_only(name, *ok);
+            match kind {
+                super::BindingKind::Const => self.define_local_const(name, *ok),
+                super::BindingKind::Param => self.define_local_param(name, *ok),
+                super::BindingKind::Mut => self.define_local(name, *ok),
+            }
         }
     }
 }

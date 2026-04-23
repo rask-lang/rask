@@ -6,23 +6,23 @@
 
 // --- Write ---
 
-func write_u8(buf: Vec<u8>, offset: i64, val: i64) {
+func write_u8(mutate buf: Vec<u8>, offset: i64, val: i64) {
     buf.set(offset, (val & 0xFF) as u8)
 }
 
-func write_u16le(buf: Vec<u8>, offset: i64, val: i64) {
+func write_u16le(mutate buf: Vec<u8>, offset: i64, val: i64) {
     buf.set(offset, (val & 0xFF) as u8)
     buf.set(offset + 1, ((val >> 8) & 0xFF) as u8)
 }
 
-func write_u32le(buf: Vec<u8>, offset: i64, val: i64) {
+func write_u32le(mutate buf: Vec<u8>, offset: i64, val: i64) {
     buf.set(offset, (val & 0xFF) as u8)
     buf.set(offset + 1, ((val >> 8) & 0xFF) as u8)
     buf.set(offset + 2, ((val >> 16) & 0xFF) as u8)
     buf.set(offset + 3, ((val >> 24) & 0xFF) as u8)
 }
 
-func write_i64le(buf: Vec<u8>, offset: i64, val: i64) {
+func write_i64le(mutate buf: Vec<u8>, offset: i64, val: i64) {
     write_u32le(buf, offset, val & 0xFFFFFFFF)
     write_u32le(buf, offset + 4, ((val >> 32) & 0xFFFFFFFF))
 }
@@ -56,7 +56,7 @@ func read_i64le(buf: Vec<u8>, offset: i64) -> i64 {
 // --- Helpers ---
 
 // Grow buffer to at least `needed` bytes if it's too short
-func ensure_size(buf: Vec<u8>, needed: i64) {
+func ensure_size(mutate buf: Vec<u8>, needed: i64) {
     while buf.len() < needed {
         buf.push(0 as u8)
     }
