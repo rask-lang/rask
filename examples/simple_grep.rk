@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Simple grep - Pattern search using module syntax
 // Usage: rask run simple_grep.rk <pattern> <file>
-// Demonstrates: cli.args, fs.read_lines, string methods, match, Vec, loops
+// Demonstrates: cli.args, fs.read_lines, string methods, T or E, Vec, loops
 
 import fs
 import cli
 import std
 
-enum GrepResult {
-    Ok(i32)
-    Err(string)
+enum GrepError { Msg(string) }
+extend GrepError {
+    func message(self) -> string {
+        match self {
+            GrepError.Msg(m) => return m,
+        }
+    }
 }
 
-func grep_file(pattern: string, path: string) -> GrepResult {
+func grep_file(pattern: string, path: string) -> i32 or GrepError {
     const lines_result = fs.read_lines(path)
 
     if lines_result? {
@@ -27,9 +31,9 @@ func grep_file(pattern: string, path: string) -> GrepResult {
             }
         }
 
-        return GrepResult.Ok(match_count)
+        return match_count
     } else as e {
-        return GrepResult.Err(e.message())
+        return GrepError.Msg(e.message())
     }
 }
 
@@ -42,24 +46,21 @@ func main() {
         std.exit(1)
     }
 
-    const pattern = args.get(1).unwrap()
-    const file_path = args.get(2).unwrap()
+    const pattern = args.get(1)!
+    const file_path = args.get(2)!
 
     println("Searching for '{pattern}' in {file_path}...")
 
     const result = grep_file(pattern, file_path)
 
-    match result {
-        Ok(count) => {
-            println("")
-            println("Found {count} matching lines")
-            if count == 0 {
-                std.exit(1)
-            }
+    if result? as count {
+        println("")
+        println("Found {count} matching lines")
+        if count == 0 {
+            std.exit(1)
         }
-        Err(e) => {
-            println("Error: {e}")
-            std.exit(2)
-        }
+    } else as e {
+        println("Error: {e.message()}")
+        std.exit(2)
     }
 }

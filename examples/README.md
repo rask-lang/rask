@@ -17,13 +17,13 @@ These examples parse and run with the current interpreter:
 | # | Example | Topic | Status |
 |---|---------|-------|--------|
 | - | `hello_world.rk` | Hello World | ✅ Runnable |
-| 01 | `01_variables.rk` | Variables (`const`, `let`) | ✅ Runnable |
+| 01 | `01_variables.rk` | Variables (`const`, `mut`) | ✅ Runnable |
 | 02 | `02_functions.rk` | Functions and returns | ✅ Runnable |
 | 03 | `03_collections.rk` | Vec and Map | ✅ Runnable |
 | 04 | `04_pattern_matching.rk` | Match expressions | ✅ Runnable |
 | 05 | `05_loops.rk` | For and while loops | ✅ Runnable |
 | 06 | `06_structs.rk` | Structs and methods | ✅ Runnable |
-| 07 | `07_error_handling.rk` | Result types, `try` | ✅ Runnable |
+| 07 | `07_error_handling.rk` | `T or E`, `try` | ✅ Runnable |
 | 08 | `08_traits.rk` | Traits and polymorphism | ✅ Runnable |
 | 13 | `13_string_operations.rk` | String methods | ✅ Runnable |
 | 16 | `16_concurrency_basics.rk` | Threads and channels | ✅ Runnable |

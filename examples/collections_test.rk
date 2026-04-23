@@ -15,9 +15,9 @@ func main() {
     v.push(30)
     const vlen = v.len()
     println("Vec length: {vlen}")
-    const v0 = v.get(0).unwrap()
-    const v1 = v.get(1).unwrap()
-    const v2 = v.get(2).unwrap()
+    const v0 = v.get(0)!
+    const v1 = v.get(1)!
+    const v2 = v.get(2)!
     println("v[0] = {v0}")
     println("v[1] = {v1}")
     println("v[2] = {v2}")
