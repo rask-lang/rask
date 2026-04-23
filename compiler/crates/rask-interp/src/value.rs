@@ -7,11 +7,17 @@ use std::fmt;
 use std::fs::File as StdFile;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::LazyLock;
 
 use rask_ast::expr::Expr;
 
 /// Global pool ID counter. Each Pool gets a unique ID.
 static NEXT_POOL_ID: AtomicU32 = AtomicU32::new(1);
+
+/// Process-global active Multitasking runtime slot (conc.async/C1).
+/// At most one `using Multitasking { }` block may be active per process.
+pub static ACTIVE_RUNTIME: LazyLock<RwLock<Option<Arc<MultitaskingRuntime>>>> =
+    LazyLock::new(|| RwLock::new(None));
 
 /// Allocate the next unique pool ID.
 pub fn next_pool_id() -> u32 {

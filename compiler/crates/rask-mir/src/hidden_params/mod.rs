@@ -28,7 +28,7 @@ use rask_ast::{NodeId, Span};
 /// A context requirement derived from a `using` clause.
 #[derive(Debug, Clone)]
 pub(crate) struct ContextReq {
-    /// Hidden parameter name: `__ctx_pool_Player`, `__ctx_runtime`, etc.
+    /// Hidden parameter name: `__ctx_pool_Player`, etc.
     pub param_name: String,
     /// Type string for the parameter: `&Pool<Player>`, `RuntimeContext`
     pub param_type: String,
@@ -189,28 +189,24 @@ impl<'a> HiddenParamPass<'a> {
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Convert a ContextClause into a ContextReq.
+///
+/// Only called for pool contexts — runtime types (Multitasking, ThreadPool)
+/// are filtered out before this point (see `collect::is_runtime_context`).
 pub(crate) fn context_clause_to_req(cc: &ContextClause) -> ContextReq {
-    let is_runtime = cc.ty == "Multitasking" || cc.ty == "multitasking";
-
-    let (param_name, param_type) = if is_runtime {
-        ("__ctx_runtime".to_string(), "RuntimeContext".to_string())
+    // Pool<T> → __ctx_pool_T with type &Pool<T>
+    let inner = extract_generic_arg(&cc.ty).unwrap_or_default();
+    let param_name = if let Some(alias) = &cc.name {
+        format!("__ctx_{}", alias)
     } else {
-        // Pool<T> → __ctx_pool_T with type &Pool<T>
-        let inner = extract_generic_arg(&cc.ty).unwrap_or_default();
-        let name = if let Some(alias) = &cc.name {
-            format!("__ctx_{}", alias)
-        } else {
-            format!("__ctx_pool_{}", inner)
-        };
-        let ty = format!("&{}", cc.ty);
-        (name, ty)
+        format!("__ctx_pool_{}", inner)
     };
+    let param_type = format!("&{}", cc.ty);
 
     ContextReq {
         param_name,
         param_type,
         clause_type: cc.ty.clone(),
-        is_runtime,
+        is_runtime: false,
         alias: cc.name.clone(),
     }
 }
@@ -299,16 +295,13 @@ mod tests {
     }
 
     #[test]
-    fn test_context_clause_to_req_runtime() {
-        let cc = ContextClause {
-            name: None,
-            ty: "Multitasking".to_string(),
-            is_frozen: false,
-        };
-        let req = context_clause_to_req(&cc);
-        assert_eq!(req.param_name, "__ctx_runtime");
-        assert_eq!(req.param_type, "RuntimeContext");
-        assert!(req.is_runtime);
+    fn test_runtime_context_filtered() {
+        use crate::hidden_params::collect::is_runtime_context;
+        assert!(is_runtime_context("Multitasking"));
+        assert!(is_runtime_context("multitasking"));
+        assert!(is_runtime_context("ThreadPool"));
+        assert!(is_runtime_context("threadpool"));
+        assert!(!is_runtime_context("Pool<Player>"));
     }
 
     #[test]

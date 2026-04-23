@@ -261,10 +261,11 @@ impl Interpreter {
             ));
         }
 
-        // Check for Multitasking context
-        if self.env.get("__multitasking_ctx").is_none() {
-            return Err(RuntimeError::TypeError(
-                "spawn() requires 'using Multitasking' context".to_string(),
+        // Check for active runtime slot (CC3 fallback)
+        if crate::value::ACTIVE_RUNTIME.read().unwrap().is_none() {
+            return Err(RuntimeError::Panic(
+                "RUNTIME PANIC: spawn() called with no active `using Multitasking` scope\n\
+                 Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
             ));
         }
 

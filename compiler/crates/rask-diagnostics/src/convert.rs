@@ -555,6 +555,27 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`using` blocks require a known runtime context to initialize")
             }
 
+            SignatureRuntimeContext { ctx, span } => {
+                Diagnostic::error(format!("`using {}` cannot appear on a function signature", ctx))
+                    .with_code("E0351")
+                    .with_primary(*span, "remove this clause from the signature")
+                    .with_help(format!(
+                        "`using {}` is a block, not a signature annotation — \
+                         wrap the call site in `using {} {{ ... }}` instead",
+                        ctx, ctx
+                    ))
+                    .with_why("`using Multitasking` installs a process-global runtime slot; \
+                               functions don't declare it, they just use it [conc.async/CC1]")
+            }
+
+            SpawnOutsideBlock { span } => {
+                Diagnostic::error("`spawn` must be inside a `using Multitasking { ... }` block")
+                    .with_code("E0352")
+                    .with_primary(*span, "`spawn` used here without a runtime")
+                    .with_help("wrap this code in `using Multitasking { ... }`")
+                    .with_why("spawn() requires an active runtime slot installed by `using Multitasking { }` [conc.async/CC1]")
+            }
+
             CyclicTypeAlias { cycle, span } => {
                 Diagnostic::error(format!("cyclic type alias: {}", cycle))
                     .with_code("E0343")

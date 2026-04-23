@@ -2,7 +2,7 @@
 //! Async module - green task spawning.
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{ThreadHandleInner, Value};
+use crate::value::{ThreadHandleInner, Value, ACTIVE_RUNTIME};
 use std::sync::{Arc, Mutex};
 
 impl Interpreter {
@@ -29,9 +29,10 @@ impl Interpreter {
                         body,
                         captured_env,
                     } => {
-                        if self.env.get("__multitasking_ctx").is_none() {
-                            return Err(RuntimeError::TypeError(
-                                "spawn() requires 'using Multitasking' context".to_string(),
+                        if ACTIVE_RUNTIME.read().unwrap().is_none() {
+                            return Err(RuntimeError::Panic(
+                                "RUNTIME PANIC: spawn() called with no active `using Multitasking` scope\n\
+                                 Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
                             ));
                         }
 

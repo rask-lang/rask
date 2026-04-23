@@ -10,6 +10,17 @@ use crate::value::{ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, Typ
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
+/// CC3 runtime panic message for spawn() without an active `using Multitasking` block.
+const SPAWN_NO_RUNTIME_MSG: &str =
+    "RUNTIME PANIC: spawn() called with no active `using Multitasking` scope\n\
+     \n\
+     This can happen when:\n\
+     - A closure containing spawn is stored and called outside a block\n\
+     - A trait object dispatches to an impl that spawns\n\
+     - FFI calls back into Rask outside any scope\n\
+     \n\
+     Install a `using Multitasking { ... }` block that encloses the call.";
+
 /// Set origin on an error value (the inner payload of Err). Only sets if not already set (ER15).
 fn set_error_origin(val: Value, origin: &Arc<str>) -> Value {
     match val {
@@ -1609,7 +1620,7 @@ impl Interpreter {
             ExprKind::UsingBlock { name, args, body }
                 if name == "Multitasking" || name == "multitasking" =>
             {
-                use crate::value::MultitaskingRuntime;
+                use crate::value::{MultitaskingRuntime, ACTIVE_RUNTIME};
 
                 let num_workers = if args.is_empty() {
                     std::thread::available_parallelism()
@@ -1622,9 +1633,23 @@ impl Interpreter {
 
                 let runtime = Arc::new(MultitaskingRuntime::new(num_workers));
 
+                // C1: exactly one active block per process — nested blocks panic at runtime
+                {
+                    let mut slot = ACTIVE_RUNTIME.write().unwrap();
+                    if slot.is_some() {
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic(
+                                "nested `using Multitasking` blocks are not allowed\n\
+                                 only one block may be active per process at a time".to_string(),
+                            ),
+                            expr.span,
+                        ));
+                    }
+                    *slot = Some(runtime.clone());
+                }
+
                 self.env.push_scope();
                 let scope_depth = self.env.scope_depth();
-                self.env.define("__multitasking_ctx".to_string(), Value::MultitaskingRuntime(runtime.clone()));
 
                 let mut result = Value::Unit;
                 for stmt in body {
@@ -1632,6 +1657,7 @@ impl Interpreter {
                         Ok(val) => result = val,
                         Err(e) => {
                             runtime.shutdown();
+                            *ACTIVE_RUNTIME.write().unwrap() = None;
                             self.env.pop_scope();
                             return Err(e);
                         }
@@ -1641,6 +1667,7 @@ impl Interpreter {
                 // Check for unconsumed handles (conc.async/H1)
                 if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
                     runtime.shutdown();
+                    *ACTIVE_RUNTIME.write().unwrap() = None;
                     self.env.pop_scope();
                     return Err(RuntimeDiagnostic::new(
                         RuntimeError::Panic(msg),
@@ -1649,77 +1676,66 @@ impl Interpreter {
                 }
 
                 runtime.shutdown();
+                *ACTIVE_RUNTIME.write().unwrap() = None;
                 self.env.pop_scope();
                 Ok(result)
             }
 
             ExprKind::Spawn { body } => {
+                use crate::value::ACTIVE_RUNTIME;
+
                 let body = body.clone();
                 let captured = self.env.capture();
                 let child = self.spawn_child(captured);
-                let in_multitasking = self.env.get("__multitasking_ctx").is_some();
 
-                let handle_inner = if in_multitasking {
-                    // Submit to the multitasking thread pool
-                    let (result_tx, result_rx) = std::sync::mpsc::channel();
-                    let task = PoolTask {
-                        work: Box::new(move || {
-                            let mut interp = child;
-                            let mut result = Value::Unit;
-                            for stmt in &body {
-                                match interp.exec_stmt(stmt) {
-                                    Ok(val) => result = val,
-                                    Err(e) => {
-                                        let _ = result_tx.send(Err(format!("{}", e)));
-                                        return;
-                                    }
-                                }
-                            }
-                            let _ = result_tx.send(Ok(result));
-                        }),
-                    };
-
-                    if let Some(Value::MultitaskingRuntime(rt)) = self.env.get("__multitasking_ctx") {
-                        let sender = rt.sender.lock().unwrap();
-                        if let Some(tx) = sender.as_ref() {
-                            let _ = tx.send(task);
-                        }
+                // Read the active runtime from the process-global slot (CC3 fallback if None)
+                let runtime = ACTIVE_RUNTIME.read().unwrap().clone();
+                let rt = match runtime {
+                    Some(rt) => rt,
+                    None => {
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic(SPAWN_NO_RUNTIME_MSG.to_string()),
+                            expr.span,
+                        ));
                     }
+                };
 
-                    Arc::new(ThreadHandleInner {
-                        handle: Mutex::new(None),
-                        receiver: Mutex::new(Some(result_rx)),
-                    })
-                } else {
-                    // Outside multitasking: spawn OS thread directly
-                    let join_handle = std::thread::spawn(move || {
+                // Submit to the multitasking thread pool
+                let (result_tx, result_rx) = std::sync::mpsc::channel();
+                let task = PoolTask {
+                    work: Box::new(move || {
                         let mut interp = child;
                         let mut result = Value::Unit;
                         for stmt in &body {
                             match interp.exec_stmt(stmt) {
                                 Ok(val) => result = val,
-                                Err(e) => return Err(format!("{}", e)),
+                                Err(e) => {
+                                    let _ = result_tx.send(Err(format!("{}", e)));
+                                    return;
+                                }
                             }
                         }
-                        Ok(result)
-                    });
-
-                    Arc::new(ThreadHandleInner {
-                        handle: Mutex::new(Some(join_handle)),
-                        receiver: Mutex::new(None),
-                    })
+                        let _ = result_tx.send(Ok(result));
+                    }),
                 };
+
+                {
+                    let sender = rt.sender.lock().unwrap();
+                    if let Some(tx) = sender.as_ref() {
+                        let _ = tx.send(task);
+                    }
+                }
+
+                let handle_inner = Arc::new(ThreadHandleInner {
+                    handle: Mutex::new(None),
+                    receiver: Mutex::new(Some(result_rx)),
+                });
 
                 // Register handle for affine tracking (conc.async/H1)
                 let ptr = Arc::as_ptr(&handle_inner) as usize;
-                let type_name = if in_multitasking { "TaskHandle" } else { "ThreadHandle" };
-                self.resource_tracker.register_handle(ptr, type_name, self.env.scope_depth());
+                self.resource_tracker.register_handle(ptr, "TaskHandle", self.env.scope_depth());
 
-                if in_multitasking {
-                    Ok(Value::TaskHandle(handle_inner))
-                } else {
-                    Ok(Value::ThreadHandle(handle_inner))
-                }
+                Ok(Value::TaskHandle(handle_inner))
             }
 
             ExprKind::Assert { condition, message } => {

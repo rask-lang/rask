@@ -957,6 +957,11 @@ impl TypeChecker {
             }
 
             ExprKind::Spawn { body } => {
+                // CC1: direct spawn must be lexically inside a `using Multitasking { }` block
+                if self.multitasking_depth == 0 {
+                    self.errors.push(TypeError::SpawnOutsideBlock { span: expr.span });
+                }
+
                 // Spawn blocks are like anonymous functions - they have their own return type
                 let outer_return_type = self.current_return_type.take();
                 let outer_accumulate = self.accumulate_errors;
@@ -1021,8 +1026,19 @@ impl TypeChecker {
                 for arg in args {
                     self.infer_expr(&arg.expr);
                 }
+                // CC1: track nesting depth so spawn() inside this block is allowed
+                let is_multitasking = matches!(
+                    name.as_str(),
+                    "Multitasking" | "MultiTasking" | "multitasking"
+                );
+                if is_multitasking {
+                    self.multitasking_depth += 1;
+                }
                 for stmt in body {
                     self.check_stmt(stmt);
+                }
+                if is_multitasking {
+                    self.multitasking_depth -= 1;
                 }
                 // Check if the block ends with a diverging statement (return/break/continue)
                 if let Some(last) = body.last() {
@@ -1282,9 +1298,19 @@ impl TypeChecker {
         }
 
         // Extern and unsafe function calls require unsafe context
+        // Also: CC1 — spawn() must be inside a `using Multitasking { }` block
         if let ExprKind::Ident(_) = &func.kind {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
                 if let Some(sym) = self.resolved.symbols.get(sym_id) {
+                    // CC1: spawn() outside any using Multitasking block
+                    if matches!(&sym.kind, SymbolKind::BuiltinFunction { builtin }
+                        if *builtin == rask_resolve::BuiltinFunctionKind::Spawn)
+                    {
+                        if self.multitasking_depth == 0 {
+                            self.errors.push(TypeError::SpawnOutsideBlock { span });
+                        }
+                    }
+
                     let unsafe_category = match &sym.kind {
                         SymbolKind::ExternFunction { .. } => Some(super::UnsafeCategory::ExternCall),
                         SymbolKind::Function { is_unsafe: true, .. } => Some(super::UnsafeCategory::UnsafeFuncCall),

@@ -78,6 +78,16 @@ impl TypeChecker {
             _ => false,
         };
 
+        // CC1: reject `using Multitasking` / `using ThreadPool` on function signatures
+        for cc in &f.context_clauses {
+            if is_runtime_context(&cc.ty) {
+                self.errors.push(TypeError::SignatureRuntimeContext {
+                    ctx: cc.ty.clone(),
+                    span: f.span,
+                });
+            }
+        }
+
         // UF1: unsafe func body is implicitly unsafe
         let was_unsafe = self.in_unsafe;
         if f.is_unsafe {
@@ -107,6 +117,9 @@ impl TypeChecker {
                 });
             }
         }
+
+        // Reset multitasking depth for each function body
+        self.multitasking_depth = 0;
 
         self.push_scope();
         for param in &f.params {
@@ -448,4 +461,8 @@ impl TypeChecker {
             _ => false,
         }
     }
+}
+
+fn is_runtime_context(ty: &str) -> bool {
+    matches!(ty, "Multitasking" | "MultiTasking" | "multitasking" | "ThreadPool" | "threadpool")
 }

@@ -68,10 +68,13 @@ impl<'a> HiddenParamPass<'a> {
             Vec::new()
         };
 
-        // Collect explicit context requirements
+        // Collect explicit context requirements.
+        // Runtime contexts (Multitasking, ThreadPool) are no longer threaded as
+        // hidden params — they use a process-global slot instead (conc.async/CC1-CC3).
         let reqs: Vec<ContextReq> = f
             .context_clauses
             .iter()
+            .filter(|cc| !is_runtime_context(&cc.ty))
             .map(|cc| context_clause_to_req(cc))
             .collect();
 
@@ -162,6 +165,11 @@ fn infer_pool_type_from_expr(expr: &rask_ast::expr::Expr) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// True for runtime contexts that use the process-global slot, not hidden params.
+pub(crate) fn is_runtime_context(ty: &str) -> bool {
+    matches!(ty, "Multitasking" | "MultiTasking" | "multitasking" | "ThreadPool" | "threadpool")
 }
 
 /// Check if any parameter in a function is a Handle<T> type.

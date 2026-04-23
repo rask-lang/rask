@@ -119,6 +119,8 @@ pub struct TypeChecker {
     pub(super) span_types: HashMap<(usize, usize, u16), Type>,
     /// D1: Bindings invalidated by `discard`. Maps name → discard span.
     pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
+    /// CC1: nesting depth of `using Multitasking { }` blocks in current function.
+    pub(super) multitasking_depth: u32,
 }
 
 impl TypeChecker {
@@ -148,6 +150,7 @@ impl TypeChecker {
             span_types: HashMap::new(),
             accumulate_errors: false,
             discarded_bindings: HashMap::new(),
+            multitasking_depth: 0,
         }
     }
 
