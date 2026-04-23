@@ -346,6 +346,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_bare_or_after_params() {
+        // `func foo() or Error` — `or` must follow an explicit return type
+        let result = parse("func f() or Error { }");
+        assert!(!result.errors.is_empty(), "Expected parse error for bare `or`");
+        assert!(
+            result.errors[0].message.contains("`or` must follow an explicit return type"),
+            "Expected return-type mention, got: {}", result.errors[0].message
+        );
+    }
+
+    #[test]
+    fn parse_elided_void_return() {
+        // `func foo()` — returns void implicitly, body is valid
+        let result = parse("func greet(name: string) { println(name) }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            assert!(f.ret_ty.is_none(), "Elided return should be None (→ void)");
+        } else {
+            panic!("Expected function");
+        }
+    }
+
+    #[test]
+    fn parse_explicit_void_or_error() {
+        // `func foo() -> void or Error` — explicit void with error
+        let result = parse("func save() -> void or Error { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_bare_return_statement() {
+        // `return` with no value — parser must accept
+        let result = parse("func f() { return }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            if let StmtKind::Return(value) = &f.body[0].kind {
+                assert!(value.is_none(), "Bare return should have no value");
+            } else {
+                panic!("Expected Return stmt, got {:?}", f.body[0].kind);
+            }
+        }
+    }
+
+    #[test]
     fn parse_func_type_param() {
         // func(T) -> R as a parameter type
         let result = parse("extend Foo {\n    public func read(self, f: func(T) -> R) -> Option<R> { }\n}");

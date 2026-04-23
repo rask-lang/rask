@@ -753,6 +753,17 @@ impl Parser {
         let ret_ty = if self.match_token(&TokenKind::Arrow) {
             Some(self.parse_type_name()?)
         } else {
+            // Elided return type: `func foo()` means returns void.
+            // `or E` must attach to an explicit return type — a bare `or` here
+            // would mean "void or E", which the spec forbids (type.errors, SYNTAX.md).
+            if self.check(&TokenKind::Or) {
+                let or_span = self.current().span;
+                return Err(ParseError {
+                    span: or_span,
+                    message: "`or` must follow an explicit return type".to_string(),
+                    hint: Some("write `-> void or E` (or pick the concrete success type)".to_string()),
+                });
+            }
             None
         };
 
