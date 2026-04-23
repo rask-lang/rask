@@ -63,6 +63,7 @@ impl TypeTable {
         self.builtins.insert("char".to_string(), Type::Char);
         self.builtins.insert("string".to_string(), Type::String);
         self.builtins.insert("()".to_string(), Type::Unit);
+        self.builtins.insert("void".to_string(), Type::Unit);
         self.builtins.insert("int".to_string(), Type::I64);
         self.builtins.insert("uint".to_string(), Type::U64);
         self.builtins.insert("isize".to_string(), Type::I64);

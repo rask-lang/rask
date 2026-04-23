@@ -81,7 +81,7 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
     }
 
     match s {
-        "" | "()" => Type::Unit,
+        "" | "()" | "void" => Type::Unit,
         "bool" => Type::Bool,
         "string" => Type::String,
         "char" => Type::Char,

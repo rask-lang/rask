@@ -345,7 +345,7 @@ FIX: Use an integer key or newtype wrapper with defined equality:
 | Structural mutation in mutable loop | MI1 | Compile error |
 | `break value` for !Copy | A4 | Requires `.clone()` |
 | Infinite range (`0..`) | — | Works (lazy) |
-| Zero-sized types (`Vec<()>`) | — | Yields values (all identical) |
+| Zero-sized types (`Vec<void>`) | — | Yields values (all identical) |
 | `Map<f32, V>` or `Map<f64, V>` | K2 | Compile-time warning |
 
 ---

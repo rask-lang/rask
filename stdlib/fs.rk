@@ -84,7 +84,7 @@ extend fs {
     }
 
     /// Write a string to a file, replacing its contents.
-    public func write_file(path: string, content: string) -> () or IoError {
+    public func write_file(path: string, content: string) -> void or IoError {
         const p = unsafe path.as_c_str()
         const f = unsafe fopen(p, "wb\0".as_ptr())
         if unsafe f.is_null() {
@@ -98,7 +98,7 @@ extend fs {
     }
 
     /// Write bytes to a file, replacing its contents.
-    public func write_bytes(path: string, data: Vec<u8>) -> () or IoError { }
+    public func write_bytes(path: string, data: Vec<u8>) -> void or IoError { }
 
     /// Check if a file or directory exists at the path.
     public func exists(path: string) -> bool {
@@ -156,7 +156,7 @@ extend fs {
     }
 
     /// Rename a file or directory.
-    public func rename(from: string, to: string) -> () or IoError {
+    public func rename(from: string, to: string) -> void or IoError {
         const r = unsafe rask_libc_rename(from.as_c_str(), to.as_c_str())
         if r != 0 {
             return IoError.Other("could not rename")
@@ -165,7 +165,7 @@ extend fs {
     }
 
     /// Remove a file.
-    public func remove(path: string) -> () or IoError {
+    public func remove(path: string) -> void or IoError {
         const r = unsafe rask_libc_remove(path.as_c_str())
         if r != 0 {
             return IoError.Other("could not remove")
@@ -174,7 +174,7 @@ extend fs {
     }
 
     /// Create a directory.
-    public func create_dir(path: string) -> () or IoError {
+    public func create_dir(path: string) -> void or IoError {
         const r = unsafe rask_libc_mkdir(path.as_c_str(), 493)
         if r != 0 {
             return IoError.Other("could not create directory")
@@ -183,10 +183,10 @@ extend fs {
     }
 
     /// Create a directory and all parent directories.
-    public func create_dir_all(path: string) -> () or IoError { }
+    public func create_dir_all(path: string) -> void or IoError { }
 
     /// Append a string to a file.
-    public func append_file(path: string, content: string) -> () or IoError {
+    public func append_file(path: string, content: string) -> void or IoError {
         const p = unsafe path.as_c_str()
         const f = unsafe fopen(p, "ab\0".as_ptr())
         if unsafe f.is_null() {

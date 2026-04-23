@@ -201,7 +201,7 @@ const name = with pool[h] as entity { entity.name }
 with pool[h] as e: e.health -= 10
 
 // return/try/break work naturally
-func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
+func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
     with pool[h] as entity {
         entity.strength += 10
         entity.defense += 5
@@ -544,7 +544,7 @@ func update_combat(pool: Pool<Entity>) {
 ### Multi-Statement Mutation
 <!-- test: parse -->
 ```rask
-func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
+func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
     with pool[h] as entity {
         entity.strength += 10
         entity.defense += 5

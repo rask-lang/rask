@@ -133,7 +133,7 @@ export internal.lexer.Lexer
 
 | Rule | Description |
 |------|-------------|
-| **IN1: init function** | `init() -> () or Error { }` runs once before main |
+| **IN1: init function** | `init() -> void or Error { }` runs once before main |
 | **IN2: One per file** | At most one `init()` per file |
 | **IN3: Parallel topo sort** | Intra-package init order: parallel topological sort of file import DAG |
 | **IN4: Deps first** | Inter-package: dependencies fully initialize before dependents |

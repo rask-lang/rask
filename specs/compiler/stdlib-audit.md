@@ -190,14 +190,14 @@ Current interpreter returns Rust `Result<Value, RuntimeError>` but doesn't wrap 
 ### Growth Operations
 
 Per spec (C2), default growth operations panic on failure:
-- `vec.push(x)` → `()` (panics on OOM/full)
+- `vec.push(x)` → `void` (panics on OOM/full)
 - `map.insert(k, v)` → `V?` (panics on OOM/full)
-- `vec.reserve(n)` → `()` (panics on OOM)
+- `vec.reserve(n)` → `void` (panics on OOM)
 
 Fallible `try_` variants return an error union:
-- `vec.try_push(x)` → `() or PushError<T>`
+- `vec.try_push(x)` → `void or PushError<T>`
 - `map.try_insert(k, v)` → `V? or InsertError<V>`
-- `vec.try_reserve(n)` → `() or AllocError`
+- `vec.try_reserve(n)` → `void or AllocError`
 
 Current interpreter matches: panics on allocation failure (Rust default), `try_push` wraps in error union.
 

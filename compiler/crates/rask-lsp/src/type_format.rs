@@ -15,7 +15,7 @@ impl<'a> TypeFormatter<'a> {
 
     pub fn format(&self, ty: &Type) -> String {
         match ty {
-            Type::Unit => "()".to_string(),
+            Type::Unit => "void".to_string(),
             Type::Never => "!".to_string(),
             Type::Bool => "bool".to_string(),
             Type::I8 => "i8".to_string(),

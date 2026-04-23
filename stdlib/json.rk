@@ -119,7 +119,7 @@ extend JsonParser {
         }
     }
 
-    func expect(mutate self, expected: u8) -> () or JsonError {
+    func expect(mutate self, expected: u8) -> void or JsonError {
         self.skip_ws()
         if self.pos >= self.len {
             return JsonError.ParseError("unexpected end of input")

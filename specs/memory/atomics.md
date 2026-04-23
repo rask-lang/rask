@@ -93,7 +93,7 @@ const flag = AtomicBool.default()  // false
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `load(order)` | `self, Ordering -> T` | Atomically read the value |
-| `store(v, order)` | `self, T, Ordering -> ()` | Atomically write the value |
+| `store(v, order)` | `self, T, Ordering -> void` | Atomically write the value |
 | `swap(v, order)` | `self, T, Ordering -> T` | Atomically replace, return old value |
 
 `store` takes `self` (not `mutate self`) because atomics use interior mutability (AT4).

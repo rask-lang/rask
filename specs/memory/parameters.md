@@ -87,7 +87,7 @@ extend File {
         // reads from self (mutates internal position)
     }
 
-    func close(take self) -> () or Error {
+    func close(take self) -> void or Error {
         // closes and invalidates self
     }
 }

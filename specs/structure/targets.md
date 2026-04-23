@@ -33,7 +33,7 @@ Package role is determined by presence of `func main()`. No manifest flags, no d
 | Signature | When to Use |
 |-----------|-------------|
 | `public func main()` | Sync program, infallible |
-| `public func main() -> () or Error` | Sync program, can fail |
+| `public func main() -> void or Error` | Sync program, can fail |
 | `public func main(args: Args)` | Needs CLI arguments |
 
 ## CLI Arguments

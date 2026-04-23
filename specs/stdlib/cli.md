@@ -21,7 +21,7 @@ Two-level API: quick ad-hoc parsing for scripts, builder API for tools needing h
 ```rask
 import cli
 
-func main() -> () or string {
+func main() -> void or string {
     const args = cli.parse()
     const verbose = args.flag("verbose", "v")
     const output = args.option_or("output", "o", "out.txt")
@@ -47,7 +47,7 @@ func main() -> () or string {
 ```rask
 import cli
 
-func main() -> () or CliError {
+func main() -> void or CliError {
     const args = try cli.Parser.new("mygrep")
         .version("1.0.0")
         .description("Search for patterns in files")

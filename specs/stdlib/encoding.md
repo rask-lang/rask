@@ -73,7 +73,7 @@ struct InternalState {
 
 <!-- test: skip -->
 ```rask
-func send_json<T: Encode>(endpoint: string, value: T) -> () or HttpError {
+func send_json<T: Encode>(endpoint: string, value: T) -> void or HttpError {
     const body = json.encode(value)
     return http.post(endpoint, body)
 }
@@ -221,7 +221,7 @@ Format libraries use `comptime for` + `reflect` to implement encoding genericall
 import std.reflect
 
 // Type dispatch — monomorphizes per concrete type
-func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> () or JsonError {
+func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> void or JsonError {
     comptime if T == bool {
         return w.write_bool(value)
     } else if T == string {
@@ -446,7 +446,7 @@ FIX: Add @default with an explicit value:
 ```rask
 import std.reflect
 
-func encode_value<T: Encode>(value: T, w: mutate TomlWriter, key: string?) -> () or TomlError {
+func encode_value<T: Encode>(value: T, w: mutate TomlWriter, key: string?) -> void or TomlError {
     comptime if T == bool {
         return w.write_bool(key, value)
     } else if T == string {
@@ -485,7 +485,7 @@ struct Config {
     public cached_at: i64
 }
 
-func main() -> () or Error {
+func main() -> void or Error {
     // Encode
     const config = Config { host: "localhost", port: 3000, cached_at: 0 }
     const text = json.encode(config)

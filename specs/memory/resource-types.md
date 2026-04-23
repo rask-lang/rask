@@ -47,7 +47,7 @@ A resource is consumed by calling a method with `take self`, passing to a `take`
 struct File { ... }
 
 extend File {
-    func close(take self) -> () or Error {
+    func close(take self) -> void or Error {
         // ... close logic ...
     }
 
@@ -59,7 +59,7 @@ extend File {
 
 <!-- test: parse -->
 ```rask
-func process() -> () or Error {
+func process() -> void or Error {
     const file = try File.open("data.txt")
     const data = try file.read_all()
     try process_data(data)
@@ -85,12 +85,12 @@ extend DbConn {
         return "data"
     }
 
-    func close(take self) -> () or Error {
+    func close(take self) -> void or Error {
         return
     }
 }
 
-func bad() -> () or Error {
+func bad() -> void or Error {
     const conn = try DbConn.open("data.txt")
     const data = try conn.read_all()
     return
@@ -111,12 +111,12 @@ extend DbConn {
         return DbConn { handle: 1 }
     }
 
-    func close(take self) -> () or Error {
+    func close(take self) -> void or Error {
         return
     }
 }
 
-func also_bad() -> () or Error {
+func also_bad() -> void or Error {
     const conn = try DbConn.open("data.txt")
     try conn.close()
     try conn.close()    // ERROR: conn already consumed
@@ -136,7 +136,7 @@ func also_bad() -> () or Error {
 
 <!-- test: parse -->
 ```rask
-func process() -> () or Error {
+func process() -> void or Error {
     const file = try File.open("data.txt")
     ensure file.close()        // Consumption committed
 
@@ -155,7 +155,7 @@ func process() -> () or Error {
 
 <!-- test: parse -->
 ```rask
-func risky() -> () or Error {
+func risky() -> void or Error {
     const file = try File.open("data.txt")
     ensure file.close()        // May fail
 
@@ -249,8 +249,8 @@ for file in files.take_all() {
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `take_all()` | `Pool<T> -> Iterator<T>` | Take all elements for consumption |
-| `take_all_with(f)` | `func(T) -> ()` | Take all and apply consuming function |
-| `take_all_with_result(f)` | `func(T) -> () or E -> () or E` | Take all with fallible consumer |
+| `take_all_with(f)` | `func(T) -> void` | Take all and apply consuming function |
+| `take_all_with_result(f)` | `func(T) -> void or E -> void or E` | Take all with fallible consumer |
 
 ## Error Messages
 
@@ -303,7 +303,7 @@ Resources must be explicitly consumed (use take_all() before scope ends).
 **Conditional consumption:**
 <!-- test: parse -->
 ```rask
-func conditional(file: File, keep_open: bool) -> () or Error {
+func conditional(file: File, keep_open: bool) -> void or Error {
     if keep_open {
         GLOBAL_FILES.store(file)  // Consumes by transfer
     } else {
@@ -333,7 +333,7 @@ func process_file(path: string) -> Data or Error {
 ### Database Transaction
 <!-- test: parse -->
 ```rask
-func update_user(db: Database, user_id: u64) -> () or Error {
+func update_user(db: Database, user_id: u64) -> void or Error {
     const txn = try db.begin_transaction()
     ensure txn.rollback()     // Default: rollback on error
 
@@ -350,7 +350,7 @@ func update_user(db: Database, user_id: u64) -> () or Error {
 ### Connection Pool
 <!-- test: parse -->
 ```rask
-func handle_connections(pool: Pool<Connection>) -> () or Error {
+func handle_connections(pool: Pool<Connection>) -> void or Error {
     // Check which connections should close
     const to_close: Vec<Handle<Connection>> = Vec.new()
     for h in pool.handles().collect<Vec<_>>() {
@@ -438,7 +438,7 @@ try read_config(file).map_err(|e| e.close_and_convert())
 **Compound resources with ensure:**
 <!-- test: parse -->
 ```rask
-func process_files(paths: Vec<string>) -> () or Error {
+func process_files(paths: Vec<string>) -> void or Error {
     const files = Vec.new()
 
     for path in paths {

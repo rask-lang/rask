@@ -80,7 +80,7 @@ ensure b.close()          // registered 2nd → runs FIRST ✓
 
 <!-- test: parse -->
 ```rask
-func process() -> () or Error {
+func process() -> void or Error {
     const file = try open("data.txt")   // file is linear
     ensure file.close()              // EN3: file WILL be consumed
 
@@ -99,7 +99,7 @@ func process() -> () or Error {
 
 <!-- test: skip -->
 ```rask
-func process(a: File, b: File) -> () or Error {
+func process(a: File, b: File) -> void or Error {
     ensure a.close()
 
     const data = try some_op()     // ✅ Safe: a is ensured (L1)
@@ -135,7 +135,7 @@ ensure file.close() else |e| { try fallible() }   // ❌ Error: ER3
 
 <!-- test: skip -->
 ```rask
-func process() -> () or Error {
+func process() -> void or Error {
     const a = try open("a.txt")
     ensure a.close() else |e| log("a close failed: {e}")
 
@@ -161,7 +161,7 @@ func process() -> () or Error {
 <!-- test: parse -->
 ```rask
 // When cleanup errors actually matter (rare), don't use ensure:
-func write_important(data: Data) -> () or Error {
+func write_important(data: Data) -> void or Error {
     const file = try create("important.txt")
     try file.write(data)
     try file.close()                 // Explicit: propagate close error
@@ -175,7 +175,7 @@ func write_important(data: Data) -> () or Error {
 
 <!-- test: parse -->
 ```rask
-func process() -> () or Error {
+func process() -> void or Error {
     const config = try load_config()
 
     {
@@ -252,7 +252,7 @@ return
 
 <!-- test: parse -->
 ```rask
-func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> () or Error {
+func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> void or Error {
     const tx = try db.begin()
     ensure tx.rollback()      // Rollback if we don't commit
 
@@ -276,7 +276,7 @@ Cleaning up pools of linear resources:
 
 <!-- test: parse -->
 ```rask
-func process_many_files(paths: Vec<string>) -> () or Error {
+func process_many_files(paths: Vec<string>) -> void or Error {
     mut files: Pool<File> = Pool.new()
     ensure files.take_all_with(|f| { f.close(); })
 
@@ -296,7 +296,7 @@ Errors during cleanup (e.g., `close()` fails) are ignored by default (ER1). If c
 
 <!-- test: parse -->
 ```rask
-func process_many_files_careful(paths: Vec<string>) -> () or Error {
+func process_many_files_careful(paths: Vec<string>) -> void or Error {
     mut files: Pool<File> = Pool.new()
 
     for path in paths {
@@ -423,7 +423,7 @@ Name choice: "ensure" reads naturally—"ensure this happens before we leave thi
 
 <!-- test: parse -->
 ```rask
-func copy_file(src: string, dst: string) -> () or Error {
+func copy_file(src: string, dst: string) -> void or Error {
     const input = try open(src)
     ensure input.close()
 
@@ -442,7 +442,7 @@ Both files guaranteed to close on any exit path.
 
 <!-- test: parse -->
 ```rask
-func modify_database(db: Database) -> () or Error {
+func modify_database(db: Database) -> void or Error {
     const tx = try db.begin()
     ensure tx.rollback()    // Ensures unhappy path
 
@@ -458,7 +458,7 @@ func modify_database(db: Database) -> () or Error {
 
 <!-- test: skip -->
 ```rask
-func process_many(paths: Vec<string>) -> () or Error {
+func process_many(paths: Vec<string>) -> void or Error {
     mut resources: Pool<Resource> = Pool.new()
     ensure resources.take_all_with(|r| { r.cleanup(); })
 

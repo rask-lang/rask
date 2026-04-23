@@ -42,7 +42,7 @@ button.on_click(|event, state| {
 |--------|-----------|-------------|
 | `Cell.new(value)` | `T -> Cell<T>` | Create cell with initial value |
 | `cell.get()` | `Cell<T> -> T` | Copy out the inner value (CE6, Copy types only) |
-| `cell.set(value)` | `(Cell<T>, T) -> ()` | Replace inner value (CE6) |
+| `cell.set(value)` | `(Cell<T>, T) -> void` | Replace inner value (CE6) |
 | `cell.replace(value)` | `T -> T` | Swap in new value, return old |
 | `cell.into_inner()` | `take Cell<T> -> T` | Consume cell, return value |
 

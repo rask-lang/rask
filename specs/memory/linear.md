@@ -74,7 +74,7 @@ If the value is consumed explicitly before scope exit, any registered `ensure` i
 
 <!-- test: parse -->
 ```rask
-func transfer(db: Database) -> () or Error {
+func transfer(db: Database) -> void or Error {
     const tx = try db.begin()
     ensure tx.rollback()     // Default: rollback on any exit
 

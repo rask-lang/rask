@@ -81,7 +81,7 @@ func scratch() {
 
 @deny(unused_result)
 extend Server {
-    func start(take self) -> () or Error {
+    func start(take self) -> void or Error {
         try self.listener.bind(self.addr)
         return
     }
@@ -137,7 +137,7 @@ FIX: prefix with `_` if intentional: `const _count = data.len()`
 ```
 
 ```
-WARNING [tool.warnings/W2]: unused result of type `() or IoError`
+WARNING [tool.warnings/W2]: unused result of type `void or IoError`
    |
 2  |     file.write(data)
    |     ^^^^^^^^^^^^^^^^ this `T or E` result is discarded

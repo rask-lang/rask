@@ -28,12 +28,12 @@ extend File with Reader {
 
 extend File with Writer {
     func write(self, data: []u8) -> usize or IoError
-    func write_all(self, data: []u8) -> () or IoError
-    func flush(self) -> () or IoError
+    func write_all(self, data: []u8) -> void or IoError
+    func flush(self) -> void or IoError
 }
 
 extend File {
-    func close(take self) -> () or IoError
+    func close(take self) -> void or IoError
     func read_text(self) -> string or IoError
     func lines(self) -> Vec<string> or IoError
     func metadata(self) -> Metadata or IoError
@@ -51,9 +51,9 @@ extend File {
 | `fs.read_file` | `(path: string) -> string or IoError` |
 | `fs.read_bytes` | `(path: string) -> Vec<u8> or IoError` |
 | `fs.read_lines` | `(path: string) -> Vec<string> or IoError` |
-| `fs.write_file` | `(path: string, content: string) -> () or IoError` |
-| `fs.write_bytes` | `(path: string, data: Vec<u8>) -> () or IoError` |
-| `fs.append_file` | `(path: string, content: string) -> () or IoError` |
+| `fs.write_file` | `(path: string, content: string) -> void or IoError` |
+| `fs.write_bytes` | `(path: string, data: Vec<u8>) -> void or IoError` |
+| `fs.append_file` | `(path: string, content: string) -> void or IoError` |
 | `fs.exists` | `(path: string) -> bool` |
 
 <!-- test: parse -->
@@ -108,12 +108,12 @@ ensure file.close()
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `fs.read_dir` | `(path: string) -> Vec<DirEntry> or IoError` | List directory contents |
-| `fs.create_dir` | `(path: string) -> () or IoError` | Create single directory |
-| `fs.create_dir_all` | `(path: string) -> () or IoError` | Create directory tree (mkdir -p) |
-| `fs.remove` | `(path: string) -> () or IoError` | Remove file |
-| `fs.remove_dir` | `(path: string) -> () or IoError` | Remove empty directory |
-| `fs.remove_dir_all` | `(path: string) -> () or IoError` | Remove directory tree recursively |
-| `fs.rename` | `(from: string, to: string) -> () or IoError` | Rename/move file or directory |
+| `fs.create_dir` | `(path: string) -> void or IoError` | Create single directory |
+| `fs.create_dir_all` | `(path: string) -> void or IoError` | Create directory tree (mkdir -p) |
+| `fs.remove` | `(path: string) -> void or IoError` | Remove file |
+| `fs.remove_dir` | `(path: string) -> void or IoError` | Remove empty directory |
+| `fs.remove_dir_all` | `(path: string) -> void or IoError` | Remove directory tree recursively |
+| `fs.rename` | `(from: string, to: string) -> void or IoError` | Rename/move file or directory |
 | `fs.copy` | `(from: string, to: string) -> u64 or IoError` | Copy file, returns bytes copied |
 | `fs.canonicalize` | `(path: string) -> string or IoError` | Resolve to absolute path |
 | `fs.metadata` | `(path: string) -> Metadata or IoError` | Get metadata without opening |

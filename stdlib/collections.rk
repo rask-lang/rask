@@ -35,7 +35,7 @@ extend Vec<T> {
     public func push(mutate self, value: T) { }
 
     /// Push a value onto the end. Returns error if bounded and full, or on OOM.
-    public func try_push(mutate self, value: T) -> () or PushError<T> { }
+    public func try_push(mutate self, value: T) -> void or PushError<T> { }
 
     /// Remove and return the last element.
     public func pop(mutate self) -> Option<T> { }
@@ -53,7 +53,7 @@ extend Vec<T> {
     public func reserve(mutate self, additional: usize) { }
 
     /// Reserve space for at least `additional` more elements. Returns error on OOM.
-    public func try_reserve(mutate self, additional: usize) -> () or AllocError { }
+    public func try_reserve(mutate self, additional: usize) -> void or AllocError { }
 
     /// Get element at index (borrows).
     public func get(self, index: i64) -> Option<T> { }

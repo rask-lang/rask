@@ -111,7 +111,7 @@ extend Process {
     func kill_and_wait(take self) -> Output or IoError
     func try_wait(self) -> Output? or IoError
     func id(self) -> u32
-    func write_stdin(self, data: string) -> () or IoError
+    func write_stdin(self, data: string) -> void or IoError
     func read_stdout(self) -> string or IoError
 }
 ```
@@ -178,7 +178,7 @@ cleanup()
 import os
 
 // Server with graceful shutdown
-func main() -> () or Error {
+func main() -> void or Error {
     using Multitasking {
         const signals = try os.on_signal([Signal.Interrupt, Signal.Terminate])
         const server = try HttpServer.listen("0.0.0.0:8080")

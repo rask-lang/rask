@@ -285,14 +285,14 @@ match file_result {
 
 ```rask
 // ❌ INVALID: file2 may leak on early return
-func process(file1: File, file2: File) -> () or Error {
+func process(file1: File, file2: File) -> void or Error {
     const data = try file1.read()  // file2 not consumed!
     try file2.close()
 }
 // Error: "linear resource `file2` may leak on early return at `try`"
 
 // ✅ VALID: all linear resources resolved before `try`
-func process(file1: File, file2: File) -> () or Error {
+func process(file1: File, file2: File) -> void or Error {
     const result1 = file1.read()
     const result2 = file2.close()
     const data = try result1
@@ -302,7 +302,7 @@ func process(file1: File, file2: File) -> () or Error {
 
 Alternative: use `ensure` for guaranteed cleanup:
 ```rask
-func process(file1: File, file2: File) -> () or Error {
+func process(file1: File, file2: File) -> void or Error {
     ensure file1.close()  // Guaranteed at scope exit
     ensure file2.close()  // Runs on any exit
     const data = try file1.read()  // ✅ Safe: ensure registered
@@ -528,7 +528,7 @@ const value = infallible()!  // Cannot panic (compiler knows)
 | `.variants()` on enum with payloads | E8 | Compile error |
 | `.variants()` on empty enum | E7,E11 | Returns empty `Vec` |
 | Single-variant enum | E2 | Valid, discriminant may be optimized away |
-| Zero-sized payload | E1 | `enum Foo { A(()), B }` — unit optimized to `{ A, B }` |
+| Zero-sized payload | E1 | `enum Foo { A(void), B }` — void optimized to `{ A, B }` |
 | >65536 variants | E3 | Compile error: "enum exceeds variant limit" |
 | Nested linear | PM6 | `File or FileError(File)` — both arms bind linear, both must consume |
 | Enum in Vec | E5 | Allowed if non-linear |

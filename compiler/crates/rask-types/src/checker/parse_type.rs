@@ -12,7 +12,7 @@ use crate::types::{GenericArg, Type};
 pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     let s = s.trim();
 
-    if s.is_empty() || s == "()" {
+    if s.is_empty() || s == "()" || s == "void" {
         return Ok(Type::Unit);
     }
 

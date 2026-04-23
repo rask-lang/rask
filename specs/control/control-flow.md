@@ -646,7 +646,7 @@ if state is Connected(sock) && sock.is_ready() {
 
 **Guard pattern for early exit:**
 ```rask
-func process_file(path: string) -> () or Error {
+func process_file(path: string) -> void or Error {
     const file = try open(path)
     ensure file.close()
 

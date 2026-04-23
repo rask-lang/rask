@@ -753,6 +753,17 @@ impl Parser {
         let ret_ty = if self.match_token(&TokenKind::Arrow) {
             Some(self.parse_type_name()?)
         } else {
+            // Elided return type: `func foo()` means returns void.
+            // `or E` must attach to an explicit return type — a bare `or` here
+            // would mean "void or E", which the spec forbids (type.errors, SYNTAX.md).
+            if self.check(&TokenKind::Or) {
+                let or_span = self.current().span;
+                return Err(ParseError {
+                    span: or_span,
+                    message: "`or` must follow an explicit return type".to_string(),
+                    hint: Some("write `-> void or E` (or pick the concrete success type)".to_string()),
+                });
+            }
             None
         };
 
@@ -968,30 +979,48 @@ impl Parser {
         }
 
         if self.check(&TokenKind::LParen) {
+            let lparen_span = self.current().span;
             self.advance();
             if self.check(&TokenKind::RParen) {
-                self.advance();
-                return Ok("()".to_string());
+                // type.primitives/P6: () is no longer the unit type — use `void`.
+                let rparen_span = self.current().span;
+                let span = Span::with_file(lparen_span.start, rparen_span.end, lparen_span.file_id);
+                return Err(ParseError {
+                    span,
+                    message: "`()` is not a type".to_string(),
+                    hint: Some("use `void` for the zero-sized type".to_string()),
+                });
             }
             let first_ty = self.parse_type_name()?;
             if self.match_token(&TokenKind::Comma) {
-                // Tuple type: (T,) or (T, U, ...)
+                // Tuple type: (T, U, ...) — arity >= 2 (type.tuples/TU1)
                 let mut types = vec![first_ty];
-                // TU4: trailing comma before `)` — allows single-element tuples like (T,)
                 while !self.check(&TokenKind::RParen) && !self.at_end() {
                     types.push(self.parse_type_name()?);
                     if !self.match_token(&TokenKind::Comma) { break; }
                 }
+                let rparen_span = self.current().span;
                 self.expect(&TokenKind::RParen)?;
                 if types.len() == 1 {
-                    // TU4: single-element tuple — trailing comma distinguishes from parens
-                    return Ok(format!("({},)", types[0]));
+                    // type.tuples/TU3: 1-tuples are not a thing
+                    let span = Span::with_file(lparen_span.start, rparen_span.end, lparen_span.file_id);
+                    return Err(ParseError {
+                        span,
+                        message: "1-tuples are not supported".to_string(),
+                        hint: Some(format!("tuples have arity >= 2; use `{}` directly", types[0])),
+                    });
                 }
                 return Ok(format!("({})", types.join(", ")));
             }
             // Parenthesized type: (T) — not a tuple
             self.expect(&TokenKind::RParen)?;
             return Ok(first_ty);
+        }
+
+        // `void` keyword: zero-sized unit type (type.primitives/P6)
+        if self.check(&TokenKind::Void) {
+            self.advance();
+            return Ok("()".to_string());
         }
 
         if self.check(&TokenKind::LBracket) {

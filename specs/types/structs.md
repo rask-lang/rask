@@ -291,7 +291,7 @@ public struct User {
 }
 
 extend User {
-    func validate(self) -> () or Error {
+    func validate(self) -> void or Error {
         if self.email.contains("@") { return }
         return Error.invalid("email")
     }
@@ -336,7 +336,7 @@ extend FileHandle {
         return FileHandle { fd }
     }
 
-    func close(take self) -> () or Error {
+    func close(take self) -> void or Error {
         unsafe { libc.close(self.fd) }
         return
     }

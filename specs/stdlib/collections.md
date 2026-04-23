@@ -35,12 +35,12 @@ Growth operations panic on failure (C2). Fallible `try_` variants return `T or E
 
 | Operation | Returns | On failure |
 |-----------|---------|------------|
-| `vec.push(x)` | `()` | Panics |
-| `vec.try_push(x)` | `() or PushError<T>` | Returns `PushError.Full(T)` or `PushError.Alloc(T)` |
-| `vec.extend(iter)` | `()` | Panics |
-| `vec.try_extend(iter)` | `() or ExtendError<T>` | Returns first rejected item |
-| `vec.reserve(n)` | `()` | Panics |
-| `vec.try_reserve(n)` | `() or AllocError` | Returns error |
+| `vec.push(x)` | `void` | Panics |
+| `vec.try_push(x)` | `void or PushError<T>` | Returns `PushError.Full(T)` or `PushError.Alloc(T)` |
+| `vec.extend(iter)` | `void` | Panics |
+| `vec.try_extend(iter)` | `void or ExtendError<T>` | Returns first rejected item |
+| `vec.reserve(n)` | `void` | Panics |
+| `vec.try_reserve(n)` | `void or AllocError` | Returns error |
 | `map.insert(k, v)` | `V?` | Panics |
 | `map.try_insert(k, v)` | `V? or InsertError<V>` | Returns `InsertError.Full(V)` or `InsertError.Alloc(V)` |
 
@@ -192,9 +192,9 @@ for item in vec.take_all() { }   // item: T (consuming iteration)
 
 | Method | Signature | Semantics |
 |--------|-----------|-----------|
-| `vec.sort()` | `() -> ()` | Stable sort, `T: Comparable` |
-| `vec.sort_by(cmp)` | `(\|T, T\| -> Ordering) -> ()` | Stable sort with custom comparator |
-| `vec.sort_by_key(f)` | `(\|T\| -> K) -> ()` where `K: Comparable` | Stable sort by extracted key |
+| `vec.sort()` | `() -> void` | Stable sort, `T: Comparable` |
+| `vec.sort_by(cmp)` | `(\|T, T\| -> Ordering) -> void` | Stable sort with custom comparator |
+| `vec.sort_by_key(f)` | `(\|T\| -> K) -> void` where `K: Comparable` | Stable sort by extracted key |
 
 <!-- test: skip -->
 ```rask
@@ -386,7 +386,7 @@ FIX: Use try_push to handle capacity limits:
 | `vec.insert(n, x)` where `n > len()` | V4 | Panic (bounds check) |
 | `vec.remove(n)` where `n >= len()` | V5 | Panic (bounds check) |
 | `with vec[i] as e1, vec[i] as e2` | D1 | Panic (duplicate index) |
-| ZST in `Vec<()>` | — | `len()` tracks count, no storage allocated |
+| ZST in `Vec<void>` | — | `len()` tracks count, no storage allocated |
 | `Vec<LinearResource>` | C4 | Compile error |
 | `Map<f32, V>` or `Map<f64, V>` | K1 | Compile-time warning (NaN breaks lookups) |
 | Panic inside `with` | — | Collection left in valid state |

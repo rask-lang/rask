@@ -461,7 +461,7 @@ const large = try read_packet<4096>(socket2)
 const DEBUG_MODE: bool = comptime cfg.debug
 const LOGGING_ENABLED: bool = comptime cfg.features.contains("logging")
 
-func process(data: []u8) -> () or Error {
+func process(data: []u8) -> void or Error {
     comptime if LOGGING_ENABLED {
         log.debug("Processing {} bytes", data.len)
     }

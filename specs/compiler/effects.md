@@ -155,7 +155,7 @@ func process(input: string) -> Result or Error {        // ghost: [pure]
     return try parse(input)
 }
 
-func run_server() -> () or Error {                      // ghost: [io, async]
+func run_server() -> void or Error {                      // ghost: [io, async]
     using Multitasking {
         const listener = try TcpListener.bind("0.0.0.0:8080")
         loop {

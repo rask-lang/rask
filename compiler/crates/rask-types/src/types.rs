@@ -161,7 +161,7 @@ impl fmt::Display for GenericArg {
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Type::Unit => write!(f, "()"),
+            Type::Unit => write!(f, "void"),
             Type::Bool => write!(f, "bool"),
             Type::I8 => write!(f, "i8"),
             Type::I16 => write!(f, "i16"),
