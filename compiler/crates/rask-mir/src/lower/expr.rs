@@ -2593,8 +2593,8 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Closure — synthesize a separate MIR function and emit ClosureCreate
-            ExprKind::Closure { params, ret_ty, body } => {
-                self.lower_closure(params, ret_ty.as_deref(), body)
+            ExprKind::Closure { params, ret_ty, body, is_own } => {
+                self.lower_closure(params, ret_ty.as_deref(), body, *is_own)
             }
 
             // Cast

@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// own closures: explicit move-capture, self-contained, can escape scope.
+
+func apply(f: |i32| -> i32, x: i32) -> i32 {
+    return f(x)
+}
+
+func make_adder(n: i32) -> |i32| -> i32 {
+    return own |x: i32| -> i32 { return x + n }
+}
+
+func make_multiplier(factor: i32) -> |i32| -> i32 {
+    return own |x: i32| -> i32 { return x * factor }
+}
+
+test "own closure captures Copy value" {
+    const offset = 10
+    const add = own |x: i32| -> i32 { return x + offset }
+    assert add(5) == 15
+    assert add(0) == 10
+}
+
+test "own closure returned from function" {
+    const add3 = make_adder(3)
+    assert add3(7) == 10
+    assert add3(0) == 3
+
+    const times2 = make_multiplier(2)
+    assert times2(5) == 10
+    assert times2(3) == 6
+}
+
+test "own closure passed to function" {
+    const offset = 7
+    const f = own |x: i32| -> i32 { return x + offset }
+    assert apply(f, 3) == 10
+}
+
+test "own closure no params" {
+    const val = 42
+    const get = own || val
+    assert get() == 42
+}
+
+test "own and non-own closures same function type" {
+    const factor = 3
+    const owned_scale = own |x: i32| -> i32 { return x * factor }
+    const scoped_scale = |x: i32| -> i32 { return x * factor }
+    assert owned_scale(4) == 12
+    assert scoped_scale(4) == 12
+}
+
+func main() {}

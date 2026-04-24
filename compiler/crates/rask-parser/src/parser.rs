@@ -3150,11 +3150,29 @@ impl Parser {
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) }, span: self.span(start, end) })
             }
 
-            // `own` as prefix in non-call contexts (struct field inits).
-            // Call-site `own`/`mutate` are captured in parse_args().
+            // `own` as prefix: either an owned closure (`own |...| body`) or a
+            // struct-field / call-site mode marker (captured by parse_args()).
             TokenKind::Own => {
                 self.advance();
-                self.parse_expr_bp(Self::PREFIX_BP)
+                match self.current().kind {
+                    TokenKind::Pipe => self.parse_closure(true),
+                    TokenKind::PipePipe => {
+                        self.advance();
+                        let body = self.parse_closure_body()?;
+                        let end = body.span.end;
+                        Ok(Expr {
+                            id: self.next_id(),
+                            kind: ExprKind::Closure {
+                                params: vec![],
+                                ret_ty: None,
+                                body: Box::new(body),
+                                is_own: true,
+                            },
+                            span: self.span(start, end),
+                        })
+                    }
+                    _ => self.parse_expr_bp(Self::PREFIX_BP),
+                }
             }
 
             // `read` is reserved as a parameter mode keyword but has no syntactic
@@ -3183,12 +3201,12 @@ impl Parser {
                 let end = body.span.end;
                 Ok(Expr {
                     id: self.next_id(),
-                    kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(body) },
+                    kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(body), is_own: false },
                     span: self.span(start, end),
                 })
             }
 
-            TokenKind::Pipe => self.parse_closure(),
+            TokenKind::Pipe => self.parse_closure(false),
 
             TokenKind::If => self.parse_if_expr(),
 
@@ -3436,7 +3454,7 @@ impl Parser {
         Ok(Expr { id: self.next_id(), kind: ExprKind::Array(elements), span: self.span(start, end) })
     }
 
-    fn parse_closure(&mut self) -> Result<Expr, ParseError> {
+    fn parse_closure(&mut self, is_own: bool) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
         self.expect(&TokenKind::Pipe)?;
 
@@ -3480,7 +3498,7 @@ impl Parser {
 
         Ok(Expr {
             id: self.next_id(),
-            kind: ExprKind::Closure { params, ret_ty, body: Box::new(body) },
+            kind: ExprKind::Closure { params, ret_ty, body: Box::new(body), is_own },
             span: self.span(start, end),
         })
     }
