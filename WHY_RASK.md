@@ -244,6 +244,7 @@ In practice, this costs less than it sounds. Strings are Copy (16 bytes, refcoun
 What IS zero-cost in Rask:
 - `read`/`mutate` parameter modes — functions borrow without copying
 - `with` blocks — scoped mutable access to container internals, no copy
+- Arena scopes — allocate into a region, work zero-copy inside, copy results out at the boundary. Parsers, binary protocols, request handling
 - Iterator chains in a single expression — compiler inlines, no intermediate allocations
 - Monomorphization — generics compiled to specialized code, no vtable
 - Comptime — abstraction eliminated at compile time

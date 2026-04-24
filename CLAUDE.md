@@ -10,6 +10,8 @@ Choose simple over easy
 
 - **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
 
+- **Zero-copy work uses Arena scopes, not storable references.** Rask's model for zero-copy byte/binary work: allocate into an Arena via `using Arena.scoped(size) { ... }`, work with the data inside the scope (zero-copy, no generation checks, no unsafe), copy results out at the boundary. This is the same tradeoff as Rust's lifetime-bounded returns, expressed as "work inside scope, copy out at end." Don't suggest adding storable references, ByteBuffer types, or borrowed return values. The pieces already exist: Arena + `using` scopes + offset-based indexing. See `mem.alloc` spec.
+
 # Working relationship
 
 - No sycophancy.
