@@ -17,22 +17,22 @@ pub fn classify_call(callee: &str) -> Effects {
     if is_io_source(callee) {
         // Some IO sources are also Async (AS3: Async implies IO)
         if is_async_source(callee) {
-            return Effects { io: true, async_: true, grow: false, shrink: false };
+            return Effects { io: true, async_: true, grow: false, shrink: false, needs_runtime: false };
         }
-        return Effects { io: true, async_: false, grow: false, shrink: false };
+        return Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false };
     }
 
     // Async-only sources (also get IO via AS3)
     if is_async_source(callee) {
-        return Effects { io: true, async_: true, grow: false, shrink: false };
+        return Effects { io: true, async_: true, grow: false, shrink: false, needs_runtime: false };
     }
 
     // Pool structural mutation sources (EF1: split into Grow/Shrink)
     if is_grow_source(callee) {
-        return Effects { io: false, async_: false, grow: true, shrink: false };
+        return Effects { io: false, async_: false, grow: true, shrink: false, needs_runtime: false };
     }
     if is_shrink_source(callee) {
-        return Effects { io: false, async_: false, grow: false, shrink: true };
+        return Effects { io: false, async_: false, grow: false, shrink: true, needs_runtime: false };
     }
 
     Effects::default()

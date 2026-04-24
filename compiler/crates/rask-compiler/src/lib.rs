@@ -676,9 +676,17 @@ fn prefix_decl(decl: &Decl, pkg_name: &str) -> Decl {
 }
 
 fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {
-    Diagnostic::warning(&w.message)
-        .with_code(w.code)
-        .with_primary(w.span, format!("`{}` has IO effect", w.callee_name))
+    let diag = if w.is_error {
+        Diagnostic::error(&w.message)
+    } else {
+        Diagnostic::warning(&w.message)
+    };
+    let label = if w.is_error {
+        format!("`{}` reaches spawn here", w.callee_name)
+    } else {
+        format!("`{}` has IO effect", w.callee_name)
+    };
+    diag.with_code(w.code).with_primary(w.span, label)
 }
 
 fn frozen_to_diagnostic(d: &FrozenDiagnostic) -> Diagnostic {

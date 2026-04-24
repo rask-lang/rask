@@ -35,6 +35,10 @@ pub struct Effects {
     pub grow: bool,
     /// Shrink effect: pool.remove, pool.clear, pool.drain (EF1).
     pub shrink: bool,
+    /// CC2: this function needs an active `using Multitasking` runtime at the call site.
+    /// Set when the function (or something it calls without an internal block) reaches `spawn`.
+    /// NOT propagated via the regular call graph — uses unguarded-call edges only.
+    pub needs_runtime: bool,
 }
 
 impl Effects {
@@ -76,16 +80,18 @@ impl Effects {
 /// Per-function effect results keyed by qualified function name.
 pub type EffectMap = HashMap<String, Effects>;
 
-/// A warning from effect analysis (CW1, CW2).
+/// A warning or error from effect analysis (CW1, CW2, CC2).
 #[derive(Debug, Clone)]
 pub struct EffectWarning {
-    /// Spec rule: "comp.effects/CW1" or "comp.effects/CW2".
+    /// Spec rule: "comp.effects/CW1", "comp.effects/CW2", "conc.async/CC2".
     pub code: &'static str,
     pub message: String,
     /// Location of the problematic call site.
     pub span: Span,
     /// Name of the function that introduces the effect.
     pub callee_name: String,
+    /// True if this should be reported as an error (CC2), false for warnings (CW1, CW2).
+    pub is_error: bool,
 }
 
 /// Run effect inference on a set of declarations.
@@ -104,8 +110,8 @@ mod tests {
 
     #[test]
     fn effects_union() {
-        let mut a = Effects { io: true, async_: false, grow: false, shrink: false };
-        let b = Effects { io: false, async_: true, grow: true, shrink: true };
+        let mut a = Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false };
+        let b = Effects { io: false, async_: true, grow: true, shrink: true, needs_runtime: false };
         a.union(b);
         assert!(a.io);
         assert!(a.async_);

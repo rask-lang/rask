@@ -134,6 +134,23 @@ impl<'a> WarnContext<'a> {
                 let callee_name = extract_callee_name(func);
                 if let Some(ref name) = callee_name {
                     self.maybe_warn_io_call(name, expr.span, warnings);
+                    // CC2: calling a needs_runtime function outside any using Multitasking block
+                    if !self.in_multitasking {
+                        if let Some(callee_effects) = self.effects.get(name.as_str()) {
+                            if callee_effects.needs_runtime {
+                                warnings.push(EffectWarning {
+                                    code: "E0353",
+                                    message: format!(
+                                        "`{}` reaches `spawn` — wrap the call in `using Multitasking {{ }}`",
+                                        name
+                                    ),
+                                    span: expr.span,
+                                    callee_name: name.clone(),
+                                    is_error: true,
+                                });
+                            }
+                        }
+                    }
                 }
                 self.check_expr(func, warnings);
                 for arg in args {
@@ -325,6 +342,7 @@ impl<'a> WarnContext<'a> {
                 ),
                 span,
                 callee_name: callee.to_string(),
+                is_error: false,
             });
         }
 
@@ -338,6 +356,7 @@ impl<'a> WarnContext<'a> {
                 ),
                 span,
                 callee_name: callee.to_string(),
+                is_error: false,
             });
         }
     }
@@ -438,16 +457,16 @@ mod tests {
 
     fn effects_with_io(name: &str) -> EffectMap {
         let mut m = HashMap::new();
-        m.insert(name.into(), crate::Effects { io: true, async_: false, grow: false, shrink: false });
+        m.insert(name.into(), crate::Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false });
         m
     }
 
     /// Effect map that marks a function as IO AND marks the program as concurrent.
     fn effects_with_io_concurrent(name: &str) -> EffectMap {
         let mut m = HashMap::new();
-        m.insert(name.into(), crate::Effects { io: true, async_: false, grow: false, shrink: false });
+        m.insert(name.into(), crate::Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false });
         // Some other function uses concurrency, making the program concurrent.
-        m.insert("_concurrent_marker".into(), crate::Effects { io: false, async_: true, grow: false, shrink: false });
+        m.insert("_concurrent_marker".into(), crate::Effects { io: false, async_: true, grow: false, shrink: false, needs_runtime: false });
         m
     }
 

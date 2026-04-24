@@ -31,6 +31,10 @@ struct InferPass {
     effects: EffectMap,
     /// Call graph: caller → callees.
     call_graph: HashMap<FuncName, HashSet<FuncName>>,
+    /// CC2: functions that call spawn or unguarded-call something with needs_runtime.
+    direct_needs_runtime: HashSet<FuncName>,
+    /// CC2: callee names reached without an enclosing `using Multitasking {}` block.
+    unguarded_callees: HashMap<FuncName, HashSet<FuncName>>,
 }
 
 impl InferPass {
@@ -38,6 +42,8 @@ impl InferPass {
         Self {
             effects: HashMap::new(),
             call_graph: HashMap::new(),
+            direct_needs_runtime: HashSet::new(),
+            unguarded_callees: HashMap::new(),
         }
     }
 
@@ -50,6 +56,14 @@ impl InferPass {
 
         // Phase 3: Fixed-point propagation (FX2)
         self.propagate();
+
+        // Phase 4: CC2 — propagate needs_runtime via unguarded-call edges
+        let needs_runtime = self.propagate_needs_runtime();
+        for fname in needs_runtime {
+            if let Some(e) = self.effects.get_mut(&fname) {
+                e.needs_runtime = true;
+            }
+        }
     }
 
     // ── Phase 1: Collect ────────────────────────────────────────────
@@ -112,6 +126,41 @@ impl InferPass {
         if !callees.is_empty() {
             self.call_graph.insert(qname.to_string(), callees);
         }
+
+        // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
+        let mut unguarded = HashSet::new();
+        let direct_needs_rt = rt_scan_stmts(&f.body, 0, &mut unguarded);
+        if direct_needs_rt {
+            self.direct_needs_runtime.insert(qname.to_string());
+        }
+        if !unguarded.is_empty() {
+            self.unguarded_callees.insert(qname.to_string(), unguarded);
+        }
+    }
+
+    // ── Phase 4: CC2 needs_runtime propagation ──────────────────────
+
+    fn propagate_needs_runtime(&self) -> HashSet<FuncName> {
+        let mut needs_runtime = self.direct_needs_runtime.clone();
+        loop {
+            let mut changed = false;
+            for (caller, callees) in &self.unguarded_callees {
+                if needs_runtime.contains(caller) {
+                    continue;
+                }
+                for callee in callees {
+                    if needs_runtime.contains(callee) {
+                        needs_runtime.insert(caller.clone());
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        needs_runtime
     }
 
     // ── Phase 2: Extern declarations ────────────────────────────────
@@ -126,7 +175,7 @@ impl InferPass {
                 }
                 self.effects.insert(
                     e.name.clone(),
-                    Effects { io: true, async_: false, grow: false, shrink: false },
+                    Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false },
                 );
             }
         }
@@ -422,6 +471,192 @@ fn extract_callee_name(func: &Expr) -> Option<String> {
             }
         }
         _ => None,
+    }
+}
+
+// ── CC2: runtime-needs scanning ────────────────────────────────────────
+//
+// These functions walk the AST tracking `using Multitasking {}` nesting depth.
+// At depth 0, a direct `spawn()` call sets `needs_runtime = true`.
+// Function calls at depth 0 are collected into `unguarded` for transitive propagation.
+
+fn is_multitasking_block(name: &str) -> bool {
+    matches!(name, "Multitasking" | "MultiTasking" | "multitasking")
+}
+
+fn rt_scan_stmts(stmts: &[Stmt], depth: u32, unguarded: &mut HashSet<String>) -> bool {
+    stmts.iter().fold(false, |acc, s| acc | rt_scan_stmt(s, depth, unguarded))
+}
+
+fn rt_scan_stmt(stmt: &Stmt, depth: u32, unguarded: &mut HashSet<String>) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(e) => rt_scan_expr(e, depth, unguarded),
+        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => rt_scan_expr(init, depth, unguarded),
+        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => rt_scan_expr(init, depth, unguarded),
+        StmtKind::Assign { target, value } => {
+            rt_scan_expr(target, depth, unguarded) | rt_scan_expr(value, depth, unguarded)
+        }
+        StmtKind::Return(Some(e)) => rt_scan_expr(e, depth, unguarded),
+        StmtKind::Return(None) | StmtKind::Break { value: None, .. }
+        | StmtKind::Continue(_) | StmtKind::Discard { .. } => false,
+        StmtKind::Break { value: Some(v), .. } => rt_scan_expr(v, depth, unguarded),
+        StmtKind::While { cond, body } => {
+            rt_scan_expr(cond, depth, unguarded) | rt_scan_stmts(body, depth, unguarded)
+        }
+        StmtKind::WhileLet { expr, body, .. } => {
+            rt_scan_expr(expr, depth, unguarded) | rt_scan_stmts(body, depth, unguarded)
+        }
+        StmtKind::Loop { body, .. } | StmtKind::Comptime(body) | StmtKind::ComptimeFor { body, .. } => {
+            rt_scan_stmts(body, depth, unguarded)
+        }
+        StmtKind::For { iter, body, .. } => {
+            rt_scan_expr(iter, depth, unguarded) | rt_scan_stmts(body, depth, unguarded)
+        }
+        StmtKind::Ensure { body, else_handler } => {
+            let mut r = rt_scan_stmts(body, depth, unguarded);
+            if let Some((_, handler)) = else_handler {
+                r |= rt_scan_stmts(handler, depth, unguarded);
+            }
+            r
+        }
+    }
+}
+
+fn rt_scan_expr(expr: &Expr, depth: u32, unguarded: &mut HashSet<String>) -> bool {
+    match &expr.kind {
+        ExprKind::Call { func, args } => {
+            let mut direct = false;
+            if let Some(name) = extract_callee_name(func) {
+                if name == "spawn" && depth == 0 {
+                    direct = true;
+                } else if depth == 0 {
+                    unguarded.insert(name);
+                }
+            }
+            direct |= rt_scan_expr(func, depth, unguarded);
+            for arg in args {
+                direct |= rt_scan_expr(&arg.expr, depth, unguarded);
+            }
+            direct
+        }
+
+        // `using Multitasking { }` guards the body — increase depth
+        ExprKind::UsingBlock { name, args, body } if is_multitasking_block(name) => {
+            for arg in args {
+                rt_scan_expr(&arg.expr, depth, unguarded);
+            }
+            rt_scan_stmts(body, depth + 1, unguarded);
+            false
+        }
+
+        // All other expressions: recurse with same depth
+        ExprKind::MethodCall { object, args, .. } => {
+            let mut r = rt_scan_expr(object, depth, unguarded);
+            for arg in args { r |= rt_scan_expr(&arg.expr, depth, unguarded); }
+            r
+        }
+        ExprKind::UsingBlock { args, body, .. } => {
+            let mut r = false;
+            for arg in args { r |= rt_scan_expr(&arg.expr, depth, unguarded); }
+            r |= rt_scan_stmts(body, depth, unguarded);
+            r
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rt_scan_expr(left, depth, unguarded) | rt_scan_expr(right, depth, unguarded)
+        }
+        ExprKind::Unary { operand, .. } => rt_scan_expr(operand, depth, unguarded),
+        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => rt_scan_expr(object, depth, unguarded),
+        ExprKind::DynamicField { object, field_expr } => {
+            rt_scan_expr(object, depth, unguarded) | rt_scan_expr(field_expr, depth, unguarded)
+        }
+        ExprKind::Index { object, index } => {
+            rt_scan_expr(object, depth, unguarded) | rt_scan_expr(index, depth, unguarded)
+        }
+        ExprKind::Block(stmts) => rt_scan_stmts(stmts, depth, unguarded),
+        ExprKind::If { cond, then_branch, else_branch, .. } => {
+            let mut r = rt_scan_expr(cond, depth, unguarded);
+            r |= rt_scan_expr(then_branch, depth, unguarded);
+            if let Some(e) = else_branch { r |= rt_scan_expr(e, depth, unguarded); }
+            r
+        }
+        ExprKind::IfLet { expr, then_branch, else_branch, .. } => {
+            let mut r = rt_scan_expr(expr, depth, unguarded);
+            r |= rt_scan_expr(then_branch, depth, unguarded);
+            if let Some(e) = else_branch { r |= rt_scan_expr(e, depth, unguarded); }
+            r
+        }
+        ExprKind::GuardPattern { expr, else_branch, .. } => {
+            rt_scan_expr(expr, depth, unguarded) | rt_scan_expr(else_branch, depth, unguarded)
+        }
+        ExprKind::IsPattern { expr, .. } | ExprKind::IsPresent { expr, .. }
+        | ExprKind::Unwrap { expr, .. } | ExprKind::Cast { expr, .. } => rt_scan_expr(expr, depth, unguarded),
+        ExprKind::Match { scrutinee, arms } => {
+            let mut r = rt_scan_expr(scrutinee, depth, unguarded);
+            for arm in arms {
+                if let Some(g) = &arm.guard { r |= rt_scan_expr(g, depth, unguarded); }
+                r |= rt_scan_expr(&arm.body, depth, unguarded);
+            }
+            r
+        }
+        ExprKind::Try { expr: e, else_clause } => {
+            let mut r = rt_scan_expr(e, depth, unguarded);
+            if let Some(ec) = else_clause { r |= rt_scan_expr(&ec.body, depth, unguarded); }
+            r
+        }
+        ExprKind::NullCoalesce { value, default } => {
+            rt_scan_expr(value, depth, unguarded) | rt_scan_expr(default, depth, unguarded)
+        }
+        ExprKind::Range { start, end, .. } => {
+            let mut r = false;
+            if let Some(s) = start { r |= rt_scan_expr(s, depth, unguarded); }
+            if let Some(e) = end { r |= rt_scan_expr(e, depth, unguarded); }
+            r
+        }
+        ExprKind::StructLit { fields, spread, .. } => {
+            let mut r = false;
+            for f in fields { r |= rt_scan_expr(&f.value, depth, unguarded); }
+            if let Some(s) = spread { r |= rt_scan_expr(s, depth, unguarded); }
+            r
+        }
+        ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
+            elems.iter().fold(false, |acc, e| acc | rt_scan_expr(e, depth, unguarded))
+        }
+        ExprKind::ArrayRepeat { value, count } => {
+            rt_scan_expr(value, depth, unguarded) | rt_scan_expr(count, depth, unguarded)
+        }
+        ExprKind::WithAs { bindings, body } => {
+            let mut r = false;
+            for b in bindings { r |= rt_scan_expr(&b.source, depth, unguarded); }
+            r |= rt_scan_stmts(body, depth, unguarded);
+            r
+        }
+        ExprKind::Closure { body, .. } => rt_scan_expr(body, depth, unguarded),
+        ExprKind::Spawn { body } | ExprKind::Comptime { body }
+        | ExprKind::BlockCall { body, .. } | ExprKind::Loop { body, .. }
+        | ExprKind::Unsafe { body } => rt_scan_stmts(body, depth, unguarded),
+        ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+            let mut r = rt_scan_expr(condition, depth, unguarded);
+            if let Some(m) = message { r |= rt_scan_expr(m, depth, unguarded); }
+            r
+        }
+        ExprKind::Select { arms, .. } => {
+            let mut r = false;
+            for arm in arms {
+                match &arm.kind {
+                    rask_ast::expr::SelectArmKind::Recv { channel, .. } => { r |= rt_scan_expr(channel, depth, unguarded); }
+                    rask_ast::expr::SelectArmKind::Send { channel, value } => {
+                        r |= rt_scan_expr(channel, depth, unguarded);
+                        r |= rt_scan_expr(value, depth, unguarded);
+                    }
+                    rask_ast::expr::SelectArmKind::Default => {}
+                }
+                r |= rt_scan_expr(&arm.body, depth, unguarded);
+            }
+            r
+        }
+        ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
+        | ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_)
+        | ExprKind::Null | ExprKind::None | ExprKind::Ident(_) => false,
     }
 }
 
