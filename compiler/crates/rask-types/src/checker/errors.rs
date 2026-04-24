@@ -179,6 +179,19 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// CC1: `using Multitasking`/`ThreadPool` may not appear on a function signature
+    #[error("`using {ctx}` cannot appear on a function signature")]
+    SignatureRuntimeContext {
+        ctx: String,
+        span: Span,
+    },
+
+    /// CC1: `spawn` used outside any `using Multitasking` block
+    #[error("`spawn` must be inside a `using Multitasking {{ ... }}` block")]
+    SpawnOutsideBlock {
+        span: Span,
+    },
+
     /// T6: cyclic type alias
     #[error("cyclic type alias: {cycle}")]
     CyclicTypeAlias {

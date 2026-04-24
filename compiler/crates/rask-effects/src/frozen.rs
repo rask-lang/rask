@@ -195,6 +195,7 @@ mod tests {
                 async_: false,
                 grow,
                 shrink,
+                needs_runtime: false,
             },
         );
         m

@@ -176,6 +176,15 @@ impl Default for ErrorCodeRegistry {
                 "E0342" => ("unknown context", Type,
                     "A `using` block references a context that doesn't exist. Valid contexts are `Multitasking` and `ThreadPool`.",
                     "using Foo {\n    // error: unknown context `Foo`\n}"),
+                "E0351" => ("runtime context on signature", Type,
+                    "`using Multitasking` and `using ThreadPool` install a process-global runtime slot. They cannot appear on function signatures — only on block expressions.",
+                    "// Error: signature-level using is not allowed\nfunc run_tasks() using Multitasking { }\n\n// Fix: wrap the call site instead\nfunc main() {\n    using Multitasking {\n        run_tasks()\n    }\n}"),
+                "E0352" => ("spawn outside multitasking block", Type,
+                    "`spawn` requires an active `using Multitasking { ... }` block to be in scope. Without a runtime, there's nowhere to submit the task.",
+                    "func main() {\n    spawn { do_work() }  // error: no `using Multitasking` block\n\n    // Fix:\n    using Multitasking {\n        spawn { do_work() }  // ok\n    }\n}"),
+                "E0353" => ("transitive spawn outside multitasking block", Type,
+                    "A function that transitively calls `spawn` is being called without an active `using Multitasking { ... }` runtime scope. The call will panic at runtime.",
+                    "func do_work() {\n    spawn(|| { task() })  // reaches spawn\n}\n\nfunc main() {\n    do_work()  // error: no runtime scope\n\n    // Fix:\n    using Multitasking {\n        do_work()  // ok\n    }\n}"),
 
                 // Trait errors (E07xx)
                 "E0700" => ("trait bound not satisfied", Trait,
