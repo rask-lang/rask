@@ -442,6 +442,17 @@ impl<'a> OwnershipChecker<'a> {
                             // Remove to avoid double-reporting at block exit
                             self.scope_limited_closures.remove(name);
                         }
+                    } else if matches!(&expr.kind, ExprKind::Closure { is_own: false, .. })
+                        && self.last_closure_scope_limit.take().is_some()
+                    {
+                        // Direct return of a non-`own` closure literal that captured
+                        // non-resource bindings. The closure can't outlive its captures.
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: stmt.span,
+                        });
                     }
                 }
             }
@@ -780,9 +791,17 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 } else {
-                    // SL1: Check if any capture references a borrow binding — if so,
-                    // this closure is scope-limited.
+                    // Non-`own` closures borrow their captures. Any closure with
+                    // non-resource captures is scope-limited to its creation block —
+                    // returning or storing it past that scope would dangle the borrow.
                     let mut scope_limit: Option<u32> = None;
+                    let has_non_resource_captures = captures.iter()
+                        .any(|name| !resource_captures.contains(name) && self.bindings.contains_key(name));
+                    if has_non_resource_captures {
+                        scope_limit = Some(self.current_block);
+                    }
+                    // Tighten further if any capture is itself scope-limited (borrow binding
+                    // or persistent borrow): the closure inherits the inner constraint.
                     for name in &captures {
                         if resource_captures.contains(name) { continue; }
                         if let Some(&block_id) = self.borrow_bindings.get(name) {
