@@ -398,9 +398,10 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(target);
                 // Assignments move the value
                 self.handle_assignment(value, stmt.span, true);
-                // SL2: Check if assigning a scope-limited closure to an outer variable.
-                // SL2: Propagate scope limit to target binding.
-                // Use the target's *declaration* block, not the current block.
+                // SL2: propagate or reject scope-limited closure on assignment.
+                // If the target is a plain binding, propagate the scope limit so
+                // later uses of that binding are still caught. If the target is a
+                // field/index (can't be tracked), treat it as an escape.
                 if let ExprKind::Ident(value_name) = &value.kind {
                     if let Some(&(borrow_block, _)) = self.scope_limited_closures.get(value_name) {
                         if let ExprKind::Ident(target_name) = &target.kind {
@@ -411,10 +412,18 @@ impl<'a> OwnershipChecker<'a> {
                                 target_name.clone(),
                                 (borrow_block, decl_block),
                             );
+                        } else {
+                            // Field/index assignment — cannot track, treat as escape
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                    name: value_name.clone(),
+                                },
+                                span: value.span,
+                            });
+                            self.scope_limited_closures.remove(value_name);
                         }
                     }
                 }
-                // Also pick up scope limit from a closure literal assigned directly
                 if let Some(borrow_block) = self.last_closure_scope_limit.take() {
                     if let ExprKind::Ident(target_name) = &target.kind {
                         let decl_block = self.binding_decl_blocks
@@ -424,6 +433,14 @@ impl<'a> OwnershipChecker<'a> {
                             target_name.clone(),
                             (borrow_block, decl_block),
                         );
+                    } else if matches!(&value.kind, ExprKind::Closure { is_own: false, .. }) {
+                        // Direct closure literal assigned to a field/index — escape
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: value.span,
+                        });
                     }
                 }
             }
@@ -442,6 +459,17 @@ impl<'a> OwnershipChecker<'a> {
                             // Remove to avoid double-reporting at block exit
                             self.scope_limited_closures.remove(name);
                         }
+                    } else if matches!(&expr.kind, ExprKind::Closure { is_own: false, .. })
+                        && self.last_closure_scope_limit.take().is_some()
+                    {
+                        // Direct return of a non-`own` closure literal that captured
+                        // non-resource bindings. The closure can't outlive its captures.
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: stmt.span,
+                        });
                     }
                 }
             }
@@ -576,6 +604,27 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(func);
                 for arg in args {
                     self.check_expr(&arg.expr);
+                    // SL2: scope-limited closure passed as function argument
+                    if let ExprKind::Ident(name) = &arg.expr.kind {
+                        if self.scope_limited_closures.contains_key(name) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                    name: name.clone(),
+                                },
+                                span: arg.expr.span,
+                            });
+                            self.scope_limited_closures.remove(name);
+                        }
+                    } else if matches!(&arg.expr.kind, ExprKind::Closure { is_own: false, .. })
+                        && self.last_closure_scope_limit.take().is_some()
+                    {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: arg.expr.span,
+                        });
+                    }
                     if arg.mode == ArgMode::Own {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -598,6 +647,27 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(object);
                 for arg in args {
                     self.check_expr(&arg.expr);
+                    // SL2: scope-limited closure passed as method argument
+                    if let ExprKind::Ident(name) = &arg.expr.kind {
+                        if self.scope_limited_closures.contains_key(name) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                    name: name.clone(),
+                                },
+                                span: arg.expr.span,
+                            });
+                            self.scope_limited_closures.remove(name);
+                        }
+                    } else if matches!(&arg.expr.kind, ExprKind::Closure { is_own: false, .. })
+                        && self.last_closure_scope_limit.take().is_some()
+                    {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: arg.expr.span,
+                        });
+                    }
                     if arg.mode == ArgMode::Own {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -723,6 +793,27 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::StructLit { name: _, fields, spread } => {
                 for field in fields {
                     self.check_expr(&field.value);
+                    // SL2: scope-limited closure stored in a struct field
+                    if let ExprKind::Ident(name) = &field.value.kind {
+                        if self.scope_limited_closures.contains_key(name) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                    name: name.clone(),
+                                },
+                                span: field.value.span,
+                            });
+                            self.scope_limited_closures.remove(name);
+                        }
+                    } else if matches!(&field.value.kind, ExprKind::Closure { is_own: false, .. })
+                        && self.last_closure_scope_limit.take().is_some()
+                    {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: field.value.span,
+                        });
+                    }
                 }
                 if let Some(spread) = spread {
                     self.check_expr(spread);
@@ -750,7 +841,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(end);
                 }
             }
-            ExprKind::Closure { params, body, .. } => {
+            ExprKind::Closure { params, body, is_own, .. } => {
                 // Collect names from closure params (these shadow outer bindings)
                 let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
@@ -765,53 +856,71 @@ impl<'a> OwnershipChecker<'a> {
                     .cloned()
                     .collect();
 
-                // Move resource captures in outer scope
+                // Move resource captures in outer scope (always — resources are linear)
                 for name in &resource_captures {
                     self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                 }
 
-                // SL1: Check if any capture references a borrow binding (a `const`
-                // from a non-copy source) — if so, this closure is scope-limited.
-                let mut scope_limit: Option<u32> = None;
-                for name in &captures {
-                    if resource_captures.contains(name) { continue; }
-                    // Check if the captured variable is itself a borrow binding
-                    if let Some(&block_id) = self.borrow_bindings.get(name) {
-                        scope_limit = Some(match scope_limit {
-                            None => block_id,
-                            Some(existing) => existing.max(block_id),
-                        });
-                    }
-                    // Also check active borrows on the captured variable
-                    for borrow in &self.borrows {
-                        if borrow.source == *name {
-                            if let BorrowScope::Persistent { block_id } = borrow.scope {
-                                scope_limit = Some(match scope_limit {
-                                    None => block_id,
-                                    Some(existing) => existing.max(block_id),
-                                });
+                // `own` closures move non-resource captures too; non-`own` closures borrow them.
+                if *is_own {
+                    for name in &captures {
+                        if !resource_captures.contains(name) {
+                            if self.bindings.contains_key(name) {
+                                self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                             }
                         }
                     }
-                }
-
-                // Shared borrow for non-resource captures (F4: with field projections)
-                for name in &captures {
-                    if !resource_captures.contains(name) {
-                        if self.bindings.contains_key(name) {
-                            let projection = capture_projections.get(name).cloned().flatten();
-                            let mut borrow = ActiveBorrow::new(
-                                name.clone(),
-                                BorrowMode::Shared,
-                                BorrowScope::Persistent { block_id: self.current_block },
-                                expr.span,
-                            );
-                            if let Some(fields) = projection {
-                                borrow = borrow.with_projection(fields);
+                } else {
+                    // Non-`own` closures borrow their captures. Any closure with
+                    // non-resource captures is scope-limited to its creation block —
+                    // returning or storing it past that scope would dangle the borrow.
+                    let mut scope_limit: Option<u32> = None;
+                    let has_non_resource_captures = captures.iter()
+                        .any(|name| !resource_captures.contains(name) && self.bindings.contains_key(name));
+                    if has_non_resource_captures {
+                        scope_limit = Some(self.current_block);
+                    }
+                    // Tighten further if any capture is itself scope-limited (borrow binding
+                    // or persistent borrow): the closure inherits the inner constraint.
+                    for name in &captures {
+                        if resource_captures.contains(name) { continue; }
+                        if let Some(&block_id) = self.borrow_bindings.get(name) {
+                            scope_limit = Some(match scope_limit {
+                                None => block_id,
+                                Some(existing) => existing.max(block_id),
+                            });
+                        }
+                        for borrow in &self.borrows {
+                            if borrow.source == *name {
+                                if let BorrowScope::Persistent { block_id } = borrow.scope {
+                                    scope_limit = Some(match scope_limit {
+                                        None => block_id,
+                                        Some(existing) => existing.max(block_id),
+                                    });
+                                }
                             }
-                            self.borrows.push(borrow);
                         }
                     }
+                    // Shared borrow for non-resource captures (F4: with field projections)
+                    for name in &captures {
+                        if !resource_captures.contains(name) {
+                            if self.bindings.contains_key(name) {
+                                let projection = capture_projections.get(name).cloned().flatten();
+                                let mut borrow = ActiveBorrow::new(
+                                    name.clone(),
+                                    BorrowMode::Shared,
+                                    BorrowScope::Persistent { block_id: self.current_block },
+                                    expr.span,
+                                );
+                                if let Some(fields) = projection {
+                                    borrow = borrow.with_projection(fields);
+                                }
+                                self.borrows.push(borrow);
+                            }
+                        }
+                    }
+                    // SL1: Record scope limit for the next binding to pick up
+                    self.last_closure_scope_limit = scope_limit;
                 }
 
                 // Check closure body with isolated state
@@ -855,9 +964,6 @@ impl<'a> OwnershipChecker<'a> {
                 for name in &resource_captures {
                     self.resource_bindings.remove(name);
                 }
-
-                // SL1: Record scope limit for the next binding to pick up
-                self.last_closure_scope_limit = scope_limit;
             }
             ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.check_expr(cond);

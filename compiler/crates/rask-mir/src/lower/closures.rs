@@ -15,11 +15,15 @@ use rask_ast::{
 impl<'a> MirLowerer<'a> {
     /// Closure lowering: synthesize a separate MIR function for the body,
     /// build the environment, and emit ClosureCreate in the enclosing function.
+    ///
+    /// `is_own` mirrors `mem.closures`: owned closures start heap-allocated (may
+    /// escape); scope-limited closures are always stack-allocated.
     pub(super) fn lower_closure(
         &mut self,
         params: &[rask_ast::expr::ClosureParam],
         ret_ty: Option<&str>,
         body: &Expr,
+        is_own: bool,
     ) -> Result<TypedOperand, LoweringError> {
         // 1. Collect free variables (captures from enclosing scope)
         let free_vars = self.collect_free_vars(body, params);
@@ -110,13 +114,15 @@ impl<'a> MirLowerer<'a> {
 
         self.synthesized_functions.push(closure_fn);
 
-        // 5. In the parent function, emit ClosureCreate
+        // 5. In the parent function, emit ClosureCreate.
+        // Own closures may escape — start heap-allocated so escape analysis can
+        // decide whether to downgrade. Scope-limited closures never escape; stack only.
         let result_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: result_local,
             func_name: closure_name,
             captures,
-            heap: true,
+            heap: is_own,
         }));
 
         Ok((MirOperand::Local(result_local), MirType::Ptr))

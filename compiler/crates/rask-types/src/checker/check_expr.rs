@@ -843,7 +843,7 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Closure { params, ret_ty: declared_ret, body } => {
+            ExprKind::Closure { params, ret_ty: declared_ret, body, .. } => {
                 let param_types: Vec<_> = params
                     .iter()
                     .map(|p| {

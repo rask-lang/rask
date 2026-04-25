@@ -167,11 +167,14 @@ pub enum ExprKind {
         bindings: Vec<WithBinding>,
         body: Vec<super::stmt::Stmt>,
     },
-    /// Closure (|x, y| x + y)
+    /// Closure (|x, y| x + y or own |x, y| x + y)
     Closure {
         params: Vec<ClosureParam>,
         ret_ty: Option<String>,
         body: Box<Expr>,
+        /// Captures non-Copy values by move; can escape its creation scope.
+        /// Without this flag the closure borrows outer variables (scope-limited).
+        is_own: bool,
     },
     /// Type cast (x as i32)
     Cast {

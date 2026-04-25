@@ -782,8 +782,9 @@ impl Hasher {
                 }
                 self.hash_stmts(body);
             }
-            ExprKind::Closure { params, ret_ty, body } => {
+            ExprKind::Closure { params, ret_ty, body, is_own } => {
                 self.feed_tag(70);
+                self.feed_bool(*is_own);
                 self.feed_u32(params.len() as u32);
                 for p in params {
                     self.hash_closure_param(p);
