@@ -587,6 +587,27 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(func);
                 for arg in args {
                     self.check_expr(&arg.expr);
+                    // SL2: scope-limited closure passed as function argument
+                    if let ExprKind::Ident(name) = &arg.expr.kind {
+                        if self.scope_limited_closures.contains_key(name) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                    name: name.clone(),
+                                },
+                                span: arg.expr.span,
+                            });
+                            self.scope_limited_closures.remove(name);
+                        }
+                    } else if matches!(&arg.expr.kind, ExprKind::Closure { is_own: false, .. })
+                        && self.last_closure_scope_limit.take().is_some()
+                    {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: arg.expr.span,
+                        });
+                    }
                     if arg.mode == ArgMode::Own {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -609,6 +630,27 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(object);
                 for arg in args {
                     self.check_expr(&arg.expr);
+                    // SL2: scope-limited closure passed as method argument
+                    if let ExprKind::Ident(name) = &arg.expr.kind {
+                        if self.scope_limited_closures.contains_key(name) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                    name: name.clone(),
+                                },
+                                span: arg.expr.span,
+                            });
+                            self.scope_limited_closures.remove(name);
+                        }
+                    } else if matches!(&arg.expr.kind, ExprKind::Closure { is_own: false, .. })
+                        && self.last_closure_scope_limit.take().is_some()
+                    {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: arg.expr.span,
+                        });
+                    }
                     if arg.mode == ArgMode::Own {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -734,6 +776,27 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::StructLit { name: _, fields, spread } => {
                 for field in fields {
                     self.check_expr(&field.value);
+                    // SL2: scope-limited closure stored in a struct field
+                    if let ExprKind::Ident(name) = &field.value.kind {
+                        if self.scope_limited_closures.contains_key(name) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                    name: name.clone(),
+                                },
+                                span: field.value.span,
+                            });
+                            self.scope_limited_closures.remove(name);
+                        }
+                    } else if matches!(&field.value.kind, ExprKind::Closure { is_own: false, .. })
+                        && self.last_closure_scope_limit.take().is_some()
+                    {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: field.value.span,
+                        });
+                    }
                 }
                 if let Some(spread) = spread {
                     self.check_expr(spread);
