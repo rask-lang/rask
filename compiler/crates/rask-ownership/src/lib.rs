@@ -398,9 +398,10 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(target);
                 // Assignments move the value
                 self.handle_assignment(value, stmt.span, true);
-                // SL2: Check if assigning a scope-limited closure to an outer variable.
-                // SL2: Propagate scope limit to target binding.
-                // Use the target's *declaration* block, not the current block.
+                // SL2: propagate or reject scope-limited closure on assignment.
+                // If the target is a plain binding, propagate the scope limit so
+                // later uses of that binding are still caught. If the target is a
+                // field/index (can't be tracked), treat it as an escape.
                 if let ExprKind::Ident(value_name) = &value.kind {
                     if let Some(&(borrow_block, _)) = self.scope_limited_closures.get(value_name) {
                         if let ExprKind::Ident(target_name) = &target.kind {
@@ -411,10 +412,18 @@ impl<'a> OwnershipChecker<'a> {
                                 target_name.clone(),
                                 (borrow_block, decl_block),
                             );
+                        } else {
+                            // Field/index assignment — cannot track, treat as escape
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                    name: value_name.clone(),
+                                },
+                                span: value.span,
+                            });
+                            self.scope_limited_closures.remove(value_name);
                         }
                     }
                 }
-                // Also pick up scope limit from a closure literal assigned directly
                 if let Some(borrow_block) = self.last_closure_scope_limit.take() {
                     if let ExprKind::Ident(target_name) = &target.kind {
                         let decl_block = self.binding_decl_blocks
@@ -424,6 +433,14 @@ impl<'a> OwnershipChecker<'a> {
                             target_name.clone(),
                             (borrow_block, decl_block),
                         );
+                    } else if matches!(&value.kind, ExprKind::Closure { is_own: false, .. }) {
+                        // Direct closure literal assigned to a field/index — escape
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                                name: "<closure>".to_string(),
+                            },
+                            span: value.span,
+                        });
                     }
                 }
             }
