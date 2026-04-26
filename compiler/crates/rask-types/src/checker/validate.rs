@@ -94,8 +94,13 @@ fn validate_single_result(
     }
 
     // ER4: E (or each component of a union E) must implement ErrorMessage.
+    // `none` is exempt — it's the absent sentinel for `T or none` (the optional
+    // shape), not an error type.
     for comp in &err_components {
         if is_unresolved(comp) {
+            continue;
+        }
+        if matches!(comp, Type::None) {
             continue;
         }
         if !implements_error_message(comp, checker) {
