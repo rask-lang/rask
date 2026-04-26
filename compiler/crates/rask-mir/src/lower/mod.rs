@@ -288,7 +288,7 @@ impl<'a> MirContext<'a> {
     /// Convert a Type from the type checker to MirType.
     pub fn type_to_mir(&self, ty: &Type) -> MirType {
         match ty {
-            Type::Unit => MirType::Void,
+            Type::Unit | Type::None => MirType::Void,
             Type::Bool => MirType::Bool,
             Type::I8 => MirType::I8,
             Type::I16 => MirType::I16,

@@ -20,6 +20,10 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         return Ok(Type::Never);
     }
 
+    if s == "none" {
+        return Ok(Type::None);
+    }
+
     // Union type: "IoError|ParseError" (pipe-separated at depth 0)
     if contains_pipe_at_depth_0(s) {
         let parts = split_at_pipe(s);

@@ -100,6 +100,9 @@ pub enum Type {
     },
     /// Never type (for return, panic, etc.)
     Never,
+    /// Absent sentinel: zero-field type with one inhabitant.
+    /// The absent variant of `T?` (sugar for `T or none`).
+    None,
     /// Error placeholder for recovery
     Error,
 }
@@ -228,6 +231,7 @@ impl fmt::Display for Type {
             Type::TraitObject { trait_name } => write!(f, "any {}", trait_name),
             Type::Var(_) => write!(f, "_"),
             Type::Never => write!(f, "!"),
+            Type::None => write!(f, "none"),
             Type::Error => write!(f, "<error>"),
         }
     }
