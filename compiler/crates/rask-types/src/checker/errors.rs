@@ -312,6 +312,15 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// U5 / nested-optional: a sum type cannot contain the same variant twice.
+    /// Covers `T??` (= `(T or none) or none`), `(T or E) or E`, and similar.
+    #[error("duplicate variant `{variant}` in sum type `{ty}`")]
+    DuplicateSumVariant {
+        ty: Type,
+        variant: Type,
+        span: Span,
+    },
+
     /// ER22: `else as e` requires a `T or E` condition to bind the error
     #[error("`else as {name}` requires an `if r?` condition on a Result (`T or E`)")]
     ElseBindingNotResult {

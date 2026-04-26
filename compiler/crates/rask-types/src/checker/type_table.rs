@@ -430,6 +430,11 @@ impl TypeTable {
                 ty: self.resolve_type_names(&ty),
                 span,
             },
+            TypeError::DuplicateSumVariant { ty, variant, span } => TypeError::DuplicateSumVariant {
+                ty: self.resolve_type_names(&ty),
+                variant: self.resolve_type_names(&variant),
+                span,
+            },
             other => other,
         }
     }

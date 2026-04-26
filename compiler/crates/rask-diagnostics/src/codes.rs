@@ -185,6 +185,9 @@ impl Default for ErrorCodeRegistry {
                 "E0353" => ("transitive spawn outside multitasking block", Type,
                     "A function that transitively calls `spawn` is being called without an active `using Multitasking { ... }` runtime scope. The call will panic at runtime.",
                     "func do_work() {\n    spawn(|| { task() })  // reaches spawn\n}\n\nfunc main() {\n    do_work()  // error: no runtime scope\n\n    // Fix:\n    using Multitasking {\n        do_work()  // ok\n    }\n}"),
+                "E0354" => ("duplicate variant in sum type", Type,
+                    "A sum type (`T or E` or its sugar `T?`) cannot contain the same variant twice. `T??` collapses to `(T or none) or none` — the duplicate `none` is ambiguous. Same for `(T or E) or E`. Use a named enum if you need two flavours of the same shape.",
+                    "// Error: T?? has duplicate `none`\nconst x: User?? = none\n\n// Fix: use a named enum\nenum LookupResult { Found(User), Missing, Forbidden }\nconst x: LookupResult = LookupResult.Missing"),
 
                 // Trait errors (E07xx)
                 "E0700" => ("trait bound not satisfied", Trait,

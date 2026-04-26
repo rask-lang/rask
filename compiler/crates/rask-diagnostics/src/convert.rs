@@ -718,6 +718,18 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(format!("add `extend {ty} {{ func message(self) -> string {{ ... }} }}`"))
                     .with_why("every error type must provide `func message(self) -> string`; primitives don't qualify — newtype them [type.errors/ER4]")
             }
+            DuplicateSumVariant { ty, variant, span } => {
+                let hint = if matches!(variant, rask_types::Type::None) {
+                    "use a named enum like `T or NotFound` to distinguish two flavours of absence"
+                } else {
+                    "flatten the union or rename one branch"
+                };
+                Diagnostic::error(format!("duplicate variant `{}` in sum type `{}`", variant, ty))
+                    .with_code("E0354")
+                    .with_primary(*span, format!("`{}` appears more than once", variant))
+                    .with_help(hint)
+                    .with_why("a sum type cannot contain the same variant twice — `T??` and `(T or E) or E` collapse ambiguously [type.unions/U5]")
+            }
             ElseBindingNotResult { name, span } => {
                 Diagnostic::error(format!("`else as {}` requires a Result condition", name))
                     .with_code("E0345")
