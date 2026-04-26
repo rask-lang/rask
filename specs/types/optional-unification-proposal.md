@@ -1,7 +1,10 @@
 <!-- id: type.optional-unification -->
-<!-- status: proposed -->
-<!-- summary: T? becomes sugar for T or none. none is a built-in zero-field type. The ?-family operators work on any two-variant union where one variant is none. No source-level changes; spec shrinks and the "Option is a special kind of type" rule goes away -->
+<!-- status: accepted -->
+<!-- summary: T? becomes sugar for T or none. none is a built-in zero-field type. The ?-family operators work on any two-variant union where one variant is none. No source-level changes; spec shrinks and the "Option is a special kind of type" rule goes away. Accepted — folded into types/optionals.md, types/primitives.md, types/union-types.md. -->
 <!-- depends: types/optionals.md, types/error-types.md, types/union-types.md -->
+
+> **Status: Accepted (2026-04-26).** This proposal is the chosen design. The normative rules now live in [optionals.md](optionals.md) (the operator surface and narrowing), [primitives.md](primitives.md) (`none` as P7), and [union-types.md](union-types.md) (U5 duplicate-variant, U6 disjointness). This file is retained as the design rationale and the decision record.
+
 
 # Option Unification
 

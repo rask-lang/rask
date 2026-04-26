@@ -10,7 +10,7 @@ Why I made certain design choices. Mostly about what I didn't add from other lan
 
 **Why rejected:**
 
-Rask originally had `Option<T>` and `Result<T, E>` as standard enums with `Some(v)`, `None`, `Ok(v)`, `Err(e)` constructors (Rust-style). In practice these wrappers add a tag that is always the same tag — auto-wrapping (today's OPT8, ER7) already coerced bare values at function boundaries, so the constructor survived only at intermediate sites. Every rebind form (`is Some(u)`, `is Some as u`, `const Some(u) = x`, magic rebind) existed because the wrapper needed to be unwrapped. Remove the wrapper and the rebind cloud evaporates.
+Rask originally had `Option<T>` and `Result<T, E>` as standard enums with `Some(v)`, `None`, `Ok(v)`, `Err(e)` constructors (Rust-style). In practice these wrappers add a tag that is always the same tag — auto-wrapping (now subsumed by union widening) already coerced bare values at function boundaries, so the constructor survived only at intermediate sites. Every rebind form (`is Some(u)`, `is Some as u`, `const Some(u) = x`, magic rebind) existed because the wrapper needed to be unwrapped. Remove the wrapper and the rebind cloud evaporates.
 
 `T or E` and `T?` are now builtin tagged unions. The compiler picks the branch from the value's type at return (enforced by the disjointness rule T ≠ E and the `ErrorMessage` bound on E), so construction is keyword-free on both paths: `return config` or `return MyError.Failed`, never `return Ok(config)` / `return Err(MyError.Failed)`. `none` stays as the absent sentinel (literal, not a variant).
 
@@ -101,13 +101,13 @@ Erlang's supervision trees are great—processes automatically restart when they
 // Explicit restart loop
 mut restart_count = 0
 loop {
-    const h = spawn(|| { worker_task() }
+    const h = spawn(|| { worker_task() })
     match h.join() {
-        Ok(()) => { break },
-        Err(e) => {
+        void  => { break }
+        Error as e => {
             restart_count += 1
-            if restart_count > 5: return Err("too many restarts")
-            println("Restarting after error: {e}")
+            if restart_count > 5 { return RestartError.TooMany }
+            println("Restarting after error: {e.message()}")
         }
     }
 }

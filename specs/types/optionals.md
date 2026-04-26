@@ -1,86 +1,86 @@
 <!-- id: type.optionals -->
 <!-- status: decided -->
-<!-- summary: T? is a builtin status type — bare values on the present path, none as sentinel. Operator-only surface (?, ?., ??, !, try, == none). No Some/None wrappers, no match arms. Narrowing rides on const. -->
-<!-- depends: types/types.md, control/control-flow.md -->
+<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family operators (?, ?., ??, !, try, == none) apply to any two-variant union where one variant is none. No Some/None constructors. Narrowing rides on const. -->
+<!-- depends: types/types.md, types/union-types.md, types/error-types.md, control/control-flow.md -->
 
 # Optionals
 
-`T?` is a builtin "present or absent" status type. Not an enum — the language provides the status directly, with a dedicated operator family (`?`, `?.`, `??`, `!`, `try`, `== none`) and no user-visible constructor. A value of type `T` is already a `T?` at the boundaries where auto-wrap applies; `none` is the absent sentinel.
+`T?` is shorthand for `T or none`. `none` is a built-in zero-field type — lowercase, like `void`. There is no `Option<T>` enum and no `Some`/`None` constructors; present values are bare, `none` is the absent sentinel.
 
-Enums get `match`; Option gets operators. That line is load-bearing — it's why Option has `T?` sugar, auto-wrap, and the `?`-family while user enums use pattern matching.
+Optionals aren't a separate kind of type. They're a particular union shape with dedicated operator surface. The `?`-family covers the absent-or-present case; everything else (auto-wrap, linearity, equality) falls out of the general union rules.
 
 ## The Type
 
 | Rule | Description |
 |------|-------------|
-| **OPT1: Builtin status** | `T?` is a compiler-generated tagged union of "present `T`" or "absent," not a user-definable enum |
-| **OPT2: No user wrapper** | There is no `Some` constructor, keyword, or pattern. Present values are bare |
-| **OPT3: Absent sentinel** | `none` is a literal denoting absence; context infers its type |
-| **OPT4: Nested optionals forbidden** | `T??` is a compile error; use a named enum like `T or NotFound` if you need to distinguish two flavours of absence |
+| **OPT1: `T?` is sugar for `T or none`** | The parser desugars `T?` to `T or none` before type checking; the rest of the compiler sees a regular union |
+| **OPT2: `none` is a built-in zero-field type** | Lowercase, follows the primitive convention. One inhabitant, also spelled `none`. Not user-definable |
+| **OPT3: `?`-family restricted to `T or none`** | `?`, `?.`, `??`, `!`, `try`, `== none` apply only when the operand is a two-variant union with one variant `none`. Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
+| **OPT4: No user wrapper** | No `Some` keyword, constructor, or pattern. Bare values on the present path |
 
 <!-- test: skip -->
 ```rask
-const user: User? = load()       // present value, auto-wrapped
-const missing: User? = none       // absent sentinel
+const user: User? = load()       // present value, widens to User or none
+const missing: User? = none      // absent sentinel
 ```
+
+`T??` is `(T or none) or none` — rejected by the union duplicate-variant rule (see [union-types.md](union-types.md)). No optional-specific rule needed.
 
 ## Construction
 
+Construction follows the general union widening rule: a value of type `A` widens to `A or B or …` at any position expecting the union (return, assignment, field, argument). For optionals specifically:
+
 | Rule | Description |
 |------|-------------|
-| **OPT5: Auto-wrap at return** | In a function with return type `T?`, returning a value of type `T` is wrapped automatically |
-| **OPT6: Auto-wrap at assignment** | Assigning a value of type `T` to a binding of type `T?` wraps automatically. Extends to field initialisers and `const`/`mut` declarations with explicit `T?` type |
-| **OPT7: No auto-unwrap** | `T?` does not coerce to `T` — unwrap explicitly via `if x?`, `x!`, `x ?? default`, or `try x` |
+| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x ?? default`, or `try x` |
+| **OPT6: `none` widens at use** | `none` has type `none` on its own; widens to `T or none` at any position with a target union type |
 
 <!-- test: skip -->
 ```rask
-func load_user() -> User? { … }          // bare User return auto-wraps
-
-mut cache: User? = none                  // literal; stays absent
-cache = get_current_user()                // User → User? at assignment
+func load_user() -> User? { … }         // bare User return widens
+mut cache: User? = none                  // none widens to User or none
+cache = get_current_user()               // User widens at assignment
 ```
 
 ## Operators
 
 | Rule | Syntax | Meaning |
 |------|--------|---------|
-| **OPT8: Type shorthand** | `T?` | the Option type |
-| **OPT9: Absent literal** | `none` | absent value; type inferred |
-| **OPT10: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
-| **OPT11: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
-| **OPT12: Value fallback** | `x ?? default` | unwraps `x` if present, else yields `default`; both operands must have compatible inner types |
-| **OPT13: Diverging fallback** | `x ?? return none` (or `break`, `continue`, `panic(…)`) | unwraps `x` if present, else diverges |
-| **OPT14: Force** | `x!` | extracts if present; panics with "none" or `x! "msg"` custom message |
-| **OPT15: Propagate** | `try x` | in a `T?`-returning function, unwraps if present, else returns `none` |
-| **OPT16: Absent check** | `x == none` / `x != none` | plain equality; `x?` and `x == none` narrow identically |
-| **OPT17: `!x?` forbidden** | `!x?` is a parse error suggesting `x == none` |
-| **OPT18: Propagate block** | `try { … }` | unwraps each `try` inside; propagates `none` on the first absent scrutinee |
+| **OPT7: Type shorthand** | `T?` | sugar for `T or none` |
+| **OPT8: Absent literal** | `none` | absent value; type widens at use |
+| **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
+| **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
+| **OPT11: Value fallback** | `x ?? default` | unwraps `x` if present, else yields `default`. `??` is strict-extract — `default`'s type must match the inner `T` |
+| **OPT12: Diverging fallback** | `x ?? return none` (or `break`, `continue`, `panic(…)`) | unwraps if present, else diverges |
+| **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
+| **OPT14: Propagate** | `try x` | in a `T?`-returning function, unwraps if present, else returns `none` |
+| **OPT15: Absent check** | `x == none` / `x != none` | plain equality; `x?` and `x == none` narrow identically |
+| **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x == none` |
+| **OPT17: Propagate block** | `try { … }` | each `try` inside propagates `none` on the first absent scrutinee |
+
+`??` chains while the left side stays wrapped:
 
 <!-- test: skip -->
 ```rask
-// Chain and fallback
-const name = user?.profile?.display_name ?? "Anonymous"
-
-// Force (asserts present)
-const first = list.first()!
-
-// Propagate inside a T?-returning function
-func find_admin() -> User? {
-    const user = try lookup("root")
-    return user
-}
+const name = user?.display_name
+    ?? user?.email
+    ?? "anon"
 ```
+
+As soon as an RHS is bare `T`, the chain collapses to `T` and further `??` is a type error.
 
 ## Conditions and Narrowing
 
+Narrowing rides on `const` — the same rule for any union with a recognised predicate. See [error-types.md](error-types.md) for the shared semantics; the rules below apply identically to `T or none`.
+
 | Rule | Description |
 |------|-------------|
-| **OPT19: `if x?` narrows** | In a `const` scrutinee, `if x?` narrows `x` to `T` inside the block |
-| **OPT20: `if x? as v` binds** | Binds a const `v: T` in the block; works for `mut` scrutinees, and for renaming |
-| **OPT21: Both branches narrow** | On a const scrutinee, the `else` branch is narrowed to "absent" (information-only) |
-| **OPT22: Early-exit narrow** | If a branch of `if x == none { … }` diverges, `x` is `T` in the fall-through |
-| **OPT23: No compound narrowing** | `x? && y?` is a legal bool expression but does not narrow either side — use nested `if` or `as v` bind |
-| **OPT24: No field-path narrow through mut** | `player.weapon` narrows iff the full path is rooted in a `const` binding. With `mut` anywhere in the path, use `if player.weapon? as w` |
+| **OPT18: `if x?` narrows** | On a const scrutinee, `if x?` narrows `x` to `T` inside the block |
+| **OPT19: `if x? as v` binds** | Binds a const `v: T` in the block; works for `mut` scrutinees, and for renaming |
+| **OPT20: Both branches narrow** | On a const scrutinee, the `else` branch narrows `x` to `none` |
+| **OPT21: Early-exit narrow** | If a branch of `if x == none { … }` diverges, `x` is `T` in the fall-through |
+| **OPT22: No compound narrowing** | `x? && y?` is a legal bool expression but does not narrow either side — use nested `if` or `as v` bind |
+| **OPT23: No field-path narrow through mut** | `player.weapon` narrows iff the full path is rooted in a `const` binding. With `mut` anywhere in the path, use `if player.weapon? as w` |
 
 <!-- test: skip -->
 ```rask
@@ -91,7 +91,7 @@ if user? {
 
 mut cache: Cache? = try_load()
 if cache? as c {
-    c.sweep()                 // c: Cache (const) in the block
+    c.sweep()                // c: Cache (const) in the block
     // cache still Cache? — may be reassigned below
 }
 
@@ -103,9 +103,11 @@ if user == none {
 greet(user)                   // user: User after the guard
 ```
 
+**Anonymous expressions don't narrow.** `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `const v = compute()` then `if v?`, or `if compute()? as v` to bind at the check site.
+
 ## Methods
 
-Four compiler-provided methods on `T?`. Each preserves the wrapper for chaining; operators always extract or panic.
+Four compiler-provided methods on `T or none`. Each preserves the wrapper for chaining; operators always extract or panic.
 
 | Method | Signature | Behavior |
 |--------|-----------|----------|
@@ -125,12 +127,13 @@ const profile = load_user(id).and_then(|u| load_profile(u.id))
 
 ## Linear Resources
 
+A union is linear if any variant is linear (general union rule). For `T or none` where `T` is linear:
+
 | Rule | Description |
 |------|-------------|
-| **OPT25: Linearity propagates** | If `T` is linear, `T?` is linear. Both paths (present and absent) must be handled |
-| **OPT26: Narrow consumes on present path** | `if x?` / `if x? as v` treats the present path as a resource site — the payload must be consumed on that branch |
-| **OPT27: `?.` forbidden on linear** | Optional chaining cannot partially move out of a linear `T`. Use `if x? as v { … v.field … }` |
-| **OPT28: `??` consumes one branch** | Short-circuits; exactly one `T` is produced and must be consumed |
+| **OPT24: Narrow consumes on present path** | `if x?` / `if x? as v` treats the present path as a resource site — the payload must be consumed on that branch |
+| **OPT25: `?.` forbidden on linear** | Optional chaining cannot partially move out of a linear `T`. Use `if x? as v { … v.field … }` |
+| **OPT26: `??` consumes one branch** | Short-circuits; exactly one `T` is produced and must be consumed |
 
 <!-- test: skip -->
 ```rask
@@ -142,66 +145,82 @@ if file? as f {
 // absent path has no resource to consume
 ```
 
-## No Match on Option
+## Match on `T?`
 
-Match dispatches over multi-branch types. Option has two states — every useful pattern factors through operators, usually shorter.
+| Rule | Description |
+|------|-------------|
+| **OPT27: Match is legal but linted** | `match` on `T or none` follows the general match rules. A style lint suggests operators when the match is two-arm and one arm is `none`, since the operator form is shorter |
 
-| Match form (rejected) | Operator form |
-|----------------------|---------------|
+Match on `T or none` is legal — it's a union, the general match rules apply. The lint catches the common two-arm case:
+
+<!-- test: skip -->
+```rask
+// Legal, but lint suggests operators
+match user {
+    none => "guest",
+    u    => u.name,
+}
+
+// Preferred — operators are shorter
+user?.name ?? "guest"
+```
+
+| Match form | Operator form |
+|------------|---------------|
 | `match x { none => a, v => f(v) }` | `if x? { f(x) } else { a }` |
 | `match x { none => default, u => u.name }` | `x?.name ?? default` |
 | `match x { none => return, v => v }` | `x ?? return none` (or `try x`) |
 | `match x { none => panic("…"), v => v }` | `x!` (or `x ?? panic("…")`) |
 
-The compiler rejects `match` on `T?` with a first-class diagnostic (see Error Messages below).
+The lint is non-fatal. Match earns its keep on multi-error unions where the dispatch genuinely has more than two outcomes.
 
-## Comparison
+## Equality
 
-| Rule | Description |
-|------|-------------|
-| **OPT29: Equality with `none`** | `x == none` / `x != none` are the canonical absent/present predicates |
-| **OPT30: Inner equality** | `x == y` when both are `T?` compares inner values (present-present) or returns true for absent-absent |
+Equality on `T or none` follows the general union equality rule:
 
-<!-- test: skip -->
-```rask
-if user == none { return default_profile() }
-if a == b { … }   // compares inner or both-absent
-```
+- `x == none` / `x != none` — present/absent predicate (canonical form for the absent check)
+- `x == y` where both are `T?` — true if both absent, or both present and inner values equal
+
+No optional-specific equality rule.
 
 ## Edge Cases
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Nested optionals (`T??`) | OPT4 | Compile error |
-| `match x { … }` on `T?` | — | Compile error with operator suggestions |
-| `x` is `mut` in `if x?` | OPT19 | No narrow; use `if x? as v` |
-| Anonymous expression in condition | OPT19 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
-| Auto-wrap assignment of non-`T?`-typed binding | OPT6 | Type mismatch — annotation `: T?` is what triggers the wrap |
-| `!x?` syntax | OPT17 | Parse error suggesting `x == none` |
-| Linear `?.field` | OPT27 | Compile error — cannot partially move |
-| `try x` outside a `T?`-returning function | OPT15 | Compile error — propagation target mismatch |
+| Nested optionals (`T??`) | union duplicate-variant | Compile error |
+| `?.` on `T or E or none` | OPT3 | Compile error suggesting layering: `(T or E)?` or `T or (E?)` |
+| `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
+| Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
+| `!x?` syntax | OPT16 | Parse error suggesting `x == none` |
+| Linear `?.field` | OPT25 | Compile error — cannot partially move |
+| `try x` outside a `T?`-returning function | OPT14 | Compile error — propagation target mismatch |
+| `match` on `T?` with two arms | OPT27 | Legal; style lint suggests operators |
+| `const x = none` | OPT8 | Legal. `x: none`. Widens at later use site |
+| `none == none` | equality | `true`. Standard equality on a zero-field type |
 
 ## Error Messages
 
-**Match on Option [migration]:**
+**Operator on wider union [OPT3]:**
 ```
-ERROR [type.optionals/NO_MATCH]: Option cannot be matched
+ERROR [type.optionals/OPT3]: `?.` requires a two-variant union with `none`
    |
-5  |  match user { Some(u) => …, None => … }
-   |  ^^^^^ Option is a builtin status type, not an enum
+5  |  const name = result?.display_name
+   |               ^^^^^^^ `result` is `User or DatabaseError or none` — three variants
 
-WHY: Option has two states — present and absent — and the ?-family
-covers both more concisely than a match.
+WHY: The `?`-family operators handle the absent-or-present case. For unions
+     with multiple non-absent variants, layer the types or use `match`.
 
-FIX: use operators instead:
+FIX: Layer them — error on the inside, optionality on the outside:
 
-  if user? { … } else { … }                   // branching
-  if user? as u { use(u) } else { default() } // with a fresh name
-  user?.name ?? "Anonymous"                   // chain + fallback
-  if user == none { return }                  // early-exit
-  greet(user)                                 // user: User here
+  func find(id: UserId) -> (User or DatabaseError)? { ... }
 
-Match is for enums with three or more branches.
+  const outer = find(id)
+  if outer? as r {
+      match r {
+          User       as u => use(u),
+          DatabaseError as e => log(e),
+      }
+  }
 ```
 
 **`Some(v)` / `None` at construction [migration]:**
@@ -209,14 +228,14 @@ Match is for enums with three or more branches.
 ERROR [type.optionals/NO_WRAPPER]: Some/None are not valid in Rask
    |
 3  |  return Some(user)
-   |         ^^^^^^^^^^ bare value auto-wraps to User? at return
+   |         ^^^^^^^^^^ bare value widens to User? at return
 
 FIX: return user   (or none for absent)
 ```
 
-**`!x?` forbidden [OPT17]:**
+**`!x?` forbidden [OPT16]:**
 ```
-ERROR [type.optionals/OPT17]: cannot negate `x?` with prefix `!`
+ERROR [type.optionals/OPT16]: cannot negate `x?` with prefix `!`
    |
 8  |  if !user? { return }
    |     ^^^^^^ mixes prefix ! with suffix ? ; fights the parse
@@ -224,15 +243,16 @@ ERROR [type.optionals/OPT17]: cannot negate `x?` with prefix `!`
 FIX: if user == none { return }
 ```
 
-**Nested optional [OPT4]:**
+**Match on `T or none` with two arms [style lint, non-fatal]:**
 ```
-ERROR [type.optionals/OPT4]: nested optional type `User??` is not allowed
+LINT [type.optionals/lint-match]: prefer operators over `match` on optional
    |
-2  |  const x: User?? = …
-   |           ^^^^^^ T?? cannot distinguish "absent" from "explicitly-none inner"
+5  |  match user {
+6  |      none => default_name(),
+7  |      u    => u.name,
+8  |  }
 
-FIX: Use a named enum if you need two flavours of absence:
-     type LookupResult = User or NotFound
+SUGGEST: user?.name ?? default_name()
 ```
 
 ---
@@ -241,13 +261,15 @@ FIX: Use a named enum if you need two flavours of absence:
 
 ### Rationale
 
-**OPT1 (builtin status).** The original spec had Option as an enum with dedicated sugar (`T?`, `?.`, `??`, `!`) bolted on top. Calling it "just an enum" is a fiction — Option has more dedicated surface than any other type in the language. The proposal makes the spec agree with the language: Option is builtin, operators are its interface, enums are a different thing.
+**OPT1 (sugar, not a distinct kind).** Earlier drafts treated Option as a builtin "status type" — different from enums and unions, with its own construction rules, auto-wrap rules, linearity propagation, and ban on nesting. That framing carried more teaching burden than the language earned. The new framing: "`T?` is shorthand for `T or none`, and the `?`-operators handle that shape." Shorter to teach, fewer rules to remember. The dedicated surface is on the *operators*, not on the type — the type itself is just a particular union shape.
 
-**OPT5/OPT6 (auto-wrap).** Writing `return Some(user)` when the function returns `User?` adds a tag that is always the same tag. The wrapper is redundant. Auto-wrap at return and assignment lets the type system do the work; the source stays clean.
+**OPT2 (lowercase `none`).** Rask's primitives are lowercase (`i32`, `bool`, `string`, `void`); user-facing types are capitalized (`User`, `Vec`). `none` is builtin, not a user type, so it follows the primitive convention. Uppercase `None` would read like an enum variant you have to import — exactly the framing this design moves away from.
 
-**OPT17 (`!x?` forbidden).** Mixing prefix `!` with suffix `?` mixes reading directions (`!x?` parses right-to-left but reads left-to-right as "not present"). `x == none` is unambiguous. The rule is specific to `!` applied to a `?`-suffixed expression; other uses of `!` on booleans stay normal.
+**OPT3 (restrict operators to two-variant unions).** Generalising `?.` to pass through other variants makes result types unreadable — `user?.profile?.name` on `User or DBError or none` returns `string or DBError or DBError or none`. Coherent but unteachable. Layering is the cleaner discipline; operators stay simple.
 
-**No match on Option.** Keeping match would require `some`/`none` as pattern keywords with no construction counterparts. That asymmetry is exactly the Rust-legacy ceremony the redesign removes. The rejection is the pedagogical move that makes "Option is not an enum" true in practice.
+**OPT16 (`!x?` forbidden).** `!x?` parses right-to-left but reads left-to-right as "not present" — the directions fight. `x == none` is unambiguous. The rule is specific to `!` directly applied to a `?`-suffixed expression; other uses of `!` on booleans stay normal.
+
+**OPT27 (match is a lint, not an error).** Hard errors should enforce safety or correctness, not style. Match on a two-arm union is perfectly safe; it's just verbose. A lint catches the common case.
 
 **Narrowing rides on `const`.** The usual flow-typing complications (mutation, intervening calls, closure capture, field paths) collapse into one structural fact the language already enforces: const bindings cannot be reassigned. Narrowing on a const scrutinee is trivially stable; `mut` requires an explicit `as v` bind. No flow analysis beyond "is this const?"
 
@@ -270,15 +292,6 @@ func greet(user: User?) -> string {
 }
 ```
 
-**Chains with multiple fallbacks.** `??` composes while the left side stays wrapped:
-
-<!-- test: skip -->
-```rask
-const name = user?.display_name
-    ?? user?.email
-    ?? "anon"
-```
-
 **Mutation inside a narrow.** `mut` needs explicit bind; the const `v` inside the block is safely narrowed:
 
 <!-- test: skip -->
@@ -290,15 +303,24 @@ if cache? as c {
 }
 ```
 
+**Layered with errors.** When a function can both fail and return absence, layer them — outer optional, inner result, or vice versa:
+
+<!-- test: skip -->
+```rask
+func find(id: UserId) -> (User or DatabaseError)? {
+    // outer ? indicates "not found"; inner union indicates DB error
+}
+```
+
 ### IDE Integration
 
 - Ghost text shows the narrowed type on hover inside `if x?` blocks.
-- Quick action "Convert `match` to operator form" for migrated code.
+- Quick action "Convert `match` to operator form" for the two-arm none/value case.
 - Ghost text for the diverging `??` fallback shows the return type of the enclosing function.
 
 ### See Also
 
-- [Error Types](error-types.md) — `T or E`, `try`, union errors (`type.errors`)
+- [Union Types](union-types.md) — general union rules (`type.unions`)
+- [Error Types](error-types.md) — `T or E`, `try`, narrowing rules shared with optionals (`type.errors`)
 - [Control Flow](../control/control-flow.md) — if/match/narrowing (`ctrl.flow`)
 - [Type Aliases](type-aliases.md) — nominal vs transparent (`type.aliases`)
-- [Error Model Redesign Proposal](error-model-redesign-proposal.md) — decision record for the operator-only surface

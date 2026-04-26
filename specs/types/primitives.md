@@ -21,7 +21,8 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need e
 | **P4: Boolean** | `bool` | 1 byte | `true`/`false`, no implicit int↔bool |
 | **P5: Unicode scalar** | `char` | 4 bytes | 0x0000–0xD7FF, 0xE000–0x10FFFF |
 | **P6: Unit** | `void` | 0 bytes | Zero-sized. Keyword. Canonical value is `{}` (empty block); functions fall through or `return` bare |
-| **P7: Copy** | All primitives | ≤16 bytes | All primitives are Copy |
+| **P7: Absent** | `none` | 0 bytes | Zero-sized. Keyword. One inhabitant, also spelled `none`. Used as the absent variant of `T?` (sugar for `T or none`) — see [optionals.md](optionals.md) |
+| **P8: Copy** | All primitives | ≤16 bytes | All primitives are Copy |
 
 ## Literals
 
