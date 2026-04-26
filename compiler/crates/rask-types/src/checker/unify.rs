@@ -486,8 +486,12 @@ impl TypeChecker {
 
             (Type::RawPtr(inner1), Type::RawPtr(inner2)) => self.unify(inner1, inner2, span),
 
-            // Union types: unify element-wise if same length
+            // Union types: exact match element-wise, or subset widening for try propagation (ER31).
             (Type::Union(types1), Type::Union(types2)) => {
+                // ER31: smaller union is compatible with a larger union that contains all its members
+                if t1.is_subset_of(&t2) {
+                    return Ok(false);
+                }
                 if types1.len() != types2.len() {
                     return Err(TypeError::Mismatch {
                         expected: t1,
