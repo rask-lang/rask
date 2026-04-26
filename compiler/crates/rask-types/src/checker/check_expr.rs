@@ -9,7 +9,7 @@ use rask_resolve::{SymbolId, SymbolKind};
 use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
 use super::errors::TypeError;
-use super::inference::{LiteralKind, TypeConstraint};
+use super::inference::{LiteralKind, TypeConstraint, WrapPosition};
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
 
@@ -510,11 +510,15 @@ impl TypeChecker {
                                     self.infer_expr(&field_init.value)
                                 };
                                 if let Some(expected) = expected_field {
-                                    self.ctx.add_constraint(TypeConstraint::Equal(
+                                    // OPT6: optional fields widen bare values at
+                                    // initialization. Bind position keeps non-optional
+                                    // sums strict (ER11).
+                                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                                        ret_ty: field_ty,
                                         expected,
-                                        field_ty,
-                                        field_init.value.span,
-                                    ));
+                                        position: WrapPosition::Bind,
+                                        span: field_init.value.span,
+                                    });
                                 }
                             }
                             ty
@@ -535,11 +539,12 @@ impl TypeChecker {
                                     self.infer_expr(&field_init.value)
                                 };
                                 if let Some(sub) = substituted {
-                                    self.ctx.add_constraint(TypeConstraint::Equal(
-                                        sub,
-                                        field_ty,
-                                        field_init.value.span,
-                                    ));
+                                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                                        ret_ty: field_ty,
+                                        expected: sub,
+                                        position: WrapPosition::Bind,
+                                        span: field_init.value.span,
+                                    });
                                 }
                             }
 
@@ -1411,8 +1416,14 @@ impl TypeChecker {
                         }
                     }
                     let arg_ty = self.infer_expr_expecting(&arg.expr, param);
-                    self.ctx
-                        .add_constraint(TypeConstraint::Equal(param.clone(), arg_ty, span));
+                    // OPT6: optional parameters widen bare arguments. Bind
+                    // position keeps non-optional sums strict (ER11).
+                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                        ret_ty: arg_ty,
+                        expected: param.clone(),
+                        position: WrapPosition::Bind,
+                        span,
+                    });
                 }
 
                 ret

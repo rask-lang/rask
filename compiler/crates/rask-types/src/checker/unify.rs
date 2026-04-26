@@ -3,7 +3,7 @@
 
 use rask_ast::Span;
 
-use super::inference::TypeConstraint;
+use super::inference::{TypeConstraint, WrapPosition};
 use super::errors::TypeError;
 use super::TypeChecker;
 
@@ -128,8 +128,9 @@ impl TypeChecker {
             TypeConstraint::ReturnValue {
                 ret_ty,
                 expected,
+                position,
                 span,
-            } => self.resolve_return_value(ret_ty, expected, span),
+            } => self.resolve_return_value(ret_ty, expected, position, span),
             TypeConstraint::TypePatternMatches {
                 scrutinee,
                 narrow_ty,
@@ -204,31 +205,59 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve a return value constraint with deferred auto-wrap.
-    /// Handles `T or E` and `T?`: bare `T` wraps to the success branch,
-    /// bare `E` (or a component of a union `E`) wraps to the error branch
-    /// — ER9 auto-wrap at return, disambiguated by type (ER3 disjointness).
+    /// Resolve a return-value / coercion constraint with deferred auto-wrap.
+    ///
+    /// `T or E`: at return position, bare `T` wraps to ok and bare `E` (or a
+    /// component of a union `E`) wraps to err — ER9, disambiguated by type
+    /// (ER3 disjointness). At assignment / field / argument position the wrap
+    /// is suppressed (ER11): the value must already have the union type, or
+    /// `none` may widen because the optional shape is permissive.
+    ///
+    /// `T?` (= `T or none`): widens at any position.
+    ///
     /// If the return expression's type is still unresolved, defer.
     fn resolve_return_value(
         &mut self,
         ret_ty: Type,
         expected: Type,
+        position: WrapPosition,
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
 
         if let Type::Result { ok, err } = &resolved_expected {
             let resolved_ret = self.ctx.apply(&ret_ty);
+            // Optional shape (T or none) is widened freely; non-optional sums
+            // wrap only at return.
+            let err_is_none = matches!(self.ctx.apply(err), Type::None);
+            let allow_wrap = position == WrapPosition::Return || err_is_none;
             match &resolved_ret {
                 Type::Result { .. } => self.unify(&expected, &ret_ty, span),
+                Type::Var(id) if !allow_wrap && self.ctx.literal_vars.contains_key(id) => {
+                    // Bind position with a non-optional sum: a bare literal can
+                    // never satisfy the union type. Default the literal var
+                    // immediately so unify reports a precise type mismatch
+                    // instead of silently dropping a deferred constraint.
+                    use super::inference::LiteralKind;
+                    let default = match self.ctx.literal_vars[id] {
+                        LiteralKind::Integer => Type::I32,
+                        LiteralKind::Float => Type::F64,
+                    };
+                    let id = *id;
+                    self.ctx.substitutions.insert(id, default);
+                    let resolved_ret = self.ctx.apply(&ret_ty);
+                    self.unify(&expected, &resolved_ret, span)
+                }
                 Type::Var(_) => {
                     self.ctx.add_constraint(TypeConstraint::ReturnValue {
                         ret_ty,
                         expected,
+                        position,
                         span,
                     });
                     Ok(false)
                 }
+                _ if !allow_wrap => self.unify(&expected, &ret_ty, span),
                 _ => {
                     // ER9: pick the branch by type. A value whose type equals
                     // (or is in) E goes to the error branch; otherwise it goes
@@ -263,6 +292,7 @@ impl TypeChecker {
                     self.ctx.add_constraint(TypeConstraint::ReturnValue {
                         ret_ty,
                         expected,
+                        position,
                         span,
                     });
                     Ok(false)

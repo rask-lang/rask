@@ -29,11 +29,17 @@ pub enum TypeConstraint {
         ret: Type,
         span: Span,
     },
-    /// Return value must match function return type, with auto-Ok wrapping.
-    /// Defers wrapping decision until the return type is resolved.
+    /// Return value must match function return type, with auto-wrap into a
+    /// sum type (T or E or T or none) when applicable. Defers wrapping
+    /// decision until the return type is resolved.
+    ///
+    /// `position` distinguishes spec ER9 (return: any T or E wraps) from
+    /// ER11 (assignment / field / argument: only `T or none` widens, the
+    /// optional shape; an error union must already have the union type).
     ReturnValue {
         ret_ty: Type,
         expected: Type,
+        position: WrapPosition,
         span: Span,
     },
     /// ER27: scrutinee is a `T or E`, and `narrow_ty` must match either `T`
@@ -52,6 +58,21 @@ pub enum TypeConstraint {
 pub enum LiteralKind {
     Integer,
     Float,
+}
+
+/// Position of a value-coercion site, used by `ReturnValue` to gate
+/// auto-wrap into `T or E`.
+///
+/// Per ER9/ER11: `T or E` (where E ≠ none) auto-wraps **only** at `return`.
+/// Optionals (`T or none`) widen at any position. Anywhere else for a
+/// non-optional sum, the value must already have the union type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrapPosition {
+    /// Return statement — full ER9 auto-wrap into T or E.
+    Return,
+    /// Assignment, field initialiser, function argument — ER11 restricts
+    /// auto-wrap to optional (`T or none`) only.
+    Bind,
 }
 
 /// State for type inference and unification.
