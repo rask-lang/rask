@@ -40,6 +40,8 @@ pub enum TypeError {
     InvalidTypeString(String),
     #[error("try can only be used in functions returning Option or Result, found {return_ty}")]
     TryInNonPropagatingContext { return_ty: Type, span: Span },
+    #[error("error type mismatch in `try`: propagating `{inner_err}`, but function returns `_ or {outer_err}`")]
+    TryErrorMismatch { inner_err: String, outer_err: String, span: Span },
     #[error("try can only be used within a function")]
     TryOutsideFunction { span: Span },
     #[error("missing return statement")]

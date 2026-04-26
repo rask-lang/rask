@@ -265,6 +265,10 @@ impl TypeChecker {
                     let resolved_err = self.ctx.apply(err);
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
+                        // ER32: `any Trait` error — concrete types implementing the trait go to err
+                        Type::TraitObject { trait_name } => {
+                            crate::traits::implements_trait(&self.types, &resolved_ret, trait_name)
+                        }
                         other => other == &resolved_ret,
                     };
                     let wrapped = if is_err_branch {

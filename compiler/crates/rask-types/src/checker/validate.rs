@@ -227,6 +227,10 @@ fn validate_single_result(
         if matches!(comp, Type::None) {
             continue;
         }
+        // `any ErrorMessage` is the trait itself — no need to check it satisfies itself
+        if matches!(comp, Type::TraitObject { trait_name } if trait_name == "ErrorMessage") {
+            continue;
+        }
         if !implements_error_message(comp, checker) {
             errs.push(TypeError::ErrorMessageMissing {
                 ty: (*comp).clone(),

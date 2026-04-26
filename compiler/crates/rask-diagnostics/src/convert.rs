@@ -318,6 +318,20 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("`try` propagates errors upward — the enclosing function must declare an error type in its return")
             }
 
+            TryErrorMismatch { inner_err, outer_err, span } => {
+                Diagnostic::error(format!(
+                    "error type mismatch: `try` propagates `{}`, but function returns `_ or {}`",
+                    inner_err, outer_err
+                ))
+                .with_code("E0355")
+                .with_primary(*span, format!("propagates `{}`", inner_err))
+                .with_help(format!(
+                    "use `try expr else |e| {}::from(e)` to convert, or change the function return type",
+                    outer_err
+                ))
+                .with_why("try propagates errors to the enclosing function — the error types must be compatible [error-types/ER9]")
+            }
+
             TryOutsideFunction { span } => {
                 Diagnostic::error("`try` can only be used within a function")
                     .with_code("E0317")

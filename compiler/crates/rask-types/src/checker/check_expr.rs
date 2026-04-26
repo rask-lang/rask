@@ -665,7 +665,9 @@ impl TypeChecker {
                                     // ER20: Collect instead of unifying
                                     self.inferred_errors.push(handler_ty);
                                 } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
-                                    let _ = self.unify(&handler_ty, ret_err, expr.span);
+                                    if let Err(e) = self.unify(&handler_ty, ret_err, expr.span) {
+                                        self.errors.push(e);
+                                    }
                                 } else if matches!(resolved_ret, Type::Var(_)) {
                                     // GC7/ER20: Return type is inferred — make it Result
                                     let ret_ok = self.ctx.fresh_var();
@@ -684,7 +686,16 @@ impl TypeChecker {
                                     // ER20: Collect instead of unifying
                                     self.inferred_errors.push(*err.clone());
                                 } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
-                                    let _ = self.unify(err, ret_err, expr.span);
+                                    // CROSS_SHAPE: report a clear error when error types don't match
+                                    if let Err(_) = self.unify(err, ret_err, expr.span) {
+                                        let inner_err = self.fmt_ty(&self.ctx.apply(err));
+                                        let outer_err = self.fmt_ty(&self.ctx.apply(ret_err));
+                                        self.errors.push(TypeError::TryErrorMismatch {
+                                            inner_err,
+                                            outer_err,
+                                            span: expr.span,
+                                        });
+                                    }
                                 } else if matches!(resolved_ret, Type::Var(_)) {
                                     // GC7/ER20: Return type is inferred — make it Result
                                     let ret_ok = self.ctx.fresh_var();
@@ -727,14 +738,20 @@ impl TypeChecker {
                                         self.pop_scope();
                                         if self.accumulate_errors {
                                             self.inferred_errors.push(handler_ty);
-                                        } else {
-                                            let _ = self.unify(&handler_ty, ret_err, expr.span);
+                                        } else if let Err(e) = self.unify(&handler_ty, ret_err, expr.span) {
+                                            self.errors.push(e);
                                         }
                                     } else if self.accumulate_errors {
                                         // ER20: Collect instead of unifying with return
                                         self.inferred_errors.push(err_ty);
-                                    } else {
-                                        let _ = self.unify(&err_ty, ret_err, expr.span);
+                                    } else if let Err(_) = self.unify(&err_ty, ret_err, expr.span) {
+                                        let inner_err = self.fmt_ty(&self.ctx.apply(&err_ty));
+                                        let outer_err = self.fmt_ty(&self.ctx.apply(ret_err));
+                                        self.errors.push(TypeError::TryErrorMismatch {
+                                            inner_err,
+                                            outer_err,
+                                            span: expr.span,
+                                        });
                                     }
                                     ok_ty
                                 }
@@ -1923,6 +1940,11 @@ impl TypeChecker {
         self.resolve_named(&ty)
     }
 
+    /// Format a type with resolved names (Named(id) → "TypeName").
+    pub(super) fn fmt_ty(&self, ty: &Type) -> String {
+        format!("{}", self.types.resolve_type_names(ty))
+    }
+
     pub(super) fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {
         // Primitive type constants: u64.MAX, i32.MIN, etc.
         if let ExprKind::Ident(name) = &object.kind {
@@ -2113,11 +2135,49 @@ impl TypeChecker {
         var
     }
 
-    /// Check that a match on an enum covers all variants.
+    /// Check that a match on an enum or `T or E` result covers all branches.
     fn check_match_exhaustiveness(&mut self, scrutinee_ty: &Type, arms: &[MatchArm], span: Span) {
         let resolved = self.ctx.apply(scrutinee_ty);
 
-        // Only check enums
+        // ER30: exhaustiveness check for `T or E` result matches.
+        // Collect required coverage: ok type + all error leaf types.
+        if let Type::Result { ok, err } = &resolved {
+            let ok_ty = self.ctx.apply(ok);
+            let err_ty = self.ctx.apply(err);
+            // Collect all required type names (display strings) that must be covered.
+            let mut required: Vec<String> = vec![self.fmt_ty(&ok_ty)];
+            match &err_ty {
+                Type::Union(variants) => {
+                    for v in variants {
+                        required.push(self.fmt_ty(v));
+                    }
+                }
+                Type::None => {} // void or E: only ok needed
+                other => required.push(self.fmt_ty(other)),
+            }
+
+            let mut has_wildcard = false;
+            let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for arm in arms {
+                self.collect_result_covered(&arm.pattern, &required, &mut covered, &mut has_wildcard);
+            }
+
+            if has_wildcard {
+                return;
+            }
+
+            let missing: Vec<String> = required
+                .into_iter()
+                .filter(|r| !covered.contains(r))
+                .collect();
+
+            if !missing.is_empty() {
+                self.errors.push(TypeError::NonExhaustiveMatch { missing, span });
+            }
+            return;
+        }
+
+        // Only check enums for the Named case
         let type_id = match &resolved {
             Type::Named(id) => *id,
             _ => return,
@@ -2151,6 +2211,35 @@ impl TypeChecker {
                 missing,
                 span,
             });
+        }
+    }
+
+    fn collect_result_covered(
+        &self,
+        pattern: &Pattern,
+        required: &[String],
+        covered: &mut std::collections::HashSet<String>,
+        has_wildcard: &mut bool,
+    ) {
+        match pattern {
+            Pattern::Wildcard => *has_wildcard = true,
+            Pattern::Ident(name) => {
+                // Bare ident that doesn't match a required type name → catch-all
+                if required.contains(name) {
+                    covered.insert(name.clone());
+                } else {
+                    *has_wildcard = true;
+                }
+            }
+            Pattern::TypePat { ty_name, .. } => {
+                covered.insert(ty_name.clone());
+            }
+            Pattern::Or(alts) => {
+                for alt in alts {
+                    self.collect_result_covered(alt, required, covered, has_wildcard);
+                }
+            }
+            _ => {}
         }
     }
 

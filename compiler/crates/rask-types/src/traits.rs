@@ -334,6 +334,13 @@ impl<'a> TraitChecker<'a> {
                 params: vec![],
                 ret: Type::Option(Box::new(Type::Var(crate::types::TypeVarId(0)))),
             }]),
+            // ER4/ER32: ErrorMessage trait — `func message(self) -> string`
+            "ErrorMessage" => Some(vec![MethodSig {
+                name: "message".to_string(),
+                self_param: SelfParam::Value,
+                params: vec![],
+                ret: Type::String,
+            }]),
             _ => None,
         }
     }
