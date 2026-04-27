@@ -257,3 +257,130 @@ fn missing_file_returns_error_diagnostic() {
     // Should have a single error diagnostic about the missing file.
     assert_eq!(output.diagnostics.len(), 1);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// ER42/ER43: linear payloads in error/enum variants
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn er43_top_level_wildcard_on_linear_enum_errors() {
+    // ER43: matching a transitively-linear enum with a `_` arm silently
+    // drops the linear payload. Compile error.
+    let path = tmp_rk(r#"
+        @resource
+        struct File { path: string }
+        extend File { func close(take self) {} }
+
+        enum FileError {
+            ReadFailed(File, string),
+            Other,
+        }
+
+        func bad(take e: FileError) {
+            match e {
+                FileError.Other => {},
+                _ => {}
+            }
+        }
+
+        func main() {}
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(!output.succeeded(), "ER43: top-level wildcard on linear scrutinee must error");
+    assert!(
+        output.diagnostics.iter().any(|d| d.code.as_ref().map_or(false, |c| c.0 == "E0816")),
+        "expected E0816 for linear-wildcard discard, got: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn er43_field_wildcard_on_linear_payload_errors() {
+    // ER43: a `_` inside a constructor pattern at a linear field position
+    // drops that payload silently. Compile error.
+    let path = tmp_rk(r#"
+        @resource
+        struct File { path: string }
+        extend File { func close(take self) {} }
+
+        enum FileError {
+            ReadFailed(File, string),
+            Other,
+        }
+
+        func bad(take e: FileError) {
+            match e {
+                FileError.ReadFailed(_, _) => {},
+                FileError.Other => {}
+            }
+        }
+
+        func main() {}
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(!output.succeeded(), "ER43: nested wildcard on linear field must error");
+    let has_er43 = output.diagnostics.iter().any(|d| {
+        d.code.as_ref().map_or(false, |c| c.0 == "E0816") && d.message.contains("File")
+    });
+    assert!(has_er43,
+        "expected E0816 mentioning File, got: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn er42_linear_field_bound_and_consumed_compiles() {
+    // ER42 acceptance: when every arm consumes the linear payload it binds,
+    // the program is well-formed.
+    let path = tmp_rk(r#"
+        @resource
+        struct File { path: string }
+        extend File { func close(take self) {} }
+
+        enum FileError {
+            ReadFailed(File, string),
+            Other,
+        }
+
+        func good(take e: FileError) {
+            match e {
+                FileError.ReadFailed(file, _) => file.close(),
+                FileError.Other => {}
+            }
+        }
+
+        func main() {}
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(output.succeeded(),
+        "ER42 good case must compile, got: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn er42_struct_with_linear_field_is_transitively_linear() {
+    // A plain struct that wraps a @resource is itself linear: forgetting
+    // to consume it must error (resource not consumed at scope exit).
+    let path = tmp_rk(r#"
+        @resource
+        struct File { path: string }
+        extend File { func close(take self) {} }
+
+        struct Wrapper { file: File }
+
+        func leak(take w: Wrapper) {
+            // never consume w — compile error
+        }
+
+        func main() {}
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(!output.succeeded(),
+        "transitive linearity: must error when wrapper isn't consumed"
+    );
+    let _ = std::fs::remove_file(&path);
+}

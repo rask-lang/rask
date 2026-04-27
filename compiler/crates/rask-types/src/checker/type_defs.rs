@@ -25,12 +25,20 @@ pub enum TypeDef {
         is_binary: bool,
         /// V5: fields marked `private` — accessible only inside extend blocks
         private_fields: Vec<String>,
+        /// ER42/L1 transitive linearity: true if `is_resource` is true OR any
+        /// field type is itself transitively linear. Computed by a fixed-point
+        /// pass after declaration collection.
+        is_transitive_resource: bool,
     },
     Enum {
         name: String,
         type_params: Vec<String>,
         variants: Vec<(String, Vec<Type>)>,
         methods: Vec<MethodSig>,
+        /// ER42/L1 transitive linearity: true if any variant payload contains
+        /// a transitively-linear type. Computed by a fixed-point pass after
+        /// declaration collection.
+        is_transitive_resource: bool,
     },
     Trait {
         name: String,

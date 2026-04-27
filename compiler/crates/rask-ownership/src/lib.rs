@@ -10,7 +10,9 @@ mod state;
 mod error;
 
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
-pub use error::{OwnershipError, OwnershipErrorKind, AccessKind, MoveReason};
+pub use error::{
+    AccessKind, LinearDiscardPosition, MoveReason, OwnershipError, OwnershipErrorKind,
+};
 
 use std::collections::{HashMap, HashSet};
 
@@ -479,7 +481,8 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::WhileLet { pattern, expr, body } => {
                 self.check_expr(expr);
-                self.register_pattern_bindings(pattern);
+                let scrutinee_ty = self.program.node_types.get(&expr.id).cloned();
+                self.register_pattern_bindings_typed(pattern, scrutinee_ty.as_ref(), expr.span);
                 self.check_block(body);
             }
             StmtKind::For { label: _, binding, mutate, iter, body, .. } => {
@@ -991,7 +994,8 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
                 self.check_expr(scrutinee);
                 let pre_branch = self.bindings.clone();
-                self.register_pattern_bindings(pattern);
+                let scrutinee_ty = self.program.node_types.get(&scrutinee.id).cloned();
+                self.register_pattern_bindings_typed(pattern, scrutinee_ty.as_ref(), scrutinee.span);
                 self.check_expr(then_branch);
                 let then_terminal = Self::is_terminal_expr(then_branch);
                 if let Some(else_branch) = else_branch {
@@ -1015,8 +1019,30 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Match { scrutinee, arms } => {
                 self.check_expr(scrutinee);
+                let scrutinee_ty = self.program.node_types.get(&scrutinee.id).cloned();
+                // L5: matching destructures the scrutinee. For a non-Copy
+                // owned binding, ownership transfers into the arms — the
+                // arm patterns receive the parts. Mark the scrutinee Moved
+                // so the function-exit check doesn't ask the caller to also
+                // consume it. Borrowed scrutinees stay borrowed.
+                if let ExprKind::Ident(name) = &scrutinee.kind {
+                    let owned = matches!(self.bindings.get(name), Some(BindingState::Owned));
+                    let needs_move = scrutinee_ty
+                        .as_ref()
+                        .map_or(false, |ty| !self.is_copy(ty));
+                    if owned && needs_move {
+                        self.bindings.insert(
+                            name.clone(),
+                            BindingState::Moved { at: scrutinee.span },
+                        );
+                    }
+                }
                 for arm in arms {
-                    self.register_pattern_bindings(&arm.pattern);
+                    self.register_pattern_bindings_typed(
+                        &arm.pattern,
+                        scrutinee_ty.as_ref(),
+                        scrutinee.span,
+                    );
                     if let Some(guard) = &arm.guard {
                         self.check_expr(guard);
                     }
@@ -1671,37 +1697,243 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Register pattern bindings as owned.
-    fn register_pattern_bindings(&mut self, pattern: &Pattern) {
+    /// Resolve a scrutinee `Type` to a struct's `(name, type)` field list, if
+    /// the type names a struct (or a `Generic` whose base is a struct).
+    fn struct_fields_for_type(&self, ty: &Type) -> Option<Vec<(String, Type)>> {
+        let id = match ty {
+            Type::Named(id) => *id,
+            Type::Generic { base, .. } => *base,
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                let base = name.split('<').next().unwrap_or(name);
+                self.program.types.get_type_id(base)?
+            }
+            _ => return None,
+        };
+        match self.program.types.get(id)? {
+            rask_types::TypeDef::Struct { fields, .. } => Some(fields.clone()),
+            _ => None,
+        }
+    }
+
+    /// Look up struct fields by struct name. Used when a struct pattern names
+    /// the struct directly but the scrutinee type is unresolved.
+    fn struct_fields_by_name(&self, name: &str) -> Option<Vec<(String, Type)>> {
+        let id = self.program.types.get_type_id(name)?;
+        match self.program.types.get(id)? {
+            rask_types::TypeDef::Struct { fields, .. } => Some(fields.clone()),
+            _ => None,
+        }
+    }
+
+    /// Find a variant's payload types in the enum that `scrutinee_ty` points to,
+    /// or — when scrutinee is a `Result { ok, err }` — search inside `ok` then
+    /// `err`. The constructor name may be qualified (`FileError.ReadFailed`)
+    /// or bare (`ReadFailed`); the qualified prefix is honored when present.
+    fn variant_payload_for(&self, scrutinee_ty: &Type, ctor: &str) -> Option<Vec<Type>> {
+        let (enum_name, variant_name) = match ctor.split_once('.') {
+            Some((e, v)) => (Some(e.to_string()), v.to_string()),
+            None => (None, ctor.to_string()),
+        };
+
+        // Qualified: jump straight to the named enum.
+        if let Some(name) = &enum_name {
+            return self.variant_payload_by_enum(name, &variant_name);
+        }
+
+        match scrutinee_ty {
+            Type::Named(id) => self.variant_payload_in_def(*id, &variant_name),
+            Type::Generic { base, .. } => self.variant_payload_in_def(*base, &variant_name),
+            Type::Result { ok, err } => self
+                .variant_payload_for(ok, &variant_name)
+                .or_else(|| self.variant_payload_for(err, &variant_name)),
+            Type::Union(variants) => variants
+                .iter()
+                .find_map(|v| self.variant_payload_for(v, &variant_name)),
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                let base = name.split('<').next().unwrap_or(name);
+                let id = self.program.types.get_type_id(base)?;
+                self.variant_payload_in_def(id, &variant_name)
+            }
+            _ => None,
+        }
+    }
+
+    fn variant_payload_in_def(&self, id: rask_types::TypeId, variant: &str) -> Option<Vec<Type>> {
+        match self.program.types.get(id)? {
+            rask_types::TypeDef::Enum { variants, .. } => variants
+                .iter()
+                .find(|(n, _)| n == variant)
+                .map(|(_, ts)| ts.clone()),
+            _ => None,
+        }
+    }
+
+    fn variant_payload_by_enum(&self, enum_name: &str, variant: &str) -> Option<Vec<Type>> {
+        let id = self.program.types.get_type_id(enum_name)?;
+        self.variant_payload_in_def(id, variant)
+    }
+
+    /// Search every registered enum for a variant by bare name. Used as a
+    /// fallback when the scrutinee type is unavailable.
+    fn variant_payload_by_name(&self, ctor: &str) -> Option<Vec<Type>> {
+        if let Some((e, v)) = ctor.split_once('.') {
+            return self.variant_payload_by_enum(e, v);
+        }
+        for def in self.program.types.iter() {
+            if let rask_types::TypeDef::Enum { variants, .. } = def {
+                if let Some((_, ts)) = variants.iter().find(|(n, _)| n == ctor) {
+                    return Some(ts.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Register pattern bindings, walking with scrutinee type info so a linear
+    /// position's `_` becomes ER43 and a binding at a linear position is added
+    /// to `resource_bindings`. The `pattern_span` is the scrutinee/match-arm
+    /// span used for diagnostics. `scrutinee_ty: None` skips ER42/ER43 checks
+    /// at the top level — callers without a known type pass None.
+    fn register_pattern_bindings_typed(
+        &mut self,
+        pattern: &Pattern,
+        scrutinee_ty: Option<&Type>,
+        pattern_span: Span,
+    ) {
         match pattern {
+            Pattern::Wildcard => {
+                if let Some(ty) = scrutinee_ty {
+                    if self.type_is_resource(ty) {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::LinearWildcardDiscard {
+                                position: error::LinearDiscardPosition::Scrutinee,
+                                type_name: format!(
+                                    "{}",
+                                    self.program.types.resolve_type_names(ty)
+                                ),
+                            },
+                            span: pattern_span,
+                        });
+                    }
+                }
+            }
             Pattern::Ident(name) => {
+                // Qualified path "Enum.Variant" without parens is a constructor
+                // pattern with zero fields, not a binding (parser rule).
+                if name.contains('.') {
+                    return;
+                }
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                if let Some(ty) = scrutinee_ty {
+                    self.binding_types.insert(name.clone(), ty.clone());
+                    if self.type_is_resource(ty) {
+                        self.resource_bindings.insert(name.clone());
+                    }
+                }
+            }
+            Pattern::Literal(_) | Pattern::Range { .. } => {
+                // Literal/range matches don't bind. Linear values are not
+                // comparable, so this position must be primitive — nothing to do.
             }
             Pattern::Tuple(pats) => {
-                for pat in pats {
-                    self.register_pattern_bindings(pat);
+                let elem_tys = scrutinee_ty.and_then(|ty| match ty {
+                    Type::Tuple(elems) => Some(elems.clone()),
+                    _ => None,
+                });
+                for (i, pat) in pats.iter().enumerate() {
+                    let pos_ty = elem_tys.as_ref().and_then(|tys| tys.get(i));
+                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span);
                 }
             }
-            Pattern::Struct { name: _, fields, rest: _ } => {
-                for (_, pat) in fields {
-                    self.register_pattern_bindings(pat);
+            Pattern::Struct { name, fields, rest } => {
+                let struct_fields = scrutinee_ty
+                    .and_then(|ty| self.struct_fields_for_type(ty))
+                    .or_else(|| self.struct_fields_by_name(name));
+                for (field_name, pat) in fields {
+                    let pos_ty = struct_fields
+                        .as_ref()
+                        .and_then(|fs| fs.iter().find(|(n, _)| n == field_name))
+                        .map(|(_, t)| t.clone());
+                    self.register_pattern_bindings_typed(pat, pos_ty.as_ref(), pattern_span);
+                }
+                // ER43: `..` rest discards every unmentioned linear field.
+                if *rest {
+                    if let Some(struct_fields) = struct_fields {
+                        let mentioned: std::collections::HashSet<&str> =
+                            fields.iter().map(|(n, _)| n.as_str()).collect();
+                        for (fname, fty) in &struct_fields {
+                            if !mentioned.contains(fname.as_str())
+                                && self.type_is_resource(fty)
+                            {
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::LinearWildcardDiscard {
+                                        position: error::LinearDiscardPosition::Field {
+                                            constructor: name.clone(),
+                                            field: Some(fname.clone()),
+                                            index: None,
+                                        },
+                                        type_name: format!(
+                                            "{}",
+                                            self.program.types.resolve_type_names(fty)
+                                        ),
+                                    },
+                                    span: pattern_span,
+                                });
+                            }
+                        }
+                    }
                 }
             }
-            Pattern::Constructor { name: _, fields } => {
-                for pat in fields {
-                    self.register_pattern_bindings(pat);
+            Pattern::Constructor { name, fields } => {
+                let payload_tys = scrutinee_ty
+                    .and_then(|ty| self.variant_payload_for(ty, name))
+                    .or_else(|| self.variant_payload_by_name(name));
+                for (i, pat) in fields.iter().enumerate() {
+                    let pos_ty = payload_tys.as_ref().and_then(|tys| tys.get(i));
+                    if let Pattern::Wildcard = pat {
+                        if let Some(ty) = pos_ty {
+                            if self.type_is_resource(ty) {
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::LinearWildcardDiscard {
+                                        position: error::LinearDiscardPosition::Field {
+                                            constructor: name.clone(),
+                                            field: None,
+                                            index: Some(i),
+                                        },
+                                        type_name: format!(
+                                            "{}",
+                                            self.program.types.resolve_type_names(ty)
+                                        ),
+                                    },
+                                    span: pattern_span,
+                                });
+                            }
+                        }
+                        continue;
+                    }
+                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span);
                 }
             }
             Pattern::Or(pats) => {
-                // For or-patterns, all branches should bind the same names
+                // Each alternative binds the same names; let the typed walk
+                // mark resources on the first, then de-dup with the rest.
                 for pat in pats {
-                    self.register_pattern_bindings(pat);
+                    self.register_pattern_bindings_typed(pat, scrutinee_ty, pattern_span);
                 }
             }
-            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
-            Pattern::TypePat { binding, .. } => {
+            Pattern::TypePat { ty_name, binding } => {
                 if let Some(name) = binding {
                     self.bindings.insert(name.clone(), BindingState::Owned);
+                    // Resolve the narrowed type to determine linearity. Strip
+                    // generic args ("FileError<T>" → "FileError") for lookup.
+                    let base = ty_name.split('<').next().unwrap_or(ty_name);
+                    if let Some(id) = self.program.types.get_type_id(base) {
+                        let narrow_ty = Type::Named(id);
+                        self.binding_types.insert(name.clone(), narrow_ty.clone());
+                        if self.type_is_resource(&narrow_ty) {
+                            self.resource_bindings.insert(name.clone());
+                        }
+                    }
                 }
             }
         }
@@ -1960,7 +2192,6 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Check if a method call uses `take self`.
     fn is_take_self_method(&self, object: &Expr, method_name: &str) -> bool {
-        // Look up the type of the object expression
         if let Some(ty) = self.program.node_types.get(&object.id) {
             let type_id = match ty {
                 Type::Named(id) => Some(*id),
@@ -1984,35 +2215,23 @@ impl<'a> OwnershipChecker<'a> {
         false
     }
 
-    /// Check if a type name refers to a @resource struct.
+    /// L1/ER42: a type-name annotation refers to a transitively-linear type.
+    /// Strips generic args ("File<T>" → "File") and asks the type table.
     fn is_resource_type_name(&self, ty_name: &str) -> bool {
-        // Strip generic args: "File<T>" -> "File"
         let base = ty_name.split('<').next().unwrap_or(ty_name);
-        self.program.types.is_resource_type(base)
-    }
-
-    /// Check if a Type value refers to a @resource struct.
-    fn type_is_resource(&self, ty: &Type) -> bool {
-        match ty {
-            Type::Named(type_id) => {
-                if let Some(rask_types::TypeDef::Struct { is_resource, .. }) = self.program.types.get(*type_id) {
-                    return *is_resource;
-                }
-                false
-            }
-            Type::Generic { base, .. } => {
-                if let Some(rask_types::TypeDef::Struct { is_resource, .. }) = self.program.types.get(*base) {
-                    return *is_resource;
-                }
-                false
-            }
-            Type::UnresolvedNamed(name) => self.is_resource_type_name(name),
-            Type::UnresolvedGeneric { name, .. } => self.is_resource_type_name(name),
-            _ => false,
+        if let Some(id) = self.program.types.get_type_id(base) {
+            return self.program.types.is_transitive_resource_by_id(id);
         }
+        false
     }
 
-    /// Check if an expression's inferred type is a @resource type.
+    /// L1/ER42: a `Type` is transitively linear (carries `@resource` directly
+    /// or through nested fields/variants/tuples/etc.).
+    fn type_is_resource(&self, ty: &Type) -> bool {
+        self.program.types.type_is_transitive_resource(ty)
+    }
+
+    /// Whether an expression's inferred type is transitively linear.
     fn expr_is_resource_type(&self, expr: &Expr) -> bool {
         self.program.node_types.get(&expr.id)
             .map_or(false, |ty| self.type_is_resource(ty))

@@ -155,6 +155,35 @@ pub enum OwnershipErrorKind {
     ScopeLimitedClosureEscapes {
         name: String,
     },
+
+    /// ER43: a wildcard pattern would silently drop a transitively-linear value.
+    /// Either the whole scrutinee is linear and `_` discards it, or a pattern
+    /// position inside a destructure (variant payload, struct field, tuple
+    /// element) is linear and the user wrote `_` there.
+    #[error("`_` here would silently drop linear value of type `{type_name}`")]
+    LinearWildcardDiscard {
+        /// Where the discard happens (whole scrutinee vs nested field).
+        position: LinearDiscardPosition,
+        /// The transitively-linear type that would be dropped.
+        type_name: String,
+    },
+}
+
+/// Where a linear-wildcard discard occurred. Drives the ER43 diagnostic copy.
+#[derive(Debug, Clone)]
+pub enum LinearDiscardPosition {
+    /// Top-level wildcard arm: `match r { _ => ... }` where `r` is linear.
+    Scrutinee,
+    /// Field inside a destructured variant or struct pattern.
+    Field {
+        /// Constructor or struct name (e.g. `FileError.ReadFailed`, `Wrapper`).
+        constructor: String,
+        /// Field name when known (struct patterns, named variant fields).
+        /// Constructor patterns use the positional index instead.
+        field: Option<String>,
+        /// Positional index for tuple-style payloads.
+        index: Option<usize>,
+    },
 }
 
 /// User-friendly access kind for error messages.
