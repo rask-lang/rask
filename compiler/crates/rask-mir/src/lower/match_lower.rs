@@ -65,7 +65,7 @@ impl<'a> MirLowerer<'a> {
 
         let is_result_or_option = if !is_enum {
             self.ctx.lookup_raw_type(scrutinee.id).map_or(false, |ty| {
-                matches!(ty, rask_types::Type::Result { .. } | rask_types::Type::Option(_))
+                matches!(ty, rask_types::Type::Result { .. })
             })
         } else {
             false
@@ -277,6 +277,52 @@ impl<'a> MirLowerer<'a> {
                                     }
                                 }
                             }
+                        }
+                    }
+                // TypePat { ty_name, binding } — `T as name` in a Result/Option match.
+                // The switch case routing is already correct (arm index → tag).
+                // Here we emit the payload extraction for the binding.
+                } else if let Pattern::TypePat { ty_name, binding } = &arm.pattern {
+                    if let Some(binding_name) = binding {
+                        if is_result_or_option {
+                            // Determine ok vs err branch by the ok_payload type name.
+                            let ok_name = self.mir_type_name(&ok_payload_ty);
+                            let is_ok_arm = ok_name.as_deref() == Some(ty_name.as_str())
+                                || ty_name.chars().next().map_or(false, |c| c.is_lowercase());
+                            let payload_ty = if is_ok_arm {
+                                ok_payload_ty.clone()
+                            } else {
+                                err_payload_ty.clone()
+                            };
+                            let payload_local = self.builder.alloc_local(
+                                binding_name.clone(), payload_ty.clone(),
+                            );
+                            // Scalar payloads: provide byte_offset to bypass the codegen's
+                            // "return pointer if either ok or err is aggregate" check, which
+                            // would wrongly return a pointer when ok=i32 but err=SomeEnum.
+                            // Aggregate payloads: let field_index=0 trigger the pointer return.
+                            let is_aggregate_payload = matches!(
+                                payload_ty,
+                                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+                            );
+                            let rvalue = MirRValue::Field {
+                                base: scrutinee_op.clone(),
+                                field_index: 0,
+                                byte_offset: if !is_aggregate_payload {
+                                    Some(crate::types::RESULT_PAYLOAD_OFFSET)
+                                } else {
+                                    None
+                                },
+                                field_size: None,
+                            };
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: payload_local,
+                                rvalue,
+                            }));
+                            if let Some(p) = self.mir_type_name(&payload_ty) {
+                                self.meta_mut(binding_name).type_prefix = Some(p);
+                            }
+                            self.locals.insert(binding_name.clone(), (payload_local, payload_ty));
                         }
                     }
                 }

@@ -1131,7 +1131,7 @@ impl<'a> MirLowerer<'a> {
                     && args.len() == 1
                     && matches!(args[0].expr.kind, ExprKind::None)
                     && self.ctx.lookup_raw_type(object.id)
-                        .map_or(false, |ty| matches!(ty, rask_types::Type::Option(_)));
+                        .map_or(false, |ty| ty.is_option());
                 if is_option_none_cmp {
                     let is_niche = self.is_niche_option_expr(object);
                     let tag_local = self.emit_option_tag(&obj_op, is_niche);

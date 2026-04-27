@@ -1,7 +1,10 @@
 <!-- id: type.error-model-redesign -->
-<!-- status: proposed -->
-<!-- summary: Full error-model redesign. T or E and T? become compiler-generated tagged unions with type-based branch disambiguation. No Ok/Err/Some/None constructors. Disjointness rule (T != E) enforces unambiguous construction. Operator family covers both shapes; match is for multi-branch unions only. Narrowing rides on the const/mut distinction — no flow typing. -->
+<!-- status: accepted -->
+<!-- summary: Full error-model redesign. T or E and T? become compiler-generated tagged unions with type-based branch disambiguation. No Ok/Err/Some/None constructors. Disjointness rule (T != E) enforces unambiguous construction. Operator family covers both shapes; match is for multi-branch unions only. Narrowing rides on the const/mut distinction — no flow typing. Accepted and folded into the decided specs, with the optional-unification proposal layered on top (T? is sugar for T or none). -->
 <!-- depends: types/optionals.md, types/error-types.md, types/union-types.md -->
+
+> **Status: Accepted (2026-04-26).** The chosen design. Normative rules now live in [error-types.md](error-types.md), [optionals.md](optionals.md), [union-types.md](union-types.md), and [primitives.md](primitives.md). One amendment from this proposal: per the [optional-unification proposal](optional-unification-proposal.md), `T?` is sugar for `T or none` rather than a separate "status type" kind, and `match` on `T or none` is a style lint rather than a hard error. This file is retained as the design rationale and the decision record.
+
 
 # Rask Error Model Redesign
 

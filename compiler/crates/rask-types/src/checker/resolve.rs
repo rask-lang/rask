@@ -188,8 +188,8 @@ impl TypeChecker {
                 }
             }
             // Option<T> field access: unwrap and access inner type
-            Type::Option(inner) => {
-                let inner = *inner.clone();
+            ty if ty.is_option() => {
+                let inner = ty.as_option().unwrap().clone();
                 self.resolve_field(inner, field, expected, span, self_type)
             }
             _ => Err(TypeError::NoSuchField {
@@ -353,7 +353,7 @@ impl TypeChecker {
                                     self.unify(arg_ty, &Type::I64, span)?;
                                 }
                             }
-                            let opt_ty = Type::Option(Box::new(ty));
+                            let opt_ty = Type::option(ty);
                             self.unify(&opt_ty, &ret, span)
                         } else {
                             Err(TypeError::NoSuchMethod {
@@ -410,7 +410,7 @@ impl TypeChecker {
                             name: "Handle".to_string(),
                             args: vec![GenericArg::Type(Box::new(inner_type))],
                         };
-                        let opt_ty = Type::Option(Box::new(handle_ty));
+                        let opt_ty = Type::option(handle_ty);
                         self.unify(&ret, &opt_ty, span)
                     }
                     "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
@@ -614,8 +614,8 @@ impl TypeChecker {
             Type::F32 | Type::F64 => {
                 self.resolve_float_method(&ty, &method, &args, &ret, span)
             }
-            Type::Option(inner) => {
-                let inner = *inner.clone();
+            ty if ty.is_option() => {
+                let inner = ty.as_option().unwrap().clone();
                 self.resolve_option_method(&inner, &method, &args, &ret, span)
             }
             Type::Result { ok, err } => {
@@ -652,10 +652,14 @@ impl TypeChecker {
                 HashMap::new()
             }
         } else if Some(type_id) == self.types.get_option_type_id() {
-            if let Some(Type::Option(inner)) = &self.current_return_type {
-                let mut subst = HashMap::new();
-                subst.insert(TypeVarId(0), *inner.clone());
-                subst
+            if let Some(ret_ty) = &self.current_return_type {
+                if let Some(inner) = ret_ty.as_option() {
+                    let mut subst = HashMap::new();
+                    subst.insert(TypeVarId(0), inner.clone());
+                    subst
+                } else {
+                    HashMap::new()
+                }
             } else {
                 HashMap::new()
             }
@@ -733,7 +737,7 @@ impl TypeChecker {
             "push" => self.unify(ret, &Type::Unit, span),
             "pop" => {
                 let elem_ty = self.ctx.fresh_var();
-                self.unify(ret, &Type::Option(Box::new(elem_ty)), span)
+                self.unify(ret, &Type::option(elem_ty), span)
             }
             _ => Ok(false),
         }
@@ -1109,13 +1113,13 @@ impl TypeChecker {
             // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_read") if args.len() == 1 => {
                 let result_var = self.ctx.fresh_var();
-                let opt_ty = Type::Option(Box::new(result_var));
+                let opt_ty = Type::option(result_var);
                 self.unify(ret, &opt_ty, span)
             }
             // Shared<T>.try_write(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_write") if args.len() == 1 => {
                 let result_var = self.ctx.fresh_var();
-                let opt_ty = Type::Option(Box::new(result_var));
+                let opt_ty = Type::option(result_var);
                 self.unify(ret, &opt_ty, span)
             }
             // Shared<T>.clone() -> Shared<T>
@@ -1156,7 +1160,7 @@ impl TypeChecker {
             // Mutex<T>.try_lock(|T| -> R) -> Option<R>
             ("Mutex", "try_lock") if args.len() == 1 => {
                 let result_var = self.ctx.fresh_var();
-                let opt_ty = Type::Option(Box::new(result_var));
+                let opt_ty = Type::option(result_var);
                 self.unify(ret, &opt_ty, span)
             }
             // Mutex<T>.clone() -> Mutex<T>
@@ -1310,12 +1314,12 @@ impl TypeChecker {
             }
             // pool.get(h: Handle<T>) -> T?
             "get" if args.len() == 1 => {
-                let result_ty = Type::Option(Box::new(inner_type));
+                let result_ty = Type::option(inner_type);
                 self.unify(ret, &result_ty, span)
             }
             // pool.remove(h: Handle<T>) -> T?
             "remove" if args.len() == 1 => {
-                let result_ty = Type::Option(Box::new(inner_type));
+                let result_ty = Type::option(inner_type);
                 self.unify(ret, &result_ty, span)
             }
             // pool.len() -> u64
@@ -1348,7 +1352,7 @@ impl TypeChecker {
             }
             // pool.get_mut(h) -> T?
             "get_mut" | "get_clone" if args.len() == 1 => {
-                let result_ty = Type::Option(Box::new(inner_type));
+                let result_ty = Type::option(inner_type);
                 self.unify(ret, &result_ty, span)
             }
             // pool.try_insert(value: T) -> Handle<T>?
@@ -1358,7 +1362,7 @@ impl TypeChecker {
                     name: "Handle".to_string(),
                     args: vec![GenericArg::Type(Box::new(inner_type))],
                 };
-                let opt_ty = Type::Option(Box::new(handle_ty));
+                let opt_ty = Type::option(handle_ty);
                 self.unify(ret, &opt_ty, span)
             }
             // pool.drain() -> Vec<T>
@@ -1389,7 +1393,7 @@ impl TypeChecker {
             // pool.read(h, closure) -> R?, pool.modify(h, closure) -> R?
             // pool.with_valid(h, closure) -> R?, pool.with_valid_mut(h, closure) -> R?
             "read" | "modify" | "with_valid" | "with_valid_mut" if args.len() == 2 => {
-                let result_ty = Type::Option(Box::new(self.ctx.fresh_var()));
+                let result_ty = Type::option(self.ctx.fresh_var());
                 self.unify(ret, &result_ty, span)
             }
             // pool.capacity() -> u64, pool.remaining() -> u64
@@ -1550,7 +1554,7 @@ impl TypeChecker {
                 self.unify(ret, &Type::Unit, span)
             }
             "pop" if args.is_empty() => {
-                let opt_ty = Type::Option(Box::new(inner_type));
+                let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
             "len" if args.is_empty() => {
@@ -1558,7 +1562,7 @@ impl TypeChecker {
             }
             "get" if args.len() == 1 => {
                 let _ = self.unify(&args[0], &Type::I64, span);
-                let opt_ty = Type::Option(Box::new(inner_type));
+                let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
             "set" if args.len() == 2 => {
@@ -1623,12 +1627,12 @@ impl TypeChecker {
             }
             // vec.first() -> Option<T>
             "first" if args.is_empty() => {
-                let opt_ty = Type::Option(Box::new(inner_type));
+                let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
             // vec.last() -> Option<T>
             "last" if args.is_empty() => {
-                let opt_ty = Type::Option(Box::new(inner_type));
+                let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
             // vec.contains(value) -> bool
@@ -1699,7 +1703,7 @@ impl TypeChecker {
             }
             // vec.reduce(f) -> Option<T>
             "reduce" if args.len() == 1 => {
-                let opt_ty = Type::Option(Box::new(inner_type));
+                let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
             // vec.enumerate() -> Vec<(i64, T)>
@@ -1731,12 +1735,12 @@ impl TypeChecker {
             }
             // vec.find(predicate) -> Option<T>
             "find" if args.len() == 1 => {
-                let opt_ty = Type::Option(Box::new(inner_type));
+                let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
             // vec.position(predicate) -> Option<i64>
             "position" if args.len() == 1 => {
-                let opt_ty = Type::Option(Box::new(Type::I64));
+                let opt_ty = Type::option(Type::I64);
                 self.unify(ret, &opt_ty, span)
             }
             // vec.count() -> u64
@@ -1753,12 +1757,12 @@ impl TypeChecker {
             }
             // vec.min() -> Option<T>
             "min" if args.is_empty() => {
-                let opt_ty = Type::Option(Box::new(inner_type));
+                let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
             // vec.max() -> Option<T>
             "max" if args.is_empty() => {
-                let opt_ty = Type::Option(Box::new(inner_type));
+                let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
             // vec.clone() -> Vec<T>
@@ -1857,7 +1861,7 @@ impl TypeChecker {
             }
             "get" if args.len() == 1 => {
                 let _ = self.unify(&args[0], &key_type, span);
-                let opt_ty = Type::Option(Box::new(val_type));
+                let opt_ty = Type::option(val_type);
                 self.unify(ret, &opt_ty, span)
             }
             "remove" if args.len() == 1 => {
@@ -2224,7 +2228,7 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let self_ty = Type::Option(Box::new(inner.clone()));
+        let self_ty = Type::option(inner.clone());
         match method {
             "is_some" | "is_none" if args.is_empty() => {
                 self.unify(ret, &Type::Bool, span)
@@ -2243,7 +2247,7 @@ impl TypeChecker {
                     ret: Box::new(result_inner.clone()),
                 };
                 let _ = self.unify(&args[0], &expected_fn, span);
-                self.unify(ret, &Type::Option(Box::new(result_inner)), span)
+                self.unify(ret, &Type::option(result_inner), span)
             }
             "filter" if args.len() == 1 => {
                 let expected_fn = Type::Fn {
@@ -2315,7 +2319,7 @@ impl TypeChecker {
                 self.unify(ret, &result_type, span)
             }
             "to_option" | "ok" if args.is_empty() => {
-                self.unify(ret, &Type::Option(Box::new(ok.clone())), span)
+                self.unify(ret, &Type::option(ok.clone()), span)
             }
             _ => Err(TypeError::NoSuchMethod {
                 ty: self_ty,

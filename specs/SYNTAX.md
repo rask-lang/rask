@@ -341,7 +341,7 @@ extend File {
 
 ### Enums (Sum Types)
 
-Option (`T?`) and the error union (`T or E`) are builtin tagged unions, not user enums — no `Some`/`None` or `Ok`/`Err` constructors. See [types/optionals.md](types/optionals.md) and [types/error-types.md](types/error-types.md). User enums cover everything else:
+`T or E` is a builtin tagged-union sum type, not a user enum — no `Ok`/`Err` constructors. `T?` is sugar for `T or none` (one variant is the built-in zero-field type `none`); no `Some`/`None` constructors. See [types/optionals.md](types/optionals.md) and [types/error-types.md](types/error-types.md). User enums cover everything else:
 
 ```rask
 // Positional payloads — clean for wrappers and simple cases
@@ -1147,7 +1147,7 @@ println("{sum}")
 | Rebindable | `mut x = ...` | Can reassign |
 | Mutable | `mutate param` | Explicit mutable borrow |
 | Ownership | `take param` | Explicit when consuming |
-| Optional | `T?` | Type and chaining; bare value + `none`, no `Some`/`None` |
+| Optional | `T?` | Sugar for `T or none`; bare value + `none` literal, no `Some`/`None` |
 | Error union | `T or E` | No `Ok`/`Err` — bare T auto-wraps at return; E is its own type |
 | Error prop | `try expr` | Prefix keyword |
 | Match | `match x { ... }` | Expression with `=>` arms |

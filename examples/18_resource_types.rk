@@ -126,7 +126,7 @@ func manual_close() {
     // ensure won't run because conn was already closed
 }
 
-func demonstrate_file_resources() -> () or IoError {
+func demonstrate_file_resources() -> void or IoError {
     // File handles are also linear resources
     mut file = try fs.create("test.txt")
     ensure {

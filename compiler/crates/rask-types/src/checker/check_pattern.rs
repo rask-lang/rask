@@ -48,7 +48,9 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
                 Type::UnresolvedGeneric { name: name.clone(), args: normalized_args }
             }
         }
-        Type::Option(inner) => Type::Option(Box::new(normalize_type(inner, types))),
+        Type::Result { ok, err } if **err == Type::None => {
+            Type::option(normalize_type(ok, types))
+        }
         Type::Result { ok, err } => Type::Result {
             ok: Box::new(normalize_type(ok, types)),
             err: Box::new(normalize_type(err, types)),
@@ -100,7 +102,7 @@ impl TypeChecker {
                 // (e.g. `enum GrepResult { Ok(i32), Err(string) }`).
                 if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") {
                     let applied = self.ctx.apply(scrutinee_ty);
-                    if matches!(applied, Type::Result { .. } | Type::Option(_)) {
+                    if matches!(applied, Type::Result { .. }) {
                         self.errors.push(TypeError::LegacyWrapperPattern {
                             name: name.clone(),
                             with_binding: false,
@@ -147,7 +149,7 @@ impl TypeChecker {
                 // variant names (e.g. simple_grep.rk's `GrepResult`) are fine.
                 if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") {
                     let applied = self.ctx.apply(scrutinee_ty);
-                    if matches!(applied, Type::Result { .. } | Type::Option(_)) {
+                    if matches!(applied, Type::Result { .. }) {
                         self.errors.push(TypeError::LegacyWrapperPattern {
                             name: name.clone(),
                             with_binding: !fields.is_empty(),
@@ -413,20 +415,21 @@ impl TypeChecker {
                 }
             }
             "Some" => {
-                match &resolved_scrutinee {
-                    Type::Option(inner) => {
+                match resolved_scrutinee.as_option() {
+                    Some(inner) => {
+                        let inner = inner.clone();
                         if fields.len() == 1 {
-                            return self.check_pattern(&fields[0], inner, span);
+                            return self.check_pattern(&fields[0], &inner, span);
                         }
                         if fields.is_empty() {
-                            return vec![("".to_string(), *inner.clone())];
+                            return vec![("".to_string(), inner)];
                         }
                     }
-                    Type::Var(_) => {
+                    None if matches!(resolved_scrutinee, Type::Var(_)) => {
                         let inner_ty = self.ctx.fresh_var();
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             scrutinee_ty.clone(),
-                            Type::Option(Box::new(inner_ty.clone())),
+                            Type::option(inner_ty.clone()),
                             span,
                         ));
                         if fields.len() == 1 {
@@ -444,11 +447,11 @@ impl TypeChecker {
                     // Constrain scrutinee to Option unless already known to be one.
                     // Var types need the constraint too — otherwise a standalone
                     // None arm won't propagate the Option requirement.
-                    if !matches!(&resolved_scrutinee, Type::Option(_)) {
+                    if !resolved_scrutinee.is_option() {
                         let inner_ty = self.ctx.fresh_var();
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             scrutinee_ty.clone(),
-                            Type::Option(Box::new(inner_ty)),
+                            Type::option(inner_ty),
                             span,
                         ));
                     }

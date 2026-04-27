@@ -89,11 +89,11 @@ Quick navigation by task or concept:
 
 | Spec | Description |
 |------|-------------|
-| [primitives.md](types/primitives.md) | Integers, floats, bool, char, unit |
+| [primitives.md](types/primitives.md) | Integers, floats, bool, char, unit, `none` |
 | [simd.md](types/simd.md) | SIMD vectors, masking, reductions, shuffles |
 | [structs.md](types/structs.md) | Struct definition, methods, visibility |
 | [enums.md](types/enums.md) | Sum types, pattern matching |
-| [optionals.md](types/optionals.md) | Option status type, `T?` syntax |
+| [optionals.md](types/optionals.md) | `T?` (sugar for `T or none`), `?`-family operators |
 | [error-types.md](types/error-types.md) | `T or E`, `ErrorMessage` trait, union composition |
 | [generics.md](types/generics.md) | Parametric polymorphism, constraints |
 | [gradual-constraints.md](types/gradual-constraints.md) | Type/bound inference for private functions |

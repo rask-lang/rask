@@ -700,7 +700,7 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
     return items
 }
 
-func verify_checksum(data: string, expected: string, pkg_name: string) -> () or RegistryError {
+func verify_checksum(data: string, expected: string, pkg_name: string) -> void or RegistryError {
     if expected.is_empty() { return () }
     // Simple hash: sum all bytes mod 2^32 (real impl would SHA-256)
     mut hash: i64 = 0
@@ -718,7 +718,7 @@ func fetch_packages(
     graph: DepGraph,
     registry: any Registry,
     cache_dir: string,
-) -> () or FetchError {
+) -> void or FetchError {
     fs.create_dir_all(cache_dir)
 
     const items = collect_fetch_items(graph, cache_dir)
@@ -802,7 +802,7 @@ func fetch_one(item: FetchItem, registry: any Registry) -> string or FetchError 
 //   version = "2.1.0"
 //   checksum = "sha256:a1b2..."
 
-func write_lockfile(graph: DepGraph, path: string) -> () or FetchError {
+func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
     // Write to temp file, rename on success. ensure cleans up on error.
     const tmp_path = "{path}.tmp"
 
@@ -1131,7 +1131,7 @@ func create_registry(args: CliArgs) -> any Registry {
     }
 }
 
-func run(args: CliArgs) -> () or FetchError {
+func run(args: CliArgs) -> void or FetchError {
     const registry = create_registry(args)
 
     println("Loading manifest: {args.manifest_path}")

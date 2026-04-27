@@ -1023,6 +1023,14 @@ impl Parser {
             return Ok("()".to_string());
         }
 
+        // `none` keyword: zero-sized absent-sentinel type (type.primitives/P7).
+        // Allowed in type position only; the same token is also the absent
+        // literal in expression position.
+        if self.check(&TokenKind::None) {
+            self.advance();
+            return Ok("none".to_string());
+        }
+
         if self.check(&TokenKind::LBracket) {
             self.advance();
 

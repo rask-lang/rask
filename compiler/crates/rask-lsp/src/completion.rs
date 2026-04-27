@@ -162,7 +162,7 @@ fn collect_for_type(
             }
         }
         Type::String => add_stdlib_methods("string", items),
-        Type::Option(_) => add_stdlib_methods("Option", items),
+        ty if ty.is_option() => add_stdlib_methods("Option", items),
         Type::Result { .. } => add_stdlib_methods("Result", items),
         Type::Array { .. } | Type::Slice(_) => add_stdlib_methods("Vec", items),
         _ => {}

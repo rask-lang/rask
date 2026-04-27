@@ -5,7 +5,7 @@ use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 
 use super::errors::TypeError;
-use super::inference::TypeConstraint;
+use super::inference::{TypeConstraint, WrapPosition};
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
 
@@ -42,11 +42,13 @@ impl TypeChecker {
                     (self.infer_expr(init), None)
                 };
                 let binding_ty = if let Some(declared) = declared_ty {
-                    // OPT6: auto-wrap `T` into `T?`, and `T` or `E` into `T or E`
-                    // at assignment when the annotation is an Option/Result.
+                    // ER11/optionals: at binding position, only the optional
+                    // shape (T or none) widens. Bare T into T or E (E ≠ none)
+                    // is rejected so the error-branch coercion stays visible.
                     self.ctx.add_constraint(TypeConstraint::ReturnValue {
                         ret_ty: init_ty,
                         expected: declared.clone(),
+                        position: WrapPosition::Bind,
                         span: stmt.span,
                     });
                     self.define_local(name.clone(), declared.clone());
@@ -76,10 +78,12 @@ impl TypeChecker {
                     (self.infer_expr(init), None)
                 };
                 let binding_ty = if let Some(declared) = declared_ty {
-                    // OPT6: auto-wrap at assignment (same as Mut above).
+                    // ER11/optionals: at binding position, only the optional
+                    // shape (T or none) widens — same rule as Mut above.
                     self.ctx.add_constraint(TypeConstraint::ReturnValue {
                         ret_ty: init_ty,
                         expected: declared.clone(),
+                        position: WrapPosition::Bind,
                         span: stmt.span,
                     });
                     self.define_local_const(name.clone(), declared.clone());
@@ -161,12 +165,14 @@ impl TypeChecker {
                     Type::Unit
                 };
                 if let Some(expected) = &self.current_return_type {
-                    // Defer auto-Ok wrapping — the solver resolves this after
+                    // Defer auto-wrap — the solver resolves this after
                     // method/field constraints are solved, so we know if the
-                    // return expression is already a Result or needs wrapping
+                    // return expression is already a Result or needs wrapping.
+                    // Return position permits the full ER9 wrap.
                     self.ctx.add_constraint(TypeConstraint::ReturnValue {
                         ret_ty,
                         expected: expected.clone(),
+                        position: WrapPosition::Return,
                         span: stmt.span,
                     });
                 }

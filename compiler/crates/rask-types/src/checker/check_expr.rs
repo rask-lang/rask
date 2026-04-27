@@ -9,7 +9,7 @@ use rask_resolve::{SymbolId, SymbolKind};
 use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
 use super::errors::TypeError;
-use super::inference::{LiteralKind, TypeConstraint};
+use super::inference::{LiteralKind, TypeConstraint, WrapPosition};
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
 
@@ -122,7 +122,7 @@ impl TypeChecker {
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),
             // OPT3: `none` is `T?` with inner type inferred from context.
-            ExprKind::None => Type::Option(Box::new(self.ctx.fresh_var())),
+            ExprKind::None => Type::option(self.ctx.fresh_var()),
 
             ExprKind::Ident(name) => {
                 // D1: use after discard is a compile error
@@ -390,10 +390,12 @@ impl TypeChecker {
                     // If no explicit bindings, extract inner type from Option/Result
                     // This handles patterns like `Some` or `Ok` without explicit field binding
                     let resolved_value_ty = self.ctx.apply(&value_ty);
-                    match &resolved_value_ty {
-                        Type::Option(inner) => *inner.clone(),
-                        Type::Result { ok, .. } => *ok.clone(),
-                        _ => Type::Unit,
+                    match resolved_value_ty.as_option() {
+                        Some(inner) => inner.clone(),
+                        None => match &resolved_value_ty {
+                            Type::Result { ok, .. } => *ok.clone(),
+                            _ => Type::Unit,
+                        },
                     }
                 }
             }
@@ -411,7 +413,7 @@ impl TypeChecker {
                 let scrutinee_ty = self.infer_expr(scrutinee);
                 // OPT NO_MATCH: reject `match x?` on an Option — migration error.
                 let resolved_sc = self.ctx.apply(&scrutinee_ty);
-                if matches!(resolved_sc, Type::Option(_)) {
+                if resolved_sc.is_option() {
                     self.errors.push(TypeError::MatchOnOption { span: expr.span });
                 }
                 let result_ty = self.ctx.fresh_var();
@@ -510,11 +512,15 @@ impl TypeChecker {
                                     self.infer_expr(&field_init.value)
                                 };
                                 if let Some(expected) = expected_field {
-                                    self.ctx.add_constraint(TypeConstraint::Equal(
+                                    // OPT6: optional fields widen bare values at
+                                    // initialization. Bind position keeps non-optional
+                                    // sums strict (ER11).
+                                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                                        ret_ty: field_ty,
                                         expected,
-                                        field_ty,
-                                        field_init.value.span,
-                                    ));
+                                        position: WrapPosition::Bind,
+                                        span: field_init.value.span,
+                                    });
                                 }
                             }
                             ty
@@ -535,11 +541,12 @@ impl TypeChecker {
                                     self.infer_expr(&field_init.value)
                                 };
                                 if let Some(sub) = substituted {
-                                    self.ctx.add_constraint(TypeConstraint::Equal(
-                                        sub,
-                                        field_ty,
-                                        field_init.value.span,
-                                    ));
+                                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                                        ret_ty: field_ty,
+                                        expected: sub,
+                                        position: WrapPosition::Bind,
+                                        span: field_init.value.span,
+                                    });
                                 }
                             }
 
@@ -632,7 +639,7 @@ impl TypeChecker {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
-                    Type::Option(inner) => {
+                    Type::Result { ok: inner, err } if **err == Type::None => {
                         if else_clause.is_some() {
                             // try...else on Option doesn't make sense (no error value)
                             self.errors.push(TypeError::TryOnNonResult {
@@ -660,7 +667,9 @@ impl TypeChecker {
                                     // ER20: Collect instead of unifying
                                     self.inferred_errors.push(handler_ty);
                                 } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
-                                    let _ = self.unify(&handler_ty, ret_err, expr.span);
+                                    if let Err(e) = self.unify(&handler_ty, ret_err, expr.span) {
+                                        self.errors.push(e);
+                                    }
                                 } else if matches!(resolved_ret, Type::Var(_)) {
                                     // GC7/ER20: Return type is inferred — make it Result
                                     let ret_ok = self.ctx.fresh_var();
@@ -679,7 +688,16 @@ impl TypeChecker {
                                     // ER20: Collect instead of unifying
                                     self.inferred_errors.push(*err.clone());
                                 } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
-                                    let _ = self.unify(err, ret_err, expr.span);
+                                    // CROSS_SHAPE: report a clear error when error types don't match
+                                    if let Err(_) = self.unify(err, ret_err, expr.span) {
+                                        let inner_err = self.fmt_ty(&self.ctx.apply(err));
+                                        let outer_err = self.fmt_ty(&self.ctx.apply(ret_err));
+                                        self.errors.push(TypeError::TryErrorMismatch {
+                                            inner_err,
+                                            outer_err,
+                                            span: expr.span,
+                                        });
+                                    }
                                 } else if matches!(resolved_ret, Type::Var(_)) {
                                     // GC7/ER20: Return type is inferred — make it Result
                                     let ret_ok = self.ctx.fresh_var();
@@ -697,9 +715,9 @@ impl TypeChecker {
                         if let Some(return_ty) = &self.current_return_type {
                             let resolved_ret = self.ctx.apply(return_ty);
                             match &resolved_ret {
-                                Type::Option(_) => {
+                                _ if resolved_ret.is_option() => {
                                     let inner_opt_ty = self.ctx.fresh_var();
-                                    let option_ty = Type::Option(Box::new(inner_opt_ty.clone()));
+                                    let option_ty = Type::option(inner_opt_ty.clone());
                                     let _ = self.unify(&inner_ty, &option_ty, expr.span);
                                     inner_opt_ty
                                 }
@@ -722,14 +740,20 @@ impl TypeChecker {
                                         self.pop_scope();
                                         if self.accumulate_errors {
                                             self.inferred_errors.push(handler_ty);
-                                        } else {
-                                            let _ = self.unify(&handler_ty, ret_err, expr.span);
+                                        } else if let Err(e) = self.unify(&handler_ty, ret_err, expr.span) {
+                                            self.errors.push(e);
                                         }
                                     } else if self.accumulate_errors {
                                         // ER20: Collect instead of unifying with return
                                         self.inferred_errors.push(err_ty);
-                                    } else {
-                                        let _ = self.unify(&err_ty, ret_err, expr.span);
+                                    } else if let Err(_) = self.unify(&err_ty, ret_err, expr.span) {
+                                        let inner_err = self.fmt_ty(&self.ctx.apply(&err_ty));
+                                        let outer_err = self.fmt_ty(&self.ctx.apply(ret_err));
+                                        self.errors.push(TypeError::TryErrorMismatch {
+                                            inner_err,
+                                            outer_err,
+                                            span: expr.span,
+                                        });
                                     }
                                     ok_ty
                                 }
@@ -801,7 +825,7 @@ impl TypeChecker {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
-                    Type::Option(_) | Type::Result { .. } => Type::Bool,
+                    Type::Result { .. } => Type::Bool,
                     Type::Var(_) => {
                         // Unresolved scrutinee — leave as bool, let later context constrain.
                         Type::Bool
@@ -820,12 +844,8 @@ impl TypeChecker {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
-                    Type::Option(inner) => {
-                        // Extract the inner type from Option<T>
-                        *inner.clone()
-                    }
                     Type::Result { ok, err: _ } => {
-                        // Extract the Ok type from Result<T, E>
+                        // Extract the ok type (works for T? and T or E)
                         *ok.clone()
                     }
                     Type::Var(_) => {
@@ -834,7 +854,7 @@ impl TypeChecker {
                     }
                     _ => {
                         self.errors.push(TypeError::Mismatch {
-                            expected: Type::Option(Box::new(self.ctx.fresh_var())),
+                            expected: Type::option(self.ctx.fresh_var()),
                             found: resolved,
                             span: expr.span,
                         });
@@ -1108,14 +1128,14 @@ impl TypeChecker {
                     let inner = self.ctx.fresh_var();
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         val_ty,
-                        Type::Option(Box::new(inner.clone())),
+                        Type::option(inner.clone()),
                         expr.span,
                     ));
                     inner
                 } else {
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         val_ty,
-                        Type::Option(Box::new(def_ty.clone())),
+                        Type::option(def_ty.clone()),
                         expr.span,
                     ));
                     def_ty
@@ -1126,9 +1146,9 @@ impl TypeChecker {
                 let inferred = self.infer_expr(object);
                 let obj_ty = self.ctx.apply(&inferred);
                 // ?. unwraps Option, accesses field, wraps in Option (flatten if already Option)
-                let inner_ty = match &obj_ty {
-                    Type::Option(inner) => *inner.clone(),
-                    _ => obj_ty.clone(),
+                let inner_ty = match obj_ty.as_option() {
+                    Some(inner) => inner.clone(),
+                    None => obj_ty.clone(),
                 };
                 let field_ty = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::HasField {
@@ -1138,12 +1158,12 @@ impl TypeChecker {
                     span: expr.span,
                     self_type: self.current_self_type.clone(),
                 });
-                // Flatten: if field is already Option<T>, return Option<T> not Option<Option<T>>
+                // Flatten: if field is already T?, return T? not (T?)?
                 let resolved_field = self.ctx.apply(&field_ty);
-                if matches!(&resolved_field, Type::Option(_)) {
+                if resolved_field.is_option() {
                     resolved_field
                 } else {
-                    Type::Option(Box::new(field_ty))
+                    Type::option(field_ty)
                 }
             }
 
@@ -1411,8 +1431,14 @@ impl TypeChecker {
                         }
                     }
                     let arg_ty = self.infer_expr_expecting(&arg.expr, param);
-                    self.ctx
-                        .add_constraint(TypeConstraint::Equal(param.clone(), arg_ty, span));
+                    // OPT6: optional parameters widen bare arguments. Bind
+                    // position keeps non-optional sums strict (ER11).
+                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                        ret_ty: arg_ty,
+                        expected: param.clone(),
+                        position: WrapPosition::Bind,
+                        span,
+                    });
                 }
 
                 ret
@@ -1882,11 +1908,13 @@ impl TypeChecker {
     pub(super) fn freshen_module_return_type(&mut self, ty: &Type) -> Type {
         match ty {
             Type::UnresolvedNamed(n) if n.starts_with('_') => self.ctx.fresh_var(),
+            Type::Result { ok, err } if **err == Type::None => {
+                Type::option(self.freshen_module_return_type(ok))
+            }
             Type::Result { ok, err } => Type::Result {
                 ok: Box::new(self.freshen_module_return_type(ok)),
                 err: Box::new(self.freshen_module_return_type(err)),
             },
-            Type::Option(inner) => Type::Option(Box::new(self.freshen_module_return_type(inner))),
             _ => ty.clone(),
         }
     }
@@ -1895,13 +1923,13 @@ impl TypeChecker {
     fn freshen_module_return_type_with(&mut self, ty: &Type, explicit: &Type) -> Type {
         match ty {
             Type::UnresolvedNamed(n) if n.starts_with('_') => explicit.clone(),
+            Type::Result { ok, err } if **err == Type::None => {
+                Type::option(self.freshen_module_return_type_with(ok, explicit))
+            }
             Type::Result { ok, err } => Type::Result {
                 ok: Box::new(self.freshen_module_return_type_with(ok, explicit)),
                 err: Box::new(self.freshen_module_return_type_with(err, explicit)),
             },
-            Type::Option(inner) => {
-                Type::Option(Box::new(self.freshen_module_return_type_with(inner, explicit)))
-            }
             _ => ty.clone(),
         }
     }
@@ -1910,6 +1938,11 @@ impl TypeChecker {
     fn resolve_type_name(&self, name: &str, _span: Span) -> Type {
         let ty = Type::UnresolvedNamed(name.to_string());
         self.resolve_named(&ty)
+    }
+
+    /// Format a type with resolved names (Named(id) → "TypeName").
+    pub(super) fn fmt_ty(&self, ty: &Type) -> String {
+        format!("{}", self.types.resolve_type_names(ty))
     }
 
     pub(super) fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {
@@ -2075,7 +2108,7 @@ impl TypeChecker {
                                         } else {
                                             vec![]
                                         };
-                                        let ret = Type::Option(Box::new(t_var));
+                                        let ret = Type::option(t_var);
                                         (params, ret)
                                     } else {
                                         let instantiated = self.instantiate_type_vars(&fields);
@@ -2102,11 +2135,49 @@ impl TypeChecker {
         var
     }
 
-    /// Check that a match on an enum covers all variants.
+    /// Check that a match on an enum or `T or E` result covers all branches.
     fn check_match_exhaustiveness(&mut self, scrutinee_ty: &Type, arms: &[MatchArm], span: Span) {
         let resolved = self.ctx.apply(scrutinee_ty);
 
-        // Only check enums
+        // ER30: exhaustiveness check for `T or E` result matches.
+        // Collect required coverage: ok type + all error leaf types.
+        if let Type::Result { ok, err } = &resolved {
+            let ok_ty = self.ctx.apply(ok);
+            let err_ty = self.ctx.apply(err);
+            // Collect all required type names (display strings) that must be covered.
+            let mut required: Vec<String> = vec![self.fmt_ty(&ok_ty)];
+            match &err_ty {
+                Type::Union(variants) => {
+                    for v in variants {
+                        required.push(self.fmt_ty(v));
+                    }
+                }
+                Type::None => {} // void or E: only ok needed
+                other => required.push(self.fmt_ty(other)),
+            }
+
+            let mut has_wildcard = false;
+            let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for arm in arms {
+                self.collect_result_covered(&arm.pattern, &required, &mut covered, &mut has_wildcard);
+            }
+
+            if has_wildcard {
+                return;
+            }
+
+            let missing: Vec<String> = required
+                .into_iter()
+                .filter(|r| !covered.contains(r))
+                .collect();
+
+            if !missing.is_empty() {
+                self.errors.push(TypeError::NonExhaustiveMatch { missing, span });
+            }
+            return;
+        }
+
+        // Only check enums for the Named case
         let type_id = match &resolved {
             Type::Named(id) => *id,
             _ => return,
@@ -2140,6 +2211,35 @@ impl TypeChecker {
                 missing,
                 span,
             });
+        }
+    }
+
+    fn collect_result_covered(
+        &self,
+        pattern: &Pattern,
+        required: &[String],
+        covered: &mut std::collections::HashSet<String>,
+        has_wildcard: &mut bool,
+    ) {
+        match pattern {
+            Pattern::Wildcard => *has_wildcard = true,
+            Pattern::Ident(name) => {
+                // Bare ident that doesn't match a required type name → catch-all
+                if required.contains(name) {
+                    covered.insert(name.clone());
+                } else {
+                    *has_wildcard = true;
+                }
+            }
+            Pattern::TypePat { ty_name, .. } => {
+                covered.insert(ty_name.clone());
+            }
+            Pattern::Or(alts) => {
+                for alt in alts {
+                    self.collect_result_covered(alt, required, covered, has_wildcard);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2187,8 +2287,8 @@ impl TypeChecker {
                         if let ExprKind::Ident(var_name) = &value.kind {
                             let var_ty = self.lookup_local(var_name)?;
                             let resolved = self.ctx.apply(&var_ty);
-                            if let Type::Option(inner) = &resolved {
-                                return Some((var_name.clone(), *inner.clone()));
+                            if let Some(inner) = resolved.as_option() {
+                                return Some((var_name.clone(), inner.clone()));
                             }
                         }
                     }
@@ -2233,7 +2333,7 @@ impl TypeChecker {
         };
 
         match resolved {
-            Type::Option(inner_ty) => Some((narrow_name, *inner_ty, None)),
+            Type::Result { ok, err } if *err == Type::None => Some((narrow_name, *ok, None)),
             Type::Result { ok, err } => Some((narrow_name, *ok, Some(*err))),
             _ => None,
         }
@@ -2327,11 +2427,12 @@ impl TypeChecker {
                         Some(t) => self.ctx.apply(&t),
                         None => return,
                     };
-                    if let Type::Option(inner) = scrutinee_ty {
+                    if let Some(inner) = scrutinee_ty.as_option() {
+                        let inner = inner.clone();
                         match kind {
-                            super::BindingKind::Const => self.define_local_const(name, *inner),
-                            super::BindingKind::Param => self.define_local_param(name, *inner),
-                            super::BindingKind::Mut => self.define_local(name, *inner),
+                            super::BindingKind::Const => self.define_local_const(name, inner),
+                            super::BindingKind::Param => self.define_local_param(name, inner),
+                            super::BindingKind::Mut => self.define_local(name, inner),
                         }
                     }
                 }

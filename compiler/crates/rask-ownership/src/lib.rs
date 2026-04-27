@@ -1417,7 +1417,7 @@ impl<'a> OwnershipChecker<'a> {
     fn is_copy(&self, ty: &Type) -> bool {
         match ty {
             // Primitives are always Copy
-            Type::Unit | Type::Bool | Type::Char => true,
+            Type::Unit | Type::None | Type::Bool | Type::Char => true,
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => true,
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => true,
             Type::F32 | Type::F64 => true,
@@ -1439,8 +1439,9 @@ impl<'a> OwnershipChecker<'a> {
             // Slices are Copy (borrowed view)
             Type::Slice(_) => true,
 
-            // Option: Copy if inner is Copy and size <= 16 bytes
-            Type::Option(inner) => {
+            // Option (T or none): Copy if inner is Copy and size <= 16 bytes
+            ty if ty.is_option() => {
+                let inner = ty.as_option().unwrap();
                 self.is_copy(inner) && self.type_size(ty) <= 16
             }
 
@@ -1507,14 +1508,14 @@ impl<'a> OwnershipChecker<'a> {
     /// Estimate type size in bytes (simplified).
     fn type_size(&self, ty: &Type) -> usize {
         match ty {
-            Type::Unit => 0,
+            Type::Unit | Type::None => 0,
             Type::Bool | Type::I8 | Type::U8 => 1,
             Type::I16 | Type::U16 => 2,
             Type::I32 | Type::U32 | Type::F32 | Type::Char => 4,
             Type::I64 | Type::U64 | Type::F64 => 8,
             Type::Tuple(elems) => elems.iter().map(|t| self.type_size(t)).sum(),
             Type::Array { elem, len } => self.type_size(elem) * len,
-            Type::Option(inner) => self.type_size(inner) + 1, // tag byte
+            ty if ty.is_option() => self.type_size(ty.as_option().unwrap()) + 1, // tag byte
             Type::Named(type_id) => {
                 if let Some(def) = self.program.types.get(*type_id) {
                     match def {

@@ -13,10 +13,10 @@ Libraries use union errors (`T or (A | B | C)`), applications use `any Error` (t
 
 | Rule | Description |
 |------|-------------|
-| **ER1: Builtin sum** | `T or E` is a compiler-generated tagged union, not a user-definable enum |
+| **ER1: Builtin sum** | `T or E` is a compiler-generated tagged union, not a user-definable enum. Optionals (`T?`) are sugar for `T or none` and share the same machinery — see [optionals.md](optionals.md) |
 | **ER2: No user wrapper** | There is no `Ok` or `Err` constructor, keyword, or pattern. Success values are bare; error values are the error type's own constructor (e.g. `DivError.ByZero`) |
-| **ER3: Disjointness** | `T or E` requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Violation is a compile error at type formation |
-| **ER4: Error bound** | Every `E` must implement `ErrorMessage` — a structural trait requiring `func message(self) -> string`. Enforced at type formation. Primitives (`i32`, `f64`, `string`) don't qualify; newtype them |
+| **ER3: Disjointness** | `T or E` requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Violation is a compile error at type formation. Same rule as [union-types.md](union-types.md) U6 |
+| **ER4: Error bound** | Every `E` must implement `ErrorMessage` — a structural trait requiring `func message(self) -> string`. Enforced at type formation. Primitives (`i32`, `f64`, `string`) don't qualify; newtype them. **Exception:** `none` is exempt — it's the absent sentinel for optionals (`T or none`), not an error type |
 | **ER5: No `Result<T, E>` name** | The generic `Result<T, E>` type is gone. Use `T or E` directly |
 
 <!-- test: skip -->
@@ -60,9 +60,9 @@ extend NotFound {
 
 | Rule | Description |
 |------|-------------|
-| **ER9: Auto-wrap at return only** | In a function returning `T or E`, a `return` with a value of type `T` wraps to the success branch; a value of type `E` wraps to the error branch. The branch is picked by type; disjointness makes this unambiguous |
+| **ER9: Auto-wrap at return only** | In a function returning `T or E` (with `E ≠ none`), a `return` with a value of type `T` wraps to the success branch; a value of type `E` wraps to the error branch. The branch is picked by type; disjointness makes this unambiguous |
 | **ER10: Implicit unit success** | In a function returning `void or E` reaching the end without explicit `return`, the unit success path is implied |
-| **ER11: No auto-wrap elsewhere** | Assignment, field initialisers, function arguments, and collection literals do **not** auto-wrap into `T or E`. The value must already have the union type (typically from a function call) |
+| **ER11: No auto-wrap elsewhere** | For `T or E` (E ≠ none), assignment, field initialisers, function arguments, and collection literals do **not** auto-wrap. The value must already have the union type (typically from a function call). **Optionals (`T or none`) are more permissive** — bare `T` and `none` widen at any position; see [optionals.md](optionals.md) |
 
 <!-- test: skip -->
 ```rask
@@ -77,7 +77,7 @@ func save(data: Data) -> void or IoError {
 }
 ```
 
-Why return-only? Construction in assignment/field positions makes the error-branch coercion invisible at use sites. Keeping it at `return` means "this function produced a result"; branches are always visible at the site that produces them.
+Why return-only for errors? Construction in assignment/field positions makes the error-branch coercion invisible at use sites. Keeping it at `return` means "this function produced a result"; branches are always visible at the site that produces them. Optionals don't have this concern — `none` is the absent sentinel, not a hidden failure — so the optional shape relaxes the rule.
 
 ## Operators
 
@@ -419,9 +419,11 @@ thread panicked at 'not yet implemented: keyboard handling', src/handler.rk:4:19
 |------|------|----------|
 | Return bare `T` from `T or E` function | ER9 | Wraps to T branch |
 | Return bare `E` from `T or E` function | ER9 | Wraps to E branch |
-| `const x: T or E = 5` (assignment) | ER11 | Type error — auto-wrap is return-only |
+| `const x: T or E = 5` (assignment, E ≠ none) | ER11 | Type error — auto-wrap is return-only |
+| `const x: T? = bare_t` (assignment) | ER11/optionals | Legal — `T or none` widens at any position |
 | `T or T` | ER3 | Compile error; newtype one side |
 | `T or i32` (primitive E) | ER4 | Compile error — E lacks `ErrorMessage` |
+| `T or none` | ER4 | Legal — `none` is exempt from the `ErrorMessage` bound |
 | `try r` in `fn -> T?` | — | Cross-shape, ill-typed. Use `r.ok()` then `try` |
 | `try o` in `fn -> T or E` | — | Cross-shape, ill-typed. Use `o.to_result(err)` then `try` |
 | `try` on narrower E into wider union | ER31 | Auto-widen succeeds |
@@ -496,23 +498,27 @@ FIX: Construct via a function that returns T or E, or use
      explicit branch construction helpers.
 ```
 
-**Cross-shape try [migration]:**
+**Cross-shape try [special-case of subset mismatch]:**
 ```
 ERROR [type.errors/CROSS_SHAPE]: cannot `try` Option in Result-returning function
    |
 4  |  const x = try maybe_value
-   |            ^^^ maybe_value: T?
+   |            ^^^ maybe_value: T?  (= T or none)
    |
-   |  current function returns T or E
+   |  current function returns T or E  — `none` is not in E
 
-WHY: Cross-shape propagation silently fabricates or drops errors.
+WHY: `try` widens the inner error union into the function's error union.
+     `none` is the absent sentinel, not an error — silently treating it
+     as one would fabricate errors out of absence.
 
 FIX: Convert explicitly:
      const x = try maybe_value.to_result(MyError.NotFound)
 ```
 
-**Match on Option [migration]:**
-See [optionals.md#error-messages](optionals.md). Same diagnostic fires for `match x { Some(…) => …, None => … }`.
+The reverse case — `try r` (a `T or E`) in a `T?`-returning function — fails the same subset check (`E ⊄ none`) and gets a parallel diagnostic suggesting `r.ok()`.
+
+**Match on Option:**
+`match x { Some(…) => …, None => … }` is rejected as `Some`/`None` are not valid Rask syntax (see the `Some(v)`/`None` diagnostic in [optionals.md](optionals.md)). The accepted form `match x { none => …, u => … }` is legal but emits a style lint suggesting the operator form.
 
 ---
 

@@ -269,7 +269,9 @@ impl TypeChecker {
                     other => other.clone(),
                 }).collect(),
             },
-            Type::Option(inner) => Type::Option(Box::new(Self::normalize_named_types(inner, id_to_name))),
+            Type::Result { ok, err } if **err == Type::None => {
+                Type::option(Self::normalize_named_types(ok, id_to_name))
+            }
             Type::Result { ok, err } => Type::Result {
                 ok: Box::new(Self::normalize_named_types(ok, id_to_name)),
                 err: Box::new(Self::normalize_named_types(err, id_to_name)),

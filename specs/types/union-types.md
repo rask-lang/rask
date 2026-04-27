@@ -1,20 +1,24 @@
 <!-- id: type.unions -->
 <!-- status: decided -->
-<!-- summary: Error unions (A | B) for type-safe error composition, restricted to error position -->
-<!-- depends: types/error-types.md, types/enums.md -->
+<!-- summary: Error unions (A | B) for type-safe error composition, restricted to error position. Outer T or E sum types (including T or none for optionals) share the duplicate-variant rule. -->
+<!-- depends: types/error-types.md, types/enums.md, types/optionals.md -->
 
 # Union Types
 
 Union types (`A | B`) provide type-safe error composition. Restricted to error position in `T or E` — use explicit enums for data modeling.
 
+The outer `or` keyword forms a sum type (`T or E`). Optionals (`T?`) desugar to `T or none` and use the same machinery — see [optionals.md](optionals.md).
+
 ## Union Syntax and Semantics
 
 | Rule | Description |
 |------|-------------|
-| **U1: Error position only** | Union types valid only in error position of `T or E` |
+| **U1: `\|` restricted to error position** | The `\|` syntax for ad-hoc unions is valid only in the error position of `T or E` |
 | **U2: Anonymous enum** | `A \| B \| C` compiles to a compiler-generated anonymous enum |
 | **U3: Canonical ordering** | Union types normalized alphabetically; duplicates deduplicated |
 | **U4: Equality** | Two union types equal if their canonical forms are equal |
+| **U5: Duplicate variants forbidden** | A sum type cannot contain the same variant twice. `T??` (= `(T or none) or none`), `(T or E) or E`, and `A \| A` are compile errors |
+| **U6: Disjointness for `T or E`** | The outer `T or E` sum requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Same rule as [error-types.md](error-types.md) ER3 |
 
 <!-- test: skip -->
 ```rask
@@ -68,12 +72,14 @@ func load() -> Config or (IoError | ParseError) {
 <!-- test: skip -->
 ```rask
 match result {
-    Config as config => use(config),
-    IoError.NotFound(p) => println("not found: {}", p),
-    ParseError.Syntax(l, c) => println("syntax error at {}:{}", l, c),
-    _ => println("other error"),
+    Config as config            => use(config),
+    IoError.NotFound(p)         => println("not found: {}", p),
+    ParseError.Syntax(line, col) => println("syntax error at {}:{}", line, col),
+    _                           => println("other error"),
 }
 ```
+
+Type patterns (`Config`, `IoError`, `ParseError`) match the success type or each error variant of the union; variant patterns (`IoError.NotFound(p)`) destructure further. No `Ok`/`Err` wrappers — the compiler dispatches on the value's actual type.
 
 ## Generics
 
@@ -116,10 +122,13 @@ FIX: Add ParseError to the return type:
 
 | Case | Rule | Behavior |
 |------|------|----------|
-| Duplicate types in union | U3 | Deduplicated (`IoError \| IoError` = `IoError`) |
-| Single type in union | U3 | Equivalent to bare error type |
+| Duplicate types in `\|` union | U3 | Deduplicated (`IoError \| IoError` = `IoError`) |
+| Single type in `\|` union | U3 | Equivalent to bare error type |
 | Order differences | U3 | Normalized alphabetically |
-| Union in non-error position | U1 | Compile error |
+| `\|` union in non-error position | U1 | Compile error |
+| `T??` (nested optional) | U5 | Compile error — duplicate `none` variant |
+| `(T or E) or E` | U5 | Compile error — duplicate `E` variant |
+| `T or T` | U6 | Compile error — disjointness; newtype one side |
 | Generic error extension | G1 | Union extends E with additional variants |
 
 ---

@@ -3,7 +3,7 @@
 
 use rask_ast::Span;
 
-use super::inference::TypeConstraint;
+use super::inference::{TypeConstraint, WrapPosition};
 use super::errors::TypeError;
 use super::TypeChecker;
 
@@ -128,8 +128,9 @@ impl TypeChecker {
             TypeConstraint::ReturnValue {
                 ret_ty,
                 expected,
+                position,
                 span,
-            } => self.resolve_return_value(ret_ty, expected, span),
+            } => self.resolve_return_value(ret_ty, expected, position, span),
             TypeConstraint::TypePatternMatches {
                 scrutinee,
                 narrow_ty,
@@ -204,38 +205,82 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve a return value constraint with deferred auto-wrap.
-    /// Handles `T or E` and `T?`: bare `T` wraps to the success branch,
-    /// bare `E` (or a component of a union `E`) wraps to the error branch
-    /// — ER9 auto-wrap at return, disambiguated by type (ER3 disjointness).
+    /// Resolve a return-value / coercion constraint with deferred auto-wrap.
+    ///
+    /// `T or E`: at return position, bare `T` wraps to ok and bare `E` (or a
+    /// component of a union `E`) wraps to err — ER9, disambiguated by type
+    /// (ER3 disjointness). At assignment / field / argument position the wrap
+    /// is suppressed (ER11): the value must already have the union type, or
+    /// `none` may widen because the optional shape is permissive.
+    ///
+    /// `T?` (= `T or none`): widens at any position.
+    ///
     /// If the return expression's type is still unresolved, defer.
     fn resolve_return_value(
         &mut self,
         ret_ty: Type,
         expected: Type,
+        position: WrapPosition,
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
 
         if let Type::Result { ok, err } = &resolved_expected {
             let resolved_ret = self.ctx.apply(&ret_ty);
+            // Optional shape (T or none) is widened freely; non-optional sums
+            // wrap only at return.
+            let err_is_none = matches!(self.ctx.apply(err), Type::None);
+            let allow_wrap = position == WrapPosition::Return || err_is_none;
             match &resolved_ret {
                 Type::Result { .. } => self.unify(&expected, &ret_ty, span),
+                Type::Var(id) if !allow_wrap && self.ctx.literal_vars.contains_key(id) => {
+                    // Bind position with a non-optional sum: a bare literal can
+                    // never satisfy the union type. Default the literal var
+                    // immediately so unify reports a precise type mismatch
+                    // instead of silently dropping a deferred constraint.
+                    use super::inference::LiteralKind;
+                    let default = match self.ctx.literal_vars[id] {
+                        LiteralKind::Integer => Type::I32,
+                        LiteralKind::Float => Type::F64,
+                    };
+                    let id = *id;
+                    self.ctx.substitutions.insert(id, default);
+                    let resolved_ret = self.ctx.apply(&ret_ty);
+                    self.unify(&expected, &resolved_ret, span)
+                }
                 Type::Var(_) => {
                     self.ctx.add_constraint(TypeConstraint::ReturnValue {
                         ret_ty,
                         expected,
+                        position,
                         span,
                     });
                     Ok(false)
                 }
+                _ if !allow_wrap => self.unify(&expected, &ret_ty, span),
                 _ => {
                     // ER9: pick the branch by type. A value whose type equals
                     // (or is in) E goes to the error branch; otherwise it goes
                     // to T. Disjointness (ER3) makes this unambiguous.
                     let resolved_err = self.ctx.apply(err);
+                    let resolved_ok = self.ctx.apply(ok);
+                    // ER39: inferred err. If err is unresolved and the return
+                    // value doesn't match ok, treat as an err and accumulate.
+                    // Don't unify err here — leave it for the function-level
+                    // finalization to compute the union.
+                    if self.accumulate_errors
+                        && matches!(resolved_err, Type::Var(_))
+                        && resolved_ret != resolved_ok
+                    {
+                        self.inferred_errors.push(resolved_ret);
+                        return Ok(false);
+                    }
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
+                        // ER32: `any Trait` error — concrete types implementing the trait go to err
+                        Type::TraitObject { trait_name } => {
+                            crate::traits::implements_trait(&self.types, &resolved_ret, trait_name)
+                        }
                         other => other == &resolved_ret,
                     };
                     let wrapped = if is_err_branch {
@@ -252,10 +297,10 @@ impl TypeChecker {
                     self.unify(&expected, &wrapped, span)
                 }
             }
-        } else if let Type::Option(_) = &resolved_expected {
+        } else if resolved_expected.is_option() {
             let resolved_ret = self.ctx.apply(&ret_ty);
             // Named(option_type_id) is Option-shaped (e.g. bare `None` or Option<T> reference).
-            let is_option_shaped = matches!(&resolved_ret, Type::Option(_))
+            let is_option_shaped = resolved_ret.is_option()
                 || matches!(&resolved_ret, Type::Named(id) if Some(*id) == self.types.get_option_type_id());
             match &resolved_ret {
                 _ if is_option_shaped => self.unify(&expected, &ret_ty, span),
@@ -263,12 +308,13 @@ impl TypeChecker {
                     self.ctx.add_constraint(TypeConstraint::ReturnValue {
                         ret_ty,
                         expected,
+                        position,
                         span,
                     });
                     Ok(false)
                 }
                 _ => {
-                    let wrapped = Type::Option(Box::new(ret_ty));
+                    let wrapped = Type::option(ret_ty);
                     self.unify(&expected, &wrapped, span)
                 }
             }
@@ -412,8 +458,6 @@ impl TypeChecker {
                 Ok(progress)
             }
 
-            (Type::Option(inner1), Type::Option(inner2)) => self.unify(inner1, inner2, span),
-
             (
                 Type::Result { ok: o1, err: e1 },
                 Type::Result { ok: o2, err: e2 },
@@ -452,8 +496,12 @@ impl TypeChecker {
 
             (Type::RawPtr(inner1), Type::RawPtr(inner2)) => self.unify(inner1, inner2, span),
 
-            // Union types: unify element-wise if same length
+            // Union types: exact match element-wise, or subset widening for try propagation (ER31).
             (Type::Union(types1), Type::Union(types2)) => {
+                // ER31: smaller union is compatible with a larger union that contains all its members
+                if t1.is_subset_of(&t2) {
+                    return Ok(false);
+                }
                 if types1.len() != types2.len() {
                     return Err(TypeError::Mismatch {
                         expected: t1,
@@ -500,7 +548,8 @@ impl TypeChecker {
                 }
             }
 
-            (Type::Option(_inner), Type::Named(id)) | (Type::Named(id), Type::Option(_inner)) => {
+            // Option-shaped Result (T or none) unified with Named option type id
+            (t, Type::Named(id)) | (Type::Named(id), t) if t.is_option() => {
                 if Some(*id) == self.types.get_option_type_id() {
                     Ok(false)
                 } else {

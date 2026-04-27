@@ -66,7 +66,7 @@ impl<'a> TypeFormatter<'a> {
                 format!("func({}) -> {}", params_str, self.format(ret))
             }
 
-            Type::Option(inner) => format!("{}?", self.format(inner)),
+            Type::Result { ok, err } if **err == Type::None => format!("{}?", self.format(ok)),
 
             Type::Result { ok, err } => {
                 format!("{} or {}", self.format(ok), self.format(err))
@@ -92,6 +92,7 @@ impl<'a> TypeFormatter<'a> {
             Type::SimdVector { elem, lanes } => format!("{}x{}", self.format(elem), lanes),
             Type::TraitObject { trait_name } => format!("any {}", trait_name),
             Type::Var(_) => "_".to_string(),
+            Type::None => "none".to_string(),
             Type::UnresolvedNamed(name) => name.clone(),
             Type::Error => "<error>".to_string(),
         }

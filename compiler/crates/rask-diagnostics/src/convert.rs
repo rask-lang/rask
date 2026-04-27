@@ -318,6 +318,20 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("`try` propagates errors upward — the enclosing function must declare an error type in its return")
             }
 
+            TryErrorMismatch { inner_err, outer_err, span } => {
+                Diagnostic::error(format!(
+                    "error type mismatch: `try` propagates `{}`, but function returns `_ or {}`",
+                    inner_err, outer_err
+                ))
+                .with_code("E0355")
+                .with_primary(*span, format!("propagates `{}`", inner_err))
+                .with_help(format!(
+                    "use `try expr else |e| {}::from(e)` to convert, or change the function return type",
+                    outer_err
+                ))
+                .with_why("try propagates errors to the enclosing function — the error types must be compatible [error-types/ER9]")
+            }
+
             TryOutsideFunction { span } => {
                 Diagnostic::error("`try` can only be used within a function")
                     .with_code("E0317")
@@ -717,6 +731,18 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, format!("`{}` needs a `message` method", ty))
                     .with_help(format!("add `extend {ty} {{ func message(self) -> string {{ ... }} }}`"))
                     .with_why("every error type must provide `func message(self) -> string`; primitives don't qualify — newtype them [type.errors/ER4]")
+            }
+            DuplicateSumVariant { ty, variant, span } => {
+                let hint = if matches!(variant, rask_types::Type::None) {
+                    "use a named enum like `T or NotFound` to distinguish two flavours of absence"
+                } else {
+                    "flatten the union or rename one branch"
+                };
+                Diagnostic::error(format!("duplicate variant `{}` in sum type `{}`", variant, ty))
+                    .with_code("E0354")
+                    .with_primary(*span, format!("`{}` appears more than once", variant))
+                    .with_help(hint)
+                    .with_why("a sum type cannot contain the same variant twice — `T??` and `(T or E) or E` collapse ambiguously [type.unions/U5]")
             }
             ElseBindingNotResult { name, span } => {
                 Diagnostic::error(format!("`else as {}` requires a Result condition", name))

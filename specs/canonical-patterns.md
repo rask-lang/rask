@@ -226,7 +226,7 @@ See [control/ensure.md](control/ensure.md), [memory/resource-types.md](memory/re
 
 ## Option Handling
 
-Four patterns, each for a different situation. Option is a builtin status type with an operator-only surface — no `Some`/`None` wrappers, no `match` arms.
+Four patterns, each for a different situation. `T?` is sugar for `T or none` — bare values on the present path, `none` literal for absent. No `Some`/`None` wrappers; the operator family covers the common cases. `match` is legal but linted toward operators when there are only two arms.
 
 ```rask
 // Single check — narrow in place (const scrutinee)

@@ -1889,12 +1889,11 @@ impl<'a> FunctionBuilder<'a> {
             // Unresolved named types (TcpListener, TcpConnection, etc.) — pointer-sized scalars
             RaskType::UnresolvedNamed(_) | RaskType::Named(_) => false,
             // Niche-optimized Option<Handle<T>> — scalar (sentinel value, no tag)
-            RaskType::Option(inner)
-                if matches!(inner.as_ref(), RaskType::UnresolvedGeneric { name, .. } if name == "Handle") =>
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::UnresolvedGeneric { name, .. } if name == "Handle") =>
             {
                 false
             }
-            // User-defined enums/structs, tuples, arrays, Option, Result — aggregate
+            // User-defined enums/structs, tuples, arrays, Option (T or none), Result — aggregate
             _ => true,
         }
     }
