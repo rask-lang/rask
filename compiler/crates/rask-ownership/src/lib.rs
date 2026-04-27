@@ -1439,8 +1439,9 @@ impl<'a> OwnershipChecker<'a> {
             // Slices are Copy (borrowed view)
             Type::Slice(_) => true,
 
-            // Option: Copy if inner is Copy and size <= 16 bytes
-            Type::Option(inner) => {
+            // Option (T or none): Copy if inner is Copy and size <= 16 bytes
+            ty if ty.is_option() => {
+                let inner = ty.as_option().unwrap();
                 self.is_copy(inner) && self.type_size(ty) <= 16
             }
 
@@ -1514,7 +1515,7 @@ impl<'a> OwnershipChecker<'a> {
             Type::I64 | Type::U64 | Type::F64 => 8,
             Type::Tuple(elems) => elems.iter().map(|t| self.type_size(t)).sum(),
             Type::Array { elem, len } => self.type_size(elem) * len,
-            Type::Option(inner) => self.type_size(inner) + 1, // tag byte
+            ty if ty.is_option() => self.type_size(ty.as_option().unwrap()) + 1, // tag byte
             Type::Named(type_id) => {
                 if let Some(def) = self.program.types.get(*type_id) {
                     match def {

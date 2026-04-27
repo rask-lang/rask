@@ -53,7 +53,6 @@ fn collect_type_deps(ty: &Type, out: &mut HashSet<String>) {
                 }
             }
         }
-        Type::Option(inner) => collect_type_deps(inner, out),
         Type::Result { ok, err } => {
             collect_type_deps(ok, out);
             collect_type_deps(err, out);

@@ -156,7 +156,7 @@ impl InferenceContext {
                 len: *len,
             },
             Type::Slice(inner) => Type::Slice(Box::new(self.apply(inner))),
-            Type::Option(inner) => Type::Option(Box::new(self.apply(inner))),
+            Type::Result { ok, err } if **err == Type::None => Type::option(self.apply(ok)),
             Type::Result { ok, err } => Type::Result {
                 ok: Box::new(self.apply(ok)),
                 err: Box::new(self.apply(err)),
@@ -192,7 +192,7 @@ impl InferenceContext {
             }
             Type::Tuple(elems) => elems.iter().any(|e| self.occurs_in(var, e)),
             Type::Array { elem, .. } => self.occurs_in(var, elem),
-            Type::Slice(inner) | Type::Option(inner) => self.occurs_in(var, inner),
+            Type::Slice(inner) => self.occurs_in(var, inner),
             Type::Result { ok, err } => self.occurs_in(var, ok) || self.occurs_in(var, err),
             _ => false,
         }

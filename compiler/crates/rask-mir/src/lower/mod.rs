@@ -34,8 +34,8 @@ pub(crate) const HANDLE_NONE_SENTINEL: i64 = -1;
 
 /// Check if a raw Type is Option<Handle<T>> (eligible for niche optimization).
 pub(crate) fn is_niche_option_handle(ty: &Type) -> bool {
-    if let Type::Option(inner) = ty {
-        matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle")
+    if let Some(inner) = ty.as_option() {
+        matches!(inner, Type::UnresolvedGeneric { name, .. } if name == "Handle")
     } else {
         false
     }
@@ -327,10 +327,6 @@ impl<'a> MirContext<'a> {
                 let type_str = format!("{}", ty);
                 self.resolve_type_str(&type_str)
             }
-            // Niche-optimized: Option<Handle<T>> → plain i64 handle (-1 = None)
-            Type::Option(inner)
-                if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle")
-                => MirType::Handle,
             // Raw pointers and function types are pointer-sized
             Type::RawPtr(_) | Type::Fn { .. } => MirType::Ptr,
             // Tuple → struct-like layout with positional fields
@@ -344,8 +340,14 @@ impl<'a> MirContext<'a> {
             },
             // Slice → fat pointer (ptr + len)
             Type::Slice(elem) => MirType::Slice(Box::new(self.type_to_mir(elem))),
-            // Option<T> → tagged union (tag + payload)
-            Type::Option(inner) => MirType::Option(Box::new(self.type_to_mir(inner))),
+            // Option (T or none): niche-optimized Handle or tagged union
+            Type::Result { ok: inner, err } if **err == Type::None => {
+                if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
+                    MirType::Handle
+                } else {
+                    MirType::Option(Box::new(self.type_to_mir(inner)))
+                }
+            }
             // Result<T, E> → tagged union (tag + max(T, E) payload)
             Type::Result { ok, err } => MirType::Result {
                 ok: Box::new(self.type_to_mir(ok)),
@@ -404,8 +406,8 @@ impl<'a> MirContext<'a> {
                     None
                 }
             }
+            Type::Result { err, .. } if **err == Type::None => Some("Option"),
             Type::Result { .. } => Some("Result"),
-            Type::Option(_) => Some("Option"),
             Type::RawPtr(_) => Some("Ptr"),
             _ => None,
         }
@@ -1002,7 +1004,7 @@ impl<'a> MirLowerer<'a> {
     fn extract_payload_type(&self, expr: &Expr) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
             match ty {
-                Type::Option(inner) => {
+                Type::Result { ok: inner, err } if **err == Type::None => {
                     let mir = self.ctx.type_to_mir(inner);
                     // Ptr means unresolved — let callers fall through to other strategies
                     if matches!(mir, MirType::Ptr) { None } else { Some(mir) }

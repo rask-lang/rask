@@ -322,7 +322,9 @@ impl TypeTable {
     pub fn resolve_type_names(&self, ty: &Type) -> Type {
         match ty {
             Type::Named(id) => Type::UnresolvedNamed(self.type_name(*id)),
-            Type::Option(inner) => Type::Option(Box::new(self.resolve_type_names(inner))),
+            Type::Result { ok, err } if **err == Type::None => {
+                Type::option(self.resolve_type_names(ok))
+            }
             Type::Result { ok, err } => Type::Result {
                 ok: Box::new(self.resolve_type_names(ok)),
                 err: Box::new(self.resolve_type_names(err)),
@@ -339,7 +341,7 @@ impl TypeTable {
                 }
                 if Some(*base) == self.option_type_id && args.len() == 1 {
                     if let GenericArg::Type(inner) = &args[0] {
-                        return Type::Option(Box::new(self.resolve_type_names(inner)));
+                        return Type::option(self.resolve_type_names(inner));
                     }
                 }
                 Type::UnresolvedGeneric {

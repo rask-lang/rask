@@ -665,7 +665,13 @@ impl TypeChecker {
                 }
             }
             // Option/Result: delegate to inner types
-            Type::Option(inner) => self.type_has_method(inner, method),
+            t if t.is_option() => {
+                if let Some(inner) = t.as_option() {
+                    self.type_has_method(inner, method)
+                } else {
+                    false
+                }
+            }
             Type::Result { ok, err } => {
                 self.type_has_method(ok, method) && self.type_has_method(err, method)
             }

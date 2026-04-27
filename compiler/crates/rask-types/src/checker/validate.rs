@@ -41,8 +41,7 @@ fn collect_result_errors(
             collect_result_errors(ok, span, checker, errs);
             collect_result_errors(err, span, checker, errs);
         }
-        Type::Option(inner)
-        | Type::Slice(inner)
+        Type::Slice(inner)
         | Type::RawPtr(inner) => collect_result_errors(inner, span, checker, errs),
         Type::Array { elem, .. } | Type::SimdVector { elem, .. } => {
             collect_result_errors(elem, span, checker, errs)
@@ -122,8 +121,8 @@ fn check_nested_optional(ty: &Type, span: Span, errs: &mut Vec<TypeError>) {
 
 fn walk_for_nested_option(ty: &Type, span: Span, errs: &mut Vec<TypeError>) {
     match ty {
-        Type::Option(inner) => {
-            if matches!(inner.as_ref(), Type::Option(_)) {
+        Type::Result { ok: inner, err } if **err == Type::None => {
+            if inner.is_option() {
                 errs.push(TypeError::DuplicateSumVariant {
                     ty: ty.clone(),
                     variant: Type::None,
@@ -163,17 +162,13 @@ fn walk_for_nested_option(ty: &Type, span: Span, errs: &mut Vec<TypeError>) {
 }
 
 /// Gather the leaf types of an `or`-tree. `Result { ok, err }` recurses both
-/// sides; `Option<T>` contributes `T` and `Type::None` (the implicit absent
-/// variant); `Union` contributes each component. Anything else is a leaf.
+/// sides (for `T?` = `T or none`, this naturally pushes T then Type::None);
+/// `Union` contributes each component. Anything else is a leaf.
 fn collect_or_leaves<'a>(ty: &'a Type, out: &mut Vec<&'a Type>) {
     match ty {
         Type::Result { ok, err } => {
             collect_or_leaves(ok, out);
             collect_or_leaves(err, out);
-        }
-        Type::Option(inner) => {
-            collect_or_leaves(inner, out);
-            out.push(&NONE_LEAF);
         }
         Type::Union(types) => {
             for t in types {
@@ -183,10 +178,6 @@ fn collect_or_leaves<'a>(ty: &'a Type, out: &mut Vec<&'a Type>) {
         other => out.push(other),
     }
 }
-
-/// Static `Type::None` reference for `collect_or_leaves` to return when
-/// flattening the implicit absent variant of `Type::Option`.
-static NONE_LEAF: Type = Type::None;
 
 fn validate_single_result(
     ok: &Type,

@@ -65,7 +65,7 @@ impl<'a> MirLowerer<'a> {
 
         let is_result_or_option = if !is_enum {
             self.ctx.lookup_raw_type(scrutinee.id).map_or(false, |ty| {
-                matches!(ty, rask_types::Type::Result { .. } | rask_types::Type::Option(_))
+                matches!(ty, rask_types::Type::Result { .. })
             })
         } else {
             false

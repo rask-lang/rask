@@ -35,7 +35,7 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
 
     if s.ends_with('?') && !s.starts_with('(') {
         let inner = parse_type_string(&s[..s.len() - 1], types)?;
-        return Ok(Type::Option(Box::new(inner)));
+        return Ok(Type::option(inner));
     }
 
     if s.starts_with('(') && s.ends_with(')') {
@@ -114,7 +114,7 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
                 "Option" if args.len() == 1 => {
                     // Option takes a single type argument
                     if let GenericArg::Type(ty) = args.into_iter().next().unwrap() {
-                        return Ok(Type::Option(ty));
+                        return Ok(Type::option(*ty));
                     } else {
                         return Err(TypeError::GenericError(
                             "Option expects a type argument, not a const".to_string(),

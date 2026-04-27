@@ -77,7 +77,7 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
 
     // Handle "Option<T>" (parser-normalized form)
     if let Some(inner) = s.strip_prefix("Option<").and_then(|r| r.strip_suffix('>')) {
-        return Type::Option(Box::new(parse_stub_type(inner)));
+        return Type::option(parse_stub_type(inner));
     }
 
     match s {
@@ -292,6 +292,6 @@ mod tests {
     #[test]
     fn parse_option_type() {
         let ty = parse_stub_type("Option<i64>");
-        assert_eq!(ty, Type::Option(Box::new(Type::I64)));
+        assert_eq!(ty, Type::option(Type::I64));
     }
 }

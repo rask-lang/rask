@@ -87,8 +87,8 @@ impl TypeChecker {
                 }
                 ty.clone()
             }
-            Type::Option(inner) => {
-                Type::Option(Box::new(Self::substitute_type_params(inner, subst)))
+            Type::Result { ok, err } if **err == Type::None => {
+                Type::option(Self::substitute_type_params(ok, subst))
             }
             Type::Result { ok, err } => Type::Result {
                 ok: Box::new(Self::substitute_type_params(ok, subst)),
@@ -167,7 +167,7 @@ impl TypeChecker {
                     self.collect_type_vars(e, subst);
                 }
             }
-            Type::Array { elem, .. } | Type::Slice(elem) | Type::Option(elem) => {
+            Type::Array { elem, .. } | Type::Slice(elem) => {
                 self.collect_type_vars(elem, subst);
             }
             Type::Result { ok, err } => {
@@ -216,8 +216,8 @@ impl TypeChecker {
             Type::Slice(elem) => {
                 Type::Slice(Box::new(self.apply_type_var_substitution(elem, substitution)))
             }
-            Type::Option(inner) => {
-                Type::Option(Box::new(self.apply_type_var_substitution(inner, substitution)))
+            Type::Result { ok, err } if **err == Type::None => {
+                Type::option(self.apply_type_var_substitution(ok, substitution))
             }
             Type::Result { ok, err } => Type::Result {
                 ok: Box::new(self.apply_type_var_substitution(ok, substitution)),

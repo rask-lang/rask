@@ -297,10 +297,10 @@ impl TypeChecker {
                     self.unify(&expected, &wrapped, span)
                 }
             }
-        } else if let Type::Option(_) = &resolved_expected {
+        } else if resolved_expected.is_option() {
             let resolved_ret = self.ctx.apply(&ret_ty);
             // Named(option_type_id) is Option-shaped (e.g. bare `None` or Option<T> reference).
-            let is_option_shaped = matches!(&resolved_ret, Type::Option(_))
+            let is_option_shaped = resolved_ret.is_option()
                 || matches!(&resolved_ret, Type::Named(id) if Some(*id) == self.types.get_option_type_id());
             match &resolved_ret {
                 _ if is_option_shaped => self.unify(&expected, &ret_ty, span),
@@ -314,7 +314,7 @@ impl TypeChecker {
                     Ok(false)
                 }
                 _ => {
-                    let wrapped = Type::Option(Box::new(ret_ty));
+                    let wrapped = Type::option(ret_ty);
                     self.unify(&expected, &wrapped, span)
                 }
             }
@@ -458,8 +458,6 @@ impl TypeChecker {
                 Ok(progress)
             }
 
-            (Type::Option(inner1), Type::Option(inner2)) => self.unify(inner1, inner2, span),
-
             (
                 Type::Result { ok: o1, err: e1 },
                 Type::Result { ok: o2, err: e2 },
@@ -550,7 +548,8 @@ impl TypeChecker {
                 }
             }
 
-            (Type::Option(_inner), Type::Named(id)) | (Type::Named(id), Type::Option(_inner)) => {
+            // Option-shaped Result (T or none) unified with Named option type id
+            (t, Type::Named(id)) | (Type::Named(id), t) if t.is_option() => {
                 if Some(*id) == self.types.get_option_type_id() {
                     Ok(false)
                 } else {

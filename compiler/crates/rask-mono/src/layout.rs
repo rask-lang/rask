@@ -66,9 +66,10 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::Char => (8, 8),
         Type::String => (16, 8), // 16-byte SSO inline (RaskStr union)
         Type::Slice(_) => (16, 8), // Fat pointer: ptr + len
-        Type::Option(inner) => {
+        ty if ty.is_option() => {
+            let inner = ty.as_option().unwrap();
             // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.
-            if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
+            if matches!(inner, Type::UnresolvedGeneric { name, .. } if name == "Handle") {
                 return (8, 8);
             }
             let (size, align) = type_size_align(inner, cache);
@@ -196,7 +197,7 @@ pub(crate) fn parse_field_type(s: &str) -> Type {
     // Option shorthand: T? → Option<T>
     if s.ends_with('?') {
         let inner = parse_field_type(&s[..s.len() - 1]);
-        return Type::Option(Box::new(inner));
+        return Type::option(inner);
     }
 
     // Result type: "T or E"
@@ -215,9 +216,9 @@ pub(crate) fn parse_field_type(s: &str) -> Type {
             let name = &s[..angle];
             let inner = &s[angle + 1..s.len() - 1];
 
-            // Option<T> → Type::Option
+            // Option<T> → T or none
             if name == "Option" {
-                return Type::Option(Box::new(parse_field_type(inner)));
+                return Type::option(parse_field_type(inner));
             }
 
             // Split comma-separated type args (respecting nested angle brackets)
@@ -647,7 +648,7 @@ mod tests {
     #[test]
     fn option_i32_layout() {
         // tag (8 bytes) + i32 payload (8 bytes, codegen uses i64) = 16
-        let (size, align) = tsa(&Type::Option(Box::new(Type::I32)));
+        let (size, align) = tsa(&Type::option(Type::I32));
         assert_eq!(align, 8);
         assert_eq!(size, 16);
     }
@@ -655,7 +656,7 @@ mod tests {
     #[test]
     fn option_i8_layout() {
         // tag (8) + i8 payload (8, codegen uses i64) = 16
-        let (size, align) = tsa(&Type::Option(Box::new(Type::I8)));
+        let (size, align) = tsa(&Type::option(Type::I8));
         assert_eq!(align, 8);
         assert_eq!(size, 16);
     }
@@ -667,7 +668,7 @@ mod tests {
             name: "Handle".to_string(),
             args: vec![rask_types::GenericArg::Type(Box::new(Type::I32))],
         };
-        let (size, align) = tsa(&Type::Option(Box::new(handle_ty)));
+        let (size, align) = tsa(&Type::option(handle_ty));
         assert_eq!(size, 8);
         assert_eq!(align, 8);
     }

@@ -75,9 +75,7 @@ pub enum Type {
     },
     /// Slice type (view into array/vec)
     Slice(Box<Type>),
-    /// Option type (T?)
-    Option(Box<Type>),
-    /// Result type
+    /// Result type — also represents `T?` when err = Type::None.
     Result {
         ok: Box<Type>,
         err: Box<Type>,
@@ -136,6 +134,24 @@ impl Type {
             1 => flat.into_iter().next().unwrap(),
             _ => Type::Union(flat),
         }
+    }
+
+    /// Construct `T?` = `T or none`.
+    pub fn option(inner: Type) -> Type {
+        Type::Result { ok: Box::new(inner), err: Box::new(Type::None) }
+    }
+
+    /// True if this is the optional shape (`T or none`).
+    pub fn is_option(&self) -> bool {
+        matches!(self, Type::Result { err, .. } if **err == Type::None)
+    }
+
+    /// Unwrap the inner type if this is an optional (`T or none`).
+    pub fn as_option(&self) -> Option<&Type> {
+        if let Type::Result { ok, err } = self {
+            if **err == Type::None { return Some(ok); }
+        }
+        None
     }
 
     /// Check if this type is a subset of another union type.
@@ -217,7 +233,7 @@ impl fmt::Display for Type {
             }
             Type::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             Type::Slice(elem) => write!(f, "[{}]", elem),
-            Type::Option(inner) => write!(f, "{}?", inner),
+            Type::Result { ok, err } if **err == Type::None => write!(f, "{}?", ok),
             Type::Result { ok, err } => write!(f, "{} or {}", ok, err),
             Type::Union(types) => {
                 for (i, ty) in types.iter().enumerate() {
