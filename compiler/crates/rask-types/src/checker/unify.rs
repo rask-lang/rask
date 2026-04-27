@@ -263,6 +263,18 @@ impl TypeChecker {
                     // (or is in) E goes to the error branch; otherwise it goes
                     // to T. Disjointness (ER3) makes this unambiguous.
                     let resolved_err = self.ctx.apply(err);
+                    let resolved_ok = self.ctx.apply(ok);
+                    // ER39: inferred err. If err is unresolved and the return
+                    // value doesn't match ok, treat as an err and accumulate.
+                    // Don't unify err here — leave it for the function-level
+                    // finalization to compute the union.
+                    if self.accumulate_errors
+                        && matches!(resolved_err, Type::Var(_))
+                        && resolved_ret != resolved_ok
+                    {
+                        self.inferred_errors.push(resolved_ret);
+                        return Ok(false);
+                    }
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
                         // ER32: `any Trait` error — concrete types implementing the trait go to err
