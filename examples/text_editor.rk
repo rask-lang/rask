@@ -72,7 +72,7 @@ extend Document {
     }
 
     // Insert a new line after the given index (-1 for beginning)
-    func insert_line(self, after: i32, text: string) -> () or Error {
+    func insert_line(self, after: i32, text: string) -> void or Error {
         const h = self.lines.insert(Line { text: text })
         const raw_pos = after + 1
         const insert_pos = if raw_pos > self.line_order.len(): self.line_order.len() else: raw_pos
@@ -85,7 +85,7 @@ extend Document {
     }
 
     // Delete a line at the given index
-    func delete_line(self, at: i32) -> () or Error {
+    func delete_line(self, at: i32) -> void or Error {
         if at < 0 || at >= self.line_count(): return Error.IndexOutOfBounds
 
         const h = self.line_order.remove(at as i64)
@@ -98,7 +98,7 @@ extend Document {
     }
 
     // Modify text at the given line
-    func modify_line(self, at: i32, new_text: string) -> () or Error {
+    func modify_line(self, at: i32, new_text: string) -> void or Error {
         if at < 0 || at >= self.line_count(): return Error.IndexOutOfBounds
 
         const h = self.line_order[at as usize]
@@ -134,7 +134,7 @@ extend Document {
     }
 
     // Apply a command without recording it
-    func apply_command_silent(self, cmd: EditCommand) -> () or Error {
+    func apply_command_silent(self, cmd: EditCommand) -> void or Error {
         match cmd {
             InsertLine(after, text) => {
                 const h = self.lines.insert(Line { text: text })
@@ -153,7 +153,7 @@ extend Document {
     }
 
     // Save document to file
-    func save(self, path: string) -> () or fs.IoError {
+    func save(self, path: string) -> void or fs.IoError {
         mut file = try fs.create(path)
         ensure file.close()
 
@@ -232,7 +232,7 @@ func print_help() {
     println("  h/help                  - Show this help")
 }
 
-func main() -> () or Error {
+func main() -> void or Error {
     mut doc = Document.new()
 
     println("Simple Text Editor - type 'help' for commands")

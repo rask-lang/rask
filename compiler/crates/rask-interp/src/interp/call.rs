@@ -311,6 +311,13 @@ fn value_matches_any_type(value: &Value, names: &[String]) -> bool {
     if names.is_empty() {
         return false;
     }
+    // "none" in the error type names matches the interpreter's `none` runtime value,
+    // which is represented as Option.None (from ExprKind::None).
+    if names.iter().any(|n| n == "none") {
+        if matches!(value, Value::Enum { name, variant, .. } if name == "Option" && variant == "None") {
+            return true;
+        }
+    }
     let value_type_name: Option<&str> = match value {
         Value::Enum { name, .. } => Some(name.as_str()),
         Value::Struct(s) => {

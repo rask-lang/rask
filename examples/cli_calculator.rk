@@ -144,7 +144,7 @@ extend Parser {
         return Parser { lexer: lexer, current: current }
     }
 
-    func advance(self) -> () or CalcError {
+    func advance(self) -> void or CalcError {
         self.current = try self.lexer.next_token()
     }
 
@@ -315,7 +315,7 @@ func print_help() {
     println("  quit     Exit calculator")
 }
 
-func main() -> () or Error {
+func main() -> void or Error {
     println("Rask Calculator")
     println("Type 'help' for usage, 'quit' to exit")
     println("")

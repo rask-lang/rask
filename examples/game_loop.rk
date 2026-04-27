@@ -237,7 +237,7 @@ func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_thread
 }
 
 // Main game loop with fixed timestep and threading
-func main() -> () or Error {
+func main() -> void or Error {
     mut state = try GameState.new()
 
     const target_fps = 60.0f32

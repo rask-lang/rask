@@ -1450,6 +1450,7 @@ impl Interpreter {
             ExprKind::NullCoalesce { value, default } => {
                 let val = self.eval_expr(value)?;
                 match &val {
+                    // T? (Option.Some) — legacy or direct optional
                     Value::Enum { name, variant, fields, .. }
                         if name == "Option" && variant == "Some" =>
                     {
@@ -1457,6 +1458,17 @@ impl Interpreter {
                     }
                     Value::Enum { name, variant, .. }
                         if name == "Option" && variant == "None" =>
+                    {
+                        self.eval_expr(default)
+                    }
+                    // T or none (Result.Ok / Result.Err with none payload)
+                    Value::Enum { name, variant, fields, .. }
+                        if name == "Result" && variant == "Ok" =>
+                    {
+                        Ok(fields.first().cloned().unwrap_or(Value::Unit))
+                    }
+                    Value::Enum { name, variant, .. }
+                        if name == "Result" && variant == "Err" =>
                     {
                         self.eval_expr(default)
                     }

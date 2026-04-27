@@ -90,6 +90,24 @@ impl Interpreter {
                 ))),
                 _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
+            // `x == none` desugars to `x.eq(none)` — for T or none results
+            "eq" if args.len() == 1 => {
+                let arg_is_none = matches!(
+                    &args[0],
+                    Value::Enum { name, variant: v, .. } if name == "Option" && v == "None"
+                );
+                if arg_is_none {
+                    let self_is_absent = variant == "Err" && fields.first().map(|f| {
+                        matches!(f, Value::Enum { name, variant: v, .. } if name == "Option" && v == "None")
+                    }).unwrap_or(false);
+                    Ok(Value::Bool(self_is_absent))
+                } else {
+                    Err(RuntimeError::NoSuchMethod {
+                        ty: "Result".to_string(),
+                        method: method.to_string(),
+                    })
+                }
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Result".to_string(),
                 method: method.to_string(),

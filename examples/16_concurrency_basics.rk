@@ -31,7 +31,7 @@ extend MainError {
     }
 }
 
-func main() -> () or MainError {
+func main() -> void or MainError {
     print("=== Basic Threading ===\n\n")
 
     // Spawn a thread with Thread.spawn(|| {})

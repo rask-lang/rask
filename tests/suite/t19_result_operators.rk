@@ -48,7 +48,7 @@ test "auto-wrap at return" {
 
 // --- implicit unit success (ER10) ---
 
-func do_nothing() -> () or DivError {
+func do_nothing() -> void or DivError {
     // No explicit return — ER10 says implicit unit success
 }
 
