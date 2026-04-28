@@ -111,13 +111,29 @@ pub(crate) fn display_pipeline_output<T>(
 
 /// Run check_file, display all diagnostics, exit on errors. Returns CheckResult on success.
 pub(crate) fn run_check_or_exit(path: &str, format: Format) -> rask_compiler::CheckResult {
+    match run_check(path, format) {
+        Ok(result) => result,
+        Err(err_count) => {
+            if format == Format::Human {
+                eprintln!("\n{}", self::output::banner_fail("Check", err_count));
+            }
+            process::exit(1);
+        }
+    }
+}
+
+/// Like `run_check_or_exit` but returns the error count instead of exiting.
+/// Diagnostics are still displayed. Use this for multi-file iteration where
+/// one file's failure shouldn't stop the rest.
+pub(crate) fn run_check(
+    path: &str,
+    format: Format,
+) -> Result<rask_compiler::CheckResult, usize> {
     let config = rask_compiler::CompilerConfig {
         cfg: rask_compiler::CfgConfig::from_host("debug", vec![]),
     };
     let output = rask_compiler::check_file(path, &config);
 
-    // Source files for display: prefer from pipeline (has all package files
-    // with correct file_id ordering), fall back to reading the target file.
     let source_files: Vec<(std::path::PathBuf, String)> = if !output.source_files.is_empty() {
         output.source_files.clone()
     } else if let Some(ref r) = output.result {
@@ -135,13 +151,10 @@ pub(crate) fn run_check_or_exit(path: &str, format: Format) -> rask_compiler::Ch
         let err_count = output.diagnostics.iter()
             .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Error))
             .count();
-        if format == Format::Human {
-            eprintln!("\n{}", self::output::banner_fail("Check", err_count));
-        }
-        process::exit(1);
+        return Err(err_count);
     }
 
-    output.result.unwrap()
+    Ok(output.result.unwrap())
 }
 
 fn main() {
@@ -388,8 +401,16 @@ fn main() {
                 }
             };
             let test_opts = commands::run::TestOptions { verbose, sequential, seed };
-            if Path::new(file).is_dir() {
-                commands::run::cmd_test_project(file, filter, format);
+            let p = Path::new(file);
+            if p.is_dir() {
+                // Directory with build.rk → single project (all files share types).
+                // Directory without build.rk → folder of standalone files; run each
+                // independently so duplicate type names across files don't collide.
+                if p.join("build.rk").is_file() {
+                    commands::run::cmd_test_project(file, filter, format);
+                } else {
+                    commands::run::cmd_test_files_native(file, filter, format);
+                }
             } else {
                 commands::run::cmd_test_native_with_opts(file, filter, format, &test_opts);
             }

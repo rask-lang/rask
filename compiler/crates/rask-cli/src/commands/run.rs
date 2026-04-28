@@ -266,25 +266,46 @@ pub fn cmd_test_native_with_opts(path: &str, filter: Option<String>, format: For
 }
 
 pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
-    let mut result = match std::panic::catch_unwind(|| {
-        crate::run_check_or_exit(path, format)
-    }) {
-        Ok(r) => r,
+    if !run_test_file_native(path, filter.as_deref(), format) {
+        process::exit(1);
+    }
+}
+
+/// Run tests for a single file natively. Returns true on success.
+/// Unlike `cmd_test_native`, this never calls `process::exit` — failures are
+/// reported via diagnostics and the return value, so callers can iterate over
+/// multiple files without aborting on the first failure. Panics anywhere in
+/// the pipeline are caught and reported as a per-file failure.
+pub fn run_test_file_native(path: &str, filter: Option<&str>, format: Format) -> bool {
+    let path_owned = path.to_string();
+    let filter_owned = filter.map(|s| s.to_string());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_test_file_native_inner(&path_owned, filter_owned.as_deref(), format)
+    }));
+    match result {
+        Ok(success) => success,
         Err(_) => {
-            eprintln!("{}: frontend panic for {}", output::error_label(), path);
-            process::exit(1);
+            eprintln!("{}: panic while testing {}", output::error_label(), path);
+            false
         }
+    }
+}
+
+fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) -> bool {
+    let mut result = match crate::run_check(path, format) {
+        Ok(r) => r,
+        Err(_) => return false,
     };
 
     rask_mir::hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed.node_types));
-    let tests = super::compile::extract_tests(&mut result.decls, filter.as_deref());
+    let tests = super::compile::extract_tests(&mut result.decls, filter);
 
     if tests.is_empty() {
         if format == Format::Human {
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
         }
-        return;
+        return true;
     }
 
     // Inject compiled stdlib functions + struct defs for mono/codegen
@@ -301,7 +322,7 @@ pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{}: mono: {:?}", output::error_label(), e);
-            process::exit(1);
+            return false;
         }
     };
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
@@ -323,14 +344,14 @@ pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
             eprintln!("{}: compile: {}", output::error_label(), e);
         }
         let _ = std::fs::remove_file(&obj_path);
-        process::exit(1);
+        return false;
     }
 
     let link_opts = super::link::LinkOptions::default();
     if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, false, None) {
         eprintln!("{}: link: {}", output::error_label(), e);
         let _ = std::fs::remove_file(&obj_path);
-        process::exit(1);
+        return false;
     }
     let _ = std::fs::remove_file(&obj_path);
 
@@ -341,14 +362,58 @@ pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             display_test_results(&stdout, path, format);
-            if !out.status.success() {
-                process::exit(1);
-            }
+            out.status.success()
         }
         Err(e) => {
             eprintln!("{}: executing test binary: {}", output::error_label(), e);
-            process::exit(1);
+            false
         }
+    }
+}
+
+/// Run tests for every `.rk` file in a directory independently.
+///
+/// Each file is type-checked and compiled in isolation, so identically-named
+/// types in different files don't collide. Used when the directory has no
+/// `build.rk` manifest — i.e., it's a folder of standalone test files rather
+/// than a single multi-file package. Exits 1 if any file fails.
+pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) {
+    let dir_path = std::path::Path::new(dir);
+    let files = crate::collect_rk_files(dir_path);
+
+    if files.is_empty() {
+        if format == Format::Human {
+            println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(dir), "===".dimmed());
+            println!("  No .rk files found.");
+        }
+        return;
+    }
+
+    if format == Format::Human {
+        println!("{} Test suite: {} ({} files) {}\n",
+            "===".dimmed(), output::file_path(dir), files.len(), "===".dimmed());
+    }
+
+    let mut failed_files = 0;
+    for file in &files {
+        if !run_test_file_native(file, filter.as_deref(), format) {
+            failed_files += 1;
+        }
+    }
+
+    if format == Format::Human && files.len() > 1 {
+        println!();
+        println!("{}", output::separator(50));
+        if failed_files == 0 {
+            println!("{} all {} files passed", output::status_pass(), files.len());
+        } else {
+            println!("{} {} of {} files failed",
+                output::status_fail(), failed_files, files.len());
+        }
+    }
+
+    if failed_files > 0 {
+        process::exit(1);
     }
 }
 
