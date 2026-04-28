@@ -4481,9 +4481,9 @@ impl Parser {
                     self.advance();
                     let binding = self.expect_ident()?;
                     Ok(Pattern::TypePat { ty_name: name, binding: Some(binding) })
-                } else if self.check(&TokenKind::LBrace) && name.contains('.') {
+                } else if self.check(&TokenKind::LBrace) && name.contains('.') && self.allow_brace_expr {
                     // Struct variant pattern: Enum.Variant { field1, field2 }
-                    // Only for qualified names to avoid ambiguity with blocks
+                    // Only for qualified names, and only when braces are allowed (not in while/if conditions)
                     self.advance();
                     self.skip_newlines();
                     let mut fields = Vec::new();

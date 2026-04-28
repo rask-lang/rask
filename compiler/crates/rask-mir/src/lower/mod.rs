@@ -247,6 +247,10 @@ impl<'a> MirContext<'a> {
                 if let Some(inner) = name.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
                     return MirType::Option(Box::new(self.resolve_type_str(inner)));
                 }
+                // "T?" → MirType::Option (shorthand syntax from type annotations)
+                if let Some(inner) = name.strip_suffix('?') {
+                    return MirType::Option(Box::new(self.resolve_type_str(inner)));
+                }
                 // Generic collection types: Vec<T>, Map<K,V>, etc. are heap pointers
                 if name.starts_with("Vec<") || name == "Vec" {
                     return MirType::Ptr; // Vec handle (opaque pointer)
@@ -1050,6 +1054,37 @@ impl<'a> MirLowerer<'a> {
             }
             _ => 0,
         }
+    }
+
+    /// Like `pattern_tag` but uses the matched value's type to resolve ambiguity.
+    ///
+    /// When matching `r is DivError` where `r: T or DivError`, "DivError" is the
+    /// error enum type name, not a variant — it should map to tag 1 (Err).
+    /// `pattern_tag` can't detect this without type context.
+    pub(crate) fn pattern_tag_in_type_context(
+        &self,
+        pattern: &rask_ast::expr::Pattern,
+        val_ty: &MirType,
+    ) -> i64 {
+        use rask_ast::expr::Pattern;
+        if let Pattern::Ident(name) = pattern {
+            if is_variant_name(name) {
+                // If the name matches the error enum type of a Result, tag = 1 (Err).
+                if let MirType::Result { err, .. } = val_ty {
+                    if let MirType::Enum(eid) = err.as_ref() {
+                        let idx = eid.id as usize;
+                        if idx < self.ctx.enum_layouts.len()
+                            && self.ctx.enum_layouts[idx].name == name.as_str()
+                        {
+                            return 1;
+                        }
+                    }
+                }
+                return self.variant_tag(name);
+            }
+            return 0;
+        }
+        self.pattern_tag(pattern)
     }
 
     /// Look up the tag value for a variant name.

@@ -519,6 +519,50 @@ impl CodeGenerator {
             self.func_ids.insert("rask_check_fail".to_string(), id);
         }
 
+        // rask_i64_to_string(out: *RaskStr, val: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // out ptr
+            sig.params.push(AbiParam::new(types::I64)); // val
+            let id = self.module
+                .declare_function("rask_i64_to_string", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_i64_to_string".to_string(), id);
+        }
+
+        // rask_bool_to_string(out: *RaskStr, val: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // out ptr
+            sig.params.push(AbiParam::new(types::I64)); // val
+            let id = self.module
+                .declare_function("rask_bool_to_string", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_bool_to_string".to_string(), id);
+        }
+
+        // rask_f64_to_string(out: *RaskStr, val: f64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // out ptr
+            sig.params.push(AbiParam::new(types::F64)); // val
+            let id = self.module
+                .declare_function("rask_f64_to_string", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_f64_to_string".to_string(), id);
+        }
+
+        // rask_char_to_string(out: *RaskStr, codepoint: i32) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // out ptr
+            sig.params.push(AbiParam::new(types::I32)); // codepoint
+            let id = self.module
+                .declare_function("rask_char_to_string", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_char_to_string".to_string(), id);
+        }
+
         Ok(())
     }
 

@@ -610,6 +610,20 @@ impl<'a> FunctionBuilder<'a> {
                     val = Self::convert_value(builder, val, val_ty, dst_ty);
                 }
 
+                // When dest is Option(T) and the source is already Option-typed,
+                // copy the struct. When the source is a scalar, wrap as Some.
+                let src_option_ty = if let MirType::Option(_) = &dst_local.ty {
+                    if let MirRValue::Use(MirOperand::Local(src_id)) = rvalue {
+                        ctx.locals.iter().find(|l| l.id == *src_id)
+                            .map(|l| matches!(l.ty, MirType::Option(_)))
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
                 // Aggregate assignment: when the destination has a stack slot and
                 // the rvalue produces a pointer to aggregate data, copy the data
                 // into the destination's stack slot rather than aliasing pointers.
@@ -620,8 +634,19 @@ impl<'a> FunctionBuilder<'a> {
                     // Field on aggregate base returns pointer for aggregate elements
                     (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
                      MirType::Result { .. } | MirType::Option(_), MirRValue::Field { .. }) => true,
+                    // Option(T) assigned from an Option-typed local: copy the 16-byte struct
+                    (MirType::Option(_), _) if src_option_ty => true,
                     _ => false,
                 };
+
+                // Option(T) assigned from a scalar: wrap as Some in the stack slot.
+                // Needed for `const x: i32? = 42` — without this, the scalar 42
+                // overwrites the stack-address held in x's var, causing a SIGSEGV
+                // when code later loads the tag by dereferencing that "address".
+                let wrap_as_some = matches!(&dst_local.ty, MirType::Option(_))
+                    && !needs_copy
+                    && ctx.stack_slot_map.contains_key(dst);
+
                 if needs_copy {
                     if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst) {
                         Self::copy_aggregate(builder, val, *dst_ss, *dst_size);
@@ -630,6 +655,9 @@ impl<'a> FunctionBuilder<'a> {
                             .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
                         builder.def_var(*var, val);
                     }
+                } else if wrap_as_some {
+                    let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
+                    Self::wrap_some_into_slot(builder, val, *dst_ss);
                 } else {
                     let var = ctx.var_map.get(dst)
                         .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
@@ -1551,8 +1579,15 @@ impl<'a> FunctionBuilder<'a> {
                             builder.ins().iconst(types::I64, 0)
                         };
                         if let Some((ss, _size)) = ctx.stack_slot_map.get(dst_id) {
-                            // Extern C functions return plain values; wrap in Ok for Result destinations
-                            Self::wrap_ok_into_slot(builder, val, *ss);
+                            let dst_is_option = ctx.locals.iter()
+                                .find(|l| l.id == *dst_id)
+                                .map(|l| matches!(l.ty, MirType::Option(_)))
+                                .unwrap_or(false);
+                            if dst_is_option {
+                                Self::wrap_some_into_slot(builder, val, *ss);
+                            } else {
+                                Self::wrap_ok_into_slot(builder, val, *ss);
+                            }
                         } else {
                             builder.def_var(*var, val);
                         }
@@ -1776,8 +1811,16 @@ impl<'a> FunctionBuilder<'a> {
                             Self::wrap_result_into_slot(builder, final_val, *ss);
                         } else {
                             // C stdlib function returns a plain value (not a pointer to an aggregate).
-                            // Wrap it as Ok(value) in the destination Result slot.
-                            Self::wrap_ok_into_slot(builder, final_val, *ss);
+                            // Wrap as Some/Ok depending on destination type.
+                            let dst_is_option = ctx.locals.iter()
+                                .find(|l| l.id == *dst_id)
+                                .map(|l| matches!(l.ty, MirType::Option(_)))
+                                .unwrap_or(false);
+                            if dst_is_option {
+                                Self::wrap_some_into_slot(builder, final_val, *ss);
+                            } else {
+                                Self::wrap_ok_into_slot(builder, final_val, *ss);
+                            }
                         }
                     } else {
                         builder.def_var(*var, final_val);
@@ -2076,6 +2119,43 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirRValue::Cast { value, target_ty } => {
+                if target_ty == &MirType::String {
+                    // Casting to string requires a runtime call that writes 16-byte
+                    // RaskStr into an out-param. A plain type-cast (convert_value)
+                    // would return a scalar, which copy_aggregate would dereference
+                    // as a pointer — causing a segfault.
+                    let src_mir_ty = Self::operand_mir_type(value, ctx.locals);
+                    let (fn_name, arg_ty) = match src_mir_ty.as_ref() {
+                        Some(MirType::Bool) => ("rask_bool_to_string", types::I64),
+                        Some(MirType::F64) => ("rask_f64_to_string", types::F64),
+                        Some(MirType::F32) => ("rask_f64_to_string", types::F64),
+                        Some(MirType::Char) => ("rask_char_to_string", types::I32),
+                        _ => match value {
+                            MirOperand::Constant(MirConst::Bool(_)) => ("rask_bool_to_string", types::I64),
+                            MirOperand::Constant(MirConst::Float(_)) => ("rask_f64_to_string", types::F64),
+                            MirOperand::Constant(MirConst::Char(_)) => ("rask_char_to_string", types::I32),
+                            _ => ("rask_i64_to_string", types::I64),
+                        }
+                    };
+
+                    let fr = ctx.func_refs.get(fn_name)
+                        .ok_or_else(|| CodegenError::FunctionNotFound(fn_name.to_string()))?;
+
+                    let out_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, 16, 0,
+                    ));
+                    let out_ptr = builder.ins().stack_addr(types::I64, out_ss, 0);
+
+                    let mut val = Self::lower_operand_typed(builder, value, Some(arg_ty), ctx)?;
+                    let val_ty = builder.func.dfg.value_type(val);
+                    if val_ty != arg_ty {
+                        val = Self::convert_value(builder, val, val_ty, arg_ty);
+                    }
+
+                    builder.ins().call(*fr, &[out_ptr, val]);
+                    return Ok(out_ptr);
+                }
+
                 let val = Self::lower_operand(builder, value, ctx)?;
                 let target = mir_to_cranelift_type(target_ty)?;
                 let val_ty = builder.func.dfg.value_type(val);
@@ -2167,6 +2247,16 @@ impl<'a> FunctionBuilder<'a> {
                             let is_aggregate = |t: &MirType| matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String);
                             if *field_index == 0 && (is_aggregate(ok.as_ref()) || is_aggregate(err.as_ref())) {
                                 let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::RESULT_PAYLOAD_OFFSET as i64);
+                                // If the caller expects a scalar (non-I64), this is a scalar
+                                // payload extraction (e.g., Ok value from Result<I32, SomeEnum>).
+                                // Load from the payload address instead of returning the address.
+                                // Without this, convert_value would truncate the address to I32.
+                                if let Some(exp) = expected_ty {
+                                    if exp != types::I64 {
+                                        let loaded = builder.ins().load(exp, MemFlags::new(), payload_addr, 0);
+                                        return Ok(loaded);
+                                    }
+                                }
                                 return Ok(payload_addr);
                             }
                             crate::layouts::RESULT_PAYLOAD_OFFSET + (*field_index * 8) as i32
@@ -2295,15 +2385,50 @@ impl<'a> FunctionBuilder<'a> {
                 if ctx.is_main {
                     builder.ins().return_(&[]);
                 } else if let Some(stack_info) = Self::return_stack_info(value.as_ref(), ctx.stack_slot_map) {
-                    // For small aggregate return values (≤8 bytes) in stack slots,
-                    // load the data and return it directly.
+                    // For small aggregate return values (≤8 bytes) in stack slots:
+                    //   - If the function return type is Result/Option, the small value
+                    //     is a component (ok or err), not a Result — must be wrapped.
+                    //   - Otherwise load the scalar and return it directly.
                     // For larger aggregates, return the stack slot address. The caller
                     // copies from it immediately via copy_aggregate (the callee stack
                     // is still accessible at that point on x86-64).
-                    let (_local_id, ss, size) = stack_info;
+                    let (local_id, ss, size) = stack_info;
                     if size <= 8 {
                         let loaded = builder.ins().stack_load(types::I64, ss, 0);
-                        builder.ins().return_(&[loaded]);
+                        if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
+                            // Small component in a Result/Option-returning function.
+                            // Wrap it as Ok or Err by checking the local's type.
+                            let slot_size = Self::resolve_type_alloc_size(
+                                ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts
+                            ).unwrap_or(16);
+                            let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot, slot_size, 0,
+                            ));
+                            let is_err = if let MirType::Result { err, .. } = ctx.ret_ty {
+                                ctx.locals.iter()
+                                    .find(|l| l.id == local_id)
+                                    .map(|l| &l.ty == err.as_ref())
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            };
+                            if is_err {
+                                let tag = builder.ins().iconst(types::I64, 1);
+                                builder.ins().stack_store(tag, ret_ss, crate::layouts::TAG_OFFSET);
+                                let zero = builder.ins().iconst(types::I64, 0);
+                                builder.ins().stack_store(zero, ret_ss, crate::layouts::ORIGIN_FILE_OFFSET);
+                                builder.ins().stack_store(zero, ret_ss, crate::layouts::ORIGIN_LINE_OFFSET);
+                                builder.ins().stack_store(loaded, ret_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
+                            } else if matches!(ctx.ret_ty, MirType::Option(_)) {
+                                Self::wrap_some_into_slot(builder, loaded, ret_ss);
+                            } else {
+                                Self::wrap_ok_into_slot(builder, loaded, ret_ss);
+                            }
+                            let addr = builder.ins().stack_addr(types::I64, ret_ss, 0);
+                            builder.ins().return_(&[addr]);
+                        } else {
+                            builder.ins().return_(&[loaded]);
+                        }
                     } else {
                         // Return pointer to stack slot data for copy_aggregate
                         Self::emit_return(builder, value.as_ref(), ctx)?;
@@ -2325,7 +2450,11 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         builder.ins().iconst(types::I64, 0)
                     };
-                    Self::wrap_ok_into_slot(builder, val, ss);
+                    if matches!(ctx.ret_ty, MirType::Option(_)) {
+                        Self::wrap_some_into_slot(builder, val, ss);
+                    } else {
+                        Self::wrap_ok_into_slot(builder, val, ss);
+                    }
                     let addr = builder.ins().stack_addr(types::I64, ss, 0);
                     builder.ins().return_(&[addr]);
                 } else {
@@ -2522,13 +2651,15 @@ impl<'a> FunctionBuilder<'a> {
                     .unwrap_or(ok.size());
                 let err_size = Self::resolve_type_alloc_size(err, struct_layouts, enum_layouts)
                     .unwrap_or(err.size());
-                // tag (8) + origin_file (8) + origin_line (8) + payload
-                Some(crate::layouts::RESULT_PAYLOAD_OFFSET as u32 + ok_size.max(err_size))
+                // tag (8) + origin_file (8) + origin_line (8) + payload.
+                // Scalars are stored as 8-byte values in codegen; .max(8) prevents OOB writes.
+                Some(crate::layouts::RESULT_PAYLOAD_OFFSET as u32 + ok_size.max(8).max(err_size.max(8)))
             }
             MirType::Option(inner) => {
                 let inner_size = Self::resolve_type_alloc_size(inner, struct_layouts, enum_layouts)
                     .unwrap_or(inner.size());
-                Some(8 + inner_size)
+                // Scalars are stored as 8-byte values in codegen; .max(8) prevents OOB writes.
+                Some(8 + inner_size.max(8))
             }
             MirType::Tuple(fields) => {
                 let mut offset = 0u32;
@@ -2593,6 +2724,16 @@ impl<'a> FunctionBuilder<'a> {
         builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_FILE_OFFSET);
         builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_LINE_OFFSET);
         builder.ins().stack_store(value, dst_slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
+    }
+
+    /// Wrap a scalar value as Some(value) into an Option stack slot.
+    ///
+    /// Option layout: [tag:8][payload:8]. Much smaller than Result — no origin fields.
+    /// Using `wrap_ok_into_slot` for Options writes past the end of the slot (UB/crash).
+    fn wrap_some_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
+        let tag = builder.ins().iconst(types::I64, 0); // 0 = Some
+        builder.ins().stack_store(tag, dst_slot, crate::layouts::TAG_OFFSET);
+        builder.ins().stack_store(value, dst_slot, crate::layouts::PAYLOAD_OFFSET);
     }
 
     /// C functions that use "negative return = error" convention.

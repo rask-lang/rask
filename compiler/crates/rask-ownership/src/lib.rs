@@ -346,16 +346,16 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Const { name, name_span: _, ty, init } => {
                 self.check_expr(init);
-                // const: Copy types are copied, non-Copy types create
-                // a block-scoped borrow (source stays valid but frozen)
+                // non-Copy types are moved (O3); field/index projections create borrows.
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
                     self.binding_types.insert(name.clone(), t.clone());
-                    // SL1: If this is a non-copy type, this const is a borrow view.
-                    // Track it so closures capturing it are scope-limited.
-                    if !self.is_copy(&t) {
+                    // SL1: Only a projection (field/index) borrow creates a borrow view.
+                    // Whole-variable moves create owned bindings; closures can capture freely.
+                    let (_, projection) = Self::extract_root_and_fields(init);
+                    if !self.is_copy(&t) && projection.is_some() {
                         self.borrow_bindings.insert(name.clone(), self.current_block);
                     }
                 }
@@ -1259,12 +1259,17 @@ impl<'a> OwnershipChecker<'a> {
                 return;
             }
 
-            // Non-Copy types: move or borrow depending on binding mutability
+            // Non-Copy types: whole-variable access moves the source (O3);
+            // field/index projections create a borrow (mode depends on is_mutable).
             // F1: Extract root binding and optional field projection
             let (root, projection) = Self::extract_root_and_fields(expr);
             if let Some(source_name) = root {
-                if is_mutable {
-                    // Mutable binding (let): check not borrowed, then move
+                if projection.is_some() {
+                    // F1: Field-projected — borrow the source
+                    let mode = if is_mutable { BorrowMode::Exclusive } else { BorrowMode::Shared };
+                    self.create_borrow_with_projection(source_name, mode, span, projection);
+                } else {
+                    // Whole-variable assignment: move source regardless of const/mut
                     if let Some(state) = self.bindings.get(&source_name) {
                         match state {
                             BindingState::Borrowed { .. } => {
@@ -1302,15 +1307,7 @@ impl<'a> OwnershipChecker<'a> {
                             BindingState::Owned => {}
                         }
                     }
-                    if projection.is_some() {
-                        // F1: Field-projected borrow — disjoint fields don't conflict
-                        self.create_borrow_with_projection(source_name, BorrowMode::Exclusive, span, projection);
-                    } else {
-                        self.bindings.insert(source_name, BindingState::Moved { at: span });
-                    }
-                } else {
-                    // Immutable binding (const): create block-scoped borrow
-                    self.create_borrow_with_projection(source_name, BorrowMode::Shared, span, projection);
+                    self.bindings.insert(source_name, BindingState::Moved { at: span });
                 }
             }
         }
