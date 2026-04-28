@@ -907,30 +907,28 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 let (note, help) = match reason {
                     MoveReason::SizeExceedsThreshold { type_name, size } => (
                         format!(
-                            "`{}` is {} bytes (copy threshold is 16) — `let` moves instead of copying",
+                            "`{}` is {} bytes (copy threshold is 16) — assignment moves instead of copying",
                             type_name, size
                         ),
                         format!(
-                            "use `const` instead of `let` if you don't need to mutate, \
-                             or `{}.clone()` if you need an independent copy",
+                            "add `{}.clone()` if you need an independent copy",
                             name
                         ),
                     ),
                     MoveReason::OwnsHeapMemory { type_name } => (
                         format!(
-                            "`{}` owns heap memory — `let` moves instead of copying",
+                            "`{}` owns heap memory — assignment moves instead of copying",
                             type_name
                         ),
                         format!(
-                            "use `const` instead of `let` to borrow, \
-                             or `{}.clone()` for a deep copy",
+                            "add `{}.clone()` if you need an independent copy",
                             name
                         ),
                     ),
                     MoveReason::Unique { type_name } => (
                         format!("`{}` is @unique — implicit copy is disabled", type_name),
                         format!(
-                            "use `const` to borrow, or `{}.clone()` for an explicit copy",
+                            "add `{}.clone()` if the type supports it",
                             name
                         ),
                     ),
@@ -939,10 +937,9 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         "restructure so the resource is only used once".to_string(),
                     ),
                     MoveReason::Unknown => (
-                        format!("`{}` was moved — `let` transfers ownership", name),
+                        format!("`{}` was moved — assignment transfers ownership", name),
                         format!(
-                            "use `const` instead of `let` to borrow, \
-                             or `{}.clone()` if you need a separate copy",
+                            "add `{}.clone()` if you need a separate copy",
                             name
                         ),
                     ),

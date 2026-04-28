@@ -2387,9 +2387,9 @@ impl<'a> MirLowerer<'a> {
             // Pattern test (expr is Pattern) — evaluates to bool
             ExprKind::IsPattern { expr: inner, pattern } => {
                 let is_niche = self.is_niche_option_expr(inner);
-                let (val, _ty) = self.lower_expr(inner)?;
+                let (val, val_ty) = self.lower_expr(inner)?;
                 let tag = self.emit_option_tag(&val, is_niche);
-                let expected = self.pattern_tag(pattern);
+                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
                 let result = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result,

@@ -172,6 +172,15 @@ fn try_inline_call(
         return false;
     }
 
+    // Don't inline Result/Option-returning functions where some return paths carry
+    // a non-Result/Option value. The codegen wraps these in lower_terminator, but
+    // the inline pass can't emit that wrapping logic, so the inlined code would
+    // assign a raw scalar to a Result-typed variable and crash when the caller
+    // later dereferences it as a struct pointer.
+    if is_result_or_option(&callee.ret_ty) && has_unwrapped_return(callee) {
+        return false;
+    }
+
     // --- Renumbering ---
 
     // Find the next available LocalId and BlockId in the caller
@@ -762,6 +771,39 @@ fn fixup_cleanup_exits(
             }
         }
     }
+}
+
+fn is_result_or_option(ty: &MirType) -> bool {
+    matches!(ty, MirType::Result { .. } | MirType::Option(_))
+}
+
+/// True if the callee has any Return/CleanupReturn that carries a value whose
+/// type is NOT a Result or Option. These returns need codegen-level wrapping
+/// that the inline pass can't reproduce.
+fn has_unwrapped_return(callee: &MirFunction) -> bool {
+    for block in &callee.blocks {
+        let ret_val = match &block.terminator.kind {
+            MirTerminatorKind::Return { value: Some(op) } => Some(op),
+            MirTerminatorKind::CleanupReturn { value: Some(op), .. } => Some(op),
+            _ => None,
+        };
+        if let Some(MirOperand::Local(id)) = ret_val {
+            if let Some(local) = callee.locals.iter().find(|l| l.id == *id) {
+                if !is_result_or_option(&local.ty) {
+                    return true;
+                }
+            } else if let Some(param) = callee.params.iter().find(|p| p.id == *id) {
+                if !is_result_or_option(&param.ty) {
+                    return true;
+                }
+            }
+        }
+        // Constant returns (e.g. return 0) are scalars and would also need wrapping
+        if let Some(MirOperand::Constant(_)) = ret_val {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

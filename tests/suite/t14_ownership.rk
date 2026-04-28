@@ -60,7 +60,6 @@ test "small struct survives function pass" {
 }
 
 // --- Vec is never Copy (VS3), moves on assignment (O2) ---
-// NOTE: Use-after-move (O3) is not yet enforced by the ownership checker.
 
 test "vec move to new binding" {
     mut v = Vec<i32>.new()
