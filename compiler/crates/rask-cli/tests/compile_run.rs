@@ -880,3 +880,65 @@ fn interp_ensure_continuation() {
         "unexpected output: {:?}", stdout
     );
 }
+
+// ─── Regression: issue #236 ─────────────────────────────────
+//
+// `rask test <dir>` on a directory of standalone files (no build.rk)
+// must run each file in isolation. Without isolation, identically named
+// types in different files collide ("expected `Point`, found `Point`"
+// with different TypeIds) — type checking regresses vs single-file mode.
+
+#[test]
+fn test_dir_runs_files_independently() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir().join(format!("rask_test_dir_indep_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // Two files each defining their own `Point` — cannot share a TypeId.
+    std::fs::write(dir.join("a.rk"), r#"
+struct Point { x: i32, y: i32 }
+test "a uses its own Point" {
+    const p = Point { x: 1, y: 2 }
+    assert p.x == 1
+}
+"#).unwrap();
+
+    std::fs::write(dir.join("b.rk"), r#"
+struct Point { x: i32, y: i32, z: i32 }
+test "b uses its own Point" {
+    const p = Point { x: 1, y: 2, z: 3 }
+    assert p.z == 3
+}
+"#).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("test")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask test");
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        out.status.success(),
+        "rask test <dir> should succeed when files have independent types\nstdout: {}\nstderr: {}",
+        stdout, stderr,
+    );
+
+    // Per-file processing prevents the spurious "expected `Point`, found `Point`"
+    // error that issue #236 was about.
+    assert!(
+        !combined.contains("expected `Point`, found `Point`"),
+        "must not produce cross-file Point/Point mismatch: {}", combined,
+    );
+    assert!(
+        combined.contains("a uses its own Point") && combined.contains("b uses its own Point"),
+        "both files' tests should run: {}", combined,
+    );
+}
