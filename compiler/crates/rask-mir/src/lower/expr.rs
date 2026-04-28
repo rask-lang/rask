@@ -608,8 +608,8 @@ impl<'a> MirLowerer<'a> {
                 cond,
                 then_branch,
                 else_branch,
-                ..
-            } => self.lower_if(cond, then_branch, else_branch.as_deref()),
+                else_binding,
+            } => self.lower_if(cond, then_branch, else_branch.as_deref(), else_binding.as_deref()),
 
             // Match expression (spec L2)
             ExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms),
@@ -3057,7 +3057,29 @@ impl<'a> MirLowerer<'a> {
         cond: &Expr,
         then_branch: &Expr,
         else_branch: Option<&Expr>,
+        else_binding: Option<&str>,
     ) -> Result<TypedOperand, LoweringError> {
+        // OPT19/OPT20 + ER19/ER20/ER21/ER22: `if x?` / `if x? as v` /
+        // `... else as e` evaluate the scrutinee once and rebind the
+        // payload as a local in the matching branch.
+        if let ExprKind::IsPresent { expr: inner, binding } = &cond.kind {
+            let then_name = match (binding.as_deref(), &inner.kind) {
+                (Some(v), _) => Some(v.to_string()),
+                (None, ExprKind::Ident(n)) => Some(n.clone()),
+                _ => None,
+            };
+            let else_name = else_binding.map(|s| s.to_string()).or_else(|| then_name.clone());
+            if then_name.is_some() || else_name.is_some() {
+                return self.lower_if_present(
+                    inner,
+                    then_branch,
+                    else_branch,
+                    then_name,
+                    else_name,
+                );
+            }
+        }
+
         let (cond_op, _) = self.lower_expr(cond)?;
 
         let then_block = self.builder.create_block();
@@ -3104,6 +3126,113 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
 
+        Ok((MirOperand::Local(result_local), then_ty))
+    }
+
+    /// Lower `if expr? [as v] { then } [else [as e] { else_br }]` — present-check
+    /// with payload narrowing. Mirrors the interpreter path in
+    /// `rask-interp/src/interp/eval_expr.rs::ExprKind::If(IsPresent ..)`.
+    fn lower_if_present(
+        &mut self,
+        inner: &Expr,
+        then_branch: &Expr,
+        else_branch: Option<&Expr>,
+        then_name: Option<String>,
+        else_name: Option<String>,
+    ) -> Result<TypedOperand, LoweringError> {
+        let is_niche = self.is_niche_option_expr(inner);
+        let (val, _) = self.lower_expr(inner)?;
+        let tag = self.emit_option_tag(&val, is_niche);
+
+        // Branch on tag: 0 = present (Some/Ok), nonzero = absent (None/Err).
+        let is_present = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: is_present,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Eq,
+                left: MirOperand::Local(tag),
+                right: MirOperand::Constant(MirConst::Int(0)),
+            },
+        }));
+
+        let then_block = self.builder.create_block();
+        let else_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(is_present),
+            then_block,
+            else_block,
+        }));
+
+        // Then: bind the present payload as the narrow name, lower body.
+        self.builder.switch_to_block(then_block);
+        let payload_ty = self.extract_payload_type(inner).unwrap_or(MirType::I64);
+        if let Some(name) = then_name.as_ref() {
+            let local = self.builder.alloc_local(name.clone(), payload_ty.clone());
+            let rvalue = if is_niche {
+                MirRValue::Use(val.clone())
+            } else {
+                MirRValue::Field {
+                    base: val.clone(),
+                    field_index: 0,
+                    byte_offset: None,
+                    field_size: None,
+                }
+            };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
+            self.locals.insert(name.clone(), (local, payload_ty.clone()));
+            if let Some(prefix) = self.mir_type_name(&payload_ty) {
+                self.meta_mut(name).type_prefix = Some(prefix);
+            }
+        }
+        let (then_val, then_ty) = self.lower_expr(then_branch)?;
+        let result_local = self.builder.alloc_temp(then_ty.clone());
+        if self.builder.current_block_unterminated() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result_local,
+                rvalue: MirRValue::Use(then_val),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: merge_block,
+            }));
+        }
+
+        // Else: for Result, bind the err payload (field 0) as the else name.
+        // For Option, None has no payload so skip the bind.
+        self.builder.switch_to_block(else_block);
+        if let (Some(name), Some(err_ty)) = (else_name.as_ref(), self.extract_err_type(inner)) {
+            let local = self.builder.alloc_local(name.clone(), err_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::Field {
+                    base: val.clone(),
+                    field_index: 0,
+                    byte_offset: None,
+                    field_size: None,
+                },
+            }));
+            self.locals.insert(name.clone(), (local, err_ty.clone()));
+            if let Some(prefix) = self.mir_type_name(&err_ty) {
+                self.meta_mut(name).type_prefix = Some(prefix);
+            }
+        }
+        if let Some(else_expr) = else_branch {
+            let (else_val, _) = self.lower_expr(else_expr)?;
+            if self.builder.current_block_unterminated() {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Use(else_val),
+                }));
+            }
+        }
+        if self.builder.current_block_unterminated() {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: merge_block,
+            }));
+        }
+
+        self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), then_ty))
     }
 

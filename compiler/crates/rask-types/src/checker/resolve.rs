@@ -623,6 +623,58 @@ impl TypeChecker {
                 let err = *err.clone();
                 self.resolve_result_method(&ok, &err, &method, &args, &ret, span)
             }
+            // ER4: A method on a union (`A | B`) dispatches when every variant
+            // implements a compatible method. The result type is the unified
+            // return — repeated unification of `ret` against each variant's
+            // return type enforces compatibility.
+            Type::Union(variants) => {
+                let variants = variants.clone();
+                let any_unresolved = variants.iter().any(|v| {
+                    matches!(self.resolve_named(&self.ctx.apply(v)), Type::Var(_))
+                });
+                if any_unresolved {
+                    self.ctx.add_constraint(TypeConstraint::HasMethod {
+                        ty: Type::Union(variants),
+                        method,
+                        args,
+                        ret,
+                        span,
+                    });
+                    return Ok(false);
+                }
+
+                let mut missing: Vec<Type> = Vec::new();
+                let mut progress = false;
+                for variant in &variants {
+                    match self.resolve_method(
+                        variant.clone(),
+                        method.clone(),
+                        args.clone(),
+                        ret.clone(),
+                        span,
+                    ) {
+                        Ok(p) => {
+                            if p {
+                                progress = true;
+                            }
+                        }
+                        Err(TypeError::NoSuchMethod { .. }) => {
+                            missing.push(variant.clone());
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                if !missing.is_empty() {
+                    return Err(TypeError::NoSuchMethod {
+                        ty: Type::Union(variants),
+                        method,
+                        span,
+                    });
+                }
+
+                Ok(progress)
+            }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty,

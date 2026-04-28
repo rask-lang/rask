@@ -171,4 +171,24 @@ test "match on Result" {
     assert value == 5
 }
 
+// --- rask#211: shared methods auto-dispatch on union errors ---
+//
+// Every `E` satisfies `ErrorMessage` (ER4), so `e.message()` on a union
+// `e: A | B` resolves by dispatching to whichever variant `e` holds.
+
+func union_message(s: string, b: i32) -> string {
+    const r = combined(s, b)
+    if r? as v {
+        return "ok({v})"
+    } else as e {
+        return e.message()
+    }
+}
+
+test "union error dispatches shared message()" {
+    assert union_message("42", 2) == "ok(21)"
+    assert union_message("bad", 2) == "parse error: not a number"
+    assert union_message("42", 0) == "division by zero"
+}
+
 func main() {}
