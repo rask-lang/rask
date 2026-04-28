@@ -1176,6 +1176,35 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_help(format!("clone `{}` before passing, or restructure to avoid taking ownership", item))
                 .with_why("for-mutate borrows elements in place — taking ownership would leave a hole in the collection")
             }
+
+            LinearWildcardDiscard { position, type_name } => {
+                use rask_ownership::LinearDiscardPosition;
+                let (label, help) = match position {
+                    LinearDiscardPosition::Scrutinee => (
+                        format!("`_` would silently drop linear value of type `{}`", type_name),
+                        "name the value with `name` (or `Type as name`) and consume it on every arm".to_string(),
+                    ),
+                    LinearDiscardPosition::Field { constructor, field, index } => {
+                        let where_ = match (field, index) {
+                            (Some(f), _) => format!("field `{}` of `{}`", f, constructor),
+                            (None, Some(i)) => format!("field {} of `{}`", i, constructor),
+                            (None, None) => format!("a field of `{}`", constructor),
+                        };
+                        (
+                            format!("`_` discards linear `{}` payload in {}", type_name, where_),
+                            "bind the linear field by name and consume it (e.g. `try value.close()`)".to_string(),
+                        )
+                    }
+                };
+                Diagnostic::error(format!(
+                    "wildcard would silently drop linear value of type `{}`",
+                    type_name
+                ))
+                .with_code("E0816")
+                .with_primary(self.span, label)
+                .with_help(help)
+                .with_why("linear values must be consumed exactly once — a `_` here would leak the resource [ER42/ER43]")
+            }
         }
     }
 }

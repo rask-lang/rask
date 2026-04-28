@@ -461,12 +461,16 @@ impl TypeChecker {
             _ => {}
         }
 
+        // Qualified `Enum.Variant` patterns: the variant lookup needs the
+        // bare variant name, not the enum-qualified path.
+        let variant_lookup_name = name.rsplit('.').next().unwrap_or(name);
+
         match &resolved_scrutinee {
             Type::Named(type_id) => {
                 let variant_fields = self.types.get(*type_id).and_then(|def| {
                     if let TypeDef::Enum { variants, .. } = def {
                         variants.iter()
-                            .find(|(n, _)| n == name)
+                            .find(|(n, _)| n == variant_lookup_name)
                             .map(|(_, f)| f.clone())
                     } else {
                         None

@@ -48,6 +48,7 @@ impl TypeChecker {
             }
         }
         self.propagate_uniqueness();
+        self.propagate_resource_linearity();
         self.auto_derive_traits();
         self.register_binary_methods();
 
@@ -202,6 +203,10 @@ impl TypeChecker {
             is_unique,
             is_binary,
             private_fields,
+            // ER42/L1: refined by `propagate_resource_linearity` after all
+            // declarations are collected. @resource is the seed; transitive
+            // linearity propagates from there.
+            is_transitive_resource: is_resource,
         });
 
         if let Some(info) = binary_info {
@@ -287,6 +292,9 @@ impl TypeChecker {
             type_params,
             variants,
             methods,
+            // ER42/L1: refined by `propagate_resource_linearity` once all
+            // declarations are visible.
+            is_transitive_resource: false,
         });
     }
 
@@ -422,6 +430,54 @@ impl TypeChecker {
                             changed = true;
                         }
                     }
+                }
+            }
+            if !changed { break; }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // ER42/L1: Transitive linearity — a struct/enum that contains a linear
+    // field (directly or via nested struct/enum/tuple/etc.) is itself linear.
+    // Drives ownership-checker consumption obligations and the ER43 wildcard
+    // ban during pattern matching.
+    // ------------------------------------------------------------------------
+
+    fn propagate_resource_linearity(&mut self) {
+        use crate::types::TypeId;
+
+        loop {
+            let mut changed = false;
+            let type_count = self.types.types.len();
+            for idx in 0..type_count {
+                let id = TypeId(idx as u32);
+                let def = self.types.get(id).unwrap().clone();
+                match &def {
+                    TypeDef::Struct { fields, is_transitive_resource, .. } => {
+                        if *is_transitive_resource { continue; }
+                        let has_linear_field = fields.iter().any(|(_, ty)| {
+                            self.types.type_is_transitive_resource(ty)
+                        });
+                        if has_linear_field {
+                            if let Some(TypeDef::Struct { is_transitive_resource, .. }) = self.types.get_mut(id) {
+                                *is_transitive_resource = true;
+                                changed = true;
+                            }
+                        }
+                    }
+                    TypeDef::Enum { variants, is_transitive_resource, .. } => {
+                        if *is_transitive_resource { continue; }
+                        let has_linear_payload = variants.iter().any(|(_, fts)| {
+                            fts.iter().any(|ty| self.types.type_is_transitive_resource(ty))
+                        });
+                        if has_linear_payload {
+                            if let Some(TypeDef::Enum { is_transitive_resource, .. }) = self.types.get_mut(id) {
+                                *is_transitive_resource = true;
+                                changed = true;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             if !changed { break; }

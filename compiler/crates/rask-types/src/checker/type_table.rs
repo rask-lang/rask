@@ -78,6 +78,7 @@ impl TypeTable {
                 ("None".to_string(), vec![]),
             ],
             methods: vec![],
+            is_transitive_resource: false,
         });
         self.option_type_id = Some(option_id);
 
@@ -89,6 +90,7 @@ impl TypeTable {
                 ("Err".to_string(), vec![Type::Var(TypeVarId(1))]),
             ],
             methods: vec![],
+            is_transitive_resource: false,
         });
         self.result_type_id = Some(result_id);
     }
@@ -248,6 +250,63 @@ impl TypeTable {
             return *is_resource;
         }
         false
+    }
+
+    /// ER42/L1: TypeId is transitively linear (carries a `@resource` directly
+    /// or through any nested field/variant). Computed by
+    /// `propagate_resource_linearity` and queried during ownership checking.
+    pub fn is_transitive_resource_by_id(&self, id: TypeId) -> bool {
+        match self.types.get(id.0 as usize) {
+            Some(TypeDef::Struct { is_transitive_resource, .. }) => *is_transitive_resource,
+            Some(TypeDef::Enum { is_transitive_resource, .. }) => *is_transitive_resource,
+            _ => false,
+        }
+    }
+
+    /// ER42/L1: A `Type` value is transitively linear. Walks through tuples,
+    /// arrays, slices, Result, and Generic args so containers of linear values
+    /// inherit the obligation. Trait objects and unresolved/error types are
+    /// conservatively non-linear.
+    pub fn type_is_transitive_resource(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Named(id) => self.is_transitive_resource_by_id(*id),
+            Type::Generic { base, args } => {
+                if self.is_transitive_resource_by_id(*base) {
+                    return true;
+                }
+                args.iter().any(|a| match a {
+                    crate::types::GenericArg::Type(t) => self.type_is_transitive_resource(t),
+                    _ => false,
+                })
+            }
+            Type::Tuple(elems) => elems.iter().any(|t| self.type_is_transitive_resource(t)),
+            Type::Array { elem, .. } | Type::Slice(elem) => {
+                self.type_is_transitive_resource(elem)
+            }
+            Type::Result { ok, err } => {
+                self.type_is_transitive_resource(ok) || self.type_is_transitive_resource(err)
+            }
+            Type::Union(variants) => variants.iter().any(|v| self.type_is_transitive_resource(v)),
+            Type::UnresolvedNamed(name) => {
+                let base = name.split('<').next().unwrap_or(name);
+                self.type_names
+                    .get(base)
+                    .map_or(false, |id| self.is_transitive_resource_by_id(*id))
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                let base_name = name.split('<').next().unwrap_or(name);
+                if let Some(&id) = self.type_names.get(base_name) {
+                    if self.is_transitive_resource_by_id(id) {
+                        return true;
+                    }
+                }
+                args.iter().any(|a| match a {
+                    crate::types::GenericArg::Type(t) => self.type_is_transitive_resource(t),
+                    _ => false,
+                })
+            }
+            _ => false,
+        }
     }
 
     /// Check if a TypeId refers to a `@unique` struct.
