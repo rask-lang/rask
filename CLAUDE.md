@@ -1,12 +1,16 @@
 Keep docs short. In chat, explain things to me—I'm not a language architect expert.
 
-Be critical, test all assumptions, scrutinize the design choices.
+Prefer long term proper fixes over quick-fixes.
 
-Prefer long term proper fixes over quick-fixes. 
+Choose simple over easy.
 
-Choose simple over easy
+## Design is mostly settled
 
-## Settled design decisions — don't re-litigate
+The big decisions are made (see **Decided** table below). Don't re-derive them and don't open design debates inside implementation tasks. Spend energy on implementation, rough edges, and bugs.
+
+If something genuinely seems wrong, flag it once with a concrete reason — then drop it unless I bite. Keep critique pointed; no broad "have you considered" rounds on settled areas.
+
+### Don't re-litigate
 
 - **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
 
@@ -19,10 +23,10 @@ Choose simple over easy
 - Don’t add yourself as a co-author to git commits.
 
 ## Debugging discipline
-                                                                   
+
 - Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
 - Fix causes, not symptoms.
-- When you find a bug, check existing issues on `rask-lang/rask` first, then file a new one with a repro if it's not already tracked. Don't let bugs live only in chat.  
+- **Pre-existing errors that surface during unrelated work get filed, not ignored.** If a test fails, the compiler panics, or a spec breaks for reasons unrelated to your current change, search `rask-lang/rask` issues first; if it's not tracked, open one with a minimal repro before moving on. Don't paper over it, don't only mention it in chat, don't bundle it into the current commit silently.
 
 **Tool usage:**
 - Use `Write` tool for creating test files, not `Bash` with cat/heredocs
@@ -134,6 +138,27 @@ For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
 | Error formatting | `rask-diagnostics/src/{formatter,convert}.rs` |
 | CLI commands | `rask-cli/src/commands/`, `main.rs` |
 | Formatter | `rask-fmt/src/printer.rs` |
+
+## Stdlib design
+
+The stdlib should feel Rask, not Rust-with-different-keywords. Don't lift names, shapes, or layering from `std::*` just because they're familiar.
+
+- Pick names from how Rask programs read, not from Rust precedent. `Vec`/`Map` survive because they fit; `Result`, `Option`, `Box`, `Rc`, `RefCell`, `Arc<Mutex<T>>` do not — Rask has `T or E`, `T?`, `Owned`, `Shared`, `Cell`, `Mutex`.
+- Method names follow Rask conventions, not Rust's (`unwrap`, `expect`, `ok_or`, `and_then` are Rust idioms; design from the actual operation, not the cheat sheet).
+- Layering should reflect Rask's box family and linearity rules — don't import Rust's trait hierarchy (`Deref`, `Borrow`, `AsRef`, `Iterator` adapters) by reflex.
+- When in doubt, sketch how the call site reads in a real Rask program first, then pick the name.
+
+If a Rust name genuinely is the right one, fine — but justify it from Rask's side, not from "that's what `std` calls it."
+
+## Error messages
+
+Diagnostics are a first-class feature, not an afterthought. A confusing error is a bug.
+
+- All user-facing compiler errors go through `rask-diagnostics` (`compiler/crates/rask-diagnostics/src/`). Don't `eprintln!` or `panic!` your way out of an error path.
+- Every diagnostic must explain **what's wrong, where, and what to do next** — not just restate the failed check. If the message is "expected `T`, found `U`", that's a starting point, not the finished message.
+- Prefer suggestions (`suggestions.rs`) over prose when there's an obvious fix. Show the fix as code, not as a sentence.
+- Use stable error codes (`codes.rs`) so messages can be looked up and improved over time.
+- When you add a new error path, write the message before writing the check — if you can't phrase it clearly, the check probably isn't the right shape.
 
 ## Goal
 
