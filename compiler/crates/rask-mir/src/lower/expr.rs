@@ -2266,11 +2266,14 @@ impl<'a> MirLowerer<'a> {
                 else_branch,
             } => {
                 let is_niche = self.is_niche_option_expr(expr);
-                let (val, _) = self.lower_expr(expr)?;
+                let (val, val_ty) = self.lower_expr(expr)?;
                 let tag = self.emit_option_tag(&val, is_niche);
 
-                // Compare tag against expected variant
-                let expected = self.pattern_tag(pattern);
+                // Compare tag against expected variant. Use type-context
+                // resolution so `if r is ErrEnum [as e]` against `T or ErrEnum`
+                // routes to the err side (tag 1) instead of falling through to
+                // 0 like the bare `pattern_tag` does.
+                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
                 let matches = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: matches,
@@ -2293,9 +2296,18 @@ impl<'a> MirLowerer<'a> {
 
                 // Then block: bind payload, evaluate body
                 self.builder.switch_to_block(then_block);
-                let payload_ty = self.extract_payload_type(expr)
-                    .unwrap_or(MirType::I64);
-                self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche);
+                // ER23: `Type as v` on the err side needs the err type, not ok.
+                let bind_ty = if let rask_ast::expr::Pattern::TypePat { ty_name, .. } = pattern {
+                    let is_ok_side = ty_name.chars().next().map_or(false, |c| c.is_lowercase());
+                    if is_ok_side {
+                        self.extract_payload_type(expr).unwrap_or(MirType::I64)
+                    } else {
+                        self.extract_err_type(expr).unwrap_or(MirType::I64)
+                    }
+                } else {
+                    self.extract_payload_type(expr).unwrap_or(MirType::I64)
+                };
+                self.bind_pattern_payload_niche(pattern, val, bind_ty, is_niche);
                 let (then_val, then_ty) = self.lower_expr(then_branch)?;
                 let result_local = self.builder.alloc_temp(then_ty.clone());
                 if self.builder.current_block_unterminated() {
