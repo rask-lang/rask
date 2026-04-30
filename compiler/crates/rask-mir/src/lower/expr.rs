@@ -2111,7 +2111,13 @@ impl<'a> MirLowerer<'a> {
                     .map(|prefix| {
                         // Strip generic parameters: "Vec<T>" → "Vec"
                         let base = prefix.split('<').next().unwrap_or(&prefix);
-                        format!("{}_index", base)
+                        // Map indexing: `m[k]` panics on missing key — same shape
+                        // as `Map_get_unwrap` (the unwrapping form of Map_get).
+                        if base == "Map" {
+                            "Map_get_unwrap".to_string()
+                        } else {
+                            format!("{}_index", base)
+                        }
                     })
                     .unwrap_or_else(|| "index".to_string());
                 let result_local = self.builder.alloc_temp(result_ty.clone());
