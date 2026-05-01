@@ -2266,6 +2266,12 @@ impl TypeChecker {
                 let variant = name.rsplit('.').next().unwrap_or(name);
                 covered.insert(variant.to_string());
             }
+            // Struct-style variant pattern `Enum.Variant { field, .. }` —
+            // same coverage semantics as Constructor.
+            Pattern::Struct { name, .. } => {
+                let variant = name.rsplit('.').next().unwrap_or(name);
+                covered.insert(variant.to_string());
+            }
             Pattern::Or(patterns) => {
                 for p in patterns {
                     self.collect_covered_variants(p, covered, has_wildcard, enum_variants);
