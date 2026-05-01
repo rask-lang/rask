@@ -495,7 +495,28 @@ impl<'a> MirLowerer<'a> {
             }
             result
         } else {
-            vec![self.lower_expr(scrutinee)?]
+            // Non-literal scrutinee — if its type is a tuple, project each
+            // field; otherwise treat it as a single-element vec.
+            let (op, ty) = self.lower_expr(scrutinee)?;
+            if let MirType::Tuple(field_tys) = &ty {
+                let mut result = Vec::with_capacity(field_tys.len());
+                for (i, field_ty) in field_tys.iter().enumerate() {
+                    let field_local = self.builder.alloc_temp(field_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: field_local,
+                        rvalue: MirRValue::Field {
+                            base: op.clone(),
+                            field_index: i as u32,
+                            byte_offset: None,
+                            field_size: None,
+                        },
+                    }));
+                    result.push((MirOperand::Local(field_local), field_ty.clone()));
+                }
+                result
+            } else {
+                vec![(op, ty)]
+            }
         };
 
         let merge_block = self.builder.create_block();
