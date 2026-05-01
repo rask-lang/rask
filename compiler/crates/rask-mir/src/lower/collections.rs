@@ -399,6 +399,50 @@ impl<'a> MirLowerer<'a> {
         8 // scalar default
     }
 
+    /// Size of a Type used as an element/key/value slot. Mirrors
+    /// `generic_type_param_size`'s rules but works on the type checker's
+    /// `Type` directly so bare `Vec.new()` / `Map.new()` can pick up an
+    /// inferred element type.
+    pub(super) fn slot_size_for_type(&self, ty: &rask_types::Type) -> Option<i64> {
+        use rask_types::Type;
+        match ty {
+            Type::String => Some(16),
+            Type::Bool
+            | Type::I8 | Type::I16 | Type::I32 | Type::I64
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64
+            | Type::F32 | Type::F64 | Type::Char => Some(8),
+            Type::UnresolvedNamed(name) => match name.as_str() {
+                "string" => Some(16),
+                "bool" | "u8" | "i8" | "u16" | "i16"
+                | "u32" | "i32" | "f32"
+                | "u64" | "i64" | "f64"
+                | "usize" | "isize" | "char" => Some(8),
+                _ => self.ctx.find_struct(name).map(|(_, l)| l.size as i64).or(Some(8)),
+            },
+            Type::Var(_) => None,
+            _ => Some(8),
+        }
+    }
+
+    /// Resolve the Nth generic argument's slot size from the inferred type
+    /// at `node_id`. Falls back to `None` when the argument is missing or
+    /// still an unresolved type variable.
+    pub(super) fn inferred_generic_param_size(
+        &self,
+        node_id: rask_ast::NodeId,
+        index: usize,
+    ) -> Option<i64> {
+        use rask_types::{GenericArg, Type};
+        let ty = self.ctx.lookup_raw_type(node_id)?;
+        let args = match ty {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        let arg = args.get(index)?;
+        let GenericArg::Type(inner) = arg else { return None; };
+        self.slot_size_for_type(inner)
+    }
+
     /// Clone function name for a type, or None if the type is Copy.
     pub(super) fn clone_fn_for_type(ty: &rask_types::Type) -> Option<&'static str> {
         match ty {

@@ -2305,11 +2305,13 @@ mod tests {
 
     #[test]
     fn lower_binary_op_and_or() {
+        // Short-circuit: `&&`/`||` lower to a branch + per-arm assigns,
+        // not a single BinaryOp. Verify the branch terminator is emitted.
         let decl = make_fn("f", vec![], Some("bool"), vec![
             return_stmt(Some(binary_expr(BinOp::And, bool_expr(true), bool_expr(false)))),
         ]);
         let f = lower_one(&decl);
-        assert!(find_assign_binop(&f));
+        assert!(has_branch(&f));
     }
 
     #[test]
