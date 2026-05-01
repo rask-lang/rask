@@ -319,6 +319,21 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail_cmp_str".to_string(), id);
         }
 
+        // assert_fail_cmp_f64(left: f64, right: f64, op: ptr, file: ptr, line: i32, col: i32)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::F64)); // left
+            sig.params.push(AbiParam::new(types::F64)); // right
+            sig.params.push(AbiParam::new(types::I64)); // op str ptr
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_assert_fail_cmp_f64", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("assert_fail_cmp_f64".to_string(), id);
+        }
+
         // pool_get_checked(pool: i64, handle: i64, file: ptr, line: i32, col: i32) -> ptr
         {
             let mut sig = self.module.make_signature();

@@ -116,6 +116,16 @@ void rask_assert_fail_cmp_str(const char *left, const char *right,
     rask_panic_at(file, line, col, buf);
 }
 
+void rask_assert_fail_cmp_f64(double left, double right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assertion failed: %g %s %g (left: %g, right: %g)",
+             left, op ? op : "?", right, left, right);
+    rask_panic_at(file, line, col, buf);
+}
+
 // ─── I/O primitives ──────────────────────────────────────────────
 // Thin wrappers around POSIX syscalls. Return values match POSIX
 // conventions: bytes transferred on success, -1 on error.

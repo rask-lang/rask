@@ -2947,9 +2947,9 @@ impl<'a> MirLowerer<'a> {
                 };
 
                 if let Some((left_expr, right_expr, op_str, is_string)) = cmp_info {
-                    // Lower both sides first to capture their values
-                    let (left_op, _) = self.lower_expr(left_expr)?;
-                    let (right_op, _) = self.lower_expr(right_expr)?;
+                    // Lower both sides first to capture their values + types
+                    let (left_op, left_ty) = self.lower_expr(left_expr)?;
+                    let (right_op, right_ty) = self.lower_expr(right_expr)?;
 
                     // Now lower the full condition
                     let (cond_op, _) = self.lower_expr(condition)?;
@@ -2964,7 +2964,18 @@ impl<'a> MirLowerer<'a> {
 
                     self.builder.switch_to_block(fail_block);
                     let op_const = MirOperand::Constant(MirConst::String(op_str.to_string()));
-                    let fail_fn = if is_string { "assert_fail_cmp_str" } else { "assert_fail_cmp_i64" };
+                    // Pick the right fail helper for the operand types so the
+                    // Cranelift call signature matches: f64 args go to a f64
+                    // helper, strings to the str helper, everything else i64.
+                    let is_float = matches!(left_ty, MirType::F32 | MirType::F64)
+                        || matches!(right_ty, MirType::F32 | MirType::F64);
+                    let fail_fn = if is_string {
+                        "assert_fail_cmp_str"
+                    } else if is_float {
+                        "assert_fail_cmp_f64"
+                    } else {
+                        "assert_fail_cmp_i64"
+                    };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
                         func: FunctionRef::internal(fail_fn.to_string()),

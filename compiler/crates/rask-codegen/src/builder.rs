@@ -1390,6 +1390,24 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                 }
+            } else if func.name == "assert_fail_cmp_f64" {
+                // Comparison assert failure with f64 values: args = [left, right, op_str]
+                if args.len() >= 3 {
+                    let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::F64), ctx)?;
+                    let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::F64), ctx)?;
+                    let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
+                    if let Some(file_str) = ctx.source_file {
+                        if let (Some(func_ref), Some(gv)) = (
+                            ctx.func_refs.get("assert_fail_cmp_f64"),
+                            ctx.string_globals.get(file_str),
+                        ) {
+                            let file_ptr = builder.ins().global_value(types::I64, *gv);
+                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                            builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
+                        }
+                    }
+                }
             } else if func.name == "check_fail" {
                 // check failed — record failure, don't unwind
                 let msg = if !args.is_empty() {
