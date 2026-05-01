@@ -1009,14 +1009,33 @@ impl<'a> MirLowerer<'a> {
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
                             }
 
-                            // Map.new() with string keys → use string hash/eq
+                            // Map.new() with string keys → use string hash/eq.
+                            // Inspect the first generic arg of the Map type for
+                            // any string-flavored shape (resolved or unresolved),
+                            // OR fall back to the syntactic type name when the
+                            // user wrote `Map<string, _>.new()` explicitly.
                             let func_name = if func_name == "Map_new" {
+                                fn arg_is_string(arg: &rask_types::GenericArg) -> bool {
+                                    if let rask_types::GenericArg::Type(t) = arg {
+                                        match t.as_ref() {
+                                            rask_types::Type::String => true,
+                                            rask_types::Type::UnresolvedNamed(n) => n == "string",
+                                            _ => false,
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
                                 let has_string_keys = self.ctx.lookup_raw_type(expr.id)
-                                    .map(|ty| {
-                                        let s = format!("{:?}", ty);
-                                        s.contains("Map") && s.contains("String")
+                                    .map(|ty| match ty {
+                                        rask_types::Type::Generic { args, .. }
+                                        | rask_types::Type::UnresolvedGeneric { args, .. } => {
+                                            args.first().map_or(false, arg_is_string)
+                                        }
+                                        _ => false,
                                     })
-                                    .unwrap_or(false);
+                                    .unwrap_or(false)
+                                    || (name.starts_with("Map<") && name.contains("string"));
                                 if has_string_keys {
                                     "Map_new_string_keys".to_string()
                                 } else {
