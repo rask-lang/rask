@@ -1521,7 +1521,13 @@ impl<'a> MirLowerer<'a> {
                     .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
                     // parse<T> always belongs to string (structural, not type-prefix related)
                     .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
-                    .map(|prefix| format!("{}_{}", prefix, method))
+                    .map(|prefix| {
+                        // Strip generic params from the prefix before mangling:
+                        // "Vec<T>" → "Vec", "Map<K, V>" → "Map". Otherwise the
+                        // call name is `Vec<T>_len` which has no codegen entry.
+                        let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                        format!("{}_{}", base, method)
+                    })
                     .unwrap_or_else(|| {
                         eprintln!(
                             "[mir] method `{}` has no type prefix — type checker should have resolved this",
