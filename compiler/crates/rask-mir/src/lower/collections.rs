@@ -377,10 +377,16 @@ impl<'a> MirLowerer<'a> {
             if let Some(type_name) = params.get(index) {
                 return match *type_name {
                     "string" => 16,
-                    "bool" | "u8" | "i8" => 1,
-                    "u16" | "i16" => 2,
-                    "u32" | "i32" | "f32" => 4,
-                    "u64" | "i64" | "f64" | "usize" | "isize" | "char" => 8,
+                    // All scalar types use 8-byte slots — matches the codegen
+                    // layout convention (rask-mono::layout::type_size_align)
+                    // where every value is stored as i64. Sub-i64 storage caused
+                    // 32-bit truncation: pushes wrote 4 bytes, but `for x in v`
+                    // loaded 8 bytes (the dst is i64), pulling stale bits from
+                    // the next slot.
+                    "bool" | "u8" | "i8"
+                    | "u16" | "i16"
+                    | "u32" | "i32" | "f32"
+                    | "u64" | "i64" | "f64" | "usize" | "isize" | "char" => 8,
                     _ => {
                         if let Some((_, layout)) = self.ctx.find_struct(type_name) {
                             return layout.size as i64;
