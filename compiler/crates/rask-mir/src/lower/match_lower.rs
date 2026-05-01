@@ -191,10 +191,14 @@ impl<'a> MirLowerer<'a> {
 
             if has_tag {
                 if let Pattern::Constructor { name, fields } = &arm.pattern {
+                    // Qualified variant names like "Tagged.With" — strip the
+                    // enum prefix so the layout lookup matches the variant's
+                    // bare name (same as the Pattern::Struct path below).
+                    let variant_name = name.rsplit('.').next().unwrap_or(name);
                     let variant_fields: Option<Vec<(MirType, u32)>> =
                         if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
                             self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
-                                layout.variants.iter().find(|v| v.name == *name).map(|v| {
+                                layout.variants.iter().find(|v| v.name == variant_name).map(|v| {
                                     v.fields.iter().map(|f| {
                                         (self.ctx.type_to_mir(&f.ty), f.offset)
                                     }).collect()
@@ -235,7 +239,7 @@ impl<'a> MirLowerer<'a> {
                                 .or_else(|| {
                                     if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
                                         self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
-                                            layout.variants.iter().find(|v| v.name == *name).and_then(|v| {
+                                            layout.variants.iter().find(|v| v.name == variant_name).and_then(|v| {
                                                 v.fields.get(j).and_then(|f| {
                                                     super::MirContext::type_prefix(&f.ty, self.ctx.type_names)
                                                 })
