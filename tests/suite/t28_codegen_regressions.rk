@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Codegen and MIR-lowering regressions surfaced via `rask test` (native path).
+// Each test passes under the interpreter — failures here are codegen-only.
+
+// ─── Method dispatch on user enums ───────────────────────────────
+// Bug: MIR lowering picks `Map.get` (stdlib) when a user `extend E { func get }`
+// has the same method name. Manifests as Cranelift "mismatched argument count".
+
+enum LookupEnum { Found(string), Missing }
+
+extend LookupEnum {
+    func get(self) -> string {
+        match self {
+            LookupEnum.Found(s) => return s
+            LookupEnum.Missing => return ""
+        }
+    }
+}
+
+test "user method named get is not shadowed by Map.get" {
+    const e = LookupEnum.Found("hello")
+    assert e.get() == "hello"
+}
+
+extend LookupEnum {
+    func len(self) -> i64 {
+        match self {
+            LookupEnum.Found(s) => return 1
+            LookupEnum.Missing => return 0
+        }
+    }
+}
+
+test "user method named len is not shadowed by Vec.len" {
+    const e = LookupEnum.Found("x")
+    assert e.len() == 1
+}
+
+// ─── Match-arm string interpolation of payload binding ───────────
+// Bug: `match self { E.A(s) => return "got: {s}" }` interpolates the bound
+// payload as an integer/address rather than the string value.
+
+enum Tagged { With(string) }
+
+extend Tagged {
+    func render(self) -> string {
+        match self {
+            Tagged.With(s) => return "got: {s}"
+        }
+    }
+}
+
+test "string payload interpolates correctly inside match arm" {
+    assert Tagged.With("hi").render() == "got: hi"
+}
+
+// ─── Match expression as a sub-expression ─────────────────────────
+// Bug: `f(match e { ... => s })` reads the bound payload from the wrong slot.
+
+enum Either { Left(string), Right(string) }
+
+func pick(e: Either) -> string {
+    return match e {
+        Either.Left(s) => s
+        Either.Right(s) => s
+    }
+}
+
+test "match expression returning payload binding" {
+    assert pick(Either.Left("hello")) == "hello"
+    assert pick(Either.Right("world")) == "world"
+}
+
+// ─── Enum variant with struct payload ────────────────────────────
+// Bug: extracting a struct payload via `Shape.P(p)` reads wrong offsets;
+// compiled program produces empty/garbage output.
+
+struct Pt { x: i32, y: i32 }
+enum Shape { Pos(Pt), Scalar(i32) }
+
+func sum_shape(s: Shape) -> i32 {
+    match s {
+        Shape.Pos(p) => return p.x + p.y
+        Shape.Scalar(v) => return v
+    }
+}
+
+test "enum variant with struct payload" {
+    assert sum_shape(Shape.Pos(Pt { x: 3, y: 4 })) == 7
+    assert sum_shape(Shape.Scalar(11)) == 11
+}
+
+// ─── `if x? as v` binds Option payload ───────────────────────────
+// Bug: codegen reads garbage instead of the inner value when narrowing
+// an Option<string> via `if x? as v`. (OPT22 / OPT23)
+
+func maybe_text(b: bool) -> string? {
+    if b { return "yes" }
+    return none
+}
+
+test "if x? as v binds Option<string> payload" {
+    const v = maybe_text(true)
+    if v? as s {
+        assert s == "yes"
+    } else {
+        assert false, "expected present"
+    }
+}
+
+// ─── `if r is ErrType as e` binds Result error payload ───────────
+// Bug: MIR lowering raises UnresolvedVariable("e") for ER23-style narrowing.
+
+enum DivErr { Zero(string) }
+
+extend DivErr {
+    public func message(self) -> string {
+        match self {
+            DivErr.Zero(s) => return s
+        }
+    }
+}
+
+func div(a: i32, b: i32) -> i32 or DivErr {
+    if b == 0 { return DivErr.Zero("zero divisor") }
+    return a / b
+}
+
+test "if r is ErrType as e narrows and binds error payload" {
+    const r = div(10, 0)
+    if r is DivErr as e {
+        assert e.message() == "zero divisor"
+    } else {
+        assert false, "expected error"
+    }
+}
+
+func main() {}

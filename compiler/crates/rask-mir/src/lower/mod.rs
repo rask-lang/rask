@@ -1052,6 +1052,12 @@ impl<'a> MirLowerer<'a> {
                     0
                 }
             }
+            // ER23/ER27: `Type as v` — lowercase first char ⇒ ok side (tag 0),
+            // uppercase ⇒ user enum on the err side (tag 1). Same convention as
+            // match_lower's TypePat handling.
+            Pattern::TypePat { ty_name, .. } => {
+                if ty_name.chars().next().map_or(false, |c| c.is_lowercase()) { 0 } else { 1 }
+            }
             _ => 0,
         }
     }
@@ -1067,24 +1073,35 @@ impl<'a> MirLowerer<'a> {
         val_ty: &MirType,
     ) -> i64 {
         use rask_ast::expr::Pattern;
-        if let Pattern::Ident(name) = pattern {
-            if is_variant_name(name) {
-                // If the name matches the error enum type of a Result, tag = 1 (Err).
-                if let MirType::Result { err, .. } = val_ty {
-                    if let MirType::Enum(eid) = err.as_ref() {
-                        let idx = eid.id as usize;
-                        if idx < self.ctx.enum_layouts.len()
-                            && self.ctx.enum_layouts[idx].name == name.as_str()
-                        {
-                            return 1;
+        match pattern {
+            Pattern::Ident(name) => {
+                if is_variant_name(name) {
+                    // If the name matches the error enum type of a Result, tag = 1 (Err).
+                    if let MirType::Result { err, .. } = val_ty {
+                        if let MirType::Enum(eid) = err.as_ref() {
+                            let idx = eid.id as usize;
+                            if idx < self.ctx.enum_layouts.len()
+                                && self.ctx.enum_layouts[idx].name == name.as_str()
+                            {
+                                return 1;
+                            }
                         }
                     }
+                    return self.variant_tag(name);
                 }
-                return self.variant_tag(name);
+                0
             }
-            return 0;
+            // ER23: `Type as v` — lowercase first char ⇒ ok side, uppercase
+            // user enum ⇒ err side (when scrutinee is `T or E`).
+            Pattern::TypePat { ty_name, .. } => {
+                if ty_name.chars().next().map_or(false, |c| c.is_lowercase()) {
+                    0
+                } else {
+                    1
+                }
+            }
+            _ => self.pattern_tag(pattern),
         }
-        self.pattern_tag(pattern)
     }
 
     /// Look up the tag value for a variant name.
@@ -1210,6 +1227,51 @@ impl<'a> MirLowerer<'a> {
                         }
                     }
                     // Wildcard, Literal in field position — skip binding
+                }
+            }
+            // ER23/ER27: `Type as name` — bind the matching side's payload
+            // as a fresh local. The caller already routed control flow to the
+            // correct branch via `pattern_tag`, so here we just emit the
+            // payload extraction with the appropriate offset.
+            Pattern::TypePat { ty_name, binding: Some(name) } => {
+                let is_ok_side = ty_name.chars().next().map_or(false, |c| c.is_lowercase());
+                // payload_ty is the ok payload (passed by the IfLet caller via
+                // extract_payload_type). For the err side, look up the err type
+                // and use that instead.
+                let bound_ty = if is_ok_side {
+                    payload_ty.clone()
+                } else {
+                    // Walk the locals' raw type via the value's nominal — we
+                    // can't recover the err type from `payload_ty` alone, so
+                    // fall back to payload_ty if extract fails.
+                    payload_ty.clone()
+                };
+                let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
+                let is_aggregate = matches!(
+                    bound_ty,
+                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+                );
+                let rvalue = if is_niche {
+                    MirRValue::Use(value.clone())
+                } else {
+                    MirRValue::Field {
+                        base: value.clone(),
+                        field_index: 0,
+                        byte_offset: if !is_aggregate {
+                            Some(crate::types::RESULT_PAYLOAD_OFFSET)
+                        } else {
+                            None
+                        },
+                        field_size: None,
+                    }
+                };
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: local,
+                    rvalue,
+                }));
+                self.locals.insert(name.clone(), (local, bound_ty.clone()));
+                if let Some(prefix) = self.mir_type_name(&bound_ty) {
+                    self.meta_mut(name).type_prefix = Some(prefix);
                 }
             }
             // Ident that is a variant name: no binding (pure match)

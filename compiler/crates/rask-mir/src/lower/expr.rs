@@ -1009,14 +1009,33 @@ impl<'a> MirLowerer<'a> {
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
                             }
 
-                            // Map.new() with string keys → use string hash/eq
+                            // Map.new() with string keys → use string hash/eq.
+                            // Inspect the first generic arg of the Map type for
+                            // any string-flavored shape (resolved or unresolved),
+                            // OR fall back to the syntactic type name when the
+                            // user wrote `Map<string, _>.new()` explicitly.
                             let func_name = if func_name == "Map_new" {
+                                fn arg_is_string(arg: &rask_types::GenericArg) -> bool {
+                                    if let rask_types::GenericArg::Type(t) = arg {
+                                        match t.as_ref() {
+                                            rask_types::Type::String => true,
+                                            rask_types::Type::UnresolvedNamed(n) => n == "string",
+                                            _ => false,
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
                                 let has_string_keys = self.ctx.lookup_raw_type(expr.id)
-                                    .map(|ty| {
-                                        let s = format!("{:?}", ty);
-                                        s.contains("Map") && s.contains("String")
+                                    .map(|ty| match ty {
+                                        rask_types::Type::Generic { args, .. }
+                                        | rask_types::Type::UnresolvedGeneric { args, .. } => {
+                                            args.first().map_or(false, arg_is_string)
+                                        }
+                                        _ => false,
                                     })
-                                    .unwrap_or(false);
+                                    .unwrap_or(false)
+                                    || (name.starts_with("Map<") && name.contains("string"));
                                 if has_string_keys {
                                     "Map_new_string_keys".to_string()
                                 } else {
@@ -1521,7 +1540,13 @@ impl<'a> MirLowerer<'a> {
                     .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
                     // parse<T> always belongs to string (structural, not type-prefix related)
                     .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
-                    .map(|prefix| format!("{}_{}", prefix, method))
+                    .map(|prefix| {
+                        // Strip generic params from the prefix before mangling:
+                        // "Vec<T>" → "Vec", "Map<K, V>" → "Map". Otherwise the
+                        // call name is `Vec<T>_len` which has no codegen entry.
+                        let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                        format!("{}_{}", base, method)
+                    })
                     .unwrap_or_else(|| {
                         eprintln!(
                             "[mir] method `{}` has no type prefix — type checker should have resolved this",
@@ -2111,7 +2136,13 @@ impl<'a> MirLowerer<'a> {
                     .map(|prefix| {
                         // Strip generic parameters: "Vec<T>" → "Vec"
                         let base = prefix.split('<').next().unwrap_or(&prefix);
-                        format!("{}_index", base)
+                        // Map indexing: `m[k]` panics on missing key — same shape
+                        // as `Map_get_unwrap` (the unwrapping form of Map_get).
+                        if base == "Map" {
+                            "Map_get_unwrap".to_string()
+                        } else {
+                            format!("{}_index", base)
+                        }
                     })
                     .unwrap_or_else(|| "index".to_string());
                 let result_local = self.builder.alloc_temp(result_ty.clone());
@@ -2266,11 +2297,14 @@ impl<'a> MirLowerer<'a> {
                 else_branch,
             } => {
                 let is_niche = self.is_niche_option_expr(expr);
-                let (val, _) = self.lower_expr(expr)?;
+                let (val, val_ty) = self.lower_expr(expr)?;
                 let tag = self.emit_option_tag(&val, is_niche);
 
-                // Compare tag against expected variant
-                let expected = self.pattern_tag(pattern);
+                // Compare tag against expected variant. Use type-context
+                // resolution so `if r is ErrEnum [as e]` against `T or ErrEnum`
+                // routes to the err side (tag 1) instead of falling through to
+                // 0 like the bare `pattern_tag` does.
+                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
                 let matches = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: matches,
@@ -2293,9 +2327,18 @@ impl<'a> MirLowerer<'a> {
 
                 // Then block: bind payload, evaluate body
                 self.builder.switch_to_block(then_block);
-                let payload_ty = self.extract_payload_type(expr)
-                    .unwrap_or(MirType::I64);
-                self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche);
+                // ER23: `Type as v` on the err side needs the err type, not ok.
+                let bind_ty = if let rask_ast::expr::Pattern::TypePat { ty_name, .. } = pattern {
+                    let is_ok_side = ty_name.chars().next().map_or(false, |c| c.is_lowercase());
+                    if is_ok_side {
+                        self.extract_payload_type(expr).unwrap_or(MirType::I64)
+                    } else {
+                        self.extract_err_type(expr).unwrap_or(MirType::I64)
+                    }
+                } else {
+                    self.extract_payload_type(expr).unwrap_or(MirType::I64)
+                };
+                self.bind_pattern_payload_niche(pattern, val, bind_ty, is_niche);
                 let (then_val, then_ty) = self.lower_expr(then_branch)?;
                 let result_local = self.builder.alloc_temp(then_ty.clone());
                 if self.builder.current_block_unterminated() {
@@ -2929,9 +2972,9 @@ impl<'a> MirLowerer<'a> {
                 };
 
                 if let Some((left_expr, right_expr, op_str, is_string)) = cmp_info {
-                    // Lower both sides first to capture their values
-                    let (left_op, _) = self.lower_expr(left_expr)?;
-                    let (right_op, _) = self.lower_expr(right_expr)?;
+                    // Lower both sides first to capture their values + types
+                    let (left_op, left_ty) = self.lower_expr(left_expr)?;
+                    let (right_op, right_ty) = self.lower_expr(right_expr)?;
 
                     // Now lower the full condition
                     let (cond_op, _) = self.lower_expr(condition)?;
@@ -2946,7 +2989,18 @@ impl<'a> MirLowerer<'a> {
 
                     self.builder.switch_to_block(fail_block);
                     let op_const = MirOperand::Constant(MirConst::String(op_str.to_string()));
-                    let fail_fn = if is_string { "assert_fail_cmp_str" } else { "assert_fail_cmp_i64" };
+                    // Pick the right fail helper for the operand types so the
+                    // Cranelift call signature matches: f64 args go to a f64
+                    // helper, strings to the str helper, everything else i64.
+                    let is_float = matches!(left_ty, MirType::F32 | MirType::F64)
+                        || matches!(right_ty, MirType::F32 | MirType::F64);
+                    let fail_fn = if is_string {
+                        "assert_fail_cmp_str"
+                    } else if is_float {
+                        "assert_fail_cmp_f64"
+                    } else {
+                        "assert_fail_cmp_i64"
+                    };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
                         func: FunctionRef::internal(fail_fn.to_string()),

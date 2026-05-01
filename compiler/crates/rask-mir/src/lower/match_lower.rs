@@ -191,10 +191,14 @@ impl<'a> MirLowerer<'a> {
 
             if has_tag {
                 if let Pattern::Constructor { name, fields } = &arm.pattern {
+                    // Qualified variant names like "Tagged.With" — strip the
+                    // enum prefix so the layout lookup matches the variant's
+                    // bare name (same as the Pattern::Struct path below).
+                    let variant_name = name.rsplit('.').next().unwrap_or(name);
                     let variant_fields: Option<Vec<(MirType, u32)>> =
                         if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
                             self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
-                                layout.variants.iter().find(|v| v.name == *name).map(|v| {
+                                layout.variants.iter().find(|v| v.name == variant_name).map(|v| {
                                     v.fields.iter().map(|f| {
                                         (self.ctx.type_to_mir(&f.ty), f.offset)
                                     }).collect()
@@ -235,7 +239,7 @@ impl<'a> MirLowerer<'a> {
                                 .or_else(|| {
                                     if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
                                         self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
-                                            layout.variants.iter().find(|v| v.name == *name).and_then(|v| {
+                                            layout.variants.iter().find(|v| v.name == variant_name).and_then(|v| {
                                                 v.fields.get(j).and_then(|f| {
                                                     super::MirContext::type_prefix(&f.ty, self.ctx.type_names)
                                                 })
@@ -495,7 +499,28 @@ impl<'a> MirLowerer<'a> {
             }
             result
         } else {
-            vec![self.lower_expr(scrutinee)?]
+            // Non-literal scrutinee — if its type is a tuple, project each
+            // field; otherwise treat it as a single-element vec.
+            let (op, ty) = self.lower_expr(scrutinee)?;
+            if let MirType::Tuple(field_tys) = &ty {
+                let mut result = Vec::with_capacity(field_tys.len());
+                for (i, field_ty) in field_tys.iter().enumerate() {
+                    let field_local = self.builder.alloc_temp(field_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: field_local,
+                        rvalue: MirRValue::Field {
+                            base: op.clone(),
+                            field_index: i as u32,
+                            byte_offset: None,
+                            field_size: None,
+                        },
+                    }));
+                    result.push((MirOperand::Local(field_local), field_ty.clone()));
+                }
+                result
+            } else {
+                vec![(op, ty)]
+            }
         };
 
         let merge_block = self.builder.create_block();
