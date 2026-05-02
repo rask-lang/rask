@@ -55,7 +55,29 @@ fn parse_type_arg(s: &str) -> Type {
             args,
         }
     } else {
-        Type::UnresolvedNamed(s.to_string())
+        // Map primitive names directly; otherwise they leak as UnresolvedNamed
+        // and method resolution can't dispatch (e.g. `Vec<i32>.new()` followed
+        // by `v[0] + 5` looking up `i32.add`).
+        match s {
+            "i8" => Type::I8,
+            "i16" => Type::I16,
+            "i32" => Type::I32,
+            "i64" | "isize" | "int" => Type::I64,
+            "i128" => Type::I128,
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "u64" | "usize" | "uint" => Type::U64,
+            "u128" => Type::U128,
+            "f32" => Type::F32,
+            "f64" => Type::F64,
+            "bool" => Type::Bool,
+            "char" => Type::Char,
+            "string" => Type::String,
+            "void" | "()" => Type::Unit,
+            "none" => Type::None,
+            _ => Type::UnresolvedNamed(s.to_string()),
+        }
     }
 }
 
