@@ -523,6 +523,14 @@ pub fn compile_tests_to_object(
         codegen.set_debug_context(src_file, lm.clone());
     }
 
+    // Build and register vtables for trait objects used by test bodies.
+    let test_trait_methods = build_trait_methods(typed);
+    let vtables = collect_vtables(&mir_functions, &test_trait_methods, mono);
+    if !vtables.is_empty() {
+        codegen.register_vtables(&vtables)
+            .map_err(|e| vec![e.to_string()])?;
+    }
+
     gen_functions(&mut codegen, &mir_functions)?;
 
     // Generate the test runner entry point
