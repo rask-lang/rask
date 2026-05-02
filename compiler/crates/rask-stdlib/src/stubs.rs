@@ -382,10 +382,12 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         .map(|p| (p.name.clone(), p.ty.clone()))
         .collect();
 
-    let span = find_func_name_span(source, &f.name, parent_span);
+    // Parser appends `<T: Bound>` to generic function names; strip for lookup.
+    let bare_name = strip_type_params(&f.name);
+    let span = find_func_name_span(source, &bare_name, parent_span);
 
     MethodStub {
-        name: f.name.clone(),
+        name: bare_name,
         takes_self,
         mutate_self,
         take_self,
@@ -491,6 +493,7 @@ mod tests {
         assert!(reg.has_method("Option", "map"));
         assert!(reg.has_method("Option", "or"));
     }
+
 
     #[test]
     fn string_methods_present() {

@@ -9,6 +9,21 @@
 public enum Option<T> { }
 
 extend Option<T> {
+    /// True if the value is present.
+    public func is_some(self) -> bool { }
+
+    /// True if the value is absent.
+    public func is_none(self) -> bool { }
+
+    /// Extract the contained value, panicking if absent.
+    public func unwrap(self) -> T { }
+
+    /// Return the contained value or `default` if absent.
+    public func unwrap_or(self, default: T) -> T { }
+
+    /// Return self if present, otherwise `other`.
+    public func or(self, other: T?) -> T? { }
+
     /// Transform the contained value if present.
     public func map(self, f: func(T) -> U) -> U? { }
 

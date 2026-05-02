@@ -12,6 +12,21 @@
 public enum Result<T, E> { }
 
 extend Result<T, E> {
+    /// True if the result is a success.
+    public func is_ok(self) -> bool { }
+
+    /// True if the result is an error.
+    public func is_err(self) -> bool { }
+
+    /// Extract the success value, panicking on error.
+    public func unwrap(self) -> T { }
+
+    /// Extract the error, panicking on success.
+    public func unwrap_err(self) -> E { }
+
+    /// Return the success value or `default` on error.
+    public func unwrap_or(self, default: T) -> T { }
+
     /// Transform the success value; error propagates unchanged.
     public func map(self, f: func(T) -> U) -> U or E { }
 

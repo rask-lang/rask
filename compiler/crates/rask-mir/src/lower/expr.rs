@@ -187,16 +187,25 @@ impl<'a> MirLowerer<'a> {
         match &expr.kind {
             // Literals
             ExprKind::Int(val, suffix) => {
+                // Suffixed literals carry their type explicitly. Unsuffixed
+                // literals follow the type checker's inference (default i32).
                 let ty = match suffix {
                     Some(IntSuffix::I8) => MirType::I8,
                     Some(IntSuffix::I16) => MirType::I16,
                     Some(IntSuffix::I32) => MirType::I32,
-                    Some(IntSuffix::I64) | None => MirType::I64,
+                    Some(IntSuffix::I64) => MirType::I64,
                     Some(IntSuffix::U8) => MirType::U8,
                     Some(IntSuffix::U16) => MirType::U16,
                     Some(IntSuffix::U32) => MirType::U32,
                     Some(IntSuffix::U64) => MirType::U64,
                     Some(IntSuffix::I128 | IntSuffix::U128 | IntSuffix::Isize | IntSuffix::Usize) => MirType::I64,
+                    None => self
+                        .ctx
+                        .lookup_node_type(expr.id)
+                        .filter(|t| matches!(t,
+                            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                            | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64))
+                        .unwrap_or(MirType::I64),
                 };
                 Ok((MirOperand::Constant(MirConst::Int(*val)), ty))
             }
