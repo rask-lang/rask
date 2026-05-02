@@ -309,11 +309,33 @@ fn try_inline_call(
     }
 
     // --- Create merge block ---
+    let caller_block_id = caller.blocks[block_idx].id;
     caller.blocks.push(MirBlock {
         id: merge_block_id,
         statements: post_stmts,
         terminator: original_terminator,
     });
+
+    // Successor phis previously listed `caller_block_id` as the predecessor;
+    // after the split, the merge block is the real predecessor. Without this
+    // fixup, SSA destruct emits the phi-copy in `caller_block_id` (which no
+    // longer defines the copied local), so reads in successors see undef.
+    let merge_succs = crate::analysis::cfg::successors(
+        &caller.blocks.last().unwrap().terminator,
+    );
+    for succ_id in merge_succs {
+        if let Some(succ_block) = caller.blocks.iter_mut().find(|b| b.id == succ_id) {
+            for stmt in &mut succ_block.statements {
+                if let MirStmtKind::Phi { args, .. } = &mut stmt.kind {
+                    for (pred, _) in args.iter_mut() {
+                        if *pred == caller_block_id {
+                            *pred = merge_block_id;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // --- Fixup return values ---
     // For callee blocks that ended with Return/CleanupReturn { value: Some(op) },

@@ -13,7 +13,7 @@ use crate::{
     MirTerminatorKind, MirType,
 };
 use rask_ast::{
-    expr::{Expr, ExprKind, UnaryOp},
+    expr::{BinOp, Expr, ExprKind, UnaryOp},
     stmt::{Stmt, StmtKind},
     token::{FloatSuffix, IntSuffix},
 };
@@ -305,6 +305,11 @@ impl<'a> MirLowerer<'a> {
             }
 
             ExprKind::Binary { op, left, right } => {
+                // Short-circuit `&&`/`||`: evaluate rhs only if lhs doesn't decide the result.
+                if matches!(op, BinOp::And | BinOp::Or) {
+                    return self.lower_short_circuit(*op, left, right);
+                }
+
                 let (left_op, left_ty) = self.lower_expr(left)?;
                 let (right_op, _) = self.lower_expr(right)?;
                 let mir_op = lower_binop(*op);
@@ -996,15 +1001,20 @@ impl<'a> MirLowerer<'a> {
 
                             // Vec.new(): inject elem_size so runtime allocates correct slots.
                             // string elements need 16 bytes; structs use layout size; default 8.
+                            // For bare `Vec.new()` (no generic args), the syntactic name
+                            // carries no `<T>`, so fall back to the inferred call type.
                             if base_name == "Vec" && method == "new" {
-                                let elem_size = self.generic_type_param_size(name, 0);
+                                let elem_size = self.inferred_generic_param_size(expr.id, 0)
+                                    .unwrap_or_else(|| self.generic_type_param_size(name, 0));
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);
                             }
                             // Map.new(): inject key_size, val_size
                             if (base_name == "Map") && method == "new" {
-                                let key_size = self.generic_type_param_size(name, 0);
-                                let val_size = self.generic_type_param_size(name, 1);
+                                let key_size = self.inferred_generic_param_size(expr.id, 0)
+                                    .unwrap_or_else(|| self.generic_type_param_size(name, 0));
+                                let val_size = self.inferred_generic_param_size(expr.id, 1)
+                                    .unwrap_or_else(|| self.generic_type_param_size(name, 1));
                                 arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
                             }
@@ -1453,14 +1463,25 @@ impl<'a> MirLowerer<'a> {
 
                 // Qualify method name with receiver type to avoid dispatch
                 // ambiguity (e.g. Vec.get vs Map.get vs Pool.get).
-                // Check local_meta type_prefix first (tracks actual codegen types),
-                // then fall back to type-checker info (handles both stdlib
-                // and user-defined types from extend blocks).
-                let qualified_name = if let ExprKind::Ident(var_name) = &object.kind {
+                // Priority: user-defined struct/enum from type checker first
+                // (`extend E { func get(self) }` would otherwise be shadowed by
+                // the hardcoded Map.get fallback below). Skip stdlib types
+                // (Option, Result, ...) so their methods stay on the existing
+                // dispatch path.
+                let user_type_prefix = self.ctx.lookup_raw_type(object.id)
+                    .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+                    .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+                    .filter(|prefix| {
+                        let base = prefix.split('<').next().unwrap_or(prefix);
+                        self.ctx.find_struct(base).is_some()
+                            || self.ctx.find_enum(base).is_some()
+                    });
+                let qualified_name = user_type_prefix
+                    .or_else(|| if let ExprKind::Ident(var_name) = &object.kind {
                         self.meta(var_name).and_then(|m| m.type_prefix.clone())
                     } else {
                         None
-                    }
+                    })
                     // Field access on struct: resolve field type from struct layout
                     .or_else(|| {
                         if let ExprKind::Field { object: inner_obj, field: field_name } = &object.kind {
@@ -3181,6 +3202,69 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(merge_block);
 
         Ok((MirOperand::Local(result_local), then_ty))
+    }
+
+    /// Lower `&&` / `||` with short-circuit semantics.
+    ///
+    /// For `lhs && rhs`: if lhs is false, skip rhs and yield false.
+    /// For `lhs || rhs`: if lhs is true, skip rhs and yield true.
+    fn lower_short_circuit(
+        &mut self,
+        op: BinOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        let (left_op, _) = self.lower_expr(left)?;
+
+        let rhs_block = self.builder.create_block();
+        let short_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        // `&&`: take rhs branch when lhs is true. `||`: take rhs branch when lhs is false.
+        let (then_block, else_block) = match op {
+            BinOp::And => (rhs_block, short_block),
+            BinOp::Or => (short_block, rhs_block),
+            _ => unreachable!(),
+        };
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: left_op,
+            then_block,
+            else_block,
+        }));
+
+        let result_local = self.builder.alloc_temp(MirType::Bool);
+
+        // Short-circuit branch: yield the lhs value (false for &&, true for ||).
+        self.builder.switch_to_block(short_block);
+        let short_val = match op {
+            BinOp::And => MirOperand::Constant(MirConst::Int(0)),
+            BinOp::Or => MirOperand::Constant(MirConst::Int(1)),
+            _ => unreachable!(),
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(short_val),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        // Long branch: evaluate rhs, yield rhs.
+        self.builder.switch_to_block(rhs_block);
+        let (right_op, _) = self.lower_expr(right)?;
+        if self.builder.current_block_unterminated() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result_local,
+                rvalue: MirRValue::Use(right_op),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: merge_block,
+            }));
+        }
+
+        self.builder.switch_to_block(merge_block);
+
+        Ok((MirOperand::Local(result_local), MirType::Bool))
     }
 
     /// Lower `if expr? [as v] { then } [else [as e] { else_br }]` — present-check
