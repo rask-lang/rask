@@ -219,9 +219,19 @@ impl TypeChecker {
                             Type::Char
                         }
                     }
-                    // Vec<T>, Map<K,V>, Pool<T> — extract element type from first type arg
+                    // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
+                    // Map<K,V> indexed by K → value type from second arg.
                     Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
-                        if let Some(GenericArg::Type(elem)) = args.first() {
+                        let is_map = match &obj_ty {
+                            Type::UnresolvedGeneric { name, .. } => name == "Map",
+                            Type::Generic { base, .. } => self
+                                .types
+                                .get_type_id("Map")
+                                .map_or(false, |id| id == *base),
+                            _ => false,
+                        };
+                        let elem_arg = if is_map { args.get(1) } else { args.first() };
+                        if let Some(GenericArg::Type(elem)) = elem_arg {
                             if is_range {
                                 Type::Slice(elem.clone())
                             } else {
