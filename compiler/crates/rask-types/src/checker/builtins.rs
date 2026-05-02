@@ -80,6 +80,38 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         return Type::option(parse_stub_type(inner));
     }
 
+    // Handle other generics: `Name<T1, T2, ...>` (Vec, Map, Pool, Handle, ...)
+    // Without this, `Vec<string>` returns as `UnresolvedNamed("Vec<string>")`,
+    // which the method-lookup path doesn't unify against `Generic { Vec, [string] }`.
+    if let Some(open) = s.find('<') {
+        if s.ends_with('>') {
+            let name = s[..open].trim();
+            let inner = &s[open + 1..s.len() - 1];
+            let mut args = Vec::new();
+            let mut start = 0usize;
+            let mut depth: i32 = 0;
+            let bytes = inner.as_bytes();
+            for (i, b) in bytes.iter().enumerate() {
+                match b {
+                    b'<' => depth += 1,
+                    b'>' => depth -= 1,
+                    b',' if depth == 0 => {
+                        args.push(parse_stub_type(inner[start..i].trim()));
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            if !inner.is_empty() {
+                args.push(parse_stub_type(inner[start..].trim()));
+            }
+            return Type::UnresolvedGeneric {
+                name: name.to_string(),
+                args: args.into_iter().map(|t| crate::types::GenericArg::Type(Box::new(t))).collect(),
+            };
+        }
+    }
+
     match s {
         "" | "()" | "void" => Type::Unit,
         "none" => Type::None,
@@ -229,10 +261,14 @@ mod tests {
 
     #[test]
     fn cli_args_returns_vec_string() {
+        use crate::types::GenericArg;
         let bm = BuiltinModules::new();
         let sig = bm.get_method("cli", "args").unwrap();
         assert!(sig.params.is_empty());
-        assert_eq!(sig.ret, Type::UnresolvedNamed("Vec<string>".to_string()));
+        assert_eq!(sig.ret, Type::UnresolvedGeneric {
+            name: "Vec".to_string(),
+            args: vec![GenericArg::Type(Box::new(Type::String))],
+        });
     }
 
     #[test]
@@ -269,8 +305,12 @@ mod tests {
 
     #[test]
     fn parse_generic_type() {
+        use crate::types::GenericArg;
         let ty = parse_stub_type("Vec<string>");
-        assert_eq!(ty, Type::UnresolvedNamed("Vec<string>".to_string()));
+        assert_eq!(ty, Type::UnresolvedGeneric {
+            name: "Vec".to_string(),
+            args: vec![GenericArg::Type(Box::new(Type::String))],
+        });
     }
 
     #[test]

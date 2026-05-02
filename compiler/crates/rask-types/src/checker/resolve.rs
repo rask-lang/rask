@@ -373,6 +373,7 @@ impl TypeChecker {
                 }
             }
             Type::String => self.resolve_string_method(&method, &args, &ret, span),
+            Type::Char => self.resolve_char_method(&method, &args, &ret, span),
             Type::Array { .. } | Type::Slice(_) => {
                 self.resolve_array_method(&ty, &method, &args, &ret, span)
             }
@@ -470,6 +471,10 @@ impl TypeChecker {
             // SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
             Type::UnresolvedNamed(name) if Self::is_simd_type(name) => {
                 self.resolve_simd_method(name, &method, &args, &ret, span)
+            }
+            // Iterator<T> — adapter chain methods, terminator methods.
+            Type::UnresolvedGeneric { name, args: type_args } if name == "Iterator" => {
+                self.resolve_iterator_method(&type_args, &method, &args, &ret, span)
             }
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
             Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel") => {
@@ -723,6 +728,138 @@ impl TypeChecker {
             .iter()
             .map(|ty| self.apply_type_var_substitution(ty, &substitution))
             .collect()
+    }
+
+    /// Resolve methods on `Iterator<T>` (lazy iterator type returned by
+    /// `string.split`, `Vec.iter`, etc.). The runtime is implemented in
+    /// the interpreter; the type checker only needs to ascribe types.
+    pub(super) fn resolve_iterator_method(
+        &mut self,
+        type_args: &[GenericArg],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let elem = type_args.first().and_then(|a| {
+            if let GenericArg::Type(t) = a { Some(*t.clone()) } else { None }
+        }).unwrap_or_else(|| self.ctx.fresh_var());
+        let self_ty = Type::UnresolvedGeneric {
+            name: "Iterator".to_string(),
+            args: vec![GenericArg::Type(Box::new(elem.clone()))],
+        };
+        match method {
+            "next" if args.is_empty() => {
+                self.unify(ret, &Type::option(elem), span)
+            }
+            "iter" if args.is_empty() => self.unify(ret, &self_ty, span),
+            "collect" if args.is_empty() => {
+                let vec_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(elem))],
+                };
+                self.unify(ret, &vec_ty, span)
+            }
+            "count" if args.is_empty() => self.unify(ret, &Type::U64, span),
+            "sum" if args.is_empty() => self.unify(ret, &elem, span),
+            "min" | "max" if args.is_empty() => self.unify(ret, &Type::option(elem), span),
+            "map" if args.len() == 1 => {
+                let out = self.ctx.fresh_var();
+                let expected_fn = Type::Fn {
+                    params: vec![elem],
+                    ret: Box::new(out.clone()),
+                };
+                self.unify(&args[0], &expected_fn, span)?;
+                let iter_out = Type::UnresolvedGeneric {
+                    name: "Iterator".to_string(),
+                    args: vec![GenericArg::Type(Box::new(out))],
+                };
+                self.unify(ret, &iter_out, span)
+            }
+            "filter" if args.len() == 1 => {
+                let expected_fn = Type::Fn {
+                    params: vec![elem],
+                    ret: Box::new(Type::Bool),
+                };
+                self.unify(&args[0], &expected_fn, span)?;
+                self.unify(ret, &self_ty, span)
+            }
+            "fold" if args.len() == 2 => {
+                let acc = args[0].clone();
+                let expected_fn = Type::Fn {
+                    params: vec![acc.clone(), elem],
+                    ret: Box::new(acc.clone()),
+                };
+                self.unify(&args[1], &expected_fn, span)?;
+                self.unify(ret, &acc, span)
+            }
+            "take" | "skip" if args.len() == 1 => {
+                self.unify(&args[0], &Type::U64, span)?;
+                self.unify(ret, &self_ty, span)
+            }
+            "enumerate" if args.is_empty() => {
+                let pair = Type::Tuple(vec![Type::U64, elem]);
+                let iter_pairs = Type::UnresolvedGeneric {
+                    name: "Iterator".to_string(),
+                    args: vec![GenericArg::Type(Box::new(pair))],
+                };
+                self.unify(ret, &iter_pairs, span)
+            }
+            "any" | "all" if args.len() == 1 => {
+                let expected_fn = Type::Fn {
+                    params: vec![elem],
+                    ret: Box::new(Type::Bool),
+                };
+                self.unify(&args[0], &expected_fn, span)?;
+                self.unify(ret, &Type::Bool, span)
+            }
+            "find" if args.len() == 1 => {
+                let expected_fn = Type::Fn {
+                    params: vec![elem.clone()],
+                    ret: Box::new(Type::Bool),
+                };
+                self.unify(&args[0], &expected_fn, span)?;
+                self.unify(ret, &Type::option(elem), span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: self_ty,
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    pub(super) fn resolve_char_method(
+        &mut self,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        if let Some(method_def) = rask_stdlib::lookup_method("char", method) {
+            let expected_params = method_def.params.len();
+            if args.len() != expected_params {
+                return Err(TypeError::ArityMismatch {
+                    expected: expected_params,
+                    found: args.len(),
+                    span,
+                });
+            }
+            let ret_ty = super::builtins::parse_stub_type(&method_def.ret_ty);
+            return self.unify(ret, &ret_ty, span);
+        }
+
+        match method {
+            "eq" | "ne" if args.len() == 1 => {
+                self.unify(&args[0], &Type::Char, span)?;
+                self.unify(ret, &Type::Bool, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::Char,
+                method: method.to_string(),
+                span,
+            }),
+        }
     }
 
     pub(super) fn resolve_string_method(
@@ -2432,12 +2569,20 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         match method {
-            "add" | "sub" | "mul" | "div"
-            | "min" | "max" | "pow" if args.len() == 1 => {
+            "add" | "sub" | "mul" | "div" | "rem"
+            | "min" | "max" | "pow" | "powf" if args.len() == 1 => {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
-            "neg" | "abs" | "floor" | "ceil" | "round" | "sqrt" if args.is_empty() => {
+            "powi" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::I32, span);
+                self.unify(ret, ty, span)
+            }
+            "neg" | "abs" | "floor" | "ceil" | "round" | "sqrt"
+            | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
+            | "ln" | "log10" | "log2" | "exp" | "trunc" | "fract"
+                if args.is_empty() =>
+            {
                 self.unify(ret, ty, span)
             }
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {

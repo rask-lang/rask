@@ -191,7 +191,21 @@ impl Interpreter {
             "max" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             "to_int" => Ok(Value::Int(a as i64)),
-            "pow" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.powf(b))) }
+            "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.powf(b))) }
+            "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(a.powi(b as i32))) }
+            "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.rem_euclid(b))) }
+            "sin" => Ok(Value::Float(a.sin())),
+            "cos" => Ok(Value::Float(a.cos())),
+            "tan" => Ok(Value::Float(a.tan())),
+            "asin" => Ok(Value::Float(a.asin())),
+            "acos" => Ok(Value::Float(a.acos())),
+            "atan" => Ok(Value::Float(a.atan())),
+            "ln" => Ok(Value::Float(a.ln())),
+            "log10" => Ok(Value::Float(a.log10())),
+            "log2" => Ok(Value::Float(a.log2())),
+            "exp" => Ok(Value::Float(a.exp())),
+            "trunc" => Ok(Value::Float(a.trunc())),
+            "fract" => Ok(Value::Float(a.fract())),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "f64".to_string(),
                 method: method.to_string(),

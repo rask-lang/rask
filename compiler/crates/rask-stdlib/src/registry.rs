@@ -91,10 +91,13 @@ const U128_METHODS: &[&str] = &[
 ];
 
 const F64_METHODS: &[&str] = &[
-    "add", "sub", "mul", "div", "neg",
-    "eq", "lt", "le", "gt", "ge",
-    "abs", "floor", "ceil", "round", "sqrt",
-    "min", "max", "to_string", "to_int", "pow",
+    "add", "sub", "mul", "div", "rem", "neg",
+    "eq", "lt", "le", "gt", "ge", "compare",
+    "abs", "floor", "ceil", "round", "sqrt", "trunc", "fract",
+    "min", "max", "to_string", "to_int",
+    "pow", "powf", "powi",
+    "sin", "cos", "tan", "asin", "acos", "atan",
+    "ln", "log10", "log2", "exp",
 ];
 
 const BOOL_METHODS: &[&str] = &["eq"];
