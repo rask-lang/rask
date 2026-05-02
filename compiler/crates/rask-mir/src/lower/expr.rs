@@ -251,6 +251,37 @@ impl<'a> MirLowerer<'a> {
             // Variable reference (or bare enum variant like None)
             ExprKind::Ident(name) => {
                 if let Some((id, ty)) = self.locals.get(name).cloned() {
+                    // ER24/CF22: ER24 narrowing redefines the binding's type in
+                    // the type checker's scope, but the MIR local keeps its
+                    // declared type. When the use-site has a more specific
+                    // narrowed type recorded, extract the payload from the
+                    // wider Result/Option so downstream Field / method lookup
+                    // operates on the narrowed type, not the wrapper.
+                    let narrow_ty = self
+                        .ctx
+                        .lookup_node_type(expr.id)
+                        .filter(|t| !matches!(t, MirType::Ptr));
+                    let needs_narrow = matches!(
+                        (&ty, &narrow_ty),
+                        (MirType::Result { .. }, Some(n)) if !matches!(n, MirType::Result { .. })
+                    ) || matches!(
+                        (&ty, &narrow_ty),
+                        (MirType::Option(_), Some(n)) if !matches!(n, MirType::Option(_))
+                    );
+                    if needs_narrow {
+                        let inner_ty = narrow_ty.unwrap();
+                        let inner_local = self.builder.alloc_temp(inner_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: inner_local,
+                            rvalue: MirRValue::Field {
+                                base: MirOperand::Local(id),
+                                field_index: 0,
+                                byte_offset: None,
+                                field_size: None,
+                            },
+                        }));
+                        return Ok((MirOperand::Local(inner_local), inner_ty));
+                    }
                     Ok((MirOperand::Local(id), ty))
                 } else if name == "None" {
                     // Niche: Option<Handle<T>> uses sentinel instead of tag
@@ -2358,13 +2389,29 @@ impl<'a> MirLowerer<'a> {
                 // Then block: bind payload, evaluate body
                 self.builder.switch_to_block(then_block);
                 // ER23: `Type as v` on the err side needs the err type, not ok.
+                // Match `ty_name` against the actual ok/err names first; fall back
+                // to the case heuristic only when neither side has a discoverable
+                // name (string, primitives, generics).
                 let bind_ty = if let rask_ast::expr::Pattern::TypePat { ty_name, .. } = pattern {
-                    let is_ok_side = ty_name.chars().next().map_or(false, |c| c.is_lowercase());
-                    if is_ok_side {
-                        self.extract_payload_type(expr).unwrap_or(MirType::I64)
-                    } else {
-                        self.extract_err_type(expr).unwrap_or(MirType::I64)
+                    let val_ty = &val_ty;
+                    let mut chosen: Option<MirType> = None;
+                    if let MirType::Result { ok, err } = val_ty {
+                        let ok_name = self.mir_type_name(ok);
+                        let err_name = self.mir_type_name(err);
+                        if ok_name.as_deref() == Some(ty_name.as_str()) {
+                            chosen = Some(*ok.clone());
+                        } else if err_name.as_deref() == Some(ty_name.as_str()) {
+                            chosen = Some(*err.clone());
+                        }
                     }
+                    chosen.unwrap_or_else(|| {
+                        let is_ok_side = ty_name.chars().next().map_or(false, |c| c.is_lowercase());
+                        if is_ok_side {
+                            self.extract_payload_type(expr).unwrap_or(MirType::I64)
+                        } else {
+                            self.extract_err_type(expr).unwrap_or(MirType::I64)
+                        }
+                    })
                 } else {
                     self.extract_payload_type(expr).unwrap_or(MirType::I64)
                 };
