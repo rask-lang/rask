@@ -2792,10 +2792,15 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Check if MIR arg at `index` is a string type.
     fn is_string_arg(mir_args: &[MirOperand], index: usize, locals: &[rask_mir::MirLocal]) -> bool {
-        mir_args.get(index)
-            .and_then(|a| Self::operand_mir_type(a, locals))
-            .map(|t| t == MirType::String)
-            .unwrap_or(false)
+        match mir_args.get(index) {
+            Some(MirOperand::Local(id)) => locals
+                .iter()
+                .find(|l| l.id == *id)
+                .map(|l| l.ty == MirType::String)
+                .unwrap_or(false),
+            Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
+            _ => false,
+        }
     }
 
     /// Check if destination local is a string type.

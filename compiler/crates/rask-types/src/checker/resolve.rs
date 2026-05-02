@@ -239,9 +239,13 @@ impl TypeChecker {
                 Ok(false)
             }
             Type::Named(type_id) => {
-                let methods = match self.types.get(*type_id) {
-                    Some(TypeDef::Struct { methods, .. }) => methods.clone(),
-                    Some(TypeDef::Enum { methods, .. }) => methods.clone(),
+                let (methods, type_params) = match self.types.get(*type_id) {
+                    Some(TypeDef::Struct { methods, type_params, .. }) => {
+                        (methods.clone(), type_params.clone())
+                    }
+                    Some(TypeDef::Enum { methods, type_params, .. }) => {
+                        (methods.clone(), type_params.clone())
+                    }
                     _ => {
                         return Err(TypeError::NoSuchMethod {
                             ty,
@@ -260,14 +264,26 @@ impl TypeChecker {
                         });
                     }
 
+                    // Instantiate generic type params with fresh vars so a
+                    // bare `Vec.new()` produces a Vec carrying a fresh element
+                    // var instead of the literal "T" placeholder. Without this
+                    // the placeholder leaks into node_types and downstream
+                    // unifications (push, get, ...) silently no-op.
+                    let subst: std::collections::HashMap<&str, Type> = type_params
+                        .iter()
+                        .map(|p| (p.as_str(), self.ctx.fresh_var()))
+                        .collect();
+
                     let mut progress = false;
                     for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
-                        if self.unify(param_ty, arg, span)? {
+                        let substituted = Self::substitute_type_params(param_ty, &subst);
+                        if self.unify(&substituted, arg, span)? {
                             progress = true;
                         }
                     }
 
-                    if self.unify(&method_sig.ret, &ret, span)? {
+                    let substituted_ret = Self::substitute_type_params(&method_sig.ret, &subst);
+                    if self.unify(&substituted_ret, &ret, span)? {
                         progress = true;
                     }
 
