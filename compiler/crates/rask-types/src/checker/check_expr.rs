@@ -55,7 +55,29 @@ fn parse_type_arg(s: &str) -> Type {
             args,
         }
     } else {
-        Type::UnresolvedNamed(s.to_string())
+        // Map primitive names directly; otherwise they leak as UnresolvedNamed
+        // and method resolution can't dispatch (e.g. `Vec<i32>.new()` followed
+        // by `v[0] + 5` looking up `i32.add`).
+        match s {
+            "i8" => Type::I8,
+            "i16" => Type::I16,
+            "i32" => Type::I32,
+            "i64" | "isize" | "int" => Type::I64,
+            "i128" => Type::I128,
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "u64" | "usize" | "uint" => Type::U64,
+            "u128" => Type::U128,
+            "f32" => Type::F32,
+            "f64" => Type::F64,
+            "bool" => Type::Bool,
+            "char" => Type::Char,
+            "string" => Type::String,
+            "void" | "()" => Type::Unit,
+            "none" => Type::None,
+            _ => Type::UnresolvedNamed(s.to_string()),
+        }
     }
 }
 
@@ -219,9 +241,19 @@ impl TypeChecker {
                             Type::Char
                         }
                     }
-                    // Vec<T>, Map<K,V>, Pool<T> — extract element type from first type arg
+                    // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
+                    // Map<K,V> indexed by K → value type from second arg.
                     Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
-                        if let Some(GenericArg::Type(elem)) = args.first() {
+                        let is_map = match &obj_ty {
+                            Type::UnresolvedGeneric { name, .. } => name == "Map",
+                            Type::Generic { base, .. } => self
+                                .types
+                                .get_type_id("Map")
+                                .map_or(false, |id| id == *base),
+                            _ => false,
+                        };
+                        let elem_arg = if is_map { args.get(1) } else { args.first() };
+                        if let Some(GenericArg::Type(elem)) = elem_arg {
                             if is_range {
                                 Type::Slice(elem.clone())
                             } else {

@@ -139,10 +139,18 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 "i32" | "u32" | "f32" => (4, 4),
                 "i64" | "u64" | "f64" => (8, 8),
                 "char" => (4, 4),
+                // Stdlib types backed by opaque runtime pointers
+                "TcpListener" | "TcpConnection" | "File" | "ThreadHandle"
+                | "TaskHandle" | "Sender" | "Receiver" | "ThreadPool"
+                | "MultitaskingRuntime" | "Rng" | "Iterator" | "StringBuilder" => (8, 8),
                 _ => {
                     // Look up user-defined types from the layout cache
                     if let Some(&cached) = cache.get(name.as_str()) {
                         cached
+                    } else if is_typevar_name(name) {
+                        // Unsubstituted type parameter — pointer-sized fallback,
+                        // silent because mono always picks a concrete size on real call sites.
+                        (8, 8)
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,
                         // it should have been caught by the type checker.
@@ -188,6 +196,18 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
 /// Align a value up to the given alignment
 fn align_up(val: u32, align: u32) -> u32 {
     (val + align - 1) & !(align - 1)
+}
+
+/// Heuristic: single uppercase letter (or letter + digit) is a type parameter
+/// like `T`, `K`, `V`, `T1`. These should never reach layout in monomorphized
+/// code; the warning is noise on every compile.
+fn is_typevar_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    match bytes.len() {
+        1 => bytes[0].is_ascii_uppercase(),
+        2 => bytes[0].is_ascii_uppercase() && bytes[1].is_ascii_digit(),
+        _ => false,
+    }
 }
 
 /// Parse a field type string (from AST) to a Type for layout computation.

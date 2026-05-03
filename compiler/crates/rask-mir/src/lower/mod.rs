@@ -1091,9 +1091,21 @@ impl<'a> MirLowerer<'a> {
                 }
                 0
             }
-            // ER23: `Type as v` — lowercase first char ⇒ ok side, uppercase
-            // user enum ⇒ err side (when scrutinee is `T or E`).
+            // ER23: `Type as v` — for Result<T, E>, prefer matching `ty_name` against
+            // the actual ok / err names. Without this, a user struct on the ok side
+            // (uppercase, e.g. `Cfg or CfgError`) wrongly maps to tag=1 because of
+            // the case heuristic.
             Pattern::TypePat { ty_name, .. } => {
+                if let MirType::Result { ok, err } = val_ty {
+                    let ok_name = self.mir_type_name(ok);
+                    let err_name = self.mir_type_name(err);
+                    if ok_name.as_deref() == Some(ty_name.as_str()) {
+                        return 0;
+                    }
+                    if err_name.as_deref() == Some(ty_name.as_str()) {
+                        return 1;
+                    }
+                }
                 if ty_name.chars().next().map_or(false, |c| c.is_lowercase()) {
                     0
                 } else {

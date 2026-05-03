@@ -35,16 +35,16 @@ extend bits {
 
 // ── Binary parsing (P1-P4) ──────────────────────────────────────────
 
-enum ParseError {
+enum BinaryParseError {
     UnexpectedEnd { expected: usize, actual: usize }
     InvalidData { message: string }
 }
 
-extend ParseError {
+extend BinaryParseError {
     public func message(self) -> string {
         match self {
-            ParseError.UnexpectedEnd { expected, actual } => return "unexpected end: expected {expected} bytes, got {actual}",
-            ParseError.InvalidData { message } => return "invalid data: {message}",
+            BinaryParseError.UnexpectedEnd { expected, actual } => return "unexpected end: expected {expected} bytes, got {actual}",
+            BinaryParseError.InvalidData { message } => return "invalid data: {message}",
         }
     }
 }

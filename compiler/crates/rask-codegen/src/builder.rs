@@ -2468,7 +2468,57 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         builder.ins().iconst(types::I64, 0)
                     };
-                    if matches!(ctx.ret_ty, MirType::Option(_)) {
+                    // Aggregate payload (string/struct/...) — `val` is a pointer to
+                    // 16+ bytes. Copy into the payload area instead of storing the
+                    // pointer at offset 8 (which leaves the rest of the slot
+                    // uninitialized).
+                    let inner_aggregate = match ctx.ret_ty {
+                        MirType::Option(inner) => Some(inner.as_ref()),
+                        MirType::Result { ok, .. } => Some(ok.as_ref()),
+                        _ => None,
+                    }.filter(|t| matches!(t,
+                        MirType::String | MirType::Struct(_) | MirType::Enum(_)
+                        | MirType::Tuple(_) | MirType::Result { .. } | MirType::Option(_)
+                    ));
+                    if let Some(inner) = inner_aggregate {
+                        let inner_size = Self::resolve_type_alloc_size(
+                            inner, ctx.struct_layouts, ctx.enum_layouts,
+                        ).unwrap_or(inner.size());
+                        let payload_off = if matches!(ctx.ret_ty, MirType::Option(_)) {
+                            crate::layouts::PAYLOAD_OFFSET
+                        } else {
+                            crate::layouts::RESULT_PAYLOAD_OFFSET
+                        };
+                        let tag = builder.ins().iconst(types::I64, 0);
+                        builder.ins().stack_store(tag, ss, crate::layouts::TAG_OFFSET);
+                        if matches!(ctx.ret_ty, MirType::Result { .. }) {
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            builder.ins().stack_store(zero, ss, crate::layouts::ORIGIN_FILE_OFFSET);
+                            builder.ins().stack_store(zero, ss, crate::layouts::ORIGIN_LINE_OFFSET);
+                        }
+                        let dst = builder.ins().stack_addr(types::I64, ss, payload_off);
+                        let mut off = 0i32;
+                        let size = inner_size as i32;
+                        while off + 8 <= size {
+                            let word = builder.ins().load(types::I64, MemFlags::new(), val, off);
+                            builder.ins().store(MemFlags::new(), word, dst, off);
+                            off += 8;
+                        }
+                        if size - off >= 4 {
+                            let w = builder.ins().load(types::I32, MemFlags::new(), val, off);
+                            builder.ins().store(MemFlags::new(), w, dst, off);
+                            off += 4;
+                        }
+                        if size - off >= 2 {
+                            let w = builder.ins().load(types::I16, MemFlags::new(), val, off);
+                            builder.ins().store(MemFlags::new(), w, dst, off);
+                            off += 2;
+                        }
+                        if size - off >= 1 {
+                            let w = builder.ins().load(types::I8, MemFlags::new(), val, off);
+                            builder.ins().store(MemFlags::new(), w, dst, off);
+                        }
+                    } else if matches!(ctx.ret_ty, MirType::Option(_)) {
                         Self::wrap_some_into_slot(builder, val, ss);
                     } else {
                         Self::wrap_ok_into_slot(builder, val, ss);
@@ -2792,10 +2842,15 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Check if MIR arg at `index` is a string type.
     fn is_string_arg(mir_args: &[MirOperand], index: usize, locals: &[rask_mir::MirLocal]) -> bool {
-        mir_args.get(index)
-            .and_then(|a| Self::operand_mir_type(a, locals))
-            .map(|t| t == MirType::String)
-            .unwrap_or(false)
+        match mir_args.get(index) {
+            Some(MirOperand::Local(id)) => locals
+                .iter()
+                .find(|l| l.id == *id)
+                .map(|l| l.ty == MirType::String)
+                .unwrap_or(false),
+            Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
+            _ => false,
+        }
     }
 
     /// Check if destination local is a string type.

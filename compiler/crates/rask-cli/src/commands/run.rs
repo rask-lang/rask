@@ -256,6 +256,55 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 
 /// Compile a .rk file's tests natively and run them.
 /// Compile and run tests with options (verbose, sequential, seed).
+/// Run tests through the tree-walking interpreter (no codegen).
+/// Useful for cross-checking codegen-side regressions and for tests that
+/// don't yet compile natively.
+pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
+    let result = crate::run_check_or_exit(path, format);
+
+    let mut interp = rask_interp::Interpreter::new();
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    interp.inject_cfg(&cfg);
+    if let Some((_, source)) = result.source_files.first() {
+        interp.set_source_info(path, source);
+    }
+    if !result.package_names.is_empty() {
+        interp.register_packages(&result.package_names);
+    }
+
+    let test_results = interp.run_tests(&result.decls, filter.as_deref());
+
+    // Render in the same format as native (JSON-per-line, then summarize).
+    let mut json_lines = String::new();
+    for r in &test_results {
+        let escaped_name = r.name.replace('\\', "\\\\").replace('"', "\\\"");
+        let dur_ns = r.duration.as_nanos() as u64;
+        if let Some(reason) = &r.skipped {
+            let escaped = reason.replace('\\', "\\\\").replace('"', "\\\"");
+            json_lines.push_str(&format!(
+                "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{},\"skipped\":\"{}\"}}\n",
+                escaped_name, dur_ns, escaped,
+            ));
+        } else if r.passed {
+            json_lines.push_str(&format!(
+                "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{}}}\n",
+                escaped_name, dur_ns,
+            ));
+        } else {
+            let err = r.errors.join("; ").replace('\\', "\\\\").replace('"', "\\\"");
+            json_lines.push_str(&format!(
+                "{{\"name\":\"{}\",\"passed\":false,\"duration_ns\":{},\"error\":\"{}\"}}\n",
+                escaped_name, dur_ns, err,
+            ));
+        }
+    }
+    display_test_results(&json_lines, path, format);
+
+    if test_results.iter().any(|r| !r.passed && r.skipped.is_none()) {
+        process::exit(1);
+    }
+}
+
 pub fn cmd_test_native_with_opts(path: &str, filter: Option<String>, format: Format, opts: &TestOptions) {
     // --seed is accepted for forward-compatibility (T8) but not yet functional
     if opts.seed.is_some() && format == Format::Human {

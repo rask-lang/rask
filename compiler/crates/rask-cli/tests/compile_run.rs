@@ -6,6 +6,18 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Global counter for temp file names. Local per-function counters collide
+/// across helper functions (each starts at 0), producing identical paths
+/// like `rask_ctest_<pid>_1.rk` from different threads — one thread deletes
+/// the file before another's rask subprocess can read it. Sharing one counter
+/// guarantees unique IDs across the test binary.
+static NEXT_TMP_ID: AtomicU64 = AtomicU64::new(0);
+
+fn next_tmp_id() -> u64 {
+    NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 fn rask_binary() -> PathBuf {
     // cargo test builds into target/debug or target/release
@@ -318,10 +330,8 @@ fn error_missing_return() {
 
 /// Run `rask check` and return combined stdout+stderr.
 fn check_output(source: &str) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let rask = rask_binary();
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = next_tmp_id();
     let tmp = std::env::temp_dir().join(format!("rask_errtest_{}_{}.rk", std::process::id(), id));
     std::fs::write(&tmp, source).unwrap();
 
@@ -389,10 +399,8 @@ fn fmt_normalizes_spacing() {
 // ─── rask lint integration ──────────────────────────────────
 
 fn lint_output(source: &str) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let rask = rask_binary();
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = next_tmp_id();
     let tmp = std::env::temp_dir().join(format!("rask_linttest_{}_{}.rk", std::process::id(), id));
     std::fs::write(&tmp, source).unwrap();
 
@@ -475,10 +483,8 @@ fn api_shows_map_methods() {
 // This catches stubs that exist but aren't wired into the resolver.
 
 fn check_succeeds(source: &str) -> bool {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let rask = rask_binary();
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = next_tmp_id();
     let tmp = std::env::temp_dir().join(format!("rask_disctest_{}_{}.rk", std::process::id(), id));
     std::fs::write(&tmp, source).unwrap();
 
@@ -562,10 +568,8 @@ fn c_header_fixture(name: &str) -> PathBuf {
 
 /// Write a temp .rk file that imports the given header and check it.
 fn check_c_import(header: &str, rask_body: &str) -> bool {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let rask = rask_binary();
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = next_tmp_id();
     let header_path = c_header_fixture(header);
     let tmp = std::env::temp_dir().join(format!("rask_ctest_{}_{}.rk", std::process::id(), id));
     let source = format!(
@@ -587,10 +591,8 @@ fn check_c_import(header: &str, rask_body: &str) -> bool {
 
 /// Run `rask check` and return stderr+stdout for assertion.
 fn check_c_import_output(header: &str, rask_body: &str) -> (bool, String) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let rask = rask_binary();
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = next_tmp_id();
     let header_path = c_header_fixture(header);
     let tmp = std::env::temp_dir().join(format!("rask_ctest_{}_{}.rk", std::process::id(), id));
     let source = format!(
@@ -617,10 +619,8 @@ fn check_c_import_output(header: &str, rask_body: &str) -> (bool, String) {
 
 /// Run `rask resolve` and return stdout for symbol inspection.
 fn resolve_c_import(header: &str, rask_body: &str) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let rask = rask_binary();
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = next_tmp_id();
     let header_path = c_header_fixture(header);
     let tmp = std::env::temp_dir().join(format!("rask_crestest_{}_{}.rk", std::process::id(), id));
     let source = format!(
@@ -720,10 +720,8 @@ fn c_import_call_with_args_typechecks() {
 // CI5: import c "header.h" hiding { symbol }
 #[test]
 fn c_import_hiding() {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let rask = rask_binary();
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = next_tmp_id();
     let header_path = c_header_fixture("mylib.h");
     let tmp = std::env::temp_dir().join(format!("rask_chidetest_{}_{}.rk", std::process::id(), id));
     let source = format!(
@@ -755,10 +753,8 @@ fn c_import_hiding() {
 // CI1: Aliased import: import c "header.h" as mylib
 #[test]
 fn c_import_alias() {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let rask = rask_binary();
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = next_tmp_id();
     let header_path = c_header_fixture("mylib.h");
     let tmp = std::env::temp_dir().join(format!("rask_caliastest_{}_{}.rk", std::process::id(), id));
     let source = format!(

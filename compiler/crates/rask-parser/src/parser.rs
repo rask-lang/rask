@@ -920,6 +920,25 @@ impl Parser {
         Ok(params)
     }
 
+    /// Parse one parameter inside a function type: `T`, `name: T`, or `mutate name: T`.
+    /// In type position, names and modifiers are noise — only the type part is kept.
+    fn parse_func_type_param(&mut self) -> Result<String, ParseError> {
+        // Skip optional `mutate` modifier
+        if matches!(self.current_kind(), TokenKind::MutateKw) {
+            self.advance();
+        }
+
+        // If `name :` precedes the type, skip the name and colon
+        if let TokenKind::Ident(_) = self.current_kind() {
+            if matches!(self.peek(1), TokenKind::Colon) {
+                self.advance(); // name
+                self.advance(); // :
+            }
+        }
+
+        self.parse_type_name()
+    }
+
     fn parse_type_name(&mut self) -> Result<String, ParseError> {
         let base = self.parse_base_type()?;
 
@@ -1077,13 +1096,14 @@ impl Parser {
             return Ok(n.to_string());
         }
 
-        // Closure type: |T1, T2| -> R
+        // Closure type: |T1, T2| -> R, or with named/modified params:
+        //   |name: T|, |mutate name: T| (names are noise in type position)
         if self.check(&TokenKind::Pipe) {
             self.advance();
             let mut params = Vec::new();
             if !self.check(&TokenKind::Pipe) {
                 loop {
-                    params.push(self.parse_type_name()?);
+                    params.push(self.parse_func_type_param()?);
                     if !self.match_token(&TokenKind::Comma) { break; }
                 }
             }
@@ -1105,7 +1125,7 @@ impl Parser {
             let mut params = Vec::new();
             if !self.check(&TokenKind::RParen) {
                 loop {
-                    params.push(self.parse_type_name()?);
+                    params.push(self.parse_func_type_param()?);
                     if !self.match_token(&TokenKind::Comma) { break; }
                 }
             }

@@ -401,8 +401,15 @@ fn main() {
                 }
             };
             let test_opts = commands::run::TestOptions { verbose, sequential, seed };
+            let interp = cmd_args.contains(&"--interp");
             let p = Path::new(file);
-            if p.is_dir() {
+            if interp {
+                if p.is_dir() {
+                    eprintln!("{}: --interp does not yet support directory mode", output::error_label());
+                    process::exit(1);
+                }
+                commands::run::cmd_test_interp(file, filter, format);
+            } else if p.is_dir() {
                 // Directory with build.rk → single project (all files share types).
                 // Directory without build.rk → folder of standalone files; run each
                 // independently so duplicate type names across files don't collide.

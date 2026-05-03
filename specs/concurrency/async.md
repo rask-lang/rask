@@ -129,7 +129,7 @@ const results = try group.join_all()
 func main() {
     using Multitasking(workers: 4) {
         // all spawn() calls below, on any thread, use this runtime
-        ...
+        // body
     }
     // block exit: all spawned tasks drained, runtime shut down
 }
