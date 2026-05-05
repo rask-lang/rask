@@ -3270,6 +3270,16 @@ impl<'a> MirLowerer<'a> {
         left: &Expr,
         right: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
+        // Special case `&& with IsPattern lhs`: the pattern test must bind its
+        // payload locals before the rhs is evaluated, so `s is Rectangle(w, h)
+        // && w > h` can reference w and h on the matched path. The bare
+        // IsPattern lowering only emits a tag comparison and drops bindings.
+        if matches!(op, BinOp::And) {
+            if let ExprKind::IsPattern { expr: scrutinee, pattern } = &left.kind {
+                return self.lower_and_with_pattern(scrutinee, pattern, right);
+            }
+        }
+
         let (left_op, _) = self.lower_expr(left)?;
 
         let rhs_block = self.builder.create_block();
@@ -3320,6 +3330,73 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
 
+        Ok((MirOperand::Local(result_local), MirType::Bool))
+    }
+
+    /// Lower `(scrutinee is Pattern) && rhs` so payload bindings from the
+    /// pattern are in scope while rhs is evaluated. Falls back to a plain
+    /// tag-test value on the no-match path.
+    fn lower_and_with_pattern(
+        &mut self,
+        scrutinee: &Expr,
+        pattern: &rask_ast::expr::Pattern,
+        right: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        let is_niche = self.is_niche_option_expr(scrutinee);
+        let (val, val_ty) = self.lower_expr(scrutinee)?;
+        let tag = self.emit_option_tag(&val, is_niche);
+        let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
+
+        let matches = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: matches,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Eq,
+                left: MirOperand::Local(tag),
+                right: MirOperand::Constant(MirConst::Int(expected)),
+            },
+        }));
+
+        let bind_block = self.builder.create_block();
+        let short_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(matches),
+            then_block: bind_block,
+            else_block: short_block,
+        }));
+
+        let result_local = self.builder.alloc_temp(MirType::Bool);
+
+        // No-match path: short-circuit to false.
+        self.builder.switch_to_block(short_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        // Match path: bind payload, then evaluate rhs.
+        self.builder.switch_to_block(bind_block);
+        let payload_ty = self
+            .extract_payload_type(scrutinee)
+            .unwrap_or(MirType::I64);
+        self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche);
+        let (right_op, _) = self.lower_expr(right)?;
+        if self.builder.current_block_unterminated() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result_local,
+                rvalue: MirRValue::Use(right_op),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: merge_block,
+            }));
+        }
+
+        self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), MirType::Bool))
     }
 
