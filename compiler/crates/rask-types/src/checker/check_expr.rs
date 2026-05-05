@@ -2353,7 +2353,7 @@ impl TypeChecker {
     /// Must run after the cond has been inferred so the scrutinee's type is
     /// available in `node_types`.
     pub(super) fn extract_is_present_narrowing(
-        &self,
+        &mut self,
         cond: &Expr,
     ) -> Option<(String, Type, Option<Type>)> {
         let ExprKind::IsPresent { expr: inner, binding } = &cond.kind else {
@@ -2368,6 +2368,24 @@ impl TypeChecker {
             (Some(v), _) => v.clone(),
             (None, ExprKind::Ident(n)) if self.is_local_read_only(n) => n.clone(),
             _ => return None,
+        };
+
+        // If the scrutinee is still an unsolved type variable (e.g. Map.get
+        // on a Map.new() whose V is only fixed by later inserts), constrain
+        // it to a Result shape so we can extract ok/err vars right now.
+        // The fresh err var defers Option vs Result distinction to constraint
+        // solving — it will unify to None for `T?` and to E for `T or E`.
+        let resolved = if let Type::Var(_) = resolved {
+            let ok = self.ctx.fresh_var();
+            let err = self.ctx.fresh_var();
+            let target = Type::Result {
+                ok: Box::new(ok),
+                err: Box::new(err),
+            };
+            let _ = self.unify(&resolved, &target, cond.span);
+            self.ctx.apply(&resolved)
+        } else {
+            resolved
         };
 
         match resolved {

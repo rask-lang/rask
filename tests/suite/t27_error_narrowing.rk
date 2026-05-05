@@ -150,4 +150,33 @@ test "generic type pattern in is ... else guard" {
     assert generic_guard() == 2
 }
 
+// --- #224: bare `if x?` narrows when scrutinee's type-var is solved later ---
+//
+// `Map.new()` without an annotation leaves V unsolved at the point `if existing?`
+// is checked. Narrowing must still bind `existing` to the unwrapped type so
+// constraint-solving can later resolve it through downstream `insert` calls.
+
+func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
+    mut counts = Map.new()
+    for item in items {
+        const existing = counts.get(item)
+        if existing? {
+            counts.insert(item, existing + 1)
+        } else {
+            counts.insert(item, 1)
+        }
+    }
+    return counts
+}
+
+test "Map.new() inferred V narrows on if x?" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(1)
+    const c = count_occurrences(v)
+    assert c[1] == 2
+    assert c[2] == 1
+}
+
 func main() {}
