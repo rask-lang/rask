@@ -2603,11 +2603,16 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(none_block);
                 let (default_val, _) = self.lower_expr(default)?;
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(default_val),
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+                // Guard against a divergent default (`?? continue` / `?? break` /
+                // `?? return`): if it already terminated the block, don't emit
+                // the assignment+goto into a dead block.
+                if self.builder.current_block_unterminated() {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: result_local,
+                        rvalue: MirRValue::Use(default_val),
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+                }
 
                 self.builder.switch_to_block(merge_block);
                 Ok((MirOperand::Local(result_local), payload_ty))
