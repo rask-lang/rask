@@ -2402,6 +2402,13 @@ impl<'a> MirLowerer<'a> {
                             chosen = Some(*ok.clone());
                         } else if err_name.as_deref() == Some(ty_name.as_str()) {
                             chosen = Some(*err.clone());
+                        } else if err_name.is_some() {
+                            // Generic ok types collapse to Ptr in MIR and lose
+                            // their nominal name. If err is a known name that
+                            // doesn't match, the pattern must be the ok side.
+                            chosen = Some(*ok.clone());
+                        } else if ok_name.is_some() {
+                            chosen = Some(*err.clone());
                         }
                     }
                     chosen.unwrap_or_else(|| {
@@ -2458,10 +2465,10 @@ impl<'a> MirLowerer<'a> {
                 else_branch,
             } => {
                 let is_niche = self.is_niche_option_expr(expr);
-                let (val, _) = self.lower_expr(expr)?;
+                let (val, val_ty) = self.lower_expr(expr)?;
                 let tag = self.emit_option_tag(&val, is_niche);
 
-                let expected = self.pattern_tag(pattern);
+                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
                 let matches = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: matches,
