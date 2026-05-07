@@ -1005,17 +1005,16 @@ impl<'a> MirLowerer<'a> {
 
     /// Extract the Ok/Some payload type from the raw type of an expression.
     /// For Option<T>, returns T. For Result<T, E>, returns T.
+    /// MirType::Ptr is a legitimate result for Vec/Map/Pool/Channel/etc.,
+    /// so the caller must not treat Ptr as "unresolved".
     fn extract_payload_type(&self, expr: &Expr) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
             match ty {
                 Type::Result { ok: inner, err } if **err == Type::None => {
-                    let mir = self.ctx.type_to_mir(inner);
-                    // Ptr means unresolved — let callers fall through to other strategies
-                    if matches!(mir, MirType::Ptr) { None } else { Some(mir) }
+                    Some(self.ctx.type_to_mir(inner))
                 }
                 Type::Result { ok, .. } => {
-                    let mir = self.ctx.type_to_mir(ok);
-                    if matches!(mir, MirType::Ptr) { None } else { Some(mir) }
+                    Some(self.ctx.type_to_mir(ok))
                 }
                 _ => None,
             }
@@ -1029,8 +1028,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
             match ty {
                 Type::Result { err, .. } => {
-                    let mir = self.ctx.type_to_mir(err);
-                    if matches!(mir, MirType::Ptr) { None } else { Some(mir) }
+                    Some(self.ctx.type_to_mir(err))
                 }
                 _ => None,
             }
@@ -1103,6 +1101,15 @@ impl<'a> MirLowerer<'a> {
                         return 0;
                     }
                     if err_name.as_deref() == Some(ty_name.as_str()) {
+                        return 1;
+                    }
+                    // Generic ok types like `Vec<i32>` collapse to MirType::Ptr
+                    // and lose their nominal name. If the err side has a known
+                    // name and it doesn't match, the pattern must be the ok side.
+                    if err_name.is_some() {
+                        return 0;
+                    }
+                    if ok_name.is_some() {
                         return 1;
                     }
                 }
@@ -1178,11 +1185,24 @@ impl<'a> MirLowerer<'a> {
         payload_ty: MirType,
         is_niche: bool,
     ) -> LocalId {
-        let result = self.builder.alloc_temp(payload_ty);
+        let result = self.builder.alloc_temp(payload_ty.clone());
         let rvalue = if is_niche {
             MirRValue::Use(value)
         } else {
-            MirRValue::Field { base: value, field_index: 0, byte_offset: None, field_size: None }
+            // For non-aggregate payloads (scalars, Ptr to Vec/Map/etc.), pass an
+            // explicit byte_offset so codegen loads the value at
+            // RESULT_PAYLOAD_OFFSET instead of falling into the aggregate
+            // fast-path that returns the slot address.
+            let is_aggregate = matches!(
+                payload_ty,
+                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+            );
+            let byte_offset = if is_aggregate {
+                None
+            } else {
+                Some(crate::types::RESULT_PAYLOAD_OFFSET)
+            };
+            MirRValue::Field { base: value, field_index: 0, byte_offset, field_size: None }
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: result, rvalue }));
         result

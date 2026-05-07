@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     operand::MirConst, types::{EnumLayoutId, StructLayoutId},
-    BlockId, FunctionRef, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
+    BlockId, FunctionRef, LocalId, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType,
 };
 use rask_ast::{
@@ -2402,6 +2402,13 @@ impl<'a> MirLowerer<'a> {
                             chosen = Some(*ok.clone());
                         } else if err_name.as_deref() == Some(ty_name.as_str()) {
                             chosen = Some(*err.clone());
+                        } else if err_name.is_some() {
+                            // Generic ok types collapse to Ptr in MIR and lose
+                            // their nominal name. If err is a known name that
+                            // doesn't match, the pattern must be the ok side.
+                            chosen = Some(*ok.clone());
+                        } else if ok_name.is_some() {
+                            chosen = Some(*err.clone());
                         }
                     }
                     chosen.unwrap_or_else(|| {
@@ -2458,10 +2465,10 @@ impl<'a> MirLowerer<'a> {
                 else_branch,
             } => {
                 let is_niche = self.is_niche_option_expr(expr);
-                let (val, _) = self.lower_expr(expr)?;
+                let (val, val_ty) = self.lower_expr(expr)?;
                 let tag = self.emit_option_tag(&val, is_niche);
 
-                let expected = self.pattern_tag(pattern);
+                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
                 let matches = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: matches,
@@ -2603,11 +2610,16 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(none_block);
                 let (default_val, _) = self.lower_expr(default)?;
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(default_val),
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+                // Guard against a divergent default (`?? continue` / `?? break` /
+                // `?? return`): if it already terminated the block, don't emit
+                // the assignment+goto into a dead block.
+                if self.builder.current_block_unterminated() {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: result_local,
+                        rvalue: MirRValue::Use(default_val),
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+                }
 
                 self.builder.switch_to_block(merge_block);
                 Ok((MirOperand::Local(result_local), payload_ty))
@@ -2859,6 +2871,9 @@ impl<'a> MirLowerer<'a> {
                 // Default: simple alias binding (Pool, Cell, etc.)
                 // W2a/W2b: Track pool bindings for re-resolution after pool mutators
                 let mut pool_binding_keys: Vec<String> = Vec::new();
+                // Vec[i] / Map[k] writeback info: (collection, index/key, item_local, setter_name).
+                // Captured per binding so we can emit Vec_set / Map_set after the body runs.
+                let mut coll_writebacks: Vec<(MirOperand, MirOperand, LocalId, &'static str)> = Vec::new();
                 for binding in bindings {
                     // Before lowering, extract pool/handle info for re-resolution tracking
                     let pool_info = if let ExprKind::Index { object, index } = &binding.source.kind {
@@ -2885,13 +2900,45 @@ impl<'a> MirLowerer<'a> {
                         None
                     };
 
+                    // Detect `with vec[i] as item` / `with map[k] as item` so we
+                    // can write `item` back to the collection once the body
+                    // finishes. Without this, mutations through `item` are lost.
+                    let coll_writeback_info = if let ExprKind::Index { object, index } = &binding.source.kind {
+                        if let ExprKind::Ident(coll_name) = &object.kind {
+                            let prefix = self.meta(coll_name)
+                                .and_then(|m| m.type_prefix.as_deref())
+                                .map(|s| s.to_string());
+                            let setter = match prefix.as_deref() {
+                                Some("Vec") => Some("Vec_set"),
+                                Some("Map") => Some("Map_set"),
+                                _ => None,
+                            };
+                            if let Some(setter_name) = setter {
+                                let (obj_op, _) = self.lower_expr(object)?;
+                                let (idx_op, _) = self.lower_expr(index)?;
+                                Some((obj_op, idx_op, setter_name))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     let (val, val_ty) = self.lower_expr(&binding.source)?;
                     let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
-                    self.locals.insert(binding.name.clone(), (local, val_ty));
+                    self.locals.insert(binding.name.clone(), (local, val_ty.clone()));
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: local,
                         rvalue: MirRValue::Use(val),
                     }));
+
+                    if let Some((obj_op, idx_op, setter_name)) = coll_writeback_info {
+                        let _ = val_ty;
+                        coll_writebacks.push((obj_op, idx_op, local, setter_name));
+                    }
 
                     // Register pool binding for re-resolution
                     if let Some((pool_name, pool_local, handle_local)) = pool_info {
@@ -2902,6 +2949,14 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 let result = self.lower_block(body);
+                // Write back Vec[i] / Map[k] mutations through `with` bindings.
+                for (obj_op, idx_op, item_local, setter_name) in coll_writebacks {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(setter_name.to_string()),
+                        args: vec![obj_op, idx_op, MirOperand::Local(item_local)],
+                    }));
+                }
                 // Clean up pool binding registrations
                 for key in &pool_binding_keys {
                     if let Some(entries) = self.with_pool_bindings.get_mut(key) {
@@ -3270,6 +3325,16 @@ impl<'a> MirLowerer<'a> {
         left: &Expr,
         right: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
+        // Special case `&& with IsPattern lhs`: the pattern test must bind its
+        // payload locals before the rhs is evaluated, so `s is Rectangle(w, h)
+        // && w > h` can reference w and h on the matched path. The bare
+        // IsPattern lowering only emits a tag comparison and drops bindings.
+        if matches!(op, BinOp::And) {
+            if let ExprKind::IsPattern { expr: scrutinee, pattern } = &left.kind {
+                return self.lower_and_with_pattern(scrutinee, pattern, right);
+            }
+        }
+
         let (left_op, _) = self.lower_expr(left)?;
 
         let rhs_block = self.builder.create_block();
@@ -3320,6 +3385,73 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
 
+        Ok((MirOperand::Local(result_local), MirType::Bool))
+    }
+
+    /// Lower `(scrutinee is Pattern) && rhs` so payload bindings from the
+    /// pattern are in scope while rhs is evaluated. Falls back to a plain
+    /// tag-test value on the no-match path.
+    fn lower_and_with_pattern(
+        &mut self,
+        scrutinee: &Expr,
+        pattern: &rask_ast::expr::Pattern,
+        right: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        let is_niche = self.is_niche_option_expr(scrutinee);
+        let (val, val_ty) = self.lower_expr(scrutinee)?;
+        let tag = self.emit_option_tag(&val, is_niche);
+        let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
+
+        let matches = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: matches,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Eq,
+                left: MirOperand::Local(tag),
+                right: MirOperand::Constant(MirConst::Int(expected)),
+            },
+        }));
+
+        let bind_block = self.builder.create_block();
+        let short_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(matches),
+            then_block: bind_block,
+            else_block: short_block,
+        }));
+
+        let result_local = self.builder.alloc_temp(MirType::Bool);
+
+        // No-match path: short-circuit to false.
+        self.builder.switch_to_block(short_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        // Match path: bind payload, then evaluate rhs.
+        self.builder.switch_to_block(bind_block);
+        let payload_ty = self
+            .extract_payload_type(scrutinee)
+            .unwrap_or(MirType::I64);
+        self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche);
+        let (right_op, _) = self.lower_expr(right)?;
+        if self.builder.current_block_unterminated() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result_local,
+                rvalue: MirRValue::Use(right_op),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: merge_block,
+            }));
+        }
+
+        self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), MirType::Bool))
     }
 

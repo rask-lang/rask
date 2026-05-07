@@ -429,13 +429,6 @@ impl Resolver {
     /// Check if a name refers to a builtin type or enum (not a builtin function).
     /// User-defined functions can shadow builtin functions like `max`, `min`,
     /// but not builtin types like `Vec`, `Map`, `Option`.
-    /// Check whether a name matches a stdlib module namespace (`io`, `fs`,
-    /// `json`, ...). Stdlib modules aren't pre-bound in scope, so a local
-    /// `const io = ...` would silently break later `io.stdout()` calls.
-    fn is_stdlib_namespace(name: &str) -> bool {
-        rask_stdlib::registry::REGISTERED_MODULES.contains(&name)
-    }
-
     fn is_builtin_type_name(&self, name: &str) -> bool {
         if let Some(sym_id) = self.scopes.lookup(name) {
             if let Some(sym) = self.symbols.get(sym_id) {
@@ -1531,7 +1524,7 @@ impl Resolver {
             }
             StmtKind::Mut { name, name_span, ty, init } => {
                 self.resolve_expr(init);
-                if !self.stdlib_mode && Self::is_stdlib_namespace(name) {
+                if !self.stdlib_mode && self.is_builtin_name(name) {
                     self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
                 }
                 let sym_id = self.symbols.insert(
@@ -1547,7 +1540,7 @@ impl Resolver {
             }
             StmtKind::Const { name, name_span, ty, init } => {
                 self.resolve_expr(init);
-                if !self.stdlib_mode && Self::is_stdlib_namespace(name) {
+                if !self.stdlib_mode && self.is_builtin_name(name) {
                     self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
                 }
                 let sym_id = self.symbols.insert(

@@ -150,4 +150,67 @@ test "generic type pattern in is ... else guard" {
     assert generic_guard() == 2
 }
 
+// --- #224: bare `if x?` narrows when scrutinee's type-var is solved later ---
+//
+// `Map.new()` without an annotation leaves V unsolved at the point `if existing?`
+// is checked. Narrowing must still bind `existing` to the unwrapped type so
+// constraint-solving can later resolve it through downstream `insert` calls.
+
+func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
+    mut counts = Map.new()
+    for item in items {
+        const existing = counts.get(item)
+        if existing? {
+            counts.insert(item, existing + 1)
+        } else {
+            counts.insert(item, 1)
+        }
+    }
+    return counts
+}
+
+test "Map.new() inferred V narrows on if x?" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(1)
+    const c = count_occurrences(v)
+    assert c[1] == 2
+    assert c[2] == 1
+}
+
+// --- #256: `is V(payload) && guard` keeps payload bindings ---
+//
+// The bare form `if s is Rectangle(w, h) { ... }` already works via IfLet,
+// but the compound form `s is Rectangle(w, h) && w > h` parses to `If` with
+// a `Binary(And, IsPattern, ..)` cond. MIR lowering of && needs to bind the
+// payload locals before the rhs is evaluated, otherwise rhs trips
+// UnresolvedVariable on the bound names.
+
+enum Shape256 { Rectangle(i32, i32), Circle(i32) }
+
+test "is constructor pattern && guard" {
+    const wide = Shape256.Rectangle(10, 5)
+    if wide is Rectangle(w, h) && w > h {
+        assert w == 10
+        assert h == 5
+    } else {
+        assert false, "expected wide rectangle"
+    }
+
+    const tall = Shape256.Rectangle(3, 5)
+    if tall is Rectangle(w, h) && w > h {
+        assert false, "guard should fail"
+    } else {
+        assert true
+    }
+
+    const round = Shape256.Circle(5)
+    if round is Rectangle(w, h) && w > h {
+        assert false, "tag should not match"
+    } else {
+        assert true
+    }
+}
+
 func main() {}
