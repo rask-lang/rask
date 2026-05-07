@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     operand::MirConst, types::{EnumLayoutId, StructLayoutId},
-    BlockId, FunctionRef, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
+    BlockId, FunctionRef, LocalId, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType,
 };
 use rask_ast::{
@@ -2871,6 +2871,9 @@ impl<'a> MirLowerer<'a> {
                 // Default: simple alias binding (Pool, Cell, etc.)
                 // W2a/W2b: Track pool bindings for re-resolution after pool mutators
                 let mut pool_binding_keys: Vec<String> = Vec::new();
+                // Vec[i] / Map[k] writeback info: (collection, index/key, item_local, setter_name).
+                // Captured per binding so we can emit Vec_set / Map_set after the body runs.
+                let mut coll_writebacks: Vec<(MirOperand, MirOperand, LocalId, &'static str)> = Vec::new();
                 for binding in bindings {
                     // Before lowering, extract pool/handle info for re-resolution tracking
                     let pool_info = if let ExprKind::Index { object, index } = &binding.source.kind {
@@ -2897,13 +2900,45 @@ impl<'a> MirLowerer<'a> {
                         None
                     };
 
+                    // Detect `with vec[i] as item` / `with map[k] as item` so we
+                    // can write `item` back to the collection once the body
+                    // finishes. Without this, mutations through `item` are lost.
+                    let coll_writeback_info = if let ExprKind::Index { object, index } = &binding.source.kind {
+                        if let ExprKind::Ident(coll_name) = &object.kind {
+                            let prefix = self.meta(coll_name)
+                                .and_then(|m| m.type_prefix.as_deref())
+                                .map(|s| s.to_string());
+                            let setter = match prefix.as_deref() {
+                                Some("Vec") => Some("Vec_set"),
+                                Some("Map") => Some("Map_set"),
+                                _ => None,
+                            };
+                            if let Some(setter_name) = setter {
+                                let (obj_op, _) = self.lower_expr(object)?;
+                                let (idx_op, _) = self.lower_expr(index)?;
+                                Some((obj_op, idx_op, setter_name))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     let (val, val_ty) = self.lower_expr(&binding.source)?;
                     let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
-                    self.locals.insert(binding.name.clone(), (local, val_ty));
+                    self.locals.insert(binding.name.clone(), (local, val_ty.clone()));
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: local,
                         rvalue: MirRValue::Use(val),
                     }));
+
+                    if let Some((obj_op, idx_op, setter_name)) = coll_writeback_info {
+                        let _ = val_ty;
+                        coll_writebacks.push((obj_op, idx_op, local, setter_name));
+                    }
 
                     // Register pool binding for re-resolution
                     if let Some((pool_name, pool_local, handle_local)) = pool_info {
@@ -2914,6 +2949,14 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 let result = self.lower_block(body);
+                // Write back Vec[i] / Map[k] mutations through `with` bindings.
+                for (obj_op, idx_op, item_local, setter_name) in coll_writebacks {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(setter_name.to_string()),
+                        args: vec![obj_op, idx_op, MirOperand::Local(item_local)],
+                    }));
+                }
                 // Clean up pool binding registrations
                 for key in &pool_binding_keys {
                     if let Some(entries) = self.with_pool_bindings.get_mut(key) {
