@@ -60,8 +60,9 @@ extend Pool<T> {
     /// Iterate over (handle, element) pairs.
     public func iter(self) -> Iterator<(Handle<T>, T)> { }
 
-    /// Iterate over handles only.
-    public func handles(self) -> Iterator<Handle<T>> { }
+    /// Snapshot of handles. Returned as a Vec so callers can index, slice,
+    /// or iterate without invalidating on subsequent insert/remove.
+    public func handles(self) -> Vec<Handle<T>> { }
 
     /// Iterate over elements only.
     public func values(self) -> Iterator<T> { }

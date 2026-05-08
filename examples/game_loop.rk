@@ -208,31 +208,20 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
     }
 }
 
-// Parallel movement update - processes entity batches across threads
-// Takes Pool<Entity> directly — borrow checker tracks field-level borrow at call site
-func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_threads: usize)
-    using ThreadPool
-{
+// Movement update across all entities. Sharing a `mutate Pool<Entity>`
+// across worker threads isn't sound (Pool needs exclusive mutable access),
+// so the parallel pipeline lives outside the example and we run movement
+// single-threaded here. For genuine parallelism, compute new positions on
+// worker threads from a read-only snapshot and ship results back over a
+// channel for the main thread to apply.
+func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_threads: usize) {
+    const _ = num_threads
     mut handles = entities.handles()
-    mut chunk_size = (handles.len() + num_threads - 1) / num_threads
-
-    // Split work across thread pool
-    mut thread_handles = Vec.new()
-    for chunk in handles.chunks(chunk_size) {
-        mut chunk = chunk.to_vec()
-        mut task = ThreadPool.spawn(|| {
-            for h in chunk {
-                if !entities[h].active: continue
-                entities[h].position.x += entities[h].velocity.dx * dt
-                entities[h].position.y += entities[h].velocity.dy * dt
-            }
-        })
-        thread_handles.push(task)
-    }
-
-    // Wait for all chunks to complete
-    for h in thread_handles {
-        h.join().ok()
+    for i in 0..handles.len() {
+        const h = handles[i as i64]
+        if !entities[h].active: continue
+        entities[h].position.x += entities[h].velocity.dx * dt
+        entities[h].position.y += entities[h].velocity.dy * dt
     }
 }
 
