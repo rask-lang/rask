@@ -1103,16 +1103,23 @@ impl<'a> FunctionBuilder<'a> {
 
                 // Copy concrete value to heap
                 if let MirOperand::Local(src_id) = value {
-                    if let Some((ss, sz)) = ctx.stack_slot_map.get(src_id) {
-                        // Aggregate: memcpy from stack slot
-                        let src_ptr = builder.ins().stack_addr(types::I64, *ss, 0);
+                    if ctx.stack_slot_map.contains_key(src_id) {
+                        // Aggregate: memcpy from the source pointer the var holds —
+                        // not the local's own slot, which may be uninitialized when
+                        // the var aliases another slot (e.g. `_1 = _0`).
+                        let src_var = ctx.var_map.get(src_id)
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                                "TraitBox: source variable not found".to_string()
+                            ))?;
+                        let src_ptr = builder.use_var(*src_var);
+                        let sz = *concrete_size;
                         let mut off = 0i32;
-                        while (off as u32) + 8 <= *sz {
+                        while (off as u32) + 8 <= sz {
                             let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
                             builder.ins().store(MemFlags::new(), word, data_ptr, off);
                             off += 8;
                         }
-                        if (off as u32) < *sz {
+                        if (off as u32) < sz {
                             let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
                             builder.ins().store(MemFlags::new(), word, data_ptr, off);
                         }
@@ -1193,7 +1200,16 @@ impl<'a> FunctionBuilder<'a> {
                         .ok_or_else(|| CodegenError::UnsupportedFeature(
                             format!("TraitCall destination for '{}' not found", method_name)
                         ))?;
-                    builder.def_var(*var, result);
+                    // Aggregate-returning methods (string, struct, ...) hand back a
+                    // pointer to data in the callee frame. Copy into the dst's
+                    // stack slot before that frame goes away.
+                    if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst_id) {
+                        Self::copy_aggregate(builder, result, *dst_ss, *dst_size);
+                        let addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
+                        builder.def_var(*var, addr);
+                    } else {
+                        builder.def_var(*var, result);
+                    }
                 }
             }
 
@@ -1775,14 +1791,14 @@ impl<'a> FunctionBuilder<'a> {
                             builder.ins().stack_addr(types::I64, ss, 0)
                         }
                         CallAdapt::DerefStringElement => {
-                            // void* pointing to 16-byte string in collection.
-                            // Copy to dst's stack slot.
+                            // void* pointing to aggregate data in collection.
+                            // Copy `slot_size` bytes into the dst's own slot.
                             let results = builder.inst_results(call_inst);
                             let ptr = if !results.is_empty() { results[0] } else {
                                 builder.ins().iconst(types::I64, 0)
                             };
-                            if let Some((ss, _)) = ctx.stack_slot_map.get(dst_id) {
-                                Self::copy_aggregate(builder, ptr, *ss, 16);
+                            if let Some((ss, slot_size)) = ctx.stack_slot_map.get(dst_id) {
+                                Self::copy_aggregate(builder, ptr, *ss, *slot_size);
                                 slot_already_written = true;
                             }
                             ptr
@@ -2853,6 +2869,31 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// MIR arg already lives behind a pointer — its i64 value is a pointer to
+    /// the data, not the data itself. Strings, structs, enums, tuples, options,
+    /// results, slices, and trait objects all qualify.
+    fn is_by_ptr_arg(mir_args: &[MirOperand], index: usize, locals: &[rask_mir::MirLocal]) -> bool {
+        match mir_args.get(index) {
+            Some(MirOperand::Local(id)) => locals
+                .iter()
+                .find(|l| l.id == *id)
+                .map(|l| matches!(l.ty,
+                    MirType::String
+                    | MirType::Struct(_)
+                    | MirType::Enum(_)
+                    | MirType::Tuple(_)
+                    | MirType::Option(_)
+                    | MirType::Result { .. }
+                    | MirType::Slice(_)
+                    | MirType::Union(_)
+                    | MirType::TraitObject { .. }
+                ))
+                .unwrap_or(false),
+            Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
+            _ => false,
+        }
+    }
+
     /// Check if destination local is a string type.
     fn is_string_dst(dst: Option<&LocalId>, ctx: &CodegenCtx) -> bool {
         dst.and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
@@ -2860,7 +2901,8 @@ impl<'a> FunctionBuilder<'a> {
             .unwrap_or(false)
     }
 
-    /// Wrap args[index] as a pointer unless it's already a string pointer.
+    /// Wrap args[index] as a pointer unless it's already a pointer to data
+    /// (string, struct, enum, tuple, option, result, etc.).
     fn wrap_arg_as_ptr(
         builder: &mut ClifFunctionBuilder,
         args: &mut Vec<Value>,
@@ -2868,7 +2910,7 @@ impl<'a> FunctionBuilder<'a> {
         index: usize,
         locals: &[rask_mir::MirLocal],
     ) {
-        if args.len() > index && !Self::is_string_arg(mir_args, index, locals) {
+        if args.len() > index && !Self::is_by_ptr_arg(mir_args, index, locals) {
             let val = args[index];
             args[index] = Self::value_to_ptr(builder, val);
         }
@@ -2902,9 +2944,26 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// Deref result, but return DerefStringElement for string destinations.
+    /// Deref result, but copy through dst's slot for aggregate destinations
+    /// (string, struct, tuple, ...). The collection holds the data inline; the
+    /// runtime returns a pointer into that storage which we must copy into the
+    /// caller's slot before the collection moves.
     fn deref_or_string(dst: Option<&LocalId>, ctx: &CodegenCtx) -> CallAdapt {
-        if Self::is_string_dst(dst, ctx) { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
+        let is_aggregate = dst
+            .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+            .map(|l| matches!(l.ty,
+                MirType::String
+                | MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Tuple(_)
+                | MirType::Option(_)
+                | MirType::Result { .. }
+                | MirType::Slice(_)
+                | MirType::Union(_)
+                | MirType::TraitObject { .. }
+            ))
+            .unwrap_or(false);
+        if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
     }
 
     /// Look up struct layout size for a MIR arg, returning (elem_size, is_struct).

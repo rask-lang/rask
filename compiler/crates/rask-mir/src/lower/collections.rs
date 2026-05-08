@@ -419,6 +419,10 @@ impl<'a> MirLowerer<'a> {
                 | "usize" | "isize" | "char" => Some(8),
                 _ => self.ctx.find_struct(name).map(|(_, l)| l.size as i64).or(Some(8)),
             },
+            Type::Named(id) => {
+                let name = self.ctx.type_names.get(id)?;
+                self.ctx.find_struct(name).map(|(_, l)| l.size as i64).or(Some(8))
+            }
             Type::Var(_) => None,
             _ => Some(8),
         }
