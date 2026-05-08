@@ -3772,11 +3772,16 @@ impl Parser {
                 None
             };
 
-            // Capture call-site mode keywords
+            // Capture call-site mode keywords. `own` is overloaded — it also
+            // prefixes an owned-closure literal (`own || body` / `own |x| body`).
+            // When the next token is `|` or `||`, treat `own` as part of the
+            // expression so parse_expr sees an owned closure, not ArgMode::Own.
             let mode = if self.check(&TokenKind::MutateKw) {
                 self.advance();
                 ArgMode::Mutate
-            } else if self.check(&TokenKind::Own) {
+            } else if self.check(&TokenKind::Own)
+                && !matches!(self.peek(1), TokenKind::Pipe | TokenKind::PipePipe)
+            {
                 self.advance();
                 ArgMode::Own
             } else {

@@ -869,7 +869,15 @@ impl<'a> OwnershipChecker<'a> {
                     for name in &captures {
                         if !resource_captures.contains(name) {
                             if self.bindings.contains_key(name) {
-                                self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                                // Copy types stay valid in the outer scope (VS1/VS2).
+                                let is_copy_capture = self
+                                    .binding_types
+                                    .get(name)
+                                    .map(|t| self.is_copy(t))
+                                    .unwrap_or(false);
+                                if !is_copy_capture {
+                                    self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                                }
                             }
                         }
                     }
