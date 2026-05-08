@@ -95,11 +95,10 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
     const content = try fs.read_file(path)
         else |e| GrepError.FileError(e)
 
-    const lines = content.lines()
     mut match_count: i64 = 0
     mut line_num = 0
 
-    for line in lines {
+    for line in content.lines() {
         line_num = line_num + 1
         const matches = line_matches(line, opts.pattern, opts.ignore_case)
         const show = if opts.invert_match: !matches else: matches
