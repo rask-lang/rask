@@ -123,8 +123,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Vec_pop", c_name: "rask_vec_pop",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
         StdlibEntry::simple("Vec_len", "rask_vec_len", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_as_ptr", "rask_vec_as_ptr", &[types::I64], Some(types::I64), false),

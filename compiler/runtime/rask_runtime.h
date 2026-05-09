@@ -85,7 +85,7 @@ int64_t  rask_vec_push(RaskVec *v, const void *elem);
 void    *rask_vec_get(const RaskVec *v, int64_t index);
 void    *rask_vec_get_unchecked(const RaskVec *v, int64_t index);
 void     rask_vec_set(RaskVec *v, int64_t index, const void *elem);
-int64_t  rask_vec_pop(RaskVec *v, void *out);
+void    *rask_vec_pop(RaskVec *v);
 int64_t  rask_vec_remove(RaskVec *v, int64_t index);
 void     rask_vec_clear(RaskVec *v);
 int64_t  rask_vec_reserve(RaskVec *v, int64_t additional);
