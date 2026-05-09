@@ -208,12 +208,39 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
     }
 }
 
-// Movement update across all entities. Sharing a `mutate Pool<Entity>`
-// across worker threads isn't sound (Pool needs exclusive mutable access),
-// so the parallel pipeline lives outside the example and we run movement
-// single-threaded here. For genuine parallelism, compute new positions on
-// worker threads from a read-only snapshot and ship results back over a
-// channel for the main thread to apply.
+// Movement update across all entities.
+//
+// The aspirational form (specs/concurrency/runtime.md:1807) shares the
+// pool across green tasks via a context clause:
+//
+//     func parallel_movement_system(dt: f32, num_threads: usize)
+//         using Pool<Entity>, Multitasking
+//     {
+//         const handles = pool.handles()
+//         const chunk_size = (handles.len() + num_threads - 1) / num_threads
+//         mut tasks = Vec.new()
+//         for chunk in handles.chunks(chunk_size) {
+//             const work = chunk.to_vec()
+//             tasks.push(spawn(own || {
+//                 for h in work {
+//                     if !pool[h].active: continue
+//                     pool[h].position.x += pool[h].velocity.dx * dt
+//                     pool[h].position.y += pool[h].velocity.dy * dt
+//                 }
+//             }))
+//         }
+//         for t in tasks { t.join().ok() }
+//     }
+//
+// This doesn't typecheck yet — three compiler gaps block it:
+//   #266 `using Pool<Entity>` parser rejects generic args
+//   #267 `spawn` builtin not registered in the type checker
+//   #268 `with mutex as v { ... }` doesn't unwrap to inner T
+// (Pool's internal Arc<Mutex<Vec>> threading depends on #268 too.)
+//
+// Until then, run movement single-threaded. The shape stays close to
+// the aspirational form so the only delta when the gaps land is moving
+// the body into a `spawn(own || { ... })` per chunk.
 func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_threads: usize) {
     const _ = num_threads
     mut handles = entities.handles()
