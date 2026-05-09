@@ -1107,7 +1107,40 @@ impl TypeChecker {
             ExprKind::WithAs { bindings, body } => {
                 self.push_scope();
                 for binding in bindings {
-                    let elem_ty = self.infer_expr(&binding.source);
+                    let raw_ty = self.infer_expr(&binding.source);
+                    let source_ty = self.ctx.apply(&raw_ty);
+                    // conc.sync/MX1: `with mutex as v { ... }` — bind `v` to the
+                    // inner T, not the Mutex wrapper. The lock is held for the
+                    // block's duration; releasing happens when `with` exits.
+                    // Same for Shared<T>: bare `with shared as v` is rejected by
+                    // R4 elsewhere; if it slips through here we still unwrap so
+                    // the body sees the inner type rather than the wrapper.
+                    let elem_ty = match &source_ty {
+                        Type::Generic { base, args } if !args.is_empty() => {
+                            let base_name = self.types.type_name(*base);
+                            if base_name == "Mutex" || base_name == "Shared" {
+                                if let GenericArg::Type(inner) = &args[0] {
+                                    (**inner).clone()
+                                } else {
+                                    source_ty.clone()
+                                }
+                            } else {
+                                source_ty.clone()
+                            }
+                        }
+                        Type::UnresolvedGeneric { name, args } if !args.is_empty() => {
+                            if name == "Mutex" || name == "Shared" {
+                                if let GenericArg::Type(inner) = &args[0] {
+                                    (**inner).clone()
+                                } else {
+                                    source_ty.clone()
+                                }
+                            } else {
+                                source_ty.clone()
+                            }
+                        }
+                        _ => source_ty.clone(),
+                    };
                     self.define_local(binding.name.clone(), elem_ty);
                 }
                 for stmt in body {

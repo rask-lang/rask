@@ -4021,7 +4021,30 @@ impl Parser {
 
         let mut contexts: Vec<(String, Vec<CallArg>)> = Vec::new();
         loop {
-            let name = self.expect_ident()?;
+            let mut name = self.expect_ident()?;
+            // Generic args on context types: `using Pool<Entity>, Multitasking { ... }`
+            // (mem.context-clauses/CC4). Mirrors the loop in parse_base_type.
+            if self.match_token(&TokenKind::Lt) {
+                name.push('<');
+                loop {
+                    if let TokenKind::Int(n, _) = self.current_kind().clone() {
+                        self.advance();
+                        name.push_str(&n.to_string());
+                    } else {
+                        name.push_str(&self.parse_type_name()?);
+                    }
+                    if self.pending_gt {
+                        break;
+                    }
+                    if self.match_token(&TokenKind::Comma) {
+                        name.push_str(", ");
+                    } else {
+                        break;
+                    }
+                }
+                self.expect_gt_in_generic()?;
+                name.push('>');
+            }
             let args = if self.match_token(&TokenKind::LParen) {
                 let args = self.parse_args()?;
                 self.expect(&TokenKind::RParen)?;
