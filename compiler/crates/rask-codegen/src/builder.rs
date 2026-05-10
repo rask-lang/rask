@@ -650,13 +650,27 @@ impl<'a> FunctionBuilder<'a> {
                     _ => false,
                 };
 
-                // Option(T) assigned from a scalar: wrap as Some in the stack slot.
-                // Needed for `const x: i32? = 42` — without this, the scalar 42
-                // overwrites the stack-address held in x's var, causing a SIGSEGV
-                // when code later loads the tag by dereferencing that "address".
+                // Option(T) assigned from a non-Option source: wrap as Some
+                // in the stack slot. Scalars need this so `const x: i32? = 42`
+                // doesn't overwrite x's slot-address with the scalar 42 (later
+                // tag loads would dereference 42 as a pointer and SIGSEGV).
+                // Aggregates (Struct/Enum/Tuple/String) need it so the bytes
+                // land at PAYLOAD_OFFSET of the Option slot, not just the
+                // pointer in the first 8 bytes — otherwise field reads
+                // through the Option's payload return garbage.
                 let wrap_as_some = matches!(&dst_local.ty, MirType::Option(_))
                     && !needs_copy
                     && ctx.stack_slot_map.contains_key(dst);
+                // If the source is an aggregate and dst is Option<aggregate>,
+                // we need full-aggregate wrap (tag + memcpy payload), not the
+                // scalar wrap.
+                let wrap_as_some_aggregate = wrap_as_some
+                    && matches!(rvalue, MirRValue::Use(MirOperand::Local(_)))
+                    && if let MirType::Option(inner) = &dst_local.ty {
+                        matches!(inner.as_ref(),
+                            MirType::Struct(_) | MirType::Enum(_) |
+                            MirType::Tuple(_) | MirType::String)
+                    } else { false };
 
                 if needs_copy {
                     if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst) {
@@ -683,6 +697,39 @@ impl<'a> FunctionBuilder<'a> {
                         let var = ctx.var_map.get(dst)
                             .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
                         builder.def_var(*var, val);
+                    }
+                } else if wrap_as_some_aggregate {
+                    // tag=Some at offset 0, then memcpy payload bytes at PAYLOAD_OFFSET.
+                    let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
+                    let inner_size = if let MirType::Option(inner) = &dst_local.ty {
+                        Self::resolve_type_alloc_size(
+                            inner.as_ref(), ctx.struct_layouts, ctx.enum_layouts,
+                        ).unwrap_or(inner.size())
+                    } else { 0 };
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder.ins().stack_store(zero, *dst_ss, crate::layouts::TAG_OFFSET);
+                    // Copy `inner_size` bytes from `val` (pointer to source aggregate)
+                    // to dst_slot + PAYLOAD_OFFSET.
+                    let mut offset = 0i32;
+                    let payload_base = crate::layouts::PAYLOAD_OFFSET;
+                    while (offset as u32) + 8 <= inner_size {
+                        let word = builder.ins().load(types::I64, MemFlags::new(), val, offset);
+                        builder.ins().stack_store(word, *dst_ss, payload_base + offset);
+                        offset += 8;
+                    }
+                    if (inner_size as i32 - offset) >= 4 {
+                        let word = builder.ins().load(types::I32, MemFlags::new(), val, offset);
+                        builder.ins().stack_store(word, *dst_ss, payload_base + offset);
+                        offset += 4;
+                    }
+                    if (inner_size as i32 - offset) >= 2 {
+                        let word = builder.ins().load(types::I16, MemFlags::new(), val, offset);
+                        builder.ins().stack_store(word, *dst_ss, payload_base + offset);
+                        offset += 2;
+                    }
+                    if (inner_size as i32 - offset) >= 1 {
+                        let word = builder.ins().load(types::I8, MemFlags::new(), val, offset);
+                        builder.ins().stack_store(word, *dst_ss, payload_base + offset);
                     }
                 } else if wrap_as_some {
                     let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();

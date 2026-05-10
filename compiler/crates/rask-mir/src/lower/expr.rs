@@ -2682,18 +2682,65 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Optional chaining (a?.b)
-            ExprKind::OptionalField { object, field: _ } => {
+            ExprKind::OptionalField { object, field } => {
+                // `obj?.field` lowers to:
+                //   if obj is Some(t): Some(t.field)
+                //   if obj is None:    None
+                // The result type is Option<typeof(t.field)>, NOT the payload
+                // type. Earlier lowering ignored the field name and just
+                // unwrapped the Option, which collapsed the chain to garbage
+                // for any non-leaf access (#271).
                 let is_niche = self.is_niche_option_expr(object);
                 let (obj, _) = self.lower_expr(object)?;
                 let tag_local = self.emit_option_tag(&obj, is_niche);
 
+                // Resolve the payload struct's layout to find the field's
+                // index, type, and offset. Required for the Some-branch
+                // load and to size the Option<field_ty> result.
+                // Peel off any extra Option layers — the type checker's flatten
+                // logic only fires when constraints have already resolved at
+                // OptionalField time, so chained `?.` can store an
+                // `Option<Option<T>>` raw type for the inner expression. We
+                // want the bare T to look up the field on.
+                let mut payload_ty = self.extract_payload_type(object)
+                    .unwrap_or(MirType::I64);
+                while let MirType::Option(inner) = payload_ty {
+                    payload_ty = *inner;
+                }
+                let (field_index, field_ty, byte_offset, field_size) =
+                    if let MirType::Struct(StructLayoutId { id, .. }) = &payload_ty {
+                        if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
+                            if let Some((idx, fl)) = layout.fields.iter().enumerate()
+                                .find(|(_, f)| f.name == *field)
+                            {
+                                let ft = self.ctx.resolve_type_str(&format!("{}", fl.ty));
+                                (idx as u32, ft, Some(fl.offset), Some(fl.size))
+                            } else {
+                                (0, payload_ty.clone(), None, None)
+                            }
+                        } else {
+                            (0, payload_ty.clone(), None, None)
+                        }
+                    } else {
+                        // Non-struct payload (rare — e.g. tuple). Fall back to
+                        // the old "just unwrap" shape so we don't regress.
+                        (0, payload_ty.clone(), None, None)
+                    };
+
+                // Flatten: if the field is already T?, the result stays T?
+                // (matches check_expr.rs behavior). In that case the Some
+                // branch just copies the field-Option through; no extra wrap.
+                let field_is_option = matches!(field_ty, MirType::Option(_));
+                let result_ty = if field_is_option {
+                    field_ty.clone()
+                } else {
+                    MirType::Option(Box::new(field_ty.clone()))
+                };
+                let result_local = self.builder.alloc_temp(result_ty.clone());
+
                 let some_block = self.builder.create_block();
                 let none_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
-                // Infer field type from the optional value
-                let result_ty = self.extract_payload_type(object)
-                    .unwrap_or(MirType::I64);
-                let result_local = self.builder.alloc_temp(result_ty.clone());
 
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: MirOperand::Local(tag_local),
@@ -2701,22 +2748,78 @@ impl<'a> MirLowerer<'a> {
                     else_block: some_block,
                 }));
 
+                // Some branch: read field, then either copy through (flattened)
+                // or wrap as Some.
                 self.builder.switch_to_block(some_block);
-                let rvalue = if is_niche {
-                    MirRValue::Use(obj)
-                } else {
-                    MirRValue::Field { base: obj, field_index: 0, byte_offset: None, field_size: None }
-                };
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: result_local,
-                    rvalue,
-                }));
+                if byte_offset.is_some() {
+                    // Read payload struct, then field from struct layout.
+                    let payload_local = self.builder.alloc_temp(payload_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: payload_local,
+                        rvalue: MirRValue::Field {
+                            base: obj.clone(),
+                            field_index: 0,
+                            byte_offset: None,
+                            field_size: None,
+                        },
+                    }));
+                    let field_local = self.builder.alloc_temp(field_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: field_local,
+                        rvalue: MirRValue::Field {
+                            base: MirOperand::Local(payload_local),
+                            field_index,
+                            byte_offset,
+                            field_size,
+                        },
+                    }));
+                    if field_is_option {
+                        // result_local is the same Option<X> shape — just copy
+                        // the bytes through. Codegen Assign(Option, Option)
+                        // hits the src_option_ty needs_copy branch.
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: result_local,
+                            rvalue: MirRValue::Use(MirOperand::Local(field_local)),
+                        }));
+                    } else {
+                        // Wrap as Some: tag=0, payload at offset 8.
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: result_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(0)),
+                            store_size: Some(8),
+                        }));
+                        let value_size = field_size.unwrap_or(8);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: result_local,
+                            offset: 8,
+                            value: MirOperand::Local(field_local),
+                            store_size: Some(value_size),
+                        }));
+                    }
+                } else if is_niche {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: result_local,
+                        offset: 0,
+                        value: MirOperand::Constant(MirConst::Int(0)),
+                        store_size: Some(8),
+                    }));
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: result_local,
+                        offset: 8,
+                        value: obj.clone(),
+                        store_size: Some(field_ty.size()),
+                    }));
+                }
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
+                // None branch: write None-tag (1) at offset 0.
                 self.builder.switch_to_block(none_block);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: result_local,
+                    offset: 0,
+                    value: MirOperand::Constant(MirConst::Int(1)),
+                    store_size: Some(8),
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
