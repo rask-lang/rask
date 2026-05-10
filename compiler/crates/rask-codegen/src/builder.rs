@@ -1414,6 +1414,37 @@ impl<'a> FunctionBuilder<'a> {
                         builder.def_var(*var, zero);
                     }
                 }
+            } else if func.name == "panic" || func.name == "todo" || func.name == "unreachable" {
+                // User-level diverging builtin: emit rask_panic_at with the
+                // message string and trap. todo/unreachable map to fixed
+                // messages when called without args.
+                let msg_ptr = if let Some(arg) = args.first() {
+                    Self::lower_operand_as_cstr(builder, arg, ctx)?
+                } else {
+                    let label = match func.name.as_str() {
+                        "todo" => "not yet implemented",
+                        "unreachable" => "entered unreachable code",
+                        _ => "panic",
+                    };
+                    ctx.string_globals.get(label)
+                        .map(|gv| builder.ins().global_value(types::I64, *gv))
+                        .unwrap_or_else(|| builder.ins().iconst(types::I64, 0))
+                };
+                if let Some(panic_ref) = ctx.func_refs.get("panic_at") {
+                    let file_ptr = ctx.source_file.and_then(|f| ctx.string_globals.get(f))
+                        .map(|gv| builder.ins().global_value(types::I64, *gv))
+                        .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                    builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, msg_ptr]);
+                }
+                builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                // After a trap, codegen needs to enter an unreachable block
+                // so subsequent Cranelift instructions are still well-formed.
+                let unreach_block = builder.create_block();
+                builder.switch_to_block(unreach_block);
+                builder.seal_block(unreach_block);
+                return Ok(());
             } else if func.name == "assert_fail" {
                 // MIR already handled branching; this is the fail path.
                 // If a message arg is provided, pass it as raw C string pointer.
