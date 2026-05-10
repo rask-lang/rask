@@ -8,7 +8,7 @@ use crate::{
     MirTerminatorKind, MirType,
     types::RESULT_PAYLOAD_OFFSET,
 };
-use rask_ast::expr::{Expr, ExprKind, TryElse};
+use rask_ast::expr::{CallArg, Expr, ExprKind, TryElse};
 
 impl<'a> MirLowerer<'a> {
     /// Try expression lowering (spec L3).
@@ -534,5 +534,418 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(out), out_ty))
+    }
+
+    /// Inline lowering for Result/Option methods that have stdlib stubs but
+    /// no runtime implementation (`.map`, `.ok`, `.filter`).
+    ///
+    /// Returns `Ok(Some(operand))` when the call was inlined; `Ok(None)`
+    /// when the receiver isn't a Result/Option or the method isn't one we
+    /// inline. Falling through lets the normal method-dispatch path handle
+    /// other calls.
+    pub(super) fn try_lower_result_option_method(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        method: &str,
+        args: &[CallArg],
+    ) -> Result<Option<super::TypedOperand>, LoweringError> {
+        let raw_ty = match self.ctx.lookup_raw_type(object.id) {
+            Some(t) => t.clone(),
+            None => return Ok(None),
+        };
+        let is_result = matches!(&raw_ty, rask_types::Type::Result { err, .. }
+            if **err != rask_types::Type::None && !matches!(**err, rask_types::Type::Var(_)));
+        let is_option = matches!(&raw_ty, rask_types::Type::Result { err, .. } if **err == rask_types::Type::None);
+        if !is_result && !is_option {
+            return Ok(None);
+        }
+
+        // Skip when the type checker couldn't fully resolve the err side
+        // (unresolved type variables) — MIR lowering may end up with a
+        // non-Result MirType and the inline lowering will fail to match.
+        let result = match (is_result, method, args.len()) {
+            (true, "map", 1) => self.lower_result_map(expr, object, &args[0].expr).map(Some),
+            (true, "ok", 0) => self.lower_result_ok(expr, object).map(Some),
+            (false, "map", 1) => self.lower_option_map(expr, object, &args[0].expr).map(Some),
+            (false, "filter", 1) => self.lower_option_filter(expr, object, &args[0].expr).map(Some),
+            _ => Ok(None),
+        };
+        // If the inline lowering fails because the receiver's MIR type
+        // doesn't actually match Result/Option (type checker unresolved),
+        // fall through to the regular dispatch path instead of erroring.
+        match result {
+            Err(LoweringError::InvalidConstruct(msg)) if msg.contains("receiver must be") => Ok(None),
+            other => other,
+        }
+    }
+
+    /// Inline `result.map(closure)` for Result<T, E>:
+    ///   if Ok(t): result = Ok(closure(t))
+    ///   if Err(e): result = Err(e)  (copy through)
+    fn lower_result_map(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        closure: &Expr,
+    ) -> Result<super::TypedOperand, LoweringError> {
+        let (obj_op, obj_ty) = self.lower_expr(object)?;
+        let (closure_op, _) = self.lower_expr(closure)?;
+        let closure_local = match closure_op {
+            MirOperand::Local(id) => id,
+            _ => return Err(LoweringError::InvalidConstruct(
+                "Result.map closure must be a local".to_string(),
+            )),
+        };
+
+        // Result types: in T, err E; out U, err E.
+        let (in_ok_ty, err_ty) = match &obj_ty {
+            MirType::Result { ok, err } => ((**ok).clone(), (**err).clone()),
+            _ => return Err(LoweringError::InvalidConstruct(
+                "Result.map receiver must be Result".to_string(),
+            )),
+        };
+        let result_ty = self.lookup_expr_type(expr)
+            .unwrap_or(MirType::Result { ok: Box::new(MirType::I64), err: Box::new(err_ty.clone()) });
+        let out_ok_ty = match &result_ty {
+            MirType::Result { ok, .. } => (**ok).clone(),
+            _ => MirType::I64,
+        };
+
+        let result_local = self.builder.alloc_temp(result_ty.clone());
+
+        let tag_local = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag_local,
+            rvalue: MirRValue::EnumTag { value: obj_op.clone() },
+        }));
+
+        let ok_block = self.builder.create_block();
+        let err_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(tag_local),
+            then_block: err_block,
+            else_block: ok_block,
+        }));
+
+        // Ok branch: read T payload, call closure, store new Ok.
+        self.builder.switch_to_block(ok_block);
+        let payload_local = self.builder.alloc_temp(in_ok_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: payload_local,
+            rvalue: MirRValue::Field {
+                base: obj_op.clone(),
+                field_index: 0,
+                byte_offset: None,
+                field_size: None,
+            },
+        }));
+        let mapped_local = self.builder.alloc_temp(out_ok_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+            dst: Some(mapped_local),
+            closure: closure_local,
+            args: vec![MirOperand::Local(payload_local)],
+        }));
+        // tag = 0, zero origin, payload = mapped value.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 0,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: Some(8),
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 8,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: Some(8),
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 16,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: Some(8),
+        }));
+        let payload_size = out_ok_ty.size().max(8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local,
+            offset: RESULT_PAYLOAD_OFFSET,
+            value: MirOperand::Local(mapped_local),
+            store_size: Some(payload_size),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        // Err branch: copy whole source Result to result_local (tag=1, origin, err
+        // payload are preserved). Same MIR shape works because both Result types
+        // share the err side.
+        self.builder.switch_to_block(err_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(obj_op),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// Inline `result.ok()` for Result<T, E>: Result<T, E> → T?
+    ///   if Ok(t): Some(t); if Err: None
+    fn lower_result_ok(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+    ) -> Result<super::TypedOperand, LoweringError> {
+        let (obj_op, obj_ty) = self.lower_expr(object)?;
+        let in_ok_ty = match &obj_ty {
+            MirType::Result { ok, .. } => (**ok).clone(),
+            _ => return Err(LoweringError::InvalidConstruct(
+                "Result.ok receiver must be Result".to_string(),
+            )),
+        };
+        let result_ty = self.lookup_expr_type(expr)
+            .unwrap_or(MirType::Option(Box::new(in_ok_ty.clone())));
+        let result_local = self.builder.alloc_temp(result_ty.clone());
+
+        let tag_local = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag_local,
+            rvalue: MirRValue::EnumTag { value: obj_op.clone() },
+        }));
+
+        let ok_block = self.builder.create_block();
+        let err_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(tag_local),
+            then_block: err_block,
+            else_block: ok_block,
+        }));
+
+        // Ok branch: result = Some(payload)
+        self.builder.switch_to_block(ok_block);
+        let payload_local = self.builder.alloc_temp(in_ok_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: payload_local,
+            rvalue: MirRValue::Field {
+                base: obj_op.clone(),
+                field_index: 0,
+                byte_offset: None,
+                field_size: None,
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 0,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: Some(8),
+        }));
+        let payload_size = in_ok_ty.size().max(8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 8,
+            value: MirOperand::Local(payload_local),
+            store_size: Some(payload_size),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        // Err branch: result = None (tag=1)
+        self.builder.switch_to_block(err_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: Some(8),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// Inline `option.map(closure)` for Option<T>: T? → U?
+    fn lower_option_map(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        closure: &Expr,
+    ) -> Result<super::TypedOperand, LoweringError> {
+        let (obj_op, obj_ty) = self.lower_expr(object)?;
+        let (closure_op, _) = self.lower_expr(closure)?;
+        let closure_local = match closure_op {
+            MirOperand::Local(id) => id,
+            _ => return Err(LoweringError::InvalidConstruct(
+                "Option.map closure must be a local".to_string(),
+            )),
+        };
+        let in_ty = match &obj_ty {
+            MirType::Option(inner) => (**inner).clone(),
+            MirType::Result { ok, err } if **err == MirType::Void => (**ok).clone(),
+            _ => return Err(LoweringError::InvalidConstruct(
+                "Option.map receiver must be Option".to_string(),
+            )),
+        };
+        let result_ty = self.lookup_expr_type(expr)
+            .unwrap_or(MirType::Option(Box::new(MirType::I64)));
+        let out_ty = match &result_ty {
+            MirType::Option(inner) => (**inner).clone(),
+            _ => MirType::I64,
+        };
+
+        let result_local = self.builder.alloc_temp(result_ty.clone());
+
+        let tag_local = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag_local,
+            rvalue: MirRValue::EnumTag { value: obj_op.clone() },
+        }));
+
+        let some_block = self.builder.create_block();
+        let none_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(tag_local),
+            then_block: none_block,
+            else_block: some_block,
+        }));
+
+        // Some branch: closure(payload), result = Some(mapped)
+        self.builder.switch_to_block(some_block);
+        let payload_local = self.builder.alloc_temp(in_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: payload_local,
+            rvalue: MirRValue::Field {
+                base: obj_op.clone(),
+                field_index: 0,
+                byte_offset: None,
+                field_size: None,
+            },
+        }));
+        let mapped_local = self.builder.alloc_temp(out_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+            dst: Some(mapped_local),
+            closure: closure_local,
+            args: vec![MirOperand::Local(payload_local)],
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 0,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: Some(8),
+        }));
+        let payload_size = out_ty.size().max(8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 8,
+            value: MirOperand::Local(mapped_local),
+            store_size: Some(payload_size),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        // None: result = None
+        self.builder.switch_to_block(none_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: Some(8),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// Inline `option.filter(closure)` for Option<T>: T? → T?
+    ///   if Some(t) and closure(t): Some(t); else: None
+    fn lower_option_filter(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        closure: &Expr,
+    ) -> Result<super::TypedOperand, LoweringError> {
+        let (obj_op, obj_ty) = self.lower_expr(object)?;
+        let (closure_op, _) = self.lower_expr(closure)?;
+        let closure_local = match closure_op {
+            MirOperand::Local(id) => id,
+            _ => return Err(LoweringError::InvalidConstruct(
+                "Option.filter closure must be a local".to_string(),
+            )),
+        };
+        let in_ty = match &obj_ty {
+            MirType::Option(inner) => (**inner).clone(),
+            MirType::Result { ok, err } if **err == MirType::Void => (**ok).clone(),
+            _ => return Err(LoweringError::InvalidConstruct(
+                "Option.filter receiver must be Option".to_string(),
+            )),
+        };
+        let result_ty = self.lookup_expr_type(expr).unwrap_or(obj_ty.clone());
+
+        let result_local = self.builder.alloc_temp(result_ty.clone());
+
+        let tag_local = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag_local,
+            rvalue: MirRValue::EnumTag { value: obj_op.clone() },
+        }));
+
+        let some_block = self.builder.create_block();
+        let none_block = self.builder.create_block();
+        let keep_block = self.builder.create_block();
+        let drop_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(tag_local),
+            then_block: none_block,
+            else_block: some_block,
+        }));
+
+        // Some branch: closure(payload) → if true keep, else drop
+        self.builder.switch_to_block(some_block);
+        let payload_local = self.builder.alloc_temp(in_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: payload_local,
+            rvalue: MirRValue::Field {
+                base: obj_op.clone(),
+                field_index: 0,
+                byte_offset: None,
+                field_size: None,
+            },
+        }));
+        let keep_local = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+            dst: Some(keep_local),
+            closure: closure_local,
+            args: vec![MirOperand::Local(payload_local)],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(keep_local),
+            then_block: keep_block,
+            else_block: drop_block,
+        }));
+
+        // keep: result = source (copy)
+        self.builder.switch_to_block(keep_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(obj_op.clone()),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        // drop: result = None
+        self.builder.switch_to_block(drop_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: Some(8),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        // None: result = None
+        self.builder.switch_to_block(none_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local, offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: Some(8),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), result_ty))
     }
 }

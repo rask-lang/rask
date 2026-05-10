@@ -419,6 +419,16 @@ impl<'a> MirLowerer<'a> {
                 | "usize" | "isize" | "char" => Some(8),
                 _ => self.ctx.find_struct(name).map(|(_, l)| l.size as i64).or(Some(8)),
             },
+            Type::Named(id) => {
+                let name = self.ctx.type_names.get(id)?;
+                self.ctx.find_struct(name).map(|(_, l)| l.size as i64).or(Some(8))
+            }
+            // `T?` (Option) lays out as [tag:8][payload:8+]. Pick max(8) for the
+            // payload so scalar inners still get a full word.
+            Type::Result { ok, err } if **err == Type::None => {
+                let inner = self.slot_size_for_type(ok)?;
+                Some(8 + inner.max(8))
+            }
             Type::Var(_) => None,
             _ => Some(8),
         }

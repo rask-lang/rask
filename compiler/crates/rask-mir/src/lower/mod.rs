@@ -493,6 +493,10 @@ pub(crate) struct LocalMeta {
     /// C1/C2: resource_id local for consumption cancellation.
     /// Set when an ensure registers this variable as its receiver.
     pub resource_id: Option<LocalId>,
+    /// Function parameter declared `mutate`. Whole-value reassignment must
+    /// flow back through the param's pointer (mem.borrowing/M-rules), so
+    /// `p = expr` lowers to a Store(*p, ...) instead of Assign(p, ...).
+    pub is_mutate_param: bool,
 }
 
 pub struct MirLowerer<'a> {
@@ -803,6 +807,9 @@ impl<'a> MirLowerer<'a> {
                 let prefix = lowerer.mir_type_name(&param_ty)
                     .or_else(|| type_prefix_from_str(param_ty_str));
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
+                if param.is_mutate {
+                    meta.is_mutate_param = true;
+                }
                 if let Some(p) = prefix {
                     meta.type_prefix = Some(p);
                 }
@@ -880,17 +887,50 @@ impl<'a> MirLowerer<'a> {
         // Implicit return for functions that don't explicitly return.
         // Void functions get `return`, non-void get Unreachable (caller
         // must ensure all paths return explicitly).
-        // Result { ok: Void, .. } also gets an implicit return — codegen
-        // wraps the void value as Ok in the Result slot.
+        // Result { ok: Void, .. } also gets an implicit return — emit a
+        // wrapped Ok-tagged temp so callers (including the inliner, which
+        // copies the return value into the call-site dst) see a properly
+        // initialized Result instead of stale stack bytes.
         if lowerer.builder.current_block_unterminated() {
-            let implicit_ok = matches!(ret_ty, MirType::Void)
-                || matches!(&ret_ty, MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void));
+            let result_void_ok = matches!(&ret_ty,
+                MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void));
+            let implicit_ok = matches!(ret_ty, MirType::Void) || result_void_ok;
             if implicit_ok {
+                // For Result<Void, E>, build a temp holding Ok(void) so the
+                // caller's slot gets the right tag bytes even when the call
+                // is inlined.
+                let return_value = if result_void_ok {
+                    let wrap_local = lowerer.builder.alloc_temp(ret_ty.clone());
+                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: wrap_local,
+                        offset: 0,
+                        value: MirOperand::Constant(MirConst::Int(0)),
+                        store_size: Some(8),
+                    }));
+                    // Zero the origin-file and origin-line fields so they
+                    // don't carry stale bytes when the caller copies the
+                    // whole slot.
+                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: wrap_local,
+                        offset: 8,
+                        value: MirOperand::Constant(MirConst::Int(0)),
+                        store_size: Some(8),
+                    }));
+                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: wrap_local,
+                        offset: 16,
+                        value: MirOperand::Constant(MirConst::Int(0)),
+                        store_size: Some(8),
+                    }));
+                    Some(MirOperand::Local(wrap_local))
+                } else {
+                    None
+                };
                 if lowerer.ensure_stack.is_empty() {
-                    lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+                    lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: return_value }));
                 } else {
                     lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
-                        value: None,
+                        value: return_value,
                         cleanup_chain: lowerer.cleanup_chain(),
                     }));
                 }
@@ -1074,15 +1114,39 @@ impl<'a> MirLowerer<'a> {
         match pattern {
             Pattern::Ident(name) => {
                 if is_variant_name(name) {
-                    // If the name matches the error enum type of a Result, tag = 1 (Err).
-                    if let MirType::Result { err, .. } = val_ty {
-                        if let MirType::Enum(eid) = err.as_ref() {
-                            let idx = eid.id as usize;
-                            if idx < self.ctx.enum_layouts.len()
-                                && self.ctx.enum_layouts[idx].name == name.as_str()
-                            {
+                    // If the name matches the err side of a Result, tag = 1.
+                    // Handles enum errors, struct errors, and union errors
+                    // (e.g. `result is ParseError` where err side is
+                    // `ParseError | DivError`). Without these branches a
+                    // `result is StructError` check compared against tag 0
+                    // and inverted the entire control flow [#259 family].
+                    let name_matches_type = |ty: &MirType, n: &str| -> bool {
+                        match ty {
+                            MirType::Enum(eid) => {
+                                let idx = eid.id as usize;
+                                idx < self.ctx.enum_layouts.len()
+                                    && self.ctx.enum_layouts[idx].name == n
+                            }
+                            MirType::Struct(sid) => {
+                                let idx = sid.id as usize;
+                                idx < self.ctx.struct_layouts.len()
+                                    && self.ctx.struct_layouts[idx].name == n
+                            }
+                            _ => false,
+                        }
+                    };
+                    if let MirType::Result { ok, err } = val_ty {
+                        if name_matches_type(err.as_ref(), name) {
+                            return 1;
+                        }
+                        if let MirType::Union(variants) = err.as_ref() {
+                            if variants.iter().any(|v| name_matches_type(v, name)) {
                                 return 1;
                             }
+                        }
+                        // Symmetric: name matches the ok side → tag 0 (Ok).
+                        if name_matches_type(ok.as_ref(), name) {
+                            return 0;
                         }
                     }
                     return self.variant_tag(name);

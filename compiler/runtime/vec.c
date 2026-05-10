@@ -107,15 +107,17 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     memcpy(v->data + index * v->elem_size, elem, (size_t)v->elem_size);
 }
 
-int64_t rask_vec_pop(RaskVec *v, void *out) {
+// Pop returns NULL when empty (Option encoding via DerefOption codegen
+// adapter — same convention as rask_map_get). On success, returns a
+// pointer into the buffer for the just-vacated slot; the codegen reads
+// out the bytes into the destination Option payload before any
+// subsequent vec mutation could clobber it.
+void *rask_vec_pop(RaskVec *v) {
     if (!v || v->len == 0) {
-        rask_panic("pop from empty Vec");
+        return NULL;
     }
     v->len--;
-    if (out) {
-        memcpy(out, v->data + v->len * v->elem_size, (size_t)v->elem_size);
-    }
-    return 0;
+    return v->data + v->len * v->elem_size;
 }
 
 int64_t rask_vec_remove(RaskVec *v, int64_t index) {

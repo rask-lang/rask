@@ -55,7 +55,7 @@ extend Document {
         mut doc = Document.new()
         for line in file.lines() {
             const text = try line
-            const h = doc.lines.insert(Line { text: text })
+            const h = try doc.lines.insert(Line { text: text })
             doc.line_order.push(h)
         }
         return doc
@@ -73,9 +73,10 @@ extend Document {
 
     // Insert a new line after the given index (-1 for beginning)
     func insert_line(self, after: i32, text: string) -> void or Error {
-        const h = self.lines.insert(Line { text: text })
-        const raw_pos = after + 1
-        const insert_pos = if raw_pos > self.line_order.len(): self.line_order.len() else: raw_pos
+        const h = try self.lines.insert(Line { text: text })
+        const raw_pos = (after + 1) as i64
+        const cap = self.line_order.len() as i64
+        const insert_pos = if raw_pos > cap: cap else: raw_pos
         self.line_order.insert(insert_pos, h)
 
         // Record for undo
@@ -137,12 +138,12 @@ extend Document {
     func apply_command_silent(self, cmd: EditCommand) -> void or Error {
         match cmd {
             InsertLine(after, text) => {
-                const h = self.lines.insert(Line { text: text })
-                self.line_order.insert(after + 1, h)
+                const h = try self.lines.insert(Line { text: text })
+                self.line_order.insert((after + 1) as i64, h)
             }
             DeleteLine(at, _) => {
                 const h = self.line_order.remove(at as i64)
-                self.lines.remove(h).ok()
+                self.lines.remove(h)
             }
             ModifyLine(at, _, new_text) => {
                 const h = self.line_order[at as usize]
@@ -194,28 +195,28 @@ func parse_command(input: string) -> EditorCommand? {
     }
     if parts.is_empty(): return none
 
-    return match parts[0] {
+    match parts[0] {
         "i" | "insert" if parts.len() >= 3 => {
             const after = try parts[1].parse<i32>().ok()
             const text = parts[2..].join(" ")
-            EditorCommand.Insert(after: after, text: text)
+            return EditorCommand.Insert(after: after, text: text)
         }
         "d" | "delete" if parts.len() >= 2 => {
             const line = try parts[1].parse<i32>().ok()
-            EditorCommand.Delete(line: line)
+            return EditorCommand.Delete(line: line)
         }
         "e" | "edit" if parts.len() >= 3 => {
             const line = try parts[1].parse<i32>().ok()
             const text = parts[2..].join(" ")
-            EditorCommand.Edit(line: line, text: text)
+            return EditorCommand.Edit(line: line, text: text)
         }
-        "u" | "undo" => EditorCommand.Undo,
-        "r" | "redo" => EditorCommand.Redo,
-        "w" | "save" if parts.len() >= 2 => EditorCommand.Save(path: parts[1]),
-        "p" | "print" => EditorCommand.Print,
-        "q" | "quit" => EditorCommand.Quit,
-        "h" | "help" => EditorCommand.Help,
-        _ => none,
+        "u" | "undo" => return EditorCommand.Undo,
+        "r" | "redo" => return EditorCommand.Redo,
+        "w" | "save" if parts.len() >= 2 => return EditorCommand.Save(path: parts[1]),
+        "p" | "print" => return EditorCommand.Print,
+        "q" | "quit" => return EditorCommand.Quit,
+        "h" | "help" => return EditorCommand.Help,
+        _ => return none,
     }
 }
 

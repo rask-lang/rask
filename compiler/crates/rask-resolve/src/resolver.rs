@@ -158,6 +158,35 @@ impl Resolver {
         // in the global scope — they require explicit `import` statements.
         // See resolve_import() for how they enter scope.
 
+        // Top-level stdlib stub functions (e.g. async.rk's `spawn`,
+        // `cancelled`, `join_all`, `select_first`) are auto-registered.
+        // The pipeline sometimes runs the resolver without stdlib_decls
+        // (single-file `rask check`), and these names are spec-required to
+        // be in scope under their context (`spawn` under `using Multitasking`,
+        // for instance — checked separately via context-clause analysis).
+        // Skip names already claimed by hardcoded builtins above so println,
+        // print, format, etc. keep their BuiltinFunction symbol kind.
+        let stub_reg = rask_stdlib::StubRegistry::load();
+        for f in stub_reg.functions() {
+            if self.scopes.lookup(&f.name).is_some() {
+                continue;
+            }
+            let ret_ty = if f.ret_ty.is_empty() { None } else { Some(f.ret_ty.clone()) };
+            let sym_id = self.symbols.insert(
+                f.name.clone(),
+                SymbolKind::Function {
+                    params: vec![],
+                    ret_ty,
+                    context_clauses: vec![],
+                    is_unsafe: false,
+                },
+                None,
+                Span::new(0, 0),
+                true,
+            );
+            let _ = self.scopes.define(f.name.clone(), sym_id, Span::new(0, 0));
+        }
+
         // Register null constant for unsafe pointer comparisons
         let null_sym = self.symbols.insert(
             "null".to_string(),

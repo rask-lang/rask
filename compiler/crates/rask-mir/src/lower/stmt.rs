@@ -80,8 +80,37 @@ impl<'a> MirLowerer<'a> {
 
             StmtKind::Return(opt_expr) => {
                 let value = if let Some(e) = opt_expr {
-                    let (op, _) = self.lower_expr(e)?;
-                    Some(op)
+                    let (op, op_ty) = self.lower_expr(e)?;
+                    // Auto-wrap a non-Option value into Some(...) when the
+                    // function returns Option<T>. The user-level shorthand
+                    // `func -> User? { return User { ... } }` relies on this;
+                    // without an explicit wrap, codegen returns just the T
+                    // pointer and the caller's Option slot ends up with
+                    // garbage in the tag/payload positions (#274).
+                    let ret_ty = self.builder.ret_ty().clone();
+                    let needs_wrap = matches!(&ret_ty, MirType::Option(inner)
+                        if !matches!(op_ty, MirType::Option(_)) && **inner == op_ty);
+                    let final_op = if needs_wrap {
+                        let wrap_local = self.builder.alloc_temp(ret_ty.clone());
+                        // tag = 0 (Some)
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: wrap_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(0)),
+                            store_size: Some(8),
+                        }));
+                        // payload at offset 8
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: wrap_local,
+                            offset: 8,
+                            value: op,
+                            store_size: Some(op_ty.size()),
+                        }));
+                        MirOperand::Local(wrap_local)
+                    } else {
+                        op
+                    };
+                    Some(final_op)
                 } else {
                     None
                 };
@@ -107,18 +136,40 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Assign { target, value } => {
-                let (val_op, _) = self.lower_expr(value)?;
+                let (val_op, val_ty) = self.lower_expr(value)?;
                 match &target.kind {
                     ExprKind::Ident(name) => {
-                        let (local_id, _) = self
+                        let (local_id, dst_ty) = self
                             .locals
                             .get(name)
                             .cloned()
                             .ok_or_else(|| LoweringError::UnresolvedVariable(name.clone()))?;
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: local_id,
-                            rvalue: MirRValue::Use(val_op),
-                        }));
+                        // mem.borrowing/M-rules: `p = expr` on a `mutate` param
+                        // copies bytes through the caller's pointer. Lower as a
+                        // Store so DCE doesn't drop it as a "dead local write"
+                        // and codegen emits the through-pointer copy.
+                        let is_mutate_param = self.meta(name)
+                            .map(|m| m.is_mutate_param)
+                            .unwrap_or(false);
+                        if is_mutate_param {
+                            let store_size = match &dst_ty {
+                                MirType::Struct(layout) => Some(layout.byte_size),
+                                MirType::Enum(layout) => Some(layout.byte_size),
+                                _ => Some(dst_ty.size()),
+                            };
+                            let _ = val_ty;
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                addr: local_id,
+                                offset: 0,
+                                value: val_op,
+                                store_size,
+                            }));
+                        } else {
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: local_id,
+                                rvalue: MirRValue::Use(val_op),
+                            }));
+                        }
                     }
                     // Field assignment: obj.field = value → Store at field offset
                     ExprKind::Field { object, field } => {
@@ -1566,6 +1617,40 @@ impl<'a> MirLowerer<'a> {
         label: Option<&str>,
         value: Option<&Expr>,
     ) -> Result<(), LoweringError> {
+        // `break n` is parser-ambiguous: `n` could be a label or a value
+        // expression. The parser favors label; if no enclosing loop has that
+        // label but a local of the same name is in scope, reinterpret as
+        // `break value=n`. The resolver already silenced its "unknown label"
+        // error in that case (see resolver.rs StmtKind::Break).
+        let reinterpret_as_value = label
+            .filter(|lbl| value.is_none() && !self.loop_stack.iter().any(|ctx| ctx.label.as_deref() == Some(lbl)))
+            .filter(|lbl| self.locals.contains_key(*lbl));
+        if let Some(name) = reinterpret_as_value {
+            let (local_id, _ty) = self.locals.get(name).cloned().ok_or_else(|| {
+                LoweringError::UnresolvedVariable(name.to_string())
+            })?;
+            let val_op = MirOperand::Local(local_id);
+            let ctx = self.loop_stack.last().ok_or_else(|| {
+                LoweringError::InvalidConstruct("break outside of loop".to_string())
+            })?;
+            let exit_block = ctx.exit_block;
+            let result_local = ctx.result_local;
+            let ensure_depth = ctx.ensure_depth;
+            if let Some(result) = result_local {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result,
+                    rvalue: MirRValue::Use(val_op),
+                }));
+            }
+            self.emit_loop_cleanup(ensure_depth);
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: exit_block,
+            }));
+            let dead_block = self.builder.create_block();
+            self.builder.switch_to_block(dead_block);
+            return Ok(());
+        }
+
         let ctx = self.find_loop(label)?;
         let exit_block = ctx.exit_block;
         let result_local = ctx.result_local;
