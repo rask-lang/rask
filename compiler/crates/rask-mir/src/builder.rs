@@ -15,6 +15,11 @@ pub struct BlockBuilder {
 }
 
 impl BlockBuilder {
+    /// Return type of the function being built (read-only).
+    pub fn ret_ty(&self) -> &MirType {
+        &self.function.ret_ty
+    }
+
     pub fn new(name: String, ret_ty: MirType) -> Self {
         let entry_block = BlockId(0);
         let function = MirFunction {

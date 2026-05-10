@@ -80,8 +80,37 @@ impl<'a> MirLowerer<'a> {
 
             StmtKind::Return(opt_expr) => {
                 let value = if let Some(e) = opt_expr {
-                    let (op, _) = self.lower_expr(e)?;
-                    Some(op)
+                    let (op, op_ty) = self.lower_expr(e)?;
+                    // Auto-wrap a non-Option value into Some(...) when the
+                    // function returns Option<T>. The user-level shorthand
+                    // `func -> User? { return User { ... } }` relies on this;
+                    // without an explicit wrap, codegen returns just the T
+                    // pointer and the caller's Option slot ends up with
+                    // garbage in the tag/payload positions (#274).
+                    let ret_ty = self.builder.ret_ty().clone();
+                    let needs_wrap = matches!(&ret_ty, MirType::Option(inner)
+                        if !matches!(op_ty, MirType::Option(_)) && **inner == op_ty);
+                    let final_op = if needs_wrap {
+                        let wrap_local = self.builder.alloc_temp(ret_ty.clone());
+                        // tag = 0 (Some)
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: wrap_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(0)),
+                            store_size: Some(8),
+                        }));
+                        // payload at offset 8
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: wrap_local,
+                            offset: 8,
+                            value: op,
+                            store_size: Some(op_ty.size()),
+                        }));
+                        MirOperand::Local(wrap_local)
+                    } else {
+                        op
+                    };
+                    Some(final_op)
                 } else {
                     None
                 };
