@@ -1380,11 +1380,23 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
-                // .ok() / .to_option(): Result<T,E> → Option<T>
-                // Pass through as-is — runtime uses the same tagged-union layout
-                // (tag 0 = Ok/Some, tag 1 = Err/None).
+                // .ok() / .to_option(): Result<T,E> → Option<T>.
+                // Try the inline lowering (try_lower_result_option_method)
+                // first so payload offsets are recomputed. The legacy
+                // pass-through here was lying about the layout — Result's
+                // origin fields between tag and payload don't exist in
+                // Option, so subsequent `.0` reads landed on the wrong
+                // bytes and `opt == none` checks compared stale pointers.
                 if (method == "ok" || method == "to_option") && args.is_empty() {
-                    return Ok((obj_op, obj_ty));
+                    if let Some(handled) = self.try_lower_result_option_method(
+                        expr, object, method.as_str(), args,
+                    )? {
+                        return Ok(handled);
+                    }
+                    // Fallback for cases the inline lowerer couldn't handle
+                    // (no resolved receiver type, etc.) — pass through.
+                    let (obj_op2, obj_ty2) = self.lower_expr(object)?;
+                    return Ok((obj_op2, obj_ty2));
                 }
 
                 // .unwrap(): Option<T>/Result<T,E> → T — panic on None/Err
@@ -1516,21 +1528,21 @@ impl<'a> MirLowerer<'a> {
                         self.ctx.find_struct(base).is_some()
                             || self.ctx.find_enum(base).is_some()
                     });
+                // Inline Result/Option methods that have no runtime impl —
+                // `.map(f)`, `.ok()`, `.filter(f)`. These were dispatching
+                // to Vec_map et al. as a fallback and silently
+                // mis-computing on aggregate or non-i64 values.
+                if let Some(handled) = self.try_lower_result_option_method(
+                    expr, object, method.as_str(), args,
+                )? {
+                    return Ok(handled);
+                }
+
                 let qualified_name = user_type_prefix
                     .or_else(|| if let ExprKind::Ident(var_name) = &object.kind {
                         self.meta(var_name).and_then(|m| m.type_prefix.clone())
                     } else {
                         None
-                    })
-                    // Stdlib type from the type checker (Result, Option, etc.)
-                    // when the receiver isn't an ident — e.g. method-chain on a
-                    // call result `safe_div(...).map(...)`. Without this fall-
-                    // through, "map" lands on the hardcoded Vec fallback below
-                    // and dispatches Vec_map on a Result.
-                    .or_else(|| {
-                        self.ctx.lookup_raw_type(object.id)
-                            .and_then(|ty| super::MirContext::stdlib_type_prefix(ty))
-                            .map(|s| s.to_string())
                     })
                     // Field access on struct: resolve field type from struct layout
                     .or_else(|| {

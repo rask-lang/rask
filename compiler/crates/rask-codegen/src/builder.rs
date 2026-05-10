@@ -643,9 +643,19 @@ impl<'a> FunctionBuilder<'a> {
                     // Whole-aggregate copy: rvalue produces a pointer to the source
                     // aggregate, dst has its own storage (either a stack slot or an
                     // external pointer for mutate-params).
-                    (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                     | MirType::Result { .. } | MirType::Option(_),
+                    (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
                      MirRValue::Use(MirOperand::Local(_))) => true,
+                    // Result/Option whole-aggregate copy: only when src and dst
+                    // have the same general shape. Avoid clobbering layout when
+                    // src is Result and dst is Option (different payload offsets).
+                    (MirType::Result { .. }, MirRValue::Use(MirOperand::Local(src_id))) => {
+                        ctx.locals.iter().find(|l| l.id == *src_id)
+                            .map_or(false, |l| matches!(l.ty, MirType::Result { .. }))
+                    }
+                    (MirType::Option(_), MirRValue::Use(MirOperand::Local(src_id))) => {
+                        ctx.locals.iter().find(|l| l.id == *src_id)
+                            .map_or(false, |l| matches!(l.ty, MirType::Option(_)))
+                    }
                     // Option(T) assigned from an Option-typed local: copy the 16-byte struct
                     (MirType::Option(_), _) if src_option_ty => true,
                     _ => false,

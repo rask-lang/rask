@@ -1115,49 +1115,38 @@ impl<'a> MirLowerer<'a> {
             Pattern::Ident(name) => {
                 if is_variant_name(name) {
                     // If the name matches the err side of a Result, tag = 1.
-                    // Handles both enum errors (e.g. `is DbError`) and struct
-                    // errors (e.g. `is ParseError`) — without the struct case
-                    // a `result is ParseError` check compared against tag 0
+                    // Handles enum errors, struct errors, and union errors
+                    // (e.g. `result is ParseError` where err side is
+                    // `ParseError | DivError`). Without these branches a
+                    // `result is StructError` check compared against tag 0
                     // and inverted the entire control flow [#259 family].
-                    if let MirType::Result { ok, err } = val_ty {
-                        match err.as_ref() {
+                    let name_matches_type = |ty: &MirType, n: &str| -> bool {
+                        match ty {
                             MirType::Enum(eid) => {
                                 let idx = eid.id as usize;
-                                if idx < self.ctx.enum_layouts.len()
-                                    && self.ctx.enum_layouts[idx].name == name.as_str()
-                                {
-                                    return 1;
-                                }
+                                idx < self.ctx.enum_layouts.len()
+                                    && self.ctx.enum_layouts[idx].name == n
                             }
                             MirType::Struct(sid) => {
                                 let idx = sid.id as usize;
-                                if idx < self.ctx.struct_layouts.len()
-                                    && self.ctx.struct_layouts[idx].name == name.as_str()
-                                {
-                                    return 1;
-                                }
+                                idx < self.ctx.struct_layouts.len()
+                                    && self.ctx.struct_layouts[idx].name == n
                             }
-                            _ => {}
+                            _ => false,
+                        }
+                    };
+                    if let MirType::Result { ok, err } = val_ty {
+                        if name_matches_type(err.as_ref(), name) {
+                            return 1;
+                        }
+                        if let MirType::Union(variants) = err.as_ref() {
+                            if variants.iter().any(|v| name_matches_type(v, name)) {
+                                return 1;
+                            }
                         }
                         // Symmetric: name matches the ok side → tag 0 (Ok).
-                        match ok.as_ref() {
-                            MirType::Struct(sid) => {
-                                let idx = sid.id as usize;
-                                if idx < self.ctx.struct_layouts.len()
-                                    && self.ctx.struct_layouts[idx].name == name.as_str()
-                                {
-                                    return 0;
-                                }
-                            }
-                            MirType::Enum(eid) => {
-                                let idx = eid.id as usize;
-                                if idx < self.ctx.enum_layouts.len()
-                                    && self.ctx.enum_layouts[idx].name == name.as_str()
-                                {
-                                    return 0;
-                                }
-                            }
-                            _ => {}
+                        if name_matches_type(ok.as_ref(), name) {
+                            return 0;
                         }
                     }
                     return self.variant_tag(name);
