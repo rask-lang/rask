@@ -1522,6 +1522,16 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         None
                     })
+                    // Stdlib type from the type checker (Result, Option, etc.)
+                    // when the receiver isn't an ident — e.g. method-chain on a
+                    // call result `safe_div(...).map(...)`. Without this fall-
+                    // through, "map" lands on the hardcoded Vec fallback below
+                    // and dispatches Vec_map on a Result.
+                    .or_else(|| {
+                        self.ctx.lookup_raw_type(object.id)
+                            .and_then(|ty| super::MirContext::stdlib_type_prefix(ty))
+                            .map(|s| s.to_string())
+                    })
                     // Field access on struct: resolve field type from struct layout
                     .or_else(|| {
                         if let ExprKind::Field { object: inner_obj, field: field_name } = &object.kind {

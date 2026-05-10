@@ -643,7 +643,8 @@ impl<'a> FunctionBuilder<'a> {
                     // Whole-aggregate copy: rvalue produces a pointer to the source
                     // aggregate, dst has its own storage (either a stack slot or an
                     // external pointer for mutate-params).
-                    (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
+                    (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                     | MirType::Result { .. } | MirType::Option(_),
                      MirRValue::Use(MirOperand::Local(_))) => true,
                     // Option(T) assigned from an Option-typed local: copy the 16-byte struct
                     (MirType::Option(_), _) if src_option_ty => true,
@@ -2545,9 +2546,13 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 } else if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
                     // Function returns Result/Option but value is a plain scalar
-                    // (e.g. `return 42` in a function returning `i32 or string`).
-                    // Wrap the value as Ok/Some in a temporary stack slot and return
-                    // the slot address so the caller can copy_aggregate.
+                    // or non-stack-slotted local (e.g. `return 42` or
+                    // `return DivError {}` from a `i32 or DivError` fn).
+                    // Wrap as Ok/Some — or Err when the value's MIR type matches
+                    // the Result's err side. Without the Err detection, returning
+                    // a struct-typed error from a Result-returning function
+                    // wrapped it as Ok and caused `is X` checks at the call site
+                    // to silently take the wrong branch (#259 family).
                     let slot_size = Self::resolve_type_alloc_size(ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts)
                         .unwrap_or(16);
                     let ss = builder.create_sized_stack_slot(StackSlotData::new(
@@ -2555,20 +2560,40 @@ impl<'a> FunctionBuilder<'a> {
                         slot_size,
                         0,
                     ));
+                    let val_ty = value.as_ref().and_then(|v| match v {
+                        MirOperand::Local(id) => ctx.locals.iter()
+                            .find(|l| l.id == *id)
+                            .map(|l| l.ty.clone()),
+                        _ => None,
+                    });
+                    let is_err_value = if let MirType::Result { err, .. } = ctx.ret_ty {
+                        val_ty.as_ref().map_or(false, |t| t == err.as_ref())
+                    } else {
+                        false
+                    };
                     let val = if let Some(val_op) = value.as_ref() {
                         Self::lower_operand_typed(builder, val_op, Some(types::I64), ctx)?
                     } else {
                         builder.ins().iconst(types::I64, 0)
                     };
+
                     // Aggregate payload (string/struct/...) — `val` is a pointer to
                     // 16+ bytes. Copy into the payload area instead of storing the
                     // pointer at offset 8 (which leaves the rest of the slot
                     // uninitialized).
-                    let inner_aggregate = match ctx.ret_ty {
-                        MirType::Option(inner) => Some(inner.as_ref()),
-                        MirType::Result { ok, .. } => Some(ok.as_ref()),
-                        _ => None,
-                    }.filter(|t| matches!(t,
+                    let inner_branch = if is_err_value {
+                        match ctx.ret_ty {
+                            MirType::Result { err, .. } => Some(err.as_ref()),
+                            _ => None,
+                        }
+                    } else {
+                        match ctx.ret_ty {
+                            MirType::Option(inner) => Some(inner.as_ref()),
+                            MirType::Result { ok, .. } => Some(ok.as_ref()),
+                            _ => None,
+                        }
+                    };
+                    let inner_aggregate = inner_branch.filter(|t| matches!(t,
                         MirType::String | MirType::Struct(_) | MirType::Enum(_)
                         | MirType::Tuple(_) | MirType::Result { .. } | MirType::Option(_)
                     ));
@@ -2581,7 +2606,8 @@ impl<'a> FunctionBuilder<'a> {
                         } else {
                             crate::layouts::RESULT_PAYLOAD_OFFSET
                         };
-                        let tag = builder.ins().iconst(types::I64, 0);
+                        let tag_val = if is_err_value { 1 } else { 0 };
+                        let tag = builder.ins().iconst(types::I64, tag_val);
                         builder.ins().stack_store(tag, ss, crate::layouts::TAG_OFFSET);
                         if matches!(ctx.ret_ty, MirType::Result { .. }) {
                             let zero = builder.ins().iconst(types::I64, 0);
@@ -2589,27 +2615,37 @@ impl<'a> FunctionBuilder<'a> {
                             builder.ins().stack_store(zero, ss, crate::layouts::ORIGIN_LINE_OFFSET);
                         }
                         let dst = builder.ins().stack_addr(types::I64, ss, payload_off);
-                        let mut off = 0i32;
-                        let size = inner_size as i32;
-                        while off + 8 <= size {
-                            let word = builder.ins().load(types::I64, MemFlags::new(), val, off);
-                            builder.ins().store(MemFlags::new(), word, dst, off);
-                            off += 8;
+                        if inner_size > 0 {
+                            let mut off = 0i32;
+                            let size = inner_size as i32;
+                            while off + 8 <= size {
+                                let word = builder.ins().load(types::I64, MemFlags::new(), val, off);
+                                builder.ins().store(MemFlags::new(), word, dst, off);
+                                off += 8;
+                            }
+                            if size - off >= 4 {
+                                let w = builder.ins().load(types::I32, MemFlags::new(), val, off);
+                                builder.ins().store(MemFlags::new(), w, dst, off);
+                                off += 4;
+                            }
+                            if size - off >= 2 {
+                                let w = builder.ins().load(types::I16, MemFlags::new(), val, off);
+                                builder.ins().store(MemFlags::new(), w, dst, off);
+                                off += 2;
+                            }
+                            if size - off >= 1 {
+                                let w = builder.ins().load(types::I8, MemFlags::new(), val, off);
+                                builder.ins().store(MemFlags::new(), w, dst, off);
+                            }
                         }
-                        if size - off >= 4 {
-                            let w = builder.ins().load(types::I32, MemFlags::new(), val, off);
-                            builder.ins().store(MemFlags::new(), w, dst, off);
-                            off += 4;
-                        }
-                        if size - off >= 2 {
-                            let w = builder.ins().load(types::I16, MemFlags::new(), val, off);
-                            builder.ins().store(MemFlags::new(), w, dst, off);
-                            off += 2;
-                        }
-                        if size - off >= 1 {
-                            let w = builder.ins().load(types::I8, MemFlags::new(), val, off);
-                            builder.ins().store(MemFlags::new(), w, dst, off);
-                        }
+                    } else if is_err_value {
+                        // Scalar Err — tag=1, payload at RESULT_PAYLOAD_OFFSET.
+                        let tag = builder.ins().iconst(types::I64, 1);
+                        builder.ins().stack_store(tag, ss, crate::layouts::TAG_OFFSET);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        builder.ins().stack_store(zero, ss, crate::layouts::ORIGIN_FILE_OFFSET);
+                        builder.ins().stack_store(zero, ss, crate::layouts::ORIGIN_LINE_OFFSET);
+                        builder.ins().stack_store(val, ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
                     } else if matches!(ctx.ret_ty, MirType::Option(_)) {
                         Self::wrap_some_into_slot(builder, val, ss);
                     } else {
