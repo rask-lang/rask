@@ -1617,6 +1617,40 @@ impl<'a> MirLowerer<'a> {
         label: Option<&str>,
         value: Option<&Expr>,
     ) -> Result<(), LoweringError> {
+        // `break n` is parser-ambiguous: `n` could be a label or a value
+        // expression. The parser favors label; if no enclosing loop has that
+        // label but a local of the same name is in scope, reinterpret as
+        // `break value=n`. The resolver already silenced its "unknown label"
+        // error in that case (see resolver.rs StmtKind::Break).
+        let reinterpret_as_value = label
+            .filter(|lbl| value.is_none() && !self.loop_stack.iter().any(|ctx| ctx.label.as_deref() == Some(lbl)))
+            .filter(|lbl| self.locals.contains_key(*lbl));
+        if let Some(name) = reinterpret_as_value {
+            let (local_id, _ty) = self.locals.get(name).cloned().ok_or_else(|| {
+                LoweringError::UnresolvedVariable(name.to_string())
+            })?;
+            let val_op = MirOperand::Local(local_id);
+            let ctx = self.loop_stack.last().ok_or_else(|| {
+                LoweringError::InvalidConstruct("break outside of loop".to_string())
+            })?;
+            let exit_block = ctx.exit_block;
+            let result_local = ctx.result_local;
+            let ensure_depth = ctx.ensure_depth;
+            if let Some(result) = result_local {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result,
+                    rvalue: MirRValue::Use(val_op),
+                }));
+            }
+            self.emit_loop_cleanup(ensure_depth);
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: exit_block,
+            }));
+            let dead_block = self.builder.create_block();
+            self.builder.switch_to_block(dead_block);
+            return Ok(());
+        }
+
         let ctx = self.find_loop(label)?;
         let exit_block = ctx.exit_block;
         let result_local = ctx.result_local;
