@@ -107,18 +107,40 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Assign { target, value } => {
-                let (val_op, _) = self.lower_expr(value)?;
+                let (val_op, val_ty) = self.lower_expr(value)?;
                 match &target.kind {
                     ExprKind::Ident(name) => {
-                        let (local_id, _) = self
+                        let (local_id, dst_ty) = self
                             .locals
                             .get(name)
                             .cloned()
                             .ok_or_else(|| LoweringError::UnresolvedVariable(name.clone()))?;
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: local_id,
-                            rvalue: MirRValue::Use(val_op),
-                        }));
+                        // mem.borrowing/M-rules: `p = expr` on a `mutate` param
+                        // copies bytes through the caller's pointer. Lower as a
+                        // Store so DCE doesn't drop it as a "dead local write"
+                        // and codegen emits the through-pointer copy.
+                        let is_mutate_param = self.meta(name)
+                            .map(|m| m.is_mutate_param)
+                            .unwrap_or(false);
+                        if is_mutate_param {
+                            let store_size = match &dst_ty {
+                                MirType::Struct(layout) => Some(layout.byte_size),
+                                MirType::Enum(layout) => Some(layout.byte_size),
+                                _ => Some(dst_ty.size()),
+                            };
+                            let _ = val_ty;
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                addr: local_id,
+                                offset: 0,
+                                value: val_op,
+                                store_size,
+                            }));
+                        } else {
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: local_id,
+                                rvalue: MirRValue::Use(val_op),
+                            }));
+                        }
                     }
                     // Field assignment: obj.field = value → Store at field offset
                     ExprKind::Field { object, field } => {

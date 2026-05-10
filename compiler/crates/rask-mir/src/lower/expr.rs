@@ -3566,6 +3566,9 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_block(&mut self, stmts: &[Stmt]) -> Result<TypedOperand, LoweringError> {
         let mut last_val = MirOperand::Constant(MirConst::Int(0));
         let mut last_ty = MirType::Void;
+        // Block scope: any const/mut declared inside the braces shadows but
+        // doesn't leak out. Snapshot the locals map and restore after.
+        let saved_locals = self.locals.clone();
         for (i, stmt) in stmts.iter().enumerate() {
             if i == stmts.len() - 1 {
                 if let StmtKind::Expr(e) = &stmt.kind {
@@ -3577,6 +3580,7 @@ impl<'a> MirLowerer<'a> {
             }
             self.lower_stmt(stmt)?;
         }
+        self.locals = saved_locals;
         Ok((last_val, last_ty))
     }
 } // end impl MirLowerer

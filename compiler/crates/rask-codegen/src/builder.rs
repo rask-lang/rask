@@ -629,11 +629,22 @@ impl<'a> FunctionBuilder<'a> {
                 // into the destination's stack slot rather than aliasing pointers.
                 // This covers String (always 16 bytes) and Field extractions from
                 // Struct/Tuple/Result/Option that return aggregate sub-fields.
+                //
+                // Whole-aggregate assignment (`p = q` where both are Struct/Tuple/etc.)
+                // also needs a memcpy: aliasing the pointers means a subsequent
+                // `mutate p` write would land in `q`'s storage. mem.borrowing/M-rules
+                // require `mutate` writes to flow back to the caller, which only
+                // works if `p = ...` copies bytes into `*p`'s slot.
                 let needs_copy = match (&dst_local.ty, rvalue) {
                     (MirType::String, _) => true,
                     // Field on aggregate base returns pointer for aggregate elements
                     (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
                      MirType::Result { .. } | MirType::Option(_), MirRValue::Field { .. }) => true,
+                    // Whole-aggregate copy: rvalue produces a pointer to the source
+                    // aggregate, dst has its own storage (either a stack slot or an
+                    // external pointer for mutate-params).
+                    (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
+                     MirRValue::Use(MirOperand::Local(_))) => true,
                     // Option(T) assigned from an Option-typed local: copy the 16-byte struct
                     (MirType::Option(_), _) if src_option_ty => true,
                     _ => false,
@@ -650,6 +661,24 @@ impl<'a> FunctionBuilder<'a> {
                 if needs_copy {
                     if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst) {
                         Self::copy_aggregate(builder, val, *dst_ss, *dst_size);
+                    } else if matches!(&dst_local.ty,
+                        MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
+                    {
+                        // Dst variable holds an external pointer (mutate-param) —
+                        // copy bytes through it instead of overwriting the pointer.
+                        let size = Self::resolve_type_alloc_size(
+                            &dst_local.ty, ctx.struct_layouts, ctx.enum_layouts,
+                        ).unwrap_or(0);
+                        if size > 0 {
+                            let var = ctx.var_map.get(dst)
+                                .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
+                            let dst_ptr = builder.use_var(*var);
+                            Self::copy_aggregate_to_ptr(builder, val, dst_ptr, size);
+                        } else {
+                            let var = ctx.var_map.get(dst)
+                                .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
+                            builder.def_var(*var, val);
+                        }
                     } else {
                         let var = ctx.var_map.get(dst)
                             .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
@@ -2796,6 +2825,32 @@ impl<'a> FunctionBuilder<'a> {
         if (size as i32 - offset) >= 1 {
             let val = builder.ins().load(types::I8, MemFlags::new(), src_ptr, offset);
             builder.ins().stack_store(val, dst_slot, offset);
+        }
+    }
+
+    /// Copy `size` bytes from `src_ptr` to `dst_ptr`. Mirror of `copy_aggregate`
+    /// but for through-pointer destinations (mutate-params, where the dst's
+    /// variable holds an external pointer instead of a stack-slot address).
+    fn copy_aggregate_to_ptr(builder: &mut ClifFunctionBuilder, src_ptr: Value, dst_ptr: Value, size: u32) {
+        let mut offset = 0i32;
+        while (offset as u32) + 8 <= size {
+            let val = builder.ins().load(types::I64, MemFlags::new(), src_ptr, offset);
+            builder.ins().store(MemFlags::new(), val, dst_ptr, offset);
+            offset += 8;
+        }
+        if (size as i32 - offset) >= 4 {
+            let val = builder.ins().load(types::I32, MemFlags::new(), src_ptr, offset);
+            builder.ins().store(MemFlags::new(), val, dst_ptr, offset);
+            offset += 4;
+        }
+        if (size as i32 - offset) >= 2 {
+            let val = builder.ins().load(types::I16, MemFlags::new(), src_ptr, offset);
+            builder.ins().store(MemFlags::new(), val, dst_ptr, offset);
+            offset += 2;
+        }
+        if (size as i32 - offset) >= 1 {
+            let val = builder.ins().load(types::I8, MemFlags::new(), src_ptr, offset);
+            builder.ins().store(MemFlags::new(), val, dst_ptr, offset);
         }
     }
 

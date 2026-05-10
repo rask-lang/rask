@@ -493,6 +493,10 @@ pub(crate) struct LocalMeta {
     /// C1/C2: resource_id local for consumption cancellation.
     /// Set when an ensure registers this variable as its receiver.
     pub resource_id: Option<LocalId>,
+    /// Function parameter declared `mutate`. Whole-value reassignment must
+    /// flow back through the param's pointer (mem.borrowing/M-rules), so
+    /// `p = expr` lowers to a Store(*p, ...) instead of Assign(p, ...).
+    pub is_mutate_param: bool,
 }
 
 pub struct MirLowerer<'a> {
@@ -803,6 +807,9 @@ impl<'a> MirLowerer<'a> {
                 let prefix = lowerer.mir_type_name(&param_ty)
                     .or_else(|| type_prefix_from_str(param_ty_str));
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
+                if param.is_mutate {
+                    meta.is_mutate_param = true;
+                }
                 if let Some(p) = prefix {
                     meta.type_prefix = Some(p);
                 }

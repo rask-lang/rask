@@ -52,9 +52,15 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
 
     // Snapshot callee bodies (we read callees while mutating callers).
     // Only snapshot functions that are candidates for inlining.
+    //
+    // Skip functions whose body writes through a parameter (mutate-param
+    // writeback). Inlining copies args into fresh locals before lowering the
+    // body, so the writeback would land in the fresh local instead of the
+    // caller's storage.
     let callee_bodies: HashMap<String, MirFunction> = fns
         .iter()
         .filter(|f| should_inline(&cg, &f.name))
+        .filter(|f| !writes_through_param(f))
         .map(|f| (f.name.clone(), f.clone()))
         .collect();
 
@@ -71,6 +77,18 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
 }
 
 /// Determine if a function is a candidate for inlining at any call site.
+/// True if the function body contains a `Store` whose address is one of the
+/// function's parameters (mutate-param writeback). Such functions can't be
+/// inlined safely — the writeback needs to flow through the caller's pointer.
+fn writes_through_param(f: &MirFunction) -> bool {
+    use crate::MirStmtKind;
+    let param_ids: std::collections::HashSet<LocalId> =
+        f.params.iter().map(|p| p.id).collect();
+    f.blocks.iter().any(|b| b.statements.iter().any(|s| {
+        matches!(&s.kind, MirStmtKind::Store { addr, .. } if param_ids.contains(addr))
+    }))
+}
+
 fn should_inline(cg: &CallGraph, callee_name: &str) -> bool {
     if cg.is_recursive(callee_name) {
         return false;
