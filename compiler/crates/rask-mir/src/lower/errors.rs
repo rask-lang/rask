@@ -554,18 +554,29 @@ impl<'a> MirLowerer<'a> {
             Some(t) => t.clone(),
             None => return Ok(None),
         };
-        let is_result = matches!(&raw_ty, rask_types::Type::Result { err, .. } if **err != rask_types::Type::None);
+        let is_result = matches!(&raw_ty, rask_types::Type::Result { err, .. }
+            if **err != rask_types::Type::None && !matches!(**err, rask_types::Type::Var(_)));
         let is_option = matches!(&raw_ty, rask_types::Type::Result { err, .. } if **err == rask_types::Type::None);
         if !is_result && !is_option {
             return Ok(None);
         }
 
-        match (is_result, method, args.len()) {
+        // Skip when the type checker couldn't fully resolve the err side
+        // (unresolved type variables) — MIR lowering may end up with a
+        // non-Result MirType and the inline lowering will fail to match.
+        let result = match (is_result, method, args.len()) {
             (true, "map", 1) => self.lower_result_map(expr, object, &args[0].expr).map(Some),
             (true, "ok", 0) => self.lower_result_ok(expr, object).map(Some),
             (false, "map", 1) => self.lower_option_map(expr, object, &args[0].expr).map(Some),
             (false, "filter", 1) => self.lower_option_filter(expr, object, &args[0].expr).map(Some),
             _ => Ok(None),
+        };
+        // If the inline lowering fails because the receiver's MIR type
+        // doesn't actually match Result/Option (type checker unresolved),
+        // fall through to the regular dispatch path instead of erroring.
+        match result {
+            Err(LoweringError::InvalidConstruct(msg)) if msg.contains("receiver must be") => Ok(None),
+            other => other,
         }
     }
 
