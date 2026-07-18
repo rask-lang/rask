@@ -18,7 +18,7 @@
 | **PL4: Index access** | `pool[h]` | `&T` or `&mut T` | Access (panics if invalid) |
 | **PL5: Safe access** | `pool.get(h)` | `T?` | Safe access (T: Copy) |
 | **PL6: Remove** | `pool.remove(h)` | `T?` | Remove and return |
-| **PL7: Iterate** | `pool.handles()` | `Iterator<Handle<T>>` | Iterate all valid handles |
+| **PL7: Iterate** | `pool.handles()` | `Sequence<Handle<T>>` | Iterate all valid handles |
 
 ```rask
 const pool: Pool<Entity> = Pool.new()

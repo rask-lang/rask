@@ -102,7 +102,7 @@ if state is Connected(sock) && sock.is_ready() {
 |------|-------------|
 | **CF13: Diverging else** | `else` block must diverge (`return`, `break`, `panic`, etc.) |
 | **CF14: Binding escapes** | Successful match binds value to outer scope |
-| **CF15: Linear in else** | Pattern fails, value available in `else` for cleanup |
+| **CF33: Linear in else** | Pattern fails, value available in `else` for cleanup |
 
 ```rask
 // Early return on non-matching variant
@@ -328,7 +328,7 @@ FIX: Use if is instead:
 
 **Linear resource consumed only in one branch [CF11]:**
 ```
-ERROR [ctrl.flow/CF15]: linear resource may not be consumed
+ERROR [ctrl.flow/CF11]: linear resource may not be consumed
    |
 3  |  const file = open("data.txt")
    |               ---------------- resource created here

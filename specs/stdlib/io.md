@@ -102,7 +102,7 @@ const reader = BufReader.new(file)              // default 8KB
 const reader = BufReader.with_capacity(4096, file)
 
 reader.read_line() -> string or IoError         // strips trailing newline
-reader.lines() -> Iterator<string or IoError>   // lazy line iterator
+reader.lines() -> Sequence<string or IoError>   // lazy line sequence
 ```
 
 <!-- test: skip -->

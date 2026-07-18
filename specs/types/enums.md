@@ -162,7 +162,7 @@ Conditional matching requires explicit catch-all. No hidden gaps.
 
 ```rask
 match response {
-    Loaded(body) if body.len() > 0: process(body),
+    Loaded(body) if body.len() > 0 => process(body),
     Loaded(body) => default(body),  // REQUIRED: catches guard failure
     Failed(e) => handle(e)
 }
@@ -176,7 +176,7 @@ match response {
 ```rask
 // ❌ INVALID: guard may fail with no fallback
 match response {
-    Loaded(body) if body.len() > 0: process(body),
+    Loaded(body) if body.len() > 0 => process(body),
     Failed(e) => handle(e)
 }
 ```
@@ -408,7 +408,7 @@ Shape.variants()  // ❌ Compile error: variants() requires fieldless enum
 enum Status { Pending, Done, Failed }
 
 const s = Done
-const d = discriminant(s)  // 1 (zero-indexed)
+const d = discriminant(s)  // 1 (Pending = 0, Done = 1)
 ```
 
 **Function signature:**
