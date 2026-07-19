@@ -495,9 +495,8 @@ See [stdlib/fs.md](stdlib/fs.md), [stdlib/io.md](stdlib/io.md).
 `if x is` for single checks, `match` for multiple branches.
 
 ```rask
-// Single pattern check
-// result is impliclty unwrapped
-if result is Ok {
+// Single success check — result narrows to T inside the block
+if result? {
     use(result)
 }
 
@@ -632,7 +631,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
 | Handle errors | `try` (propagate), `try...else` (propagate with context), `match` (handle) |
 | Clean up resources | `ensure` |
-| Handle options | `if x is Some`, `??`, guard, `match` |
+| Handle options | `if x?`, `??`, guard, `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `StringBuilder` |
 | Share state | `Shared<T>`, channels |

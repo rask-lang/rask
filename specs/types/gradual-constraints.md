@@ -23,7 +23,7 @@ Non-public functions may omit parameter types, return types, and bounds. Compile
 | Public = explicit | `public` functions MUST have full type annotations and trait bounds |
 | Private = flexible | Non-public functions MAY omit parameter types, return types, and/or bounds |
 | Annotations are additive | Explicit types/bounds merge with inferred ones |
-| Structural traits apply | Inferred bounds use structural matching, same as explicit bounds |
+| Inferred bounds are method-requirements | Inference collects the methods the body calls, not named traits. Named (nominal) bounds appear when the signature is written out — see below |
 
 ## Inference Levels
 
@@ -257,7 +257,7 @@ Inference rules:
 
 Fully statically checked at every stage. Not dynamic typing.
 
-**Interaction with structural traits:** Inferred bounds use structural matching. Body calls `.hash()` and `.eq()` — compiler infers bound requiring those. IDE maps structural bounds to named traits for display.
+**Interaction with nominal traits:** Inferred bounds are method-requirements, checked by shape — body calls `.hash()` and `.eq()`, the compiler infers a bound requiring those methods. This is deliberately looser than nominal conformance: it's private-only prototyping glue, invisible in any API. The moment the signature is written out (and always at `public`), bounds are named traits and nominal conformance applies (`type.generics/G1`). IDE maps inferred method-requirements to matching named traits for display.
 
 **Monomorphization:** Inference doesn't change monomorphization. Compiler infers bounds, then monomorphization proceeds as with explicit: each call site generates specialized code. Inferred signature is semantically identical to equivalent explicit.
 

@@ -397,23 +397,7 @@ trait Comparable {
 }
 ```
 
-**Structural matching:** If a type has the right methods, it satisfies the trait automatically.
-
-```rask
-struct Point {
-    x: i32
-    y: i32
-}
-
-extend Point {
-    func to_string(self) -> string {
-        return "{self.x}, {self.y}"
-    }
-}
-// Point satisfies Displayable automatically
-```
-
-**Explicit trait implementation:** Use `extend Type with Trait` when you want to document intent:
+**Conformance is declared:** a type satisfies a trait through `extend Type with Trait` (`type.generics/G1`):
 ```rask
 extend Point with Displayable {
     func to_string(self) -> string {
@@ -422,9 +406,17 @@ extend Point with Displayable {
 }
 ```
 
-**Runtime polymorphism:** Use `any Trait` for heterogeneous collections:
+If the type already has the methods, an empty declaration suffices: `extend Point with Displayable {}`.
+
+**Structural traits:** a trait marked `structural` matches by shape — any type with the right methods satisfies it, no declaration. Used for traits where the method bundle is the whole contract (`ErrorMessage`, I/O traits).
+
+**Runtime polymorphism:** Use `any Trait` for heterogeneous collections. Conversion is explicit — it heap-allocates, and the cast marks where (`type.traits/TR5`):
 ```rask
-const widgets: []any Widget = [button, textbox, slider]
+const widgets: []any Widget = [
+    button as any Widget,
+    textbox as any Widget,
+    slider as any Widget,
+]
 for w in widgets: w.draw()    // Dynamic dispatch
 ```
 
@@ -1121,7 +1113,7 @@ match n {
 
 <!-- test: run | 6 -->
 ```rask
-const v = Vec.new()
+mut v = Vec.new()
 v.push(1)
 v.push(2)
 v.push(3)

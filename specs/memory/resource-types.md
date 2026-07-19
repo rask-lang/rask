@@ -248,7 +248,7 @@ for file in files.take_all() {
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `take_all()` | `Pool<T> -> Iterator<T>` | Take all elements for consumption |
+| `take_all()` | `Pool<T> -> Sequence<T>` | Take all elements for consumption |
 | `take_all_with(f)` | `func(T) -> void` | Take all and apply consuming function |
 | `take_all_with_result(f)` | `func(T) -> void or E -> void or E` | Take all with fallible consumer |
 

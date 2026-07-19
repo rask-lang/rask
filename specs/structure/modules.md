@@ -117,8 +117,8 @@ export internal.lexer.Lexer
 
 | Rule | Description |
 |------|-------------|
-| **TV1: Inferred** | `extend` visibility = min(trait visibility, type visibility) |
-| **TV2: No keyword** | No `public extend` needed — compiler infers, IDE shows ghost annotation |
+| **TV1: Declared** | Trait conformance is package-internal by default; `public extend Type with Trait` exports it |
+| **TV2: Capped by parts** | `public extend` requires both trait and type to be public — conformance can't be more visible than what it connects |
 
 ## Package-Level State
 

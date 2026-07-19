@@ -516,12 +516,8 @@ struct UserResponse {
 }
 
 func handle_create_user(req: http.Request) -> http.Response {
-    const body = req.body() is Some else {
-        return http.Response.bad_request("missing body")
-    }
-    const input = json.decode<CreateUserRequest>(body) is Ok else {
-        return http.Response.bad_request("invalid JSON")
-    }
+    const body = req.body() ?? return http.Response.bad_request("missing body")
+    const input = json.decode<CreateUserRequest>(body) ?? return http.Response.bad_request("invalid JSON")
     const user = create_user(input.name, input.email, input.age)
     const response = UserResponse { id: user.id, name: user.name, email: user.email }
     return http.Response.ok(json.encode(response))
@@ -536,5 +532,5 @@ Zero serialization boilerplate. Comparable to Go.
 - `std.reflect` — Field reflection, type introspection (`std.reflect/R1`)
 - `std.json` — JSON format library using this mechanism (`std.json/J6`)
 - `type.generics` — Trait bounds, auto-derive pattern (`type.generics/CL1`)
-- `type.traits` — Trait definitions, structural matching (`type.traits/TR1`)
+- `type.generics` — Trait conformance, structural opt-in (`type.generics/G1`)
 - `mem.relocatable` — Pool binary serialization using Encode/Decode (`mem.relocatable/PB1`)
