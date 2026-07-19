@@ -64,6 +64,7 @@ extend Shared<T> {
     func new(value: T) -> Shared<T>
     func read(self) -> T             // inline access (R5) — expression-scoped read lock
     func write(self) -> T            // inline access (R5) — expression-scoped write lock
+    func staged(self) -> T           // staged access (ST1) — exclusive lock, working copy
     func try_read<R>(self, f: |T| -> R) -> R?
     func try_write<R>(self, f: |T| -> R) -> R?
 }
@@ -108,6 +109,7 @@ struct Mutex<T> { }
 extend Mutex<T> {
     func new(value: T) -> Mutex<T>
     func lock(self) -> T             // inline access (MX3) — expression-scoped exclusive lock
+    func staged(self) -> T           // staged access (ST1) — exclusive lock, working copy
     func try_lock<R>(self, f: |T| -> R) -> R?
 }
 ```
@@ -189,6 +191,38 @@ with pool[h1] as e1, pool[h2] as e2 {
 }
 ```
 
+## Staged Access
+
+Panic-atomic updates, opt-in per site. A panic mid-`with` releases the lock cleanly but keeps whatever writes already happened (`ctrl.panic/LK1–LK3`) — when other tasks will read a multi-field invariant, that torn state is unacceptable. `staged()` makes the update atomic with respect to panics *by construction*: the `with` block has exact boundaries, so the runtime can work on a copy and commit it as one move.
+
+| Rule | Description |
+|------|-------------|
+| **ST1: Staged access** | `with mutex.staged() as v { }` / `with shared.staged() as v { }` — takes the exclusive lock, binds `v` to a working copy of the value (clone at entry) |
+| **ST2: Commit on exit** | Every non-panic exit (normal, `return`, `try`, `break`/`continue`) commits the copy back as one move |
+| **ST3: Panic discards** | Unwind drops the copy uncommitted — survivors see the last committed state. Torn state impossible at staged sites |
+| **ST4: Panic-only scope** | Staged is not error rollback — `try` exits commit (ST2). Rollback-on-error already has a mechanism: `ensure tx.rollback()` + explicit commit (`ctrl.ensure/C1`) |
+
+<!-- test: parse -->
+```rask
+// Vulnerable: panic between the two writes leaves state torn
+func transfer_torn(amount: i64) {
+    with accounts as a {
+        a.checking -= amount
+        a.savings += amount      // panic here → survivors see money destroyed
+    }
+}
+
+// Staged: both writes land as one commit, or not at all
+func transfer(amount: i64) {
+    with accounts.staged() as a {
+        a.checking -= amount
+        a.savings += amount      // panic here → nothing committed (ST3)
+    }                            // clean exit → one commit (ST2)
+}
+```
+
+The clone is the price and the method name says so — same visibility deal as `.clone()`. Plain `with mutex as v` stays free; only sites guarding a real invariant pay. Cross-box invariants stay out of reach, but nested locks are already forbidden (DL1), so per-box atomicity is all the language promises anyway. Lint (candidate, `idiom/staged-multi-write`): a `with` block over a sync box that writes 2+ fields without `staged()` gets a nudge.
+
 ## Non-blocking variants
 
 `try_read`, `try_write`, and `try_lock` stay as closures. These are uncommon and closure-based is fine for them. `with` is always blocking.
@@ -215,6 +249,8 @@ const got_it = mutex.try_lock(|v| v.push(item))
 | `mutex.lock().field` | MX3 | Expression-scoped exclusive lock |
 | Standalone `shared.read()` without chaining | R5 | Compile error |
 | Inline access inside `with` on same primitive | DL2 | Compile error |
+| Panic inside `with` on a sync primitive | — | Lock releases cleanly, no poisoning; writes so far kept (`ctrl.panic/LK1–LK3`) |
+| Panic inside `with x.staged()` | ST3 | Working copy discarded — nothing committed |
 | Writers starve under read load | SY1 | By design — read performance prioritized |
 
 ---

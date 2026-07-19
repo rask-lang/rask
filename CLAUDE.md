@@ -21,6 +21,7 @@ If something genuinely seems wrong, flag it once with a concrete reason — then
 - Be critical; challenge my reasoning.
 - Don’t include timeline estimates in plans.
 - Don’t add yourself as a co-author to git commits.
+- When creating a PR, tag the issues it resolves in the body with closing keywords (`Closes #N` / `Fixes #N`) so GitHub auto-closes them on merge. Issues it only relates to get a plain `#N` reference.
 
 ## Debugging discipline
 
@@ -198,6 +199,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Resource types | `@resource` annotation for I/O handles, transactions; `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions, tuples, nominal types, type aliases | [types/](specs/types/) |
 | Errors | `T or E` result, `try` propagation, `T?` optionals, `todo()`/`unreachable()` | [error-types.md](specs/types/error-types.md) |
+| Panics | Task-kill + unwind, ensures run, locks release without poisoning, opt-in `staged()` | [panics.md](specs/control/panics.md) |
 | Concurrency | spawn(\|\| {})/join/detach (functions), channels, no function coloring | [concurrency/](specs/concurrency/) |
 | Comptime | Compile-time execution | [comptime.md](specs/control/comptime.md) |
 | C interop | Unsafe blocks, raw pointers | [unsafe.md](specs/memory/unsafe.md) |
