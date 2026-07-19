@@ -408,9 +408,9 @@ func handle(event: Event) -> Response {
 }
 ```
 
-**`todo()` output:**
+**`todo()` output (`ctrl.panic/F1` format):**
 ```
-thread panicked at 'not yet implemented: keyboard handling', src/handler.rk:4:19
+panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 ```
 
 ## Edge Cases

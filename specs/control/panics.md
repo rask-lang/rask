@@ -74,7 +74,7 @@ Closes the panic half of [#280](https://github.com/rask-lang/rask/issues/280). S
 |------|-------------|
 | **E1: Ensure panic panics the task** | A panic inside an ensure body (or its `else` handler) ends that ensure and starts — or continues — unwind. The task dies |
 | **E2: Remaining ensures still run** | The other scheduled ensures, in this block and every outer block, run anyway in LIFO order. One failing cleanup never skips other releases |
-| **E3: First panic wins** | The first panic becomes the task's `Panicked` message. Panics from later ensure bodies during the same unwind are contained at that ensure's boundary and reported to stderr as secondary panics |
+| **E3: First panic wins** | The first panic becomes the task's `Panicked` message. Any panic raised later in the same unwind — an ensure body, or a runtime guard firing at an unwound scope exit (`mem.resources/R5`, `conc.async/H1`) — is contained at its boundary and reported to stderr as a secondary panic |
 | **A1: Abort escape hatch** | If the runtime itself cannot continue unwinding (panic inside the unwind machinery, stack exhaustion during unwind), the process aborts (SIGABRT). This is a runtime failure mode, not a semantic rule programs may rely on |
 
 <!-- test: parse -->
@@ -92,7 +92,7 @@ func work() {
 // a.close(): ran anyway (E2) — no leak
 ```
 
-There is no Rust-style double-panic abort. Ensure bodies are the only user code that executes during unwind, and they are already an error-isolation boundary (`ctrl.ensure/ER5` makes their *errors* independent; E2–E3 extend the same shape to their *panics*).
+There is no Rust-style double-panic abort. The only code that executes during unwind is ensure bodies and runtime guards at scope exits — both bounded, runtime-invoked regions where containment is cheap (`ctrl.ensure/ER5` makes ensure *errors* independent; E2–E3 extend the same shape to unwind-time *panics*).
 
 ## What Survivors Observe
 
@@ -129,6 +129,8 @@ Resolves the panic open question in `determinism`.
 | Panic in ensure body during normal block exit | E1–E2 | Task dies with that panic; remaining ensures run |
 | Panic in ensure body during unwind | E3 | Contained, reported as secondary; original panic wins |
 | Panic in `else \|e\|` handler | E1 | Same as ensure-body panic |
+| Non-empty `Pool<Resource>` scope exits during unwind | E3 | R5 guard fires as secondary — reported, contained; elements leak (U5's consequence) |
+| Unconsumed `TaskHandle` scope exits during unwind | E3 | H1 guard fires as secondary — reported, contained; the task keeps running as if detached |
 | Panic while holding nested pool bindings (`with pool[h1] as a, pool[h2] as b`) | U3 | Both accesses released |
 | Panic between linear acquisition and its `ensure` | U5 | Resource leaks; lint nudges ensure-immediately-after |
 | `os.exit()` inside an ensure body | P5 | Immediate exit — remaining ensures skipped (that's what exit means) |
