@@ -245,6 +245,8 @@ for name in scores.keys() { println(name) }
 for score in scores.values() { println(format("{}", score)) }
 ```
 
+**Iteration order is unspecified and seeded per process** — don't depend on it. The hash seed varies between production runs (and across sim seeds, so order-dependent code fails under test rather than in production). Need a stable order? Sort explicitly: `map.keys().collect().sort()`. See `determinism/D7`.
+
 ## Shrinking
 
 Infallible, best-effort. If the allocator can't provide a smaller block, the collection keeps its current allocation.

@@ -17,6 +17,8 @@ This is the foundation for commitment 3 of [NORTH_STAR.md](../NORTH_STAR.md): no
 | **D2: Zero production cost** | Sim mode is a runtime mode, not a compilation dialect. Production builds carry no determinism instrumentation. The only always-on choices are semantic ones (D7) |
 | **D3: Same code** | Programs are not written differently for sim. The same binary logic runs in both modes; only the runtime beneath it is swapped |
 
+The governing rule for every disposal below: **production may be nondeterministic only in ways sim can explore (interleavings, timings, faults, orders), never in ways sim can't express (divergent semantics).** A behavior difference between the two modes that sim can't reach through its seed space is a hole in the contract.
+
 ## Sources of nondeterminism and their disposal
 
 Every source is listed here. A source not listed is a spec bug.
@@ -26,7 +28,7 @@ Every source is listed here. A source not listed is a spec bug.
 | **D4: Task scheduling** | Green task interleaving | Sim runs the scheduler single-threaded; task switch order drawn from the seed. Adversarial schedules (pathological interleavings) are a seed away, not a fluke |
 | **D5: Time** | `Instant`, `SystemTime`, timers, sleep | Virtual clock in sim, advanced by the scheduler. Already runtime-mediated |
 | **D6: Randomness** | `random` module | All generators derive from the sim seed |
-| **D7: Map iteration order** | Hash order | Insertion-ordered by definition, in all modes. Iteration order is a semantic guarantee, not an accident — this closes the classic replay leak at a small constant cost |
+| **D7: Map iteration order** | Hash order | Seeded hash order, seed owned by the mode: production seeds per process (HashDoS mitigation; accidental order-dependence can't take root), sim derives the seed from the sim seed (replay-exact, and seed search varies the order so order-dependent code fails under test). No mode guarantees an observable order — code that needs one sorts explicitly. Insertion-ordered Map was considered and rejected: order-preserving removal costs O(n) or compaction pauses, and the index layer taxes every lookup |
 | **D8: Pool/handle allocation** | Slot and generation assignment | Deterministic function of the operation sequence. Handles are indices, never addresses |
 | **D9: I/O** | Network, disk, file system | Sim substitutes simulated implementations behind the same stdlib surface. Fault injection (partitions, slow disks, torn writes) is driven by the seed |
 | **D10: External inputs** | Env, args, stdin, wall-clock start | Fixed or recorded as part of the sim scenario |
@@ -43,6 +45,6 @@ Every source is listed here. A source not listed is a spec bug.
 
 ## Open questions
 
-- **D7 ratification:** insertion-ordered Map changes production semantics (and blesses order-dependent code). The alternative — deterministic ordering only in sim — keeps prod flexible but reopens the leak. Decide before Map iteration behavior gets load-bearing users.
+- **Ordered map type:** with D7 guaranteeing no order anywhere, programs that genuinely need insertion or sorted order have no dedicated type — sort-at-use covers most cases; decide whether an explicit `OrderedMap` earns a place in the stdlib when real programs ask for it.
 - **Record-replay in production:** capturing real inputs for after-the-fact replay is a heavier feature than sim and is not part of this contract yet.
 - **Panic interaction:** replaying a run that panics requires the panic path itself to be deterministic (message, unwind behavior). Depends on the panic-semantics spec (tracked separately).
