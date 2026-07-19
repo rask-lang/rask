@@ -1,18 +1,18 @@
 <!-- id: type.generics -->
 <!-- status: decided -->
-<!-- summary: Trait matching by shape, operator-to-method expansion, verified clone/equal/comparable, code specialization per type -->
+<!-- summary: Nominal trait conformance via extend...with, operator-to-method expansion, verified clone/equal/comparable, code specialization per type -->
 <!-- depends: types/structs.md, types/enums.md, types/traits.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
 # Generics and Traits
 
-Traits match by shape — if your type has the right methods, it satisfies the trait. Operators like `a + b` expand to method calls. The compiler generates specialized code for each concrete type you use (this is called *monomorphization*). For mixed-type collections, opt into runtime dispatch with `any Trait`.
+Trait conformance is declared — `extend Type with Trait` says the type satisfies the trait, and the compiler checks the signatures against the declaration. `structural trait` opts individual traits into shape-matching where the shape genuinely is the contract. Operators like `a + b` expand to method calls. The compiler generates specialized code for each concrete type you use (this is called *monomorphization*). For mixed-type collections, opt into runtime dispatch with `any Trait`.
 
 ## Core Principles
 
 | Rule | Description |
 |------|-------------|
-| **G1: Trait matching** | A type satisfies a trait if it has all the required methods with matching signatures — no explicit `extend` needed |
+| **G1: Declared conformance** | A type satisfies a trait through a declared `extend Type with Trait` block, checked against the trait's signatures. `structural trait` opts a trait into shape-matching (no declaration needed). The five core traits (Equal, Hashable, Comparable, Cloneable, Default) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2/DF3 |
 | **G2: Checked at use site** | The compiler verifies trait matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before trait checking |
@@ -30,8 +30,8 @@ Traits match by shape — if your type has the right methods, it satisfies the t
 
 | Trait Form | Meaning |
 |------------|---------|
-| `trait Comparable` | Structural matching allowed |
-| `explicit trait Serializable` | Requires explicit `extend` (for library stability) |
+| `trait Comparable` | Nominal (default) — types conform via `extend Type with Comparable` |
+| `structural trait Reader` | Shape-matched — any type with the right methods satisfies it, no declaration |
 | `trait Hashable: Equal` | Composition (requires all methods from Equal plus Hashable's own) |
 
 ```rask
@@ -46,7 +46,7 @@ trait Name {
 }
 ```
 
-When a trait is marked `explicit`, types must provide an explicit `extend` block. This protects library APIs from accidental breakage when method signatures change.
+Nominal is the default because conformance is a semantic claim, not just a shape: `compare()` existing doesn't make it a total order. The declaration states intent, gives the compiler a place to check signatures, and gives readers and tools a place to look. Mark a trait `structural` when the shape genuinely is the whole contract — I/O-style method bundles (`Reader`, `Writer`), `ErrorMessage` — and accidental conformance is harmless.
 
 ## Generic Functions
 
@@ -67,9 +67,19 @@ func helper(item) { item.hash() }
 
 See [Gradual Constraints](gradual-constraints.md) for inference rules, smart error messages, and edge cases.
 
-## How Trait Matching Works
+## How Conformance Is Checked
 
-The compiler checks (G1) whether a type has all the methods a trait requires:
+A conformance declaration provides the trait's methods (or inherits them from methods already on the type):
+
+```rask
+extend Point with Comparable {
+    func compare(self, other: Point) -> Ordering {
+        // Custom implementation
+    }
+}
+```
+
+An empty `extend Point with Comparable {}` declares conformance using methods the type already has. Either way, the compiler checks each required method:
 1. Method exists on the type (not a free function)
 2. Parameter types match exactly
 3. Return type matches exactly
@@ -81,15 +91,7 @@ The compiler checks (G1) whether a type has all the methods a trait requires:
 | `func compare(self, other: T) -> i32` | `compare(self, other: T) -> Ordering` | No (return type mismatch) |
 | `func compare(a: T, b: T) -> Ordering` | `compare(self, other: T) -> Ordering` | No (free function, not method) |
 
-Types can also provide explicit implementations to override defaults or satisfy `explicit trait`:
-
-```rask
-extend Point with Comparable {
-    func compare(self, other: Point) -> Ordering {
-        // Custom implementation
-    }
-}
-```
+For `structural trait`, the same signature check runs at the use site against the type's own methods — no declaration involved. Errors point at the declaration for nominal traits and at the use site for structural ones.
 
 ## Operator Expansion
 
@@ -337,7 +339,7 @@ func increment<T: Numeric>(val: T) -> T {
 
 ### Rationale
 
-**G1 (trait matching):** Explicit constraints catch errors early without whole-program analysis. Matching by shape avoids needing to track trait implementations globally across the entire program.
+**G1 (declared conformance):** This flipped. The original design matched by shape by default, with `explicit trait` as the opt-out — chosen to avoid global impl tracking. Two things overturned it: accidental conformance is silent-wrong (a `compare()` that isn't a total order satisfies `Comparable` structurally and misbehaves instead of erroring), and the declaration's cost dropped — one line that states intent is cheap, especially when most code is machine-written and human-reviewed. Checking stays local: a declaration is checked where it's written, and bounds are still checked at the use site — no whole-program analysis either way. `structural trait` keeps shape-matching available where it's genuinely right.
 
 **G4 (operator expansion):** Makes numeric code ergonomic — `a + b` reads naturally while the trait system handles dispatch.
 
@@ -345,7 +347,7 @@ func increment<T: Numeric>(val: T) -> T {
 
 **G6 (code specialization):** Keeps costs transparent and compilation fast. Each usage generates specialized code — no hidden function-pointer overhead.
 
-**`explicit trait`:** Provides library stability when needed. Prevents accidental shape matches from breaking when method signatures evolve.
+**`structural trait`:** The opt-in that replaced `explicit trait` when the default flipped. Reserve it for traits where the method bundle is the entire contract and accidental matches are harmless.
 
 ### Patterns & Guidance
 
@@ -381,7 +383,7 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 ### Integration Notes
 
 - **Memory model**: Generic ownership rules same as non-generic; move/copy determined per concrete type
-- **Type system**: Traits checked by shape at use site; no global tracking required (unless `explicit trait`)
+- **Type system**: Conformance declared and checked locally at the `extend` block; bounds checked at use site — no global tracking. `structural trait` checks shape at use site
 - **Concurrency**: Generic tasks can send owned generic values; traits verified per concrete type
 - **Compiler**: Specialization happens per compilation unit; no cross-unit analysis
 - **C interop**: Generic functions cannot be exported to C (no stable ABI); specialized wrappers required

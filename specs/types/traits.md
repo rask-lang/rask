@@ -36,9 +36,9 @@ The vtable only contains slots for compatible methods. Incompatible methods have
 
 | Rule | Description |
 |------|-------------|
-| **TR5: Implicit when target is `any`** | Concrete values implicitly convert when the target type is `any Trait` — assignment, function arguments, collection elements, struct fields |
-| **TR6: Explicit cast** | `const w = button as any Widget` — converts with `as` when target type isn't known |
-| **TR7: Collection type** | `[]any Widget`, `Map<string, any Handler>` — heterogeneous collections |
+| **TR5: Explicit conversion** | Converting a concrete value to `any Trait` requires `value as any Trait` — at assignment, function arguments, collection elements, and struct fields alike. No implicit boxing |
+| **TR6: Cast form** | `const w = button as any Widget` — the one conversion syntax, whether or not the target type is otherwise known |
+| **TR7: Collection type** | `[]any Widget`, `Map<string, any Handler>` — heterogeneous collections; each element is converted explicitly |
 
 <!-- test: parse -->
 ```rask
@@ -51,24 +51,20 @@ func render_all(widgets: []any Widget) {
 }
 ```
 
-The `any` keyword in the target type is the cost signal. Conversion is implicit when the target type is known to be `any Trait`:
+The `as any Trait` cast is the cost signal — each conversion heap-allocates (TR9), and the allocation is visible exactly where it happens:
 
 <!-- test: parse -->
 ```rask
 const button = Button { label: "OK" }
 
-// Implicit — target type is any Widget
-const w: any Widget = button          // TR5: type annotation
-render(button)                        // TR5: parameter type
-const widgets: []any Widget = [       // TR5: collection element type
-    button,
-    slider,
-    label,
+const w = button as any Widget
+render(button as any Widget)
+const widgets: []any Widget = [
+    button as any Widget,
+    slider as any Widget,
+    label as any Widget,
 ]
-router.add("/home", handler)          // TR5: struct field / parameter type
-
-// Explicit — no target type context, or for clarity
-const w = button as any Widget        // TR6: no type annotation to infer from
+router.add("/home", handler as any Handler)
 ```
 
 ## Boxing
@@ -81,7 +77,7 @@ Creating an `any Trait` value heap-allocates the concrete data.
 | **TR10: Owned data** | `any Trait` owns its heap data — same ownership model as Vec or string |
 | **TR11: Move-only** | `any Trait` is never Copy; assignment moves. Cloneable only if the trait provides a clone method |
 
-The `any` keyword in the type is the cost signal.
+The `as any Trait` cast marks the allocation site (TR5).
 
 ## Dispatch
 
@@ -140,17 +136,16 @@ FIX: Use a generic function for type-preserving operations:
   }
 ```
 
-**No target type for `as any` [TR6]:**
+**Missing conversion to `any` [TR5]:**
 ```
-ERROR [type.traits/TR6]: can't infer trait object type
+ERROR [type.traits/TR5]: expected `any Widget`, found `Button`
    |
-5  |  const w = button
-   |        ^ type `Button` — did you mean `button as any Widget`?
+5  |  render(button)
+   |         ^^^^^^ converting to `any Widget` heap-allocates — write it explicitly
 
-FIX: Add a type annotation or use explicit conversion:
+FIX: Convert at the call site:
 
-  const w: any Widget = button    // Implicit via type annotation
-  const w = button as any Widget  // Explicit cast
+  render(button as any Widget)
 ```
 
 ## Examples
@@ -211,7 +206,7 @@ extend Container {
 
 **TR1–TR4 (per-method restrictions):** Rust rejects entire traits from `dyn` if any method is incompatible — "trait is not object-safe." I think that's too coarse. A trait with nine compatible methods and one `Self`-returning method should work with `any` — you just can't call that one method. The error appears at the call site where the problem is, not at the coercion site where it isn't.
 
-**TR5 (implicit when target is `any`):** The `any` keyword is already visible in the function signature, the collection type, or the struct field type. Requiring `as any Widget` on every handler registration, every collection element, every callback — it's ceremony that doesn't help readability. The `any` keyword in the *type system* is the cost signal, not the conversion at each use site. If you see `[]any Widget`, you know there's allocation. You don't need `[button as any Widget, slider as any Widget]` to remind you.
+**TR5 (explicit conversion):** This flipped. The original design converted implicitly whenever the target type was `any Trait`, arguing the `any` in the type was signal enough. But the type can sit far from the conversion — a struct field in another file, a parameter in a signature you're not looking at — so the allocation happened at lines that showed nothing. That's a straight violation of transparency-of-cost: allocations are supposed to be visible in code where they occur. The cast is ceremony, and it's ceremony at exactly the sites where N allocations are happening — the place paying attention is the point. If the full requirement proves too heavy in real code, the candidate relaxation is narrow: implicit conversion only when the annotation is on the same line (`const w: any Widget = button`), explicit everywhere else. Decide from usage, not in the abstract.
 
 **TR9 (heap allocation):** I chose owned heap allocation over alternatives. The `any` keyword is the cost signal — you see it in the type, you know there's indirection and allocation. This is a deliberate tradeoff: ergonomic for the use cases where you need it (handlers, plugins, UI), explicit enough that you won't accidentally use it in hot paths.
 

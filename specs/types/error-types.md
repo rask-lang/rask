@@ -34,7 +34,7 @@ func save(data: Data) -> void or IoError                   // unit success
 
 | Rule | Description |
 |------|-------------|
-| **ER6: Structural matching** | Any type with `func message(self) -> string` satisfies `ErrorMessage` — no explicit `impl Trait` needed |
+| **ER6: Structural trait** | `ErrorMessage` is a `structural trait` (`type.generics/G1`) — any type with `func message(self) -> string` satisfies it, no declaration needed. The shape is the whole contract, and requiring a conformance line on every error enum would tax the most common trait in the language |
 | **ER7: Auto-Displayable** | Error types auto-satisfy `Displayable`; `to_string()` delegates to `message()` |
 | **ER8: Layered traits** | Richer capabilities (`LinedError`, `ContextualError`, `CodedError`) are opt-in traits on top of `ErrorMessage`. The minimum bound is just `message() -> string` |
 

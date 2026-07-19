@@ -532,5 +532,5 @@ Zero serialization boilerplate. Comparable to Go.
 - `std.reflect` — Field reflection, type introspection (`std.reflect/R1`)
 - `std.json` — JSON format library using this mechanism (`std.json/J6`)
 - `type.generics` — Trait bounds, auto-derive pattern (`type.generics/CL1`)
-- `type.traits` — Trait definitions, structural matching (`type.traits/TR1`)
+- `type.generics` — Trait conformance, structural opt-in (`type.generics/G1`)
 - `mem.relocatable` — Pool binary serialization using Encode/Decode (`mem.relocatable/PB1`)
