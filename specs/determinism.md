@@ -47,4 +47,4 @@ Every source is listed here. A source not listed is a spec bug.
 
 - **Ordered map type:** with D7 guaranteeing no order anywhere, programs that genuinely need insertion or sorted order have no dedicated type — sort-at-use covers most cases; decide whether an explicit `OrderedMap` earns a place in the stdlib when real programs ask for it.
 - **Record-replay in production:** capturing real inputs for after-the-fact replay is a heavier feature than sim and is not part of this contract yet.
-- **Panic interaction:** replaying a run that panics requires the panic path itself to be deterministic (message, unwind behavior). Depends on the panic-semantics spec (tracked separately).
+- **Panic interaction:** resolved by the proposed panic spec — panic point, message, and unwind order are deterministic and replay-stable (`ctrl.panic/PD1–PD3`). Closes when that spec is accepted.

@@ -130,6 +130,7 @@ Quick navigation by task or concept:
 | [loops.md](control/loops.md) | for-in syntax, desugaring |
 | [ranges.md](control/ranges.md) | Range types, reverse iteration |
 | [ensure.md](control/ensure.md) | Deferred cleanup |
+| [panics.md](control/panics.md) | Panic semantics — task-kill, unwind, lock release (proposed) |
 | [comptime.md](control/comptime.md) | Compile-time execution |
 
 ## Concurrency — How tasks run in parallel
