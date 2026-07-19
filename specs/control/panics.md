@@ -43,13 +43,15 @@ Panic during `comptime` evaluation is not a runtime event — it's a compile err
 | **P4: main is a task** | A panic escaping `main` unwinds `main`'s stack (ensures run), then the process exits with status 101 (`struct.targets/EX4`) |
 | **P5: exit is not a panic** | `os.exit(n)` terminates immediately — no unwind, no ensures (`struct.targets/EX3`) |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
-const h = spawn(|| { risky_work() })
-match h.join() {
-    T as val                => process(val),
-    JoinError.Panicked(msg) => log("worker died: {msg}"),  // P3: only observation point
-    JoinError.Cancelled     => {},
+func observe() {
+    const h = spawn(|| { risky_work() })
+    match h.join() {
+        T as val                => process(val),
+        JoinError.Panicked(msg) => log("worker died: {msg}"),  // P3: only observation point
+        JoinError.Cancelled     => {},
+    }
 }
 ```
 
@@ -75,17 +77,21 @@ U5 is deliberate. Rask has no hidden destructors — that's the point of linear 
 
 When cross-task state must stay consistent even under panics, build the new value locally and commit with one write:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Vulnerable: panic between the two writes leaves state torn
-with accounts as a {
-    a.checking -= amount
-    a.savings += amount      // panic here → survivors see money destroyed
+func transfer_torn(amount: i64) {
+    with accounts as a {
+        a.checking -= amount
+        a.savings += amount      // panic here → survivors see money destroyed
+    }
 }
 
 // Commit pattern: compute outside, write once
-const next = compute_transfer(accounts.lock().clone(), amount)
-with accounts as a { a = next }      // single write — torn state impossible
+func transfer_committed(amount: i64) {
+    const next = compute_transfer(accounts.lock().clone(), amount)
+    with accounts as a { a = next }  // single write — torn state impossible
+}
 ```
 
 ## Ensure × Panic
@@ -99,7 +105,7 @@ Closes the panic half of [#280](https://github.com/rask-lang/rask/issues/280). S
 | **E3: First panic wins** | The first panic becomes the task's `Panicked` message. Panics from later ensure bodies during the same unwind are contained at that ensure's boundary and reported to stderr as secondary panics |
 | **A1: Abort escape hatch** | If the runtime itself cannot continue unwinding (panic inside the unwind machinery, stack exhaustion during unwind), the process aborts (SIGABRT). This is a runtime failure mode, not a semantic rule programs may rely on |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func work() {
     const a = try open("a.txt")
