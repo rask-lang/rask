@@ -568,6 +568,15 @@ func process() {
 
 Send is consumption like any other (C5) — it cancels the ensure and falls under the same C3/C4 definiteness rules. (An earlier draft made send-with-active-ensure an outright error; C5 replaces that.)
 
+### Implementation status (C3–C5)
+
+The implementation currently does the opposite of C3: `ensure` blanket-suppresses the static linear check for its receiver, and cancellation is decided by runtime flags (MIR `ResourceConsume` + `rask_resource_is_consumed`; interpreter `ResourceTracker`). Tracked:
+
+- [#293](https://github.com/rask-lang/rask/issues/293) — implement the static definiteness analysis, retire the runtime flags
+- [#294](https://github.com/rask-lang/rask/issues/294) — if-without-else soundness hole in the merge analysis (prerequisite)
+- [#295](https://github.com/rask-lang/rask/issues/295) — interpreter: cancellation misses nested-block consumption, cleanup double-runs today
+- [#296](https://github.com/rask-lang/rask/issues/296) — take-param/send consumption not recognized without call-site `own` (C5 assumes it is)
+
 ### See Also
 
 - [Resource Types](../memory/resource-types.md) — Linear resources (`mem.resources`)
