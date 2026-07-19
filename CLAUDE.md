@@ -21,6 +21,7 @@ If something genuinely seems wrong, flag it once with a concrete reason — then
 - Be critical; challenge my reasoning.
 - Don’t include timeline estimates in plans.
 - Don’t add yourself as a co-author to git commits.
+- When creating a PR, tag the issues it resolves in the body with closing keywords (`Closes #N` / `Fixes #N`) so GitHub auto-closes them on merge. Issues it only relates to get a plain `#N` reference.
 
 ## Debugging discipline
 
