@@ -1,22 +1,11 @@
 <!-- id: ctrl.panic -->
-<!-- status: proposed -->
+<!-- status: decided -->
 <!-- summary: Panic kills the task — unwind runs ensures, locks release without poisoning, recovery only at join -->
 <!-- depends: control/ensure.md, concurrency/async.md, concurrency/sync.md, memory/linear.md, memory/borrowing.md -->
 
 # Panic Semantics
 
 A panic is a detected bug, not an error value. It kills the panicking task: the stack unwinds to the task root, running `ensure` blocks and releasing lock access on the way, and the failure surfaces as `JoinError.Panicked` at the join point. There is no in-task recovery.
-
-## Decision points
-
-Proposed spec — four choices needed making. Each is written into the rules below as if decided; the appendix works through the alternatives.
-
-| # | Question | This draft picks | Rejected alternatives |
-|---|----------|------------------|-----------------------|
-| A | Blast radius | Unwind and kill the task (P1–P2). Process abort only when the runtime can't unwind (A1) | `panic=abort` everywhere; Go-style process death on any unjoined panic |
-| B | Panic while holding a lock | Release cleanly, no poisoning (LK1–LK2) + opt-in `staged()` access for panic-atomic updates (ST1–ST4) | Rust-style poison-with-error-channel; sticky poison that panics later acquirers; recovery arm on `with`; abort |
-| C | Panic inside an `ensure` body | Remaining ensures still run; later panics during the same unwind are contained and reported (E1–E3) | Current `ctrl.ensure` line: skip remaining ensures (leaks every outer resource) |
-| D | Detached task panics | Message to stderr, process continues (O4) | Silent death; process abort |
 
 ## What Panics
 
@@ -75,39 +64,7 @@ U5 is deliberate. Rask has no hidden destructors — that's the point of linear 
 | **LK2: No poison state** | There is no poisoned flag. The next `with mutex` succeeds and sees the value exactly as the dying task left it |
 | **LK3: Torn invariants are yours** | A panic mid-mutation can leave *application-level* invariants broken for survivors. Language-level invariants (memory safety, lock state, generation counts) always hold |
 
-### Staged access — opt-in panic atomicity
-
-Where LK3 isn't acceptable — a multi-field invariant that other tasks will read — opt into `staged()` access. The `with` block already has exact boundaries, so the update can be made atomic with respect to panics *by construction* instead of detected after the fact (Rust's poisoning).
-
-| Rule | Description |
-|------|-------------|
-| **ST1: Staged access** | `with mutex.staged() as v { }` / `with shared.staged() as v { }` — takes the exclusive lock, binds `v` to a working copy of the value (clone at entry) |
-| **ST2: Commit on exit** | Every non-panic exit (normal, `return`, `try`, `break`/`continue`) commits the copy back as one move |
-| **ST3: Panic discards** | Unwind drops the copy uncommitted — survivors see the last committed state. Torn state impossible at staged sites |
-| **ST4: Panic-only scope** | Staged is not error rollback — `try` exits commit (ST2). Rollback-on-error already has a mechanism: `ensure tx.rollback()` + explicit commit (`ctrl.ensure/C1`) |
-
-<!-- test: parse -->
-```rask
-// Vulnerable: panic between the two writes leaves state torn (LK3)
-func transfer_torn(amount: i64) {
-    with accounts as a {
-        a.checking -= amount
-        a.savings += amount      // panic here → survivors see money destroyed
-    }
-}
-
-// Staged: both writes land as one commit, or not at all
-func transfer(amount: i64) {
-    with accounts.staged() as a {
-        a.checking -= amount
-        a.savings += amount      // panic here → nothing committed (ST3)
-    }                            // clean exit → one commit (ST2)
-}
-```
-
-The clone is the price and the method name says so — same visibility deal as `.clone()`. Plain `with mutex as v` stays free; only sites guarding a real invariant pay. Cross-box invariants stay out of reach, but nested locks are already forbidden (`conc.sync/DL1`), so per-box atomicity is all the language ever promises anyway. Lint (candidate, `idiom/staged-multi-write`): a `with` block over a sync box that writes 2+ fields without `staged()` gets a nudge.
-
-Staged access belongs in `conc.sync` (it's a box-family feature); it lives here while the spec is proposed because panic semantics motivate it.
+Where LK3 isn't acceptable — a multi-field invariant that other tasks will read — opt into **staged access**: `with mutex.staged() as v { }` works on a copy that commits as one move on non-panic exit and is discarded on unwind. Torn state impossible by construction at staged sites. Rules and example: `conc.sync/ST1–ST4`.
 
 ## Ensure × Panic
 
@@ -196,7 +153,7 @@ Worked alternative — **abort everywhere**: smaller runtime (no unwinder), no t
 
 Poisoning (Rust `std`) turns every lock acquisition into a fallible operation. Rask's `with mutex as v { }` has no error channel, and adding one taxes every call site with ceremony for a case that is already a bug elsewhere. The Rust ecosystem's own drift to `parking_lot` (no poisoning) is evidence the tax doesn't pay.
 
-Rust is stuck with detection because a `MutexGuard` is a free-floating reference — the language can't see where an update starts and ends. Rask can: the `with` block *is* the update, with compiler-known boundaries. That's what makes ST1–ST4 possible — prevention by construction, priced per site, instead of detection taxed everywhere. Commit is an infallible move under a held lock, so unlike poisoning there is nothing to handle and nothing to cascade.
+Rust is stuck with detection because a `MutexGuard` is a free-floating reference — the language can't see where an update starts and ends. Rask can: the `with` block *is* the update, with compiler-known boundaries. That's what makes staged access (`conc.sync/ST1–ST4`) possible — prevention by construction, priced per site, instead of detection taxed everywhere. Commit is an infallible move under a held lock, so unlike poisoning there is nothing to handle and nothing to cascade.
 
 Other alternatives worked through:
 
@@ -225,7 +182,7 @@ The interpreter already implements most of this model; compiled code has the big
 - Diverges from E2/E3: a panic in an ensure body skips the *remaining* ensures, and when it happens during unwind the secondary panic is silently dropped instead of reported (`interp/call.rs`, `run_ensures`).
 - Diverges from U2: `with`-block writes are buffered and the write-back is skipped on panic (`eval_expr.rs`, WithAs) — plain `with` accidentally behaves like ST3 today. Compiled code mutates in place (matches U2). One of the two must move; U2 says the interpreter does.
 - Exits with code 1 on uncaught panic, not 101 (`struct.targets/EX4`).
-- `staged()` (ST1–ST4) is unimplemented in both paths.
+- `staged()` (`conc.sync/ST1–ST4`) is unimplemented in both paths.
 
 **Compiled** (`rask-codegen` + C runtime):
 - Ensures are inlined only on the normal-return path (`CleanupReturn`); the panic path is `rask_panic_at → trap`. **No ensure runs on panic** — violates U1. The green runtime's `rask_ensure_push/pop` hook stack exists but codegen never emits calls to it.

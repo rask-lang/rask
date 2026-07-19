@@ -323,7 +323,7 @@ func process_many_files_careful(paths: Vec<string>) -> void or Error {
 | Ensure in nested blocks | EN1 | Each ensure runs when its enclosing block exits |
 | Ensure in loop body | EN7 | Runs at end of each iteration, not loop exit |
 | Ensure + explicit consumption | C1 | Explicit consumption cancels ensure |
-| Ensure body panics | — | Task panics; remaining ensures still run — see `ctrl.panic/E1–E3` (proposed) |
+| Ensure body panics | — | Task panics; remaining ensures still run — see `ctrl.panic/E1–E3` |
 | Ensure body returns value | — | Value discarded (ensure is statement, not expression) |
 | Nested ensures (ensure inside ensure) | — | Forbidden—ensure is statement, not block |
 
