@@ -236,6 +236,9 @@ If a value is consumed explicitly before scope exit, the ensure is cancelled.
 |------|-------------|
 | **C1: Explicit consumption wins** | If value consumed before scope exit, ensure doesn't run |
 | **C2: Cancellation tracked** | Compiler tracks consumption and voids the ensure |
+| **C3: Definite at every exit** | At every scope-exit point, the consumption state of an ensured value must be statically definite — consumed on all paths reaching that exit, or on none. Which cleanups run is decided at compile time, never by hidden runtime state |
+| **C4: Maybe-consumed is a compile error** | If any exit point is reachable with the value both consumed and unconsumed (consumed on one branch, then paths merge), compile error. Restructure: exit inside the consuming branch, or consume on every path |
+| **C5: All consumption is one analysis** | Sending on a channel, passing to a `take` parameter, and `take self` methods are the same consumption for C3 — no special channel rule |
 
 <!-- test: skip -->
 ```rask
@@ -246,6 +249,21 @@ ensure tx.rollback()    // Scheduled
 
 tx.commit()             // Consumes tx, cancels ensure (C1)
 return
+```
+
+Path-*dependent* cancellation is fine — the transfer example below exits early with `tx` unconsumed (rollback runs) or falls through after `commit()` (cancelled). Each exit is definite. What C3/C4 forbid is path-dependent *uncertainty*: consuming in a branch and then merging back before the exit.
+
+<!-- test: skip -->
+```rask
+const tx = try db.begin()
+ensure tx.rollback()
+
+if fast_path {
+    tx.commit()         // consumed on this branch only...
+}
+
+log("done")             // ❌ C4: paths merge — at scope exit, consumption
+                        //    depends on which path ran
 ```
 
 **Transaction pattern:** Ensure the unhappy path (rollback), explicitly handle the happy path (commit).
@@ -323,6 +341,10 @@ func process_many_files_careful(paths: Vec<string>) -> void or Error {
 | Ensure in nested blocks | EN1 | Each ensure runs when its enclosing block exits |
 | Ensure in loop body | EN7 | Runs at end of each iteration, not loop exit |
 | Ensure + explicit consumption | C1 | Explicit consumption cancels ensure |
+| Consumed on some branches, paths merge before exit | C4 | Compile error — exit inside the consuming branch, or consume on every path |
+| Consumption in some match arms only | C4 | Same — every arm consumes, or consuming arms exit |
+| Consumption inside a loop body | C3 | Compile error — the loop may run zero times, so the state after it is indefinite |
+| Send on channel with active ensure | C5, C1 | Send is consumption — cancels the ensure, same definiteness rules |
 | Ensure body panics | — | Task panics; remaining ensures still run — see `ctrl.panic/E1–E3` |
 | Ensure body returns value | — | Value discarded (ensure is statement, not expression) |
 | Nested ensures (ensure inside ensure) | — | Forbidden—ensure is statement, not block |
@@ -380,6 +402,34 @@ FIX: Use ensure to guarantee cleanup:
   const data = try file.read()
 ```
 
+**Maybe-consumed value [C4]:**
+```
+ERROR [ctrl.ensure/C4]: consumption of `tx` depends on which path ran
+   |
+3  |  ensure tx.rollback()
+   |         ^^^^^^^^^^^^^ cleanup scheduled here
+5  |  if fast_path {
+6  |      tx.commit()
+   |      ^^^^^^^^^^^ consumed only on this branch
+7  |  }
+9  |  }
+   |  ^ scope exits with `tx` maybe-consumed
+
+WHY: Which cleanups run is decided at compile time. A value consumed on some
+     paths but not others has no definite answer at this exit.
+
+FIX: Exit inside the consuming branch:
+
+  if fast_path {
+      tx.commit()
+      return
+  }
+
+Or consume on every path:
+
+  if fast_path { tx.commit() } else { tx.rollback() }
+```
+
 **Ensure on non-linear without else [ER1]:**
 ```
 NOTE [ctrl.ensure/ER1]: ensure result ignored
@@ -414,6 +464,8 @@ FIX: Add else clause to handle errors:
 **EN5 (try forbidden in ensure):** Ensure runs during scope exit—there's nowhere to propagate errors. Forbidding `try` makes this explicit. If you need fallible cleanup, use explicit handling (not ensure).
 
 **EN6 (explicit consumption cancels ensure):** Transaction pattern: ensure rollback, explicitly commit. If commit succeeds, rollback shouldn't run. Explicit consumption cancels the ensure—compiler tracks this.
+
+**C3/C4 (definite at every exit, no drop flags):** Rust solves the maybe-consumed case with hidden runtime flags — a boolean per value, checked at scope exit to decide whether the drop runs. Rust needs that because drops are implicit everywhere; Rask's cleanup is explicit, so the language can demand definiteness instead. The flag itself would be cheap — what it hides is *semantics*: which cleanup runs would depend on invisible runtime state instead of readable control flow. It would also make ensure the one place in the language where linearity goes flow-blurry — plain linear values already require consumption on all paths. The cost is restructuring the occasional maybe-consumed function; the diagnostic shows both fixes as code.
 
 Name choice: "ensure" reads naturally—"ensure this happens before we leave this scope." Considered `defer` (Go), `finally` (Java), `scope(exit)` (D). "Ensure" emphasizes the guarantee, not the timing.
 
@@ -510,11 +562,11 @@ func process() {
     const file = try open("data.txt")
     ensure file.close()
 
-    channel.send(file)      // Transfers ownership, cancels ensure
+    channel.send(file)      // Transfers ownership, cancels ensure (C5, C1)
 }
 ```
 
-Compiler error if you try to send a value with active ensure—must consume or cancel first.
+Send is consumption like any other (C5) — it cancels the ensure and falls under the same C3/C4 definiteness rules. (An earlier draft made send-with-active-ensure an outright error; C5 replaces that.)
 
 ### See Also
 
