@@ -741,7 +741,7 @@ func TaskHandle::cancel(mut self) -> T or JoinError {
 
 **Check points (CN3):**
 - I/O entry (`File.open`, `TcpConnection.read`, etc.)
-- Channel operations (`send`, `recv`)
+- Channel operations (`send`, `receive`)
 - Explicit `cancelled()` function call
 
 **Ensure blocks run (CN2):** Before task completes, ensure hooks execute LIFO (see §7).
@@ -1069,7 +1069,7 @@ public struct Timer {
 }
 
 public struct TimerReceiver {
-    func recv() -> void or RecvError  // Blocks until timer fires
+    func receive() -> void or ReceiveError  // Blocks until timer fires
 }
 ```
 
@@ -1097,7 +1097,7 @@ using Multitasking {
     const ticker = Timer.interval(Duration.milliseconds(100))
     spawn(|| {
         loop {
-            try ticker.recv()
+            try ticker.receive()
             update_stats()
         }
     }).detach()
@@ -1365,11 +1365,11 @@ func Sender::send(self, value: T) -> void or SendError {
 ### Receive Flow (CH3)
 
 ```rust
-func Receiver::recv(self) -> T or RecvError {
+func Receiver::receive(self) -> T or ReceiveError {
     let runtime = RUNTIME_SLOT.read();
     if let Some(r) = &runtime {
         if r.current_task().cancel_flag.load(Relaxed) {
-            return Err(RecvError::Cancelled)
+            return Err(ReceiveError::Cancelled)
         }
     }
 
@@ -1387,7 +1387,7 @@ func Receiver::recv(self) -> T or RecvError {
         return Ok(value)
     } else if self.channel.senders.load(Relaxed) == 0 {
         // All senders dropped (CH3: close on drop)
-        return Err(RecvError::Closed)
+        return Err(ReceiveError::Closed)
     } else if __ctx is Some(ctx) {
         // Buffer empty, async context: park task
         drop(buf);
@@ -1401,7 +1401,7 @@ func Receiver::recv(self) -> T or RecvError {
         let (lock, cvar) = &self.channel.recv_notify;
         let _guard = cvar.wait(buf);
 
-        return self.recv(__ctx)
+        return self.receive(__ctx)
     }
 }
 ```
@@ -1416,8 +1416,8 @@ func Receiver::recv(self) -> T or RecvError {
 |-----------|------|----------|
 | send (space available) | ~50ns | Mutex lock + push + unlock |
 | send (buffer full, async) | ~1µs | Park + context switch + wake |
-| recv (items available) | ~50ns | Mutex lock + pop + unlock |
-| recv (buffer empty, async) | ~1µs | Park + context switch + wake |
+| receive (items available) | ~50ns | Mutex lock + pop + unlock |
+| receive (buffer empty, async) | ~1µs | Park + context switch + wake |
 | channel creation | ~200ns | Allocate + initialize atomics |
 
 **Lock contention:** Under heavy load (many senders/receivers), Mutex becomes bottleneck. I chose lock-protected for simplicity. Can upgrade to lock-free ring buffer if profiling shows contention is a real problem. Rust's crossbeam crate provides battle-tested lock-free channels, could integrate if needed.
@@ -1699,7 +1699,7 @@ func register_io(fd: RawFd, interest: Interest) {
 | Task.result | Mutex | N/A | Rarely contended (written once, read once) |
 | Task.waker | Mutex | N/A | Written once (registration), read once (wake) |
 | Task.cancel_flag | AtomicBool | Release/Relaxed | Write visible before check; checks are frequent so Relaxed reads OK |
-| Channel.buffer | Mutex | N/A | Send/recv need mutual exclusion (push/pop modify buffer) |
+| Channel.buffer | Mutex | N/A | Send/receive need mutual exclusion (push/pop modify buffer) |
 | Channel senders/receivers | AtomicUsize | Relaxed | Only need atomicity for count, not ordering |
 | Reactor.registrations | Mutex/RwLock | N/A | Reads common (poll), writes rare (register) - RwLock better but Mutex simpler |
 

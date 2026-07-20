@@ -84,7 +84,7 @@ pub fn rask_file_read(file: &File, buf: &mut [u8]) -> Result<usize, IoError> {
 | `io` | `Stdin.read`, `Stdout.write`, `Stderr.write` | Yes — stream I/O blocks |
 | `io` | `Buffer.read`, `Buffer.write` | No — in-memory, never blocks |
 | `async` | `sleep`, `timeout` | Yes — needs timer/scheduler |
-| `async` | `spawn`, `Channel.send/recv` | Yes — needs scheduler/reactor |
+| `async` | `spawn`, `Channel.send/receive` | Yes — needs scheduler/reactor |
 | collections | `Vec`, `Map`, `Pool` | No — pure memory operations |
 | `json` | `json.encode`, `json.decode` | No — pure computation |
 | `fmt` | `format` | No — pure computation |

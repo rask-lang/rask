@@ -24,7 +24,7 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 |------|-------------|
 | **A1: Thread per spawn** | `spawn(|| {})` creates an OS thread via `pthread_create` (`thread.c`) |
 | **A2: Blocking I/O** | All I/O blocks the calling thread. No reactor, no parking |
-| **A3: Real channels** | Channels use a ring buffer + mutex/condvar (`channel.c`). Blocking send/recv |
+| **A3: Real channels** | Channels use a ring buffer + mutex/condvar (`channel.c`). Blocking send/receive |
 | **A4: Affine handles** | `TaskHandle` wraps a refcounted `TaskState*`. Runtime panic on drop (same as interpreter) |
 | **A5: Block installs process-global slot** | `using Multitasking { ... }` fills the process-global runtime slot (`conc.runtime/R1`) even in Phase A — implementations ignore the slot's contents and block threads for I/O, but the CC1/CC2 scope check and C1 single-active-block invariant are enforced |
 | **A6: ThreadPool real** | `ThreadPool` uses a real bounded thread pool |
@@ -115,7 +115,7 @@ No state-machine codegen pass, no pause-point enumeration, no wide ABIs for indi
 | Aspect | Stays the same |
 |--------|---------------|
 | Programmer syntax | `spawn(|| {})`, `.join()`, `.detach()`, channels, `select` |
-| Error types | `JoinError`, `SendError`, `RecvError`, `TimedOut` |
+| Error types | `JoinError`, `SendError`, `ReceiveError`, `TimedOut` |
 | Affine handle rules | Must consume via join/detach/cancel |
 | `using` block scoping | Block exit waits for non-detached tasks |
 | Channel semantics | Buffered/unbuffered, close-on-drop, backpressure |

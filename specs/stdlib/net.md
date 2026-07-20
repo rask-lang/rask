@@ -98,7 +98,7 @@ const response = try conn.read_text()
 |------|-------------|
 | **U1: UdpSocket** | Connectionless datagram socket. Linear resource — must close |
 | **U2: Bind** | `net.udp_bind(addr)` creates a socket bound to a local address |
-| **U3: Connect** | `udp.connect(addr)` sets a default peer for `send`/`recv` — no actual handshake |
+| **U3: Connect** | `udp.connect(addr)` sets a default peer for `send`/`receive` — no actual handshake |
 
 <!-- test: skip -->
 ```rask
@@ -112,10 +112,10 @@ net.udp_bind(addr: string) -> UdpSocket or IoError
 ```rask
 extend UdpSocket {
     func send_to(self, data: []u8, addr: string) -> usize or IoError
-    func recv_from(self, buf: []u8) -> (usize, string) or IoError
+    func receive_from(self, buf: []u8) -> (usize, string) or IoError
     func connect(self, addr: string) -> void or IoError
     func send(self, data: []u8) -> usize or IoError     // to connected peer
-    func recv(self, buf: []u8) -> usize or IoError      // from connected peer
+    func receive(self, buf: []u8) -> usize or IoError      // from connected peer
     func local_addr(self) -> string
     func close(take self) -> void or IoError
 }
@@ -129,7 +129,7 @@ const socket = try net.udp_bind("0.0.0.0:9000")
 ensure socket.close()
 
 mut buf = [0u8; 1024]
-const (n, sender) = try socket.recv_from(buf)
+const (n, sender) = try socket.receive_from(buf)
 try socket.send_to(buf[0..n], sender)
 ```
 
@@ -200,7 +200,7 @@ WHY: Another process is already listening on this address.
 | `read_text` on non-UTF-8 data | `IoError.Other("invalid UTF-8")` — use `read_bytes` for raw bytes | N6 |
 | `close()` fails (rare) | `IoError` returned; `ensure conn.close()` discards it | N8 |
 | Accept on closed listener | `IoError.Other("listener closed")` | N1 |
-| UDP `send`/`recv` without `connect` | `IoError.Other("not connected")` | U3 |
+| UDP `send`/`receive` without `connect` | `IoError.Other("not connected")` | U3 |
 | UDP packet too large for buffer | Truncated, remaining bytes lost | U1 |
 | DNS resolution with no results | Empty `Vec` | D1 |
 | DNS resolution for IP literal | Returns the IP itself | D1 |

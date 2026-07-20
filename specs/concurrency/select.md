@@ -68,7 +68,7 @@ result = select {
 
 | Rule | Description |
 |------|-------------|
-| **CL1: All closed** | If all recv channels closed, immediate return with `Closed` error |
+| **CL1: All closed** | If all receive channels closed, immediate return with `Closed` error |
 | **CL2: Some closed** | Skip closed channels, wait on remaining |
 | **CL3: Send closed** | Send arm returns `Closed` error |
 
@@ -77,7 +77,7 @@ result = select {
 <!-- test: skip -->
 ```rask
 const rx = Timer.after(5.seconds)
-rx.recv()  // Blocks for 5 seconds, returns ()
+rx.receive()  // Blocks for 5 seconds, returns ()
 
 select {
     work -> w: process(w),

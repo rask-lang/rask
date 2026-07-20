@@ -118,14 +118,14 @@ Each stage is independently shippable and testable.
       public func stream(take self) -> Sequence<T> {
           return |yield| {
               loop {
-                  const r = self.recv()
+                  const r = self.receive()
                   if r? as msg { if not yield(msg): break } else { break }
               }
           }
       }
   }
   ```
-- `take self` is required: the returned closure calls `recv()` after `stream()` has returned, so the Receiver must be owned by the closure. A borrowing `self` produces an expression-scoped Sequence (`mem.closures/SL2`) — not storable.
+- `take self` is required: the returned closure calls `receive()` after `stream()` has returned, so the Receiver must be owned by the closure. A borrowing `self` produces an expression-scoped Sequence (`mem.closures/SL2`) — not storable.
 - **Test 1**: `for msg in rx.stream().take(10) { ... }` — channel close terminates the sequence
 - **Test 2**: build a channel, call `rx.stream()`, drop the Sequence without iterating. Verify the Receiver drops with it and senders see the channel-closed path.
 

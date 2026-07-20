@@ -881,7 +881,7 @@ spawn { background_work() }.detach()
 // Channels
 const (tx, rx) = Channel<Message>.buffered(100)
 try tx.send(msg)
-const msg = try rx.recv()
+const msg = try rx.receive()
 
 // Select
 select {

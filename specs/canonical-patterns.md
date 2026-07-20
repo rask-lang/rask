@@ -406,7 +406,7 @@ with db.write() as d {
 // Message passing — channels between tasks
 const ch = Channel.buffered(16)
 spawn(|| { ch.sender.send(compute_result()) }
-const result = try ch.receiver.recv()
+const result = try ch.receiver.receive()
 ```
 
 **Anti-patterns:**
@@ -445,7 +445,7 @@ using Multitasking {
     }
 
     for _ in 0..urls.len() {
-        const data = try ch.receiver.recv()
+        const data = try ch.receiver.receive()
         process(data)
     }
 }

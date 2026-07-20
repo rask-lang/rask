@@ -48,7 +48,7 @@ From `conc.io-context`:
 | Module | Functions | IO? |
 |--------|-----------|-----|
 | `fs` | `File.open`, `File.read`, `File.write`, `File.close`, `fs.read_text`, `fs.write_text`, `fs.exists` | Yes |
-| `net` | `TcpListener.accept`, `TcpConnection.read/write`, `UdpSocket.send/recv` | Yes |
+| `net` | `TcpListener.accept`, `TcpConnection.read/write`, `UdpSocket.send/receive` | Yes |
 | `io` | `Stdin.read`, `Stdout.write`, `Stderr.write` | Yes |
 | `async` | `sleep`, `timeout` | Yes (also Async) |
 | `io` | `Buffer.read`, `Buffer.write` | No |
@@ -61,7 +61,7 @@ From `conc.io-context`:
 
 | Rule | Description |
 |------|-------------|
-| **AS1: Source functions** | `spawn()`, `sleep()`, `timeout()`, `Channel.send()`, `Channel.recv()`, `TaskHandle.join()` |
+| **AS1: Source functions** | `spawn()`, `sleep()`, `timeout()`, `Channel.send()`, `Channel.receive()`, `TaskHandle.join()` |
 | **AS2: Transitive** | Any function that transitively calls an Async source has the Async effect |
 | **AS3: Subset of IO** | All Async source functions are also IO sources (they involve scheduler/reactor). A function with Async always has IO too |
 

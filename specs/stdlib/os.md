@@ -1,7 +1,7 @@
 <!-- id: std.os -->
 <!-- status: decided -->
 <!-- summary: Process control, environment, platform info, subprocess spawning, signal handling -->
-<!-- depends: stdlib/io.md, stdlib/time.md, concurrency/channels.md -->
+<!-- depends: stdlib/io.md, stdlib/time.md, concurrency/async.md -->
 
 # OS
 
@@ -184,7 +184,7 @@ import os
 const signals = try os.signals([Signal.Interrupt, Signal.Terminate])
 
 // Block until signal received
-const sig = try signals.recv()
+const sig = try signals.receive()
 println("Received {sig}, shutting down...")
 cleanup()
 ```
@@ -201,7 +201,7 @@ func main() -> void or Error {
         ensure server.close()
 
         const shutdown = spawn(|| {
-            signals.recv()
+            signals.receive()
         })
 
         const serve = spawn(|| {
@@ -323,7 +323,7 @@ const signals = try os.signals([Signal.Interrupt, Signal.Terminate])
 
 // In a select or spawn, wait for signal
 spawn(|| {
-    const sig = try signals.recv()
+    const sig = try signals.receive()
     println("Shutting down on {sig}...")
     shutdown_server()
 }).detach()

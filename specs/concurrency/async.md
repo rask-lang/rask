@@ -227,7 +227,7 @@ const producer = spawn(|| {
 
 const consumer = spawn(|| {
     loop {
-        const r = rx.recv()
+        const r = rx.receive()
         if r? as msg { process(msg) } else { break }
     }
 })
@@ -240,11 +240,11 @@ try join_all(producer, consumer)
 | Operation | Returns | Description |
 |-----------|---------|-------------|
 | `tx.send(val)` | `void or SendError` | Send value, pauses/blocks if full |
-| `rx.recv()` | `T or RecvError` | Receive value, pauses/blocks if empty |
+| `rx.receive()` | `T or ReceiveError` | Receive value, pauses/blocks if empty |
 | `tx.close()` | `void or CloseError` | Explicit close with error handling |
 | `rx.close()` | `void or CloseError` | Explicit close with error handling |
 | `tx.try_send(val)` | `void or TrySendError` | Non-blocking send |
-| `rx.try_recv()` | `T or TryRecvError` | Non-blocking receive |
+| `rx.try_receive()` | `T or TryReceiveError` | Non-blocking receive |
 
 ### Buffered Items on Close
 
@@ -340,10 +340,10 @@ Install a `using Multitasking { ... }` block that encloses the call.
 <!-- test: parse -->
 ```rask
 enum SendError { Closed }
-enum RecvError { Closed }
+enum ReceiveError { Closed }
 enum CloseError { AlreadyClosed, FlushFailed }
 enum TrySendError { Full(T), Closed(T) }
-enum TryRecvError { Empty, Closed }
+enum TryReceiveError { Empty, Closed }
 ```
 
 ### Architecture
