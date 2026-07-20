@@ -79,7 +79,7 @@ func send_json<T: Encode>(endpoint: string, value: T) -> void or HttpError {
 }
 
 func load_config<T: Decode>(path: string) -> T or ConfigError {
-    const text = try fs.read_string(path)
+    const text = try fs.read_text(path)
     return try toml.decode<T>(text)
 }
 ```
@@ -245,7 +245,7 @@ func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> void or JsonErro
     } else if reflect.is_map<T>() {
         try w.begin_object()
         for key, val in value {
-            try w.key(key)
+            try w.write_key(key)
             try encode_value(val, mutate w)
         }
         return w.end_object()
@@ -253,7 +253,7 @@ func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> void or JsonErro
         try w.begin_object()
         comptime for field in reflect.fields<T>() {
             comptime if !field.is_skipped {
-                try w.key(field.serial_name)
+                try w.write_key(field.serial_name)
                 try encode_value(value.(field.name), mutate w)
             }
         }
@@ -267,7 +267,7 @@ func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> void or JsonErro
 public func encode<T: Encode>(value: T) -> string or JsonError {
     mut w = JsonWriter.new()
     try encode_value(value, mutate w)
-    return w.finish()
+    return w.build()
 }
 ```
 
@@ -292,7 +292,7 @@ func decode_value<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
     } else if reflect.is_vec<T>() {
         mut result = Vec.new()
         try parser.begin_array()
-        while !parser.end_array() {
+        while !parser.is_array_end() {
             result.push(try decode_value(parser))
         }
         return result
@@ -304,7 +304,7 @@ func decode_value<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
 func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
     try parser.begin_object()
     mut fields = Map<string, JsonValue>.new()
-    while !parser.end_object() {
+    while !parser.is_object_end() {
         const key = try parser.read_key()
         fields.insert(key, try parser.read_value())
     }

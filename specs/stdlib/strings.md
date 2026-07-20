@@ -17,7 +17,7 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 | **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
 | **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |
 | **S6: Refcount semantics** | Atomic refcount in heap header. SSO strings (S8) bypass refcounting entirely. Literals ≤ 15 bytes use SSO; longer literals use sentinel refcount (never freed/decremented). Compiler elides atomic ops for provably sole-owner heap strings (see `comp.string-refcount-elision`). This is a language primitive — not available to user-defined types |
-| **S7: Builder for mutation** | `append`, `append_char` live on `StringBuilder` only. `string` has no mutation methods |
+| **S7: Builder for mutation** | `push`, `push_char` live on `StringBuilder` only. `string` has no mutation methods |
 | **S8: Small string optimization** | Strings ≤ 15 bytes are stored inline in the 16-byte value (no heap allocation, no refcount). Longer strings use heap mode with refcounted header. Layout is a tagged union — discriminant is the MSB of the last byte. User-facing semantics are identical in both modes |
 
 ### Internal Layout (S1 + S8)
@@ -101,7 +101,7 @@ Validated stored references using handles (parsers, tokenizers, ASTs). Follows `
 |-----------|--------|-------|
 | `StringPool.new()` | `StringPool` | Empty pool |
 | `pool.insert(s)` | `Handle<string> or InsertError` | Add string, get handle |
-| `pool.slice(h, i, j)` | `StringSlice or Error` | Create validated slice |
+| `pool.slice(h, i, j)` | `StringSlice or SliceError` | Create validated slice |
 | `pool[slice]` | inline access (expression-scoped) | Panics if invalid |
 | `pool.get(slice)` | `(inline access)?` | Safe access |
 | `with pool[slice] as s { ... }` | block value | Multi-statement access |
@@ -114,7 +114,7 @@ Handle validation: pool_id + index + generation. Wrong pool or stale handle retu
 | Operation | Return Type | Validation Cost |
 |-----------|-------------|-----------------|
 | `"literal"` | `string` | Compile-time |
-| `string.from_utf8(bytes)` | `string or utf8_error` | Runtime O(n), one-time |
+| `string.from_utf8(bytes)` | `string or Utf8Error` | Runtime O(n), one-time |
 | `string.from_utf8_unchecked(bytes)` | `string` | None (unsafe block only) |
 
 ## Iteration
@@ -144,9 +144,9 @@ Iterators borrow for expression scope only. Cannot be stored.
 | Operation | Return Type | Notes |
 |-----------|-------------|-------|
 | `"literal"` | `string` | Compile-time validated. ≤ 15 bytes → SSO (inline, no allocation). > 15 bytes → static storage, sentinel refcount (never freed) |
-| `string.from_utf8(bytes)` | `string or utf8_error` | Validates bytes |
+| `string.from_utf8(bytes)` | `string or Utf8Error` | Validates bytes |
 | `string.from_char(c)` | `string` | Single-char string |
-| `string.repeat(s, n)` or `s.repeat(n)` | `string` | `s` repeated `n` times, allocates |
+| `s.repeat(n)` | `string` | `s` repeated `n` times, allocates |
 | `slice.to_string()` | `string` | Copy slice bytes into new independent string (allocates) |
 
 ## String Builder
@@ -157,24 +157,23 @@ Iterators borrow for expression scope only. Cannot be stored.
 |-----------|-----------|-------|
 | `StringBuilder.new()` | `() -> StringBuilder` | Empty builder |
 | `StringBuilder.with_capacity(n)` | `(usize) -> StringBuilder` | Pre-allocate |
-| `b.append(s)` | `(mutate self, s: string)` | Append string |
-| `b.append_char(c)` | `(mutate self, c: char)` | Append char |
+| `b.push(s)` | `(mutate self, s: string)` | Add string at end |
+| `b.push_char(c)` | `(mutate self, c: char)` | Add char at end |
 | `b.build()` | `(take self) -> string` | Consume builder, return string. Zero-copy |
 | `b.len()` | `(self) -> usize` | Current byte length |
 | `b.is_empty()` | `(self) -> bool` | True if no bytes written |
 
-`build()` consumes the builder and transfers the internal buffer to the new string without copying. The buffer is guaranteed valid UTF-8 by construction — `append` only accepts `string`, `append_char` only accepts `char`.
+`build()` consumes the builder and transfers the internal buffer to the new string without copying. The buffer is guaranteed valid UTF-8 by construction — `push` only accepts `string`, `push_char` only accepts `char`. `push` is the one "add to the end of a growable thing" verb — same as `Vec.push`.
 
-**Interpolation optimization:** `b.append("hello {name}")` — compiler desugars interpolation directly into builder appends, avoiding temp string allocation.
+**Interpolation optimization:** `b.push("hello {name}")` — compiler desugars interpolation directly into builder pushes, avoiding temp string allocation.
 
 ## Concatenation and Formatting
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `string.concat(a, b)` | `string` | Allocates new string |
 | `"hello {name}"` | `string` | String interpolation, desugars to builder calls, allocates |
 
-No `+` operator. Allocation must be visible via method name or interpolation.
+No `+` operator and no `concat` function. Interpolation is the one way to combine strings (`StringBuilder` for loops, `join` for lists). Allocation stays visible.
 
 ## Join
 
@@ -193,8 +192,8 @@ const csv = headers.join(",")      // CSV header row
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.find(pat)` or `s.index_of(pat)` | `usize?` | Byte index of first match |
-| `s.rfind(pat)` | `usize?` | Byte index of last match |
+| `s.index_of(pat)` | `usize?` | Byte index of first match |
+| `s.last_index_of(pat)` | `usize?` | Byte index of last match |
 | `s.contains(pat)` | `bool` | Substring check |
 | `s.starts_with(pat)` | `bool` | Prefix check |
 | `s.ends_with(pat)` | `bool` | Suffix check |
@@ -206,7 +205,7 @@ const csv = headers.join(",")      // CSV header row
 | `s.trim()` | Expression-scoped slice | Zero-copy, removes leading/trailing whitespace |
 | `s.trim_start()` | Expression-scoped slice | Leading whitespace only |
 | `s.trim_end()` | Expression-scoped slice | Trailing whitespace only |
-| `s.trim_bounds()` | `(usize, usize)` | Returns (start, end) indices |
+| `s.trim_indices()` | `(usize, usize)` | Returns (start, end) byte indices of the trimmed region |
 
 ## Case Conversion
 
@@ -232,8 +231,19 @@ const csv = headers.join(",")      // CSV header row
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.parse_int()` or `s.parse()` | `i64 or string` | Parse to integer, trims whitespace |
-| `s.parse_float()` | `f64 or string` | Parse to floating point, trims whitespace |
+| `s.parse_int()` | `i64 or ParseError` | Parse to integer, trims whitespace |
+| `s.parse_float()` | `f64 or ParseError` | Parse to floating point, trims whitespace |
+
+One name per operation — there is no generic `s.parse()`. The error is a real type (`type.errors/ER4` forbids `string` as an error):
+
+<!-- test: parse -->
+```rask
+enum ParseError {
+    Empty               // no digits found
+    Invalid             // non-numeric character
+    OutOfRange          // doesn't fit the target type
+}
+```
 
 ## String Manipulation
 
@@ -256,10 +266,10 @@ const csv = headers.join(",")      // CSV header row
 |----------------|-------------|
 | `cstring` | Owned null-terminated string |
 | `c"literal"` | Null-terminated string literal |
-| `s.to_cstring()` | `cstring or null_byte_error` (fails if `\0` present) |
+| `s.to_cstring()` | `cstring or NullByteError` (fails if `\0` present) |
 | `cstring.as_ptr()` | `*u8` (unsafe context only) |
 | `cstring.from_ptr(ptr)` | `cstring` (unsafe, takes ownership) |
-| `cstring.to_string()` | `string or utf8_error` |
+| `cstring.to_string()` | `string or Utf8Error` |
 
 <!-- test: skip -->
 ```rask
@@ -305,15 +315,15 @@ FIX: Use char_indices() to find safe boundaries:
 ```
 ERROR [std.strings/S7]: cannot mutate string
    |
-3  |  s.append("x")
-   |    ^^^^^^ string is immutable
+3  |  s.push("x")
+   |    ^^^^ string is immutable
 
 WHY: Use StringBuilder for construction.
 
 FIX:
   mut b = StringBuilder.new()
-  b.append(s)
-  b.append("x")
+  b.push(s)
+  b.push("x")
   const result = b.build()
 ```
 
@@ -397,9 +407,9 @@ For cheap sharing of arbitrary data, use `Shared<T>` — explicit, visible, corr
 <!-- test: skip -->
 ```rask
 mut b = StringBuilder.new()
-b.append("User: ")
-b.append(name)
-b.append_char('\n')
+b.push("User: ")
+b.push(name)
+b.push_char('\n')
 const msg = b.build()
 ```
 
@@ -411,8 +421,8 @@ func flush_lines(lines: Vec<string>) -> Vec<string> {
     mut results = Vec.new()
     for line in lines {
         mut b = StringBuilder.new()
-        b.append(line)
-        b.append_char('\n')
+        b.push(line)
+        b.push_char('\n')
         results.push(b.build())
     }
     return results
@@ -429,11 +439,11 @@ trait Renderable {
 
 extend HtmlTag: Renderable {
     func render(self, mutate builder: StringBuilder) {
-        builder.append("<{self.tag}>")
+        builder.push("<{self.tag}>")
         for child in self.children {
             child.render(builder)
         }
-        builder.append("</{self.tag}>")
+        builder.push("</{self.tag}>")
     }
 }
 ```
@@ -444,10 +454,10 @@ extend HtmlTag: Renderable {
 ```rask
 // These are equivalent, but the compiler optimizes the interpolation
 // form to avoid creating a temp string:
-builder.append("tag {value}")
+builder.push("tag {value}")
 // ≈
-builder.append("tag ")
-builder.append(value.to_string())
+builder.push("tag ")
+builder.push(value.to_string())
 ```
 
 ### Patterns & Guidance
@@ -509,8 +519,7 @@ Current interpreter behavior differs from spec in some areas:
 - This causes allocation but matches common usage patterns
 
 **Method name aliases:**
-- `s.parse()` and `s.parse_int()` both work
-- `s.index_of(pat)` is alias for `s.find(pat)`
+- The interpreter still accepts the removed aliases `s.parse()` (for `parse_int`) and `s.find(pat)` (for `index_of`)
 
 These will converge to spec behavior in the compiled version.
 

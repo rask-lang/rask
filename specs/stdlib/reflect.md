@@ -106,7 +106,7 @@ struct MethodInfo {
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `implements<T, Trait>()` | `-> bool` | Whether T satisfies Trait (structural or explicit) |
-| `traits<T>()` | `-> []string` | Names of traits T explicitly extends |
+| `trait_names<T>()` | `-> []string` | Names of traits T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
 
 `implements` checks whether T has the required methods. Does NOT scan the codebase for all implementors (R2).
 

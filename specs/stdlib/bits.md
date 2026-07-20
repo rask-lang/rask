@@ -12,13 +12,13 @@ Methods on all integer types.
 
 | Rule | Description |
 |------|-------------|
-| **B1: Integer methods** | `popcount`, `leading_zeros`, `trailing_zeros`, `leading_ones`, `trailing_ones`, `reverse_bits`, `rotate_left`, `rotate_right`, `swap_bytes` are methods on all integer types |
+| **B1: Integer methods** | `count_ones`, `count_zeros`, `leading_zeros`, `trailing_zeros`, `leading_ones`, `trailing_ones`, `reverse_bits`, `rotate_left`, `rotate_right`, `swap_bytes` are methods on all integer types |
 
 <!-- test: skip -->
 ```rask
 const x: u32 = 0b1100_0000_0000_0000_0000_0000_0000_0011
 
-x.popcount()        // 4
+x.count_ones()      // 4
 x.leading_zeros()   // 0
 x.trailing_zeros()  // 0
 x.reverse_bits()    // bit-reversed value
@@ -30,7 +30,6 @@ x.reverse_bits()    // bit-reversed value
 |------|-------------|
 | **B2: Endian methods** | `to_be`, `to_le`, `from_be`, `from_le` convert integer byte order |
 | **B3: Byte array methods** | `to_be_bytes`, `to_le_bytes`, `to_ne_bytes` produce byte arrays; `T.from_be_bytes`, `T.from_le_bytes`, `T.from_ne_bytes` parse them |
-| **B4: Network aliases** | `bits.hton_*` and `bits.ntoh_*` are aliases for big-endian conversion |
 
 <!-- test: skip -->
 ```rask
@@ -39,14 +38,7 @@ const be_bytes = port.to_be_bytes()   // [0x1F, 0x90]
 const p1 = u16.from_be_bytes([0x1F, 0x90])  // 8080
 ```
 
-Network byte order aliases:
-
-| Function | Equivalent |
-|----------|------------|
-| `bits.hton_u16(x)` | `x.to_be()` |
-| `bits.hton_u32(x)` | `x.to_be()` |
-| `bits.ntoh_u16(x)` | `u16.from_be(x)` |
-| `bits.ntoh_u32(x)` | `u32.from_be(x)` |
+Network byte order is big-endian — use `x.to_be()` / `u16.from_be(x)` directly for network code. No separate `hton`/`ntoh` aliases.
 
 ## Binary Parsing
 
@@ -74,7 +66,7 @@ Type specifiers for `unpack`: `u8`, `i8`, `u16be`, `u16le`, `i16be`, `i16le`, `u
 
 | Rule | Description |
 |------|-------------|
-| **K1: pack** | `pack(values...)` builds a `Vec<u8>` from typed values |
+| **K1: pack** | `bits.pack(values...)` builds a `Vec<u8>` from typed values. Module function — the inverse `unpack` is a method on the data because it has a source slice to hang off; `pack` doesn't |
 | **K2: BinaryBuilder** | Builder pattern for incremental construction via `write_*` methods |
 | **K3: Buffer write** | `buffer[cursor..].write_*(value)` for zero-allocation building, returns bytes written |
 

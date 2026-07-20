@@ -1022,8 +1022,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 **Rask:**
 ```rask
 func handler(w: ResponseWriter, r: Request) -> void or HttpError {
-    const body = try r.body.read_all()
-    const req = try json.parse<Request>(body)
+    const body = try r.body.read_bytes()
+    const req = try json.decode<Request>(body)
     const result = try process(req)
     return w.write_json(result)
 }
@@ -1048,7 +1048,7 @@ def process_file(path):
 func process_file(path: string) -> Data or IoError {
     const file = try File.open(path)
     ensure file.close()
-    const content = try file.read_all()
+    const content = try file.read_text()
     return transform(content)
 }
 ```

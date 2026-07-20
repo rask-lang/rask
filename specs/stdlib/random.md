@@ -35,7 +35,7 @@ rng.shuffle(items)
 | Rule | Description |
 |------|-------------|
 | **C1: Thread-local RNG** | `random.*` functions use a thread-local system-seeded Rng |
-| **C2: Same API** | `random.u64()`, `random.range(lo, hi)`, `random.f64()`, `random.bool()`, `random.shuffle(vec)`, `random.choice(vec)` mirror instance methods |
+| **C2: Same API** | Every `Rng` instance method (M1–M3) has a `random.*` mirror: `random.u64()`, `random.i64()`, `random.f64()`, `random.f32()`, `random.bool()`, `random.range(lo, hi)`, `random.shuffle(vec)`, `random.choice(vec)` |
 
 <!-- test: parse -->
 ```rask

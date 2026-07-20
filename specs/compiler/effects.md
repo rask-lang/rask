@@ -29,7 +29,7 @@ Effects don't restrict what you can call. A function without IO effects can call
 ```rask
 // IO effect — calls File.open (source function)
 func load_config(path: string) -> Config or Error {
-    const data = try fs.read_file(path)
+    const data = try fs.read_text(path)
     return try json.decode<Config>(data)
 }
 
@@ -47,7 +47,7 @@ From `conc.io-context`:
 
 | Module | Functions | IO? |
 |--------|-----------|-----|
-| `fs` | `File.open`, `File.read`, `File.write`, `File.close`, `fs.read_file`, `fs.write_file`, `fs.exists` | Yes |
+| `fs` | `File.open`, `File.read`, `File.write`, `File.close`, `fs.read_text`, `fs.write_text`, `fs.exists` | Yes |
 | `net` | `TcpListener.accept`, `TcpConnection.read/write`, `UdpSocket.send/recv` | Yes |
 | `io` | `Stdin.read`, `Stdout.write`, `Stderr.write` | Yes |
 | `async` | `sleep`, `timeout` | Yes (also Async) |
@@ -131,7 +131,7 @@ func parse(input: string) -> Config or ParseError {
 
 // Not pure — calls File.open (IO effect)
 func load(path: string) -> Config or Error {
-    const data = try fs.read_file(path)
+    const data = try fs.read_text(path)
     return try parse(data)
 }
 ```
@@ -147,7 +147,7 @@ func load(path: string) -> Config or Error {
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or Error {    // ghost: [io]
-    const data = try fs.read_file(path)                 // ← IO originates here
+    const data = try fs.read_text(path)                 // ← IO originates here
     return try json.decode<Config>(data)                // (no marker — pure)
 }
 

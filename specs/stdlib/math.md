@@ -42,7 +42,6 @@ Dedicated `math` module for functions that don't attach to a single value (trig,
 | Rule | Description |
 |------|-------------|
 | **M1: hypot** | `math.hypot(x, y)` computes sqrt(x^2 + y^2) without overflow |
-| **M2: clamp** | `math.clamp(x, lo, hi)` clamps to [lo, hi]; generic over ordered numeric types |
 
 ## Generic Comparison Functions (Prelude)
 
@@ -66,14 +65,13 @@ const first_name = min(name_a, name_b)
 const newest = max(version_a, version_b)
 ```
 
-`math.clamp` remains for numeric-specific use. The prelude `clamp` is generic over all Comparable types.
+There is no `math.min`/`math.max`/`math.clamp` and no `.min()`/`.max()` methods — the prelude functions are the one way.
 
-## Conversion and Classification
+## Conversion
 
 | Rule | Description |
 |------|-------------|
 | **V1: Angle conversion** | `math.to_radians(degrees)` and `math.to_degrees(radians)` |
-| **V2: Classification** | `math.is_nan(x)`, `math.is_inf(x)`, `math.is_finite(x)` return `bool` |
 
 <!-- test: skip -->
 ```rask
@@ -82,15 +80,15 @@ import math
 const angle = math.PI / 4.0
 const result = math.sin(angle)
 const dist = math.hypot(3.0, 4.0)   // 5.0
-const clamped = math.clamp(150.0, 0.0, 100.0)  // 100.0
+const clamped = clamp(150.0, 0.0, 100.0)  // 100.0 (prelude)
 ```
 
 ## Value Methods (not in math module)
 
 | Rule | Description |
 |------|-------------|
-| **N1: f64 methods** | `abs`, `sqrt`, `pow`, `floor`, `ceil`, `round`, `min`, `max` are methods on `f64` |
-| **N2: i64 methods** | `abs`, `min`, `max` are methods on `i64` |
+| **N1: f64 methods** | `abs`, `sqrt`, `pow`, `floor`, `ceil`, `round`, `is_nan`, `is_inf`, `is_finite` are methods on `f64` |
+| **N2: i64 methods** | `abs` is a method on `i64` |
 
 | Method | Available on | Example |
 |--------|-------------|---------|
@@ -100,8 +98,9 @@ const clamped = math.clamp(150.0, 0.0, 100.0)  // 100.0
 | `floor()` | f64 | `x.floor()` |
 | `ceil()` | f64 | `x.ceil()` |
 | `round()` | f64 | `x.round()` |
-| `min(y)` | f64, i64 | `x.min(y)` |
-| `max(y)` | f64, i64 | `x.max(y)` |
+| `is_nan()` | f64 | `x.is_nan()` |
+| `is_inf()` | f64 | `x.is_inf()` |
+| `is_finite()` | f64 | `x.is_finite()` |
 
 ## Error Messages
 
@@ -124,9 +123,9 @@ FIX: Use math.sin(x) instead.
 | `math.ln(-1.0)` | L2 | Returns `NAN` |
 | `math.sqrt(-1.0)` | N1 | Returns `NAN` |
 | `math.sin(NAN)` | T1 | Returns `NAN` (NaN propagates) |
-| `math.clamp(NAN, 0.0, 1.0)` | M2 | Returns `NAN` |
+| `clamp(NAN, 0.0, 1.0)` | G3 | Returns `NAN` |
 | `math.INF + math.NEG_INF` | C1 | Returns `NAN` |
-| `math.is_nan(math.NAN)` | V2 | Returns `true` |
+| `math.NAN.is_nan()` | N1 | Returns `true` |
 
 ---
 

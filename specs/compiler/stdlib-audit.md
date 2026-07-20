@@ -67,8 +67,7 @@ Comparison of interpreter builtins implementation against spec requirements. Tra
 | `modify_many([i, j], \|[a,b]\| R)` | `std.collections/D1` | MEDIUM | Multi-element mutation |
 | `swap(i, j)` | `std.collections/D1` | LOW | Swap two indices |
 | `remove_where(\|x\| bool)` | `std.collections` | MEDIUM | Conditional removal |
-| `drain_where(\|x\| bool)` | `std.collections` | MEDIUM | Remove and collect |
-| `retain(\|x\| bool)` | `std.collections` | LOW | Keep matching |
+| `take_where(\|x\| bool)` | `std.collections` | MEDIUM | Remove and collect |
 | `push_with(\|slot\| T)` | `std.collections` | LOW | In-place construction |
 | `shrink_to_fit()` | `std.collections` | LOW | Shrink allocation |
 | `shrink_to(n)` | `std.collections` | LOW | Shrink to capacity |
@@ -105,8 +104,8 @@ These are compile-target features, not needed for interpreter MVP:
 
 | Method | Spec Reference | Priority | Notes |
 |--------|----------------|----------|-------|
-| `ensure(k, \|\| v)` | `std.collections` | **HIGH** | Insert if missing |
-| `ensure_modify(k, \|\| v, \|v\| R)` | `std.collections` | **HIGH** | Insert then mutate |
+| `insert_if_missing(k, \|\| v)` | `std.collections` | **HIGH** | Insert if missing |
+| `modify_with_default(k, \|\| v, \|v\| R)` | `std.collections` | **HIGH** | Insert then mutate |
 | `read(k, \|v\| R)` | `std.collections` | **HIGH** | Read via closure |
 | `modify(k, \|v\| R)` | `std.collections` | **HIGH** | Mutate via closure |
 | `get_clone(k)` | `std.collections` | MEDIUM | Clone out (non-Copy) |
@@ -209,7 +208,7 @@ These are needed before the compiler can emit correct code:
 
 1. **`take_all()` for Vec, Map, Pool** — Required for linear type handling
 2. **`modify()` and `read()` closures** — Required for safe non-Copy element access
-3. **`ensure()` and `ensure_modify()`** — Common patterns in spec examples
+3. **`insert_if_missing()` and `modify_with_default()`** — Common patterns in spec examples
 
 ### High (Interpreter Correctness)
 
@@ -223,7 +222,7 @@ These affect interpreter behavior vs spec:
 
 Nice to have but not blocking:
 
-1. `remove_where()`, `drain_where()`, `retain()`
+1. `remove_where()`, `take_where()`, `remove_where() (inverted)`
 2. `modify_many()`, `swap()`
 3. `get_clone()` for non-Copy types
 4. `shrink_to_fit()`, capacity management
@@ -234,14 +233,14 @@ Nice to have but not blocking:
 2. **Error cases** — Test fallible operations return errors
 3. **Iteration modes** — Verify index vs ref vs take_all behaviors
 4. **Linear types** — Test that take_all is required for Vec<File>
-5. **Closure methods** — Test `modify()`, `read()`, `ensure_modify()`
+5. **Closure methods** — Test `modify()`, `read()`, `modify_with_default()`
 
 ## Next Steps
 
 1. Implement `take_all()` for Vec, Map, Pool (high priority)
 2. Fix default iteration to yield indices (breaking change!)
 3. Add `modify()` and `read()` closure methods
-4. Implement `ensure()` and `ensure_modify()` for Map
+4. Implement `insert_if_missing()` and `modify_with_default()` for Map
 5. Create string methods spec
 6. Add comprehensive stdlib tests
 

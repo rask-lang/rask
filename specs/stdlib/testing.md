@@ -38,7 +38,7 @@ func config_defaults_are_valid() -> bool {
 | **A1: assert** | `assert expr` — test stops immediately on failure |
 | **A2: check** | `check expr` — test continues, marked failed |
 | **A3: Messages** | Both accept optional message: `assert expr, "message"` |
-| **A4: Rich comparison** | `assert_eq(got, expected)` pretty-prints diff on failure |
+| **A4: Rich comparison** | `assert_eq(got, expected)` and `assert_ne(got, unexpected)` pretty-print a diff on failure and stop the test; `check_eq`/`check_ne` are the continuing forms. First argument is what the code produced, second is what the test expects |
 
 ```rask
 test "multiple checks" {

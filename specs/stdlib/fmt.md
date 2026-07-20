@@ -87,10 +87,10 @@ extend AppError {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Trait** | `trait Debug { func debug_string(self) -> string }` |
+| **G1: Trait** | `trait Debug { func to_debug_string(self) -> string }` |
 | **G2: Auto-derive** | All types auto-derive `Debug` by default |
 | **G3: Override** | Auto-derived `Debug` can be overridden via `extend Type with Debug` |
-| **G4: Debug format** | `format("{:?}", x)` calls `debug_string()` |
+| **G4: Debug format** | `format("{:?}", x)` calls `to_debug_string()` |
 
 <!-- test: parse -->
 ```rask
@@ -228,7 +228,7 @@ extend Color with Displayable {
 ```rask
 mut b = StringBuilder.with_capacity(1024)
 for item in items {
-    b.append("{item.name}: {item.value}\n")
+    b.push("{item.name}: {item.value}\n")
 }
 const report = b.build()
 ```

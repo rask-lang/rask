@@ -61,7 +61,7 @@ extend File {
 ```rask
 func process() -> void or Error {
     const file = try File.open("data.txt")
-    const data = try file.read_all()
+    const data = try file.read_text()
     try process_data(data)
     try file.close()                          // Consumed
     return
@@ -81,7 +81,7 @@ extend DbConn {
         return DbConn { handle: 1 }
     }
 
-    func read_all(self) -> string or Error {
+    func read_text(self) -> string or Error {
         return "data"
     }
 
@@ -92,7 +92,7 @@ extend DbConn {
 
 func bad() -> void or Error {
     const conn = try DbConn.open("data.txt")
-    const data = try conn.read_all()
+    const data = try conn.read_text()
     return
     // ERROR: conn not consumed before scope exit
 }
@@ -199,7 +199,7 @@ enum FileError {
 }
 
 func read_config(file: File) -> Config or FileError {
-    const data = if file.read_all() ? as d { d } else as reason {
+    const data = if file.read_text() ? as d { d } else as reason {
         return FileError.ReadFailed { file, reason }
     }
 

@@ -7,6 +7,8 @@
 
 Trait-based I/O: `Reader` and `Writer` as foundation, buffered wrappers for efficiency, linear standard stream handles, single `IoError` enum.
 
+One vocabulary for whole-stream I/O, everywhere (traits, `File`, `TcpConnection`, and the `fs.*` convenience functions): `read_text`/`write_text` for strings, `read_bytes`/`write_bytes` for bytes, `read_lines` for line vectors. Bare `read`/`write` are the low-level partial operations. If you guess a name from this grid, it exists.
+
 ## IoError
 
 | Rule | Description |
@@ -33,7 +35,7 @@ enum IoError {
 | Rule | Description |
 |------|-------------|
 | **R1: Read** | `read(buf)` reads up to `buf.len()` bytes. Returns bytes read (0 = EOF) |
-| **R2: Read all** | `read_all()` reads all remaining bytes. Allocates |
+| **R2: Read bytes** | `read_bytes()` reads all remaining bytes into an owned `Vec<u8>`. Allocates |
 | **R3: Read text** | `read_text()` reads all as UTF-8 string. Fails on invalid UTF-8 |
 | **R4: Read exact** | `read_exact(buf)` fills `buf` completely or returns `UnexpectedEof` |
 
@@ -41,25 +43,29 @@ enum IoError {
 ```rask
 trait Reader {
     func read(self, buf: []u8) -> usize or IoError
-    func read_all(self) -> []u8 or IoError
+    func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
     func read_exact(self, buf: []u8) -> void or IoError
 }
 ```
+
+Owned byte results are `Vec<u8>`; byte inputs are `[]u8` views — everywhere in the I/O surface.
 
 ## Writer Trait
 
 | Rule | Description |
 |------|-------------|
 | **W1: Write** | `write(data)` writes up to `data.len()` bytes. Returns bytes written |
-| **W2: Write all** | `write_all(data)` writes entire buffer, retrying partial writes internally |
+| **W2: Write bytes** | `write_bytes(data)` writes the entire buffer, retrying partial writes internally |
 | **W3: Flush** | `flush()` flushes internal buffers to the underlying sink |
+| **W4: Write text** | `write_text(data)` writes a whole string (its UTF-8 bytes). Mirror of `read_text` |
 
 <!-- test: parse -->
 ```rask
 trait Writer {
     func write(self, data: []u8) -> usize or IoError
-    func write_all(self, data: []u8) -> void or IoError
+    func write_bytes(self, data: []u8) -> void or IoError
+    func write_text(self, data: string) -> void or IoError
     func flush(self) -> void or IoError
 }
 ```
@@ -137,7 +143,7 @@ import io
 
 const stdout = io.stdout()
 ensure stdout.close()
-try stdout.write_all("Hello, world!\n".as_bytes())
+try stdout.write_text("Hello, world!\n")
 try stdout.flush()
 ```
 
@@ -150,8 +156,8 @@ try stdout.flush()
 <!-- test: skip -->
 ```rask
 const buf = Buffer.new()
-try buf.write_all("hello ".as_bytes())
-try buf.write_all("world".as_bytes())
+try buf.write_text("hello ")
+try buf.write_text("world")
 const result = string.from_utf8(buf.as_bytes())  // "hello world"
 ```
 
@@ -161,7 +167,8 @@ const result = string.from_utf8(buf.as_bytes())  // "hello world"
 | `Buffer.from(data: []u8)` | `Buffer` | Initialized with data, position at 0 |
 | `as_bytes(self)` | `[]u8` | View of all written bytes |
 | `len(self)` | `usize` | Total bytes written |
-| `reset(self)` | `()` | Reset read position to 0 |
+
+No `reset` — `buf.seek(SeekFrom.Start(0))` is the one way to rewind.
 
 ## Convenience Functions
 
@@ -172,7 +179,7 @@ const result = string.from_utf8(buf.as_bytes())  // "hello world"
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `io.read_line()` | `-> string or IoError` | Read one line from stdin (strips newline) |
-| `io.copy(reader, writer)` | `-> usize or IoError` | Copy all bytes, returns total copied |
+| `io.copy(reader, writer)` | `-> u64 or IoError` | Copy all bytes, returns total copied |
 
 ## Trait Implementations Summary
 
@@ -206,7 +213,7 @@ ERROR [std.io/R3]: invalid UTF-8
 5  |  const text = try file.read_text()
    |                   ^^^^^^^^^^^^^^^^ stream contains invalid UTF-8
 
-WHY: read_text() requires valid UTF-8. Use read_all() for raw bytes.
+WHY: read_text() requires valid UTF-8. Use read_bytes() for raw bytes.
 ```
 
 ## Edge Cases

@@ -90,6 +90,7 @@ const users = Map.from([
 | `with vec[i] as v { ... }` | block value (mutable) | none | Yes (OOB) |
 | `vec.insert(i, x)` | `()` | none | Yes (OOB or alloc) |
 | `vec.remove(i)` | `T` | none | Yes (OOB) |
+| `vec.remove_unordered(i)` | `T` | none | Yes (OOB) |
 | `vec.pop()` | `T?` | none | No |
 
 ### Positional Insert/Remove
@@ -99,6 +100,7 @@ const users = Map.from([
 | **V4: Insert at index** | `vec.insert(i, x)` inserts before position `i`, shifting later elements right. Panics on `i > len()` or alloc failure |
 | **V5: Remove at index** | `vec.remove(i)` removes and returns the element at `i`, shifting later elements left. Panics on `i >= len()` |
 | **V6: Pop last** | `vec.pop()` removes and returns the last element as `T?`. Returns `none` on empty vec |
+| **V7: Unordered remove** | `vec.remove_unordered(i)` removes and returns the element at `i` by swapping in the last element — O(1), does not preserve order. Panics on `i >= len()` |
 
 <!-- test: skip -->
 ```rask
@@ -140,13 +142,15 @@ const name = with vec[i] as v { v.name.clone() }
 
 | Method | Returns | Semantics |
 |--------|---------|-----------|
-| `map.ensure(k, \|\| v)` | `()` | Insert if missing, no-op if present. Panics on alloc failure |
-| `map.ensure_modify(k, \|\| v, \|v\| R)` | `R` | Insert if missing, then mutate. Panics on alloc failure |
+| `map.insert_if_missing(k, \|\| v)` | `()` | Insert if missing, no-op if present. Panics on alloc failure |
+| `map.modify_with_default(k, \|\| v, \|v\| R)` | `R` | Insert default if missing, then mutate. One hash lookup. Panics on alloc failure |
+
+Named for what they do — `ensure` is taken by the cleanup keyword (`ctrl.ensure`) and means something else.
 
 <!-- test: parse -->
 ```rask
-map.ensure(user_id, || User.new(user_id))
-map.ensure_modify(user_id, || User.new(user_id), |u| {
+map.insert_if_missing(user_id, || User.new(user_id))
+map.modify_with_default(user_id, || User.new(user_id), |u| {
     u.last_seen = now()
     u.visit_count += 1
 })
@@ -179,8 +183,9 @@ for item in vec.take_all() { }   // item: T (consuming iteration)
 | Method | Returns | Notes |
 |--------|---------|-------|
 | `vec.remove_where(\|x\| bool)` | `usize` | Remove matching, return count. No allocation |
-| `vec.drain_where(\|x\| bool)` | `Vec<T>` | Remove and collect. Allocates |
-| `vec.retain(\|x\| bool)` | `()` | Retain non-matching |
+| `vec.take_where(\|x\| bool)` | `Vec<T>` | Remove matching and return them. Allocates |
+
+Two forms: count or collect. There is no `retain` — invert the predicate on `remove_where`.
 
 ## Sorting
 
@@ -215,7 +220,7 @@ users.sort_by(|a, b| b.score.compare(a.score))  // descending
 | `vec.first()` | `() -> T?` | `T: Copy` | First element or `none` |
 | `vec.last()` | `() -> T?` | `T: Copy` | Last element or `none` |
 | `vec.reverse()` | `(mutate self)` | none | In-place reversal |
-| `vec.dedup()` | `(mutate self)` | `T: Equal` | Remove consecutive duplicates |
+| `vec.remove_adjacent_duplicates()` | `(mutate self)` | `T: Equal` | The name says the limitation: only runs of equal neighbors collapse. Sort first for full dedup |
 
 <!-- test: skip -->
 ```rask
@@ -225,8 +230,8 @@ items.first()                 // 3
 items.last()                  // 5
 items.reverse()               // [5, 1, 4, 1, 3]
 
-items.sort()                  // [1, 1, 3, 4, 5]
-items.dedup()                 // [1, 3, 4, 5]
+items.sort()                            // [1, 1, 3, 4, 5]
+items.remove_adjacent_duplicates()      // [1, 3, 4, 5]
 ```
 
 ## Map Convenience Methods

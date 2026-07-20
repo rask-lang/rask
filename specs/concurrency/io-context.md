@@ -79,7 +79,7 @@ pub fn rask_file_read(file: &File, buf: &mut [u8]) -> Result<usize, IoError> {
 | Module | Functions | Context needed? |
 |--------|-----------|----------------|
 | `fs` | `File.open`, `File.read`, `File.write`, `File.close` | Yes — file I/O blocks |
-| `fs` | `fs.read_file`, `fs.write_file`, `fs.exists` | Yes — convenience functions do I/O |
+| `fs` | `fs.read_text`, `fs.write_text`, `fs.exists` | Yes — convenience functions do I/O |
 | `net` | `TcpListener.accept`, `TcpConnection.read/write` | Yes — network I/O blocks |
 | `io` | `Stdin.read`, `Stdout.write`, `Stderr.write` | Yes — stream I/O blocks |
 | `io` | `Buffer.read`, `Buffer.write` | No — in-memory, never blocks |
@@ -138,7 +138,7 @@ func io.copy(reader: any Reader, writer: any Writer) -> usize or IoError {
     loop {
         const n = try reader.read(buf)
         if n == 0 { break }
-        try writer.write_all(buf[..n])
+        try writer.write_bytes(buf[..n])
         total += n
     }
     return total

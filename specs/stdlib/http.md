@@ -76,7 +76,7 @@ extend Request {
 | Rule | Description |
 |------|-------------|
 | **R1: Status helpers** | Named constructors for common status codes |
-| **R2: Status categories** | `is_ok()`, `is_error()` etc. check status code ranges |
+| **R2: Status categories** | `is_ok()`, `is_error()`, `is_redirect()`, `is_client_error()`, `is_server_error()` check status code ranges |
 
 <!-- test: skip -->
 ```rask
@@ -101,6 +101,7 @@ extend Response {
     func is_redirect(self) -> bool      // 300-399
     func is_client_error(self) -> bool  // 400-499
     func is_server_error(self) -> bool  // 500-599
+    func is_error(self) -> bool         // 400-599
 }
 ```
 
@@ -168,20 +169,21 @@ const resp = try client.get("http://api.example.com/users")
 
 | Rule | Description |
 |------|-------------|
-| **S1: HttpServer** | TCP listener that parses HTTP/1.1. Linear resource — must close |
+| **S1: HttpServer** | `http.listen(addr)` returns an `HttpServer` — a TCP listener that parses HTTP/1.1. Linear resource — must close. Free function, parallel to `net.tcp_listen` |
 | **S2: Responder** | Linear handle for sending exactly one response per request. Compiler guarantees every accepted request gets a response |
 | **S3: Accept loop** | Server yields `(Request, Responder)` pairs. Spawn tasks for concurrent handling |
 
 <!-- test: skip -->
 ```rask
+http.listen(addr: string) -> HttpServer or HttpError
+
 @resource
 struct HttpServer { }
 
 extend HttpServer {
-    func listen(addr: string) -> HttpServer or HttpError
     func accept(self) -> (Request, Responder) or HttpError
     func local_addr(self) -> string
-    func close(take self)
+    func close(take self) -> void or IoError
 }
 
 @resource
@@ -198,7 +200,7 @@ import http
 
 func main() -> void or Error {
     using Multitasking {
-        const server = try HttpServer.listen("0.0.0.0:8080")
+        const server = try http.listen("0.0.0.0:8080")
         ensure server.close()
 
         loop {
@@ -217,11 +219,11 @@ func main() -> void or Error {
 
 | Rule | Description |
 |------|-------------|
-| **S4: listen_and_serve** | One-line server for simple cases. Spawns a green task per request. Requires `using Multitasking` |
+| **S4: serve** | `http.serve(addr, handler)` — one-line server for simple cases. Spawns a green task per request. Requires `using Multitasking` |
 
 <!-- test: skip -->
 ```rask
-http.listen_and_serve(
+http.serve(
     addr: string,
     handler: func(Request) -> Response,
 ) -> void or HttpError
@@ -233,7 +235,7 @@ import http
 
 func main() -> void or Error {
     using Multitasking {
-        try http.listen_and_serve("0.0.0.0:8080", handle)
+        try http.serve("0.0.0.0:8080", handle)
     }
 }
 
@@ -321,7 +323,7 @@ WHY: Could not establish TCP connection to the remote host.
 
 **C1 (shared internal client):** Module-level functions (`http.get`, etc.) reuse a shared internal client for connection pooling. Without this, every call does a fresh TCP+TLS handshake. Use `HttpClient.new()` when you need isolation or custom settings.
 
-**S4 (listen_and_serve):** Covers the common pattern of "listen, accept in a loop, spawn a task per request." Three lines instead of ten. For anything more complex (graceful shutdown, connection limits), use the `HttpServer` accept loop directly.
+**S4 (serve):** Covers the common pattern of "listen, accept in a loop, spawn a task per request." Three lines instead of ten. For anything more complex (graceful shutdown, connection limits), use `http.listen` and the accept loop directly.
 
 ### Deferred
 
@@ -350,7 +352,7 @@ struct User {
 
 func main() -> void or Error {
     using Multitasking {
-        try http.listen_and_serve("0.0.0.0:8080", handle)
+        try http.serve("0.0.0.0:8080", handle)
     }
 }
 

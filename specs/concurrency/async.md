@@ -157,7 +157,7 @@ Inference is invisible in source: writing or reading a function's body never inv
 ```rask
 func process_file(path: string) -> Data or Error {
     const file = try File.open(path)
-    const contents = try file.read_all()
+    const contents = try file.read_bytes()
     parse(contents)
 }
 ```

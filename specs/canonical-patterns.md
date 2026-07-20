@@ -66,7 +66,7 @@ Build values with struct literals and `from_*` constructors.
 const point = Point { x: 10, y: 20 }
 
 // from_* — construction from a different source type
-const path = Path.from_str("/usr/bin")
+const path = Path.from("/usr/bin")
 const config = Config.from_file("config.toml")
 
 // .new() — zero-argument or minimal constructor
@@ -98,6 +98,7 @@ Name encodes the cost. A developer — or a tool — knows what happens from the
 // as_* — cheap view, no allocation
 const bytes = s.as_bytes()
 const slice = vec.as_slice()
+const str = path.as_string()
 
 // to_* — allocates a new value, doesn't consume source
 const s = number.to_string()
@@ -112,20 +113,25 @@ const vec = list.into_vec()
 
 | Prefix/Suffix | Meaning | Returns | Examples |
 |---------------|---------|---------|----------|
-| `from_*` | Construction from source | `Self` or `Self or E` | `from_str(s)`, `from_bytes(b)` |
+| `from_*` | Construction from source | `Self` or `Self or E` | `Path.from(s)`, `from_utf8(b)` — suffix only when the source type needs disambiguating |
 | `into_*` | Consuming conversion | new type (takes ownership) | `into_string()`, `into_vec()` |
-| `as_*` | Cheap view or cast | reference or copy | `as_slice()`, `as_str()` |
+| `as_*` | Cheap view or cast | reference or copy | `as_slice()`, `as_string()` |
 | `to_*` | Non-consuming conversion | new type (may allocate) | `to_string()`, `to_lowercase()` |
 | `is_*` | Boolean predicate | `bool` | `is_empty()`, `is_valid()` |
-| `with_*` | Builder-style setter | `Self` | `with_capacity(n)` |
-| `*_or(default)` | Value with fallback | `T` | `on_err(0)`, `env_or(k, d)` |
-| `try_*` | Fallible version | `T or E` | `try_parse()`, `try_connect()` |
+| `has_*` | Containment predicate | `bool` | `has_field(name)`, `has_extension(ext)` |
+| `with_*` | Builder-style setter (one-shot setting) | `Self` | `with_capacity(n)`, `with_timeout(d)` |
+| `*_or(default)` | Value with fallback | `T` | `env_or(k, d)` |
+| `try_*` | Fallible variant of a panicking sibling | `T or E` | `try_push()`, `try_insert()` |
+
+**`try_*` is narrow:** it exists only where a panicking default sibling exists (`push`/`try_push`). Operations that are inherently fallible just return `T or E` under their plain name (`parse_int`, `from_utf8`, `to_cstring`) — the return type already says it can fail.
+
+**Builders:** one-shot optional settings use `with_*` (`with_timeout`, `with_capacity`). Repeatable accumulator methods on builders whose whole job is accumulating use bare nouns (`Command.arg()`, `.env()`; `cli.Parser.flag()`, `.option()`) — `with_arg().with_arg()` is ceremony without information. Builders terminate with `build()` — one verb everywhere (`StringBuilder`, `BinaryBuilder`, `JsonWriter`).
 
 ### Domain-Specific Patterns
 
 | Pattern | Domain | Examples |
 |---------|--------|---------|
-| `read_*` / `write_*` | Binary I/O | `read_u32be()`, `write_all()` |
+| `read_*` / `write_*` | I/O — suffix says what moves | `read_text()`, `write_bytes()`, `read_u32be()` |
 | `decode` / `encode` | Serialization | `json.decode<T>()`, `json.encode()` |
 
 **Anti-patterns:**
@@ -143,13 +149,13 @@ Propagate with `try`, handle with `match`, add context with `try...else`.
 ```rask
 // Propagation — pass the error up as-is
 func load_config(path: string) -> Config or IoError {
-    const text = try fs.read_file(path)
+    const text = try fs.read_text(path)
     const config = try Config.from_str(text)
     return config
 }
 
 // Handling — react to the specific error
-match fs.read_file(path) {
+match fs.read_text(path) {
     Data as data => process(data),
     IoError as e => log("failed to read {path}: {e.message()}"),
 }
@@ -169,19 +175,19 @@ Use `try...else` to add context when propagating errors. Stdlib provides `Contex
 ```rask
 // Application code — human-readable context chains
 func load_config(path: string) -> Config or ContextError {
-    const text = try fs.read_file(path) else |e| context("reading {path}", e)
+    const text = try fs.read_text(path) else |e| context("reading {path}", e)
     return try Config.parse(text) else |e| context("parsing {path}", e)
 }
 // Output: "reading /app.toml: file not found"
 
 // Library code — typed domain errors (callers can match)
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_file(path) else |e| ConfigError.Io { path, source: e }
+    const text = try fs.read_text(path) else |e| ConfigError.Io { path, source: e }
     return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
 }
 
 // Block form — when you need side effects before propagating
-const text = try fs.read_file(path) else |e| {
+const text = try fs.read_text(path) else |e| {
     log("failed to read {path}: {e.message()}")
     context("reading {path}", e)
 }
@@ -314,7 +320,7 @@ const msg = format("hello, {name}! you have {count} messages")
 // StringBuilder — for loops or many concatenations
 mut sb = StringBuilder.new()
 for item in items {
-    sb.append("{item}\n")
+    sb.push("{item}\n")
 }
 const result = sb.build()
 
@@ -459,10 +465,10 @@ Explicit, no hidden effects. Every I/O operation is visible in the function body
 
 ```rask
 // Read entire file
-const text = try fs.read_file(path)
+const text = try fs.read_text(path)
 
 // Write entire file
-try fs.write_file(path, data)
+try fs.write_text(path, data)
 
 // Line-by-line reading
 const lines = try fs.read_lines(path)
@@ -574,10 +580,10 @@ test "user creation" {
 
 test "file cleanup" {
     const file = try fs.create("/tmp/test.txt")
-    ensure fs.remove("/tmp/test.txt")
+    ensure fs.remove_file("/tmp/test.txt")
 
     try file.write_text("hello")
-    const content = try fs.read_file("/tmp/test.txt")
+    const content = try fs.read_text("/tmp/test.txt")
     assert_eq(content, "hello")
 }
 ```
@@ -636,7 +642,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 | Build strings | `format()`, `StringBuilder` |
 | Share state | `Shared<T>`, channels |
 | Run concurrently | `spawn`, `using Multitasking { }` |
-| Do I/O | `fs.read_file`, `fs.open` + `ensure close` |
+| Do I/O | `fs.read_text`, `fs.open` + `ensure close` |
 | Match patterns | `if x is` (single), `match` (multiple) |
 | Iterate | `for x in`, adapters (`.map`, `.filter`) |
 | Test | `test "name" { }` blocks |

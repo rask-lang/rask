@@ -136,7 +136,7 @@ struct SavedContext {
 ```rask
 spawn(|| {
     const file = try File.open("data.txt")
-    const data = try file.read_all()
+    const data = try file.read_bytes()
     process(data)
 })
 ```
@@ -1784,7 +1784,7 @@ spawn(|| {
     ensure { file.close() }  // Registers cleanup hook
 
     // If task cancelled here, ensure still runs
-    const data = try file.read_all()
+    const data = try file.read_bytes()
     process(data)
 })
 ```
@@ -2046,7 +2046,7 @@ public func async.stats() -> RuntimeStats {
 ```rask
 using Multitasking {
     const file = try File.open("data.txt")  // ⟨pauses⟩ ghost annotation
-    const data = try file.read_all()        // ⟨pauses⟩
+    const data = try file.read_bytes()        // ⟨pauses⟩
     process(data)                           // (no annotation - CPU work)
 }
 ```

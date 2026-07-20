@@ -16,7 +16,7 @@ Foundational types and modules for systems programming.
 
 **Linear resources for I/O.** File handles, sockets, system resources are linear types — must be consumed exactly once. Prevents leaks by construction.
 
-**Fallible operations.** Operations that can fail return `Result`. No hidden exceptions.
+**Fallible operations.** Operations that can fail return `T or E`. No hidden exceptions.
 
 **Transparent costs.** Allocations, I/O, syscalls — visible in code.
 
@@ -50,9 +50,10 @@ Foundational types and modules for systems programming.
 ### Data Formats
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [json](json.md) | JSON parsing and serialization | Specified |
+| [json](json.md) | JSON encoding and decoding | Specified |
+| [encoding](encoding.md) | Encode/Decode traits, field annotations | Specified |
 | [csv](#csv) | CSV parsing and writing | Planned |
-| [encoding](#encoding) | Base64, hex, URL encoding | Planned |
+| [encoding (base64/hex/url)](#encoding-1) | Base64, hex, URL encoding — planned additions to `std.encoding` | Planned |
 
 ### Utilities
 | Module | Purpose | Status |
@@ -64,7 +65,8 @@ Foundational types and modules for systems programming.
 | [math](math.md) | Mathematical functions | Specified |
 | [random](random.md) | Random number generation | Specified |
 | [hash](#hash) | SHA256, MD5, CRC32 | Planned |
-| [bits](#bits) | Bit manipulation utilities | Planned |
+| [bits](bits.md) | Bit manipulation, byte order, binary pack/unpack | Specified |
+| [reflect](reflect.md) | Compile-time type introspection | Specified |
 | [unicode](#unicode) | Unicode utilities | Planned |
 | [terminal](#terminal) | ANSI colors, terminal detection | Planned |
 
@@ -135,7 +137,7 @@ Always available without import:
 | `Debug` | Debug formatting |
 | `Default` | Default values |
 | `Numeric` | Arithmetic operations |
-| `Iterator` | Iteration protocol |
+| `Sequence` | Iteration protocol |
 
 ---
 
@@ -378,7 +380,7 @@ Command-line argument parsing (flags, options, positional args, help generation)
 
 ## Encoding
 
-Common encodings (RFC 4648).
+Common encodings (RFC 4648). Planned additions to `std.encoding` ([encoding.md](encoding.md)), alongside the Encode/Decode serialization traits.
 
 ### Base64
 
@@ -435,7 +437,7 @@ const hex = encoding.hex.encode(digest)
 const hasher = hash.Sha256.new()
 hasher.update(chunk1)
 hasher.update(chunk2)
-const digest = hasher.finish()
+const digest = hasher.digest()
 ```
 
 **Note:** For cryptographic security (HMAC, signatures), use the `crypto` package.
@@ -623,7 +625,7 @@ for row in reader {
 const writer = csv.Writer.new()
 try writer.write_row(["name", "age"])
 try writer.write_row(["Alice", "30"])
-const output = writer.finish()
+const output = writer.build()
 ```
 
 ### Options
@@ -632,7 +634,7 @@ const output = writer.finish()
 const reader = csv.Reader.from_string(data)
     .delimiter(';')
     .quote('"')
-    .has_headers(true)
+    .with_headers()
 ```
 
 **Status:** Planned — detailed specification TODO.

@@ -20,7 +20,8 @@ Three types: `Duration` for time spans, `Instant` for monotonic timestamps, `Sys
 | Rule | Description |
 |------|-------------|
 | **D4: Nanosecond precision** | Internal storage is nanosecond. Range: 0 to ~584 years |
-| **D5: Truncation** | Fractional nanoseconds from `from_secs_f64` are truncated |
+| **D5: Truncation** | Fractional nanoseconds from `seconds_f64` are truncated |
+| **D6: Unit spelling** | `seconds` is spelled out; sub-second units use the common short forms `millis`/`micros`/`nanos`. Constructors are bare unit names, accessors are `as_` + unit |
 
 <!-- test: skip -->
 ```rask
@@ -29,15 +30,15 @@ Duration.seconds(n: u64) -> Duration
 Duration.millis(n: u64) -> Duration
 Duration.micros(n: u64) -> Duration
 Duration.nanos(n: u64) -> Duration
-Duration.from_secs_f64(secs: f64) -> Duration
+Duration.seconds_f64(secs: f64) -> Duration
 
 // Conversions
-duration.as_secs() -> u64
+duration.as_seconds() -> u64
 duration.as_millis() -> u64
 duration.as_micros() -> u64
 duration.as_nanos() -> u64
-duration.as_secs_f32() -> f32
-duration.as_secs_f64() -> f64
+duration.as_seconds_f32() -> f32
+duration.as_seconds_f64() -> f64
 ```
 
 ## Instant API
@@ -50,9 +51,10 @@ duration.as_secs_f64() -> f64
 <!-- test: skip -->
 ```rask
 Instant.now() -> Instant
-instant.duration_since(earlier: Instant) -> Duration
 instant.elapsed() -> Duration
 ```
+
+No `duration_since` on `Instant` — `end - start` is the one way to get the difference (A2). `SystemTime` keeps `duration_since` because its checked form can fail (`TimeError.Backwards`).
 
 ## Module Functions
 
@@ -99,14 +101,14 @@ WHY: Platform-specific sleep failure (rare). See `std.os/SY1`.
 ```rask
 SystemTime.now() -> SystemTime
 SystemTime.unix_epoch() -> SystemTime
-SystemTime.from_unix_secs(secs: i64) -> SystemTime
+SystemTime.from_unix_seconds(seconds: i64) -> SystemTime
 SystemTime.from_unix_millis(millis: i64) -> SystemTime
 ```
 
 <!-- test: skip -->
 ```rask
 extend SystemTime {
-    func unix_secs(self) -> i64
+    func unix_seconds(self) -> i64
     func unix_millis(self) -> i64
     func unix_nanos(self) -> i128
     func duration_since(self, earlier: SystemTime) -> Duration or TimeError
@@ -126,11 +128,11 @@ enum TimeError {
 import time
 
 const now = time.SystemTime.now()
-const timestamp = now.unix_secs()         // 1709251200
+const timestamp = now.unix_seconds()      // 1709251200
 const millis = now.unix_millis()          // 1709251200000
 
 // Reconstruct from stored timestamp
-const restored = time.SystemTime.from_unix_secs(timestamp)
+const restored = time.SystemTime.from_unix_seconds(timestamp)
 
 // Duration since epoch
 const since_epoch = try now.duration_since(time.SystemTime.unix_epoch())
@@ -180,15 +182,15 @@ const tomorrow = now + time.Duration.seconds(86400)
 
 | Case | Behavior | Rule |
 |------|----------|------|
-| `Duration.from_secs_f64(0.5000000001)` | Truncated to 500000000 ns | D5 |
+| `Duration.seconds_f64(0.5000000001)` | Truncated to 500000000 ns | D5 |
 | `Instant` across process restarts | Not comparable — opaque epoch | I2 |
 | `Instant` serialization | Not supported — use `SystemTime` | I2 |
 | Sleep interrupted by signal | May return early | S1 |
 | Duration overflow | Wraps (u64 nanoseconds) | D4 |
 | Duration divide by zero | Panic | A4 |
-| `SystemTime` before UNIX epoch | Negative `unix_secs()` | W2 |
+| `SystemTime` before UNIX epoch | Negative `unix_seconds()` | W2 |
 | `SystemTime` NTP adjustment backward | `duration_since` returns `TimeError.Backwards` | W1 |
-| `SystemTime` serialization | Use `unix_secs()` or `unix_millis()` | W2 |
+| `SystemTime` serialization | Use `unix_seconds()` or `unix_millis()` | W2 |
 | `SystemTime` comparison across machines | Only meaningful if clocks are synchronized | W1 |
 
 ---

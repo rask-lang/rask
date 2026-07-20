@@ -161,7 +161,7 @@ In-place mutation uses mutable mode (`for mutate`). Structural mutation requires
 |------|-------------|
 | **M1: In-place safe** | `vec[i].field = x` doesn't invalidate indices |
 | **M2: Growth unsafe** | `vec.push(x)` inside loop: new elements not visited, length captured at start |
-| **M3: Removal unsafe** | `vec.swap_remove(i)` inside loop: later indices refer to wrong elements |
+| **M3: Removal unsafe** | `vec.remove_unordered(i)` inside loop: later indices refer to wrong elements |
 
 <!-- test: skip -->
 ```rask
@@ -173,7 +173,7 @@ for mutate entity in entities {
 // Index mode for structural mutation
 for i in (0..entities.len()).rev() {
     if entities[i].health <= 0 {
-        entities.swap_remove(i)
+        entities.remove_unordered(i)
     }
 }
 
@@ -369,7 +369,7 @@ FIX: Use an integer key or newtype wrapper with defined equality:
 ```rask
 // 1. Reverse iteration for removal
 for i in (0..vec.len()).rev() {
-    if vec[i].expired { vec.swap_remove(i) }
+    if vec[i].expired { vec.remove_unordered(i) }
 }
 
 // 2. Collect during value iteration, then mutate
@@ -377,7 +377,7 @@ const to_remove = Vec.new()
 for (i, item) in vec.enumerate() {
     if item.expired { to_remove.push(i) }
 }
-for i in to_remove.rev() { vec.swap_remove(i) }
+for i in to_remove.rev() { vec.remove_unordered(i) }
 
 // 3. Filter via take_all
 const vec = vec.take_all().filter(|item| !item.expired).collect()
