@@ -182,6 +182,7 @@ const result = string.from_utf8(buf.as_bytes())  // "hello world"
 | `Stdout` | -- | Yes | -- | Yes |
 | `Stderr` | -- | Yes | -- | Yes |
 | `File` (from `fs`) | Yes | Yes | Yes | Yes |
+| `TcpConnection` (from `net`) | Yes | Yes | -- | Yes |
 | `Buffer` | Yes | Yes | Yes | No |
 | `BufReader<R>` | Yes | -- | -- | Inherits from R |
 | `BufWriter<W>` | -- | Yes | -- | Inherits from W |
@@ -248,6 +249,6 @@ WHY: read_text() requires valid UTF-8. Use read_all() for raw bytes.
 ### See Also
 
 - `std.fs` — `File` type implementing Reader/Writer
-- `std.net` — `TcpConnection` will implement Reader/Writer
+- `std.net` — `TcpConnection` implements Reader/Writer
 - `mem.resource-types` — `@resource` and `ensure` semantics
 - `type.errors` — `T or E` result pattern

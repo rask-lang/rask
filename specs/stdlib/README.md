@@ -181,10 +181,10 @@ Networking primitives.
 | Type | Description | Linear? |
 |------|-------------|---------|
 | `TcpListener` | TCP server socket | Yes |
-| `TcpStream` | TCP connection | Yes |
+| `TcpConnection` | TCP connection | Yes |
 | `UdpSocket` | UDP socket | Yes |
-| `IpAddr` | IP address (v4/v6) | No |
-| `SocketAddr` | IP address + port | No |
+
+Addresses are plain strings — no `SocketAddr`/`IpAddr` types.
 
 ### TCP Server
 
@@ -195,10 +195,10 @@ const listener = try net.tcp_listen("0.0.0.0:8080")
 ensure listener.close()
 
 loop {
-    const (stream, addr) = try listener.accept()
+    const conn = try listener.accept()
     spawn {
-        ensure stream.close()
-        try handle_connection(stream)
+        ensure conn.close()
+        try handle_connection(conn)
     }.detach()
 }
 ```
@@ -206,11 +206,11 @@ loop {
 ### TCP Client
 
 ```rask
-const stream = try net.tcp_connect("example.com:80")
-ensure stream.close()
+const conn = try net.tcp_connect("example.com:80")
+ensure conn.close()
 
-try stream.write_all(request)
-const response = try stream.read_all()
+try conn.write_text(request)
+const response = try conn.read_text()
 ```
 
 **Status:** Specified — see [net.md](net.md).
@@ -344,8 +344,8 @@ import tls
 const stream = try tls.connect("example.com:443")
 ensure stream.close()
 
-try stream.write_all(request)
-const response = try stream.read_all()
+try stream.write_text(request)
+const response = try stream.read_text()
 ```
 
 ### Server

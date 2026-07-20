@@ -307,12 +307,12 @@ Send `to_bytes()` over the network. Handles are valid on the receiving end becau
 
 <!-- test: skip -->
 ```rask
-func migrate_to(pool: Pool<Entity>, target: TcpStream) -> void or Error {
+func migrate_to(pool: Pool<Entity>, target: TcpConnection) -> void or Error {
     const bytes = try pool.to_bytes()
     try target.write_all(bytes)
 }
 
-func receive_migration(stream: TcpStream) -> Pool<Entity> or Error {
+func receive_migration(stream: TcpConnection) -> Pool<Entity> or Error {
     const bytes = try stream.read_all()
     return try Pool.from_bytes(bytes)
 }

@@ -56,11 +56,26 @@ loop {
 
 ## TcpConnection
 
+| Rule | Description |
+|------|-------------|
+| **N6: Reader/Writer** | `TcpConnection` implements `Reader` and `Writer` (see `std.io`) — TCP is a byte transport. `read_text`/`write_text` are UTF-8 conveniences for text protocols |
+
 <!-- test: skip -->
 ```rask
+extend TcpConnection with Reader {
+    func read(self, buf: []u8) -> usize or IoError
+    func read_all(self) -> []u8 or IoError
+}
+
+extend TcpConnection with Writer {
+    func write(self, data: []u8) -> usize or IoError
+    func write_all(self, data: []u8) -> void or IoError
+    func flush(self) -> void or IoError
+}
+
 extend TcpConnection {
-    func read_all(self) -> string or IoError
-    func write_all(self, data: string) -> void or IoError
+    func read_text(self) -> string or IoError
+    func write_text(self, data: string) -> void or IoError
     func remote_addr(self) -> string
     func close(take self)
 }
@@ -72,8 +87,8 @@ import net
 
 const conn = try net.tcp_connect("example.com:80")
 ensure conn.close()
-try conn.write_all("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
-const response = try conn.read_all()
+try conn.write_text("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+const response = try conn.read_text()
 ```
 
 ## UDP
@@ -181,6 +196,7 @@ WHY: Another process is already listening on this address.
 | Connection not closed | Compile error | N7 |
 | Invalid address string | `IoError.Other` | N4, N5 |
 | Remote closes during read | `IoError.ConnectionReset` or empty result | N2 |
+| `read_text` on non-UTF-8 data | `IoError.Other("invalid UTF-8")` — use `read_all` for raw bytes | N6 |
 | Accept on closed listener | `IoError.Other("listener closed")` | N1 |
 | UDP `send`/`recv` without `connect` | `IoError.Other("not connected")` | U3 |
 | UDP packet too large for buffer | Truncated, remaining bytes lost | U1 |
@@ -192,6 +208,8 @@ WHY: Another process is already listening on this address.
 ## Appendix (non-normative)
 
 ### Rationale
+
+**N6 (byte transport):** `string` is UTF-8 by construction — binary protocols (TLS records, file transfer) would fail validation or corrupt. Byte signatures match the `Reader`/`Writer` traits; `read_text`/`write_text` cover text-protocol call sites, named after `Reader.read_text` (`std.io/R3`).
 
 **N3 (string addresses):** No `SocketAddr` or `IpAddr` types. Simpler API, and parsing can be added later without breaking changes.
 
