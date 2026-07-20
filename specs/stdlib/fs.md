@@ -35,10 +35,11 @@ extend File with Writer {
 extend File {
     func close(take self) -> void or IoError
     func read_text(self) -> string or IoError
-    func lines(self) -> Vec<string> or IoError
     func metadata(self) -> Metadata or IoError
 }
 ```
+
+No `lines()` on `File`. Line reading is `fs.read_lines(path)` (eager) or `BufReader.new(file).lines()` (lazy) — see `std.io`.
 
 ## Convenience Functions
 
