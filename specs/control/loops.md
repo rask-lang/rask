@@ -343,7 +343,7 @@ tree.in_order_mut()(|mutate node: Node<T>| {
 |------|---------|---------|
 | Read all elements | Value iteration | `for item in vec { process(item) }` |
 | Mutate elements in place | Mutable iteration | `for mutate item in vec { item.field = x }` |
-| Structural mutation (insert/remove) | Index iteration | `for i in 0..vec.len() { vec.swap_remove(i) }` |
+| Structural mutation (insert/remove) | Index iteration | `for i in 0..vec.len() { vec.remove_unordered(i) }` |
 | Clone values | Value iteration + clone | `for item in vec { const v = item.clone(); use(v) }` |
 | Take ownership (consume) | `take_all()` | `for item in vec.take_all() { own(item) }` |
 | Iterate Pool by handle | `.handles()` | `for h in pool.handles() { pool[h].update() }` |

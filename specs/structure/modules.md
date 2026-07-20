@@ -65,11 +65,11 @@ Package-visible default for items and fields, `private` keyword for extend-only 
 ```rask
 import http
 import myapp.utils as u
-import json.{parse, stringify}
+import json.{decode, encode}
 
 func main() {
     const req = http.new("GET", "/")
-    const body = parse(read())
+    const body = decode<JsonValue>(read())
 }
 ```
 

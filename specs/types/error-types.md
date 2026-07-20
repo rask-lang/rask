@@ -104,7 +104,7 @@ const config = load_config()!
 
 // Error-context block (replaces r ?? |e| f(e))
 const content = try {
-    try fs.read_file(path)
+    try fs.read_text(path)
 } else |e| context("reading {path}", e)
 ```
 
@@ -126,7 +126,7 @@ Example:
 
 <!-- test: skip -->
 ```rask
-const text = try fs.read_file(path) else |e| context("reading {path}", e)
+const text = try fs.read_text(path) else |e| context("reading {path}", e)
 ```
 
 `try`, `map_err`, and `try … else`:
@@ -277,7 +277,7 @@ enum ConfigError {
 // sizeof(ConfigError) = sizeof(payload) + 16 bytes origin
 
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_file(path)     // ConfigError.NotFound captures origin
+    const text = try fs.read_text(path)     // ConfigError.NotFound captures origin
     return try Config.parse(text)            // ConfigError.Parse captures origin
 }
 
@@ -560,7 +560,7 @@ The reverse case — `try r` (a `T or E`) in a `T?`-returning function — fails
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ContextError {
-    const text = try fs.read_file(path) else |e| context("reading {path}", e)
+    const text = try fs.read_text(path) else |e| context("reading {path}", e)
     return try Config.parse(text) else |e| context("parsing {path}", e)
 }
 ```
@@ -570,7 +570,7 @@ func load_config(path: string) -> Config or ContextError {
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_file(path) else |e| ConfigError.Io { path, source: e }
+    const text = try fs.read_text(path) else |e| ConfigError.Io { path, source: e }
     return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
 }
 ```

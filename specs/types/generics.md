@@ -401,7 +401,7 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 | `Cloneable` | `clone(self) -> Self` | Yes — all Cloneable fields, no raw pointers (CL1) |
 | `Default` | `default() -> Self` | Yes — all Default fields, structs only (DF1) |
 | `Displayable` | `to_string(self) -> string` | No — opt-in (user-facing output is intentional) |
-| `Debug` | `debug_string(self) -> string` | Yes — all types |
+| `Debug` | `to_debug_string(self) -> string` | Yes — all types |
 | `Numeric` | `add, sub, mul, div, neg, zero, one, from_int` | No |
 | `Convert<From, To>` | `convert(self: From) -> To` | No |
 | `Encode` | Marker — no methods | Yes — all-Encode public fields (`std.encoding/E12`) |

@@ -34,7 +34,8 @@ net.tcp_connect(addr: string) -> TcpConnection or IoError
 ```rask
 extend TcpListener {
     func accept(self) -> TcpConnection or IoError
-    func close(take self)
+    func local_addr(self) -> string
+    func close(take self) -> void or IoError
 }
 ```
 
@@ -56,13 +57,28 @@ loop {
 
 ## TcpConnection
 
+| Rule | Description |
+|------|-------------|
+| **N6: Reader/Writer** | `TcpConnection` implements `Reader` and `Writer` (see `std.io`) — TCP is a byte transport. `read_text`/`write_text` (from the traits) cover text protocols |
+
 <!-- test: skip -->
 ```rask
+extend TcpConnection with Reader {
+    func read(self, buf: []u8) -> usize or IoError
+    func read_bytes(self) -> Vec<u8> or IoError
+    func read_text(self) -> string or IoError
+}
+
+extend TcpConnection with Writer {
+    func write(self, data: []u8) -> usize or IoError
+    func write_bytes(self, data: []u8) -> void or IoError
+    func write_text(self, data: string) -> void or IoError
+    func flush(self) -> void or IoError
+}
+
 extend TcpConnection {
-    func read_all(self) -> string or IoError
-    func write_all(self, data: string) -> void or IoError
     func remote_addr(self) -> string
-    func close(take self)
+    func close(take self) -> void or IoError
 }
 ```
 
@@ -72,8 +88,8 @@ import net
 
 const conn = try net.tcp_connect("example.com:80")
 ensure conn.close()
-try conn.write_all("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
-const response = try conn.read_all()
+try conn.write_text("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+const response = try conn.read_text()
 ```
 
 ## UDP
@@ -82,7 +98,7 @@ const response = try conn.read_all()
 |------|-------------|
 | **U1: UdpSocket** | Connectionless datagram socket. Linear resource — must close |
 | **U2: Bind** | `net.udp_bind(addr)` creates a socket bound to a local address |
-| **U3: Connect** | `udp.connect(addr)` sets a default peer for `send`/`recv` — no actual handshake |
+| **U3: Connect** | `udp.connect(addr)` sets a default peer for `send`/`receive` — no actual handshake |
 
 <!-- test: skip -->
 ```rask
@@ -96,12 +112,12 @@ net.udp_bind(addr: string) -> UdpSocket or IoError
 ```rask
 extend UdpSocket {
     func send_to(self, data: []u8, addr: string) -> usize or IoError
-    func recv_from(self, buf: []u8) -> (usize, string) or IoError
+    func receive_from(self, buf: []u8) -> (usize, string) or IoError
     func connect(self, addr: string) -> void or IoError
     func send(self, data: []u8) -> usize or IoError     // to connected peer
-    func recv(self, buf: []u8) -> usize or IoError      // from connected peer
+    func receive(self, buf: []u8) -> usize or IoError      // from connected peer
     func local_addr(self) -> string
-    func close(take self)
+    func close(take self) -> void or IoError
 }
 ```
 
@@ -113,7 +129,7 @@ const socket = try net.udp_bind("0.0.0.0:9000")
 ensure socket.close()
 
 mut buf = [0u8; 1024]
-const (n, sender) = try socket.recv_from(buf)
+const (n, sender) = try socket.receive_from(buf)
 try socket.send_to(buf[0..n], sender)
 ```
 
@@ -146,8 +162,8 @@ const addrs = try net.resolve("example.com")
 ```rask
 func handle(conn: TcpConnection) -> void or IoError {
     ensure conn.close()
-    const data = try conn.read_all()
-    try conn.write_all(process(data))
+    const data = try conn.read_bytes()
+    try conn.write_bytes(process(data))
 }
 ```
 
@@ -181,8 +197,10 @@ WHY: Another process is already listening on this address.
 | Connection not closed | Compile error | N7 |
 | Invalid address string | `IoError.Other` | N4, N5 |
 | Remote closes during read | `IoError.ConnectionReset` or empty result | N2 |
+| `read_text` on non-UTF-8 data | `IoError.Other("invalid UTF-8")` — use `read_bytes` for raw bytes | N6 |
+| `close()` fails (rare) | `IoError` returned; `ensure conn.close()` discards it | N8 |
 | Accept on closed listener | `IoError.Other("listener closed")` | N1 |
-| UDP `send`/`recv` without `connect` | `IoError.Other("not connected")` | U3 |
+| UDP `send`/`receive` without `connect` | `IoError.Other("not connected")` | U3 |
 | UDP packet too large for buffer | Truncated, remaining bytes lost | U1 |
 | DNS resolution with no results | Empty `Vec` | D1 |
 | DNS resolution for IP literal | Returns the IP itself | D1 |
@@ -192,6 +210,8 @@ WHY: Another process is already listening on this address.
 ## Appendix (non-normative)
 
 ### Rationale
+
+**N6 (byte transport):** `string` is UTF-8 by construction — binary protocols (TLS records, file transfer) would fail validation or corrupt. Byte signatures match the `Reader`/`Writer` traits; `read_text`/`write_text` (`std.io/R3`, `W4`) cover text-protocol call sites.
 
 **N3 (string addresses):** No `SocketAddr` or `IpAddr` types. Simpler API, and parsing can be added later without breaking changes.
 

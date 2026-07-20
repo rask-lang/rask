@@ -647,12 +647,12 @@ struct Observable<T> {
 extend Observable<T> {
     func set(self, value: T, pool: Pool<Observer>) {
         self.value = value
-        self.observers.retain(|weak| {
+        self.observers.remove_where(|weak| {
             if weak.upgrade()? as h {
                 pool[h].notify(self.value);
-                true
+                false     // keep — still alive
             } else {
-                false
+                true      // remove — observer gone
             }
         })
     }

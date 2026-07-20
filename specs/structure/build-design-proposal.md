@@ -124,7 +124,7 @@ code generation steps (protobuf + schema + C compilation), it's wasteful.
 func build(ctx: BuildContext) -> void or Error {
     // Step 1: only re-runs when schema.json changes
     try ctx.step("codegen", inputs: ["schema.json"], || {
-        const schema = try fs.read_file("schema.json")
+        const schema = try fs.read_text("schema.json")
         try ctx.write_source("types.rk", generate_types(schema))
     })
 

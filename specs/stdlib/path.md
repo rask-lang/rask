@@ -26,9 +26,10 @@ Single `Path` type wrapping a string. No `PathBuf`/`OsStr`/`OsString` zoo. Non-U
 
 <!-- test: skip -->
 ```rask
-Path.new(s: string) -> Path         // normalize separators
-Path.from(s: string) -> Path        // alias for new
+Path.from(s: string) -> Path        // normalize separators
 ```
+
+One constructor. `from` because a Path is built from a string value, matching `Vec.from`/`Map.from`.
 
 ## Component Access
 
@@ -54,17 +55,18 @@ path.has_extension(ext: string) -> bool  // case-insensitive on Windows
 
 <!-- test: skip -->
 ```rask
-path.join(other: string) -> Path    // append component with separator
-path / other -> Path                // operator sugar for join
+path / other -> Path                // append component with separator
 path.with_extension(ext: string) -> Path   // replace extension
 path.with_file_name(name: string) -> Path  // replace final component
 ```
+
+`/` is the one way to join paths — there is no `join` method.
 
 ## Conversion
 
 <!-- test: skip -->
 ```rask
-path.to_string() -> string          // trivial — Path IS a string
+path.as_string(self) -> string      // cheap view — Path IS a string
 ```
 
 ## Platform Behavior
@@ -90,11 +92,11 @@ WHY: Rask paths are UTF-8. Non-UTF-8 filenames are lossy-converted at the system
 
 | Case | Rule | Handling |
 |------|------|----------|
-| `Path.new("")` | — | Empty path; `parent()` and `file_name()` return `none` |
-| `Path.new("/")` | — | Root; `parent()` and `file_name()` return `none` |
-| `Path.new("file.tar.gz")` | — | `extension()` -> `"gz"`, `stem()` -> `"file.tar"` |
-| `Path.new(".gitignore")` | — | `extension()` -> `none`, `stem()` -> `".gitignore"` (dotfiles are stems) |
-| `Path.new("no_ext")` | — | `extension()` -> `none` |
+| `Path.from("")` | — | Empty path; `parent()` and `file_name()` return `none` |
+| `Path.from("/")` | — | Root; `parent()` and `file_name()` return `none` |
+| `Path.from("file.tar.gz")` | — | `extension()` -> `"gz"`, `stem()` -> `"file.tar"` |
+| `Path.from(".gitignore")` | — | `extension()` -> `none`, `stem()` -> `".gitignore"` (dotfiles are stems) |
+| `Path.from("no_ext")` | — | `extension()` -> `none` |
 | Trailing slash `"/home/user/"` | P2 | Normalized to `"/home/user"` |
 | Double separators `"/home//user"` | P2 | Normalized to `"/home/user"` |
 | Non-UTF-8 filenames on Unix | P3 | Lossy replacement (`\uFFFD`), affects <0.01% of real paths |
@@ -117,7 +119,7 @@ WHY: Rask paths are UTF-8. Non-UTF-8 filenames are lossy-converted at the system
 import path
 
 func output_path(input: Path, ext: string) -> Path {
-    const dir = input.parent() ?? Path.new(".")
+    const dir = input.parent() ?? Path.from(".")
     const name = input.stem() ?? "output"
     return dir / "{name}.{ext}"
 }
@@ -129,7 +131,7 @@ func output_path(input: Path, ext: string) -> Path {
 import path
 import fs
 
-func find_rask_files(dir: Path) -> Vec<Path> or string {
+func find_rask_files(dir: Path) -> Vec<Path> or IoError {
     const entries = try fs.read_dir(dir)
     const results = Vec.new()
     for entry in entries {
@@ -152,12 +154,12 @@ func find_rask_files(dir: Path) -> Vec<Path> or string {
 ```rask
 import path
 
-const base = Path.new("/usr/local")
+const base = Path.from("/usr/local")
 const bin = base / "bin"             // /usr/local/bin
 const exe = bin / "rask"             // /usr/local/bin/rask
 
 // Chaining
-const config = Path.new(home) / ".config" / "rask" / "settings.toml"
+const config = Path.from(home) / ".config" / "rask" / "settings.toml"
 ```
 
 ### Integration

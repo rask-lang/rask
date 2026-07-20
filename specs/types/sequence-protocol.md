@@ -150,7 +150,7 @@ func walk<T>(node: Node<T>, yield: |Node<T>| -> bool) -> bool {
 
 **From a channel:**
 
-The receiver must be owned by the Sequence because the closure calls `recv()` *after* the method that built it has returned. Any capture of `rx` by borrow would make the closure expression-scoped — it would not type-check at the storage or return site.
+The receiver must be owned by the Sequence because the closure calls `receive()` *after* the method that built it has returned. Any capture of `rx` by borrow would make the closure expression-scoped — it would not type-check at the storage or return site.
 
 <!-- test: skip -->
 ```rask
@@ -158,7 +158,7 @@ extend Receiver<T> {
     public func stream(take self) -> Sequence<T> {
         return |yield| {
             loop {
-                if self.recv()? as msg {
+                if self.receive()? as msg {
                     if not yield(msg): break
                 } else {
                     break
@@ -489,4 +489,4 @@ Hovering over a for-loop over a Sequence shows:
 - [Loops](../control/loops.md) — For-loop desugar for built-ins and Sequences (`ctrl.loops`)
 - [Iteration Patterns](../stdlib/iteration.md) — Collection iteration modes (`std.iteration`)
 - [Collections](../stdlib/collections.md) — Vec, Pool, Map APIs (`std.collections`)
-- [Channels](../concurrency/sync.md) — Streaming via `recv()` in a for-loop
+- [Channels](../concurrency/sync.md) — Streaming via `receive()` in a for-loop

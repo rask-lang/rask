@@ -1,7 +1,7 @@
 <!-- id: std.os -->
 <!-- status: decided -->
 <!-- summary: Process control, environment, platform info, subprocess spawning, signal handling -->
-<!-- depends: stdlib/io.md, stdlib/time.md, concurrency/channels.md -->
+<!-- depends: stdlib/io.md, stdlib/time.md, concurrency/async.md -->
 
 # OS
 
@@ -15,7 +15,7 @@ Single `os` module: env vars, args, exit, platform info, subprocess spawning, an
 | **E2: Get with default** | `os.env_or(key, default)` returns `string` |
 | **E3: Set** | `os.set_env(key, value)` sets an env var |
 | **E4: Remove** | `os.remove_env(key)` unsets an env var |
-| **E5: List all** | `os.vars()` returns `Vec<(string, string)>` |
+| **E5: List all** | `os.env_vars()` returns `Vec<(string, string)>` |
 
 ## Command-Line Arguments
 
@@ -28,7 +28,7 @@ Single `os` module: env vars, args, exit, platform info, subprocess spawning, an
 | Rule | Description |
 |------|-------------|
 | **P1: Exit** | `os.exit(code: i32)` exits the process; return type is `!` (never) |
-| **P2: PID** | `os.getpid()` returns `u32` |
+| **P2: PID** | `os.pid()` returns `u32` |
 
 ## Platform Info
 
@@ -54,6 +54,22 @@ func main() {
 }
 ```
 
+## SysError
+
+| Rule | Description |
+|------|-------------|
+| **SY1: Shared error type** | `SysError` covers rare platform-level failures (sleep, clock operations). One shared type instead of a one-variant enum per syscall. Implements `ErrorMessage` (`type.errors/ER4`) |
+
+<!-- test: parse -->
+```rask
+enum SysError {
+    Unsupported(string)     // operation not available on this platform
+    Failed(string)          // raw OS error text
+}
+```
+
+These are "should never happen" failures — most callers `try` them upward or crash with `!`.
+
 ## Subprocess
 
 | Rule | Description |
@@ -72,7 +88,7 @@ extend Command {
     func arg(take self, arg: string) -> Command
     func args(take self, args: Vec<string>) -> Command
     func env(take self, key: string, value: string) -> Command
-    func cwd(take self, dir: string) -> Command
+    func working_dir(take self, dir: string) -> Command
     func stdin(take self, cfg: Stdio) -> Command
     func stdout(take self, cfg: Stdio) -> Command
     func stderr(take self, cfg: Stdio) -> Command
@@ -109,8 +125,8 @@ struct Process { }
 extend Process {
     func wait(take self) -> Output or IoError
     func kill_and_wait(take self) -> Output or IoError
-    func try_wait(self) -> Output? or IoError
-    func id(self) -> u32
+    func poll(self) -> Output? or IoError      // non-blocking: none = still running
+    func pid(self) -> u32
     func write_stdin(self, data: string) -> void or IoError
     func read_stdout(self) -> string or IoError
 }
@@ -144,7 +160,7 @@ const output = try proc.wait()
 | Rule | Description |
 |------|-------------|
 | **SG1: Signal enum** | Named signals for portable handling |
-| **SG2: Channel-based** | `os.on_signal(signals)` returns a `Receiver<Signal>` from the concurrency module |
+| **SG2: Channel-based** | `os.signals(list)` returns a `Receiver<Signal>` from the concurrency module |
 | **SG3: Default restored** | When the receiver is dropped, the default OS signal behavior is restored |
 
 <!-- test: skip -->
@@ -157,7 +173,7 @@ enum Signal {
     User2           // SIGUSR2
 }
 
-os.on_signal(signals: Vec<Signal>) -> Receiver<Signal> or IoError
+os.signals(list: Vec<Signal>) -> Receiver<Signal> or IoError
 ```
 
 <!-- test: skip -->
@@ -165,10 +181,10 @@ os.on_signal(signals: Vec<Signal>) -> Receiver<Signal> or IoError
 import os
 
 // Graceful shutdown
-const signals = try os.on_signal([Signal.Interrupt, Signal.Terminate])
+const signals = try os.signals([Signal.Interrupt, Signal.Terminate])
 
 // Block until signal received
-const sig = try signals.recv()
+const sig = try signals.receive()
 println("Received {sig}, shutting down...")
 cleanup()
 ```
@@ -180,12 +196,12 @@ import os
 // Server with graceful shutdown
 func main() -> void or Error {
     using Multitasking {
-        const signals = try os.on_signal([Signal.Interrupt, Signal.Terminate])
-        const server = try HttpServer.listen("0.0.0.0:8080")
+        const signals = try os.signals([Signal.Interrupt, Signal.Terminate])
+        const server = try http.listen("0.0.0.0:8080")
         ensure server.close()
 
         const shutdown = spawn(|| {
-            signals.recv()
+            signals.receive()
         })
 
         const serve = spawn(|| {
@@ -267,7 +283,7 @@ struct Config {
 func load_config() -> Config {
     return Config {
         host: os.env_or("HOST", "localhost"),
-        port: os.env("PORT")?.parse<i64>() ?? 8080,
+        port: os.env("PORT")?.parse_int().ok() ?? 8080,
         debug: os.env("DEBUG")?.to_lowercase() == "true",
     }
 }
@@ -287,17 +303,6 @@ func default_config_dir() -> string {
 }
 ```
 
-### Migration
-
-| Old | New | Notes |
-|-----|-----|-------|
-| `env.var(key)` | `os.env(key)` | Returns `string?` |
-| `env.vars()` | `os.vars()` | Returns `Vec<(string, string)>` |
-| `cli.args()` | `os.args()` | Identical |
-| `std.exit(code)` | `os.exit(code)` | Identical |
-
-Old import names (`env`, `std`, `cli`) remain as aliases during transition.
-
 **Subprocess pipeline:**
 
 <!-- test: skip -->
@@ -314,11 +319,11 @@ if !output.success() {
 
 <!-- test: skip -->
 ```rask
-const signals = try os.on_signal([Signal.Interrupt, Signal.Terminate])
+const signals = try os.signals([Signal.Interrupt, Signal.Terminate])
 
 // In a select or spawn, wait for signal
 spawn(|| {
-    const sig = try signals.recv()
+    const sig = try signals.receive()
     println("Shutting down on {sig}...")
     shutdown_server()
 }).detach()

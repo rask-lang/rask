@@ -23,22 +23,24 @@ struct File {
 
 extend File with Reader {
     func read(self, buf: []u8) -> usize or IoError
-    func read_all(self) -> []u8 or IoError
+    func read_bytes(self) -> Vec<u8> or IoError
+    func read_text(self) -> string or IoError
 }
 
 extend File with Writer {
     func write(self, data: []u8) -> usize or IoError
-    func write_all(self, data: []u8) -> void or IoError
+    func write_bytes(self, data: []u8) -> void or IoError
+    func write_text(self, data: string) -> void or IoError
     func flush(self) -> void or IoError
 }
 
 extend File {
     func close(take self) -> void or IoError
-    func read_text(self) -> string or IoError
-    func lines(self) -> Vec<string> or IoError
     func metadata(self) -> Metadata or IoError
 }
 ```
+
+No `lines()` on `File`. Line reading is `fs.read_lines(path)` (eager) or `BufferedReader.new(file).lines()` (lazy) — see `std.io`.
 
 ## Convenience Functions
 
@@ -46,20 +48,22 @@ extend File {
 |------|-------------|
 | **F3: Self-contained** | Convenience functions open, operate, and close internally — no resource obligation |
 
+Same vocabulary as the `Reader`/`Writer` methods — `fs.read_text(path)` is `open + read_text + close`:
+
 | Function | Signature |
 |----------|-----------|
-| `fs.read_file` | `(path: string) -> string or IoError` |
+| `fs.read_text` | `(path: string) -> string or IoError` |
 | `fs.read_bytes` | `(path: string) -> Vec<u8> or IoError` |
 | `fs.read_lines` | `(path: string) -> Vec<string> or IoError` |
-| `fs.write_file` | `(path: string, content: string) -> void or IoError` |
-| `fs.write_bytes` | `(path: string, data: Vec<u8>) -> void or IoError` |
-| `fs.append_file` | `(path: string, content: string) -> void or IoError` |
+| `fs.write_text` | `(path: string, content: string) -> void or IoError` |
+| `fs.write_bytes` | `(path: string, data: []u8) -> void or IoError` |
+| `fs.append_text` | `(path: string, content: string) -> void or IoError` |
 | `fs.exists` | `(path: string) -> bool` |
 
 <!-- test: parse -->
 ```rask
-const content = try fs.read_file("config.txt")
-try fs.write_file("output.txt", "hello world")
+const content = try fs.read_text("config.txt")
+try fs.write_text("output.txt", "hello world")
 ```
 
 ## File Handle Functions
@@ -110,13 +114,15 @@ ensure file.close()
 | `fs.read_dir` | `(path: string) -> Vec<DirEntry> or IoError` | List directory contents |
 | `fs.create_dir` | `(path: string) -> void or IoError` | Create single directory |
 | `fs.create_dir_all` | `(path: string) -> void or IoError` | Create directory tree (mkdir -p) |
-| `fs.remove` | `(path: string) -> void or IoError` | Remove file |
+| `fs.remove_file` | `(path: string) -> void or IoError` | Remove file — pairs with `remove_dir`, the name says which one it handles |
 | `fs.remove_dir` | `(path: string) -> void or IoError` | Remove empty directory |
 | `fs.remove_dir_all` | `(path: string) -> void or IoError` | Remove directory tree recursively |
 | `fs.rename` | `(from: string, to: string) -> void or IoError` | Rename/move file or directory |
-| `fs.copy` | `(from: string, to: string) -> u64 or IoError` | Copy file, returns bytes copied |
-| `fs.canonicalize` | `(path: string) -> string or IoError` | Resolve to absolute path |
+| `fs.copy` | `(from: string, to: string) -> void or IoError` | Copy file |
+| `fs.absolute_path` | `(path: string) -> string or IoError` | Resolve symlinks, make absolute |
 | `fs.metadata` | `(path: string) -> Metadata or IoError` | Get metadata without opening |
+| `fs.current_dir` | `() -> Path` | Current working directory |
+| `fs.home_dir` | `() -> Path?` | User home directory, `none` if unknown |
 
 ## Metadata and DirEntry
 
@@ -167,8 +173,9 @@ WHY: The path does not exist on the filesystem.
 | `ensure` + explicit `close()` before scope end | Safe — ensure's close silently succeeds | F1 |
 | File handle not closed | Compile error | F4 |
 | `fs.exists` on symlink to missing target | Returns `false` | F3 |
-| `fs.write_file` to existing file | Truncates and overwrites | F3 |
-| `fs.append_file` to nonexistent file | Creates it | F3 |
+| `fs.write_text` to existing file | Truncates and overwrites | F3 |
+| `fs.append_text` to nonexistent file | Creates it | F3 |
+| `fs.remove_file` on a directory | `IoError.Other` — use `remove_dir` | F3 |
 
 ---
 
@@ -190,7 +197,7 @@ WHY: The path does not exist on the filesystem.
 ```rask
 const file = try fs.create("data.tmp")
 ensure file.close()
-try file.write(serialize(data))
+try file.write_bytes(serialize(data))
 file.close()
 try fs.rename("data.tmp", "data.json")
 ```

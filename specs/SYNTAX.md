@@ -430,8 +430,8 @@ func identity(x: T) -> T {
     return x
 }
 
-func map(list: List<Item>, f: |Item| -> Result) -> List<Result> {
-    // Item and Result are type parameters
+func map(list: List<Item>, f: |Item| -> Output) -> List<Output> {
+    // List, Item, and Output are type parameters
     // ... implementation ...
 }
 
@@ -708,26 +708,26 @@ if state is Connected(sock) && sock.is_ready() {
 
 | Use Case | Recommended |
 |----------|-------------|
-| Check Option presence | `if opt?` (narrow) or `if opt? as v` (bind) |
+| Check optional presence | `if opt?` (narrow) or `if opt? as v` (bind) |
 | Check error variant on `T or E` | `if r is IoError as e` |
 | Check user enum variant | `if x is Variant` |
 | Exhaustive handling | `match` |
-| Loop over iterator | `for x in iter` |
+| Loop over a sequence | `for x in seq` |
 
 `is` is non-exhaustive — unmatched patterns skip the block. Use `match` when you need to handle all cases.
 
 **Guard pattern with early-exit narrow:**
 
-For Option, use `?? return` or the early-exit absent check:
+For optionals, use `?? return` or the early-exit absent check:
 
 ```rask
-const value = result ?? return  // Option: divert on absent, value: T after
+const value = result ?? return  // optional: divert on absent, value: T after
 
 if opt == none { return }
 use(opt)                         // opt: T here (early-exit narrow)
 ```
 
-For Result, use `try` for propagation, or type-pattern narrow with divergence:
+For results (`T or E`), use `try` for propagation, or type-pattern narrow with divergence:
 
 ```rask
 const data = try read_file(path)             // propagates the error
@@ -835,7 +835,7 @@ Pool access, `ensure` cleanup, and `@resource` types are shown in the sections a
 ## Error Handling Syntax
 
 ```rask
-// Option shorthand — bare value auto-wraps
+// Optional shorthand — bare value auto-wraps
 const x: i32? = 42
 const name = user?.profile?.name    // `none` if any step is `none`
 const port = config.port ?? 8080
@@ -854,7 +854,7 @@ See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 ### Development Panics
 
 ```rask
-func process(item: Item) -> Result {
+func process(item: Item) -> Report {
     todo()                    // panics: "not yet implemented"
     todo("handle edge case")  // panics: "not yet implemented: handle edge case"
 }
@@ -881,7 +881,7 @@ spawn { background_work() }.detach()
 // Channels
 const (tx, rx) = Channel<Message>.buffered(100)
 try tx.send(msg)
-const msg = try rx.recv()
+const msg = try rx.receive()
 
 // Select
 select {
@@ -1022,8 +1022,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 **Rask:**
 ```rask
 func handler(w: ResponseWriter, r: Request) -> void or HttpError {
-    const body = try r.body.read_all()
-    const req = try json.parse<Request>(body)
+    const body = try r.body.read_bytes()
+    const req = try json.decode<Request>(body)
     const result = try process(req)
     return w.write_json(result)
 }
@@ -1048,7 +1048,7 @@ def process_file(path):
 func process_file(path: string) -> Data or IoError {
     const file = try File.open(path)
     ensure file.close()
-    const content = try file.read_all()
+    const content = try file.read_text()
     return transform(content)
 }
 ```

@@ -482,8 +482,8 @@ func copy_file(src: string, dst: string) -> void or Error {
     const output = try create(dst)
     ensure output.close()
 
-    const data = try input.read_all()
-    try output.write_all(data)
+    const data = try input.read_bytes()
+    try output.write_bytes(data)
     return
 }
 ```

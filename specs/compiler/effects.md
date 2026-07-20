@@ -29,7 +29,7 @@ Effects don't restrict what you can call. A function without IO effects can call
 ```rask
 // IO effect — calls File.open (source function)
 func load_config(path: string) -> Config or Error {
-    const data = try fs.read_file(path)
+    const data = try fs.read_text(path)
     return try json.decode<Config>(data)
 }
 
@@ -47,8 +47,8 @@ From `conc.io-context`:
 
 | Module | Functions | IO? |
 |--------|-----------|-----|
-| `fs` | `File.open`, `File.read`, `File.write`, `File.close`, `fs.read_file`, `fs.write_file`, `fs.exists` | Yes |
-| `net` | `TcpListener.accept`, `TcpConnection.read/write`, `UdpSocket.send/recv` | Yes |
+| `fs` | `File.open`, `File.read`, `File.write`, `File.close`, `fs.read_text`, `fs.write_text`, `fs.exists` | Yes |
+| `net` | `TcpListener.accept`, `TcpConnection.read/write`, `UdpSocket.send/receive` | Yes |
 | `io` | `Stdin.read`, `Stdout.write`, `Stderr.write` | Yes |
 | `async` | `sleep`, `timeout` | Yes (also Async) |
 | `io` | `Buffer.read`, `Buffer.write` | No |
@@ -61,7 +61,7 @@ From `conc.io-context`:
 
 | Rule | Description |
 |------|-------------|
-| **AS1: Source functions** | `spawn()`, `sleep()`, `timeout()`, `Channel.send()`, `Channel.recv()`, `TaskHandle.join()` |
+| **AS1: Source functions** | `spawn()`, `sleep()`, `timeout()`, `Channel.send()`, `Channel.receive()`, `TaskHandle.join()` |
 | **AS2: Transitive** | Any function that transitively calls an Async source has the Async effect |
 | **AS3: Subset of IO** | All Async source functions are also IO sources (they involve scheduler/reactor). A function with Async always has IO too |
 
@@ -131,7 +131,7 @@ func parse(input: string) -> Config or ParseError {
 
 // Not pure — calls File.open (IO effect)
 func load(path: string) -> Config or Error {
-    const data = try fs.read_file(path)
+    const data = try fs.read_text(path)
     return try parse(data)
 }
 ```
@@ -147,7 +147,7 @@ func load(path: string) -> Config or Error {
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or Error {    // ghost: [io]
-    const data = try fs.read_file(path)                 // ← IO originates here
+    const data = try fs.read_text(path)                 // ← IO originates here
     return try json.decode<Config>(data)                // (no marker — pure)
 }
 

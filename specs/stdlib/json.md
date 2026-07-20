@@ -33,18 +33,20 @@ enum JsonError {
 }
 ```
 
-## Parsing and Serialization
+## Encoding and Decoding
+
+One verb pair for both layers: `decode` (string → value) and `encode` (value → string), per the serialization convention in canonical-patterns.md. The untyped path is just `decode` with `JsonValue` as the target — no separate `parse`/`stringify` family.
 
 | Rule | Description |
 |------|-------------|
-| **J4: RFC 8259** | `json.parse` accepts any valid RFC 8259 JSON string |
+| **J4: RFC 8259** | `json.decode` accepts any valid RFC 8259 JSON string |
 | **J5: Duplicate keys** | Last value wins (matches JavaScript behavior) |
 
 <!-- test: skip -->
 ```rask
-json.parse(input: string) -> JsonValue or JsonError
-json.stringify(value: JsonValue) -> string
-json.stringify_pretty(value: JsonValue) -> string
+json.decode<JsonValue>(input) -> JsonValue or JsonError    // untyped/dynamic JSON
+json.encode(value)                                          // works for JsonValue too
+json.encode_pretty(value)
 ```
 
 ## JsonValue Access
@@ -139,9 +141,9 @@ WHY: Only primitive, collection, optional, and nested-struct types can be encode
 
 | Case | Behavior | Rule |
 |------|----------|------|
-| `json.parse("")` | `JsonError.ParseError` | J4 |
-| `json.parse("null")` | `JsonValue.Null` | J4 |
-| `json.parse("123")` | `JsonValue.Number(123.0)` | J2 |
+| `json.decode<JsonValue>("")` | `JsonError.ParseError` | J4 |
+| `json.decode<JsonValue>("null")` | `JsonValue.Null` | J4 |
+| `json.decode<JsonValue>("123")` | `JsonValue.Number(123.0)` | J2 |
 | Large integers (>2^53) | Precision loss in f64 | J2 |
 | Duplicate keys in object | Last value wins | J5 |
 | JSON has extra keys not in struct | Ignored | J10 |

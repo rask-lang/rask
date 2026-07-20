@@ -26,7 +26,7 @@
 | Specifier | Example | Result |
 |-----------|---------|--------|
 | `{}` | `format("{}", 42)` | `"42"` |
-| `{:?}` | `format("{:?}", vec)` | `"[1, 2, 3]"` |
+| `{:debug}` | `format("{:debug}", vec)` | `"[1, 2, 3]"` |
 | `{:x}` | `format("{:x}", 255)` | `"ff"` |
 | `{:X}` | `format("{:X}", 255)` | `"FF"` |
 | `{:b}` | `format("{:b}", 10)` | `"1010"` |
@@ -87,17 +87,17 @@ extend AppError {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Trait** | `trait Debug { func debug_string(self) -> string }` |
+| **G1: Trait** | `trait Debug { func to_debug_string(self) -> string }` |
 | **G2: Auto-derive** | All types auto-derive `Debug` by default |
 | **G3: Override** | Auto-derived `Debug` can be overridden via `extend Type with Debug` |
-| **G4: Debug format** | `format("{:?}", x)` calls `debug_string()` |
+| **G4: Debug format** | `format("{:debug}", x)` calls `to_debug_string()` |
 
 <!-- test: parse -->
 ```rask
 struct Point { x: f64, y: f64 }
 
 const p = Point { x: 1.0, y: 2.0 }
-println(format("{:?}", p))    // Point { x: 1.0, y: 2.0 }
+println(format("{:debug}", p))    // Point { x: 1.0, y: 2.0 }
 ```
 
 ## println / print Interpolation
@@ -172,7 +172,7 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 | Error type in `{}` | D5 | Auto-bridges — calls `message()` |
 | `{{` in template | F4 | Literal `{` |
 | Empty template | F1 | Returns empty string |
-| `format("{:?}", x)` on auto-derived type | G2 | Shows struct fields / enum variants |
+| `format("{:debug}", x)` on auto-derived type | G2 | Shows struct fields / enum variants |
 
 ## Compiler Mechanism
 
@@ -180,7 +180,7 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 |------|-------------|
 | **CM1: Compiler-known** | `format()` is a compiler-known function, not a regular function. It accepts variable arguments through compiler support (`struct.modules/BF4`), not through a general variadic mechanism |
 | **CM2: Template parsing** | The compiler parses the template string at compile time, extracting placeholder positions, names, and format specifiers |
-| **CM3: Per-arg type check** | Each argument is type-checked against its placeholder: `{}` requires `Displayable`, `{:?}` requires `Debug`, `{:x}` requires integer type |
+| **CM3: Per-arg type check** | Each argument is type-checked against its placeholder: `{}` requires `Displayable`, `{:debug}` requires `Debug`, `{:x}` requires integer type |
 | **CM4: Compile-time errors** | Missing arguments, type mismatches, and malformed specifiers are compile-time errors. No runtime formatting failures for static templates |
 | **CM5: Codegen** | The compiler generates specialized string-building code per call site. No runtime template parsing for static templates |
 | **CM6: Comptime folding** | When all arguments are comptime-known, the result is a static string |
@@ -228,7 +228,7 @@ extend Color with Displayable {
 ```rask
 mut b = StringBuilder.with_capacity(1024)
 for item in items {
-    b.append("{item.name}: {item.value}\n")
+    b.push("{item.name}: {item.value}\n")
 }
 const report = b.build()
 ```

@@ -81,7 +81,7 @@ func parse(input: string) -> Config or ParseError {
 @pure
 func bad_pure(path: string) -> Config or Error {
     // P1 violation: fs.read_file has IO effect
-    const data = try fs.read_file(path)
+    const data = try fs.read_text(path)
     return try json.decode<Config>(data)
 }
 ```
@@ -158,7 +158,7 @@ WARNING [tool.lint/P1]: `@pure` function performs I/O
    |
 2  |  @pure
 3  |  func bad_pure(path: string) -> Config or Error {
-4  |      const data = try fs.read_file(path)
+4  |      const data = try fs.read_text(path)
    |                       ^^^^^^^^^^^^ IO effect (file read)
    |
 WHY: @pure asserts no I/O, async, or mutation effects.

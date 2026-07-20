@@ -1,7 +1,7 @@
 <!-- id: std.time -->
 <!-- status: decided -->
 <!-- summary: Duration, Instant (monotonic), and SystemTime (wall-clock) for time operations -->
-<!-- depends: memory/value-semantics.md -->
+<!-- depends: memory/value-semantics.md, stdlib/os.md -->
 
 # Time
 
@@ -20,7 +20,8 @@ Three types: `Duration` for time spans, `Instant` for monotonic timestamps, `Sys
 | Rule | Description |
 |------|-------------|
 | **D4: Nanosecond precision** | Internal storage is nanosecond. Range: 0 to ~584 years |
-| **D5: Truncation** | Fractional nanoseconds from `from_secs_f64` are truncated |
+| **D5: Truncation** | Fractional nanoseconds from `seconds_f64` are truncated |
+| **D6: Unit spelling** | `seconds` is spelled out; sub-second units use the common short forms `millis`/`micros`/`nanos`. Constructors are bare unit names, accessors are `as_` + unit |
 
 <!-- test: skip -->
 ```rask
@@ -29,15 +30,15 @@ Duration.seconds(n: u64) -> Duration
 Duration.millis(n: u64) -> Duration
 Duration.micros(n: u64) -> Duration
 Duration.nanos(n: u64) -> Duration
-Duration.from_secs_f64(secs: f64) -> Duration
+Duration.seconds_f64(secs: f64) -> Duration
 
 // Conversions
-duration.as_secs() -> u64
+duration.as_seconds() -> u64
 duration.as_millis() -> u64
 duration.as_micros() -> u64
 duration.as_nanos() -> u64
-duration.as_secs_f32() -> f32
-duration.as_secs_f64() -> f64
+duration.as_seconds_f32() -> f32
+duration.as_seconds_f64() -> f64
 ```
 
 ## Instant API
@@ -50,19 +51,20 @@ duration.as_secs_f64() -> f64
 <!-- test: skip -->
 ```rask
 Instant.now() -> Instant
-instant.duration_since(earlier: Instant) -> Duration
 instant.elapsed() -> Duration
 ```
+
+No `duration_since` on `Instant` — `end - start` is the one way to get the difference (A2). `SystemTime` keeps `duration_since` because its checked form can fail (`TimeError.Backwards`).
 
 ## Module Functions
 
 | Rule | Description |
 |------|-------------|
-| **S1: Sleep** | `time.sleep(duration)` blocks current thread for at least the given duration. May wake early on signal |
+| **S1: Sleep** | `time.sleep(duration)` blocks current thread for at least the given duration. May wake early on signal. Fails with `SysError` (`std.os/SY1`) on rare platform-level errors |
 
 <!-- test: skip -->
 ```rask
-time.sleep(duration: Duration) -> void or string
+time.sleep(duration: Duration) -> void or SysError
 ```
 
 <!-- test: skip -->
@@ -82,9 +84,9 @@ time.sleep(time.Duration.millis(16))
 ERROR [std.time/S1]: sleep failed
    |
 5  |  try time.sleep(duration)
-   |      ^^^^^^^^^^^^^^^^^^^^^ system sleep error
+   |      ^^^^^^^^^^^^^^^^^^^^^ SysError.Failed("clock_nanosleep: invalid argument")
 
-WHY: Platform-specific sleep failure (rare).
+WHY: Platform-specific sleep failure (rare). See `std.os/SY1`.
 ```
 
 ## SystemTime
@@ -99,14 +101,14 @@ WHY: Platform-specific sleep failure (rare).
 ```rask
 SystemTime.now() -> SystemTime
 SystemTime.unix_epoch() -> SystemTime
-SystemTime.from_unix_secs(secs: i64) -> SystemTime
+SystemTime.from_unix_seconds(seconds: i64) -> SystemTime
 SystemTime.from_unix_millis(millis: i64) -> SystemTime
 ```
 
 <!-- test: skip -->
 ```rask
 extend SystemTime {
-    func unix_secs(self) -> i64
+    func unix_seconds(self) -> i64
     func unix_millis(self) -> i64
     func unix_nanos(self) -> i128
     func duration_since(self, earlier: SystemTime) -> Duration or TimeError
@@ -126,11 +128,11 @@ enum TimeError {
 import time
 
 const now = time.SystemTime.now()
-const timestamp = now.unix_secs()         // 1709251200
+const timestamp = now.unix_seconds()      // 1709251200
 const millis = now.unix_millis()          // 1709251200000
 
 // Reconstruct from stored timestamp
-const restored = time.SystemTime.from_unix_secs(timestamp)
+const restored = time.SystemTime.from_unix_seconds(timestamp)
 
 // Duration since epoch
 const since_epoch = try now.duration_since(time.SystemTime.unix_epoch())
@@ -180,15 +182,15 @@ const tomorrow = now + time.Duration.seconds(86400)
 
 | Case | Behavior | Rule |
 |------|----------|------|
-| `Duration.from_secs_f64(0.5000000001)` | Truncated to 500000000 ns | D5 |
+| `Duration.seconds_f64(0.5000000001)` | Truncated to 500000000 ns | D5 |
 | `Instant` across process restarts | Not comparable — opaque epoch | I2 |
 | `Instant` serialization | Not supported — use `SystemTime` | I2 |
 | Sleep interrupted by signal | May return early | S1 |
 | Duration overflow | Wraps (u64 nanoseconds) | D4 |
 | Duration divide by zero | Panic | A4 |
-| `SystemTime` before UNIX epoch | Negative `unix_secs()` | W2 |
+| `SystemTime` before UNIX epoch | Negative `unix_seconds()` | W2 |
 | `SystemTime` NTP adjustment backward | `duration_since` returns `TimeError.Backwards` | W1 |
-| `SystemTime` serialization | Use `unix_secs()` or `unix_millis()` | W2 |
+| `SystemTime` serialization | Use `unix_seconds()` or `unix_millis()` | W2 |
 | `SystemTime` comparison across machines | Only meaningful if clocks are synchronized | W1 |
 
 ---
@@ -224,6 +226,7 @@ const tomorrow = now + time.Duration.seconds(86400)
 ### See Also
 
 - `mem.value-semantics` — Copy types <=16 bytes
+- `std.os` — `SysError` for platform-level failures
 - `std.testing` — Benchmarks use Duration/Instant internally
 - `std.http` — SystemTime used for HTTP Date headers
 - `std.fs` — File timestamps as `u64` (seconds since epoch)

@@ -16,7 +16,7 @@ Foundational types and modules for systems programming.
 
 **Linear resources for I/O.** File handles, sockets, system resources are linear types — must be consumed exactly once. Prevents leaks by construction.
 
-**Fallible operations.** Operations that can fail return `Result`. No hidden exceptions.
+**Fallible operations.** Operations that can fail return `T or E`. No hidden exceptions.
 
 **Transparent costs.** Allocations, I/O, syscalls — visible in code.
 
@@ -27,7 +27,7 @@ Foundational types and modules for systems programming.
 ### Core & Collections
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [core](#core) | Primitives, traits, Option, Result | Specified |
+| [core](#core) | Primitives, traits, optionals (`T?`), results (`T or E`) | Specified |
 | [collections](collections.md) | Vec, Map, Pool | Specified |
 | [string](strings.md) | String types | Specified |
 | [iteration](iteration.md) | Collection iteration | Specified |
@@ -50,9 +50,10 @@ Foundational types and modules for systems programming.
 ### Data Formats
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [json](json.md) | JSON parsing and serialization | Specified |
+| [json](json.md) | JSON encoding and decoding | Specified |
+| [encoding](encoding.md) | Encode/Decode traits, field annotations | Specified |
 | [csv](#csv) | CSV parsing and writing | Planned |
-| [encoding](#encoding) | Base64, hex, URL encoding | Planned |
+| [encoding (base64/hex/url)](#encoding-1) | Base64, hex, URL encoding — planned additions to `std.encoding` | Planned |
 
 ### Utilities
 | Module | Purpose | Status |
@@ -64,7 +65,8 @@ Foundational types and modules for systems programming.
 | [math](math.md) | Mathematical functions | Specified |
 | [random](random.md) | Random number generation | Specified |
 | [hash](#hash) | SHA256, MD5, CRC32 | Planned |
-| [bits](#bits) | Bit manipulation utilities | Planned |
+| [bits](bits.md) | Bit manipulation, byte order, binary pack/unpack | Specified |
+| [reflect](reflect.md) | Compile-time type introspection | Specified |
 | [unicode](#unicode) | Unicode utilities | Planned |
 | [terminal](#terminal) | ANSI colors, terminal detection | Planned |
 
@@ -119,7 +121,8 @@ Always available without import:
 
 | Function | Description |
 |----------|-------------|
-| `print(...)` | Print to stdout |
+| `print(...)` | Print to stdout (no newline) |
+| `println(...)` | Print to stdout with newline |
 | `panic(msg)` | Terminate with message |
 
 ### Traits
@@ -135,7 +138,7 @@ Always available without import:
 | `Debug` | Debug formatting |
 | `Default` | Default values |
 | `Numeric` | Arithmetic operations |
-| `Iterator` | Iteration protocol |
+| `Sequence` | Iteration protocol |
 
 ---
 
@@ -181,10 +184,10 @@ Networking primitives.
 | Type | Description | Linear? |
 |------|-------------|---------|
 | `TcpListener` | TCP server socket | Yes |
-| `TcpStream` | TCP connection | Yes |
+| `TcpConnection` | TCP connection | Yes |
 | `UdpSocket` | UDP socket | Yes |
-| `IpAddr` | IP address (v4/v6) | No |
-| `SocketAddr` | IP address + port | No |
+
+Addresses are plain strings — no `SocketAddr`/`IpAddr` types.
 
 ### TCP Server
 
@@ -195,10 +198,10 @@ const listener = try net.tcp_listen("0.0.0.0:8080")
 ensure listener.close()
 
 loop {
-    const (stream, addr) = try listener.accept()
+    const conn = try listener.accept()
     spawn {
-        ensure stream.close()
-        try handle_connection(stream)
+        ensure conn.close()
+        try handle_connection(conn)
     }.detach()
 }
 ```
@@ -206,11 +209,11 @@ loop {
 ### TCP Client
 
 ```rask
-const stream = try net.tcp_connect("example.com:80")
-ensure stream.close()
+const conn = try net.tcp_connect("example.com:80")
+ensure conn.close()
 
-try stream.write_all(request)
-const response = try stream.read_all()
+try conn.write_text(request)
+const response = try conn.read_text()
 ```
 
 **Status:** Specified — see [net.md](net.md).
@@ -344,8 +347,8 @@ import tls
 const stream = try tls.connect("example.com:443")
 ensure stream.close()
 
-try stream.write_all(request)
-const response = try stream.read_all()
+try stream.write_text(request)
+const response = try stream.read_text()
 ```
 
 ### Server
@@ -378,7 +381,7 @@ Command-line argument parsing (flags, options, positional args, help generation)
 
 ## Encoding
 
-Common encodings (RFC 4648).
+Common encodings (RFC 4648). Planned additions to `std.encoding` ([encoding.md](encoding.md)), alongside the Encode/Decode serialization traits.
 
 ### Base64
 
@@ -435,7 +438,7 @@ const hex = encoding.hex.encode(digest)
 const hasher = hash.Sha256.new()
 hasher.update(chunk1)
 hasher.update(chunk2)
-const digest = hasher.finish()
+const digest = hasher.digest()
 ```
 
 **Note:** For cryptographic security (HMAC, signatures), use the `crypto` package.
@@ -553,9 +556,10 @@ Terminal utilities and ANSI styling.
 ```rask
 import terminal
 
-print(terminal.red("Error: ") + message)
-print(terminal.green("Success"))
-print(terminal.bold(terminal.blue("Header")))
+const label = terminal.red("Error: ")
+println("{label}{message}")
+println(terminal.green("Success"))
+println(terminal.bold(terminal.blue("Header")))
 ```
 
 ### Styles
@@ -623,7 +627,7 @@ for row in reader {
 const writer = csv.Writer.new()
 try writer.write_row(["name", "age"])
 try writer.write_row(["Alice", "30"])
-const output = writer.finish()
+const output = writer.build()
 ```
 
 ### Options
@@ -632,7 +636,7 @@ const output = writer.finish()
 const reader = csv.Reader.from_string(data)
     .delimiter(';')
     .quote('"')
-    .has_headers(true)
+    .with_headers()
 ```
 
 **Status:** Planned — detailed specification TODO.

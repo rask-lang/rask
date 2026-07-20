@@ -50,7 +50,7 @@ channel.send(data)        // Ownership transferred
 data.process()            // ERROR: data was sent
 
 // Receiving:
-const received = channel.recv()   // Ownership acquired
+const received = channel.receive()   // Ownership acquired
 received.process()              // OK: we own it now
 ```
 
