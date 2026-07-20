@@ -516,8 +516,8 @@ struct UserResponse {
 }
 
 func handle_create_user(req: http.Request) -> http.Response {
-    const body = req.body() ?? return http.Response.bad_request("missing body")
-    const input = json.decode<CreateUserRequest>(body) ?? return http.Response.bad_request("invalid JSON")
+    if req.body.is_empty() { return http.Response.bad_request("missing body") }
+    const input = json.decode<CreateUserRequest>(req.body) ?? return http.Response.bad_request("invalid JSON")
     const user = create_user(input.name, input.email, input.age)
     const response = UserResponse { id: user.id, name: user.name, email: user.email }
     return http.Response.ok(json.encode(response))

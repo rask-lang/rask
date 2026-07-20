@@ -89,7 +89,7 @@ test "file processing" {
 ```rask
 test "parser" {
     test "numbers" {
-        check parse("42") == some(42)
+        check parse("42")! == 42
     }
     test "invalid" {
         check parse("abc") == none

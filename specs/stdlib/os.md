@@ -303,17 +303,6 @@ func default_config_dir() -> string {
 }
 ```
 
-### Migration
-
-| Old | New | Notes |
-|-----|-----|-------|
-| `env.var(key)` | `os.env(key)` | Returns `string?` |
-| `env.vars()` | `os.env_vars()` | Returns `Vec<(string, string)>` |
-| `cli.args()` | `os.args()` | Identical |
-| `std.exit(code)` | `os.exit(code)` | Identical |
-
-Old import names (`env`, `std`, `cli`) remain as aliases during transition.
-
 **Subprocess pipeline:**
 
 <!-- test: skip -->

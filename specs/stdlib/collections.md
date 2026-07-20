@@ -12,7 +12,7 @@ Vec and Map with optional capacity constraints, inline element access, fallible 
 | Rule | Description |
 |------|-------------|
 | **C1: Value ownership** | Collections own their data. No lifetime parameters |
-| **C2: Panic on alloc failure** | Growth operations (`push`, `insert`, `extend`) panic on OOM. Fallible variants (`try_push`, `try_insert`, `try_extend`) return `Result` with rejected value |
+| **C2: Panic on alloc failure** | Growth operations (`push`, `insert`, `extend`) panic on OOM. Fallible variants (`try_push`, `try_insert`, `try_extend`) return `T or E` with the rejected value |
 | **C3: Inline access** | Element access via `[]` is inline (expression-scoped). Multi-statement access via `with` |
 | **C4: No linear resources** | `Vec<Linear>` and `Map<K, Linear>` are compile errors. Use `Pool<Linear>` |
 
@@ -407,7 +407,7 @@ FIX: Use try_push to handle capacity limits:
 
 ### Rationale
 
-**C2 (panic on alloc failure):** I considered making all growth operations return `Result` (and did, initially). In practice, 98% of push calls ignored the error — application code can't meaningfully recover from OOM on unbounded collections. Rust's `Vec::push` and Go's `append` both panic on OOM. The `try_` variants exist for the cases that matter: bounded collections, embedded systems, and allocation-aware code. The rejected value is still returned in the error so callers can retry or log without losing data.
+**C2 (panic on alloc failure):** I considered making all growth operations fallible (and did, initially). In practice, 98% of push calls ignored the error — application code can't meaningfully recover from OOM on unbounded collections. Rust's `Vec::push` and Go's `append` both panic on OOM. The `try_` variants exist for the cases that matter: bounded collections, embedded systems, and allocation-aware code. The rejected value is still returned in the error so callers can retry or log without losing data.
 
 **C3 (inline access):** Collections can grow/shrink, invalidating any held views. Inline expression access kills this bug class. Multi-statement access uses `with`. See `mem.borrowing/B2`.
 

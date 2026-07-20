@@ -27,7 +27,7 @@ Foundational types and modules for systems programming.
 ### Core & Collections
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [core](#core) | Primitives, traits, Option, Result | Specified |
+| [core](#core) | Primitives, traits, optionals (`T?`), results (`T or E`) | Specified |
 | [collections](collections.md) | Vec, Map, Pool | Specified |
 | [string](strings.md) | String types | Specified |
 | [iteration](iteration.md) | Collection iteration | Specified |
@@ -121,7 +121,8 @@ Always available without import:
 
 | Function | Description |
 |----------|-------------|
-| `print(...)` | Print to stdout |
+| `print(...)` | Print to stdout (no newline) |
+| `println(...)` | Print to stdout with newline |
 | `panic(msg)` | Terminate with message |
 
 ### Traits
@@ -555,9 +556,10 @@ Terminal utilities and ANSI styling.
 ```rask
 import terminal
 
-print(terminal.red("Error: ") + message)
-print(terminal.green("Success"))
-print(terminal.bold(terminal.blue("Header")))
+const label = terminal.red("Error: ")
+println("{label}{message}")
+println(terminal.green("Success"))
+println(terminal.bold(terminal.blue("Header")))
 ```
 
 ### Styles

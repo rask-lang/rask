@@ -321,7 +321,7 @@ FIX: Use index mode for structural mutation, or collect changes first:
 ```
 WARNING [std.iteration/K2]: float type used as map key
    |
-3  |  const cache: Map<f64, Result> = Map.new()
+3  |  const cache: Map<f64, Stats> = Map.new()
    |                   ^^^ f64 keys break map lookups when NaN is present
 
 WHY: NaN != NaN by IEEE 754. A NaN key can be inserted but never
@@ -329,7 +329,7 @@ WHY: NaN != NaN by IEEE 754. A NaN key can be inserted but never
 
 FIX: Use an integer key or newtype wrapper with defined equality:
 
-  const cache: Map<u64, Result> = Map.new()
+  const cache: Map<u64, Stats> = Map.new()
 ```
 
 ## Edge Cases

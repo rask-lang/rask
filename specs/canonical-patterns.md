@@ -230,7 +230,7 @@ See [control/ensure.md](control/ensure.md), [memory/resource-types.md](memory/re
 
 ---
 
-## Option Handling
+## Optional Handling
 
 Four patterns, each for a different situation. `T?` is sugar for `T or none` — bare values on the present path, `none` literal for absent. No `Some`/`None` wrappers; the operator family covers the common cases. `match` is legal but linted toward operators when there are only two arms.
 
@@ -262,7 +262,7 @@ if opt? {
 
 **Anti-patterns:**
 - `x!` without checking — crashes on none.
-- `match` on Option — rejected with a migration diagnostic. Use the operator family.
+- `match` on optionals — rejected with a migration diagnostic. Use the operator family.
 - `!x?` — parse error. Use `x == none`.
 
 See [types/optionals.md](types/optionals.md).
@@ -274,7 +274,7 @@ See [types/optionals.md](types/optionals.md).
 Read from collections with `get` (safe), index (panics), or iterate.
 
 ```rask
-// Safe access — returns Option
+// Safe access — returns `T?`
 const item = vec.get(i)
 
 // Indexed access — panics on out of bounds
@@ -637,7 +637,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
 | Handle errors | `try` (propagate), `try...else` (propagate with context), `match` (handle) |
 | Clean up resources | `ensure` |
-| Handle options | `if x?`, `??`, guard, `match` |
+| Handle optionals | `if x?`, `??`, guard, `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `StringBuilder` |
 | Share state | `Shared<T>`, channels |
