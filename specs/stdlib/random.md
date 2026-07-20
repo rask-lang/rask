@@ -1,18 +1,18 @@
 <!-- id: std.random -->
 <!-- status: decided -->
-<!-- summary: Pseudo-random number generation via Rng type and module convenience functions -->
+<!-- summary: Pseudo-random number generation via Random type and module convenience functions -->
 
 # Random
 
-One `Rng` type plus module-level convenience functions. Explicit generator for reproducible sequences, module functions for quick usage.
+One `Random` type plus module-level convenience functions. Explicit generator for reproducible sequences, module functions for quick usage.
 
 ## Types
 
 | Rule | Description |
 |------|-------------|
-| **R1: Rng type** | `Rng` is a 32-byte stateful PRNG; not Copy |
-| **R2: System seed** | `Rng.new()` seeds from system entropy (time + thread ID) |
-| **R3: Deterministic seed** | `Rng.from_seed(seed: u64)` produces identical sequences for identical seeds |
+| **R1: Random type** | `Random` is a 32-byte stateful PRNG; not Copy |
+| **R2: System seed** | `Random.new()` seeds from system entropy (time + thread ID) |
+| **R3: Deterministic seed** | `Random.from_seed(seed: u64)` produces identical sequences for identical seeds |
 
 ## Instance Methods
 
@@ -24,7 +24,7 @@ One `Rng` type plus module-level convenience functions. Explicit generator for r
 
 <!-- test: skip -->
 ```rask
-const rng = Rng.from_seed(42)
+const rng = Random.from_seed(42)
 const a = rng.range(0, 100)       // deterministic for seed 42
 const b = rng.f64()               // [0.0, 1.0)
 rng.shuffle(items)
@@ -34,8 +34,8 @@ rng.shuffle(items)
 
 | Rule | Description |
 |------|-------------|
-| **C1: Thread-local RNG** | `random.*` functions use a thread-local system-seeded Rng |
-| **C2: Same API** | Every `Rng` instance method (M1–M3) has a `random.*` mirror: `random.u64()`, `random.i64()`, `random.f64()`, `random.f32()`, `random.bool()`, `random.range(lo, hi)`, `random.shuffle(vec)`, `random.choice(vec)` |
+| **C1: Thread-local RNG** | `random.*` functions use a thread-local system-seeded Random |
+| **C2: Same API** | Every `Random` instance method (M1–M3) has a `random.*` mirror: `random.u64()`, `random.i64()`, `random.f64()`, `random.f32()`, `random.bool()`, `random.range(lo, hi)`, `random.shuffle(vec)`, `random.choice(vec)` |
 
 <!-- test: parse -->
 ```rask
@@ -65,7 +65,7 @@ FIX: Use rng.range(5, 6) for a single value.
 | `range(5, 5)` | M2 | Panics (empty range) |
 | `choice(empty_vec)` | M3 | Returns `none` |
 | `shuffle(single_element)` | M3 | No-op |
-| `Rng.from_seed(0)` | R3 | Valid, deterministic (seed 0 not special) |
+| `Random.from_seed(0)` | R3 | Valid, deterministic (seed 0 not special) |
 
 ---
 
@@ -73,9 +73,9 @@ FIX: Use rng.range(5, 6) for a single value.
 
 ### Rationale
 
-**R1 (not Copy):** Rng is stateful — copying would fork the sequence silently, leading to duplicate values. Move semantics make sequence ownership explicit.
+**R1 (not Copy):** Random is stateful — copying would fork the sequence silently, leading to duplicate values. Move semantics make sequence ownership explicit.
 
-**C1 (thread-local):** Module functions cover the "just give me a random number" case without requiring Rng construction. Thread-local avoids synchronization cost.
+**C1 (thread-local):** Module functions cover the "just give me a random number" case without requiring Random construction. Thread-local avoids synchronization cost.
 
 ### Patterns & Guidance
 
@@ -84,7 +84,7 @@ FIX: Use rng.range(5, 6) for a single value.
 <!-- test: parse -->
 ```rask
 test "shuffle is deterministic with seed" {
-    const rng = Rng.from_seed(12345)
+    const rng = Random.from_seed(12345)
     const items = Vec.from([1, 2, 3, 4, 5])
     rng.shuffle(items)
     assert items[0] == 3
@@ -107,7 +107,7 @@ func weighted_choice(weights: Vec<f64>) -> i64 {
 
 ### Security
 
-`Rng` and `random.*` are NOT cryptographically secure. Do not use for passwords, tokens, keys, or any security-sensitive random. A future `crypto.random_bytes(n)` will provide cryptographic randomness.
+`Random` and `random.*` are NOT cryptographically secure. Do not use for passwords, tokens, keys, or any security-sensitive random. A future `crypto.random_bytes(n)` will provide cryptographic randomness.
 
 ### Algorithm
 

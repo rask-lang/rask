@@ -12,7 +12,7 @@ Vec and Map with optional capacity constraints, inline element access, fallible 
 | Rule | Description |
 |------|-------------|
 | **C1: Value ownership** | Collections own their data. No lifetime parameters |
-| **C2: Panic on alloc failure** | Growth operations (`push`, `insert`, `extend`) panic on OOM. Fallible variants (`try_push`, `try_insert`, `try_extend`) return `T or E` with the rejected value |
+| **C2: Panic on alloc failure** | Growth operations (`push`, `insert`, `push_all`) panic on OOM. Fallible variants (`try_push`, `try_insert`, `try_push_all`) return `T or E` with the rejected value |
 | **C3: Inline access** | Element access via `[]` is inline (expression-scoped). Multi-statement access via `with` |
 | **C4: No linear resources** | `Vec<Linear>` and `Map<K, Linear>` are compile errors. Use `Pool<Linear>` |
 
@@ -37,8 +37,8 @@ Growth operations panic on failure (C2). Fallible `try_` variants return `T or E
 |-----------|---------|------------|
 | `vec.push(x)` | `void` | Panics |
 | `vec.try_push(x)` | `void or PushError<T>` | Returns `PushError.Full(T)` or `PushError.Alloc(T)` |
-| `vec.extend(iter)` | `void` | Panics |
-| `vec.try_extend(iter)` | `void or ExtendError<T>` | Returns first rejected item |
+| `vec.push_all(iter)` | `void` | Panics |
+| `vec.try_push_all(iter)` | `void or PushError<T>` | Returns first rejected item. `push_all`, not `extend` — that word is the declaration keyword |
 | `vec.reserve(n)` | `void` | Panics |
 | `vec.try_reserve(n)` | `void or AllocError` | Returns error |
 | `map.insert(k, v)` | `V?` | Panics |

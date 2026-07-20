@@ -40,7 +40,7 @@ extend File {
 }
 ```
 
-No `lines()` on `File`. Line reading is `fs.read_lines(path)` (eager) or `BufReader.new(file).lines()` (lazy) — see `std.io`.
+No `lines()` on `File`. Line reading is `fs.read_lines(path)` (eager) or `BufferedReader.new(file).lines()` (lazy) — see `std.io`.
 
 ## Convenience Functions
 

@@ -482,7 +482,7 @@ ensure file.close()
 const data = try file.read_text()
 
 // Buffered I/O
-const reader = BufReader.new(file)
+const reader = BufferedReader.new(file)
 while (try reader.read_line())? as line {
     process(line)
 }

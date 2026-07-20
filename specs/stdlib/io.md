@@ -98,14 +98,14 @@ trait Seeker {
 
 | Rule | Description |
 |------|-------------|
-| **B1: BufReader** | Wraps `Reader` with internal buffer (default 8KB) for efficient small reads and line access |
-| **B2: BufWriter** | Wraps `Writer` with internal buffer (default 8KB). Flushes on full buffer, explicit `flush()`, or drop (best-effort) |
+| **B1: BufferedReader** | Wraps `Reader` with internal buffer (default 8KB) for efficient small reads and line access |
+| **B2: BufferedWriter** | Wraps `Writer` with internal buffer (default 8KB). Flushes on full buffer, explicit `flush()`, or drop (best-effort) |
 | **B3: Linearity inherited** | Buffered wrappers inherit linearity from their inner type |
 
 <!-- test: skip -->
 ```rask
-const reader = BufReader.new(file)              // default 8KB
-const reader = BufReader.with_capacity(4096, file)
+const reader = BufferedReader.new(file)              // default 8KB
+const reader = BufferedReader.with_capacity(4096, file)
 
 reader.read_line() -> string or IoError         // strips trailing newline
 reader.lines() -> Sequence<string or IoError>   // lazy line sequence
@@ -115,7 +115,7 @@ reader.lines() -> Sequence<string or IoError>   // lazy line sequence
 ```rask
 const file = try fs.open("data.txt")
 ensure file.close()
-const reader = BufReader.new(file)
+const reader = BufferedReader.new(file)
 
 for line in reader.lines() {
     const text = try line
@@ -191,8 +191,8 @@ No `reset` — `buf.seek(SeekFrom.Start(0))` is the one way to rewind.
 | `File` (from `fs`) | Yes | Yes | Yes | Yes |
 | `TcpConnection` (from `net`) | Yes | Yes | -- | Yes |
 | `Buffer` | Yes | Yes | Yes | No |
-| `BufReader<R>` | Yes | -- | -- | Inherits from R |
-| `BufWriter<W>` | -- | Yes | -- | Inherits from W |
+| `BufferedReader<R>` | Yes | -- | -- | Inherits from R |
+| `BufferedWriter<W>` | -- | Yes | -- | Inherits from W |
 
 ## Error Messages
 
@@ -225,7 +225,7 @@ WHY: read_text() requires valid UTF-8. Use read_bytes() for raw bytes.
 | `read_text` with invalid UTF-8 | `IoError.Other("invalid UTF-8")` | R3 |
 | `read_exact` on short stream | `IoError.UnexpectedEof` | R4 |
 | `io.copy` with aliased reader/writer | Undefined (caller must not alias) | C1 |
-| `BufWriter` flush on drop fails | Error silently discarded | B2 |
+| `BufferedWriter` flush on drop fails | Error silently discarded | B2 |
 | `Stdout` not closed | Compile error | S1 |
 | `Buffer` overflow | Grows like `Vec` (fallible allocation) | B4 |
 | Zero-length read/write | Returns `0`, no-op | R1, W1 |
@@ -250,8 +250,8 @@ WHY: read_text() requires valid UTF-8. Use read_bytes() for raw bytes.
 | `Stdout` | Yes | No |
 | `Stderr` | Yes | No |
 | `Buffer` | Yes | No |
-| `BufReader<R>` | if R: Send | No |
-| `BufWriter<W>` | if W: Send | No |
+| `BufferedReader<R>` | if R: Send | No |
+| `BufferedWriter<W>` | if W: Send | No |
 
 ### See Also
 
