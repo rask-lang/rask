@@ -54,6 +54,22 @@ func main() {
 }
 ```
 
+## SysError
+
+| Rule | Description |
+|------|-------------|
+| **SY1: Shared error type** | `SysError` covers rare platform-level failures (sleep, clock operations). One shared type instead of a one-variant enum per syscall. Implements `ErrorMessage` (`type.errors/ER4`) |
+
+<!-- test: parse -->
+```rask
+enum SysError {
+    Unsupported(string)     // operation not available on this platform
+    Failed(string)          // raw OS error text
+}
+```
+
+These are "should never happen" failures — most callers `try` them upward or crash with `!`.
+
 ## Subprocess
 
 | Rule | Description |

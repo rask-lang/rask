@@ -1,7 +1,7 @@
 <!-- id: std.time -->
 <!-- status: decided -->
 <!-- summary: Duration, Instant (monotonic), and SystemTime (wall-clock) for time operations -->
-<!-- depends: memory/value-semantics.md -->
+<!-- depends: memory/value-semantics.md, stdlib/os.md -->
 
 # Time
 
@@ -58,11 +58,11 @@ instant.elapsed() -> Duration
 
 | Rule | Description |
 |------|-------------|
-| **S1: Sleep** | `time.sleep(duration)` blocks current thread for at least the given duration. May wake early on signal |
+| **S1: Sleep** | `time.sleep(duration)` blocks current thread for at least the given duration. May wake early on signal. Fails with `SysError` (`std.os/SY1`) on rare platform-level errors |
 
 <!-- test: skip -->
 ```rask
-time.sleep(duration: Duration) -> void or string
+time.sleep(duration: Duration) -> void or SysError
 ```
 
 <!-- test: skip -->
@@ -82,9 +82,9 @@ time.sleep(time.Duration.millis(16))
 ERROR [std.time/S1]: sleep failed
    |
 5  |  try time.sleep(duration)
-   |      ^^^^^^^^^^^^^^^^^^^^^ system sleep error
+   |      ^^^^^^^^^^^^^^^^^^^^^ SysError.Failed("clock_nanosleep: invalid argument")
 
-WHY: Platform-specific sleep failure (rare).
+WHY: Platform-specific sleep failure (rare). See `std.os/SY1`.
 ```
 
 ## SystemTime
@@ -224,6 +224,7 @@ const tomorrow = now + time.Duration.seconds(86400)
 ### See Also
 
 - `mem.value-semantics` — Copy types <=16 bytes
+- `std.os` — `SysError` for platform-level failures
 - `std.testing` — Benchmarks use Duration/Instant internally
 - `std.http` — SystemTime used for HTTP Date headers
 - `std.fs` — File timestamps as `u64` (seconds since epoch)
