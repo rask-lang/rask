@@ -138,6 +138,16 @@ const vec = list.into_vec()
 - `to_*` that consumes the source — should be `into_*`.
 - `as_*` that allocates — should be `to_*`.
 
+### Name Provenance Check
+
+Much of this API was drafted with heavy Rust exposure, so Rust spellings are the default failure mode. Before a new stdlib name lands, check it against what Go, Python, and Kotlin call the same operation:
+
+- Name is shared across ecosystems (`push`, `contains`, `seek`, `flush`, `sort_by`) → fine.
+- Name exists **only in Rust's std** (`retain`, `dedup`, `swap_remove`, `rfind`, `Rng`, `BufReader`, `recv`, `{:?}`) → red flag. Find the plain-English name, or justify the Rust spelling from Rask's side in the spec's rationale — "that's what std calls it" is not a reason.
+- Never reuse a Rask keyword as a method name (`ensure`, `extend` were both burned this way).
+
+Sketch the call site in a real Rask program first; pick the name a developer would type before reading docs.
+
 Future stdlib additions must follow these patterns; `rask lint` enforces them. See [tooling/lint.md](tooling/lint.md).
 
 ---
