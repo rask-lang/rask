@@ -163,10 +163,15 @@ Prototype-to-production for traits is: delete one word, accept the quick-fixes. 
 
 | Candidate | Verdict |
 |-----------|---------|
-| `matching trait` | **Proposed.** Names the action, plain English, conjugates naturally in diagnostics: "`Reader` is a matching trait — `FileSource` matches it via `read()`, `close()`" |
-| `shape trait` | Solid runner-up — names the criterion instead of the action |
+| `duck trait` | **Front-runner.** Not just a metaphor — the established name for exactly this semantics (duck typing), pre-taught to the Python-first audience; the only candidate needing zero explanation. Risk: register — a joke word load-bearing in a systems language |
+| `implied trait` | **Front-runner.** Dignified literal that pairs with the system's other half: conformance is *declared* unless the trait is `implied` — having the methods implies conformance |
+| `matching trait` | Names the action, conjugates well in diagnostics — but teaches nothing by itself |
+| `shape trait` | Names the criterion; same tier as `matching` |
+| `automatching trait` | Fixes the auto-derive collision by fusing, but seven syllables next to `const`/`func`/`mut` |
 | `auto trait` | Rejected: collides with **auto-derive** inside Rask itself (the core five are auto-derived *nominal* traits — "auto-derived but not auto" is a confusion factory), plus the unrelated Rust meaning |
 | `lazy trait` | Rejected: "lazy" means deferred work everywhere else; nothing is deferred here |
+| `magic trait` | Rejected: too cute, and the one word a transparency-first language can't use |
+| `open trait` | Rejected: most overloaded word in PL (Kotlin `open`, open/closed principle, open unions) — invites confident misreading |
 | `structural trait` | Retires to prose — docs say "known elsewhere as structural typing" for searchability |
 
 ## Finding 5: Operators stayed structural — keep them, but on purpose
@@ -238,7 +243,7 @@ All findings ruled on. Accepted: **MN1–MN5** (single namespace, `scoped` opt-i
 Also accepted: **CD1** (comma-list conformance declarations).
 
 Remaining open details (bikeshed-level, decide during spec fold-in):
-- Final ruling on renaming `structural` → `matching` (analysis above; `matching` proposed, `shape` runner-up).
+- Final ruling on renaming `structural` (analysis above; `duck` and `implied` front-runners).
 - Exact spelling of the `scoped` modifier (keyword prefix vs `@`-attribute).
 - Whether IS2's generate-a-trait action lives in the compiler diagnostic or LSP-only.
 - CC3 wording depends on #283's final `public extend` syntax.
