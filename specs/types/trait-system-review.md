@@ -161,7 +161,7 @@ Prototype-to-production for traits is: delete one word, accept the quick-fixes. 
 
 `structural` is type-theory jargon. The replacement is `duck trait` — the established name for exactly this semantics (duck typing), pre-taught to the Python-first audience. The register is deliberate: the keyword *reading as unserious is the signal*. A `duck trait` in a diff announces "this contract is loose by design" — prototype-mode made visible in source, and lintable (`rask lint` warns on duck traits outside prototype contexts).
 
-**Open consequence:** G1's rationale currently keeps the stdlib's `Reader`/`Writer`/`ErrorMessage` structural permanently. If duck = prototype signal, either (a) the stdlib owns the "loose by design" reading for those, or (b) they become nominal and `duck` is purely the prototyping dial — one `extend T with Reader {}` per custom reader in production. (b) is the position consistent with "one declaration is the price of a semantic claim"; needs a ruling before fold-in.
+**Consequence (ruled): the stdlib ships zero duck traits.** `Reader`, `Writer`, and `ErrorMessage` go nominal; `duck` is purely the prototyping dial. The structural carve-out for them entered in commit 27c65f4 as implementation detail of the #283 migration, never as its own decision, and its stated rationale (ER6: "a conformance line on every error enum would tax the most common trait") is arithmetically wrong — `message()` is hand-written in an extend block regardless, so conformance is a header edit (`extend ConfigError with ErrorMessage { ... }`), zero marginal lines. Multi-trait types stay flat via CD1/CD2 (one block, header lists the claims). Retroactive conformance for third-party types is one line, priced by #312. Fold-in rewrites ER4/ER6 and the G1 rationale accordingly.
 
 The candidate analysis, for the record:
 
@@ -209,13 +209,23 @@ A type that satisfies several traits with methods it already has needs one line 
 | Rule | Description |
 |------|-------------|
 | **CD1: Conformance list** | `extend T with A, B, C { ... }` declares all listed conformances. Each trait's signature check runs independently against the block plus the type's existing methods. Composes with modifiers: `public extend`/`scoped extend` apply to every listed trait |
+| **CD2: Block body unrestricted** | The block may mix methods for any of the listed traits and ordinary non-trait methods. The conformance list is a header on a normal extend block, not a per-trait container |
+| **CD3: One condition per block** | On generic types, inferred conditions (CC2) are computed per listed trait independently. An explicit `where` clause (public, CC3) applies to the whole block — traits needing different conditions split into separate blocks |
 
 <!-- test: skip -->
 ```rask
 extend Ring<T> with Countable, Sizable {}       // two claims, one line
+
+// The common shape for a trait-rich type: ONE block, header carries the claims
+extend LogSource with Reader, Displayable, ErrorMessage {
+    func read(mutate self, buf: Buffer) -> usize or IoError { ... }
+    func to_string(self) -> string { ... }
+    func message(self) -> string { ... }
+    func rewind(mutate self) { ... }            // plain method, same block
+}
 ```
 
-Declaring conformance inline on the `struct` itself was considered and rejected — struct bodies stay pure data layout (`type.structs`).
+Without CD2 this would be Rust's shape — one impl block per trait, stacked on every type. With it, conformance costs a header on the block you were writing anyway. Declaring conformance inline on the `struct` itself was considered and rejected — struct bodies stay pure data layout (`type.structs`).
 
 ## Cross-package conformance
 
@@ -247,7 +257,7 @@ All findings ruled on. Accepted: **MN1–MN5** (single namespace, `scoped` opt-i
 Also accepted: **CD1** (comma-list conformance declarations).
 
 Remaining open details (bikeshed-level, decide during spec fold-in):
-- ~~Renaming `structural`~~ — **decided: `duck trait`**. One consequence open: do stdlib `Reader`/`Writer`/`ErrorMessage` stay duck ("loose by design") or become nominal (duck = prototyping only)?
+- ~~Renaming `structural`~~ — **decided: `duck trait`**, and the stdlib ships zero of them: `Reader`/`Writer`/`ErrorMessage` go nominal (ER4/ER6 rewrite at fold-in). CD2 keeps multi-trait types at one block.
 - Exact spelling of the `scoped` modifier (keyword prefix vs `@`-attribute).
 - Whether IS2's generate-a-trait action lives in the compiler diagnostic or LSP-only.
 - CC3 wording depends on #283's final `public extend` syntax.
