@@ -233,6 +233,27 @@ Designed in #312; summary for completeness: core five never third-party (auto-de
 
 ---
 
+## The auto-derive roster: corpus survey
+
+Question: the core five are Equal, Hashable, Comparable, Cloneable, Default — should the set grow? Surveyed the repo's 105 `.rk` files (examples, test suite, stdlib) for trait-need signals. (Note the full auto-derive roster is already eight: Debug for all types, Encode/Decode markers. "Core five" names the invariant-carrying #312 carve-out family.)
+
+| Signal | Count | Verdict |
+|---|---|---|
+| Hand-written `message()` impls | 48 in 23 files | **Largest ceremony source in the language** |
+| `.clone()` sites | 32 | Cloneable earns its seat |
+| `Map.` usage | 23 | Hashable/Equal earn theirs |
+| `spawn` sites | 52 | Sendability: compiler property, zero declarations ever needed — not a trait |
+| parse-from-string | 29 | Not derivable (format is a choice) — not core |
+| `to_string` impls | 6 | Displayable opt-in confirmed correct |
+| `.default()` | 0 | Default is the weakest member (see below) |
+| User-declared traits | 14, all domain | No missing core trait |
+
+**Proposed addition (the only one): auto-derive `ErrorMessage` for enums.** The sampled `message()` bodies are mechanical — match over variants, `"invalid nesting: {ctx}"`, wrappers delegating to `inner.message()`. Derivation: humanized variant name + payload interpolation; single-payload variants whose payload is itself ErrorMessage delegate. Overridable like EQ2; lint nudges public error types toward hand-written prose. Kills ~one impl per two files of ceremony, and keeps ErrorMessage nominal with compiler-provided conformance — consistent with the "stdlib ships zero duck traits" ruling at zero added cost.
+
+**Default needs a rebase, not removal.** Zero corpus usage, and DF4's universal zeros ("0 for ints, false for bool") are Go zero-values by another name. Once #311 (struct field defaults) lands, re-derive: a struct is Default iff every field has a *declared* or derivable default — from your stated defaults, not universal zeros. Fold into #311.
+
+Rejected after survey: `Copy` (16-byte threshold, not a trait), `Sendable` (compiler-checked property), `Parseable` (not derivable), `Iterator` (retired by Sequence protocol), `Displayable` promotion (user-facing strings are intentional).
+
 ## Ergonomics check: what the user writes, before and after
 
 | Task | Ceremony |
@@ -254,7 +275,9 @@ Every row is zero-or-one lines in the common case; the special cases are opt-in,
 
 All findings ruled on. Accepted: **MN1–MN5** (single namespace, `scoped` opt-in for collisions, trait-qualified calls), **OC1–OC3** (override cancels dependents, hard error), **IS1–IS3** (mixed inference, exact promotion with generate-trait assist, honest ghost text) plus the structural-as-prototype-dial guidance, **CC1–CC3** (conditional conformance, condition inferred, public states it), **OP1** (concrete operators are authored sugar), and the Finding 6 fixes.
 
-Also accepted: **CD1** (comma-list conformance declarations).
+Also accepted: **CD1–CD3** (comma-list conformance declarations, unrestricted block bodies, one condition per block).
+
+Proposed, awaiting ruling: **auto-derived `ErrorMessage` for enums** and the **Default-from-field-defaults rebase** (corpus survey above).
 
 Remaining open details (bikeshed-level, decide during spec fold-in):
 - ~~Renaming `structural`~~ — **decided: `duck trait`**, and the stdlib ships zero of them: `Reader`/`Writer`/`ErrorMessage` go nominal (ER4/ER6 rewrite at fold-in). CD2 keeps multi-trait types at one block.
