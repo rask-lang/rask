@@ -21,7 +21,7 @@ Compile-time type introspection through `std.reflect`. All reflection resolves a
 ```rask
 import std.reflect
 
-const FIELD_COUNT = comptime reflect.fields(MyStruct).len
+const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 ```
 
 ## Type Info

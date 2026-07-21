@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Explicit comptime keyword for compile-time evaluation; restricted subset, no I/O -->
 <!-- depends: types/generics.md -->
-<!-- implemented-by: compiler/crates/rask-interp/ -->
+<!-- implemented-by: compiler/crates/rask-comptime/, compiler/crates/rask-miri/, compiler/crates/rask-interp/ -->
 
 # Compile-Time Execution
 
@@ -37,6 +37,30 @@ func fixed_array<comptime N: usize>() -> [u8; N] {
 const buf = repeat<16>(0xff)  // OK: 16 is comptime-known
 ```
 
+## Staging Model
+
+Every expression has a stage: comptime (runs during compilation) or runtime (compiled into the binary). The stage is syntactic — set by the nearest enclosing comptime marker, never inferred.
+
+| Rule | Description |
+|------|-------------|
+| **CT55: Two stages** | Comptime code computes values and decides what runtime code exists. Runtime code is the residue left after all comptime evaluation |
+| **CT56: Comptime positions** | Comptime evaluation happens exactly at: `comptime` expressions, blocks, and variables; bodies of `comptime func`; `comptime` parameter arguments and array sizes; the iterable of `comptime for`; the condition of `comptime if`; the name in `value.(expr)` |
+| **CT57: Residual bodies** | The body of a `comptime for` and the branches of a `comptime if` in runtime position stay runtime code. Comptime control decides *which* runtime code exists (unrolls, selects) — it never evaluates that code. Calls inside these bodies are ordinary runtime calls; CT6 doesn't apply to them |
+| **CT58: Splicing** | A comptime value used in runtime position is embedded as constant data. It must be const-representable: primitives, `str`, and structs, enums, or fixed arrays of these. A comptime `string` embeds as `str`. Unfrozen `Vec`/`Map` cannot cross (CT19) |
+| **CT59: Discarded branches** | A branch discarded by a runtime-position `comptime if` is syntax-checked only — same treatment as an uninstantiated generic body (`type.generics/G2`). This is what lets platform-specific code compile on every target |
+
+<!-- test: skip -->
+```rask
+func encode<T: Encode>(value: T, mutate w: Writer) -> void or Error {
+    comptime for field in reflect.fields<T>() {   // iterable: comptime (CT56)
+        comptime if !field.is_skipped {           // condition: comptime (CT56)
+            try w.write_key(field.serial_name)    // runtime residue (CT57);
+            try encode(value.(field.name), mutate w)  // serial_name splices as str (CT58)
+        }
+    }
+}
+```
+
 ## Comptime For and Field Access
 
 | Rule | Form | Syntax | Meaning |
@@ -67,28 +91,62 @@ func print_fields<T>(value: T) {
 
 Primary use case: serialization format libraries. See `std.encoding` for the full pattern.
 
-## Comptime Function Restrictions
+## Calls at Comptime
+
+Being callable at comptime is a property of what a function does, not of its marking. `comptime func` asserts the property at the definition; unmarked functions are checked where comptime code calls them.
 
 | Rule | Description |
 |------|-------------|
-| **CT6: Comptime-only calls** | Comptime functions can only call other comptime functions |
+| **CT6: Comptime-evaluable calls** | A call in comptime position is legal iff the callee — after substituting generic parameters and resolving trait methods to concrete implementations — evaluates within CT7/CT8, transitively. No `comptime` marking required on the callee |
 | **CT7: No I/O** | Cannot perform I/O (exception: `@embed_file`), spawn tasks, allocate from runtime pools |
 | **CT8: No runtime values** | All inputs must be comptime-known; using runtime values in comptime context is a compile error |
+| **CT60: Definition-time guarantee** | `comptime func` checks CT6/CT7 at the definition instead of at distant call sites. Obligations involving type parameters are deferred to instantiation (`type.generics/G2`). `comptime func` stays comptime-only (CT3) |
+| **CT61: Trait bounds at comptime** | Calling a bound's method on `T` in comptime code is legal iff the concrete implementation, after instantiation, is comptime-evaluable — checked per instantiation. Auto-derived conformances (Equal, Hashable, Comparable, Cloneable, Debug, ErrorMessage) are comptime-evaluable by construction |
+| **CT62: No dynamic dispatch** | `any Trait` cannot be created or called at comptime — heap allocation and vtables are runtime machinery (CT30–CT34) |
 
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
-comptime func build_lookup_table() -> [u8; 256] {
-    const table = [0u8; 256]
-    for i in 0..256 {
-        table[i] = (i * 2) as u8
+func is_prime(n: u32) -> bool { ... }      // unmarked, pure
+
+const PRIMES: [u32; _] = comptime {
+    const v = Vec<u32>.new()
+    for n in 2..100 {
+        if is_prime(n) { v.push(n) }       // OK: is_prime is comptime-evaluable (CT6)
     }
-    return table
+    v.freeze()
 }
+
+comptime func bounds<T: Numeric>() -> (T, T) {
+    return (T.zero(), T.one())             // legal per instantiation (CT61):
+}                                          // i32's zero/one are comptime-evaluable
 
 func example() {
     const n = read_config()
-    const buf = repeat<n>(0xff)   // ERROR: n is runtime value
+    const buf = repeat<n>(0xff)            // ERROR: n is runtime value (CT8)
 }
+```
+
+## Generics and Phase Ordering
+
+Comptime evaluation and monomorphization are not separate phases. Comptime code inside a generic function is part of instantiating it.
+
+| Rule | Description |
+|------|-------------|
+| **CT63: Per-instantiation evaluation** | Comptime code in a generic function or type evaluates once per instantiation, after type and comptime parameters are substituted (`std.reflect/R5`, CT50). Non-generic comptime code evaluates once |
+| **CT64: Demand-driven order** | Compilation starts from non-generic roots (consts, monomorphic functions) and interleaves instantiation with comptime evaluation on demand. Guarantee: an instantiation's comptime code is fully evaluated before its runtime residue is type-checked or compiled. Evaluations are memoized by (function, type arguments, comptime arguments) |
+| **CT65: No compilation-state observation** | Comptime code observes source-declared facts (fields, variants, declared conformances, annotations) and build config (`cfg`) — never compilation progress (which instantiations exist, evaluation order, caches). Comptime results are deterministic and independent of evaluation order |
+| **CT66: Types are not values** | Types reach comptime code only as generic arguments. No storing types in variables, returning them, or creating new types at comptime. The set of types and conformances is fixed by source before evaluation begins — this is what makes CT65 hold |
+| **CT67: Value cycles are errors** | A comptime evaluation that demands its own result — directly, or through const initializers, type layouts, or instantiations — is a compile error reporting the full dependency chain. Residual calls demand only the callee's signature, never its comptime results: recursive and mutually recursive generic functions stay legal |
+| **CT68: Instantiation depth limit** | An instantiation chain (each instantiation demanding the next) deeper than 64 is a compile error showing the chain. Override with `--instantiation-limit=N` |
+
+<!-- test: skip -->
+```rask
+struct Bad {
+    buf: [u8; comptime reflect.size_of<Bad>()]  // ERROR: layout of Bad
+}                                               // depends on itself (CT67)
+
+// Fine: encode<Node> calling encode<Owned<Node>?> calling encode<Node>
+// is runtime recursion across instantiations — signatures only, no cycle (CT67)
 ```
 
 ## Return Semantics
@@ -307,7 +365,14 @@ const B = comptime get_value(5)  // Compile error: "Index out of bounds: 5 >= 3"
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Comptime function calls runtime function | CT6 | Compile error: "Cannot call runtime function from comptime" |
+| Comptime code calls unmarked pure function | CT6 | Works — evaluated at comptime, checked transitively |
+| Comptime code calls function that does I/O | CT6/CT7 | Compile error with comptime call stack naming the I/O call |
+| Comptime func with `<T: Trait>` calls bound method | CT61 | Legal iff T's implementation is comptime-evaluable; error shows instantiation chain |
+| `any Trait` created or called at comptime | CT62 | Compile error: "dynamic dispatch not available at compile time" |
+| `comptime for` body calls runtime function | CT57 | Works — the body is runtime residue, not comptime code |
+| Discarded `comptime if` branch has type error | CT59 | Not reported — discarded branches are syntax-checked only |
+| Comptime result feeds its own computation | CT67 | Compile error: "comptime dependency cycle" with chain |
+| Instantiation chain past depth limit | CT68 | Compile error showing the chain |
 | Runtime value in comptime context | CT8 | Compile error: "Value not known at compile time" |
 | Infinite loop at comptime | CT35 | Compile error after iteration limit: "Exceeded max iterations (1,000)" |
 | Comptime panic | CT46 | Compile error with message and call stack |
@@ -382,6 +447,39 @@ Triggered by:
 WHY: Comptime panics become compile errors to prevent invalid constants.
 
 FIX: Fix the comptime logic or use a valid input value.
+```
+
+**Comptime-evaluability failure through a trait bound [CT61]:**
+```
+ERROR [ctrl.comptime/CT61]: cannot evaluate `Logger.hash` at compile time: it performs I/O
+
+Comptime call stack:
+  → cache_key<Logger>() at cache.rk:12:9
+  → logger.hash() at cache.rk:14:16
+      Logger's hash calls file.append() at logger.rk:33:5
+
+Required by:
+  const KEY = comptime cache_key<Logger>() at main.rk:4:11
+
+WHY: Comptime code runs during compilation. It can call any function — marked or
+     not — as long as evaluation stays inside the comptime subset (CT7/CT8).
+
+FIX: Give Logger an I/O-free hash, or compute the key from a type that has one.
+```
+
+**Comptime dependency cycle [CT67]:**
+```
+ERROR [ctrl.comptime/CT67]: comptime dependency cycle
+
+  → layout of struct Bad
+  → comptime reflect.size_of<Bad>() at bad.rk:3:15
+  → layout of struct Bad (cycle)
+
+WHY: A comptime result cannot depend on itself. Layouts, const initializers, and
+     instantiations form one dependency graph; cycles have no answer.
+
+FIX: Break the cycle — size the buffer from the fields it holds, not from the
+     struct that contains it.
 ```
 
 **Unfrozen collection escape [CT19]:**
@@ -487,7 +585,17 @@ func process(data: []u8) -> void or Error {
 
 **CT1-CT5 (Explicit comptime):** I chose explicit `comptime` marking to clarify when code runs at compile time vs runtime. Follows Zig's proven approach. Makes the boundary between compile-time and runtime visible in the code.
 
-**CT6-CT8 (Restrictions):** I restrict to pure computation to keep the comptime interpreter simple and avoid full-language interpretation complexity (see Rust's limited `const fn`). Rask's runtime-heavy features (pools, linear resources, concurrency) don't make sense at compile time.
+**CT55-CT59 (staging):** The spec previously never said which parts of `comptime for`/`comptime if` run at compile time, which made CT6 read as forbidding the encoding pattern (runtime calls inside an unrolled body). The two-level rule fixes it: control parts are comptime, bodies are residue. Comptime *generates* runtime code; it never *runs* it.
+
+**CT6/CT60 (property, not marking):** Comptime-callability is structural — determined by what the callee does, not what it's labeled. Requiring every transitively-called helper to be marked `comptime func` would be function coloring, which Rask rejects everywhere else (Principle 5); a pure helper like `is_prime` shouldn't need two versions. `comptime func` still earns its keyword: the guarantee moves to the definition, where the author is, instead of erupting at a call site three packages away. Same split as effects — inferred property, optional declared assertion.
+
+**CT7-CT8 (pure subset):** I restrict to pure computation to keep the comptime interpreter simple and avoid full-language interpretation complexity (see Rust's limited `const fn`). Rask's runtime-heavy features (pools, linear resources, concurrency) don't make sense at compile time.
+
+**CT61 (bounds at comptime):** Checked per instantiation, matching how generic bounds are checked everywhere else (`type.generics/G2`) and how effects are inferred per instance (`comp.effects/INF1`). A `comptime`-qualified bound in the type system would color generics — rejected.
+
+**CT63-CT65 (ordering):** Demand-driven with memoization is the only order that works: comptime code needs T substituted (so it can't all run before monomorphization), and instantiation sites depend on comptime values (so it can't all run after). CT65 is what keeps this from becoming order-sensitivity: since comptime can't observe compilation progress, the schedule is unobservable, and the compiler is free to reorder, parallelize, and cache. CT66 closes the loop — no new types mid-flight means reflection answers never change while evaluation runs.
+
+**CT67-CT68 (cycles):** Hard errors, no fixpoint iteration. A build that converges "eventually" is a build you can't reason about. The dependency chain in the error message is the debugging tool.
 
 **CT17-CT19 (Freeze pattern):** Makes the boundary explicit. Compiler-managed scratch heap is bounded (256MB), deterministic (no allocator variance). Normal collection APIs work at comptime. `.freeze()` makes materialization into const data explicit.
 
@@ -592,10 +700,10 @@ comptime func safe_factorial(n: u32) -> u32 {
 
 **3. Testing Pattern**
 
-Test comptime logic at runtime first:
+Comptime-callable logic doesn't need the `comptime` marking (CT6). Keep shared logic unmarked — test it at runtime, use it at comptime:
+
 ```rask
-// The comptime function
-comptime func factorial(n: u32) -> u32 {
+func factorial(n: u32) -> u32 {
     if n <= 1 { return 1 }
     return n * factorial(n - 1)
 }
@@ -608,11 +716,11 @@ func test_factorial() {
     assert_eq(factorial(10), 3628800)
 }
 
-// Once tests pass, use at comptime
+// Same function at comptime (CT6)
 const F5 = comptime factorial(5)
 ```
 
-Workflow: write comptime function → test at runtime with full debugging tools → fix bugs using gdb/lldb/prints → apply to comptime once working.
+Workflow: write it unmarked → test at runtime with full debugging tools → use at comptime. Reserve `comptime func` for functions that need comptime-only machinery (`.freeze()`, reflection-heavy manipulation) or the definition-time guarantee — those can't run in tests (CT3).
 
 ### IDE Integration
 
