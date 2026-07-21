@@ -1,6 +1,6 @@
 <!-- id: type.trait-review -->
 <!-- status: folded -->
-<!-- summary: Historical — scenario-driven review of the trait system after the nominal flip. All rules folded into generics.md, gradual-constraints.md, error-types.md, structs.md, SYNTAX.md. Kept as the decision record -->
+<!-- summary: Historical — scenario-driven review of the trait system after the nominal flip. All rules folded into generics.md, gradual-constraints.md, error-types.md, structs.md, SYNTAX.md. Kept as the decision record. Post-fold amendment: condition inference for conditional conformance (this file's CC2) was deferred — explicit where required everywhere for now, inference is an additive relaxation later -->
 <!-- depends: types/generics.md, types/traits.md, types/gradual-constraints.md -->
 
 # Trait System Review

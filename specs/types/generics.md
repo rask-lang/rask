@@ -155,24 +155,19 @@ The core-trait family carries cross-trait contracts (`a == b` implies `hash(a) =
 | Rule | Description |
 |------|-------------|
 | **CC1: Conditional conformance** | Conformance on a generic type holds exactly for instantiations satisfying its condition, checked at monomorphization like every other bound (G2/G6) |
-| **CC2: Condition inferred** | Package-private conformances omit the clause; the compiler derives it from the conformance body — same machinery and local-only scope as gradual constraints (`type.gradual/GC6`). IDE ghosts the inferred clause |
-| **CC3: Public states it** | Public conformances declare the condition explicitly with `where` — same rule as public function signatures (`type.gradual/GC5`) |
-| **CC4: One condition per block** | Inferred conditions are computed per listed trait independently; an explicit `where` clause applies to the whole block. Traits needing different explicit conditions split into separate blocks |
+| **CC2: Explicit condition** | Conformances on generic types state the condition with `where` — public and package-private alike. Inferring the clause from the conformance body (gradual-constraints machinery) is deferred; relaxing to inference later is purely additive |
+| **CC3: One condition per block** | A `where` clause applies to the whole block. Traits needing different conditions split into separate blocks |
 
 <!-- test: skip -->
 ```rask
-// Package-private: zero boilerplate — clause inferred as `where T: Displayable`
-extend Ring<T> with Displayable {
+extend Ring<T> with Displayable where T: Displayable {
     func to_string(self) -> string {
         return self.items.map(|x| x.to_string()).join(", ")
     }
 }
-
-// Public library API: the contract is spelled out
-public extend Ring<T> with Displayable where T: Displayable { ... }
 ```
 
-This is the same conditionality auto-derive has always applied implicitly ("Vec of Cloneable is Cloneable" — CL1), with syntax for user traits.
+This is the same conditionality auto-derive has always applied implicitly ("Vec of Cloneable is Cloneable" — CL1), with syntax for user traits. The clause only exists on generic types conforming to traits; concrete types never write it.
 
 ## Operator Expansion
 
