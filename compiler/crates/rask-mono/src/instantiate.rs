@@ -666,8 +666,32 @@ impl TypeSubstitutor {
 /// Clones the AST and replaces all type parameters with concrete types.
 /// Works for functions, structs, and enums.
 pub fn instantiate_function(decl: &Decl, type_args: &[Type]) -> Decl {
-    let type_params = match &decl.kind {
-        DeclKind::Fn(f) => &f.type_params,
+    let implicit_params: Vec<TypeParam>;
+    let type_params: &[TypeParam] = match &decl.kind {
+        DeclKind::Fn(f) => {
+            if f.type_params.len() < type_args.len() {
+                // PC1: implicit single-letter type params — the checker's
+                // call-site type args are ordered by the same shared list
+                implicit_params = rask_types::signature_type_param_names(f)
+                    .into_iter()
+                    .map(|name| {
+                        f.type_params
+                            .iter()
+                            .find(|p| p.name == name)
+                            .cloned()
+                            .unwrap_or(TypeParam {
+                                name,
+                                is_comptime: false,
+                                comptime_type: None,
+                                bounds: Vec::new(),
+                            })
+                    })
+                    .collect();
+                &implicit_params
+            } else {
+                &f.type_params
+            }
+        }
         DeclKind::Struct(s) => &s.type_params,
         DeclKind::Enum(e) => &e.type_params,
         _ => {

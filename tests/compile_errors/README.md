@@ -22,6 +22,8 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
 | [error_mismatch.rk](error_mismatch.rk) | Incompatible error types with `try` |
+| [unknown_type_name.rk](unknown_type_name.rk) | Typo'd type name in signature (PC2) — errors instead of becoming a generic |
+| [single_letter_type_name.rk](single_letter_type_name.rk) | Single-letter concrete type names are reserved for type parameters (PC3) |
 | [missing_return.rk](missing_return.rk) | Function without return statement |
 
 ### Ownership & Borrowing

@@ -306,6 +306,35 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("type expressions must be valid type names or parameterized types")
             }
 
+            UnknownTypeName { name, suggestion, span } => {
+                let diag = Diagnostic::error(format!("unknown type `{}`", name))
+                    .with_code("E0356")
+                    .with_primary(*span, "not a declared type")
+                    .with_why("only single uppercase letters (`T`, `U`) are type parameters — any longer name must be a declared type [type.gradual/PC2]");
+                if let Some(s) = suggestion {
+                    diag.with_fix(format!("did you mean `{}`?", s))
+                        .with_help(format!("did you mean `{}`?", s))
+                } else {
+                    diag.with_help(format!(
+                        "declare the type, or declare a type parameter: `func f<{}>(...)`",
+                        name
+                    ))
+                    .with_fix(format!("declare `{}` or add it as a type parameter", name))
+                }
+            }
+
+            SingleLetterTypeName { name, kind, span } => {
+                Diagnostic::error(format!(
+                    "single-letter type name `{}` is reserved for type parameters",
+                    name
+                ))
+                .with_code("E0357")
+                .with_primary(*span, format!("{} named with a single letter", kind))
+                .with_help(format!("rename `{}` to a descriptive name", name))
+                .with_fix(format!("rename `{}` to a descriptive name", name))
+                .with_why("single uppercase letters in signatures always mean type parameters — a concrete type with that name would be unusable [type.gradual/PC3]")
+            }
+
             TryInNonPropagatingContext { return_ty, span } => {
                 Diagnostic::error(format!(
                     "`try` requires function returning Result or Option, found `{}`",

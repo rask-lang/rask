@@ -326,6 +326,23 @@ fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
 }
 
+#[test]
+fn error_unknown_type_name() {
+    assert!(compile_error("unknown_type_name.rk"), "should reject unknown PascalCase type in signature (PC2)");
+}
+
+#[test]
+fn error_single_letter_type_name() {
+    assert!(compile_error("single_letter_type_name.rk"), "should reject single-letter concrete type names (PC3)");
+}
+
+#[test]
+fn compile_auto_generic_single_letter() {
+    let (stdout, code) = compile_and_run("auto_generic_single_letter.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "2 1\nhello\n");
+}
+
 // ─── Error message quality ──────────────────────────────────
 
 /// Run `rask check` and return combined stdout+stderr.

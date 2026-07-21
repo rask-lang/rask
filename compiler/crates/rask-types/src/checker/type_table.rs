@@ -69,6 +69,7 @@ impl TypeTable {
         self.builtins.insert("uint".to_string(), Type::U64);
         self.builtins.insert("isize".to_string(), Type::I64);
         self.builtins.insert("usize".to_string(), Type::U64);
+        self.builtins.insert("Never".to_string(), Type::Never);
 
         let option_id = self.register_type(TypeDef::Enum {
             name: "Option".to_string(),
