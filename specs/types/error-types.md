@@ -16,7 +16,7 @@ Libraries use union errors (`T or (A | B | C)`), applications use `any Error` (t
 | **ER1: Builtin sum** | `T or E` is a compiler-generated tagged union, not a user-definable enum. Optionals (`T?`) are sugar for `T or none` and share the same machinery — see [optionals.md](optionals.md) |
 | **ER2: No user wrapper** | There is no `Ok` or `Err` constructor, keyword, or pattern. Success values are bare; error values are the error type's own constructor (e.g. `DivError.ByZero`) |
 | **ER3: Disjointness** | `T or E` requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Violation is a compile error at type formation. Same rule as [union-types.md](union-types.md) U6 |
-| **ER4: Error bound** | Every `E` must implement `ErrorMessage` — a structural trait requiring `func message(self) -> string`. Enforced at type formation. Primitives (`i32`, `f64`, `string`) don't qualify; newtype them. **Exception:** `none` is exempt — it's the absent sentinel for optionals (`T or none`), not an error type |
+| **ER4: Error bound** | Every `E` must implement `ErrorMessage` — `func message(self) -> string`, auto-derived for enums (ER6). Enforced at type formation. Primitives (`i32`, `f64`, `string`) don't qualify; newtype them. **Exception:** `none` is exempt — it's the absent sentinel for optionals (`T or none`), not an error type |
 | **ER5: No `Result<T, E>` name** | The generic `Result<T, E>` type is gone. Use `T or E` directly |
 
 <!-- test: skip -->
@@ -34,24 +34,29 @@ func save(data: Data) -> void or IoError                   // unit success
 
 | Rule | Description |
 |------|-------------|
-| **ER6: Structural trait** | `ErrorMessage` is a `structural trait` (`type.generics/G1`) — any type with `func message(self) -> string` satisfies it, no declaration needed. The shape is the whole contract, and requiring a conformance line on every error enum would tax the most common trait in the language |
+| **ER6: Auto-derived for enums** | `ErrorMessage` is nominal, auto-derived for enums: `message()` is the humanized variant name plus payload interpolation (`UnexpectedEnd(ctx)` → `"unexpected end: {ctx}"`); a single-payload variant whose payload implements `ErrorMessage` delegates to it. Override with `extend E with ErrorMessage { ... }` for hand-written prose — `rask lint` nudges public error types toward it. Structs declare conformance (usually the header of the block defining `message()`) |
 | **ER7: Auto-Displayable** | Error types auto-satisfy `Displayable`; `to_string()` delegates to `message()` |
 | **ER8: Layered traits** | Richer capabilities (`LinedError`, `ContextualError`, `CodedError`) are opt-in traits on top of `ErrorMessage`. The minimum bound is just `message() -> string` |
 
 <!-- test: skip -->
 ```rask
 enum DivError { ByZero, Overflow }
-extend DivError {
+// Nothing else needed — auto-derived (ER6):
+//   ByZero → "by zero", Overflow → "overflow"
+
+// Override for hand-written prose:
+extend DivError with ErrorMessage {
     func message(self) -> string {
         match self {
             DivError.ByZero   => "division by zero",
-            DivError.Overflow => "overflow",
+            DivError.Overflow => "arithmetic overflow",
         }
     }
 }
 
+// Structs declare conformance in the block defining message():
 struct NotFound { key: string }
-extend NotFound {
+extend NotFound with ErrorMessage {
     func message(self) -> string { "not found: {self.key}" }
 }
 ```

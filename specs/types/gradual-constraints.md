@@ -13,7 +13,7 @@ Non-public functions may omit parameter types, return types, and bounds. Compile
 |------|-------------|
 | **GC1: Parameter inference** | Compiler examines all parameter uses; single concrete type inferred as concrete, only trait constraints inferred as generic with bounds |
 | **GC2: Return inference** | Return type is unified type of all return expressions; incompatible types are a compile error |
-| **GC3: Bound inference** | Type parameter used with methods/operators produces structural trait constraints |
+| **GC3: Bound inference (mixed)** | Inferred bounds are the union of (a) nominal bounds propagated from called functions and (b) structural method-requirements from direct method/operator use. A nominal bound subsumes the methods it provides |
 | **GC4: Additive annotations** | Explicit types/bounds merge with inferred; conflict is a compile error |
 | **GC5: Public enforcement** | `public` functions must have full type annotations and trait bounds |
 | **GC6: Module-local scope** | Inference examines only function body — no callers, no cross-module analysis |
@@ -23,7 +23,7 @@ Non-public functions may omit parameter types, return types, and bounds. Compile
 | Public = explicit | `public` functions MUST have full type annotations and trait bounds |
 | Private = flexible | Non-public functions MAY omit parameter types, return types, and/or bounds |
 | Annotations are additive | Explicit types/bounds merge with inferred ones |
-| Inferred bounds are method-requirements | Inference collects the methods the body calls, not named traits. Named (nominal) bounds appear when the signature is written out — see below |
+| Inferred bounds are mixed | Direct method calls produce shape requirements; calls into bounded functions propagate their nominal bounds outward (GC3), so errors land at the outermost call site naming the real requirement. Named bounds appear when the signature is written out — see below |
 
 ## Inference Levels
 
@@ -257,7 +257,17 @@ Inference rules:
 
 Fully statically checked at every stage. Not dynamic typing.
 
-**Interaction with nominal traits:** Inferred bounds are method-requirements, checked by shape — body calls `.hash()` and `.eq()`, the compiler infers a bound requiring those methods. This is deliberately looser than nominal conformance: it's private-only prototyping glue, invisible in any API. The moment the signature is written out (and always at `public`), bounds are named traits and nominal conformance applies (`type.generics/G1`). IDE maps inferred method-requirements to matching named traits for display.
+**Interaction with nominal traits:** Direct method calls infer shape requirements — deliberately looser than nominal conformance: private-only prototyping glue, invisible in any API. The moment the signature is written out (and always at `public`), bounds are named traits and nominal conformance applies (`type.generics/G1`). The seam has three rules:
+
+| Rule | Description |
+|------|-------------|
+| **IS1: Mixed inference** | Per GC3, nominal bounds propagate up from callees; only direct method use stays shape-based |
+| **IS2: Promotion is exact** | "Make explicit"/"make public" fills in a named trait only when exactly one visible trait covers the residual method-requirements. Zero matches: report the methods and offer to generate a trait definition plus conformance declarations. Two or more: list candidates, the user picks — never auto-pick a semantic claim |
+| **IS3: Honest ghost text** | Display distinguishes propagated nominal bounds from raw shape requirements: `T: Comparable` vs `T: {frobnicate}`. Never show a trait name that was merely guessed from shape |
+
+**Gotcha (by design):** annotating a working private function can make a working call fail — the bound's meaning flips from shape to declaration when written down. A callee type that had the methods but never declared conformance passes inference and fails the explicit bound. This is the publish step doing its job: naming the contract.
+
+**Prototyping with traits:** traits belong to the structuring/publishing phase; the sketching phase needs none (inference carries shapes). When a trait is wanted while sketching, `duck trait` is the prototype mode — no conformance declarations, methods move freely. Harden by deleting the `duck` keyword: the compiler lists every shape-matching type and quick-fixes insert the declarations (`type.generics/G1`).
 
 **Monomorphization:** Inference doesn't change monomorphization. Compiler infers bounds, then monomorphization proceeds as with explicit: each call site generates specialized code. Inferred signature is semantically identical to equivalent explicit.
 

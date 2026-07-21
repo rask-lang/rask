@@ -85,7 +85,7 @@ Atomic types provide safe, data-race-free shared memory access with explicit mem
 <!-- test: skip -->
 ```rask
 const counter = AtomicU64.new(0)
-const flag = AtomicBool.default()  // false
+const flag = AtomicBool.new(false)
 ```
 
 ### Load, Store, Swap

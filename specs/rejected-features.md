@@ -443,6 +443,14 @@ This means Rask can't express `vec![1, 2, 3]`—you write `Vec.from([1, 2, 3])`.
 
 ---
 
+## Default Trait
+
+Removed (it existed briefly with auto-derived universal zeros: `0` for ints, `false` for bool, `""` for string). Universal zeros are Go zero-values by another name — a back door around all-fields-required construction, handing out values nobody chose. Declared field defaults replaced it (`type.structs/FD1–FD6`): defaulted fields are omittable at construction, `Config {}` constructs the default when every field declares one, and a defaultless field is a compile error naming the field. One mechanism feeds construction, decode-missing-fields, and fresh values. No API ever used `T: Default` as a generic bound; if a constructible-empty bound is needed someday, it can return from usage evidence.
+
+## From/Into Conversion Traits
+
+Rust's most hand-implemented trait, deliberately absent. Its three jobs dissolve at the language level: error conversion for `?` (Rask's `try` widens error *unions* structurally — the `impl From<LibError> for MyError` ceremony class never exists), flexible string parameters (one `string` type — no `String`/`&str`/`Cow` to abstract over), and general conversion (the residue, covered by opt-in `Convert<From, To>`). Rust immigrants will ask; this is the answer.
+
 ## Summary
 
 Common thread: I optimize for transparency and local reasoning, but not at the cost of ergonomics.
