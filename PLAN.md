@@ -48,7 +48,8 @@ Exit criteria: each item has a compile-error (or panic) conformance test in `tes
 ## Track 2 — Recent spec delta: catch the compiler up to decided design
 
 The trait review and consistency passes are decided design; the compiler still implements the old world.
-One epic, several mechanical sweeps.
+One epic, several mechanical sweeps. (Of the July spec wave, only PC1 — single-letter auto-generics —
+landed compiler-side.)
 
 **2a. Nominal trait flip (the epic).** Trait satisfaction is still purely structural
 (`rask-types/src/traits.rs`). Implement in dependency order:
@@ -75,8 +76,12 @@ exist under old names. One reconciliation pass over stubs + interp + runtime + e
 - `{:?}` → `{:debug}` (`rask-interp/src/interp/format.rs:155`)
 - `fs.read_file/write_file/append_file` → `read_text/write_text/append_text`; `io.write_str` → `write_text`
 - `Duration.as_secs` → `as_seconds`; `Rng` → `Random`; `os.getpid` → `os.pid`; `os.vars` → `os.env_vars`
+- `vec.extend` → `push_all` (`try_push_all` reuses `PushError`; `ExtendError` is gone);
+  `BufReader`/`BufWriter` → `BufferedReader`/`BufferedWriter`
 - #276/#277/#278 signature changes (TcpConnection `read_text/write_text`, shared `SysError`,
-  `time.sleep -> void or SysError`)
+  `time.sleep -> void or SysError`, `File.lines()` dropped — `read_lines` eager, `BufferedReader.lines` lazy)
+- Growth ops panic on alloc failure; `try_` variants return the rejected value (std.collections/C2) —
+  supersedes the `AllocError` line in TODO.md
 
 **2c. Origin tracking opt-in.** Spec revised to `@traced` + `any Error`; compiler still captures origin
 on every error, 16 bytes on every `T or E` (ER33/ER34; `rask-mir/src/lower/errors.rs:56-66`).
@@ -123,6 +128,7 @@ Divergence table (each row: bring the lagging backend up, add a dual-backend tes
 | `comptime` evaluation | deferred to runtime | comptime crate (correct model) |
 | Trait objects | dynamic dispatch (masks bugs) | vtables (1.4 bug) |
 | Overflow/div-zero checks | div-zero only | neither |
+| Map iteration order | diverges from native | diverges from interp — spec wants per-process seeded hash order (determinism/D7, #285); neither conforms |
 
 Rule going forward: a feature isn't done until both backends pass the same test. The suite runner
 should exercise check + interp + native for every suite file (it currently can — the gap is
@@ -164,6 +170,9 @@ Spec'd, absent, and not blocking the validation programs — schedule after Trac
 - **Inline `asm`** — reserved token only.
 - **Loop constraint rules** (ctrl.loops LP4, LP8, LP14) and custom-sequence for-loop desugar (LP18–LP23,
   lands with the Sequence protocol).
+- **Determinism contract / sim mode** (determinism/D1–D14, proposed): `rask test --sim` — seeded
+  scheduler, virtual clock, fault injection. The only always-on semantic piece is D7 (seeded Map hash
+  order), which is in Track 4 now; the rest waits on the Phase B runtime it virtualizes.
 
 ## Track 7 — Tooling, DX, performance
 
@@ -173,7 +182,9 @@ Real but not blocking language correctness:
   only fires at build time (`rask-compiler/src/lib.rs` check path stops after ownership+effects).
 - IDE ghost text: all of it is missing (effects `[io]`/`[pure]`, `[clone elided]`, `[rc elided]`,
   `[coalesced]`) — `inlay_hints.rs` emits only types. Effects engine already runs; surfacing is the gap.
-- Purity lint P1–P3 (`@pure` teeth) and frozen-suggestion lint FL1–FL4 — missing from rask-lint.
+- Purity lint P1–P3 (`@pure` teeth) and frozen-suggestion lint FL1–FL4 — missing from rask-lint;
+  canonical-patterns says lint enforces its naming rules (now incl. the name-provenance check) — audit
+  rask-lint against that list.
 - Incremental compilation: `rask-semantic-hash` crate is built but wired to nothing; cache is a coarse
   per-package content hash. ROADMAP Phase 4 stands; MIR serde derives are the first prerequisite.
 - `compile_rust()` (struct.build PM10) — only `compile_c` exists.
