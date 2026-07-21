@@ -243,6 +243,9 @@ impl Default for ErrorCodeRegistry {
                 "E0812" => ("discard resource type", Ownership,
                     "Resource types (@resource) must be consumed properly via their consuming method (.close(), .release(), etc). `discard` on a resource type is a compile error (D3).",
                     "@resource\nstruct File { fd: i32 }\nconst f = File { fd: 1 }\ndiscard f  // error: use f.close() instead"),
+                "E0813" => ("use after maybe-move", Ownership,
+                    "A value moved on some paths but not all (e.g. one `if` branch) was used after the paths merged. The spec treats maybe-moved as moved (O3) — move on every path, or keep the use inside the branch that still owns the value.",
+                    "const v = Vec.new()\nif c { take(own v) }\nv.len()  // error: v may have been moved"),
             },
         }
     }

@@ -573,7 +573,7 @@ Send is consumption like any other (C5) — it cancels the ensure and falls unde
 The implementation currently does the opposite of C3: `ensure` blanket-suppresses the static linear check for its receiver, and cancellation is decided by runtime flags (MIR `ResourceConsume` + `rask_resource_is_consumed`; interpreter `ResourceTracker`). Tracked:
 
 - [#293](https://github.com/rask-lang/rask/issues/293) — implement the static definiteness analysis, retire the runtime flags
-- [#294](https://github.com/rask-lang/rask/issues/294) — if-without-else soundness hole in the merge analysis (prerequisite)
+- [#294](https://github.com/rask-lang/rask/issues/294) — *fixed*: the branch merge now treats a value moved/consumed on some paths but not all as maybe-moved, so if-without-else and single-arm consumption are rejected (`mem.ownership/O3`, `mem.linear/L1`)
 - [#295](https://github.com/rask-lang/rask/issues/295) — interpreter: cancellation misses nested-block consumption, cleanup double-runs today
 - [#296](https://github.com/rask-lang/rask/issues/296) — take-param/send consumption not recognized without call-site `own` (C5 assumes it is)
 

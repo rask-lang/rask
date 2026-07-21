@@ -37,6 +37,16 @@ pub enum OwnershipErrorKind {
         reason: MoveReason,
     },
 
+    /// Value was moved on some paths but not all (e.g. one `if` branch),
+    /// then used after the paths merged. Maybe-moved is treated as moved (O3).
+    #[error("value `{name}` may have been moved")]
+    UseAfterMaybeMove {
+        name: String,
+        /// One branch's move site.
+        moved_at: Span,
+        reason: MoveReason,
+    },
+
     /// Conflicting access to a value (e.g., trying to write while someone is reading).
     #[error("cannot {requested} `{name}` - it's already being {existing}")]
     BorrowConflict {
