@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: single-letter type names are reserved (type.gradual/PC3)
+//
+// Single uppercase letters always mean type parameters in signatures, so a
+// concrete type named `T` would be unusable.
+
+// ERROR: single-letter type name `T` is reserved for type parameters
+struct T {
+    x: i32
+}
+
+func main() {
+    const t = T { x: 1 }
+    println("{t.x}")
+}

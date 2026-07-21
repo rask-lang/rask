@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// PC1: single uppercase letters in signature types are type parameters,
+// no <T> declaration needed.
+
+func swap(a: T, b: T) -> (T, T) {
+    return (b, a)
+}
+
+func first(items: Vec<T>) -> T {
+    return items[0]
+}
+
+func main() {
+    const pair = swap(1, 2)
+    println("{pair.0} {pair.1}")
+
+    mut names = Vec.new()
+    names.push("hello")
+    const head = first(names)
+    println("{head}")
+}

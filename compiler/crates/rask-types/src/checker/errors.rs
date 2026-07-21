@@ -38,6 +38,21 @@ pub enum TypeError {
     CannotInfer { span: Span },
     #[error("invalid type string: {0}")]
     InvalidTypeString(String),
+    /// type.gradual/PC2: PascalCase name in a signature resolves to nothing
+    #[error("unknown type `{name}`")]
+    UnknownTypeName {
+        name: String,
+        /// Closest declared type name, if any
+        suggestion: Option<String>,
+        span: Span,
+    },
+    /// type.gradual/PC3: single uppercase letters are reserved for type parameters
+    #[error("single-letter type name `{name}` is reserved for type parameters")]
+    SingleLetterTypeName {
+        name: String,
+        kind: String,
+        span: Span,
+    },
     #[error("try can only be used in functions returning Option or Result, found {return_ty}")]
     TryInNonPropagatingContext { return_ty: Type, span: Span },
     #[error("error type mismatch in `try`: propagating `{inner_err}`, but function returns `_ or {outer_err}`")]

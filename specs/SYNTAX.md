@@ -447,17 +447,12 @@ for w in widgets: w.draw()    // Dynamic dispatch
 
 ### Generics
 
-Unknown PascalCase identifiers in type position are automatically generic parameters:
+Single uppercase letters in type position are automatically type parameters:
 
 ```rask
 // T is automatically a type parameter (no <T> declaration needed)
 func identity(x: T) -> T {
     return x
-}
-
-func map(list: List<Item>, f: |Item| -> Output) -> List<Output> {
-    // List, Item, and Output are type parameters
-    // ... implementation ...
 }
 
 struct Pair {
@@ -473,6 +468,14 @@ func swap(a: T, b: T) -> (T, T) {
 }
 ```
 
+Longer names must resolve to declared types — a typo like `Confg` is an unknown-type error, never a silent generic. Descriptive type parameters use an explicit list:
+
+```rask
+func map<Item, Output>(list: Vec<Item>, f: |Item| -> Output) -> Vec<Output> {
+    // ... implementation ...
+}
+```
+
 **Omitted types entirely (gradual constraints):**
 ```rask
 func identity(x) {
@@ -484,7 +487,7 @@ func sum(items) {
 
 // Mix: explicit type + inferred bounds
 func sort(items: Vec<T>) {
-    items.sort()            // T is auto-generic (PascalCase), bound inferred as T: Comparable
+    items.sort()            // T is auto-generic (single letter), bound inferred as T: Comparable
 }
 ```
 
@@ -1174,7 +1177,7 @@ println("{sum}")
 | Loop value | `break expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |
 | Omitted types | `func f(x) { x + 1 }` | Private functions only; see [gradual constraints](types/gradual-constraints.md) |
-| Generics | Implicit PascalCase | `where` for constraints |
+| Generics | Implicit single letters (`T`, `U`); explicit `<Name>` otherwise | `where` for constraints |
 | Closures | `\|x\| expr` | Rust-style pipes |
 | Named args | `name: value` | Order-fixed, optional (IDE ghosts) |
 | Default args | `param = value` | Constants only, after required |

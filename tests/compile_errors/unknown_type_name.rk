@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: unknown PascalCase type name in signature (type.gradual/PC2)
+//
+// Multi-letter PascalCase names must resolve to a declared type. A typo'd
+// name errors here instead of silently becoming a generic parameter.
+
+struct Config {
+    port: i32
+}
+
+// ERROR: unknown type `Confg` (did you mean `Config`?)
+func load(c: Confg) -> i32 {
+    return c.port
+}
+
+// ERROR: unknown type `Recod` in return type
+func fetch() -> Recod {
+    return todo()
+}
+
+func main() {
+    const x = load(Config { port: 8080 })
+    println("{x}")
+}

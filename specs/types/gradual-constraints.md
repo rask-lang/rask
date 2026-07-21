@@ -88,18 +88,29 @@ public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U)
 | `func greet(name) { println("Hi, {name}") }` | `(name: string)` | String interpolation constrains type |
 | `func len(items) { items.len() }` | `<T>(items: Vec<T>) -> usize` | `.len()` doesn't constrain T |
 
-## Interaction with PascalCase Generics
+## Auto-Generics: Single Letters Only
 
 | Rule | Description |
 |------|-------------|
-| **PC1: Coexistence** | PascalCase names auto-generic (existing); gradual constraints omit type entirely |
+| **PC1: Single letters are type params** | A single uppercase letter in a signature type position (`T`, `U`, `K`, `V`, …) is always a type parameter — resolved without scope lookup, so imports can never change a signature's meaning. Explicit `<T>` stays optional |
+| **PC2: Other names must resolve** | Any longer PascalCase name in a signature must name a declared type. Unknown name is an immediate error with a "did you mean" suggestion — a typo never silently becomes a generic |
+| **PC3: Single letters reserved** | Declaring a struct, enum, trait, union, or type alias with a single-letter name is a compile error |
+
+Signature positions: function parameters, return types, struct fields, enum payloads.
 
 <!-- test: skip -->
 ```rask
-// PascalCase: explicitly name the type parameter
-func identity(x: T) -> T { return x }
+// Single letter: type parameter, no <T> declaration needed
+func swap(a: T, b: T) -> (T, T) { return (b, a) }
 
-// Gradual: omit type, mut compiler decide
+// Longer unknown names error where the typo is...
+func load(c: Confg) -> i32 { }
+// ERROR [type.gradual/PC2]: unknown type `Confg` — did you mean `Config`?
+
+// ...descriptive type parameters use an explicit list
+func map<Item, Output>(items: Vec<Item>, f: |Item| -> Output) -> Vec<Output> { }
+
+// Gradual: omit the type entirely, let the compiler decide
 func identity(x) { return x }
 // Inferred: func identity<T>(x: T) -> T
 ```
@@ -244,6 +255,8 @@ Inference rules:
 **GC5 (public enforcement):** `public` means "visible to external consumers." Explicit types at this boundary are natural — API contracts should be spelled out. Private functions are implementation details where inference reduces noise.
 
 **GC6 (module-local scope):** Compiler examines one function at a time, collects constraints, solves them. Never looks at callers, never does whole-program analysis, never crosses modules. Preserves compilation speed.
+
+**PC1–PC3 (single letters only):** The original rule made *any* unknown PascalCase name a type parameter. Two failure modes: a typo'd type name (`Confg`) silently became a generic and surfaced later as a confusing constraint failure at some call site, and adding or importing a type could silently flip an existing signature from generic to concrete — action at a distance from an import. Single letters close both. Typos are multi-letter, so they error early with a suggestion; single letters never consult scope, so a signature means the same thing no matter what's imported. The `swap(a: T, b: T)` idiom — linking two parameters without ceremony — survives, and descriptive names are one `<Item, Output>` away. Gradual constraints already cover the "just let me sketch" case by omitting types entirely.
 
 **Ergonomic Delta:** Without gradual constraints, Rask private code needs more annotation than Go or Kotlin. With them, private code matches or beats ceremony of dynamically-typed languages while keeping full static checking.
 

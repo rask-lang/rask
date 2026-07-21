@@ -6,8 +6,10 @@ use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
 
+use super::declarations::{for_each_unresolved_name, is_type_param_name, signature_type_param_names};
 use super::errors::TypeError;
 use super::parse_type::parse_type_string;
+use super::type_defs::TypeDef;
 use super::TypeChecker;
 
 use crate::types::Type;
@@ -64,6 +66,22 @@ impl TypeChecker {
         } else {
             Type::Unit
         };
+        // PC1/PC2: type params in scope for this signature — explicit <T>,
+        // implicit single letters, and the enclosing type's params (methods).
+        let mut sig_type_params = signature_type_param_names(f);
+        if let Some(Type::Named(id)) = &self.current_self_type {
+            if let Some(TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. }) =
+                self.types.get(*id)
+            {
+                for tp in type_params {
+                    if !sig_type_params.contains(tp) {
+                        sig_type_params.push(tp.clone());
+                    }
+                }
+            }
+        }
+        // PC2: unknown PascalCase names in the return type are errors.
+        self.validate_signature_names(&ret_ty, &sig_type_params, f.span);
         // ER3/ER4: validate every `T or E` that appears in the return type.
         self.validate_result_types_in(&ret_ty, f.span);
         self.current_return_type = Some(ret_ty);
@@ -145,6 +163,8 @@ impl TypeChecker {
                     self.ctx.fresh_var()
                 }
             } else if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
+                // PC2: unknown PascalCase names in parameter types are errors.
+                self.validate_signature_names(&ty, &sig_type_params, param.name_span);
                 ty
             } else {
                 continue;
@@ -245,6 +265,70 @@ impl TypeChecker {
         if f.attrs.iter().any(|a| a == "no_alloc") {
             self.check_no_alloc(&f.name, &f.body);
         }
+    }
+
+    /// PC2: every PascalCase name in an explicit signature type must resolve
+    /// to a declared type, a stdlib type, or a type parameter. A typo'd type
+    /// name must error here, not silently become a generic parameter.
+    pub(super) fn validate_signature_names(&mut self, ty: &Type, type_params: &[String], span: Span) {
+        let mut unknown: Vec<String> = Vec::new();
+        {
+            let types = &self.types;
+            for_each_unresolved_name(ty, &mut |name: &str| {
+                // PC1: single letters are always type parameters
+                if is_type_param_name(name) {
+                    return;
+                }
+                if type_params.iter().any(|p| p == name) {
+                    return;
+                }
+                // Placeholders and specials that legitimately stay unresolved.
+                // `Iterator` is special-cased in resolve.rs; the rest are
+                // stdlib names with no registration yet (#320).
+                if name == "Self"
+                    || name.starts_with('_')
+                    || matches!(name, "Error" | "Iterator" | "Reader" | "Writer" | "ParseError" | "InsertError")
+                {
+                    return;
+                }
+                // Only plain PascalCase identifiers — module paths and
+                // lowercase names resolve through other paths
+                if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    return;
+                }
+                if types.get_type_id(name).is_some()
+                    || types.builtins.contains_key(name)
+                    || types.type_aliases.contains_key(name)
+                    || rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
+                {
+                    return;
+                }
+                if !unknown.iter().any(|u| u == name) {
+                    unknown.push(name.to_string());
+                }
+            });
+        }
+        for name in unknown {
+            let suggestion = self.closest_type_name(&name);
+            self.errors.push(TypeError::UnknownTypeName { name, suggestion, span });
+        }
+    }
+
+    /// Closest declared type name by edit distance, for "did you mean" hints.
+    fn closest_type_name(&self, name: &str) -> Option<String> {
+        let max_dist = (name.len() / 3).max(1);
+        self.types
+            .type_names
+            .keys()
+            .chain(self.types.builtins.keys())
+            .chain(self.types.type_aliases.keys())
+            .chain(rask_stdlib::mir_metadata::stdlib_type_names().iter())
+            .map(|cand| (edit_distance(name, cand), cand))
+            .filter(|(d, _)| *d > 0 && *d <= max_dist)
+            .min_by_key(|(d, _)| *d)
+            .map(|(_, cand)| cand.clone())
     }
 
     /// Check that a @no_alloc function body has no heap allocations.
@@ -465,4 +549,21 @@ impl TypeChecker {
 
 fn is_runtime_context(ty: &str) -> bool {
     matches!(ty, "Multitasking" | "MultiTasking" | "multitasking" | "ThreadPool" | "threadpool")
+}
+
+/// Levenshtein distance, for type-name suggestions.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
 }

@@ -20,23 +20,40 @@ impl TypeChecker {
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
         for decl in decls {
             match &decl.kind {
-                DeclKind::Struct(s) => self.register_struct(s),
-                DeclKind::Enum(e) => self.register_enum(e, decl.span),
-                DeclKind::Trait(t) => self.register_trait(t),
-                DeclKind::Union(u) => self.register_union(u),
-                DeclKind::TypeAlias(a) => self.register_type_alias(a, decl.span),
-                DeclKind::Fn(f) if !f.type_params.is_empty() => {
+                DeclKind::Struct(s) => {
+                    self.check_declared_type_name(&s.name, "struct", decl.span);
+                    self.register_struct(s);
+                }
+                DeclKind::Enum(e) => {
+                    self.check_declared_type_name(&e.name, "enum", decl.span);
+                    self.register_enum(e, decl.span);
+                }
+                DeclKind::Trait(t) => {
+                    self.check_declared_type_name(&t.name, "trait", decl.span);
+                    self.register_trait(t);
+                }
+                DeclKind::Union(u) => {
+                    self.check_declared_type_name(&u.name, "union", decl.span);
+                    self.register_union(u);
+                }
+                DeclKind::TypeAlias(a) => {
+                    self.check_declared_type_name(&a.name, "type alias", decl.span);
+                    self.register_type_alias(a, decl.span);
+                }
+                DeclKind::Fn(f) => {
                     // Find this function's SymbolId by matching name + Function kind.
                     // Strip generic suffix: parser stores "foo<T: Trait>" but resolver
                     // registers the base name "foo".
                     let base_name = f.name.split('<').next().unwrap_or(&f.name);
-                    let type_param_names: Vec<String> = f.type_params.iter()
-                        .map(|p| p.name.clone())
-                        .collect();
-                    if let Some(sym) = self.resolved.symbols.iter()
-                        .find(|s| s.name == base_name && matches!(s.kind, SymbolKind::Function { .. }))
-                    {
-                        self.fn_type_params.insert(sym.id, type_param_names);
+                    // PC1: explicit <T> declarations plus implicit single-letter
+                    // type params from the signature.
+                    let type_param_names = signature_type_param_names(f);
+                    if !type_param_names.is_empty() {
+                        if let Some(sym) = self.resolved.symbols.iter()
+                            .find(|s| s.name == base_name && matches!(s.kind, SymbolKind::Function { .. }))
+                        {
+                            self.fn_type_params.insert(sym.id, type_param_names);
+                        }
                     }
                 }
                 _ => {}
@@ -121,6 +138,18 @@ impl TypeChecker {
                 // Store for check_fn to reuse
                 self.inferred_fn_types.insert(f.name.clone(), (param_vars, ret_ty));
             }
+        }
+    }
+
+    /// PC3: single uppercase letters are reserved for type parameters —
+    /// declaring a concrete type with one would make signatures ambiguous.
+    fn check_declared_type_name(&mut self, name: &str, kind: &str, span: Span) {
+        if is_type_param_name(name) {
+            self.errors.push(TypeError::SingleLetterTypeName {
+                name: name.to_string(),
+                kind: kind.to_string(),
+                span,
+            });
         }
     }
 
@@ -747,6 +776,14 @@ impl TypeChecker {
         match &decl.kind {
             DeclKind::Fn(f) => self.check_fn(f),
             DeclKind::Struct(s) => {
+                // PC2: field types must name declared types (single letters
+                // stay auto-generic, matching function signatures)
+                let allowed: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
+                for field in &s.fields {
+                    if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
+                        self.validate_signature_names(&ty, &allowed, field.name_span);
+                    }
+                }
                 self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
                 for method in &s.methods {
                     self.check_fn(method);
@@ -754,6 +791,15 @@ impl TypeChecker {
                 self.current_self_type = None;
             }
             DeclKind::Enum(e) => {
+                // PC2: variant payload types must name declared types
+                let allowed: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
+                for variant in &e.variants {
+                    for field in &variant.fields {
+                        if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
+                            self.validate_signature_names(&ty, &allowed, field.name_span);
+                        }
+                    }
+                }
                 self.current_self_type = self.types.get_type_id(&e.name).map(Type::Named);
                 for method in &e.methods {
                     self.check_fn(method);
@@ -1049,4 +1095,87 @@ fn parse_binary_struct_fields(
     };
 
     Ok((typed_fields, info))
+}
+
+/// PC1: single uppercase ASCII letter — always a type parameter in signatures.
+pub(super) fn is_type_param_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
+}
+
+/// PC1: a function's type params — explicit `<T>` declarations plus every
+/// single uppercase letter in its signature types, in signature order
+/// (params left to right, then return type).
+///
+/// Shared by the type checker and the monomorphizer so both derive the same
+/// ordered list. Uses a fresh TypeTable: results match the populated table
+/// because single-letter names can never be registered types (PC3), and only
+/// single letters are collected.
+pub fn signature_type_param_names(f: &FnDecl) -> Vec<String> {
+    use std::sync::OnceLock;
+    static EMPTY_TABLE: OnceLock<super::type_table::TypeTable> = OnceLock::new();
+    let table = EMPTY_TABLE.get_or_init(super::type_table::TypeTable::new);
+
+    let mut names: Vec<String> = f.type_params.iter().map(|p| p.name.clone()).collect();
+    let mut add = |n: &str| {
+        if is_type_param_name(n) && !names.iter().any(|x| x == n) {
+            names.push(n.to_string());
+        }
+    };
+    for p in &f.params {
+        if p.name != "self" && !p.ty.is_empty() {
+            if let Ok(ty) = parse_type_string(&p.ty, table) {
+                for_each_unresolved_name(&ty, &mut add);
+            }
+        }
+    }
+    if let Some(rt) = &f.ret_ty {
+        if let Ok(ty) = parse_type_string(rt, table) {
+            for_each_unresolved_name(&ty, &mut add);
+        }
+    }
+    names
+}
+
+/// Walk a parsed type tree, calling `f` on every unresolved base name.
+pub(super) fn for_each_unresolved_name(ty: &Type, f: &mut impl FnMut(&str)) {
+    use crate::types::GenericArg;
+    match ty {
+        Type::UnresolvedNamed(name) => f(name),
+        Type::UnresolvedGeneric { name, args } => {
+            f(name);
+            for a in args {
+                if let GenericArg::Type(t) = a {
+                    for_each_unresolved_name(t, f);
+                }
+            }
+        }
+        Type::Generic { args, .. } => {
+            for a in args {
+                if let GenericArg::Type(t) = a {
+                    for_each_unresolved_name(t, f);
+                }
+            }
+        }
+        Type::Result { ok, err } => {
+            for_each_unresolved_name(ok, f);
+            for_each_unresolved_name(err, f);
+        }
+        Type::Tuple(elems) | Type::Union(elems) => {
+            for e in elems {
+                for_each_unresolved_name(e, f);
+            }
+        }
+        Type::Array { elem, .. }
+        | Type::Slice(elem)
+        | Type::RawPtr(elem)
+        | Type::SimdVector { elem, .. } => for_each_unresolved_name(elem, f),
+        Type::Fn { params, ret } => {
+            for p in params {
+                for_each_unresolved_name(p, f);
+            }
+            for_each_unresolved_name(ret, f);
+        }
+        _ => {}
+    }
 }
