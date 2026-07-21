@@ -43,7 +43,7 @@ undermine the core promise (mechanical safety) and get fixed before feature work
 | 1.10 | ensure cancellation is runtime drop-flags, spec requires static definiteness. | ctrl.ensure/C3–C5 | spec's own status section | #293, #295, #296 |
 
 Exit criteria: each item has a compile-error (or panic) conformance test in `tests/compile_errors/` or
-`tests/suite/`, passing on both backends.
+`tests/suite/`, passing on both backends. Ready-to-use session prompts: [PLAN_PROMPTS.md](PLAN_PROMPTS.md).
 
 ## Track 2 — Recent spec delta: catch the compiler up to decided design
 
