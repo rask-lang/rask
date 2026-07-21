@@ -56,12 +56,13 @@ extend Username with Equal {
 
 This is the same corruption class the #312 core-trait carve-out exists to prevent, arising *within* one package. Pre-flip this couldn't happen — there were no declared overrides.
 
-**Proposed rules:**
+**Rules (accepted):**
 
 | Rule | Description |
 |------|-------------|
-| **OC1: Override cancels dependents** | Overriding `Equal` cancels auto-derived `Hashable` and `Comparable` for that type. Overriding `Comparable` alone is checked against `Equal` (auto or manual) at the declaration |
+| **OC1: Override cancels dependents** | Overriding `Equal` cancels auto-derived `Hashable` and `Comparable` for that type. Overriding `Hashable` alone is safe (hashing fewer fields than eq compares only costs collisions, never correctness) and cancels nothing |
 | **OC2: Loud, with the fix** | Using a cancelled conformance is a compile error at the use site: "Username overrides Equal, so Hashable is no longer auto-derived — declare `extend Username with Hashable` consistent with your eq" |
+| **OC3: Canonical order only** | The OC error for `Comparable` should steer one-off orderings ("sort by salary") to `sort_by` — `Comparable` is the type's one canonical order, not a per-call-site choice |
 
 Common case (no override) unaffected. The rare case gets an error instead of a haunted Map.
 
@@ -69,36 +70,58 @@ Common case (no override) unaffected. The rare case gets an error instead of a h
 
 **Scenario 10.** Under structural matching this was a non-question — one `greet` method satisfied every greet-shaped trait. Under nominal, conformance blocks can carry bodies, so two traits can in principle demand two different `greet`s. There is no qualified-call syntax to disambiguate, and nothing says whether a method defined inside `extend T with Trait { }` joins T's ordinary method namespace.
 
-**Proposed rules — one type, one method name, one meaning:**
+**Rules (accepted, with opt-in scoping):** single namespace by default; collisions opt into scoping at the site of the collision.
 
 | Rule | Description |
 |------|-------------|
 | **MN1: Single namespace** | Methods defined in `extend T with Trait { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
 | **MN2: Shared implementation** | Two conformances requiring the same method name share the one implementation — legal iff both signatures match it |
-| **MN3: Conflict is an error** | If the signatures disagree, the second conformance declaration is a compile error naming both traits. Workaround: a wrapper type |
+| **MN3: Conflict needs scoping** | If the signatures disagree, the second conformance declaration is a compile error naming both traits — unless it is declared `scoped` |
+| **MN4: Scoped conformance** | `scoped extend T with Trait { ... }` — methods in a scoped conformance do not enter T's inherent namespace. Reachable through trait dispatch (generic bounds, `any Trait`) and trait-qualified calls |
+| **MN5: Trait-qualified call** | `Trait.method(value, args)` — mirrors the existing `Type.method()` static-call syntax. Legal for any conformance, needed only for scoped ones |
 
-No qualified-call syntax, no per-trait method tables. This matches the flip's own logic: a method on a type is one semantic claim, and a type that means two different things by `greet` is two types. MN1 also answers a question users will hit in week one: yes, `dog.greet()` works even though `greet` was defined inside the conformance block.
+<!-- test: skip -->
+```rask
+extend Dog with Greeter {
+    func greet(self) -> string { ... }            // ordinary method: dog.greet()
+}
+
+scoped extend Dog with Announcer {
+    func greet(self, volume: i32) -> string { ... }  // trait-only
+}
+
+dog.greet()                 // Greeter's — the inherent one
+Announcer.greet(dog, 5)     // Announcer's — qualified
+```
+
+Common case: nothing to learn, `dog.greet()` works even when `greet` was defined inside a conformance block. Collision case: one keyword, at the declaration where the special case lives — the scoping is visible in source. (Exact spelling of `scoped` is bikesheddable; the prefix position parallels the planned `public extend` from #283.)
 
 ## Finding 3: Generic containers can't conform conditionally
 
 **Scenario 9.** `Stack<T>` is Displayable only when `T` is. Auto-derive handles this for the core five (a `Vec<T>` of Cloneable is Cloneable), which hides the gap: user traits on user generics have no rule at all. Structural matching used to give this for free — the shape either compiled per-instantiation or didn't.
 
-**Proposed rule — reuse `where`, no new syntax:**
+**Rules (accepted, with inferred clauses):** conditional conformance exists, and the condition is inferred — writing it out is for public API only. Precedent is already in the language twice: auto-derive's conditionality ("Vec of Cloneable is Cloneable") has always been implicit, and gradual constraints already infer bounds from bodies.
 
 | Rule | Description |
 |------|-------------|
-| **CC1: Conditional conformance** | `extend Type<T> with Trait where T: Bound { ... }` — conformance holds exactly for instantiations satisfying the clause, checked at monomorphization like every other bound (G2/G6) |
+| **CC1: Conditional conformance** | Conformance on a generic type holds exactly for instantiations satisfying its condition, checked at monomorphization like every other bound (G2/G6) |
+| **CC2: Condition inferred** | Package-private conformances omit the clause; the compiler derives it from the conformance body (same machinery and same local-only scope as gradual constraints, GC6). IDE ghosts the inferred clause |
+| **CC3: Public states it** | Public conformances (`public extend`, #283) declare the clause explicitly with `where` — same rule as public function signatures (GC5) |
 
 <!-- test: skip -->
 ```rask
-extend Stack<T> with Displayable where T: Displayable {
+// Package-private: zero boilerplate — clause inferred as `where T: Displayable`
+extend Ring<T> with Displayable {
     func to_string(self) -> string {
         return self.items.map(|x| x.to_string()).join(", ")
     }
 }
+
+// Public library API: the contract is spelled out
+public extend Ring<T> with Displayable where T: Displayable { ... }
 ```
 
-Blocked on `where` parsing (#313). No global analysis: the declaration is checked where the instantiation is, same as today's bounds.
+CC3 is blocked on `where` parsing (#313) and `public extend` (#283). No global analysis: instantiation-site checking, same as today's bounds.
 
 ## Finding 4: The inference seam needs its edges specced
 
@@ -108,7 +131,7 @@ Blocked on `where` parsing (#313). No global analysis: the declaration is checke
 2. **Promotion can hit a wall.** "Make public" must name traits. If the body's method-requirements match no trait, there is nothing to name — the honest fix is defining a trait, and the tooling should say so instead of pretending a signature exists. If they match *two* traits, promotion is ambiguous.
 3. **The GC5 error message oversells.** It displays an inferred signature with a named trait (`<T: Validatable>`) recovered from shape — the exact resolution the flip removed. Display must be honest about which case it's in.
 
-**Proposed rules:**
+**Rules (accepted):**
 
 | Rule | Description |
 |------|-------------|
@@ -118,13 +141,29 @@ Blocked on `where` parsing (#313). No global analysis: the declaration is checke
 
 Also worth one line in gradual-constraints.md's gotcha section: annotating a working private function can make a working call fail, because the bound's meaning flips from shape to declaration. That's by design — say it out loud.
 
+### Prototyping with traits: the dial already exists
+
+Two clarifications that came out of reviewing this seam, worth putting in the spec's guidance:
+
+**Traits belong to the structuring/publishing phase, not the sketching phase.** Prototype code doesn't need them — private inference carries shapes, and that is unchanged. The promotion wall is not a defect in the prototype workflow; naming the contract *is* the publish step. The tooling's job (IS2) is to make naming it one action.
+
+**When a trait is wanted during prototyping, `structural trait` is the prototype mode.** Declare the trait structural while sketching: zero conformance declarations, methods move freely between types, nothing to keep in sync. To harden it, delete the `structural` keyword — the compiler knows every type currently matching by shape, so it lists them and a quick-fix inserts the `extend T with Trait {}` declarations mechanically. This is the same migration #283 describes for the global flip, available per-trait, permanently:
+
+| Phase | What you write | What conformance costs |
+|-------|----------------|------------------------|
+| Sketching | `structural trait Frobber { ... }` | Nothing — shape matches |
+| Hardening | delete `structural` | Accept the generated `extend ... with` lines |
+| Published | nominal trait | One declaration per new conforming type |
+
+Prototype-to-production for traits is: delete one word, accept the quick-fixes. Cheap to move things around while coding; explicit exactly when it becomes API.
+
 ## Finding 5: Operators stayed structural — keep them, but on purpose
 
 **Scenario 7.** G4 expands `a + b` to `a.add(b)` and checks only that the method exists. The flip's rationale ("existing isn't a semantic claim") seems to apply — but doesn't, and the reason is worth recording:
 
 On **concrete** types, `a + b` resolves to an `add` method someone deliberately wrote on that type. There is no accidental-conformance risk — nothing is being *matched*, just called. The risk the flip addressed only exists where code accepts *unknown* types against a contract — and that path is already nominal: `func sum<T: Numeric>` requires declared conformance.
 
-**Proposed rule (documents the status quo as a decision):**
+**Rule (accepted — status quo, now with its rationale on record):**
 
 | Rule | Description |
 |------|-------------|
@@ -132,7 +171,7 @@ On **concrete** types, `a + b` resolves to an `add` method someone deliberately 
 
 No fine-grained `Add`/`Sub`/`Mul` trait zoo. A math type defines the methods it supports and gets exactly those operators.
 
-## Finding 6: Small inconsistencies
+## Finding 6: Small inconsistencies (all accepted)
 
 | Item | Problem | Fix |
 |------|---------|-----|
@@ -157,21 +196,23 @@ Designed in #312; summary for completeness: core five never third-party (auto-de
 | Private helper over ad-hoc shapes | nothing (inferred) |
 | Publish that helper | name the contract — a bound, or define the trait (IS2 assists) |
 | Custom equality | one extend block; family stays consistent or errors (OC1) |
-| Container conformance | one `where` clause (CC1) |
+| Container conformance | nothing — condition inferred (CC2); public API spells it out (CC3) |
+| Prototype a trait | `structural trait`; harden by deleting the keyword + accepting generated declarations |
 | Operator on a math type | write the methods (OP1) |
 | Trait for someone else's type | one extend block; collision errors loudly (#312) |
-| Two traits fighting over a name | wrapper type (MN3) — the one place ceremony lands |
+| Two traits fighting over a name | one `scoped` keyword on the second conformance (MN4) |
 
-Every row above the last two is the common case and stays at zero-or-one lines. The bottom rows are the special cases, opt-in and loud.
+Every row is zero-or-one lines in the common case; the special cases are opt-in, and each opt-in is visible at the declaration that needs it.
 
-## Decision list
+## Status
 
-Needs sign-off, in dependency order:
+All findings ruled on. Accepted: **MN1–MN5** (single namespace, `scoped` opt-in for collisions, trait-qualified calls), **OC1–OC3** (override cancels dependents, hard error), **IS1–IS3** (mixed inference, exact promotion with generate-trait assist, honest ghost text) plus the structural-as-prototype-dial guidance, **CC1–CC3** (conditional conformance, condition inferred, public states it), **OP1** (concrete operators are authored sugar), and the Finding 6 fixes.
 
-1. **MN1–MN3** — single method namespace, conflict = error. Shapes how conformance blocks are compiled; decide before #314 is fixed.
-2. **OC1–OC2** — override cancels dependent auto-derives. Small, prevents silent corruption.
-3. **IS1–IS3** — inference seam edges. Affects #314's checker work and the LSP.
-4. **CC1** — conditional conformance via `where`. Blocked on #313.
-5. **OP1, TD1 fix, composite/structural/evolution notes** — spec edits, no compiler impact yet.
+Remaining open details (bikeshed-level, decide during spec fold-in):
+- Exact spelling of the `scoped` modifier (keyword prefix vs `@`-attribute).
+- Whether IS2's generate-a-trait action lives in the compiler diagnostic or LSP-only.
+- CC3 wording depends on #283's final `public extend` syntax.
 
-Then fold the accepted rules into generics.md / gradual-constraints.md and retire this file.
+Implementation order: MN and IS shape the #314 checker fix and should land in the specs first; CC is blocked on #313 (`where` parsing) and #283 (`public extend`); OC and the Finding 6 items are independent.
+
+Next step: fold the accepted rules into generics.md / gradual-constraints.md / traits.md and retire this file.
