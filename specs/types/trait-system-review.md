@@ -147,24 +147,28 @@ Two clarifications that came out of reviewing this seam, worth putting in the sp
 
 **Traits belong to the structuring/publishing phase, not the sketching phase.** Prototype code doesn't need them — private inference carries shapes, and that is unchanged. The promotion wall is not a defect in the prototype workflow; naming the contract *is* the publish step. The tooling's job (IS2) is to make naming it one action.
 
-**When a trait is wanted during prototyping, `structural trait` is the prototype mode.** Declare the trait structural while sketching: zero conformance declarations, methods move freely between types, nothing to keep in sync. To harden it, delete the `structural` keyword — the compiler knows every type currently matching by shape, so it lists them and a quick-fix inserts the `extend T with Trait {}` declarations mechanically. This is the same migration #283 describes for the global flip, available per-trait, permanently:
+**When a trait is wanted during prototyping, `duck trait` is the prototype mode** (keyword decided below). Declare the trait duck while sketching: zero conformance declarations, methods move freely between types, nothing to keep in sync. To harden it, delete the `duck` keyword — the compiler knows every type currently matching by shape, so it lists them and a quick-fix inserts the `extend T with Trait {}` declarations mechanically. This is the same migration #283 describes for the global flip, available per-trait, permanently:
 
 | Phase | What you write | What conformance costs |
 |-------|----------------|------------------------|
-| Sketching | `structural trait Frobber { ... }` | Nothing — shape matches |
-| Hardening | delete `structural` | Accept the generated `extend ... with` lines |
+| Sketching | `duck trait Frobber { ... }` | Nothing — shape matches |
+| Hardening | delete `duck` | Accept the generated `extend ... with` lines |
 | Published | nominal trait | One declaration per new conforming type |
 
 Prototype-to-production for traits is: delete one word, accept the quick-fixes. Cheap to move things around while coding; explicit exactly when it becomes API.
 
-### Renaming the `structural` keyword
+### Renaming the `structural` keyword — decided: `duck trait`
 
-`structural` is type-theory jargon. Named from what the feature *does* — the compiler matches a type's methods against the trait's signatures, and a match is conformance — the candidates:
+`structural` is type-theory jargon. The replacement is `duck trait` — the established name for exactly this semantics (duck typing), pre-taught to the Python-first audience. The register is deliberate: the keyword *reading as unserious is the signal*. A `duck trait` in a diff announces "this contract is loose by design" — prototype-mode made visible in source, and lintable (`rask lint` warns on duck traits outside prototype contexts).
+
+**Open consequence:** G1's rationale currently keeps the stdlib's `Reader`/`Writer`/`ErrorMessage` structural permanently. If duck = prototype signal, either (a) the stdlib owns the "loose by design" reading for those, or (b) they become nominal and `duck` is purely the prototyping dial — one `extend T with Reader {}` per custom reader in production. (b) is the position consistent with "one declaration is the price of a semantic claim"; needs a ruling before fold-in.
+
+The candidate analysis, for the record:
 
 | Candidate | Verdict |
 |-----------|---------|
-| `duck trait` | **Front-runner.** Not just a metaphor — the established name for exactly this semantics (duck typing), pre-taught to the Python-first audience; the only candidate needing zero explanation. Risk: register — a joke word load-bearing in a systems language |
-| `implied trait` | **Front-runner.** Dignified literal that pairs with the system's other half: conformance is *declared* unless the trait is `implied` — having the methods implies conformance |
+| `duck trait` | **Chosen.** The only candidate needing zero explanation; the unserious register doubles as the prototype-mode signal |
+| `implied trait` | Runner-up — dignified literal pairing with *declared*; lost because dignity was the wrong goal: the keyword should mark looseness, not launder it |
 | `matching trait` | Names the action, conjugates well in diagnostics — but teaches nothing by itself |
 | `shape trait` | Names the criterion; same tier as `matching` |
 | `automatching trait` | Fixes the auto-derive collision by fusing, but seven syllables next to `const`/`func`/`mut` |
@@ -243,7 +247,7 @@ All findings ruled on. Accepted: **MN1–MN5** (single namespace, `scoped` opt-i
 Also accepted: **CD1** (comma-list conformance declarations).
 
 Remaining open details (bikeshed-level, decide during spec fold-in):
-- Final ruling on renaming `structural` (analysis above; `duck` and `implied` front-runners).
+- ~~Renaming `structural`~~ — **decided: `duck trait`**. One consequence open: do stdlib `Reader`/`Writer`/`ErrorMessage` stay duck ("loose by design") or become nominal (duck = prototyping only)?
 - Exact spelling of the `scoped` modifier (keyword prefix vs `@`-attribute).
 - Whether IS2's generate-a-trait action lives in the compiler diagnostic or LSP-only.
 - CC3 wording depends on #283's final `public extend` syntax.
