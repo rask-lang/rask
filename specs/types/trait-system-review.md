@@ -157,6 +157,18 @@ Two clarifications that came out of reviewing this seam, worth putting in the sp
 
 Prototype-to-production for traits is: delete one word, accept the quick-fixes. Cheap to move things around while coding; explicit exactly when it becomes API.
 
+### Renaming the `structural` keyword
+
+`structural` is type-theory jargon. Named from what the feature *does* — the compiler matches a type's methods against the trait's signatures, and a match is conformance — the candidates:
+
+| Candidate | Verdict |
+|-----------|---------|
+| `matching trait` | **Proposed.** Names the action, plain English, conjugates naturally in diagnostics: "`Reader` is a matching trait — `FileSource` matches it via `read()`, `close()`" |
+| `shape trait` | Solid runner-up — names the criterion instead of the action |
+| `auto trait` | Rejected: collides with **auto-derive** inside Rask itself (the core five are auto-derived *nominal* traits — "auto-derived but not auto" is a confusion factory), plus the unrelated Rust meaning |
+| `lazy trait` | Rejected: "lazy" means deferred work everywhere else; nothing is deferred here |
+| `structural trait` | Retires to prose — docs say "known elsewhere as structural typing" for searchability |
+
 ## Finding 5: Operators stayed structural — keep them, but on purpose
 
 **Scenario 7.** G4 expands `a + b` to `a.add(b)` and checks only that the method exists. The flip's rationale ("existing isn't a semantic claim") seems to apply — but doesn't, and the reason is worth recording:
@@ -180,6 +192,21 @@ No fine-grained `Add`/`Sub`/`Mul` trait zoo. A math type defines the methods it 
 | Declaring conformance to a `structural trait` | Unstated | Allowed and harmless — it's documentation plus a signature check at the declaration instead of the use site |
 | Trait evolution | Adding a required method breaks every conformer downstream | Non-normative note: adding a method **with a default body** (TD2) is non-breaking; without one is a major-version change |
 | Conformance visibility | `min(trait, type)` inference — API surface changes with no syntax | Already bundled in #283 (`public extend`); resolve there |
+
+## Trim: several conformances, one declaration
+
+A type that satisfies several traits with methods it already has needs one line per trait today. The language already has a list form for exactly this on nominal type declarations — `type UserId = u64 with (Equal, Hashable, Debug)` — so mirror it:
+
+| Rule | Description |
+|------|-------------|
+| **CD1: Conformance list** | `extend T with A, B, C { ... }` declares all listed conformances. Each trait's signature check runs independently against the block plus the type's existing methods. Composes with modifiers: `public extend`/`scoped extend` apply to every listed trait |
+
+<!-- test: skip -->
+```rask
+extend Ring<T> with Countable, Sizable {}       // two claims, one line
+```
+
+Declaring conformance inline on the `struct` itself was considered and rejected — struct bodies stay pure data layout (`type.structs`).
 
 ## Cross-package conformance
 
@@ -208,7 +235,10 @@ Every row is zero-or-one lines in the common case; the special cases are opt-in,
 
 All findings ruled on. Accepted: **MN1–MN5** (single namespace, `scoped` opt-in for collisions, trait-qualified calls), **OC1–OC3** (override cancels dependents, hard error), **IS1–IS3** (mixed inference, exact promotion with generate-trait assist, honest ghost text) plus the structural-as-prototype-dial guidance, **CC1–CC3** (conditional conformance, condition inferred, public states it), **OP1** (concrete operators are authored sugar), and the Finding 6 fixes.
 
+Also accepted: **CD1** (comma-list conformance declarations).
+
 Remaining open details (bikeshed-level, decide during spec fold-in):
+- Final ruling on renaming `structural` → `matching` (analysis above; `matching` proposed, `shape` runner-up).
 - Exact spelling of the `scoped` modifier (keyword prefix vs `@`-attribute).
 - Whether IS2's generate-a-trait action lives in the compiler diagnostic or LSP-only.
 - CC3 wording depends on #283's final `public extend` syntax.
