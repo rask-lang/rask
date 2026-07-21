@@ -495,8 +495,7 @@ const u = Url {
     scheme: "https",
     host: "api.example.com",
     path: "/users",
-    ..Url.default()
-}
+}   // port, query, fragment: field defaults fill in
 u.to_string()  // "https://api.example.com/users"
 ```
 

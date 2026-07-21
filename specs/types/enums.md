@@ -611,7 +611,7 @@ match msg {
 ### Patterns & Guidance
 
 **Integration notes:**
-- **Type system:** Enum variants participate in structural trait matching; explicit `extend` optional
+- **Type system:** Enums conform to traits like structs — declared `extend Enum with Trait`; duck traits match by shape
 - **Generics:** Bounds on `enum Foo<T: Bound>` checked at instantiation, applied to all variants
 - **Collections:** Vec\<Enum\> and Map\<K, Enum\> allowed if enum is non-linear; Pool\<Enum\> allowed with manual linear cleanup
 - **Concurrency:** Enums sent across channels transfer ownership; linear payloads remain tracked

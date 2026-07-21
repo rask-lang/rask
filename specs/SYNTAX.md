@@ -309,6 +309,19 @@ const user = User {
 const updated = User { email: "new@example.com", ..user }
 ```
 
+**Field defaults:** a field may declare a default (compile-time constant, same rule as default arguments). Defaulted fields can be omitted at construction; if every field has a default, `Config {}` constructs the default value — there is no `Default` trait or `.default()` method. A struct with any defaultless field has no empty construction; the compiler names the missing field.
+
+```rask
+struct Config {
+    host: string                      // no default — required at construction
+    port: i32 = 8080
+    verbose: bool = false
+}
+
+const c = Config { host: "localhost" }        // port=8080, verbose=false
+const c2 = Config { host: "x", port: 443 }
+```
+
 **Unique structs** (can't be copied, can be dropped):
 ```rask
 @unique
@@ -408,7 +421,19 @@ extend Point with Displayable {
 
 If the type already has the methods, an empty declaration suffices: `extend Point with Displayable {}`.
 
-**Structural traits:** a trait marked `structural` matches by shape — any type with the right methods satisfies it, no declaration. Used for traits where the method bundle is the whole contract (`ErrorMessage`, I/O traits).
+**Duck traits (prototyping):** a trait marked `duck` matches by shape — any type with the right methods satisfies it, no declaration. Prototype mode: sketch with it, then delete the keyword to harden (the compiler generates the missing conformance declarations). The stdlib ships none.
+
+**Several conformances, one block:** the `with` list is a header on a normal extend block — methods for any listed trait plus plain methods, together:
+
+```rask
+extend LogSource with Reader, Displayable, ErrorMessage {
+    func read(mutate self, buf: Buffer) -> usize or IoError { ... }
+    func to_string(self) -> string { ... }
+    func message(self) -> string { ... }
+}
+```
+
+**Name collisions:** two traits demanding the same method name with the same signature share one implementation. Different signatures: declare the second conformance `scoped` — its methods stay out of the type's namespace, reachable via trait-qualified calls (`Announcer.greet(dog, 5)`, mirroring `Type.method()` statics).
 
 **Runtime polymorphism:** Use `any Trait` for heterogeneous collections. Conversion is explicit — it heap-allocates, and the cast marks where (`type.traits/TR5`):
 ```rask
@@ -891,7 +916,7 @@ select {
 }
 
 // Shared state
-const config = Shared.new(AppConfig.default())
+const config = Shared.new(AppConfig {})
 const timeout = with config.read() as c { c.timeout }
 with config.write() as c { c.timeout = 60.seconds }
 ```

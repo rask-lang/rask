@@ -6,13 +6,13 @@
 
 # Generics and Traits
 
-Trait conformance is declared — `extend Type with Trait` says the type satisfies the trait, and the compiler checks the signatures against the declaration. `structural trait` opts individual traits into shape-matching where the shape genuinely is the contract. Operators like `a + b` expand to method calls. The compiler generates specialized code for each concrete type you use (this is called *monomorphization*). For mixed-type collections, opt into runtime dispatch with `any Trait`.
+Trait conformance is declared — `extend Type with Trait` says the type satisfies the trait, and the compiler checks the signatures against the declaration. `duck trait` opts individual traits into shape-matching — the prototyping mode; delete the keyword to harden. Operators like `a + b` expand to method calls. The compiler generates specialized code for each concrete type you use (this is called *monomorphization*). For mixed-type collections, opt into runtime dispatch with `any Trait`.
 
 ## Core Principles
 
 | Rule | Description |
 |------|-------------|
-| **G1: Declared conformance** | A type satisfies a trait through a declared `extend Type with Trait` block, checked against the trait's signatures. `structural trait` opts a trait into shape-matching (no declaration needed). The five core traits (Equal, Hashable, Comparable, Cloneable, Default) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2/DF3 |
+| **G1: Declared conformance** | A type satisfies a trait through a declared `extend Type with Trait` block, checked against the trait's signatures. `duck trait` opts a trait into shape-matching (no declaration needed). The four core traits (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `ErrorMessage` (enums, `type.errors/ER6`) are also auto-derived |
 | **G2: Checked at use site** | The compiler verifies trait matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before trait checking |
@@ -31,7 +31,7 @@ Trait conformance is declared — `extend Type with Trait` says the type satisfi
 | Trait Form | Meaning |
 |------------|---------|
 | `trait Comparable` | Nominal (default) — types conform via `extend Type with Comparable` |
-| `structural trait Reader` | Shape-matched — any type with the right methods satisfies it, no declaration |
+| `duck trait Frobber` | Shape-matched — any type with the right methods satisfies it, no declaration. Prototyping mode |
 | `trait Hashable: Equal` | Composition (requires all methods from Equal plus Hashable's own) |
 
 ```rask
@@ -46,7 +46,9 @@ trait Name {
 }
 ```
 
-Nominal is the default because conformance is a semantic claim, not just a shape: `compare()` existing doesn't make it a total order. The declaration states intent, gives the compiler a place to check signatures, and gives readers and tools a place to look. Mark a trait `structural` when the shape genuinely is the whole contract — I/O-style method bundles (`Reader`, `Writer`), `ErrorMessage` — and accidental conformance is harmless.
+Nominal is the default because conformance is a semantic claim, not just a shape: `compare()` existing doesn't make it a total order. The declaration states intent, gives the compiler a place to check signatures, and gives readers and tools a place to look.
+
+`duck trait` is the prototyping dial, not a production feature — the stdlib ships zero duck traits. Declare a trait duck while sketching: no conformance declarations, methods move freely between types. To harden, delete the `duck` keyword — the compiler lists every type currently matching by shape and a quick-fix inserts the `extend Type with Trait {}` declarations. `rask lint` warns on duck traits outside prototype contexts. Declaring conformance to a duck trait is legal and harmless: documentation plus a signature check at the declaration instead of the use site.
 
 ## Generic Functions
 
@@ -91,7 +93,86 @@ An empty `extend Point with Comparable {}` declares conformance using methods th
 | `func compare(self, other: T) -> i32` | `compare(self, other: T) -> Ordering` | No (return type mismatch) |
 | `func compare(a: T, b: T) -> Ordering` | `compare(self, other: T) -> Ordering` | No (free function, not method) |
 
-For `structural trait`, the same signature check runs at the use site against the type's own methods — no declaration involved. Errors point at the declaration for nominal traits and at the use site for structural ones.
+For `duck trait`, the same signature check runs at the use site against the type's own methods — no declaration involved. Errors point at the declaration for nominal traits and at the use site for duck ones.
+
+## Conformance Declarations
+
+| Rule | Description |
+|------|-------------|
+| **CD1: Conformance list** | `extend T with A, B, C { ... }` declares all listed conformances. Each trait's signature check runs independently against the block plus the type's existing methods. Modifiers (`public extend`, `scoped extend`) apply to every listed trait |
+| **CD2: Block body unrestricted** | The block may mix methods for any of the listed traits and ordinary non-trait methods. The conformance list is a header on a normal extend block, not a per-trait container |
+| **CD3: Composite chain** | Declaring a composite (`extend T with HashKey {}`) checks the full supertrait chain (TD3); auto-derived supertraits satisfy automatically, missing methods error at the declaration |
+
+<!-- test: skip -->
+```rask
+// The common shape for a trait-rich type: one block, header carries the claims
+extend LogSource with Reader, Displayable, ErrorMessage {
+    func read(mutate self, buf: Buffer) -> usize or IoError { ... }
+    func to_string(self) -> string { ... }
+    func message(self) -> string { ... }
+    func rewind(mutate self) { ... }            // plain method, same block
+}
+```
+
+## Method Namespace
+
+One type, one method name, one meaning — with an opt-out scoped to the collision.
+
+| Rule | Description |
+|------|-------------|
+| **MN1: Single namespace** | Methods defined in `extend T with Trait { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
+| **MN2: Shared implementation** | Two conformances requiring the same method name share the one implementation — legal iff both signatures match it |
+| **MN3: Conflict needs scoping** | If the signatures disagree, the second conformance declaration is a compile error naming both traits — unless it is declared `scoped` |
+| **MN4: Scoped conformance** | `scoped extend T with Trait { ... }` — methods in a scoped conformance do not enter T's inherent namespace. Reachable through trait dispatch (generic bounds, `any Trait`) and trait-qualified calls |
+| **MN5: Trait-qualified call** | `Trait.method(value, args)` — mirrors `Type.method()` static-call syntax. Legal for any conformance, needed only for scoped ones |
+
+<!-- test: skip -->
+```rask
+extend Dog with Greeter {
+    func greet(self) -> string { ... }               // ordinary method: dog.greet()
+}
+
+scoped extend Dog with Announcer {
+    func greet(self, volume: i32) -> string { ... }  // trait-only
+}
+
+dog.greet()                 // Greeter's — the inherent one
+Announcer.greet(dog, 5)     // Announcer's — qualified
+```
+
+## Override Coherence
+
+The core-trait family carries cross-trait contracts (`a == b` implies `hash(a) == hash(b)`; `compare` agrees with `eq`) that data structures physically rely on. Auto-derive keeps them consistent by construction; overrides must not silently break that.
+
+| Rule | Description |
+|------|-------------|
+| **OC1: Override cancels dependents** | Overriding `Equal` cancels auto-derived `Hashable` and `Comparable` for that type. Overriding `Hashable` alone is safe (hashing fewer fields than eq compares costs collisions, never correctness) and cancels nothing |
+| **OC2: Loud, with the fix** | Using a cancelled conformance is a compile error at the use site naming the override and the fix: declare the dependent trait consistent with the new eq |
+| **OC3: Canonical order only** | `Comparable` is the type's one canonical order. The OC diagnostics steer one-off orderings ("sort by salary") to `sort_by` |
+
+## Conditional Conformance
+
+| Rule | Description |
+|------|-------------|
+| **CC1: Conditional conformance** | Conformance on a generic type holds exactly for instantiations satisfying its condition, checked at monomorphization like every other bound (G2/G6) |
+| **CC2: Condition inferred** | Package-private conformances omit the clause; the compiler derives it from the conformance body — same machinery and local-only scope as gradual constraints (`type.gradual/GC6`). IDE ghosts the inferred clause |
+| **CC3: Public states it** | Public conformances declare the condition explicitly with `where` — same rule as public function signatures (`type.gradual/GC5`) |
+| **CC4: One condition per block** | Inferred conditions are computed per listed trait independently; an explicit `where` clause applies to the whole block. Traits needing different explicit conditions split into separate blocks |
+
+<!-- test: skip -->
+```rask
+// Package-private: zero boilerplate — clause inferred as `where T: Displayable`
+extend Ring<T> with Displayable {
+    func to_string(self) -> string {
+        return self.items.map(|x| x.to_string()).join(", ")
+    }
+}
+
+// Public library API: the contract is spelled out
+public extend Ring<T> with Displayable where T: Displayable { ... }
+```
+
+This is the same conditionality auto-derive has always applied implicitly ("Vec of Cloneable is Cloneable" — CL1), with syntax for user traits.
 
 ## Operator Expansion
 
@@ -105,6 +186,10 @@ The compiler expands operators into method calls before type checking (G4), then
 | `a / b` | `a.div(b)` | `div(self, other: T) -> T` |
 | `a == b` | `a.eq(b)` | `eq(self, other: T) -> bool` |
 | `a < b` | `a.compare(b) == Less` | `compare(self, other: T) -> Ordering` |
+
+| Rule | Description |
+|------|-------------|
+| **OP1: Concrete operators are authored sugar** | Operator expansion on concrete types is method-call sugar — no conformance involved. The method being called was deliberately written on that type; nothing is matched, so the accidental-conformance hazard nominal conformance addresses doesn't exist here. Generic operator use goes through nominal bounds (`Numeric`, `Comparable`) like any other generic call |
 
 ## Compiler-Verified Cloneable
 
@@ -221,39 +306,9 @@ const b = Version { major: 1, minor: 3, patch: 0 }
 // a.compare(b) → Ordering.Less
 ```
 
-## Compiler-Verified Default
+## No Default Trait
 
-The compiler auto-derives Default where all fields have a known default value.
-
-| Rule | Description |
-|------|-------------|
-| **DF1: Auto-derive for structs** | Struct is Default if every field's type is Default |
-| **DF2: No enum default** | Enums do NOT auto-derive Default (which variant?) — requires manual implementation |
-| **DF3: Override** | `extend Type with Default { ... }` overrides the auto-derived version |
-| **DF4: Primitive defaults** | `0` for integers, `0.0` for floats, `false` for bool, `""` for string |
-
-| Type | Default Value |
-|------|--------------|
-| Integer types | `0` |
-| Float types | `0.0` |
-| `bool` | `false` |
-| `string` | `""` (empty string) |
-| `Vec<T>` | Empty vec |
-| `Map<K, V>` | Empty map |
-| `T?` (optional) | `none` |
-| Struct with all Default fields | Field-wise default |
-| Enum | NOT auto-derived |
-
-<!-- test: skip -->
-```rask
-struct Config {
-    timeout: i32          // default: 0
-    retries: i32          // default: 0
-    verbose: bool         // default: false
-}
-
-const c = Config.default()  // Config { timeout: 0, retries: 0, verbose: false }
-```
+There is no `Default` trait and no `.default()` method. Declared field defaults (`type.structs`) are the mechanism: a field with a declared default may be omitted at construction, and a struct whose fields all have defaults constructs with zero fields — `Config {}` *is* the default value. A struct with any defaultless field has no empty construction; the compiler names the missing field instead of inventing `""`/`0`. Universal zero-defaults were rejected as Go zero-values by another name.
 
 ## Comptime Generics
 
@@ -325,7 +380,9 @@ func increment<T: Numeric>(val: T) -> T {
 |------|------|----------|
 | Zero usages | G2 | Function body syntax-checked; type errors may be deferred |
 | Recursive generics | G6 | `Vec<Vec<T>>` allowed; compiler prevents infinite expansion |
-| Trait visibility | TD1 | Public by default; `priv trait` for module-private |
+| Trait visibility | TD1 | Package-visible by default, `public trait` exports — same rule as structs and functions (`struct.modules/V1`) |
+| Same method required by two traits | MN2/MN3 | Same signature: shared implementation. Different: `scoped` or error |
+| Trait evolution | TD2 | Adding a required method with a default body is non-breaking; without one it breaks every conformer (major version) |
 | Generic struct fields | G1 | `struct Foo<T: Comparable>` requires T: Comparable at every usage |
 | Negative constraints | — | Not in MVP; workaround via naming convention or separate functions |
 | Associated types | — | Not in MVP; deferred |
@@ -339,7 +396,15 @@ func increment<T: Numeric>(val: T) -> T {
 
 ### Rationale
 
-**G1 (declared conformance):** This flipped. The original design matched by shape by default, with `explicit trait` as the opt-out — chosen to avoid global impl tracking. Two things overturned it: accidental conformance is silent-wrong (a `compare()` that isn't a total order satisfies `Comparable` structurally and misbehaves instead of erroring), and the declaration's cost dropped — one line that states intent is cheap, especially when most code is machine-written and human-reviewed. Checking stays local: a declaration is checked where it's written, and bounds are still checked at the use site — no whole-program analysis either way. `structural trait` keeps shape-matching available where it's genuinely right.
+**G1 (declared conformance):** This flipped. The original design matched by shape by default, with `explicit trait` as the opt-out — chosen to avoid global impl tracking. Two things overturned it: accidental conformance is silent-wrong (a `compare()` that isn't a total order satisfies `Comparable` structurally and misbehaves instead of erroring), and the declaration's cost dropped — one line that states intent is cheap, especially when most code is machine-written and human-reviewed. Checking stays local: a declaration is checked where it's written, and bounds are still checked at the use site — no whole-program analysis either way. `duck trait` keeps shape-matching available for prototyping.
+
+**MN1–MN5 (single namespace):** Under shape-matching, one method satisfied every matching trait by construction; nominal conformance created the "which trait owns this method" question. Single namespace matches how people think ("Dog has a greet method") and keeps `dog.greet()` working when `greet` was defined inside a conformance block. The collision case is rare, and `scoped` puts the ceremony exactly on the declaration that collides — no Rust-style qualified-call syntax tax on everyone.
+
+**OC1 (override cancels dependents):** Auto-derive keeps the eq/hash/compare contracts consistent by construction; a declared Equal override paired with an untouched auto-derived hash is the one guaranteed-inconsistent state (Map entries silently vanish). Cancellation plus a loud error removes it. The compiler can't verify a hand-written hash is consistent — no compiler can — but it can refuse to pair your eq with a hash you never looked at.
+
+**OP1 (operators stay authored):** The flip's hazard — being *matched* against a contract you never claimed — requires a bound satisfied by accident. Concrete operator use has no bound; it calls a method someone deliberately wrote. The generic path was already nominal. Watch-item: if public generic code over-constrains through `Numeric` when it only needs `add`, split Numeric from usage evidence — not preemptively.
+
+**Default (removed):** Zero corpus usage, and DF-style universal zeros were Go zero-values by another name — a back door around Rask's all-fields-required construction. Declared field defaults replaced the trait; `Config {}` is the default value when every field declares one. No spec API used `T: Default` as a bound at removal time; a constructible-empty bound can return from usage evidence if ever needed.
 
 **G4 (operator expansion):** Makes numeric code ergonomic — `a + b` reads naturally while the trait system handles dispatch.
 
@@ -347,7 +412,7 @@ func increment<T: Numeric>(val: T) -> T {
 
 **G6 (code specialization):** Keeps costs transparent and compilation fast. Each usage generates specialized code — no hidden function-pointer overhead.
 
-**`structural trait`:** The opt-in that replaced `explicit trait` when the default flipped. Reserve it for traits where the method bundle is the entire contract and accidental matches are harmless.
+**`duck trait`:** The opt-in that replaced `explicit trait` when the default flipped, renamed from `structural` (jargon). The register is deliberate — the keyword reading as unserious *is* the signal that the contract is loose by design. Prototype with it, delete the keyword to harden (the compiler generates the missing declarations). The stdlib ships zero duck traits; docs note the concept is known elsewhere as structural typing.
 
 ### Patterns & Guidance
 
@@ -383,7 +448,7 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 ### Integration Notes
 
 - **Memory model**: Generic ownership rules same as non-generic; move/copy determined per concrete type
-- **Type system**: Conformance declared and checked locally at the `extend` block; bounds checked at use site — no global tracking. `structural trait` checks shape at use site
+- **Type system**: Conformance declared and checked locally at the `extend` block; bounds checked at use site — no global tracking. `duck trait` checks shape at use site
 - **Concurrency**: Generic tasks can send owned generic values; traits verified per concrete type
 - **Compiler**: Specialization happens per compilation unit; no cross-unit analysis
 - **C interop**: Generic functions cannot be exported to C (no stable ABI); specialized wrappers required
@@ -399,13 +464,15 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 | `Comparable`: Equal | `compare(self, other: Self) -> Ordering` | Yes — all Comparable fields, lexicographic (CO1) |
 | `Hashable`: Equal | `hash(self) -> u64` | Yes — all Hashable fields, no floats (HA1) |
 | `Cloneable` | `clone(self) -> Self` | Yes — all Cloneable fields, no raw pointers (CL1) |
-| `Default` | `default() -> Self` | Yes — all Default fields, structs only (DF1) |
+| `ErrorMessage` | `message(self) -> string` | Yes — enums, from variant names + payloads (`type.errors/ER6`); structs declare |
 | `Displayable` | `to_string(self) -> string` | No — opt-in (user-facing output is intentional) |
 | `Debug` | `to_debug_string(self) -> string` | Yes — all types |
 | `Numeric` | `add, sub, mul, div, neg, zero, one, from_int` | No |
 | `Convert<From, To>` | `convert(self: From) -> To` | No |
 | `Encode` | Marker — no methods | Yes — all-Encode public fields (`std.encoding/E12`) |
 | `Decode` | Marker — no methods | Yes — all-Decode public fields (`std.encoding/E12`) |
+
+The four core traits (Equal, Hashable, Comparable, Cloneable) are the invariant-carrying family: their implementations get baked into data structures that cross package boundaries, so they are auto-derived, owner-overridable, and never third-party (cross-package conformance rules, issue #312).
 
 ### See Also
 

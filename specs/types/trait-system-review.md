@@ -1,6 +1,6 @@
 <!-- id: type.trait-review -->
-<!-- status: proposal -->
-<!-- summary: Scenario-driven review of the trait system after the structural-to-nominal flip; proposed rules for the holes it opened -->
+<!-- status: folded -->
+<!-- summary: Historical — scenario-driven review of the trait system after the nominal flip. All rules folded into generics.md, gradual-constraints.md, error-types.md, structs.md, SYNTAX.md. Kept as the decision record -->
 <!-- depends: types/generics.md, types/traits.md, types/gradual-constraints.md -->
 
 # Trait System Review

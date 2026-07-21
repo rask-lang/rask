@@ -181,6 +181,29 @@ const p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
 | No `private` fields | Works within package |
 | Any `private` field | Works only in `extend` blocks |
 
+**Field defaults:**
+
+| Rule | Description |
+|------|-------------|
+| **FD1: Declared defaults** | A field may declare a default: `port: i32 = 8080`. Compile-time constants only — same rule as default arguments |
+| **FD2: Omittable at construction** | Defaulted fields may be omitted in a struct literal; the declared value fills in |
+| **FD3: Zero-field construction** | If every field has a default, `Config {}` constructs the default value. There is no `Default` trait and no `.default()` method — this is it |
+| **FD4: Missing field is an error** | A field with no default and no value is a compile error naming the field. Never silently zero |
+| **FD5: Spread wins** | `Config { x: v, ..base }` — explicit fields, then spread, then defaults for anything neither covers |
+| **FD6: Decode unification** | The declared default is the decode-missing-field default (`std.encoding/E20`); `@default(expr)` remains for decode-only overrides |
+
+<!-- test: skip -->
+```rask
+struct Config {
+    host: string                   // required — no sensible default exists
+    port: i32 = 8080
+    verbose: bool = false
+}
+
+const c = Config { host: "localhost" }       // port=8080, verbose=false
+const d = Config { host: "x", ..c }          // spread beats defaults
+```
+
 ## Generics
 
 <!-- test: parse -->
@@ -353,27 +376,7 @@ extend FileHandle {
 
 **M3 (same module):** Methods in separate `extend` blocks keep data and behavior distinct, but requiring same-module keeps the type's behavior discoverable.
 
-**No default field values:** Explicit construction shows all values (transparency). Factory functions handle defaults clearly. Avoids hidden initialization order issues. Pattern for defaults:
-
-<!-- test: parse -->
-```rask
-struct Config {
-    timeout: u32
-    retries: u32
-}
-
-extend Config {
-    func default() -> Config {
-        Config { timeout: 30, retries: 3 }
-    }
-
-    func with_timeout(timeout: u32) -> Config {
-        Config { timeout, ..Config.default() }
-    }
-}
-```
-
-Zero-initialization is not automatic. Explicit factory if needed.
+**Field defaults (FD1–FD6):** This flipped — the original design rejected default field values in favor of factory functions. Declared defaults won because they're author-chosen values visible in the declaration (transparency preserved), they kill the factory boilerplate, and one mechanism feeds construction, decode-missing-fields, and "give me a fresh value" — which also eliminated the `Default` trait (`type.generics`). The line held: zero-initialization is still not automatic. A defaultless field must be provided, and the compiler names it — universal zeros are Go's silent-wrong design.
 
 ### Patterns & Guidance
 

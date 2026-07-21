@@ -326,7 +326,7 @@ func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
 **Application config:**
 <!-- test: skip -->
 ```rask
-static CONFIG: Shared<AppConfig> = Shared.new(AppConfig.default())
+static CONFIG: Shared<AppConfig> = Shared.new(AppConfig {})
 
 func get_timeout() -> Duration {
     return CONFIG.read().timeout
