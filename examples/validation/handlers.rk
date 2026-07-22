@@ -1,0 +1,226 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Request handlers. Each returns `Response or ApiError`; the router turns the
+// error side into an HTTP response once, at the top. Handlers propagate with
+// `try`, map typed store errors with `else |e| e.to_api()`, and reach shared
+// state through the module-level `store`/`metrics`/`config`.
+
+import http
+import json
+import time
+
+const started = time.Instant.now()
+
+// ─── Small response bodies ───────────────────────────────────────────
+
+struct HealthBody {
+    public status: string
+    public uptime_ms: u64
+    public tasks: usize
+}
+
+struct OkBody {
+    public ok: bool
+}
+
+struct BatchResult {
+    public applied: usize
+}
+
+// ─── Batch request DTOs ──────────────────────────────────────────────
+
+struct BatchRequest {
+    public ops: Vec<BatchOp>
+}
+
+struct BatchOp {
+    public op: string
+    public task_id: u64
+    public value: string?
+    public dep_id: u64?
+}
+
+struct AddDepRequest {
+    public dep_id: u64
+}
+
+struct CreateProjectRequest {
+    public name: string
+    public owner: u64
+}
+
+// ─── Health & metrics ────────────────────────────────────────────────
+
+func handle_health() -> Response or ApiError {
+    const count = with store as s { s.task_count() }
+    const body = HealthBody {
+        status: "ok",
+        uptime_ms: started.elapsed().as_millis(),
+        tasks: count,
+    }
+    return json_response(200, body)
+}
+
+func handle_metrics() -> Response or ApiError {
+    const summary = metrics.lock().summarize()
+    return json_response(200, summary)
+}
+
+// Deliberately fallible I/O so SysError reaches the boundary (os.SY1).
+func handle_sleep(req: Request) -> Response or ApiError {
+    const raw = req.query_param("ms") ?? "50"
+    const ms = raw.parse<u64>() ?? return ApiError.BadRequest("ms must be a non-negative integer")
+    try time.sleep(time.Duration.millis(ms)) else |e| ApiError.System(e)
+    return json_response(200, OkBody { ok: true })
+}
+
+// ─── Tasks ───────────────────────────────────────────────────────────
+
+func handle_list_tasks(req: Request) -> Response or ApiError {
+    const filter = try build_filter(req) else |e| e.to_api()
+    const page = with store as s { s.list_views(filter) }
+    return json_response(200, page)
+}
+
+func handle_create_task(req: Request, audit: Sender<AuditEvent>) -> Response or ApiError {
+    // prepare_create returns a two-error union; match narrows each side and
+    // maps it into the boundary enum (ER27/ER28 on `T or (A | B)`).
+    match prepare_create(req.body) {
+        CreateTaskRequest as dto => {
+            const priority = try Priority.from_label(dto.priority) else |e| e.to_api()
+            const project = ProjectId(dto.project_id)
+
+            const id = with store as s {
+                try s.create_task(dto.title, project, priority) else |e| e.to_api()
+            }
+            emit(audit, "create", "task", id.value)
+
+            const view = with store as s { try s.view_task(id) else |e| e.to_api() }
+            return json_response(201, view)
+        }
+        ValidationError as v => return ApiError.Validation(v),
+        json.JsonError as j  => return ApiError.BadRequest("invalid JSON: {j.message()}"),
+    }
+}
+
+func handle_get_task(id: TaskId) -> Response or ApiError {
+    const view = with store as s { try s.view_task(id) else |e| e.to_api() }
+    return json_response(200, view)
+}
+
+func handle_update_task(id: TaskId, req: Request, audit: Sender<AuditEvent>) -> Response or ApiError {
+    const dto = try json.decode<UpdateTaskRequest>(req.body) else |e| ApiError.BadRequest("invalid JSON: {e.message()}")
+    try dto.validate() else |e| e.to_api()
+    const patch = try build_patch(dto) else |e| e.to_api()
+
+    const view = with store as s { try s.update_task(id, patch) else |e| e.to_api() }
+    emit(audit, "update", "task", id.value)
+    return json_response(200, view)
+}
+
+func handle_delete_task(id: TaskId, audit: Sender<AuditEvent>) -> Response or ApiError {
+    with store as s { try s.delete_task(id) else |e| e.to_api() }
+    emit(audit, "delete", "task", id.value)
+    return json_response(200, OkBody { ok: true })
+}
+
+func handle_add_dep(id: TaskId, req: Request, audit: Sender<AuditEvent>) -> Response or ApiError {
+    const dto = try json.decode<AddDepRequest>(req.body) else |e| ApiError.BadRequest("invalid JSON: {e.message()}")
+    with store as s { try s.add_dependency(id, TaskId(dto.dep_id)) else |e| e.to_api() }
+    emit(audit, "add_dep", "task", id.value)
+    return json_response(200, OkBody { ok: true })
+}
+
+func handle_batch(req: Request, audit: Sender<AuditEvent>) -> Response or ApiError {
+    const dto = try json.decode<BatchRequest>(req.body) else |e| ApiError.BadRequest("invalid JSON: {e.message()}")
+
+    mut ops = Vec.new()
+    for raw in dto.ops {
+        ops.push(try to_txop(raw) else |e| e.to_api())
+    }
+
+    const applied = ops.len()
+    with store as s { try s.apply_batch(ops) else |e| e.to_api() }
+    emit(audit, "batch", "task", 0)
+    return json_response(200, BatchResult { applied: applied })
+}
+
+// ─── Users & projects ────────────────────────────────────────────────
+
+func handle_create_user(req: Request) -> Response or ApiError {
+    const dto = try json.decode<CreateUserRequest>(req.body) else |e| ApiError.BadRequest("invalid JSON: {e.message()}")
+    try dto.validate() else |e| e.to_api()
+
+    const email = EmailAddress { raw: dto.email }
+    const id = with store as s { try s.create_user(dto.name, email) else |e| e.to_api() }
+    const view = with store as s { try s.view_user(id) else |e| e.to_api() }
+    return json_response(201, view)
+}
+
+func handle_get_user(id: UserId) -> Response or ApiError {
+    const view = with store as s { try s.view_user(id) else |e| e.to_api() }
+    return json_response(200, view)
+}
+
+func handle_create_project(req: Request) -> Response or ApiError {
+    const dto = try json.decode<CreateProjectRequest>(req.body) else |e| ApiError.BadRequest("invalid JSON: {e.message()}")
+    if dto.name.is_empty() { return ApiError.BadRequest("project name required") }
+
+    const id = with store as s {
+        try s.create_project(dto.name, UserId(dto.owner)) else |e| e.to_api()
+    }
+    return json_response(201, ProjectView {
+        id: id.value,
+        name: dto.name,
+        owner: dto.owner,
+        archived: false,
+    })
+}
+
+// ─── Parsing helpers ─────────────────────────────────────────────────
+
+// Two-error union: decode failure (json.JsonError) OR validation failure
+// (ValidationError). `try` auto-widens each into the declared union (ER31).
+func prepare_create(body: string) -> CreateTaskRequest or (json.JsonError | ValidationError) {
+    const dto = try json.decode<CreateTaskRequest>(body)
+    try dto.validate()
+    return dto
+}
+
+func build_filter(req: Request) -> ListFilter or ValidationError {
+    mut f = ListFilter {}
+    if req.query_param("status")? as s   { f.status = try Status.from_label(s) }
+    if req.query_param("priority")? as p { f.priority = try Priority.from_label(p) }
+    if req.query_param("offset")? as o   { f.offset = o.parse<usize>() ?? 0 }
+    if req.query_param("limit")? as l    { f.limit = l.parse<usize>() ?? 50 }
+    return f
+}
+
+func build_patch(dto: UpdateTaskRequest) -> TaskPatch or ValidationError {
+    mut p = TaskPatch {}
+    if dto.status? as s    { p.status = try Status.from_label(s) }
+    if dto.priority? as pr { p.priority = try Priority.from_label(pr) }
+    if dto.assignee? as a  { p.assignee = UserId(a) }
+    if dto.add_tags? as tags { p.add_tags = tags }
+    return p
+}
+
+func to_txop(raw: BatchOp) -> TxOp or ValidationError {
+    const id = TaskId(raw.task_id)
+    match raw.op {
+        "status" => {
+            const v = raw.value ?? return ValidationError.Empty("value")
+            const st = try Status.from_label(v)
+            return TxOp.SetStatus(id, st)
+        }
+        "priority" => {
+            const v = raw.value ?? return ValidationError.Empty("value")
+            const pr = try Priority.from_label(v)
+            return TxOp.SetPriority(id, pr)
+        }
+        "dep" => {
+            const d = raw.dep_id ?? return ValidationError.Empty("dep_id")
+            return TxOp.AddDep(id, TaskId(d))
+        }
+        _ => return ValidationError.BadEnum("op", raw.op),
+    }
+}

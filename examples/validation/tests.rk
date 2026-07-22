@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Unit tests as first-class blocks (std.testing). No framework, no harness —
+// `rask test` runs these.
+
+test "priority order follows variant order" {
+    assert Priority.Low.compare(Priority.Urgent) == Ordering.Less
+    assert Priority.Urgent.compare(Priority.Low) == Ordering.Greater
+    assert Priority.High.compare(Priority.High) == Ordering.Equal
+}
+
+test "priority parses known labels and rejects the rest" {
+    assert_eq(Priority.from_label("high")!, Priority.High)
+    const bad = Priority.from_label("epic")
+    assert bad is ValidationError
+}
+
+test "status terminality" {
+    assert Status.Done.is_terminal()
+    assert Status.Cancelled.is_terminal()
+    assert !Status.Open.is_terminal()
+    assert !Status.InProgress.is_terminal()
+}
+
+test "email equality is case-insensitive (custom Equal)" {
+    const a = EmailAddress { raw: "Bo@Example.IO" }
+    const b = EmailAddress { raw: "bo@example.io" }
+    assert a == b
+    // OC1: the redeclared Hashable must agree with the override.
+    assert_eq(a.hash(), b.hash())
+}
+
+test "ids are distinct values, stepped through .value" {
+    const a = TaskId(1)
+    const b = a.next()
+    assert_eq(b.value, 2)
+    assert a != b
+}
+
+test "config defaults construct with zero fields" {
+    const c = Config {}
+    assert_eq(c.port, 8080)
+    assert_eq(c.host, "0.0.0.0")
+    assert c.request_log
+}
+
+test "validation catches an empty title" {
+    const req = CreateTaskRequest {
+        title: "",
+        project_id: 1,
+        priority: "medium",
+        tags: Vec.new(),
+        idempotency_key: "",
+    }
+    const result = req.validate()
+    assert result is ValidationError
+    if result is ValidationError as e {
+        assert e.message().contains("title")
+    }
+}
+
+test "percentile handles the empty and single-sample cases" {
+    mut empty = Vec.new()
+    assert_eq(percentile(empty, 50), 0.0)
+
+    mut one = Vec.from([42.0])
+    assert_eq(percentile(one, 95), 42.0)
+}

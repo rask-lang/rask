@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+package "tracker" "0.1.0" {
+    description: "In-memory work-item tracker — HTTP JSON API validation target"
+    license: "MIT OR Apache-2.0"
+
+    allow: ["net", "os"]
+}

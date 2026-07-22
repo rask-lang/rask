@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Audit trail. Handlers fire events into a channel; one background task
+// drains them. Single consumer, many producers (each request task holds a
+// cloned Sender).
+
+struct AuditEvent {
+    public action: string
+    public entity: string
+    public entity_id: u64
+    public at: i64
+}
+
+// Owns the receiver, drains until every sender is gone (receive() yields the
+// Closed error, which fails the `?` test and breaks the loop).
+func audit_worker(take rx: Receiver<AuditEvent>) {
+    mut count = 0
+    loop {
+        const r = rx.receive()
+        if r? as ev {
+            count += 1
+            if config.read().request_log {
+                println("[audit #{count}] {ev.action} {ev.entity}:{ev.entity_id}")
+            }
+        } else {
+            break
+        }
+    }
+    println("[audit] drained {count} events on shutdown")
+}
+
+// Best-effort. Audit is observability, not correctness — a full or closed
+// channel drops the event rather than failing the request.
+func emit(tx: Sender<AuditEvent>, action: string, entity: string, id: u64) {
+    const ev = AuditEvent { action: action, entity: entity, entity_id: id, at: now_millis() }
+    const sent = tx.send(ev)
+    if sent? { return }
+    // dropped
+}

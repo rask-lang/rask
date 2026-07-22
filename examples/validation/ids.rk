@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Nominal id newtypes and the two closed enums (Priority, Status).
+//
+// The ids inherit Equal/Hashable/Comparable through the `with (...)` clause
+// (T11) — that's the auto-derive family, delegated to u64, with zero hand-
+// written methods. They're used as Map keys and sort keys directly.
+// EmailAddress is the counter-example: a hand-rolled Equal that triggers the
+// OC1 redeclare-the-family rule.
+
+// ─── Ids ─────────────────────────────────────────────────────────────
+// Distinct nominal types (T2), so a TaskId can never be passed where a
+// ProjectId is expected — but NOT Numeric, so `id + 1` is rejected (T10).
+// Stepping the counter goes through .value + explicit re-wrap (T7/T8).
+
+type TaskId = u64 with (Equal, Hashable, Comparable, Debug)
+type ProjectId = u64 with (Equal, Hashable, Comparable, Debug)
+type UserId = u64 with (Equal, Hashable, Comparable, Debug)
+
+extend TaskId {
+    func next(self) -> TaskId { return TaskId(self.value + 1) }
+}
+
+extend ProjectId {
+    func next(self) -> ProjectId { return ProjectId(self.value + 1) }
+}
+
+extend UserId {
+    func next(self) -> UserId { return UserId(self.value + 1) }
+}
+
+// ─── Email ───────────────────────────────────────────────────────────
+// A struct (not a nominal newtype) precisely because a struct starts with
+// the four core traits auto-derived — the setup OC1 needs. Equality is
+// case-insensitive: "Bo@x.io" and "bo@x.io" are the same account. That's a
+// real semantic override, not field-wise equality.
+
+struct EmailAddress {
+    public raw: string
+}
+
+extend EmailAddress {
+    func canonical(self) -> string { return self.raw.to_lowercase() }
+}
+
+// Custom Equal (EQ2).
+extend EmailAddress with Equal {
+    func eq(self, other: EmailAddress) -> bool {
+        return self.raw.to_lowercase() == other.raw.to_lowercase()
+    }
+}
+
+// OC1: the Equal override cancels the auto-derived Hashable and Comparable.
+// Both are redeclared here, consistent with the case-insensitive equality —
+// otherwise a Map keyed by EmailAddress would silently lose entries, and the
+// compiler would reject any use of the cancelled conformances (OC2).
+extend EmailAddress with Hashable {
+    func hash(self) -> u64 { return self.raw.to_lowercase().hash() }
+}
+
+extend EmailAddress with Comparable {
+    func compare(self, other: EmailAddress) -> Ordering {
+        return self.raw.to_lowercase().compare(other.raw.to_lowercase())
+    }
+}
+
+// ─── Priority ────────────────────────────────────────────────────────
+// Variant order IS the ordering (CO1): Low < Medium < High < Urgent.
+// Enums auto-derive the core traits with no `with` clause — only nominal
+// newtypes need the opt-in. The list handler sorts by this directly.
+
+enum Priority {
+    Low
+    Medium
+    High
+    Urgent
+}
+
+extend Priority {
+    func from_label(s: string) -> Priority or ValidationError {
+        match s {
+            "low"    => return Priority.Low,
+            "medium" => return Priority.Medium,
+            "high"   => return Priority.High,
+            "urgent" => return Priority.Urgent,
+            _        => return ValidationError.BadEnum("priority", s),
+        }
+    }
+
+    func label(self) -> string {
+        match self {
+            Low    => return "low",
+            Medium => return "medium",
+            High   => return "high",
+            Urgent => return "urgent",
+        }
+    }
+}
+
+// ─── Status ──────────────────────────────────────────────────────────
+// Used as a Map key for per-status counts — auto Hashable + Equal.
+
+enum Status {
+    Open
+    InProgress
+    Blocked
+    Done
+    Cancelled
+}
+
+extend Status {
+    func from_label(s: string) -> Status or ValidationError {
+        match s {
+            "open"        => return Status.Open,
+            "in_progress" => return Status.InProgress,
+            "blocked"     => return Status.Blocked,
+            "done"        => return Status.Done,
+            "cancelled"   => return Status.Cancelled,
+            _             => return ValidationError.BadEnum("status", s),
+        }
+    }
+
+    func label(self) -> string {
+        match self {
+            Open       => return "open",
+            InProgress => return "in_progress",
+            Blocked    => return "blocked",
+            Done       => return "done",
+            Cancelled  => return "cancelled",
+        }
+    }
+
+    func is_terminal(self) -> bool {
+        match self {
+            Done      => return true,
+            Cancelled => return true,
+            _         => return false,
+        }
+    }
+}

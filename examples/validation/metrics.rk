@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Request metrics behind a Mutex — write-heavy (every request records),
+// so Mutex over Shared (conc.sync "When to Use What").
+
+struct Metrics {
+    public total_requests: u64 = 0
+    public total_errors: u64 = 0
+    public status_counts: Map<u16, u64> = Map.new()
+    public latencies_ms: Vec<f64> = Vec.new()
+}
+
+extend Metrics {
+    func record(mutate self, status: u16, latency_ms: f64) {
+        self.total_requests += 1
+        if status >= 400 { self.total_errors += 1 }
+
+        const prior = self.status_counts.get(status) ?? 0
+        self.status_counts.insert(status, prior + 1)
+        self.latencies_ms.push(latency_ms)
+    }
+
+    // Adapter chain: how many samples breached the SLA budget.
+    func slow_count(self, budget_ms: f64) -> usize {
+        return self.latencies_ms.iter().filter(|ms| ms >= budget_ms).count()
+    }
+
+    func summarize(self) -> MetricsSummary {
+        mut sorted = self.latencies_ms.clone()
+        sorted.sort()
+
+        const errors = self.total_errors
+        const total = self.total_requests
+        const rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
+
+        return MetricsSummary {
+            total_requests: total,
+            total_errors: errors,
+            error_rate: rate,
+            p50_ms: percentile(sorted.clone(), 50),
+            p95_ms: percentile(sorted, 95),
+            slow_over_250ms: self.slow_count(250.0),
+        }
+    }
+}
+
+struct MetricsSummary {
+    public total_requests: u64
+    public total_errors: u64
+    public error_rate: f64
+    public p50_ms: f64
+    public p95_ms: f64
+    public slow_over_250ms: usize
+}
+
+// Integer-math percentile keeps the index computation off the float path —
+// no float→int conversion, no rounding surprises.
+func percentile(sorted: Vec<f64>, pct: usize) -> f64 {
+    if sorted.is_empty() { return 0.0 }
+    mut idx = (sorted.len() * pct) / 100
+    if idx >= sorted.len() { idx = sorted.len() - 1 }
+    return sorted[idx]
+}
+
+// Module-level, write-heavy shared state.
+const metrics = Mutex.new(Metrics {})
+
+// Free function so handlers don't repeat the with-block.
+func record_request(status: u16, latency_ms: f64) {
+    with metrics as m {
+        m.record(status, latency_ms)
+    }
+}
