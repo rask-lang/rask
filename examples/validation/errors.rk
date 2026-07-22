@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Error surface for the tracker service.
+//
+// Three ways an error type gets its message, one per type:
+//   AuthError       — pure auto-derive (no annotations, no extend)   [ER6]
+//   StoreError      — @message templates                             [ER35]
+//   ValidationError — hand-written ErrorMessage override             [ER6]
+//   ApiError        — @traced boundary error, auto-delegating wrappers [ER34, ER37]
+
+import os
+
+// ─── Auth ────────────────────────────────────────────────────────────
+// Pure auto-derive: message() is the humanized variant name.
+//   Missing → "missing", Invalid → "invalid", Expired → "expired"
+
+enum AuthError {
+    Missing
+    Invalid
+    Expired
+}
+
+// ─── Store ───────────────────────────────────────────────────────────
+// @message generates message() from per-variant templates.
+
+@message
+enum StoreError {
+    @message("task {0} not found")
+    NotFound(u64)
+
+    @message("task {0} already exists")
+    Duplicate(u64)
+
+    @message("store is at capacity ({limit} items)")
+    CapacityFull(limit: usize)
+
+    @message("transaction conflict: {0}")
+    TxConflict(string)
+}
+
+// ─── Validation ──────────────────────────────────────────────────────
+// Hand-written override — the humanized default isn't good enough here,
+// the payloads need to be woven into prose.
+
+enum ValidationError {
+    Empty(field: string)
+    TooLong(field: string, max: usize)
+    BadEnum(field: string, value: string)
+}
+
+extend ValidationError with ErrorMessage {
+    func message(self) -> string {
+        match self {
+            Empty(field)          => return "{field} must not be empty",
+            TooLong(field, max)   => return "{field} exceeds {max} characters",
+            BadEnum(field, value) => return "{value} is not a valid {field}",
+        }
+    }
+}
+
+// ─── Boundary error ──────────────────────────────────────────────────
+// What handlers return. @traced captures the first propagation site so
+// 500s log where they came from. Wrapper variants auto-delegate to the
+// inner error's message(); the rest carry templates.
+
+@traced
+@message
+enum ApiError {
+    Validation(ValidationError)   // auto-delegates (ER37)
+    Store(StoreError)             // auto-delegates
+    Auth(AuthError)               // auto-delegates
+    System(SysError)              // auto-delegates — SysError is ErrorMessage (os.SY1)
+
+    @message("bad request: {0}")
+    BadRequest(string)
+
+    @message("rate limited; retry after {seconds}s")
+    RateLimited(seconds: u64)
+
+    @message("internal error: {0}")
+    Internal(string)
+}
+
+extend ApiError {
+    // HTTP status this error maps to. Keeps status policy in one place
+    // instead of scattered across handlers.
+    func status(self) -> u16 {
+        match self {
+            Validation(_)  => return 422,
+            BadRequest(_)  => return 400,
+            Auth(_)        => return 401,
+            RateLimited(_) => return 429,
+            Store(e)       => return store_status(e),
+            System(_)      => return 500,
+            Internal(_)    => return 500,
+        }
+    }
+}
+
+func store_status(e: StoreError) -> u16 {
+    match e {
+        NotFound(_)     => return 404,
+        Duplicate(_)    => return 409,
+        TxConflict(_)   => return 409,
+        CapacityFull(_) => return 503,
+    }
+}
+
+// Lift the typed domain errors into the boundary enum. `try` won't do this
+// automatically for an enum wrapper (only for unions, ER31, or `any Error`
+// boxing, ER32), so handlers spell it out: `try s.op() else |e| e.to_api()`.
+
+extend StoreError {
+    func to_api(self) -> ApiError { return ApiError.Store(self) }
+}
+
+extend ValidationError {
+    func to_api(self) -> ApiError { return ApiError.Validation(self) }
+}
+
+extend AuthError {
+    func to_api(self) -> ApiError { return ApiError.Auth(self) }
+}

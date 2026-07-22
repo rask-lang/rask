@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Middleware chain via `any Middleware`. This is the one place heterogeneous
+// dispatch earns its keep: logger, auth, and rate-limiter are different types
+// sharing one list, each converted with an explicit `as any Middleware`
+// (TR5 — the cast marks the heap allocation).
+
+import http
+import os
+
+// A middleware either lets the request continue or short-circuits with a
+// response. before() returns a concrete MwOutcome, so it's callable through
+// `any` (no Self, no generics — TR1/TR2).
+
+enum MwOutcome {
+    Continue
+    Short(Response)
+}
+
+trait Middleware {
+    func name(self) -> string
+    func before(self, req: Request) -> MwOutcome
+}
+
+// ─── Request logger ──────────────────────────────────────────────────
+
+struct RequestLogger { }
+
+extend RequestLogger with Middleware {
+    func name(self) -> string { return "logger" }
+
+    func before(self, req: Request) -> MwOutcome {
+        if config.read().request_log {
+            println("[req] {method_label(req.method)} {req.path()}")
+        }
+        return MwOutcome.Continue
+    }
+}
+
+// ─── Auth guard ──────────────────────────────────────────────────────
+// Every write needs a bearer token. Reads (`GET`) pass through.
+
+struct AuthGuard {
+    required_token: string
+}
+
+extend AuthGuard with Middleware {
+    func name(self) -> string { return "auth" }
+
+    func before(self, req: Request) -> MwOutcome {
+        if req.method is Method.Get { return MwOutcome.Continue }
+
+        const header = req.headers.get("Authorization") ?? return deny(AuthError.Missing)
+        const token = bearer(header) ?? return deny(AuthError.Invalid)
+        if token != self.required_token { return deny(AuthError.Invalid) }
+        return MwOutcome.Continue
+    }
+}
+
+func deny(e: AuthError) -> MwOutcome {
+    return MwOutcome.Short(error_response(ApiError.Auth(e)))
+}
+
+func bearer(header: string) -> string? {
+    if !header.starts_with("Bearer ") { return none }
+    return header[7..].to_string()
+}
+
+// ─── Rate limiter ────────────────────────────────────────────────────
+// Fixed-window per client key. Shared counter behind a Mutex because every
+// request task mutates it.
+
+struct RateLimiter {
+    counters: Mutex<Map<string, u64>>
+}
+
+extend RateLimiter {
+    func new() -> RateLimiter {
+        return RateLimiter { counters: Mutex.new(Map.new()) }
+    }
+}
+
+extend RateLimiter with Middleware {
+    func name(self) -> string { return "rate_limiter" }
+
+    func before(self, req: Request) -> MwOutcome {
+        const key = client_key(req)
+        const limit = config.read().rate_limit_per_min
+
+        mut over = false
+        with self.counters as counts {
+            const used = counts.get(key) ?? 0
+            if used >= limit {
+                over = true
+            } else {
+                counts.insert(key, used + 1)
+            }
+        }
+
+        if over { return MwOutcome.Short(error_response(ApiError.RateLimited(60))) }
+        return MwOutcome.Continue
+    }
+}
+
+func client_key(req: Request) -> string {
+    return req.headers.get("X-Client-Id") ?? "anonymous"
+}
+
+// ─── Chain ───────────────────────────────────────────────────────────
+// Build the ordered chain once; run it per request. Each `.before` call is
+// a vtable dispatch (TR12).
+
+func build_chain() -> Vec<any Middleware> {
+    return Vec.from([
+        RequestLogger {} as any Middleware,
+        AuthGuard { required_token: auth_token() } as any Middleware,
+        RateLimiter.new() as any Middleware,
+    ])
+}
+
+// Built once at startup, shared read-only across request tasks.
+const middleware_chain = build_chain()
+
+func run_chain(chain: Vec<any Middleware>, req: Request) -> MwOutcome {
+    for mw in chain {
+        match mw.before(req) {
+            MwOutcome.Continue    => continue,
+            MwOutcome.Short(resp) => return MwOutcome.Short(resp),
+        }
+    }
+    return MwOutcome.Continue
+}
+
+func auth_token() -> string {
+    return os.env_or("TRACKER_TOKEN", "dev-secret")
+}
+
+func method_label(m: Method) -> string {
+    match m {
+        Get     => return "GET",
+        Head    => return "HEAD",
+        Post    => return "POST",
+        Put     => return "PUT",
+        Delete  => return "DELETE",
+        Patch   => return "PATCH",
+        Options => return "OPTIONS",
+    }
+}

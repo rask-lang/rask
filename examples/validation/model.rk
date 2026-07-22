@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Domain entities and the Validate trait.
+//
+// Tasks form a dependency DAG: `deps` holds Handle<Task> into the store's
+// pool, not pointers or ids-to-look-up. That's the pool-shaped design from
+// canonical-patterns "Graph-shaped data is Pool-shaped".
+
+const MAX_TITLE_LEN: usize = 200
+const MAX_NAME_LEN: usize = 80
+
+// ─── Validate ────────────────────────────────────────────────────────
+// Nominal: a DTO is only validatable if it declares `extend T with Validate`.
+// A stray validate() method matching by shape is not enough (G1).
+
+trait Validate {
+    func validate(self) -> void or ValidationError
+}
+
+// Shared helper so every conformer checks lengths the same way.
+func check_len(field: string, value: string, max: usize) -> void or ValidationError {
+    if value.is_empty() { return ValidationError.Empty(field) }
+    if value.len() > max { return ValidationError.TooLong(field, max) }
+    return
+}
+
+// ─── Task ────────────────────────────────────────────────────────────
+// Field defaults (type.structs): a freshly created task is Open/Medium with
+// empty deps and tags, so callers only supply id/title/project.
+
+struct Task {
+    public id: TaskId
+    public title: string
+    public project: ProjectId
+    public priority: Priority = Priority.Medium
+    public status: Status = Status.Open
+    public assignee: UserId? = none
+    public deps: Vec<Handle<Task>> = Vec.new()
+    public tags: Vec<string> = Vec.new()
+    public created_at: i64
+}
+
+extend Task {
+    // Blocked if any dependency isn't Done. Reads other pool elements
+    // through the ambient context (mem.context auto-resolution).
+    func is_blocked(self) -> bool using frozen Pool<Task> {
+        for dep in self.deps {
+            if !dep.status.is_terminal() { return true }
+        }
+        return false
+    }
+
+    func has_tag(self, tag: string) -> bool {
+        for t in self.tags {
+            if t == tag { return true }
+        }
+        return false
+    }
+}
+
+// ─── User ────────────────────────────────────────────────────────────
+
+struct User {
+    public id: UserId
+    public name: string
+    public email: EmailAddress
+    public active: bool = true
+}
+
+// ─── Project ─────────────────────────────────────────────────────────
+
+struct Project {
+    public id: ProjectId
+    public name: string
+    public owner: UserId
+    public archived: bool = false
+}

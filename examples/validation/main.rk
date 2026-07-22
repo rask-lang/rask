@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Entry point. Opens the Multitasking runtime, starts the audit worker,
+// seeds a little data on a joined task, then runs the accept loop spawning
+// one task per connection. The Responder is linear — `ensure` guarantees a
+// reply on every path (http.md S2).
+
+import http
+
+func main() -> void or Error {
+    using Multitasking {
+        const cfg = config.read().clone()
+        println("tracker starting — {cfg}")
+
+        // Audit worker: single consumer of the event channel.
+        mut (audit_tx, audit_rx) = Channel<AuditEvent>.buffered(256)
+        spawn(|| { audit_worker(own audit_rx) }).detach()
+
+        // Warm up on a separate task and wait for it (join consumes handle).
+        const seed = spawn(|| { seed_store() })
+        seed.join()!
+
+        const server = try http.listen(cfg.addr())
+        ensure server.close()
+        println("listening on {cfg.addr()}")
+
+        loop {
+            const (req, responder) = try server.accept()
+            const tx = audit_tx.clone()
+            spawn(|| {
+                // Fallback reply on any early exit; the explicit respond below
+                // consumes the Responder and cancels this ensure (S2).
+                ensure responder.respond(Response.internal_error("unhandled"))
+                const resp = route(req, tx)
+                responder.respond(resp)
+            }).detach()
+        }
+    }
+}
+
+// Bootstrap data so the API has something to serve on first boot.
+func seed_store() {
+    with store as s {
+        const owner = s.create_user("alice", EmailAddress { raw: "alice@example.com" })!
+        const proj = s.create_project("bootstrap", owner)!
+        const first = s.create_task("write the spec", proj, Priority.High)!
+        const second = s.create_task("review the diff", proj, Priority.Medium)!
+        s.add_dependency(second, first)!
+    }
+}

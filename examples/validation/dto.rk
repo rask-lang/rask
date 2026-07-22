@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Wire DTOs. Request types auto-derive Decode, response types auto-derive
+// Encode — no declarations, just compatible public fields (E12). Field
+// annotations (@rename/@skip/@default) shape the JSON without touching the
+// domain types.
+//
+// Enums travel as strings on the wire and are parsed to Priority/Status in
+// the handlers, so the DTOs stay pure data.
+
+import json
+
+// ─── Requests ────────────────────────────────────────────────────────
+
+struct CreateTaskRequest {
+    @rename("task_title")
+    public title: string
+
+    public project_id: u64
+
+    // Optional on the wire; fills in when the client omits it.
+    @default("medium")
+    public priority: string
+
+    @default("[]")
+    public tags: Vec<string>
+
+    // Client-supplied de-dup token. Used for idempotency, never stored or
+    // echoed back, so it's skipped in both directions (E19).
+    @skip
+    public idempotency_key: string
+}
+
+struct UpdateTaskRequest {
+    // All optional — absent means "leave unchanged". Missing optionals
+    // decode to none with no @default needed.
+    public status: string?
+    public priority: string?
+    public assignee: u64?
+    public add_tags: Vec<string>?
+}
+
+struct CreateUserRequest {
+    public name: string
+    public email: string
+}
+
+// ─── Responses ───────────────────────────────────────────────────────
+
+struct TaskView {
+    public id: u64
+    @rename("task_title")
+    public title: string
+    public project_id: u64
+    public priority: string
+    public status: string
+    public assignee: u64?
+    public tags: Vec<string>
+    public blocked: bool
+}
+
+struct UserView {
+    public id: u64
+    public name: string
+    public email: string
+    public active: bool
+}
+
+struct ProjectView {
+    public id: u64
+    public name: string
+    public owner: u64
+    public archived: bool
+}
+
+struct ListResponse {
+    public items: Vec<TaskView>
+    public total: usize
+    public offset: usize
+}
+
+struct ErrorBody {
+    public error: string
+    public code: string
+}
+
+// ─── Query params ────────────────────────────────────────────────────
+// All defaulted, so `ListQuery {}` is the empty query (No Default trait —
+// the field defaults ARE the default value).
+
+struct ListQuery {
+    public status: string? = none
+    public priority: string? = none
+    public offset: usize = 0
+    public limit: usize = 50
+}
+
+// ─── Validation conformances ─────────────────────────────────────────
+// Comma-list conformance: one block claims both traits (CD1). Displayable
+// gives a compact log line; Validate is the request gate.
+
+extend CreateTaskRequest with Validate, Displayable {
+    func validate(self) -> void or ValidationError {
+        try check_len("title", self.title, MAX_TITLE_LEN)
+        if self.tags.len() > 20 { return ValidationError.TooLong("tags", 20) }
+        return
+    }
+
+    func to_string(self) -> string {
+        return "CreateTask(title={self.title}, project={self.project_id})"
+    }
+}
+
+extend UpdateTaskRequest with Validate {
+    func validate(self) -> void or ValidationError {
+        // Nothing to length-check; the enum parses happen in the handler
+        // where a bad value becomes ValidationError.BadEnum.
+        if self.add_tags? as tags {
+            if tags.len() > 20 { return ValidationError.TooLong("add_tags", 20) }
+        }
+        return
+    }
+}
+
+// public extend: the conformance is part of the crate's public API surface,
+// so it's declared public (never inferred — TR/G1).
+public extend CreateUserRequest with Validate {
+    func validate(self) -> void or ValidationError {
+        try check_len("name", self.name, MAX_NAME_LEN)
+        if !self.email.contains("@") {
+            return ValidationError.BadEnum("email", self.email)
+        }
+        return
+    }
+}

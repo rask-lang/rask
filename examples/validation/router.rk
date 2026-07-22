@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Routing. `route` runs the middleware chain, dispatches on (method, path),
+// and collapses the handler's `Response or ApiError` into one Response.
+
+import http
+
+func route(req: Request, audit: Sender<AuditEvent>) -> Response {
+    match run_chain(middleware_chain, req) {
+        MwOutcome.Short(resp) => return resp,
+        MwOutcome.Continue    => {},
+    }
+
+    const outcome = dispatch(req, audit)
+    if outcome? as resp {
+        return resp
+    } else as e {
+        return error_response(e)
+    }
+}
+
+func dispatch(req: Request, audit: Sender<AuditEvent>) -> Response or ApiError {
+    const path = req.path()
+    match (req.method, path) {
+        (Method.Get, "/health")        => return handle_health(),
+        (Method.Get, "/metrics")       => return handle_metrics(),
+        (Method.Get, "/debug/sleep")   => return handle_sleep(req),
+        (Method.Get, "/debug/inspect") => return handle_inspect(),
+        (Method.Get, "/tasks")         => return handle_list_tasks(req),
+        (Method.Post, "/tasks")        => return handle_create_task(req, audit),
+        (Method.Post, "/tasks/batch")  => return handle_batch(req, audit),
+        (Method.Post, "/users")        => return handle_create_user(req),
+        (Method.Post, "/projects")     => return handle_create_project(req),
+
+        (Method.Get, p) if p.starts_with("/users/") => {
+            const id = try user_id(p)
+            return handle_get_user(id)
+        }
+        (Method.Post, p) if p.ends_with("/deps") => {
+            const id = try task_id(p)
+            return handle_add_dep(id, req, audit)
+        }
+        (Method.Get, p) if p.starts_with("/tasks/") => {
+            const id = try task_id(p)
+            return handle_get_task(id)
+        }
+        (Method.Patch, p) if p.starts_with("/tasks/") => {
+            const id = try task_id(p)
+            return handle_update_task(id, req, audit)
+        }
+        (Method.Delete, p) if p.starts_with("/tasks/") => {
+            const id = try task_id(p)
+            return handle_delete_task(id, audit)
+        }
+
+        _ => return json_response(404, ErrorBody { error: "no route for {path}", code: "not_found" }),
+    }
+}
+
+// ─── Path parsing ────────────────────────────────────────────────────
+
+func task_id(path: string) -> TaskId or ApiError {
+    const n = try segment_id(path, "/tasks/")
+    return TaskId(n)
+}
+
+func user_id(path: string) -> UserId or ApiError {
+    const n = try segment_id(path, "/users/")
+    return UserId(n)
+}
+
+func segment_id(path: string, prefix: string) -> u64 or ApiError {
+    const rest = path[prefix.len()..].to_string()
+    const trimmed = strip_suffix(rest, "/deps")
+    const n = trimmed.parse<u64>() ?? return ApiError.BadRequest("invalid id in path: {path}")
+    return n
+}
+
+func strip_suffix(s: string, suffix: string) -> string {
+    if s.ends_with(suffix) {
+        return s[0..s.len() - suffix.len()].to_string()
+    }
+    return s
+}

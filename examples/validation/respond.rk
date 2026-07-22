@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Turning values and errors into HTTP responses. One place for the
+// Content-Type header and the error-to-status mapping.
+
+import http
+import json
+
+func json_response<T: Encode>(status: u16, value: T) -> Response {
+    // json.encode is infallible for Encode types (std.json J: `-> string`).
+    const body = json.encode(value)
+    return Response.new(status, body).with_header("Content-Type", "application/json")
+}
+
+func error_response(e: ApiError) -> Response {
+    const payload = ErrorBody { error: e.message(), code: error_code(e) }
+    return Response.new(e.status(), json.encode(payload)).with_header("Content-Type", "application/json")
+}
+
+// Stable machine-readable codes, independent of the human message.
+func error_code(e: ApiError) -> string {
+    match e {
+        Validation(_)  => return "validation_failed",
+        Store(inner)   => return store_code(inner),
+        Auth(_)        => return "unauthorized",
+        System(_)      => return "system_error",
+        BadRequest(_)  => return "bad_request",
+        RateLimited(_) => return "rate_limited",
+        Internal(_)    => return "internal",
+    }
+}
+
+func store_code(e: StoreError) -> string {
+    match e {
+        NotFound(_)     => return "not_found",
+        Duplicate(_)    => return "duplicate",
+        TxConflict(_)   => return "tx_conflict",
+        CapacityFull(_) => return "capacity_full",
+    }
+}

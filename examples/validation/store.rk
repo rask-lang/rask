@@ -1,0 +1,315 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The data store. Tasks live in a Pool<Task> (they reference each other by
+// Handle through `deps`), users and projects in plain Maps keyed by their
+// nominal ids.
+//
+// The store returns only StoreError. Wire-string parsing and validation
+// belong to the handler layer, which widens everything into ApiError — so
+// nothing here ever has to mix error vocabularies.
+
+import time
+
+// Parsed patch built by the handler; the store never sees wire strings.
+struct TaskPatch {
+    status: Status? = none
+    priority: Priority? = none
+    assignee: UserId? = none
+    clear_assignee: bool = false
+    add_tags: Vec<string> = Vec.new()
+}
+
+struct ListFilter {
+    status: Status? = none
+    priority: Priority? = none
+    offset: usize = 0
+    limit: usize = 50
+}
+
+struct Store {
+    tasks: Pool<Task>
+    by_id: Map<TaskId, Handle<Task>>
+    users: Map<UserId, User>
+    projects: Map<ProjectId, Project>
+    next_task: TaskId
+    next_user: UserId
+    next_project: ProjectId
+}
+
+extend Store {
+    func new() -> Store {
+        return Store {
+            tasks: Pool.new(),
+            by_id: Map.new(),
+            users: Map.new(),
+            projects: Map.new(),
+            next_task: TaskId(1),
+            next_user: UserId(1),
+            next_project: ProjectId(1),
+        }
+    }
+
+    // ─── Tasks ───────────────────────────────────────────────────────
+
+    func create_task(mutate self, title: string, project: ProjectId, priority: Priority) -> TaskId or StoreError {
+        const cap = config.read().store_capacity
+        if self.tasks.len() >= cap { return StoreError.CapacityFull(cap) }
+
+        const id = self.next_task
+        self.next_task = self.next_task.next()
+
+        const task = Task {
+            id: id,
+            title: title,
+            project: project,
+            priority: priority,
+            created_at: now_millis(),
+        }
+
+        const h = self.tasks.insert(task)
+        self.by_id.insert(id, h)
+        return id
+    }
+
+    func view_task(self, id: TaskId) -> TaskView or StoreError {
+        const h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
+        return to_view(h)
+    }
+
+    func update_task(mutate self, id: TaskId, patch: TaskPatch) -> TaskView or StoreError {
+        const h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
+
+        with self.tasks[h] as t {
+            if patch.status? as s { t.status = s }
+            if patch.priority? as p { t.priority = p }
+            if patch.clear_assignee {
+                t.assignee = none
+            } else if patch.assignee? as a {
+                t.assignee = a
+            }
+            for tag in patch.add_tags {
+                if !t.has_tag(tag) { t.tags.push(tag) }
+            }
+        }
+
+        return to_view(h)
+    }
+
+    func delete_task(mutate self, id: TaskId) -> void or StoreError {
+        const h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
+        self.tasks.remove(h)
+        self.by_id.remove(id)
+        return
+    }
+
+    func add_dependency(mutate self, task: TaskId, dep: TaskId) -> void or StoreError {
+        const th = self.by_id.get(task) ?? return StoreError.NotFound(task.value)
+        const dh = self.by_id.get(dep) ?? return StoreError.NotFound(dep.value)
+        with self.tasks[th] as t {
+            t.deps.push(dh)
+        }
+        return
+    }
+
+    func list_views(self, filter: ListFilter) -> ListResponse {
+        // Rank first (priority desc, then id asc) using the auto-derived
+        // Comparable on Priority and TaskId, then page with adapters.
+        mut ranked = Vec.new()
+        for h in self.tasks.handles() {
+            if !matches_filter(h, filter) { continue }
+            ranked.push(Ranked { priority: rank_of(h), id: id_of(h), view: to_view(h) })
+        }
+
+        const total = ranked.len()
+        ranked.sort_by(|a, b| {
+            const by_prio = b.priority.compare(a.priority)
+            // Bind before the `if`: `x == Ordering.Equal {` would otherwise
+            // parse as a struct literal `Ordering.Equal { ... }`.
+            const tie = by_prio == Ordering.Equal
+            if tie { return a.id.compare(b.id) }
+            return by_prio
+        })
+
+        const page = ranked
+            .iter()
+            .skip(filter.offset)
+            .take(filter.limit)
+            .map(|r| r.view.clone())
+            .collect()
+
+        return ListResponse { items: page, total: total, offset: filter.offset }
+    }
+
+    // ─── Batch transaction ───────────────────────────────────────────
+    // Stage every op, validate against current state, then commit all at
+    // once. Any early error leaves `tx` unconsumed and `ensure` rolls it
+    // back (a no-op here — nothing is written until commit). The happy path
+    // consumes tx via commit(), cancelling the ensure. Definite at every
+    // exit (ctrl.ensure/C3–C5).
+
+    func apply_batch(mutate self, ops: Vec<TxOp>) -> void or StoreError {
+        mut tx = TaskTx.begin()
+        ensure tx.rollback()
+
+        for op in ops {
+            try self.check_op(op)
+            tx.stage(op)
+        }
+
+        try tx.commit(self.by_id)
+        return
+    }
+
+    func check_op(self, op: TxOp) -> void or StoreError {
+        const id = op.target()
+        if self.by_id.get(id)? { return }
+        return StoreError.NotFound(id.value)
+    }
+
+    // ─── Users & projects ────────────────────────────────────────────
+
+    func create_user(mutate self, name: string, email: EmailAddress) -> UserId or StoreError {
+        const id = self.next_user
+        self.next_user = self.next_user.next()
+        self.users.insert(id, User { id: id, name: name, email: email })
+        return id
+    }
+
+    func view_user(self, id: UserId) -> UserView or StoreError {
+        const u = self.users.get(id) ?? return StoreError.NotFound(id.value)
+        return UserView { id: u.id.value, name: u.name, email: u.email.raw, active: u.active }
+    }
+
+    func create_project(mutate self, name: string, owner: UserId) -> ProjectId or StoreError {
+        const id = self.next_project
+        self.next_project = self.next_project.next()
+        self.projects.insert(id, Project { id: id, name: name, owner: owner })
+        return id
+    }
+
+    func task_count(self) -> usize { return self.tasks.len() }
+}
+
+// ─── Ranking helpers (context-clause auto-resolution) ────────────────
+// These read task fields straight off the Handle — `h.priority`, `h.deps`,
+// `dep.status` — with the pool threaded in as an ambient `using` context.
+// No `pool[h]` indexing, no explicit pool parameter.
+
+struct Ranked {
+    priority: Priority
+    id: TaskId
+    view: TaskView
+}
+
+func rank_of(h: Handle<Task>) -> Priority using frozen Pool<Task> {
+    return h.priority
+}
+
+func id_of(h: Handle<Task>) -> TaskId using frozen Pool<Task> {
+    return h.id
+}
+
+func matches_filter(h: Handle<Task>, filter: ListFilter) -> bool using frozen Pool<Task> {
+    if filter.status? as want {
+        if h.status != want { return false }
+    }
+    if filter.priority? as want {
+        if h.priority != want { return false }
+    }
+    return true
+}
+
+func task_is_blocked(h: Handle<Task>) -> bool using frozen Pool<Task> {
+    for dep in h.deps {
+        if !dep.status.is_terminal() { return true }
+    }
+    return false
+}
+
+func to_view(h: Handle<Task>) -> TaskView using frozen Pool<Task> {
+    return TaskView {
+        id: h.id.value,
+        title: h.title,
+        project_id: h.project.value,
+        priority: h.priority.label(),
+        status: h.status.label(),
+        assignee: opt_id(h.assignee),
+        tags: h.tags.clone(),
+        blocked: task_is_blocked(h),
+    }
+}
+
+func opt_id(x: UserId?) -> u64? {
+    const v = x ?? return none
+    return v.value
+}
+
+func now_millis() -> i64 {
+    return time.SystemTime.now().unix_millis()
+}
+
+// ─── Linear transaction resource ─────────────────────────────────────
+
+enum TxOp {
+    SetStatus(TaskId, Status)
+    SetPriority(TaskId, Priority)
+    AddDep(TaskId, TaskId)
+}
+
+extend TxOp {
+    func target(self) -> TaskId {
+        match self {
+            SetStatus(id, _)   => return id,
+            SetPriority(id, _) => return id,
+            AddDep(id, _)      => return id,
+        }
+    }
+}
+
+@resource
+struct TaskTx {
+    ops: Vec<TxOp>
+    done: bool
+}
+
+extend TaskTx {
+    func begin() -> TaskTx {
+        return TaskTx { ops: Vec.new(), done: false }
+    }
+
+    func stage(mutate self, op: TxOp) {
+        self.ops.push(op)
+    }
+
+    // Consumes the transaction and writes every staged op through the
+    // ambient task pool. Resolves `using Pool<Task>` against the caller's
+    // self.tasks (CC4 field-of-self resolution).
+    func commit(take self, index: Map<TaskId, Handle<Task>>) -> void or StoreError using Pool<Task> {
+        for op in self.ops {
+            match op {
+                SetStatus(id, st) => {
+                    const h = index.get(id) ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    h.status = st
+                }
+                SetPriority(id, p) => {
+                    const h = index.get(id) ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    h.priority = p
+                }
+                AddDep(id, dep_id) => {
+                    const h = index.get(id) ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    const dh = index.get(dep_id) ?? return StoreError.TxConflict("dep {dep_id.value} vanished mid-commit")
+                    h.deps.push(dh)
+                }
+            }
+        }
+        return
+    }
+
+    func rollback(take self) {
+        // Nothing is written until commit, so rollback just drops the staged
+        // ops — they fall with `self`. The @resource discipline still forces
+        // us to consume `self` on every path, which is the point.
+    }
+}
+
+// Module-level store — write-heavy, so Mutex (conc.sync). Handlers lock it.
+const store = Mutex.new(Store.new())

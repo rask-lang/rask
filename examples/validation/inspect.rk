@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// PROTOTYPE — the one duck trait in the program.
+//
+// Duck traits are the prototyping dial (type.generics/G1): shape-matched, no
+// conformance declarations, "harden by deleting `duck`". The stdlib ships
+// zero. In production-shaped code there is no honest place for one — the real
+// heterogeneous dispatch (middleware) uses a nominal `any Middleware`.
+//
+// This dev-only /debug/inspect endpoint is genuinely throwaway, so it's the
+// one spot where the loose contract fits: unrelated types grow a describe()
+// method for ad-hoc introspection without ceremony, and if the endpoint ever
+// stayed, deleting `duck` would generate the `extend ... with Inspectable {}`
+// declarations. See FINDINGS on why this stayed a note more than a feature.
+
+import http
+
+duck trait Inspectable {
+    func describe(self) -> string
+}
+
+// Config and BuildInfo satisfy Inspectable purely by shape — no `extend with`.
+extend Config {
+    func describe(self) -> string { return "config {self.to_string()}" }
+}
+
+struct BuildInfo {
+    version: string
+    commit: string
+}
+
+extend BuildInfo {
+    func describe(self) -> string { return "build {self.version} ({self.commit})" }
+}
+
+func handle_inspect() -> Response or ApiError {
+    const items = Vec.from([
+        config.read().clone() as any Inspectable,
+        BuildInfo { version: "0.1.0", commit: "dev" } as any Inspectable,
+    ])
+
+    mut sb = StringBuilder.new()
+    for it in items {
+        sb.push("{it.describe()}\n")
+    }
+    return Response.ok(sb.build())
+}
