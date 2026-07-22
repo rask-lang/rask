@@ -143,7 +143,7 @@ func make_vec() -> Vec<i32> or CfgError {
 
 func generic_guard() -> i32 {
     mut v = make_vec() is Vec<i32> as v else { return -1 }
-    return v.len() as i32
+    return v.len() truncate to i32
 }
 
 test "generic type pattern in is ... else guard" {

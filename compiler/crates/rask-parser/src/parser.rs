@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, ConvertKind, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -118,6 +118,13 @@ impl Parser {
 
     fn at_end(&self) -> bool {
         matches!(self.current_kind(), TokenKind::Eof)
+    }
+
+    /// True if the token `n` ahead is the contextual identifier `word`.
+    /// Conversion verbs (`truncate`, `saturate`, `float`, `convert`, `to`, `int`,
+    /// `saturating`) aren't reserved keywords — they're matched positionally.
+    fn peek_is_word(&self, n: usize, word: &str) -> bool {
+        matches!(self.peek(n), TokenKind::Ident(s) if s == word)
     }
 
     fn advance(&mut self) -> &Token {
@@ -2891,6 +2898,66 @@ impl Parser {
         result
     }
 
+    /// Parse a conversion target type — a single primitive type name.
+    fn parse_convert_target(&mut self) -> Result<String, ParseError> {
+        self.expect_ident()
+    }
+
+    /// Detect and parse a non-`try` lossy conversion suffix on `lhs`
+    /// (type.primitives CV5/CV6/CV8/CV9): `truncate to T`, `saturate to T`,
+    /// `float to int T`, `float to int T (saturating)`. Returns None if the
+    /// following tokens aren't a conversion suffix.
+    fn try_parse_convert_suffix(
+        &mut self,
+        lhs: Expr,
+        start: usize,
+    ) -> Result<Result<Expr, Expr>, ParseError> {
+        let kind = if self.peek_is_word(0, "truncate") && self.peek_is_word(1, "to") {
+            self.advance(); // truncate
+            self.advance(); // to
+            ConvertKind::Truncate
+        } else if self.peek_is_word(0, "saturate") && self.peek_is_word(1, "to") {
+            self.advance(); // saturate
+            self.advance(); // to
+            ConvertKind::Saturate
+        } else if self.peek_is_word(0, "float")
+            && self.peek_is_word(1, "to")
+            && self.peek_is_word(2, "int")
+        {
+            self.advance(); // float
+            self.advance(); // to
+            self.advance(); // int
+            ConvertKind::FloatToInt
+        } else {
+            // Not a conversion suffix — hand the lhs back untouched.
+            return Ok(Err(lhs));
+        };
+
+        let target = self.parse_convert_target()?;
+        // CV9: optional `(saturating)` marker on float-to-int.
+        let kind = if kind == ConvertKind::FloatToInt
+            && self.check(&TokenKind::LParen)
+            && self.peek_is_word(1, "saturating")
+        {
+            self.advance(); // (
+            self.advance(); // saturating
+            self.expect(&TokenKind::RParen)?;
+            ConvertKind::FloatToIntSat
+        } else {
+            kind
+        };
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Convert {
+                expr: Box::new(lhs),
+                target,
+                kind,
+            },
+            span: self.span(start, end),
+        }))
+    }
+
     fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
         let mut lhs = self.parse_prefix()?;
@@ -2920,6 +2987,25 @@ impl Parser {
                     span: self.span(start, end),
                 };
                 continue;
+            }
+
+            // Lossy conversion suffixes (CV5/CV6/CV8/CV9) bind like `as` (bp 21).
+            if (self.peek_is_word(0, "truncate")
+                || self.peek_is_word(0, "saturate")
+                || self.peek_is_word(0, "float"))
+                && 21 >= min_bp
+            {
+                match self.try_parse_convert_suffix(lhs, start)? {
+                    Ok(converted) => {
+                        lhs = converted;
+                        continue;
+                    }
+                    Err(orig) => {
+                        // `float`/`truncate`/`saturate` used as a plain identifier —
+                        // not a conversion. Restore and fall through.
+                        lhs = orig;
+                    }
+                }
             }
 
             // Pattern test: expr is Pattern (evaluates to bool)
@@ -3293,6 +3379,40 @@ impl Parser {
             TokenKind::Try => {
                 self.advance();
                 let inner = self.parse_expr_bp(Self::PREFIX_BP)?;
+
+                // CV7 `try x convert to T` / CV10 `try x float to int T`:
+                // `try` here forms an optional-producing conversion, not error
+                // propagation. Detect the conversion tail before treating `try`
+                // as propagation.
+                let convert_kind = if self.peek_is_word(0, "convert") && self.peek_is_word(1, "to") {
+                    self.advance(); // convert
+                    self.advance(); // to
+                    Some(ConvertKind::TryConvert)
+                } else if self.peek_is_word(0, "float")
+                    && self.peek_is_word(1, "to")
+                    && self.peek_is_word(2, "int")
+                {
+                    self.advance(); // float
+                    self.advance(); // to
+                    self.advance(); // int
+                    Some(ConvertKind::TryFloatToInt)
+                } else {
+                    None
+                };
+                if let Some(kind) = convert_kind {
+                    let target = self.parse_convert_target()?;
+                    let end = self.tokens[self.pos - 1].span.end;
+                    return Ok(Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::Convert {
+                            expr: Box::new(inner),
+                            target,
+                            kind,
+                        },
+                        span: self.span(start, end),
+                    });
+                }
+
                 let mut end = inner.span.end;
                 let else_clause = if self.check(&TokenKind::Else) ||
                     (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else()) {
@@ -4437,6 +4557,7 @@ impl Parser {
             }
             ExprKind::Unwrap { expr, .. } => Self::offset_spans(expr, offset),
             ExprKind::Cast { expr, .. } => Self::offset_spans(expr, offset),
+            ExprKind::Convert { expr, .. } => Self::offset_spans(expr, offset),
             ExprKind::NullCoalesce { value, default } => {
                 Self::offset_spans(value, offset);
                 Self::offset_spans(default, offset);

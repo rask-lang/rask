@@ -246,6 +246,12 @@ impl Default for ErrorCodeRegistry {
                 "E0813" => ("use after maybe-move", Ownership,
                     "A value moved on some paths but not all (e.g. one `if` branch) was used after the paths merged. The spec treats maybe-moved as moved (O3) — move on every path, or keep the use inside the branch that still owns the value.",
                     "const v = Vec.new()\nif c { take(own v) }\nv.len()  // error: v may have been moved"),
+                "E0817" => ("invalid `as` cast", Type,
+                    "`as` permits only lossless widening (CV1). Narrowing, sign reinterpretation, float↔int, int→char, and int↔bool are compile errors — use the explicit conversion forms (`truncate to`, `saturate to`, `try convert to`, `float to int`) or `char.from_u32`.",
+                    "const x: i8 = big as i8  // error: use `big truncate to i8`"),
+                "E0818" => ("invalid conversion form", Type,
+                    "A CV5–CV10 conversion form was applied to the wrong source/target kind — e.g. `float to int` on an integer, or `truncate to` producing a non-integer.",
+                    "const x = n float to int i32  // error if n is already an integer"),
             },
         }
     }

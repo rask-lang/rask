@@ -763,7 +763,7 @@ impl CodeGenerator {
                 self.register_operand_string(right, counter)
             }
             rask_mir::MirRValue::UnaryOp { operand, .. } => self.register_operand_string(operand, counter),
-            rask_mir::MirRValue::Cast { value, .. } => self.register_operand_string(value, counter),
+            rask_mir::MirRValue::Cast { value, .. } | rask_mir::MirRValue::Convert { value, .. } => self.register_operand_string(value, counter),
             rask_mir::MirRValue::Field { base, .. } => self.register_operand_string(base, counter),
             rask_mir::MirRValue::EnumTag { value } => self.register_operand_string(value, counter),
             rask_mir::MirRValue::Deref(op) => self.register_operand_string(op, counter),
@@ -1095,7 +1095,7 @@ fn collect_rvalue_strings(rvalue: &rask_mir::MirRValue, out: &mut HashSet<String
             collect_operand_string(right, out);
         }
         rask_mir::MirRValue::UnaryOp { operand, .. } => collect_operand_string(operand, out),
-        rask_mir::MirRValue::Cast { value, .. } => collect_operand_string(value, out),
+        rask_mir::MirRValue::Cast { value, .. } | rask_mir::MirRValue::Convert { value, .. } => collect_operand_string(value, out),
         rask_mir::MirRValue::Field { base, .. } => collect_operand_string(base, out),
         rask_mir::MirRValue::EnumTag { value } => collect_operand_string(value, out),
         rask_mir::MirRValue::Deref(op) => collect_operand_string(op, out),

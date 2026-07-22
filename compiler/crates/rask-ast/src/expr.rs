@@ -176,10 +176,19 @@ pub enum ExprKind {
         /// Without this flag the closure borrows outer variables (scope-limited).
         is_own: bool,
     },
-    /// Type cast (x as i32)
+    /// Type cast (x as i32) — lossless widening only (type.primitives CV1).
     Cast {
         expr: Box<Expr>,
         ty: String,
+    },
+    /// Explicit lossy numeric conversion (type.primitives CV5–CV10):
+    /// `x truncate to T`, `x saturate to T`, `try x convert to T`,
+    /// `x float to int T`, `x float to int T (saturating)`, `try x float to int T`.
+    Convert {
+        expr: Box<Expr>,
+        /// Target primitive type name (e.g. `i8`, `u32`, `f64`).
+        target: String,
+        kind: ConvertKind,
     },
     /// Spawn expression (spawn { body })
     Spawn {
@@ -279,6 +288,51 @@ pub struct ClosureParam {
     pub ty: Option<String>,
     pub is_mutate: bool,
     pub is_take: bool,
+}
+
+/// Lossy numeric conversion forms (type.primitives CV5–CV10). Unlike `as`
+/// (lossless widening only), each names its data-loss behavior explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvertKind {
+    /// CV5: `truncate to T` — wrapping/bitwise truncation.
+    Truncate,
+    /// CV6: `saturate to T` — clamp to target range.
+    Saturate,
+    /// CV7: `try convert to T` — `T?`, `none` if out of range.
+    TryConvert,
+    /// CV8: `float to int T` — truncate toward zero, panic on NaN/infinity.
+    FloatToInt,
+    /// CV9: `float to int T (saturating)` — clamp to T.MIN/T.MAX, NaN → 0.
+    FloatToIntSat,
+    /// CV10: `try float to int T` — `T?`.
+    TryFloatToInt,
+}
+
+impl ConvertKind {
+    /// Result is `T?` (optional) rather than `T`.
+    pub fn is_optional(self) -> bool {
+        matches!(self, ConvertKind::TryConvert | ConvertKind::TryFloatToInt)
+    }
+
+    /// Source is a float (CV8–CV10) rather than an integer (CV5–CV7).
+    pub fn is_float_source(self) -> bool {
+        matches!(
+            self,
+            ConvertKind::FloatToInt | ConvertKind::FloatToIntSat | ConvertKind::TryFloatToInt
+        )
+    }
+
+    /// Surface form for diagnostics.
+    pub fn surface(self) -> &'static str {
+        match self {
+            ConvertKind::Truncate => "truncate to",
+            ConvertKind::Saturate => "saturate to",
+            ConvertKind::TryConvert => "try convert to",
+            ConvertKind::FloatToInt => "float to int",
+            ConvertKind::FloatToIntSat => "float to int (saturating)",
+            ConvertKind::TryFloatToInt => "try float to int",
+        }
+    }
 }
 
 /// Binary operators.

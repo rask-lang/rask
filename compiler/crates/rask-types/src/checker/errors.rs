@@ -383,4 +383,43 @@ pub enum TypeError {
     MatchOnOption {
         span: Span,
     },
+
+    /// type.primitives CV1–CV4, CH5, BL3: an `as` cast that isn't lossless
+    /// widening. `class` selects the diagnostic + suggested conversion form.
+    #[error("invalid `as` cast from {src_ty} to {dst_ty}")]
+    InvalidCast {
+        src_ty: Type,
+        dst_ty: Type,
+        /// Original target spelling (e.g. `usize`), for the suggested fix.
+        target_name: String,
+        class: InvalidCastClass,
+        span: Span,
+    },
+
+    /// type.primitives CV5–CV10: a conversion form applied to the wrong
+    /// source/target kind (e.g. `float to int` on an integer).
+    #[error("invalid conversion: {message}")]
+    InvalidConvert {
+        message: String,
+        span: Span,
+    },
+}
+
+/// Why an `as` cast is rejected — drives the diagnostic and suggested fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidCastClass {
+    /// CV2: narrowing int→int (target range smaller).
+    Narrowing,
+    /// CV3: same-width sign reinterpretation (i32→u32).
+    SignReinterpret,
+    /// CV4: float→int via `as`.
+    FloatToInt,
+    /// CV4-adjacent: float→float narrowing (f64→f32).
+    FloatNarrowing,
+    /// CH5: integer→char via `as`.
+    IntToChar,
+    /// BL3: any conversion involving bool.
+    Bool,
+    /// Fallback: char/other lossy conversion with no obvious form.
+    Other,
 }

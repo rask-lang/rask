@@ -802,6 +802,12 @@ impl Hasher {
                 self.hash_expr(expr);
                 self.feed_str(ty);
             }
+            ExprKind::Convert { expr, target, kind } => {
+                self.feed_tag(101);
+                self.hash_expr(expr);
+                self.feed_str(target);
+                self.feed_tag(*kind as u8);
+            }
             ExprKind::Spawn { body } => {
                 self.feed_tag(72);
                 self.hash_stmts(body);

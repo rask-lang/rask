@@ -228,6 +228,10 @@ impl Interpreter {
                         kind: TypeConstructorKind::String,
                         type_param,
                     }),
+                    "char" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Char,
+                        type_param,
+                    }),
                     "Pool" => return Ok(Value::TypeConstructor {
                         kind: TypeConstructorKind::Pool,
                         type_param,
@@ -1472,6 +1476,12 @@ impl Interpreter {
                     }
                     (v, _) => Ok(v),
                 }
+            }
+
+            ExprKind::Convert { expr: inner, target, kind } => {
+                let val = self.eval_expr(inner)?;
+                super::overflow::convert(val, target, *kind)
+                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 
             ExprKind::NullCoalesce { value, default } => {

@@ -64,7 +64,7 @@ struct Lexer {
 
 extend Lexer {
     func new(input: string) -> Lexer {
-        return Lexer { input: input, pos: 0 as usize }
+        return Lexer { input: input, pos: 0 }
     }
 
     func peek_char(self) -> char? {

@@ -168,7 +168,7 @@ fn rvalue_references(rv: &MirRValue, local: LocalId) -> bool {
             operand_is(left, local) || operand_is(right, local)
         }
         MirRValue::UnaryOp { operand, .. } => operand_is(operand, local),
-        MirRValue::Cast { value, .. } => operand_is(value, local),
+        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => operand_is(value, local),
         MirRValue::Field { base, .. } => operand_is(base, local),
         MirRValue::EnumTag { value } => operand_is(value, local),
         MirRValue::ArrayIndex { base, index, .. } => {

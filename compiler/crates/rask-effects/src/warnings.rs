@@ -259,7 +259,7 @@ impl<'a> WarnContext<'a> {
             ExprKind::IsPresent { expr: e, .. } => {
                 self.check_expr(e, warnings);
             }
-            ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
+            ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } | ExprKind::Convert { expr: e, .. } => {
                 self.check_expr(e, warnings);
             }
             ExprKind::NullCoalesce { value, default } => {

@@ -451,6 +451,12 @@ fn remap_rvalue(rv: &MirRValue, local_map: &HashMap<LocalId, LocalId>) -> MirRVa
             value: remap_operand(value, local_map),
             target_ty: target_ty.clone(),
         },
+        MirRValue::Convert { value, source_ty, target_ty, kind } => MirRValue::Convert {
+            value: remap_operand(value, local_map),
+            source_ty: source_ty.clone(),
+            target_ty: target_ty.clone(),
+            kind: *kind,
+        },
         MirRValue::Field {
             base,
             field_index,

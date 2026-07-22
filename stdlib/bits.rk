@@ -70,30 +70,30 @@ extend BinaryBuilder {
     }
 
     public func write_u16be(mutate self, value: u16) -> BinaryBuilder {
-        self.data.push((value >> 8) as u8)
-        self.data.push(value as u8)
+        self.data.push((value >> 8) truncate to u8)
+        self.data.push(value truncate to u8)
         return self
     }
 
     public func write_u16le(mutate self, value: u16) -> BinaryBuilder {
-        self.data.push(value as u8)
-        self.data.push((value >> 8) as u8)
+        self.data.push(value truncate to u8)
+        self.data.push((value >> 8) truncate to u8)
         return self
     }
 
     public func write_u32be(mutate self, value: u32) -> BinaryBuilder {
-        self.data.push((value >> 24) as u8)
-        self.data.push((value >> 16) as u8)
-        self.data.push((value >> 8) as u8)
-        self.data.push(value as u8)
+        self.data.push((value >> 24) truncate to u8)
+        self.data.push((value >> 16) truncate to u8)
+        self.data.push((value >> 8) truncate to u8)
+        self.data.push(value truncate to u8)
         return self
     }
 
     public func write_u32le(mutate self, value: u32) -> BinaryBuilder {
-        self.data.push(value as u8)
-        self.data.push((value >> 8) as u8)
-        self.data.push((value >> 16) as u8)
-        self.data.push((value >> 24) as u8)
+        self.data.push(value truncate to u8)
+        self.data.push((value >> 8) truncate to u8)
+        self.data.push((value >> 16) truncate to u8)
+        self.data.push((value >> 24) truncate to u8)
         return self
     }
 

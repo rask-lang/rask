@@ -672,6 +672,9 @@ impl<'a> FunctionBuilder<'a> {
                         ctx.locals.iter().find(|l| l.id == *src_id)
                             .map_or(false, |l| matches!(l.ty, MirType::Option(_)))
                     }
+                    // `try convert`/`try float to int` builds an Option slot and
+                    // returns its pointer — copy the 16-byte struct into dst.
+                    (MirType::Option(_), MirRValue::Convert { kind, .. }) => kind.is_optional(),
                     // Option(T) assigned from an Option-typed local: copy the 16-byte struct
                     (MirType::Option(_), _) if src_option_ty => true,
                     _ => false,
@@ -2037,6 +2040,239 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// Lower an explicit conversion form (type.primitives CV5–CV10).
+    fn lower_convert(
+        builder: &mut ClifFunctionBuilder,
+        value: &MirOperand,
+        source_ty: &MirType,
+        target_ty: &MirType,
+        kind: rask_ast::expr::ConvertKind,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Value> {
+        use rask_ast::expr::ConvertKind::*;
+
+        // Normalize the operand to the source type's Cranelift width.
+        let src_clif = mir_to_cranelift_type(source_ty)?;
+        let raw = Self::lower_operand(builder, value, ctx)?;
+        let raw_ty = builder.func.dfg.value_type(raw);
+        let val = if raw_ty != src_clif {
+            Self::convert_value(builder, raw, raw_ty, src_clif)
+        } else {
+            raw
+        };
+        let tgt_clif = mir_to_cranelift_type(target_ty)?;
+
+        match kind {
+            // CV5: bit-preserving resize.
+            Truncate => Ok(Self::resize_int(builder, val, source_ty, target_ty)),
+            // CV6: clamp to target range.
+            Saturate => Ok(Self::saturate_int(builder, val, source_ty, target_ty)),
+            // CV8/CV9: float → int.
+            FloatToInt => {
+                // Trapping conversion — NaN/inf/overflow abort the task.
+                if target_ty.is_unsigned() {
+                    Ok(builder.ins().fcvt_to_uint(tgt_clif, val))
+                } else {
+                    Ok(builder.ins().fcvt_to_sint(tgt_clif, val))
+                }
+            }
+            FloatToIntSat => {
+                if target_ty.is_unsigned() {
+                    Ok(builder.ins().fcvt_to_uint_sat(tgt_clif, val))
+                } else {
+                    Ok(builder.ins().fcvt_to_sint_sat(tgt_clif, val))
+                }
+            }
+            // CV7/CV10: build Option<T> in a stack slot, branchlessly.
+            TryConvert => {
+                // char.from_u32 lowers here with a Char target — validity is
+                // "valid Unicode scalar", not a contiguous integer range.
+                if matches!(target_ty, MirType::Char) {
+                    let valid = Self::char_is_valid(builder, val);
+                    return Ok(Self::build_option(builder, val, valid, tgt_clif));
+                }
+                let payload = Self::resize_int(builder, val, source_ty, target_ty);
+                let in_range = Self::int_in_range(builder, val, source_ty, target_ty);
+                Ok(Self::build_option(builder, payload, in_range, tgt_clif))
+            }
+            TryFloatToInt => {
+                // Saturating conversion gives a defined payload; validity gates the tag.
+                let payload = if target_ty.is_unsigned() {
+                    builder.ins().fcvt_to_uint_sat(tgt_clif, val)
+                } else {
+                    builder.ins().fcvt_to_sint_sat(tgt_clif, val)
+                };
+                let valid = Self::float_in_range(builder, val, target_ty);
+                Ok(Self::build_option(builder, payload, valid, tgt_clif))
+            }
+        }
+    }
+
+    /// Bit-preserving integer resize. Widening extends by the source's signedness.
+    fn resize_int(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        source_ty: &MirType,
+        target_ty: &MirType,
+    ) -> Value {
+        let from = mir_to_cranelift_type(source_ty).unwrap_or(types::I64);
+        let to = mir_to_cranelift_type(target_ty).unwrap_or(types::I64);
+        if from == to {
+            return val;
+        }
+        if from.bits() > to.bits() {
+            builder.ins().ireduce(to, val)
+        } else if source_ty.is_unsigned() {
+            builder.ins().uextend(to, val)
+        } else {
+            builder.ins().sextend(to, val)
+        }
+    }
+
+    /// Widen an integer value to I64 for comparison, per source signedness.
+    /// No-op when the value is already 64-bit.
+    fn widen_i64(builder: &mut ClifFunctionBuilder, val: Value, source_ty: &MirType) -> Value {
+        if builder.func.dfg.value_type(val) == types::I64 {
+            return val;
+        }
+        if source_ty.is_unsigned() {
+            builder.ins().uextend(types::I64, val)
+        } else {
+            builder.ins().sextend(types::I64, val)
+        }
+    }
+
+    /// Clamp `val` (interpreted per source signedness) to the target range.
+    fn saturate_int(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        source_ty: &MirType,
+        target_ty: &MirType,
+    ) -> Value {
+        let (min, max) = Self::int_bounds_i64(target_ty);
+        // Widen to I64 for the comparison, then reduce.
+        let v64 = Self::widen_i64(builder, val, source_ty);
+        let (gt, lt) = if source_ty.is_unsigned() {
+            (IntCC::UnsignedGreaterThan, IntCC::UnsignedLessThan)
+        } else {
+            (IntCC::SignedGreaterThan, IntCC::SignedLessThan)
+        };
+        let maxc = builder.ins().iconst(types::I64, max);
+        let minc = builder.ins().iconst(types::I64, min);
+        let too_big = builder.ins().icmp(gt, v64, maxc);
+        let clamped = builder.ins().select(too_big, maxc, v64);
+        let too_small = builder.ins().icmp(lt, clamped, minc);
+        let clamped = builder.ins().select(too_small, minc, clamped);
+        let to = mir_to_cranelift_type(target_ty).unwrap_or(types::I64);
+        if to.bits() < 64 {
+            builder.ins().ireduce(to, clamped)
+        } else {
+            clamped
+        }
+    }
+
+    /// True when `val` fits in the target integer range (for `try convert`).
+    fn int_in_range(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        source_ty: &MirType,
+        target_ty: &MirType,
+    ) -> Value {
+        let (min, max) = Self::int_bounds_i64(target_ty);
+        let v64 = Self::widen_i64(builder, val, source_ty);
+        let (ge, le) = if source_ty.is_unsigned() {
+            (IntCC::UnsignedGreaterThanOrEqual, IntCC::UnsignedLessThanOrEqual)
+        } else {
+            (IntCC::SignedGreaterThanOrEqual, IntCC::SignedLessThanOrEqual)
+        };
+        let minc = builder.ins().iconst(types::I64, min);
+        let maxc = builder.ins().iconst(types::I64, max);
+        let ge_min = builder.ins().icmp(ge, v64, minc);
+        let le_max = builder.ins().icmp(le, v64, maxc);
+        builder.ins().band(ge_min, le_max)
+    }
+
+    /// True when the float is finite and its truncation fits the target range.
+    fn float_in_range(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        target_ty: &MirType,
+    ) -> Value {
+        let (min, max) = Self::int_bounds_i64(target_ty);
+        let ft = builder.func.dfg.value_type(val);
+        let minf = builder.ins().f64const(min as f64);
+        let maxf = builder.ins().f64const(max as f64);
+        let (minf, maxf) = if ft == types::F32 {
+            (builder.ins().fdemote(types::F32, minf), builder.ins().fdemote(types::F32, maxf))
+        } else {
+            (minf, maxf)
+        };
+        // NaN fails both comparisons (ordered), so `ge_min & le_max` is false.
+        let ge_min = builder.ins().fcmp(FloatCC::GreaterThanOrEqual, val, minf);
+        let le_max = builder.ins().fcmp(FloatCC::LessThanOrEqual, val, maxf);
+        builder.ins().band(ge_min, le_max)
+    }
+
+    /// True (I64 0/1) when `val` is a valid Unicode scalar (≤ 0x10FFFF, not a
+    /// surrogate 0xD800..=0xDFFF).
+    fn char_is_valid(builder: &mut ClifFunctionBuilder, val: Value) -> Value {
+        let vt = builder.func.dfg.value_type(val);
+        let n64 = if vt == types::I64 { val } else { builder.ins().uextend(types::I64, val) };
+        let max = builder.ins().iconst(types::I64, 0x10FFFF);
+        let sur_lo = builder.ins().iconst(types::I64, 0xD800);
+        let sur_hi = builder.ins().iconst(types::I64, 0xDFFF);
+        let le_max = builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, n64, max);
+        let ge_lo = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, n64, sur_lo);
+        let le_hi = builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, n64, sur_hi);
+        let le_max = builder.ins().uextend(types::I64, le_max);
+        let ge_lo = builder.ins().uextend(types::I64, ge_lo);
+        let le_hi = builder.ins().uextend(types::I64, le_hi);
+        let in_sur = builder.ins().band(ge_lo, le_hi);
+        let not_sur = builder.ins().bxor_imm(in_sur, 1);
+        builder.ins().band(le_max, not_sur)
+    }
+
+    /// Build `Option<T>` in a stack slot: tag 0 (Some) if `present`, else 1 (None).
+    /// Layout matches `wrap_some_into_slot`: [tag:8][payload:8].
+    fn build_option(
+        builder: &mut ClifFunctionBuilder,
+        payload: Value,
+        present: Value,
+        payload_ty: Type,
+    ) -> Value {
+        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot, 16, 0,
+        ));
+        let some_tag = builder.ins().iconst(types::I64, 0);
+        let none_tag = builder.ins().iconst(types::I64, 1);
+        let tag = builder.ins().select(present, some_tag, none_tag);
+        builder.ins().stack_store(tag, ss, crate::layouts::TAG_OFFSET);
+        // Store the payload at its natural width; widen scalars < 8 bytes to I64 slot.
+        let store_val = if payload_ty.is_int() && payload_ty.bits() < 64 {
+            builder.ins().uextend(types::I64, payload)
+        } else {
+            payload
+        };
+        builder.ins().stack_store(store_val, ss, crate::layouts::PAYLOAD_OFFSET);
+        builder.ins().stack_addr(types::I64, ss, 0)
+    }
+
+    /// Target integer range as i64 constants. 64-bit unsigned upper bound is
+    /// approximated by i64::MAX (saturate/try to u64 from ≤64-bit rarely overflows).
+    fn int_bounds_i64(t: &MirType) -> (i64, i64) {
+        match t {
+            MirType::I8 => (i8::MIN as i64, i8::MAX as i64),
+            MirType::I16 => (i16::MIN as i64, i16::MAX as i64),
+            MirType::I32 => (i32::MIN as i64, i32::MAX as i64),
+            MirType::I64 => (i64::MIN, i64::MAX),
+            MirType::U8 => (0, u8::MAX as i64),
+            MirType::U16 => (0, u16::MAX as i64),
+            MirType::U32 => (0, u32::MAX as i64),
+            MirType::U64 => (0, i64::MAX),
+            _ => (i64::MIN, i64::MAX),
+        }
+    }
+
     /// Pick the runtime print function based on the MIR operand.
     fn runtime_print_for_operand(op: &MirOperand, locals: &[rask_mir::MirLocal]) -> &'static str {
         match op {
@@ -2399,6 +2635,10 @@ impl<'a> FunctionBuilder<'a> {
                 let target = mir_to_cranelift_type(target_ty)?;
                 let val_ty = builder.func.dfg.value_type(val);
                 Ok(Self::convert_value(builder, val, val_ty, target))
+            }
+
+            MirRValue::Convert { value, source_ty, target_ty, kind } => {
+                Self::lower_convert(builder, value, source_ty, target_ty, *kind, ctx)
             }
 
             // Struct/enum field access: load from base pointer + field offset

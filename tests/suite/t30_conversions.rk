@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Explicit lossy conversions (type.primitives CV5–CV10) and char.from_u32 (CH3).
+// Every case is exercised at a boundary value and must give identical results
+// on the interpreter and native backends.
+
+// --- CV5: truncate to T (wrapping/bitwise) ---
+test "truncate wraps into target width" {
+    const big: i32 = 300
+    const a: u8 = big truncate to u8      // 300 & 0xFF = 44
+    assert a == 44
+    const neg: i32 = -1
+    const b: u8 = neg truncate to u8      // low 8 bits of -1 = 255
+    assert b == 255
+    const c: i8 = 200 truncate to i8      // 0xC8 → -56
+    assert c == -56
+    const same: i32 = 42 truncate to i32  // no-op on same width
+    assert same == 42
+}
+
+// --- CV6: saturate to T (clamp) ---
+test "saturate clamps to target range" {
+    const big: i32 = 300
+    assert (big saturate to u8) == 255
+    assert (big saturate to i8) == 127
+    const neg: i32 = -5
+    assert (neg saturate to u8) == 0
+    const vneg: i32 = -200
+    assert (vneg saturate to i8) == -128
+    const fits: i32 = 100
+    assert (fits saturate to u8) == 100
+}
+
+// --- CV7: try convert to T (T?, none if out of range) ---
+test "try convert yields none when out of range" {
+    const ok = try 100 convert to u8
+    assert ok! == 100
+    const overflow = try 300 convert to u8
+    assert overflow == none
+    const negative = try -1 convert to u8
+    assert negative == none
+}
+
+// --- CV8: float to int T (truncate toward zero) ---
+test "float to int truncates toward zero" {
+    const p: f64 = 3.9
+    assert (p float to int i32) == 3
+    const n: f64 = -3.9
+    assert (n float to int i32) == -3
+}
+
+// --- CV9: float to int T (saturating) ---
+test "float to int saturating clamps" {
+    const huge: f64 = 1.0e30
+    assert (huge float to int i32 (saturating)) == 2147483647
+    const tiny: f64 = -1.0e30
+    assert (tiny float to int i32 (saturating)) == -2147483648
+    const ok: f64 = 42.5
+    assert (ok float to int i32 (saturating)) == 42
+}
+
+// --- CV10: try float to int T (T?) ---
+test "try float to int yields none out of range" {
+    const ok = try 3.5 float to int i32
+    assert ok! == 3
+    const huge: f64 = 1.0e30
+    const bad = try huge float to int i32
+    assert bad == none
+}
+
+// --- int → float via `as` (lossless widening, spec examples) ---
+test "as allows int to float" {
+    const n: i32 = 300
+    const f: f64 = n as f64
+    assert f == 300.0
+}
+
+// --- CH3: char.from_u32 returns char? ---
+// (compares via `as u32` to sidestep a pre-existing native char-eq codegen bug, #332)
+test "char from_u32 validates code points" {
+    if char.from_u32(65)? as a {
+        assert (a as u32) == 65
+    } else {
+        assert false, "65 is a valid scalar"
+    }
+    const surrogate = char.from_u32(0xD800)
+    assert surrogate == none
+    const too_big = char.from_u32(0x110000)
+    assert too_big == none
+    const emoji = char.from_u32(0x1F600)
+    assert emoji?
+}

@@ -354,6 +354,11 @@ fn error_single_letter_type_name() {
 }
 
 #[test]
+fn error_cast_rules() {
+    assert!(compile_error("cast_rules.rk"), "should reject invalid `as` casts and misused conversion forms (CV1–CV10, CH5, BL3)");
+}
+
+#[test]
 fn compile_auto_generic_single_letter() {
     let (stdout, code) = compile_and_run("auto_generic_single_letter.rk");
     assert_eq!(code, 0);

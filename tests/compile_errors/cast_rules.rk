@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `as` cast rules (type.primitives CV1–CV4, CH5, BL3) and the
+// explicit conversion forms (CV5–CV10). `as` is lossless widening only; lossy
+// conversions need their named form.
+
+// --- CV2: narrowing int→int via `as` ---
+// ERROR: cannot narrow `i32` to `i8` with `as` [E0817]
+func narrow() {
+    const big: i32 = 300
+    const x: i8 = big as i8
+}
+
+// --- CV3: same-width sign reinterpretation via `as` ---
+// ERROR: cannot reinterpret sign converting `i32` to `u32` with `as` [E0817]
+func sign_reinterpret() {
+    const n: i32 = -1
+    const u: u32 = n as u32
+}
+
+// --- CV4: float→int via `as` ---
+// ERROR: cannot convert float `f64` to integer `i32` with `as` [E0817]
+func float_to_int() {
+    const f: f64 = 3.14
+    const i: i32 = f as i32
+}
+
+// --- CH5: int→char via `as` ---
+// ERROR: cannot convert `u32` to `char` with `as` — use char.from_u32 [E0817]
+func int_to_char() {
+    const n: u32 = 65
+    const c: char = n as char
+}
+
+// --- BL3: int→bool via `as` ---
+// ERROR: no conversion between `bool` and numeric types with `as` [E0817]
+func int_to_bool() {
+    const one: i32 = 1
+    const flag: bool = one as bool
+}
+
+// --- BL3: bool→int via `as` ---
+// ERROR: no conversion between `bool` and numeric types with `as` [E0817]
+func bool_to_int() {
+    const b: bool = true
+    const n: i32 = b as i32
+}
+
+// --- CV8: `float to int` misused on an integer source ---
+// ERROR: `float to int` converts a float, source is not a float [E0818]
+func float_form_on_int() {
+    const n: i32 = 5
+    const x = n float to int i32
+}
+
+// --- CV5: `truncate to` producing a non-integer ---
+// ERROR: `truncate to` produces an integer, target is not an integer [E0818]
+func truncate_to_float() {
+    const n: i32 = 5
+    const x = n truncate to f64
+}

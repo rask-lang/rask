@@ -23,8 +23,8 @@ extend TextBuffer {
 
     // Requires string to be Copy — reading old_text must not borrow self.lines
     func replace(self, index: i32, new_text: string) -> string {
-        const old_text = self.lines[index as usize]
-        self.lines[index as usize] = new_text
+        const old_text = self.lines[index]
+        self.lines[index] = new_text
         return old_text
     }
 }

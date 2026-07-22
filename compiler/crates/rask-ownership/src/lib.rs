@@ -1218,6 +1218,9 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Cast { expr: inner, ty: _ } => {
                 self.check_expr(inner);
             }
+            ExprKind::Convert { expr: inner, .. } => {
+                self.check_expr(inner);
+            }
             ExprKind::UsingBlock { name: _, args, body } => {
                 for arg in args {
                     self.check_expr(&arg.expr);
@@ -2292,7 +2295,9 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::IsPresent { expr: inner, .. } => {
                 self.collect_free_vars_inner(inner, locals, out, projections);
             }
-            ExprKind::Unwrap { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
+            ExprKind::Unwrap { expr: inner, .. }
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Convert { expr: inner, .. } => {
                 self.collect_free_vars_inner(inner, locals, out, projections);
             }
             ExprKind::NullCoalesce { value, default } => {

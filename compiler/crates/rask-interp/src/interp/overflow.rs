@@ -8,6 +8,8 @@
 //! indices, internally-produced values) has no fixed width and is unchecked,
 //! except divide-by-zero which always panics.
 
+use rask_ast::expr::ConvertKind;
+
 use crate::value::{IntKind, Value};
 
 use super::{Interpreter, RuntimeError};
@@ -159,6 +161,178 @@ pub(crate) fn checked_neg(kind: IntKind, a: i64) -> Result<i64, RuntimeError> {
     } else {
         Ok(store(kind, result))
     }
+}
+
+// ============================================================================
+// Explicit lossy conversions (type.primitives CV5–CV10)
+// ============================================================================
+
+/// An integer conversion target. `IntKind` covers i8..i64/u8..u64; i128/u128
+/// have dedicated `Value` variants and are tracked separately.
+#[derive(Clone, Copy)]
+enum IntTarget {
+    Kind(IntKind),
+    I128,
+    U128,
+}
+
+impl IntTarget {
+    fn parse(name: &str) -> Option<IntTarget> {
+        match name {
+            "i128" => Some(IntTarget::I128),
+            "u128" => Some(IntTarget::U128),
+            _ => IntKind::from_name(name).map(IntTarget::Kind),
+        }
+    }
+
+    /// Inclusive range as i128. `U128` is unbounded above in i128 — callers that
+    /// need the true upper bound handle it separately.
+    fn bounds(self) -> (i128, i128) {
+        match self {
+            IntTarget::Kind(k) => {
+                let bits = k.bits().unwrap_or(64);
+                (min_of(k, bits), max_of(k, bits))
+            }
+            IntTarget::I128 => (i128::MIN, i128::MAX),
+            IntTarget::U128 => (0, i128::MAX),
+        }
+    }
+
+    fn store(self, v: i128) -> Value {
+        match self {
+            IntTarget::Kind(k) => Value::Int(store(k, v), k),
+            IntTarget::I128 => Value::Int128(v),
+            IntTarget::U128 => Value::Uint128(v as u128),
+        }
+    }
+}
+
+/// Source integer as its logical value (unsigned kinds reinterpret the bits).
+fn int_logical(val: &Value) -> Option<i128> {
+    match val {
+        Value::Int(n, k) => Some(logical(*k, *n)),
+        Value::Int128(n) => Some(*n),
+        Value::Uint128(n) => Some(*n as i128),
+        _ => None,
+    }
+}
+
+/// Low 64 bits of the source integer's two's-complement representation.
+fn raw_i64(val: &Value) -> Option<i64> {
+    match val {
+        Value::Int(n, _) => Some(*n),
+        Value::Int128(n) => Some(*n as i64),
+        Value::Uint128(n) => Some(*n as i64),
+        _ => None,
+    }
+}
+
+fn some(val: Value) -> Value {
+    Value::Enum {
+        name: "Option".to_string(),
+        variant: "Some".to_string(),
+        fields: vec![val],
+        variant_index: 0,
+        origin: None,
+    }
+}
+
+fn none() -> Value {
+    Value::Enum {
+        name: "Option".to_string(),
+        variant: "None".to_string(),
+        fields: vec![],
+        variant_index: 1,
+        origin: None,
+    }
+}
+
+fn not_int(target: &str) -> RuntimeError {
+    RuntimeError::TypeError(format!("conversion target `{}` is not an integer type", target))
+}
+
+/// Evaluate an explicit conversion form (CV5–CV10). `Interpreter`-independent.
+pub(crate) fn convert(val: Value, target: &str, kind: ConvertKind) -> Result<Value, RuntimeError> {
+    match kind {
+        ConvertKind::Truncate => truncate_to(val, target),
+        ConvertKind::Saturate => saturate_to(val, target),
+        ConvertKind::TryConvert => try_convert_to(val, target),
+        ConvertKind::FloatToInt => float_to_int(val, target, false, false),
+        ConvertKind::FloatToIntSat => float_to_int(val, target, true, false),
+        ConvertKind::TryFloatToInt => float_to_int(val, target, false, true),
+    }
+}
+
+/// CV5: wrapping/bitwise truncation into the target width.
+fn truncate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
+    let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
+    let raw = raw_i64(&val).ok_or_else(|| RuntimeError::TypeError(
+        format!("`truncate to` needs an integer, found {}", val.type_name())))?;
+    Ok(match t {
+        IntTarget::Kind(k) => Value::Int(k.wrap(raw), k),
+        IntTarget::I128 => Value::Int128(int_logical(&val).unwrap_or(raw as i128)),
+        IntTarget::U128 => Value::Uint128(match &val {
+            Value::Uint128(n) => *n,
+            _ => int_logical(&val).unwrap_or(raw as i128) as u128,
+        }),
+    })
+}
+
+/// CV6: clamp to the target range.
+fn saturate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
+    let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
+    let src = int_logical(&val).ok_or_else(|| RuntimeError::TypeError(
+        format!("`saturate to` needs an integer, found {}", val.type_name())))?;
+    if let IntTarget::U128 = t {
+        return Ok(Value::Uint128(if src < 0 { 0 } else { src as u128 }));
+    }
+    let (min, max) = t.bounds();
+    Ok(t.store(src.clamp(min, max)))
+}
+
+/// CV7: `T?` — `none` if out of range.
+fn try_convert_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
+    let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
+    let src = int_logical(&val).ok_or_else(|| RuntimeError::TypeError(
+        format!("`try convert to` needs an integer, found {}", val.type_name())))?;
+    if let IntTarget::U128 = t {
+        return Ok(if src < 0 { none() } else { some(Value::Uint128(src as u128)) });
+    }
+    let (min, max) = t.bounds();
+    Ok(if src >= min && src <= max { some(t.store(src)) } else { none() })
+}
+
+/// CV8/CV9/CV10: float → int, truncating toward zero.
+fn float_to_int(val: Value, target: &str, saturating: bool, optional: bool) -> Result<Value, RuntimeError> {
+    let f = match val {
+        Value::Float(f) => f,
+        other => return Err(RuntimeError::TypeError(
+            format!("`float to int` needs a float, found {}", other.type_name()))),
+    };
+    let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
+    let (min, max) = t.bounds();
+    let (min_f, max_f) = (min as f64, max as f64);
+
+    if f.is_nan() {
+        if saturating { return Ok(t.store(0)); }
+        if optional { return Ok(none()); }
+        return Err(RuntimeError::Panic(format!("cannot convert NaN to {}", target)));
+    }
+    if f.is_infinite() {
+        if saturating { return Ok(t.store(if f > 0.0 { max } else { min })); }
+        if optional { return Ok(none()); }
+        return Err(RuntimeError::Panic(format!("cannot convert {}infinity to {}",
+            if f < 0.0 { "-" } else { "" }, target)));
+    }
+    let truncated = f.trunc();
+    if truncated < min_f || truncated > max_f {
+        if saturating { return Ok(t.store(if truncated > 0.0 { max } else { min })); }
+        if optional { return Ok(none()); }
+        return Err(RuntimeError::Panic(format!(
+            "float {} out of range for {}", f, target)));
+    }
+    let v = truncated as i128;
+    Ok(if optional { some(t.store(v)) } else { t.store(v) })
 }
 
 /// Mask a value into `bits`, sign-extending for signed kinds.

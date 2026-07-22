@@ -380,7 +380,7 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         ExprKind::IsPresent { expr: e, .. } => {
             classify_expr(e, effects, callees);
         }
-        ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
+        ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } | ExprKind::Convert { expr: e, .. } => {
             classify_expr(e, effects, callees);
         }
         ExprKind::NullCoalesce { value, default } => {
@@ -589,7 +589,7 @@ fn rt_scan_expr(expr: &Expr, depth: u32, unguarded: &mut HashSet<String>) -> boo
             rt_scan_expr(expr, depth, unguarded) | rt_scan_expr(else_branch, depth, unguarded)
         }
         ExprKind::IsPattern { expr, .. } | ExprKind::IsPresent { expr, .. }
-        | ExprKind::Unwrap { expr, .. } | ExprKind::Cast { expr, .. } => rt_scan_expr(expr, depth, unguarded),
+        | ExprKind::Unwrap { expr, .. } | ExprKind::Cast { expr, .. } | ExprKind::Convert { expr, .. } => rt_scan_expr(expr, depth, unguarded),
         ExprKind::Match { scrutinee, arms } => {
             let mut r = rt_scan_expr(scrutinee, depth, unguarded);
             for arm in arms {

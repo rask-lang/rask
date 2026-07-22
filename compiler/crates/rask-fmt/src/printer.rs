@@ -1749,6 +1749,37 @@ impl<'a> Printer<'a> {
                 self.emit(" as ");
                 self.emit(ty);
             }
+            ExprKind::Convert { expr: inner, target, kind } => {
+                use rask_ast::expr::ConvertKind::*;
+                match kind {
+                    Truncate => {
+                        self.format_expr(inner);
+                        self.emit(&format!(" truncate to {}", target));
+                    }
+                    Saturate => {
+                        self.format_expr(inner);
+                        self.emit(&format!(" saturate to {}", target));
+                    }
+                    TryConvert => {
+                        self.emit("try ");
+                        self.format_expr(inner);
+                        self.emit(&format!(" convert to {}", target));
+                    }
+                    FloatToInt => {
+                        self.format_expr(inner);
+                        self.emit(&format!(" float to int {}", target));
+                    }
+                    FloatToIntSat => {
+                        self.format_expr(inner);
+                        self.emit(&format!(" float to int {} (saturating)", target));
+                    }
+                    TryFloatToInt => {
+                        self.emit("try ");
+                        self.format_expr(inner);
+                        self.emit(&format!(" float to int {}", target));
+                    }
+                }
+            }
             ExprKind::Spawn { body } => {
                 self.emit("spawn {");
                 self.emit_newline();

@@ -29,7 +29,7 @@ mod validate;
 pub use type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::TypeError;
+pub use errors::{TypeError, InvalidCastClass};
 pub use parse_type::parse_type_string;
 pub use declarations::signature_type_param_names;
 
@@ -122,6 +122,9 @@ pub struct TypeChecker {
     pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
     /// CC1: nesting depth of `using Multitasking { }` blocks in current function.
     pub(super) multitasking_depth: u32,
+    /// CV1–CV10: cast/convert sites validated after literal defaults resolve
+    /// their source types. Deferred so `1 as bool` sees `i32`, not a fresh var.
+    pub(super) pending_casts: Vec<check_expr::PendingCast>,
 }
 
 impl TypeChecker {
@@ -152,6 +155,7 @@ impl TypeChecker {
             accumulate_errors: false,
             discarded_bindings: HashMap::new(),
             multitasking_depth: 0,
+            pending_casts: Vec::new(),
         }
     }
 
@@ -184,6 +188,10 @@ impl TypeChecker {
 
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
+
+        // CV1–CV10: validate casts/conversions now that literal source types
+        // are concrete (e.g. `1 as bool` sees `i32`).
+        self.validate_pending_casts();
 
         let node_types: HashMap<_, _> = self
             .node_types

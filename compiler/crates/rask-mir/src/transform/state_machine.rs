@@ -294,7 +294,7 @@ fn rvalue_uses(rv: &MirRValue, uses: &mut Vec<LocalId>) {
             operand_uses(right, uses);
         }
         MirRValue::UnaryOp { operand, .. } => operand_uses(operand, uses),
-        MirRValue::Cast { value, .. } => operand_uses(value, uses),
+        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => operand_uses(value, uses),
         MirRValue::Field { base, .. } => operand_uses(base, uses),
         MirRValue::EnumTag { value } => operand_uses(value, uses),
         MirRValue::ArrayIndex { base, index, .. } => {
@@ -702,6 +702,12 @@ fn remap_rvalue(rv: &MirRValue, map: &HashMap<LocalId, LocalId>) -> MirRValue {
         MirRValue::Cast { value, target_ty } => MirRValue::Cast {
             value: remap_operand(value, map),
             target_ty: target_ty.clone(),
+        },
+        MirRValue::Convert { value, source_ty, target_ty, kind } => MirRValue::Convert {
+            value: remap_operand(value, map),
+            source_ty: source_ty.clone(),
+            target_ty: target_ty.clone(),
+            kind: *kind,
         },
         MirRValue::Field { base, field_index, byte_offset, field_size } => MirRValue::Field {
             base: remap_operand(base, map),

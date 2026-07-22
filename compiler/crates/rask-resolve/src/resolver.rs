@@ -2243,7 +2243,7 @@ impl Resolver {
                 self.resolve_expr(body);
                 self.scopes.pop();
             }
-            ExprKind::Cast { expr: inner, .. } => {
+            ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.resolve_expr(inner);
             }
             ExprKind::Spawn { body } => {
