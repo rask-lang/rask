@@ -34,6 +34,7 @@ use rask_ast::decl::{Decl, DeclKind};
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
 mod derive;
+mod comptime_eval;
 
 // Re-export key types so callers don't need direct deps on pipeline crates.
 pub use rask_comptime::CfgConfig;
@@ -538,8 +539,15 @@ fn finalize_compile(
         }
     };
 
-    // --- Evaluate comptime globals ---
-    let comptime_globals = evaluate_comptime_globals(&check.decls, Some(&config.cfg));
+    // --- Evaluate comptime globals (single source of truth) ---
+    // Hard errors (overflow, divide-by-zero) become pipeline diagnostics and
+    // fail the build like any other pass — no separate handling downstream.
+    let (comptime_globals, ct_diags) =
+        evaluate_comptime_globals(&check.decls, &check.typed, &mono, Some(&config.cfg));
+    if !ct_diags.is_empty() {
+        diags.extend(ct_diags);
+        return PipelineOutput::fail_with_sources(diags, pkg_source_files);
+    }
 
     PipelineOutput::ok_with_sources(
         CompileResult {
@@ -558,64 +566,11 @@ fn finalize_compile(
 // Comptime global evaluation
 // ============================================================================
 
-/// Evaluate comptime const declarations via the AST interpreter.
-///
-/// For MIR-based fast-path evaluation, callers can use `MirEvalContext`
-/// in rask-cli's codegen module (which falls back to this on failure).
-pub fn evaluate_comptime_globals(
-    decls: &[Decl],
-    cfg: Option<&CfgConfig>,
-) -> HashMap<String, ComptimeGlobalMeta> {
-    use rask_ast::decl::DeclKind;
-    use rask_ast::stmt::StmtKind;
+// The comptime-global evaluator lives in `comptime_eval` — the single source
+// of truth used by both the pipeline (below) and the CLI's test/bench paths.
+pub use crate::comptime_eval::evaluate_comptime_globals;
 
-    let mut comptime_interp = rask_comptime::ComptimeInterpreter::new();
-    if let Some(c) = cfg {
-        comptime_interp.inject_cfg(c);
-    }
-    comptime_interp.register_functions(decls);
-
-    let mut globals = HashMap::new();
-    let mut comptime_consts: Vec<(String, &rask_ast::expr::Expr)> = Vec::new();
-
-    for decl in decls {
-        match &decl.kind {
-            DeclKind::Const(c) => {
-                if is_comptime_init(&c.init, decls) {
-                    comptime_consts.push((c.name.clone(), &c.init));
-                }
-            }
-            DeclKind::Fn(f) => {
-                for stmt in &f.body {
-                    if let StmtKind::Const { name, init, .. } = &stmt.kind {
-                        if is_comptime_init(init, decls) {
-                            comptime_consts.push((name.clone(), init));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    for (name, init) in comptime_consts {
-        comptime_interp.reset_branch_count();
-        match comptime_interp.eval_expr(init) {
-            Ok(val) => {
-                let type_prefix = val.type_prefix().to_string();
-                let elem_count = val.elem_count();
-                if let Some(bytes) = val.serialize() {
-                    globals.insert(name, ComptimeGlobalMeta { bytes, elem_count, type_prefix });
-                }
-            }
-            Err(_) => {} // comptime eval failures are non-fatal
-        }
-    }
-
-    globals
-}
-
-fn is_comptime_init(init: &rask_ast::expr::Expr, decls: &[Decl]) -> bool {
+pub(crate) fn is_comptime_init(init: &rask_ast::expr::Expr, decls: &[Decl]) -> bool {
     use rask_ast::expr::ExprKind;
 
     matches!(&init.kind, ExprKind::Comptime { .. })

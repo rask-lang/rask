@@ -378,7 +378,7 @@ impl Interpreter {
     /// Helper to extract an integer from args.
     pub(crate) fn expect_int(&self, args: &[Value], idx: usize) -> Result<i64, RuntimeError> {
         match args.get(idx) {
-            Some(Value::Int(n)) => Ok(*n),
+            Some(Value::Int(n, _)) => Ok(*n),
             Some(v) => Err(RuntimeError::TypeError(format!(
                 "expected int, got {}",
                 v.type_name()
@@ -485,7 +485,7 @@ impl Interpreter {
         match val {
             Value::Bool(b) => *b,
             Value::Unit => false,
-            Value::Int(0) => false,
+            Value::Int(0, _) => false,
             _ => true,
         }
     }

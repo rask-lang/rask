@@ -180,7 +180,7 @@ impl Interpreter {
             Value::Vec(v) => {
                 let guard = v.lock().unwrap();
                 guard.iter().map(|v| match v {
-                    Value::Int(n) => *n as u8,
+                    Value::Int(n, _) => *n as u8,
                     _ => 0,
                 }).collect::<Vec<u8>>()
             }
@@ -223,7 +223,7 @@ impl Interpreter {
         // Remaining data as slice
         let remaining: Vec<Value> = data[needed..]
             .iter()
-            .map(|&b| Value::Int(b as i64))
+            .map(|&b| Value::int(b as i64))
             .collect();
         let remaining_val = Value::Vec(Arc::new(Mutex::new(remaining)));
 
@@ -256,11 +256,11 @@ impl Interpreter {
 
         let mut buf = vec![0u8; meta.size_bytes as usize];
         for field_meta in &meta.fields {
-            let val = guard.fields.get(&field_meta.name).cloned().unwrap_or(Value::Int(0));
+            let val = guard.fields.get(&field_meta.name).cloned().unwrap_or(Value::int(0));
             write_binary_field(&mut buf, field_meta, &val);
         }
 
-        let result: Vec<Value> = buf.iter().map(|&b| Value::Int(b as i64)).collect();
+        let result: Vec<Value> = buf.iter().map(|&b| Value::int(b as i64)).collect();
         Ok(Value::Vec(Arc::new(Mutex::new(result))))
     }
 
@@ -287,7 +287,7 @@ impl Interpreter {
         // Build into a local buffer first
         let mut buf = vec![0u8; needed];
         for field_meta in &meta.fields {
-            let val = guard.fields.get(&field_meta.name).cloned().unwrap_or(Value::Int(0));
+            let val = guard.fields.get(&field_meta.name).cloned().unwrap_or(Value::int(0));
             write_binary_field(&mut buf, field_meta, &val);
         }
         drop(guard);
@@ -310,7 +310,7 @@ impl Interpreter {
                     });
                 }
                 for (i, &b) in buf.iter().enumerate() {
-                    guard[i] = Value::Int(b as i64);
+                    guard[i] = Value::int(b as i64);
                 }
             }
             _ => {
@@ -324,7 +324,7 @@ impl Interpreter {
         Ok(Value::Enum {
             name: "Result".into(),
             variant: "Ok".into(),
-            fields: vec![Value::Int(needed as i64)],
+            fields: vec![Value::int(needed as i64)],
             variant_index: 0,
             origin: None,
         })
@@ -337,7 +337,7 @@ fn read_binary_field(data: &[u8], field: &BinaryFieldMeta) -> Value {
         let byte_start = (field.bit_offset / 8) as usize;
         let values: Vec<Value> = data[byte_start..byte_start + field.byte_array_len]
             .iter()
-            .map(|&b| Value::Int(b as i64))
+            .map(|&b| Value::int(b as i64))
             .collect();
         return Value::Vec(Arc::new(Mutex::new(values)));
     }
@@ -345,28 +345,28 @@ fn read_binary_field(data: &[u8], field: &BinaryFieldMeta) -> Value {
     let raw = read_bits(data, field.bit_offset, field.bits);
 
     match field.runtime_type.as_str() {
-        "u8" | "u16" | "u32" | "u64" => Value::Int(raw as i64),
-        "i8" => Value::Int(raw as u8 as i8 as i64),
+        "u8" | "u16" | "u32" | "u64" => Value::int(raw as i64),
+        "i8" => Value::int(raw as u8 as i8 as i64),
         "i16" => {
             let v = match field.endian {
                 Some(Endian::Little) => i16::from_le_bytes((raw as u16).to_le_bytes()),
                 _ => raw as u16 as i16,
             };
-            Value::Int(v as i64)
+            Value::int(v as i64)
         }
         "i32" => {
             let v = match field.endian {
                 Some(Endian::Little) => i32::from_le_bytes((raw as u32).to_le_bytes()),
                 _ => raw as u32 as i32,
             };
-            Value::Int(v as i64)
+            Value::int(v as i64)
         }
         "i64" => {
             let v = match field.endian {
                 Some(Endian::Little) => i64::from_le_bytes(raw.to_le_bytes()),
                 _ => raw as i64,
             };
-            Value::Int(v)
+            Value::int(v)
         }
         "f32" => {
             let bits = raw as u32;
@@ -375,7 +375,7 @@ fn read_binary_field(data: &[u8], field: &BinaryFieldMeta) -> Value {
         "f64" => {
             Value::Float(f64::from_bits(raw))
         }
-        _ => Value::Int(raw as i64),
+        _ => Value::int(raw as i64),
     }
 }
 
@@ -386,7 +386,7 @@ fn write_binary_field(buf: &mut [u8], field: &BinaryFieldMeta, value: &Value) {
         if let Value::Vec(v) = value {
             let guard = v.lock().unwrap();
             for (i, val) in guard.iter().enumerate().take(field.byte_array_len) {
-                if let Value::Int(n) = val {
+                if let Value::Int(n, _) = val {
                     buf[byte_start + i] = *n as u8;
                 }
             }
@@ -395,7 +395,7 @@ fn write_binary_field(buf: &mut [u8], field: &BinaryFieldMeta, value: &Value) {
     }
 
     let raw: u64 = match value {
-        Value::Int(n) => *n as u64,
+        Value::Int(n, _) => *n as u64,
         Value::Float(f) => {
             if field.bits == 32 {
                 (*f as f32).to_bits() as u64

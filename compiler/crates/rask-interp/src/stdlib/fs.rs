@@ -40,7 +40,7 @@ impl Interpreter {
                     Ok(bytes) => {
                         let values: Vec<Value> = bytes
                             .into_iter()
-                            .map(|b| Value::Int(b as i64))
+                            .map(|b| Value::int(b as i64))
                             .collect();
                         Ok(Value::Enum {
                             name: "Result".to_string(),
@@ -106,7 +106,7 @@ impl Interpreter {
                         .unwrap()
                         .iter()
                         .map(|val| match val {
-                            Value::Int(n) => *n as u8,
+                            Value::Int(n, _) => *n as u8,
                             _ => 0,
                         })
                         .collect(),
@@ -238,15 +238,15 @@ impl Interpreter {
                 match std::fs::metadata(&path) {
                     Ok(meta) => {
                         let mut fields = IndexMap::new();
-                        fields.insert("size".to_string(), Value::Int(meta.len() as i64));
+                        fields.insert("size".to_string(), Value::int(meta.len() as i64));
                         if let Ok(accessed) = meta.accessed() {
                             if let Ok(dur) = accessed.duration_since(std::time::UNIX_EPOCH) {
-                                fields.insert("accessed".to_string(), Value::Int(dur.as_secs() as i64));
+                                fields.insert("accessed".to_string(), Value::int(dur.as_secs() as i64));
                             }
                         }
                         if let Ok(modified) = meta.modified() {
                             if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
-                                fields.insert("modified".to_string(), Value::Int(dur.as_secs() as i64));
+                                fields.insert("modified".to_string(), Value::int(dur.as_secs() as i64));
                             }
                         }
                         Ok(Value::Enum {
@@ -361,7 +361,7 @@ impl Interpreter {
                     Ok(bytes) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
-                        fields: vec![Value::Int(bytes as i64)],
+                        fields: vec![Value::int(bytes as i64)],
                         variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(Value::Enum {
@@ -520,9 +520,9 @@ impl Interpreter {
         method: &str,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "size" => Ok(fields.get("size").cloned().unwrap_or(Value::Int(0))),
-            "accessed" => Ok(fields.get("accessed").cloned().unwrap_or(Value::Int(0))),
-            "modified" => Ok(fields.get("modified").cloned().unwrap_or(Value::Int(0))),
+            "size" => Ok(fields.get("size").cloned().unwrap_or(Value::int(0))),
+            "accessed" => Ok(fields.get("accessed").cloned().unwrap_or(Value::int(0))),
+            "modified" => Ok(fields.get("modified").cloned().unwrap_or(Value::int(0))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Metadata".to_string(),
                 method: method.to_string(),

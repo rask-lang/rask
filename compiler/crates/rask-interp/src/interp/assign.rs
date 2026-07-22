@@ -132,7 +132,7 @@ impl Interpreter {
     fn assign_index(container: &Value, idx: &Value, value: Value) -> Result<(), RuntimeError> {
         match container {
             Value::Vec(v) => {
-                if let Value::Int(i) = idx {
+                if let Value::Int(i, _) = idx {
                     let idx = *i as usize;
                     let mut vec = v.lock().unwrap();
                     if idx < vec.len() {
@@ -196,7 +196,7 @@ impl Interpreter {
                 }
             }
             Value::Vec(v) => {
-                if let Value::Int(i) = idx {
+                if let Value::Int(i, _) = idx {
                     let idx = *i as usize;
                     let mut vec = v.lock().unwrap();
                     if idx < vec.len() {

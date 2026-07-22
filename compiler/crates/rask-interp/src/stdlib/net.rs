@@ -317,7 +317,7 @@ impl Interpreter {
             Value::Struct(ref s) => {
                 let guard = s.lock().unwrap();
                 let status = match guard.fields.get("status") {
-                    Some(Value::Int(n)) => *n as i32,
+                    Some(Value::Int(n, _)) => *n as i32,
                     _ => 200,
                 };
                 let body = match guard.fields.get("body") {

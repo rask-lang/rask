@@ -1,0 +1,18 @@
+// Arithmetic at type boundaries that must NOT panic (type.overflow).
+// Identical output required on both backends.
+func main() {
+    const max32: i32 = 2147483647
+    println((max32 - 1).to_string())   // 2147483646
+
+    const min32: i32 = -2147483648
+    println((min32 + 1).to_string())   // -2147483647
+
+    const a: i32 = 46340
+    println((a * a).to_string())       // 2147395600, fits i32
+
+    const s: i32 = 1
+    println((s << 30).to_string())     // 1073741824
+
+    const big: i64 = 9223372036854775806
+    println((big + 1).to_string())     // i64 MAX, no overflow
+}

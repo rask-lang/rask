@@ -155,11 +155,24 @@ impl Interpreter {
         match &expr.kind {
             ExprKind::Int(n, suffix) => {
                 use rask_ast::token::IntSuffix;
-                match suffix {
-                    Some(IntSuffix::I128) => Ok(Value::Int128(*n as i128)),
-                    Some(IntSuffix::U128) => Ok(Value::Uint128(*n as u128)),
-                    _ => Ok(Value::Int(*n)),
-                }
+                use crate::value::IntKind;
+                // Kind comes from an explicit suffix, else the checker's
+                // inferred type for this literal (defaults to i32). This is
+                // where width first attaches to a value (type.overflow).
+                let kind = match suffix {
+                    Some(IntSuffix::I128) => return Ok(Value::Int128(*n as i128)),
+                    Some(IntSuffix::U128) => return Ok(Value::Uint128(*n as u128)),
+                    Some(IntSuffix::I8) => IntKind::I8,
+                    Some(IntSuffix::I16) => IntKind::I16,
+                    Some(IntSuffix::I32) => IntKind::I32,
+                    Some(IntSuffix::I64) | Some(IntSuffix::Isize) => IntKind::I64,
+                    Some(IntSuffix::U8) => IntKind::U8,
+                    Some(IntSuffix::U16) => IntKind::U16,
+                    Some(IntSuffix::U32) => IntKind::U32,
+                    Some(IntSuffix::U64) | Some(IntSuffix::Usize) => IntKind::U64,
+                    None => self.node_types.get(&expr.id).map(IntKind::from_type).unwrap_or(IntKind::Untyped),
+                };
+                Ok(Value::Int(*n, kind))
             }
             ExprKind::Float(n, _) => Ok(Value::Float(*n)),
             ExprKind::String(s) => {
@@ -372,7 +385,7 @@ impl Interpreter {
                                 .map(|a| self.eval_expr(&a.expr))
                                 .collect::<Result<_, _>>()?;
                             let target_val = match arg_vals.first() {
-                                Some(Value::Int(n)) => *n,
+                                Some(Value::Int(n, _)) => *n,
                                 _ => return Err(RuntimeDiagnostic::new(
                                     RuntimeError::TypeError("from_value() expects an integer argument".to_string()),
                                     expr.span
@@ -506,6 +519,16 @@ impl Interpreter {
                     ));
                 }
 
+                // Width-aware integer overflow (type.overflow OV1–OV4, SH1).
+                // The width comes from the operand values' IntKind, so this is
+                // correct even in generic code. i128/u128 are checked in their
+                // own method impls.
+                if let Some(result) =
+                    self.try_checked_int_arith(&receiver, method, &arg_vals)
+                {
+                    return result.map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
+
                 self.call_method(receiver, method, arg_vals)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
@@ -553,7 +576,9 @@ impl Interpreter {
                         )),
                     },
                     UnaryOp::Neg => match val {
-                        Value::Int(n) => Ok(Value::Int(-n)),
+                        Value::Int(n, kind) => super::overflow::checked_neg(kind, n)
+                            .map(|v| Value::Int(v, kind))
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span)),
                         Value::Float(n) => Ok(Value::Float(-n)),
                         _ => Err(RuntimeDiagnostic::new(
                             RuntimeError::TypeError(format!(
@@ -676,7 +701,7 @@ impl Interpreter {
             } => {
                 let start_val = if let Some(s) = start {
                     match self.eval_expr(s)? {
-                        Value::Int(n) => n,
+                        Value::Int(n, _) => n,
                         v => {
                             return Err(RuntimeDiagnostic::new(
                                 RuntimeError::TypeError(format!(
@@ -692,7 +717,7 @@ impl Interpreter {
                 };
                 let end_val = if let Some(e) = end {
                     match self.eval_expr(e)? {
-                        Value::Int(n) => n,
+                        Value::Int(n, _) => n,
                         v => {
                             return Err(RuntimeDiagnostic::new(
                                 RuntimeError::TypeError(format!(
@@ -898,8 +923,8 @@ impl Interpreter {
                         // G4: @binary SIZE and SIZE_BITS constants
                         if let Some(meta) = self.binary_structs.get(&type_name) {
                             match field.as_str() {
-                                "SIZE" => return Ok(Value::Int(meta.size_bytes as i64)),
-                                "SIZE_BITS" => return Ok(Value::Int(meta.total_bits as i64)),
+                                "SIZE" => return Ok(Value::int(meta.size_bytes as i64)),
+                                "SIZE_BITS" => return Ok(Value::int(meta.total_bits as i64)),
                                 _ => {}
                             }
                         }
@@ -1019,7 +1044,7 @@ impl Interpreter {
                 let idx = self.eval_expr(index)?;
 
                 match (&obj, &idx) {
-                    (Value::Vec(v), Value::Int(i)) => {
+                    (Value::Vec(v), Value::Int(i, _)) => {
                         let vec = v.lock().unwrap();
                         let idx = *i as usize;
                         match vec.get(idx).cloned() {
@@ -1046,7 +1071,7 @@ impl Interpreter {
                         let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
                         Ok(Value::Vec(Arc::new(Mutex::new(slice))))
                     }
-                    (Value::String(s), Value::Int(i)) => {
+                    (Value::String(s), Value::Int(i, _)) => {
                         let str_val = s.lock().unwrap();
                         match str_val.chars().nth(*i as usize) {
                             Some(c) => Ok(Value::Char(c)),
@@ -1120,7 +1145,7 @@ impl Interpreter {
             ExprKind::ArrayRepeat { value, count } => {
                 let val = self.eval_expr(value)?;
                 let n = match self.eval_expr(count)? {
-                    Value::Int(n) => n as usize,
+                    Value::Int(n, _) => n as usize,
                     other => return Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "array repeat count must be integer, found {}", other.type_name()
@@ -1387,38 +1412,40 @@ impl Interpreter {
             ExprKind::Cast { expr, ty } => {
                 let val = self.eval_expr(expr)?;
                 match (val, ty.as_str()) {
-                    (Value::Int(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
-                    (Value::Float(n), "i64" | "i32" | "int" | "i16" | "i8") => {
-                        Ok(Value::Int(n as i64))
+                    (Value::Int(n, _), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Float(n), t @ ("i64" | "i32" | "int" | "i16" | "i8"
+                        | "u64" | "u32" | "u16" | "u8" | "usize")) => {
+                        let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
+                        Ok(Value::Int(kind.wrap(n as i64), kind))
                     }
-                    (Value::Float(n), "u64" | "u32" | "u16" | "u8" | "usize") => {
-                        Ok(Value::Int(n as i64))
+                    (Value::Int(n, _), t @ ("i64" | "i32" | "int" | "i16" | "i8" | "u64" | "u32"
+                        | "u16" | "u8" | "usize")) => {
+                        let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
+                        Ok(Value::Int(kind.wrap(n), kind))
                     }
-                    (Value::Int(n), "i64" | "i32" | "int" | "i16" | "i8" | "u64" | "u32"
-                        | "u16" | "u8" | "usize") => Ok(Value::Int(n)),
-                    (Value::Int(n), "string") => {
+                    (Value::Int(n, _), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     (Value::Float(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     (Value::Char(c), "i32" | "i64" | "int" | "u32" | "u8" | "u64" | "usize") => {
-                        Ok(Value::Int(c as i64))
+                        Ok(Value::int(c as i64))
                     }
-                    (Value::Int(n), "char") => {
+                    (Value::Int(n, _), "char") => {
                         Ok(Value::Char(char::from_u32(n as u32).unwrap_or('\0')))
                     }
                     // i128 conversions
-                    (Value::Int(n), "i128") => Ok(Value::Int128(n as i128)),
-                    (Value::Int(n), "u128") => Ok(Value::Uint128(n as u128)),
-                    (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::Int(n as i64)),
+                    (Value::Int(n, _), "i128") => Ok(Value::Int128(n as i128)),
+                    (Value::Int(n, _), "u128") => Ok(Value::Uint128(n as u128)),
+                    (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Int128(n), "u64" | "u32" | "u16" | "u8" | "usize" | "u128") => Ok(Value::Uint128(n as u128)),
                     (Value::Int128(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
                     (Value::Int128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     // u128 conversions
-                    (Value::Uint128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::Int(n as i64)),
+                    (Value::Uint128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Uint128(n), "i128") => Ok(Value::Int128(n as i128)),
                     (Value::Uint128(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
                     (Value::Uint128(n), "u128" | "u64" | "u32" | "u16" | "u8" | "usize") => Ok(Value::Uint128(n)),
@@ -1441,7 +1468,7 @@ impl Interpreter {
                         } else {
                             variant_index as i128
                         };
-                        Ok(Value::Int(disc as i64))
+                        Ok(Value::int(disc as i64))
                     }
                     (v, _) => Ok(v),
                 }

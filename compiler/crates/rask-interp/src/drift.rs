@@ -16,7 +16,7 @@ use crate::value::{ModuleKind, PoolData, ThreadHandleInner, Value};
 /// Only needs to route to the right dispatch — doesn't need valid data.
 fn dummy_value(type_name: &str) -> Value {
     match type_name {
-        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => Value::Int(0),
+        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => Value::int(0),
         "i128" => Value::Int128(0),
         "u128" => Value::Uint128(0),
         "f64" => Value::Float(0.0),

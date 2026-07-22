@@ -11,6 +11,112 @@ use std::sync::LazyLock;
 
 use rask_ast::expr::Expr;
 
+/// Width and signedness carried by `Value::Int`, so integer arithmetic is
+/// self-describing (type.overflow). `Untyped` means the width wasn't known at
+/// the value's creation (e.g. an internally-produced length or index) and is
+/// treated as i64 with no overflow check. Concrete kinds are range-checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntKind {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    Untyped,
+}
+
+impl IntKind {
+    /// Map a checker type to an int kind. Non-integers and i128/u128 (their own
+    /// `Value` variants) map to `Untyped`.
+    pub fn from_type(ty: &rask_types::Type) -> IntKind {
+        use rask_types::Type;
+        match ty {
+            Type::I8 => IntKind::I8,
+            Type::I16 => IntKind::I16,
+            Type::I32 => IntKind::I32,
+            Type::I64 => IntKind::I64,
+            Type::U8 => IntKind::U8,
+            Type::U16 => IntKind::U16,
+            Type::U32 => IntKind::U32,
+            Type::U64 => IntKind::U64,
+            _ => IntKind::Untyped,
+        }
+    }
+
+    pub fn signed(self) -> bool {
+        matches!(self, IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::I64 | IntKind::Untyped)
+    }
+
+    /// Bit width, or None for `Untyped` (no fixed width → unchecked).
+    pub fn bits(self) -> Option<u32> {
+        Some(match self {
+            IntKind::I8 | IntKind::U8 => 8,
+            IntKind::I16 | IntKind::U16 => 16,
+            IntKind::I32 | IntKind::U32 => 32,
+            IntKind::I64 | IntKind::U64 => 64,
+            IntKind::Untyped => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            IntKind::I8 => "i8",
+            IntKind::I16 => "i16",
+            IntKind::I32 => "i32",
+            IntKind::I64 => "i64",
+            IntKind::U8 => "u8",
+            IntKind::U16 => "u16",
+            IntKind::U32 => "u32",
+            IntKind::U64 => "u64",
+            IntKind::Untyped => "int",
+        }
+    }
+
+    /// Map a type-name string (as used by `as` casts) to an int kind.
+    pub fn from_name(s: &str) -> Option<IntKind> {
+        Some(match s {
+            "i8" => IntKind::I8,
+            "i16" => IntKind::I16,
+            "i32" | "int" => IntKind::I32,
+            "i64" | "isize" => IntKind::I64,
+            "u8" => IntKind::U8,
+            "u16" => IntKind::U16,
+            "u32" => IntKind::U32,
+            "u64" | "usize" | "uint" => IntKind::U64,
+            _ => return None,
+        })
+    }
+
+    /// Mask/sign-extend an i64 into this kind's width (the value a cast to this
+    /// kind must hold). Untyped and 64-bit kinds pass through.
+    pub fn wrap(self, n: i64) -> i64 {
+        let bits = match self.bits() {
+            Some(b) if b < 64 => b,
+            _ => return n,
+        };
+        let mask = (1i128 << bits) - 1;
+        let masked = (n as i128) & mask;
+        let v = if self.signed() && (masked & (1i128 << (bits - 1))) != 0 {
+            masked - (1i128 << bits)
+        } else {
+            masked
+        };
+        v as i64
+    }
+
+    /// Pick the more specific of two kinds — arithmetic operands share a type,
+    /// but one side may be untyped (e.g. a generic constant).
+    pub fn unify(self, other: IntKind) -> IntKind {
+        match (self, other) {
+            (IntKind::Untyped, k) | (k, IntKind::Untyped) => k,
+            (a, _) => a,
+        }
+    }
+}
+
 /// Global pool ID counter. Each Pool gets a unique ID.
 static NEXT_POOL_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -280,8 +386,8 @@ pub enum Value {
     Unit,
     /// Boolean
     Bool(bool),
-    /// Integer (using i64 for all integer types in interpreter)
-    Int(i64),
+    /// Integer stored as i64, tagged with its source width (type.overflow).
+    Int(i64, IntKind),
     /// 128-bit signed integer
     Int128(i128),
     /// 128-bit unsigned integer
@@ -548,6 +654,13 @@ impl fmt::Debug for IteratorState {
 }
 
 impl Value {
+    /// Integer of unknown source width (lengths, indices, internal results).
+    /// Unchecked for overflow — use `Value::Int(n, kind)` when the width is
+    /// known (from a literal, cast, or typed context).
+    pub fn int(n: i64) -> Self {
+        Value::Int(n, IntKind::Untyped)
+    }
+
     /// Create a new struct value wrapped in Arc<Mutex<>>.
     pub fn new_struct(name: String, fields: IndexMap<String, Value>, resource_id: Option<u64>) -> Self {
         Value::Struct(Arc::new(Mutex::new(StructData { name, fields, resource_id })))
@@ -569,7 +682,7 @@ impl Value {
         match self {
             Value::Unit => "void",
             Value::Bool(_) => "bool",
-            Value::Int(_) => "i64",
+            Value::Int(_, _) => "i64",
             Value::Int128(_) => "i128",
             Value::Uint128(_) => "u128",
             Value::Float(_) => "f64",
@@ -621,7 +734,10 @@ impl Value {
     pub fn default_for_type(ty: &str) -> Value {
         match ty {
             "i8" | "i16" | "i32" | "i64" | "int" | "isize" |
-            "u8" | "u16" | "u32" | "u64" | "uint" | "usize" => Value::Int(0),
+            "u8" => Value::Int(0, IntKind::U8),
+            "u16" => Value::Int(0, IntKind::U16),
+            "u32" => Value::Int(0, IntKind::U32),
+            "u64" | "uint" | "usize" => Value::Int(0, IntKind::U64),
             "i128" => Value::Int128(0),
             "u128" => Value::Uint128(0),
             "f32" | "f64" => Value::Float(0.0),
@@ -697,15 +813,15 @@ impl Value {
     /// Extract u64 from Value::Int (for Duration constructors).
     pub fn as_int(&self) -> Result<i64, String> {
         match self {
-            Value::Int(n) => Ok(*n),
+            Value::Int(n, _) => Ok(*n),
             _ => Err(format!("Expected integer, found {}", self.type_name())),
         }
     }
 
     pub fn as_u64(&self) -> Result<u64, String> {
         match self {
-            Value::Int(n) if *n >= 0 => Ok(*n as u64),
-            Value::Int(n) => Err(format!("Cannot convert negative integer {} to u64", n)),
+            Value::Int(n, _) if *n >= 0 => Ok(*n as u64),
+            Value::Int(n, _) => Err(format!("Cannot convert negative integer {} to u64", n)),
             _ => Err(format!("Expected integer, found {}", self.type_name())),
         }
     }
@@ -714,7 +830,7 @@ impl Value {
     pub fn as_f64(&self) -> Result<f64, String> {
         match self {
             Value::Float(f) => Ok(*f),
-            Value::Int(n) => Ok(*n as f64),
+            Value::Int(n, _) => Ok(*n as f64),
             _ => Err(format!("Expected float, found {}", self.type_name())),
         }
     }
@@ -749,7 +865,7 @@ impl fmt::Display for Value {
         match self {
             Value::Unit => write!(f, "()"),
             Value::Bool(b) => write!(f, "{}", b),
-            Value::Int(n) => write!(f, "{}", n),
+            Value::Int(n, _) => write!(f, "{}", n),
             Value::Int128(n) => write!(f, "{}", n),
             Value::Uint128(n) => write!(f, "{}", n),
             Value::Float(n) => write!(f, "{}", n),

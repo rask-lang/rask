@@ -20,6 +20,7 @@ mod pattern;
 mod collections;
 mod format;
 mod operators;
+pub(crate) mod overflow;
 mod dispatch;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};
@@ -89,6 +90,10 @@ pub struct Interpreter {
     pub(crate) source_info: Option<SourceInfo>,
     /// B1–G4: binary struct metadata for @binary parse/build.
     pub(crate) binary_structs: HashMap<String, binary::BinaryStructMeta>,
+    /// Static expression types from the checker, keyed by NodeId. Used to
+    /// recover integer widths for overflow checking (type.overflow). Empty
+    /// when types weren't supplied (e.g. comptime pre-check paths).
+    pub(crate) node_types: HashMap<rask_ast::NodeId, rask_types::Type>,
 }
 
 /// Source location info for computing error origins (ER15).
@@ -113,6 +118,7 @@ impl Interpreter {
             build_state: None,
             source_info: None,
             binary_structs: HashMap::new(),
+            node_types: HashMap::new(),
         }
     }
 
@@ -128,6 +134,7 @@ impl Interpreter {
             output_buffer: None,
             cli_args: args,
             binary_structs: HashMap::new(),
+            node_types: HashMap::new(),
             build_state: None,
             source_info: None,
         }
@@ -149,6 +156,7 @@ impl Interpreter {
             build_state: None,
             source_info: None,
             binary_structs: HashMap::new(),
+            node_types: HashMap::new(),
         };
         (interp, buffer)
     }
@@ -170,6 +178,13 @@ impl Interpreter {
         } else {
             Arc::from("<unknown>")
         }
+    }
+
+    /// Supply the checker's static expression types, enabling width-aware
+    /// integer overflow checks (type.overflow). Without this the interpreter
+    /// falls back to unchecked i64 arithmetic.
+    pub fn set_node_types(&mut self, node_types: HashMap<rask_ast::NodeId, rask_types::Type>) {
+        self.node_types = node_types;
     }
 
     pub fn inject_cfg(&mut self, cfg: &rask_comptime::CfgConfig) {
@@ -196,6 +211,7 @@ impl Interpreter {
         child.enums = self.enums.clone();
         child.struct_decls = self.struct_decls.clone();
         child.methods = self.methods.clone();
+        child.node_types = self.node_types.clone();
         for (name, value) in captured_vars {
             child.env.define(name, value);
         }
@@ -610,6 +626,9 @@ pub enum RuntimeError {
 
     #[error("division by zero; check divisor before dividing")]
     DivisionByZero,
+
+    #[error("{0}")]
+    IntegerOverflow(String),
 
     #[error("expected {expected} argument{}, got {got}", if *.expected == 1 { "" } else { "s" })]
     ArityMismatch { expected: usize, got: usize },

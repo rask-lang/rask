@@ -397,7 +397,7 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
         // Also handle raw Rask values directly (for json.encode)
         Value::Unit => "null".to_string(),
         Value::Bool(b) => b.to_string(),
-        Value::Int(n) => n.to_string(),
+        Value::Int(n, _) => n.to_string(),
         Value::Float(f) => {
             if f.is_nan() {
                 "null".to_string() // JSON has no NaN
@@ -506,7 +506,7 @@ fn stringify_json_variant(variant: &str, fields: &[Value], pretty: bool, indent:
                 } else {
                     f.to_string()
                 }
-            } else if let Some(Value::Int(n)) = fields.first() {
+            } else if let Some(Value::Int(n, _)) = fields.first() {
                 n.to_string()
             } else {
                 "0".to_string()
@@ -568,7 +568,7 @@ fn value_to_json(value: &Value) -> Result<Value, RuntimeError> {
     match value {
         Value::Unit => Ok(make_json_null()),
         Value::Bool(b) => Ok(make_json_bool(*b)),
-        Value::Int(n) => Ok(make_json_number(*n as f64)),
+        Value::Int(n, _) => Ok(make_json_number(*n as f64)),
         Value::Float(f) => Ok(make_json_number(*f)),
         Value::String(s) => Ok(make_json_string(&s.lock().unwrap())),
         Value::Vec(v) => {
@@ -797,8 +797,8 @@ fn extract_string(v: &Value) -> Result<Value, String> {
 
 fn extract_int(v: &Value) -> Result<Value, String> {
     match v {
-        Value::Int(n) => Ok(Value::Int(*n)),
-        Value::Float(f) => Ok(Value::Int(*f as i64)),
+        Value::Int(n, _) => Ok(Value::int(*n)),
+        Value::Float(f) => Ok(Value::int(*f as i64)),
         _ => Err(format!("expected number, found {}", v.type_name())),
     }
 }
@@ -806,7 +806,7 @@ fn extract_int(v: &Value) -> Result<Value, String> {
 fn extract_float(v: &Value) -> Result<Value, String> {
     match v {
         Value::Float(f) => Ok(Value::Float(*f)),
-        Value::Int(n) => Ok(Value::Float(*n as f64)),
+        Value::Int(n, _) => Ok(Value::Float(*n as f64)),
         _ => Err(format!("expected number, found {}", v.type_name())),
     }
 }

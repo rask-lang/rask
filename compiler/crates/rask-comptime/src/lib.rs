@@ -470,6 +470,21 @@ impl ComptimeValue {
         }
     }
 
+    /// The logical value (as i128) and width kind of an integer variant.
+    fn as_int(&self) -> Option<(i128, CtInt)> {
+        Some(match self {
+            ComptimeValue::I8(v) => (*v as i128, CtInt::I8),
+            ComptimeValue::I16(v) => (*v as i128, CtInt::I16),
+            ComptimeValue::I32(v) => (*v as i128, CtInt::I32),
+            ComptimeValue::I64(v) => (*v as i128, CtInt::I64),
+            ComptimeValue::U8(v) => (*v as i128, CtInt::U8),
+            ComptimeValue::U16(v) => (*v as i128, CtInt::U16),
+            ComptimeValue::U32(v) => (*v as i128, CtInt::U32),
+            ComptimeValue::U64(v) => (*v as i128, CtInt::U64),
+            _ => return None,
+        })
+    }
+
     /// Convert to f64 (widening conversion for floats).
     pub fn as_f64(&self) -> Option<f64> {
         match self {
@@ -542,6 +557,9 @@ pub enum ComptimeError {
     #[error("division by zero in comptime evaluation")]
     DivisionByZero,
 
+    #[error("integer overflow in comptime evaluation: {0}")]
+    IntegerOverflow(String),
+
     #[error("index {index} out of bounds (length is {len})")]
     IndexOutOfBounds { index: usize, len: usize },
 
@@ -586,6 +604,14 @@ pub enum ComptimeError {
 
     #[error("comptime stack overflow (depth {0}); reduce recursion or increase limit")]
     StackOverflow(usize),
+}
+
+impl ComptimeError {
+    /// Hard errors are genuine compile errors (not a reason to fall back or
+    /// skip): comptime overflow and divide-by-zero (type.overflow CT1, OV2).
+    pub fn is_hard(&self) -> bool {
+        matches!(self, ComptimeError::IntegerOverflow(_) | ComptimeError::DivisionByZero)
+    }
 }
 
 /// Result type for comptime operations.
@@ -742,6 +768,115 @@ impl ControlFlow {
 // ============================================================================
 
 /// The compile-time interpreter.
+/// Integer width of a comptime value, for width-aware overflow checks (CT1).
+/// I64 doubles as the unsuffixed-literal default.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CtInt { I8, I16, I32, I64, U8, U16, U32, U64 }
+
+#[derive(Clone, Copy)]
+pub(crate) enum CtOp { Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor }
+
+impl CtInt {
+    fn signed(self) -> bool { matches!(self, CtInt::I8 | CtInt::I16 | CtInt::I32 | CtInt::I64) }
+    fn bits(self) -> u32 {
+        match self {
+            CtInt::I8 | CtInt::U8 => 8,
+            CtInt::I16 | CtInt::U16 => 16,
+            CtInt::I32 | CtInt::U32 => 32,
+            CtInt::I64 | CtInt::U64 => 64,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            CtInt::I8 => "i8", CtInt::I16 => "i16", CtInt::I32 => "i32", CtInt::I64 => "i64",
+            CtInt::U8 => "u8", CtInt::U16 => "u16", CtInt::U32 => "u32", CtInt::U64 => "u64",
+        }
+    }
+    fn min(self) -> i128 { if self.signed() { -(1i128 << (self.bits() - 1)) } else { 0 } }
+    fn max(self) -> i128 {
+        if self.signed() { (1i128 << (self.bits() - 1)) - 1 } else { (1i128 << self.bits()) - 1 }
+    }
+    /// Pick the more specific kind. I64 is the untyped default and yields.
+    fn unify(self, other: CtInt) -> CtInt {
+        match (self, other) {
+            (CtInt::I64, k) | (k, CtInt::I64) => k,
+            (a, _) => a,
+        }
+    }
+    fn make(self, v: i128) -> ComptimeValue {
+        match self {
+            CtInt::I8 => ComptimeValue::I8(v as i8),
+            CtInt::I16 => ComptimeValue::I16(v as i16),
+            CtInt::I32 => ComptimeValue::I32(v as i32),
+            CtInt::I64 => ComptimeValue::I64(v as i64),
+            CtInt::U8 => ComptimeValue::U8(v as u8),
+            CtInt::U16 => ComptimeValue::U16(v as u16),
+            CtInt::U32 => ComptimeValue::U32(v as u32),
+            CtInt::U64 => ComptimeValue::U64(v as u64),
+        }
+    }
+    fn wrap(self, v: i128) -> i128 {
+        let bits = self.bits();
+        if bits >= 128 { return v; }
+        let mask = (1i128 << bits) - 1;
+        let masked = v & mask;
+        if self.signed() && (masked & (1i128 << (bits - 1))) != 0 { masked - (1i128 << bits) } else { masked }
+    }
+}
+
+fn ct_overflow(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeError {
+    let sym = match op {
+        CtOp::Add => "+", CtOp::Sub => "-", CtOp::Mul => "*",
+        CtOp::Div => "/", CtOp::Rem => "%", CtOp::Shl => "<<", CtOp::Shr => ">>",
+        CtOp::BitAnd => "&", CtOp::BitOr => "|", CtOp::BitXor => "^",
+    };
+    ComptimeError::IntegerOverflow(format!(
+        "{} {} {} exceeds {} range [{}, {}]", a, sym, b, kind.name(), kind.min(), kind.max()
+    ))
+}
+
+/// Width-aware checked comptime integer arithmetic (CT1).
+pub(crate) fn ct_checked_binop(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeResult<ComptimeValue> {
+    match op {
+        CtOp::BitAnd => return Ok(kind.make(a & b)),
+        CtOp::BitOr => return Ok(kind.make(a | b)),
+        CtOp::BitXor => return Ok(kind.make(a ^ b)),
+        CtOp::Shl | CtOp::Shr => {
+            if b < 0 || b >= kind.bits() as i128 {
+                return Err(ComptimeError::IntegerOverflow(format!(
+                    "shift amount {} exceeds {} bit width ({})", b, kind.name(), kind.bits()
+                )));
+            }
+            let shifted = match op {
+                CtOp::Shl => a << (b as u32),
+                CtOp::Shr if kind.signed() => a >> (b as u32),
+                CtOp::Shr => ((a as u128) >> (b as u32)) as i128,
+                _ => unreachable!(),
+            };
+            return Ok(kind.make(kind.wrap(shifted)));
+        }
+        _ => {}
+    }
+    if matches!(op, CtOp::Div | CtOp::Rem) {
+        if b == 0 { return Err(ComptimeError::DivisionByZero); }
+        if kind.signed() && a == kind.min() && b == -1 {
+            return Err(ct_overflow(kind, op, a, b));
+        }
+    }
+    let result = match op {
+        CtOp::Add => a.checked_add(b),
+        CtOp::Sub => a.checked_sub(b),
+        CtOp::Mul => a.checked_mul(b),
+        CtOp::Div => Some(a / b),
+        CtOp::Rem => Some(a % b),
+        _ => unreachable!(),
+    };
+    match result {
+        Some(r) if r >= kind.min() && r <= kind.max() => Ok(kind.make(r)),
+        _ => Err(ct_overflow(kind, op, a, b)),
+    }
+}
+
 pub struct ComptimeInterpreter {
     env: ComptimeEnv,
 }
@@ -792,8 +927,24 @@ impl ComptimeInterpreter {
 
     fn eval_expr_cf(&mut self, expr: &Expr) -> ComptimeResult<ControlFlow> {
         let value = match &expr.kind {
-            // Literals
-            ExprKind::Int(v, _) => ComptimeValue::I64(*v),
+            // Literals. An explicit width suffix picks the variant so arithmetic
+            // is checked at that width (type.overflow); unsuffixed defaults to
+            // i64 (checked at the i64 boundary).
+            ExprKind::Int(v, suffix) => {
+                use rask_ast::token::IntSuffix;
+                match suffix {
+                    Some(IntSuffix::I8) => ComptimeValue::I8(*v as i8),
+                    Some(IntSuffix::I16) => ComptimeValue::I16(*v as i16),
+                    Some(IntSuffix::I32) => ComptimeValue::I32(*v as i32),
+                    Some(IntSuffix::I64) | Some(IntSuffix::Isize) => ComptimeValue::I64(*v),
+                    Some(IntSuffix::U8) => ComptimeValue::U8(*v as u8),
+                    Some(IntSuffix::U16) => ComptimeValue::U16(*v as u16),
+                    Some(IntSuffix::U32) => ComptimeValue::U32(*v as u32),
+                    Some(IntSuffix::U64) | Some(IntSuffix::Usize) => ComptimeValue::U64(*v as u64),
+                    // I128/U128 aren't distinct comptime variants; keep i64.
+                    _ => ComptimeValue::I64(*v),
+                }
+            }
             ExprKind::Float(v, _) => ComptimeValue::F64(*v),
             ExprKind::String(s) => ComptimeValue::String(s.clone()),
             ExprKind::Char(c) => ComptimeValue::Char(*c),
@@ -1757,56 +1908,57 @@ impl ComptimeInterpreter {
             }
         }
 
-        // Handle numeric operations
+        // Handle numeric operations. CT1: overflow at comptime is a compile
+        // error (CT1), never a silent wrap. Width-aware: the operand variants
+        // carry the type, so `200u8 + 100u8` overflows at u8, not just i64.
         match method {
-            "add" => self.numeric_binop(obj, args, |a, b| a + b, |a, b| a + b),
-            "sub" => self.numeric_binop(obj, args, |a, b| a - b, |a, b| a - b),
-            "mul" => self.numeric_binop(obj, args, |a, b| a * b, |a, b| a * b),
+            "add" => self.ct_arith(obj, args, CtOp::Add, |a, b| a + b, "+"),
+            "sub" => self.ct_arith(obj, args, CtOp::Sub, |a, b| a - b, "-"),
+            "mul" => self.ct_arith(obj, args, CtOp::Mul, |a, b| a * b, "*"),
             "div" => {
-                if let Some(arg) = args.first() {
-                    if arg.as_i64() == Some(0) || arg.as_f64() == Some(0.0) {
-                        return Err(ComptimeError::DivisionByZero);
+                if args.first().and_then(|a| a.as_f64()) == Some(0.0) && obj.as_int().is_none() {
+                    return Err(ComptimeError::DivisionByZero);
+                }
+                self.ct_arith(obj, args, CtOp::Div, |a, b| a / b, "/")
+            }
+            "rem" => self.ct_arith(obj, args, CtOp::Rem, |a, b| a % b, "%"),
+            "neg" => match obj.as_int() {
+                Some((v, kind)) => {
+                    let r = -v;
+                    if r < kind.min() || r > kind.max() {
+                        Err(ComptimeError::IntegerOverflow(format!(
+                            "negating {} exceeds {} range [{}, {}]", v, kind.name(), kind.min(), kind.max()
+                        )))
+                    } else {
+                        Ok(kind.make(r))
                     }
                 }
-                self.numeric_binop(obj, args, |a, b| a / b, |a, b| a / b)
-            }
-            "rem" => {
-                if let Some(arg) = args.first() {
-                    if arg.as_i64() == Some(0) {
-                        return Err(ComptimeError::DivisionByZero);
-                    }
-                }
-                self.numeric_binop(obj, args, |a, b| a % b, |a, b| a % b)
-            }
-            "neg" => {
-                match obj {
-                    ComptimeValue::I64(v) => Ok(ComptimeValue::I64(-v)),
+                None => match obj {
                     ComptimeValue::F64(v) => Ok(ComptimeValue::F64(-v)),
+                    ComptimeValue::F32(v) => Ok(ComptimeValue::F32(-v)),
                     _ => Err(ComptimeError::TypeMismatch {
                         expected: "numeric".to_string(),
                         found: obj.type_name().to_string(),
                     }),
-                }
-            }
+                },
+            },
             "eq" => self.comparison_op(obj, args, |a, b| a == b, |a, b| a == b),
             "lt" => self.comparison_op(obj, args, |a, b| a < b, |a, b| a < b),
             "gt" => self.comparison_op(obj, args, |a, b| a > b, |a, b| a > b),
             "le" => self.comparison_op(obj, args, |a, b| a <= b, |a, b| a <= b),
             "ge" => self.comparison_op(obj, args, |a, b| a >= b, |a, b| a >= b),
-            "bit_and" => self.int_binop(obj, args, |a, b| a & b),
-            "bit_or" => self.int_binop(obj, args, |a, b| a | b),
-            "bit_xor" => self.int_binop(obj, args, |a, b| a ^ b),
-            "shl" => self.int_binop(obj, args, |a, b| a << b),
-            "shr" => self.int_binop(obj, args, |a, b| a >> b),
-            "bit_not" => {
-                match obj {
-                    ComptimeValue::I64(v) => Ok(ComptimeValue::I64(!v)),
-                    _ => Err(ComptimeError::TypeMismatch {
-                        expected: "integer".to_string(),
-                        found: obj.type_name().to_string(),
-                    }),
-                }
-            }
+            "bit_and" => self.ct_int_only(obj, args, CtOp::BitAnd),
+            "bit_or" => self.ct_int_only(obj, args, CtOp::BitOr),
+            "bit_xor" => self.ct_int_only(obj, args, CtOp::BitXor),
+            "shl" => self.ct_int_only(obj, args, CtOp::Shl),
+            "shr" => self.ct_int_only(obj, args, CtOp::Shr),
+            "bit_not" => match obj.as_int() {
+                Some((v, kind)) => Ok(kind.make(kind.wrap(!v))),
+                None => Err(ComptimeError::TypeMismatch {
+                    expected: "integer".to_string(),
+                    found: obj.type_name().to_string(),
+                }),
+            },
             // String methods
             "len" => {
                 match obj {
@@ -1822,65 +1974,69 @@ impl ComptimeInterpreter {
         }
     }
 
-    fn numeric_binop<Fi, Ff>(
+    /// Width-aware checked integer arithmetic on comptime values (CT1). Reads
+    /// the width from the operand variants (i64 is the unsuffixed default and
+    /// is checked at the i64 boundary), so overflow at any width is a compile
+    /// error. Falls back to `checked_numeric_binop` for float operands.
+    fn ct_int_binop(
+        &self,
+        obj: &ComptimeValue,
+        arg: &ComptimeValue,
+        op: CtOp,
+    ) -> Option<ComptimeResult<ComptimeValue>> {
+        let (a, ka) = obj.as_int()?;
+        let (b, kb) = arg.as_int()?;
+        let k = ka.unify(kb);
+        Some(ct_checked_binop(k, op, a, b))
+    }
+
+    /// Like `numeric_binop` but the integer op is checked (CT1). A `None`
+    /// result is an overflow and becomes a compile error.
+    /// Arithmetic that may be integer or float. Integers go through the
+    /// width-aware checked path; floats use the supplied op.
+    fn ct_arith<Ff>(
         &self,
         obj: &ComptimeValue,
         args: &[ComptimeValue],
-        int_op: Fi,
+        op: CtOp,
         float_op: Ff,
+        _sym: &str,
     ) -> ComptimeResult<ComptimeValue>
     where
-        Fi: Fn(i64, i64) -> i64,
         Ff: Fn(f64, f64) -> f64,
     {
         let arg = args.first().ok_or_else(|| ComptimeError::TypeMismatch {
             expected: "1 argument".to_string(),
             found: "0 arguments".to_string(),
         })?;
-
-        match (obj, arg) {
-            (ComptimeValue::I64(a), ComptimeValue::I64(b)) => Ok(ComptimeValue::I64(int_op(*a, *b))),
-            (ComptimeValue::F64(a), ComptimeValue::F64(b)) => Ok(ComptimeValue::F64(float_op(*a, *b))),
-            (obj, arg) => {
-                // Try to coerce to common type
-                if let (Some(a), Some(b)) = (obj.as_i64(), arg.as_i64()) {
-                    Ok(ComptimeValue::I64(int_op(a, b)))
-                } else if let (Some(a), Some(b)) = (obj.as_f64(), arg.as_f64()) {
-                    Ok(ComptimeValue::F64(float_op(a, b)))
-                } else {
-                    Err(ComptimeError::TypeMismatch {
-                        expected: "matching numeric types".to_string(),
-                        found: format!("{} and {}", obj.type_name(), arg.type_name()),
-                    })
-                }
-            }
+        if let Some(res) = self.ct_int_binop(obj, arg, op) {
+            return res;
+        }
+        if let (Some(a), Some(b)) = (obj.as_f64(), arg.as_f64()) {
+            Ok(ComptimeValue::F64(float_op(a, b)))
+        } else {
+            Err(ComptimeError::TypeMismatch {
+                expected: "matching numeric types".to_string(),
+                found: format!("{} and {}", obj.type_name(), arg.type_name()),
+            })
         }
     }
 
-    fn int_binop<F>(
+    /// Integer-only operations (bitwise, shifts), width-aware.
+    fn ct_int_only(
         &self,
         obj: &ComptimeValue,
         args: &[ComptimeValue],
-        op: F,
-    ) -> ComptimeResult<ComptimeValue>
-    where
-        F: Fn(i64, i64) -> i64,
-    {
+        op: CtOp,
+    ) -> ComptimeResult<ComptimeValue> {
         let arg = args.first().ok_or_else(|| ComptimeError::TypeMismatch {
             expected: "1 argument".to_string(),
             found: "0 arguments".to_string(),
         })?;
-
-        let a = obj.as_i64().ok_or_else(|| ComptimeError::TypeMismatch {
+        self.ct_int_binop(obj, arg, op).unwrap_or_else(|| Err(ComptimeError::TypeMismatch {
             expected: "integer".to_string(),
-            found: obj.type_name().to_string(),
-        })?;
-        let b = arg.as_i64().ok_or_else(|| ComptimeError::TypeMismatch {
-            expected: "integer".to_string(),
-            found: arg.type_name().to_string(),
-        })?;
-
-        Ok(ComptimeValue::I64(op(a, b)))
+            found: format!("{} and {}", obj.type_name(), arg.type_name()),
+        }))
     }
 
     fn comparison_op<Fi, Ff>(

@@ -204,10 +204,20 @@ impl MiriValue {
 pub enum MiriError {
     UninitializedLocal(LocalId),
     DivisionByZero,
+    /// Arithmetic overflow at comptime (CT1) — a compile error, not a wrap.
+    IntegerOverflow(String),
     BranchLimitExceeded(u64),
     UnsupportedOperation(String),
     StackOverflow,
     Unreachable,
+}
+
+impl MiriError {
+    /// Hard errors are genuine compile errors (never a reason to fall back to
+    /// another evaluator): comptime overflow and divide-by-zero.
+    pub fn is_hard(&self) -> bool {
+        matches!(self, MiriError::IntegerOverflow(_) | MiriError::DivisionByZero)
+    }
 }
 
 impl MiriError {
@@ -222,6 +232,7 @@ impl fmt::Display for MiriError {
         match self {
             MiriError::UninitializedLocal(id) => write!(f, "use of uninitialized local _{}", id.0),
             MiriError::DivisionByZero => write!(f, "division by zero"),
+            MiriError::IntegerOverflow(msg) => write!(f, "{msg}"),
             MiriError::BranchLimitExceeded(limit) => {
                 write!(f, "compile-time evaluation exceeded branch limit ({limit})")
             }

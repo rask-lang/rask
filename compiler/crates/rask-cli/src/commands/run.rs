@@ -22,6 +22,7 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let mut interp = rask_interp::Interpreter::with_args(program_args);
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
+    interp.set_node_types(result.typed.node_types.clone());
     // Set source info from the first source file (single-file mode).
     if let Some((_, source)) = result.source_files.first() {
         interp.set_source_info(path, source);
@@ -184,10 +185,9 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                     match rask_mono::monomorphize_with_packages(&typed, &all_decls, package_modules) {
                         Ok(mono) => {
                             let cfg = rask_comptime::CfgConfig::from_host("debug", prepared.resolved_feature_names);
-                            let comptime_globals = super::codegen::evaluate_comptime_globals(
-                                &all_decls, Some(&cfg),
-                                Some(super::codegen::MirEvalContext { mono: &mono, typed: &typed }),
-                            );
+                            let (comptime_globals, ct_diags) =
+                                rask_compiler::evaluate_comptime_globals(&all_decls, &typed, &mono, Some(&cfg));
+                            super::codegen::exit_on_comptime_errors(&ct_diags, &source_files);
 
                             let tmp_dir = std::env::temp_dir();
                             let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
@@ -265,6 +265,7 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     let mut interp = rask_interp::Interpreter::new();
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
+    interp.set_node_types(result.typed.node_types.clone());
     if let Some((_, source)) = result.source_files.first() {
         interp.set_source_info(path, source);
     }
@@ -375,10 +376,9 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
         }
     };
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let comptime_globals = super::codegen::evaluate_comptime_globals(
-        &result.decls, Some(&cfg),
-        Some(super::codegen::MirEvalContext { mono: &mono, typed: &result.typed }),
-    );
+    let (comptime_globals, ct_diags) =
+        rask_compiler::evaluate_comptime_globals(&result.decls, &result.typed, &mono, Some(&cfg));
+    super::codegen::exit_on_comptime_errors(&ct_diags, &result.source_files);
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
@@ -1036,10 +1036,9 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         }
     };
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let comptime_globals = super::codegen::evaluate_comptime_globals(
-        &result.decls, Some(&cfg),
-        Some(super::codegen::MirEvalContext { mono: &mono, typed: &result.typed }),
-    );
+    let (comptime_globals, ct_diags) =
+        rask_compiler::evaluate_comptime_globals(&result.decls, &result.typed, &mono, Some(&cfg));
+    super::codegen::exit_on_comptime_errors(&ct_diags, &result.source_files);
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_bench_{}", process::id()));

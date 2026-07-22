@@ -1,0 +1,6 @@
+// SH1: shift amount >= bit width panics.
+func main() {
+    const x: i32 = 1
+    const n: i32 = 40
+    println((x << n).to_string())
+}

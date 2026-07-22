@@ -13,7 +13,7 @@ fn is_truthy(val: &Value) -> bool {
     match val {
         Value::Bool(b) => *b,
         Value::Unit => false,
-        Value::Int(0) => false,
+        Value::Int(0, _) => false,
         _ => true,
     }
 }
@@ -72,7 +72,7 @@ impl Interpreter {
                 match self.iter_next(&src)? {
                     Some(item) => {
                         let pair = Value::Vec(Arc::new(Mutex::new(
-                            vec![Value::Int(idx as i64), item],
+                            vec![Value::int(idx as i64), item],
                         )));
                         Ok(Some(pair))
                     }
@@ -110,7 +110,7 @@ impl Interpreter {
                 if *current < limit {
                     let val = *current;
                     *current += 1;
-                    Ok(Some(Value::Int(val)))
+                    Ok(Some(Value::int(val)))
                 } else {
                     Ok(None)
                 }
@@ -235,7 +235,7 @@ impl Interpreter {
             }
             "take" => {
                 let n = args.first()
-                    .and_then(|v| if let Value::Int(i) = v { Some(*i as usize) } else { None })
+                    .and_then(|v| if let Value::Int(i, _) = v { Some(*i as usize) } else { None })
                     .unwrap_or(0);
                 let new_state = IteratorState::Take {
                     source: Arc::clone(iter),
@@ -245,7 +245,7 @@ impl Interpreter {
             }
             "skip" => {
                 let n = args.first()
-                    .and_then(|v| if let Value::Int(i) = v { Some(*i as usize) } else { None })
+                    .and_then(|v| if let Value::Int(i, _) = v { Some(*i as usize) } else { None })
                     .unwrap_or(0);
                 let new_state = IteratorState::Skip {
                     source: Arc::clone(iter),
@@ -387,7 +387,7 @@ impl Interpreter {
                         None => break,
                     }
                 }
-                Ok(Value::Int(n as i64))
+                Ok(Value::int(n as i64))
             }
             "sum" => {
                 let mut total = 0i64;
@@ -395,7 +395,7 @@ impl Interpreter {
                 let mut ftotal = 0.0f64;
                 loop {
                     match self.iter_next(iter)? {
-                        Some(Value::Int(n)) => {
+                        Some(Value::Int(n, _)) => {
                             if is_float { ftotal += n as f64; } else { total += n; }
                         }
                         Some(Value::Float(n)) => {
@@ -406,7 +406,7 @@ impl Interpreter {
                         None => break,
                     }
                 }
-                if is_float { Ok(Value::Float(ftotal)) } else { Ok(Value::Int(total)) }
+                if is_float { Ok(Value::Float(ftotal)) } else { Ok(Value::int(total)) }
             }
             "to_vec" => {
                 // Alias for collect
@@ -499,7 +499,7 @@ impl Interpreter {
                                     let ord = self.call_value(cmp_fn.clone(), vec![item.clone(), b.clone()])?;
                                     match ord {
                                         Value::Enum { ref name, ref variant, .. } if name == "Ordering" && variant == "Less" => item,
-                                        Value::Int(n) if n < 0 => item,
+                                        Value::Int(n, _) if n < 0 => item,
                                         _ => b,
                                     }
                                 }
@@ -535,7 +535,7 @@ impl Interpreter {
                                     let ord = self.call_value(cmp_fn.clone(), vec![item.clone(), b.clone()])?;
                                     match ord {
                                         Value::Enum { ref name, ref variant, .. } if name == "Ordering" && variant == "Greater" => item,
-                                        Value::Int(n) if n > 0 => item,
+                                        Value::Int(n, _) if n > 0 => item,
                                         _ => b,
                                     }
                                 }

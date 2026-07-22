@@ -1,0 +1,6 @@
+// OV1: signed addition overflow panics.
+func main() {
+    const x: i32 = 2147483647
+    const y: i32 = 1
+    println((x + y).to_string())
+}

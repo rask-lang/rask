@@ -111,7 +111,7 @@ impl Interpreter {
                 let code = args
                     .first()
                     .map(|v| match v {
-                        Value::Int(n) => *n as i32,
+                        Value::Int(n, _) => *n as i32,
                         _ => 1,
                     })
                     .unwrap_or(0);
@@ -120,7 +120,7 @@ impl Interpreter {
 
             #[cfg(not(target_arch = "wasm32"))]
             "getpid" => {
-                Ok(Value::Int(std::process::id() as i64))
+                Ok(Value::int(std::process::id() as i64))
             }
             #[cfg(target_arch = "wasm32")]
             "getpid" => {
@@ -333,7 +333,7 @@ impl Interpreter {
                         let status = output.status.code().unwrap_or(-1);
 
                         let mut out_fields = indexmap::IndexMap::new();
-                        out_fields.insert("status".to_string(), Value::Int(status as i64));
+                        out_fields.insert("status".to_string(), Value::int(status as i64));
                         out_fields.insert("stdout".to_string(), Value::String(Arc::new(Mutex::new(stdout_str))));
                         out_fields.insert("stderr".to_string(), Value::String(Arc::new(Mutex::new(stderr_str))));
 
@@ -390,7 +390,7 @@ impl Interpreter {
                 match cmd.spawn() {
                     Ok(child) => {
                         let mut proc_fields = indexmap::IndexMap::new();
-                        proc_fields.insert("child".to_string(), Value::Int(0)); // placeholder
+                        proc_fields.insert("child".to_string(), Value::int(0)); // placeholder
                         let proc = Value::Struct(Arc::new(Mutex::new(crate::value::StructData {
                             name: "Process".to_string(),
                             fields: proc_fields,
@@ -437,7 +437,7 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match method {
             "success" => {
-                if let Some(Value::Int(status)) = fields.get("status") {
+                if let Some(Value::Int(status, _)) = fields.get("status") {
                     Ok(Value::Bool(*status == 0))
                 } else {
                     Ok(Value::Bool(false))

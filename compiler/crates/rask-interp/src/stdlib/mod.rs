@@ -114,7 +114,7 @@ impl Interpreter {
                         for (i, val) in vec.iter().take(8).enumerate() {
                             arr[i] = match val {
                                 Value::Float(f) => *f as f32,
-                                Value::Int(n) => *n as f32,
+                                Value::Int(n, _) => *n as f32,
                                 _ => 0.0,
                             };
                         }
@@ -133,7 +133,7 @@ impl Interpreter {
                 }
                 let val = match &args[0] {
                     Value::Float(f) => *f as f32,
-                    Value::Int(n) => *n as f32,
+                    Value::Int(n, _) => *n as f32,
                     _ => return Err(RuntimeError::TypeError(format!(
                         "f32x8.splat expects a number, found {}", args[0].type_name()
                     ))),

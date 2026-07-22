@@ -1,0 +1,5 @@
+// OV1: negating signed MIN panics.
+func main() {
+    const x: i32 = -2147483648
+    println((-x).to_string())
+}

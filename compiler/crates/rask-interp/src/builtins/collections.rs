@@ -13,7 +13,7 @@ fn is_truthy(val: &Value) -> bool {
     match val {
         Value::Bool(b) => *b,
         Value::Unit => false,
-        Value::Int(0) => false,
+        Value::Int(0, _) => false,
         _ => true,
     }
 }
@@ -59,7 +59,7 @@ impl Interpreter {
                     }),
                 }
             }
-            "len" | "count" => Ok(Value::Int(v.lock().unwrap().len() as i64)),
+            "len" | "count" => Ok(Value::int(v.lock().unwrap().len() as i64)),
             "get" => {
                 let idx = self.expect_int(&args, 0)? as usize;
                 match v.lock().unwrap().get(idx).cloned() {
@@ -291,7 +291,7 @@ impl Interpreter {
                     .iter()
                     .enumerate()
                     .map(|(i, item)| {
-                        Value::Vec(Arc::new(Mutex::new(vec![Value::Int(i as i64), item.clone()])))
+                        Value::Vec(Arc::new(Mutex::new(vec![Value::int(i as i64), item.clone()])))
                     })
                     .collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(enumerated))))
@@ -350,8 +350,8 @@ impl Interpreter {
                                 _ => std::cmp::Ordering::Equal,
                             }
                         }
-                        Ok(Value::Int(n)) if n < 0 => std::cmp::Ordering::Less,
-                        Ok(Value::Int(n)) if n > 0 => std::cmp::Ordering::Greater,
+                        Ok(Value::Int(n, _)) if n < 0 => std::cmp::Ordering::Less,
+                        Ok(Value::Int(n, _)) if n > 0 => std::cmp::Ordering::Greater,
                         _ => std::cmp::Ordering::Equal,
                     }
                 });
@@ -424,7 +424,7 @@ impl Interpreter {
                         return Ok(Value::Enum {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
-                            fields: vec![Value::Int(i as i64)],
+                            fields: vec![Value::int(i as i64)],
                             variant_index: 0, origin: None,
                         });
                     }
@@ -448,7 +448,7 @@ impl Interpreter {
                 let mut is_float = false;
                 for item in vec.iter() {
                     match item {
-                        Value::Int(n) => {
+                        Value::Int(n, _) => {
                             if is_float {
                                 float_sum += *n as f64;
                             } else {
@@ -474,7 +474,7 @@ impl Interpreter {
                 if is_float {
                     Ok(Value::Float(float_sum))
                 } else {
-                    Ok(Value::Int(sum))
+                    Ok(Value::int(sum))
                 }
             }
             "min" => {
@@ -671,7 +671,7 @@ impl Interpreter {
                     Err(RuntimeError::TypeError("pool.remove() expects a Handle; use the handle returned by pool.add()".to_string()))
                 }
             }
-            "len" => Ok(Value::Int(p.lock().unwrap().len as i64)),
+            "len" => Ok(Value::int(p.lock().unwrap().len as i64)),
             "is_empty" => Ok(Value::Bool(p.lock().unwrap().len == 0)),
             "contains" => {
                 if let Some(Value::Handle { pool_id, index, generation }) = args.first() {
@@ -835,11 +835,11 @@ impl Interpreter {
             }
             "capacity" => {
                 let pool = p.lock().unwrap();
-                Ok(Value::Int(pool.slots.len() as i64))
+                Ok(Value::int(pool.slots.len() as i64))
             }
             "remaining" => {
                 let pool = p.lock().unwrap();
-                Ok(Value::Int(pool.free_list.len() as i64))
+                Ok(Value::int(pool.free_list.len() as i64))
             }
             "weak" => {
                 if let Some(Value::Handle { pool_id, index, generation }) = args.first() {
@@ -1136,7 +1136,7 @@ impl Interpreter {
                 let values: Vec<Value> = map.iter().map(|(_, v)| v.clone()).collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(values))))
             }
-            "len" => Ok(Value::Int(m.lock().unwrap().len() as i64)),
+            "len" => Ok(Value::int(m.lock().unwrap().len() as i64)),
             "is_empty" => Ok(Value::Bool(m.lock().unwrap().is_empty())),
             "clear" => {
                 m.lock().unwrap().clear();
@@ -1318,7 +1318,7 @@ impl Interpreter {
                 // Accept either a string or int (simulated pointer) argument.
                 match args.first() {
                     Some(Value::String(s)) => Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone())))),
-                    Some(Value::Int(_)) => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
+                    Some(Value::Int(_, _)) => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
                     _ => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
                 }
             }
@@ -1420,7 +1420,7 @@ impl Interpreter {
                 use std::sync::atomic::{AtomicBool, AtomicUsize};
                 match value {
                     Value::Bool(b) => Ok(Value::AtomicBool(Arc::new(AtomicBool::new(b)))),
-                    Value::Int(n) => Ok(Value::AtomicUsize(Arc::new(AtomicUsize::new(n as usize)))),
+                    Value::Int(n, _) => Ok(Value::AtomicUsize(Arc::new(AtomicUsize::new(n as usize)))),
                     _ => Err(RuntimeError::TypeError(format!(
                         "Atomic.new requires bool or int, got {}",
                         value.type_name()
@@ -1514,7 +1514,7 @@ impl Interpreter {
             "load" => {
                 let ordering = self.parse_ordering(&args, 0)?;
                 let value = atomic.load(ordering);
-                Ok(Value::Int(value as i64))
+                Ok(Value::int(value as i64))
             }
             "store" => {
                 let value = self.expect_int(&args, 0)?;
@@ -1540,7 +1540,7 @@ impl Interpreter {
             "load" => {
                 let ordering = self.parse_ordering(&args, 0)?;
                 let value = atomic.load(ordering);
-                Ok(Value::Int(value as i64))
+                Ok(Value::int(value as i64))
             }
             "store" => {
                 let value = self.expect_int(&args, 0)?;

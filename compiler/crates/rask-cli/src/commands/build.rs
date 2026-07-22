@@ -762,11 +762,9 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         }
 
         if let Some(result) = output.result {
-            // MIR-based comptime eval (fast path); falls back to AST interpreter.
-            let comptime_globals = super::codegen::evaluate_comptime_globals(
-                &result.decls, Some(&cfg),
-                Some(super::codegen::MirEvalContext { mono: &result.mono, typed: &result.typed }),
-            );
+            // Comptime globals were evaluated once in the pipeline; hard errors
+            // (overflow, divide-by-zero) already failed it (result is None).
+            let comptime_globals = result.comptime_globals;
             let target = opts.target.as_deref();
 
             let build_mode = if opts.profile == "release" {

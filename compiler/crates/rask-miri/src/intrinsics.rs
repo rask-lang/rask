@@ -53,10 +53,10 @@ pub fn eval_binop(op: BinOp, left: &MiriValue, right: &MiriValue) -> Result<Miri
 /// Evaluate a unary operation.
 pub fn eval_unaryop(op: UnaryOp, operand: &MiriValue) -> Result<MiriValue, MiriError> {
     match (op, operand) {
-        (UnaryOp::Neg, MiriValue::I8(v)) => Ok(MiriValue::I8(v.wrapping_neg())),
-        (UnaryOp::Neg, MiriValue::I16(v)) => Ok(MiriValue::I16(v.wrapping_neg())),
-        (UnaryOp::Neg, MiriValue::I32(v)) => Ok(MiriValue::I32(v.wrapping_neg())),
-        (UnaryOp::Neg, MiriValue::I64(v)) => Ok(MiriValue::I64(v.wrapping_neg())),
+        (UnaryOp::Neg, MiriValue::I8(v)) => v.checked_neg().map(MiriValue::I8).ok_or_else(|| neg_ovf(*v, "i8")),
+        (UnaryOp::Neg, MiriValue::I16(v)) => v.checked_neg().map(MiriValue::I16).ok_or_else(|| neg_ovf(*v as i64, "i16")),
+        (UnaryOp::Neg, MiriValue::I32(v)) => v.checked_neg().map(MiriValue::I32).ok_or_else(|| neg_ovf(*v as i64, "i32")),
+        (UnaryOp::Neg, MiriValue::I64(v)) => v.checked_neg().map(MiriValue::I64).ok_or_else(|| neg_ovf(*v, "i64")),
         (UnaryOp::Neg, MiriValue::F32(v)) => Ok(MiriValue::F32(-v)),
         (UnaryOp::Neg, MiriValue::F64(v)) => Ok(MiriValue::F64(-v)),
 
@@ -114,6 +114,10 @@ pub fn eval_cast(value: &MiriValue, target: &MirType) -> Result<MiriValue, MiriE
     }
 }
 
+fn neg_ovf(v: impl std::fmt::Display, ty: &str) -> MiriError {
+    MiriError::IntegerOverflow(format!("integer overflow: negating {v} exceeds {ty} range"))
+}
+
 fn cant_cast(value: &MiriValue, target: &MirType) -> MiriError {
     MiriError::UnsupportedOperation(
         format!("cannot cast {value:?} to {target:?}"),
@@ -123,20 +127,25 @@ fn cant_cast(value: &MiriValue, target: &MirType) -> MiriError {
 // --- Typed binop implementations ---
 // Macro to reduce repetition across integer types.
 
+// Comptime arithmetic is checked (type.overflow CT1): overflow is a compile
+// error, never a silent wrap. The bit width comes from the value's variant.
 macro_rules! impl_int_binop {
     ($name:ident, $ty:ty, $variant:ident, $signed:expr) => {
         fn $name(op: BinOp, a: $ty, b: $ty) -> Result<MiriValue, MiriError> {
+            let ovf = |sym: &str| MiriError::IntegerOverflow(format!(
+                "integer overflow: {} {} {} exceeds {} range", a, sym, b, stringify!($ty)
+            ));
             match op {
-                BinOp::Add => Ok(MiriValue::$variant(a.wrapping_add(b))),
-                BinOp::Sub => Ok(MiriValue::$variant(a.wrapping_sub(b))),
-                BinOp::Mul => Ok(MiriValue::$variant(a.wrapping_mul(b))),
+                BinOp::Add => a.checked_add(b).map(MiriValue::$variant).ok_or_else(|| ovf("+")),
+                BinOp::Sub => a.checked_sub(b).map(MiriValue::$variant).ok_or_else(|| ovf("-")),
+                BinOp::Mul => a.checked_mul(b).map(MiriValue::$variant).ok_or_else(|| ovf("*")),
                 BinOp::Div => {
                     if b == 0 { return Err(MiriError::DivisionByZero); }
-                    Ok(MiriValue::$variant(a.wrapping_div(b)))
+                    a.checked_div(b).map(MiriValue::$variant).ok_or_else(|| ovf("/"))
                 }
                 BinOp::Mod => {
                     if b == 0 { return Err(MiriError::DivisionByZero); }
-                    Ok(MiriValue::$variant(a.wrapping_rem(b)))
+                    a.checked_rem(b).map(MiriValue::$variant).ok_or_else(|| ovf("%"))
                 }
                 BinOp::Eq => Ok(MiriValue::Bool(a == b)),
                 BinOp::Ne => Ok(MiriValue::Bool(a != b)),
@@ -149,8 +158,12 @@ macro_rules! impl_int_binop {
                 BinOp::BitAnd => Ok(MiriValue::$variant(a & b)),
                 BinOp::BitOr => Ok(MiriValue::$variant(a | b)),
                 BinOp::BitXor => Ok(MiriValue::$variant(a ^ b)),
-                BinOp::Shl => Ok(MiriValue::$variant(a.wrapping_shl(b as u32))),
-                BinOp::Shr => Ok(MiriValue::$variant(a.wrapping_shr(b as u32))),
+                BinOp::Shl => a.checked_shl(b as u32).map(MiriValue::$variant).ok_or_else(||
+                    MiriError::IntegerOverflow(format!(
+                        "shift amount {} exceeds {} bit width", b, stringify!($ty)))),
+                BinOp::Shr => a.checked_shr(b as u32).map(MiriValue::$variant).ok_or_else(||
+                    MiriError::IntegerOverflow(format!(
+                        "shift amount {} exceeds {} bit width", b, stringify!($ty)))),
             }
         }
     };

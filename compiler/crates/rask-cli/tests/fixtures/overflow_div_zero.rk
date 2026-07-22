@@ -1,0 +1,6 @@
+// OV2: divide by zero panics.
+func main() {
+    const x: i32 = 10
+    const z: i32 = 0
+    println((x / z).to_string())
+}

@@ -1278,6 +1278,14 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_why("division by zero is undefined")
             }
 
+            RuntimeError::IntegerOverflow(msg) => {
+                Diagnostic::error(msg)
+                    .with_code("R0010")
+                    .with_primary(self.span, "arithmetic overflowed here")
+                    .with_why("default arithmetic panics on overflow in all builds (type.overflow/OV1)")
+                    .with_help("use `Wrapping<T>` from `num` for intentional wrapping, or widen the type")
+            }
+
             RuntimeError::IndexOutOfBounds { index, len } => {
                 Diagnostic::error(format!("index {} out of bounds", index))
                     .with_code("R0002")

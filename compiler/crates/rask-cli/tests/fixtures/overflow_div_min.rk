@@ -1,0 +1,6 @@
+// OV3: signed MIN / -1 panics.
+func main() {
+    const x: i32 = -2147483648
+    const y: i32 = -1
+    println((x / y).to_string())
+}

@@ -23,44 +23,43 @@ fn ordering_value(ord: std::cmp::Ordering) -> Value {
 }
 
 impl Interpreter {
-    /// Handle integer method calls.
+    /// Handle integer method calls. `kind` is the receiver's width, preserved
+    /// on integer results and used for checked arithmetic. Note: the desugared
+    /// operator path (add/sub/... ) is normally intercepted before dispatch by
+    /// `try_checked_int_arith`; these arms are the fallback and stay checked.
     pub(crate) fn call_int_method(
         &self,
         a: i64,
+        kind: crate::value::IntKind,
         method: &str,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
+        use crate::interp::overflow::{checked_binop, checked_neg, ArithOp};
+        let arg_kind = |args: &[Value]| match args.first() {
+            Some(Value::Int(_, k)) => kind.unify(*k),
+            _ => kind,
+        };
+        if let Some(op) = ArithOp::from_method(method) {
+            let b = self.expect_int(args, 0)?;
+            let k = arg_kind(args);
+            return checked_binop(k, op, a, b).map(|v| Value::Int(v, k));
+        }
         match method {
-            "add" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a + b)) }
-            "sub" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a - b)) }
-            "mul" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a * b)) }
-            "div" => {
-                let b = self.expect_int(args, 0)?;
-                if b == 0 { return Err(RuntimeError::DivisionByZero); }
-                Ok(Value::Int(a / b))
-            }
-            "rem" => {
-                let b = self.expect_int(args, 0)?;
-                if b == 0 { return Err(RuntimeError::DivisionByZero); }
-                Ok(Value::Int(a % b))
-            }
-            "neg" => Ok(Value::Int(-a)),
+            "neg" => checked_neg(kind, a).map(|v| Value::Int(v, kind)),
             "eq" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a == b)) }
             "lt" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a < b)) }
             "le" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a > b)) }
             "ge" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a >= b)) }
             "compare" => { let b = self.expect_int(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
-            "bit_and" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a & b)) }
-            "bit_or" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a | b)) }
-            "bit_xor" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a ^ b)) }
-            "shl" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a << b)) }
-            "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a >> b)) }
-            "bit_not" => Ok(Value::Int(!a)),
-            "abs" => Ok(Value::Int(a.abs())),
-            "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.pow(b as u32))) }
-            "min" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.min(b))) }
-            "max" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.max(b))) }
+            "bit_and" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a & b, arg_kind(args))) }
+            "bit_or" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a | b, arg_kind(args))) }
+            "bit_xor" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a ^ b, arg_kind(args))) }
+            "bit_not" => Ok(Value::Int(!a, kind)),
+            "abs" => Ok(Value::Int(a.wrapping_abs(), kind)),
+            "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.wrapping_pow(b as u32), kind)) }
+            "min" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.min(b), arg_kind(args))) }
+            "max" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.max(b), arg_kind(args))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             "to_float" => Ok(Value::Float(a as f64)),
             _ => Err(RuntimeError::NoSuchMethod {
@@ -77,21 +76,25 @@ impl Interpreter {
         method: &str,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
+        let overflow = |op: &str, b: i128| RuntimeError::IntegerOverflow(format!(
+            "integer overflow: {} {} {} exceeds i128 range", a, op, b
+        ));
         match method {
-            "add" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a + b)) }
-            "sub" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a - b)) }
-            "mul" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a * b)) }
+            "add" => { let b = self.expect_int128(args, 0)?; a.checked_add(b).map(Value::Int128).ok_or_else(|| overflow("+", b)) }
+            "sub" => { let b = self.expect_int128(args, 0)?; a.checked_sub(b).map(Value::Int128).ok_or_else(|| overflow("-", b)) }
+            "mul" => { let b = self.expect_int128(args, 0)?; a.checked_mul(b).map(Value::Int128).ok_or_else(|| overflow("*", b)) }
             "div" => {
                 let b = self.expect_int128(args, 0)?;
                 if b == 0 { return Err(RuntimeError::DivisionByZero); }
-                Ok(Value::Int128(a / b))
+                a.checked_div(b).map(Value::Int128).ok_or_else(|| overflow("/", b))
             }
             "rem" => {
                 let b = self.expect_int128(args, 0)?;
                 if b == 0 { return Err(RuntimeError::DivisionByZero); }
-                Ok(Value::Int128(a % b))
+                a.checked_rem(b).map(Value::Int128).ok_or_else(|| overflow("%", b))
             }
-            "neg" => Ok(Value::Int128(-a)),
+            "neg" => a.checked_neg().map(Value::Int128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
             "eq" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a == b)) }
             "lt" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a < b)) }
             "le" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a <= b)) }
@@ -101,11 +104,21 @@ impl Interpreter {
             "bit_and" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a & b)) }
             "bit_or" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a | b)) }
             "bit_xor" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a ^ b)) }
-            "shl" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a << b)) }
-            "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a >> b)) }
+            "shl" => {
+                let b = self.expect_int(args, 0)?;
+                a.checked_shl(b as u32).map(Value::Int128).ok_or_else(|| RuntimeError::IntegerOverflow(
+                    format!("shift amount {} exceeds i128 bit width (128)", b)))
+            }
+            "shr" => {
+                let b = self.expect_int(args, 0)?;
+                a.checked_shr(b as u32).map(Value::Int128).ok_or_else(|| RuntimeError::IntegerOverflow(
+                    format!("shift amount {} exceeds i128 bit width (128)", b)))
+            }
             "bit_not" => Ok(Value::Int128(!a)),
-            "abs" => Ok(Value::Int128(a.abs())),
-            "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a.pow(b as u32))) }
+            "abs" => a.checked_abs().map(Value::Int128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
+            "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range", a, b))) }
             "min" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.min(b))) }
             "max" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
@@ -123,10 +136,13 @@ impl Interpreter {
         method: &str,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
+        let overflow = |op: &str, b: u128| RuntimeError::IntegerOverflow(format!(
+            "integer overflow: {} {} {} exceeds u128 range", a, op, b
+        ));
         match method {
-            "add" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a + b)) }
-            "sub" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a - b)) }
-            "mul" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a * b)) }
+            "add" => { let b = self.expect_uint128(args, 0)?; a.checked_add(b).map(Value::Uint128).ok_or_else(|| overflow("+", b)) }
+            "sub" => { let b = self.expect_uint128(args, 0)?; a.checked_sub(b).map(Value::Uint128).ok_or_else(|| overflow("-", b)) }
+            "mul" => { let b = self.expect_uint128(args, 0)?; a.checked_mul(b).map(Value::Uint128).ok_or_else(|| overflow("*", b)) }
             "div" => {
                 let b = self.expect_uint128(args, 0)?;
                 if b == 0 { return Err(RuntimeError::DivisionByZero); }
@@ -146,10 +162,19 @@ impl Interpreter {
             "bit_and" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a & b)) }
             "bit_or" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a | b)) }
             "bit_xor" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a ^ b)) }
-            "shl" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a << b)) }
-            "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a >> b)) }
+            "shl" => {
+                let b = self.expect_int(args, 0)?;
+                a.checked_shl(b as u32).map(Value::Uint128).ok_or_else(|| RuntimeError::IntegerOverflow(
+                    format!("shift amount {} exceeds u128 bit width (128)", b)))
+            }
+            "shr" => {
+                let b = self.expect_int(args, 0)?;
+                a.checked_shr(b as u32).map(Value::Uint128).ok_or_else(|| RuntimeError::IntegerOverflow(
+                    format!("shift amount {} exceeds u128 bit width (128)", b)))
+            }
             "bit_not" => Ok(Value::Uint128(!a)),
-            "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a.pow(b as u32))) }
+            "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range", a, b))) }
             "min" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.min(b))) }
             "max" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
@@ -190,7 +215,7 @@ impl Interpreter {
             "min" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.min(b))) }
             "max" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
-            "to_int" => Ok(Value::Int(a as i64)),
+            "to_int" => Ok(Value::int(a as i64)),
             "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.powf(b))) }
             "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(a.powi(b as i32))) }
             "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.rem_euclid(b))) }
@@ -249,12 +274,12 @@ impl Interpreter {
             "is_lowercase" => Ok(Value::Bool(c.is_lowercase())),
             "to_uppercase" => Ok(Value::Char(c.to_uppercase().next().unwrap_or(c))),
             "to_lowercase" => Ok(Value::Char(c.to_lowercase().next().unwrap_or(c))),
-            "len_utf8" => Ok(Value::Int(c.len_utf8() as i64)),
+            "len_utf8" => Ok(Value::int(c.len_utf8() as i64)),
             "to_string" => Ok(Value::String(Arc::new(Mutex::new(c.to_string())))),
             "eq" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c == other)) }
             "compare" => { let other = self.expect_char(args, 0)?; Ok(ordering_value(c.cmp(&other))) }
             "debug_string" => Ok(Value::String(Arc::new(Mutex::new(format!("'{}'", c))))),
-            "to_int" => Ok(Value::Int(c as i64)),
+            "to_int" => Ok(Value::int(c as i64)),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "char".to_string(),
                 method: method.to_string(),

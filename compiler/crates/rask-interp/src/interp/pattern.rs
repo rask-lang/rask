@@ -184,7 +184,7 @@ impl Interpreter {
                 // Bounds are literal chars or ints, checked by the parser.
                 let in_range = match (value, &start.kind, &end.kind) {
                     (Value::Char(c), ExprKind::Char(s), ExprKind::Char(e)) => c >= s && c <= e,
-                    (Value::Int(n), ExprKind::Int(s, _), ExprKind::Int(e, _)) => n >= s && n <= e,
+                    (Value::Int(n, _), ExprKind::Int(s, _), ExprKind::Int(e, _)) => n >= s && n <= e,
                     _ => false,
                 };
                 if in_range { Some(HashMap::new()) } else { None }
@@ -218,7 +218,7 @@ impl Interpreter {
 
     pub(super) fn values_equal(&self, value: &Value, lit_expr: &Expr) -> bool {
         match (&value, &lit_expr.kind) {
-            (Value::Int(a), ExprKind::Int(b, _)) => *a == *b,
+            (Value::Int(a, _), ExprKind::Int(b, _)) => *a == *b,
             (Value::Int128(a), ExprKind::Int(b, _)) => *a == *b as i128,
             (Value::Uint128(a), ExprKind::Int(b, _)) => *a == *b as u128,
             (Value::Float(a), ExprKind::Float(b, _)) => *a == *b,
@@ -234,7 +234,7 @@ impl Interpreter {
         match (a, b) {
             (Value::Unit, Value::Unit) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Int(a, _), Value::Int(b, _)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::String(a), Value::String(b)) => *a.lock().unwrap() == *b.lock().unwrap(),
@@ -259,7 +259,7 @@ impl Interpreter {
         match value {
             Value::Unit => 0u8.hash(&mut hasher),
             Value::Bool(b) => b.hash(&mut hasher),
-            Value::Int(n) => n.hash(&mut hasher),
+            Value::Int(n, _) => n.hash(&mut hasher),
             Value::Int128(n) => n.hash(&mut hasher),
             Value::Uint128(n) => n.hash(&mut hasher),
             Value::Char(c) => c.hash(&mut hasher),
@@ -288,7 +288,7 @@ impl Interpreter {
     /// Returns None if the values are not comparable.
     pub(crate) fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         match (a, b) {
-            (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
+            (Value::Int(a, _), Value::Int(b, _)) => Some(a.cmp(b)),
             (Value::Int128(a), Value::Int128(b)) => Some(a.cmp(b)),
             (Value::Uint128(a), Value::Uint128(b)) => Some(a.cmp(b)),
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
@@ -338,7 +338,7 @@ fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
         Value::Bool(_) => ty_name == "bool",
         Value::Char(_) => ty_name == "char",
         Value::String(_) => ty_name == "string",
-        Value::Int(_) => matches!(
+        Value::Int(_, _) => matches!(
             ty_name,
             "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
                 | "int" | "uint" | "isize" | "usize"

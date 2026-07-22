@@ -142,6 +142,23 @@ fn run_native(fixture_name: &str) -> (String, i32) {
     (stdout, code)
 }
 
+/// Run a fixture on one backend, returning (stdout, stderr, exit code).
+/// `mode` is the `rask run` flag, e.g. "--interp" or "--native".
+fn run_capture(mode: &str, fixture_name: &str) -> (String, String, i32) {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .args(["run", mode])
+        .arg(fixture(fixture_name))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
 // ─── rask compile tests ──────────────────────────────────────
 
 #[test]
@@ -966,6 +983,108 @@ fn interp_ensure_continuation() {
         stdout == "0\n1\n" || stdout == "10\n11\n" || stdout == "0\n11\n",
         "unexpected output: {:?}", stdout
     );
+}
+
+// ─── Integer overflow semantics (type.overflow, issue #325) ──────
+//
+// Panic on overflow in all builds (OV1–OV4, SH1), identical on both
+// backends. Panic fixtures must fail (nonzero exit) with a message; the
+// boundary fixture must run cleanly with identical output on interp+native.
+
+/// Boundary arithmetic that must NOT panic — same output on both backends.
+const OVERFLOW_BOUNDARY_OUT: &str =
+    "2147483646\n-2147483647\n2147395600\n1073741824\n9223372036854775807\n";
+
+#[test]
+fn overflow_boundary_interp() {
+    let (stdout, _stderr, code) = run_capture("--interp", "overflow_boundary.rk");
+    assert_eq!(code, 0, "boundary arithmetic must not panic on interp");
+    assert_eq!(stdout, OVERFLOW_BOUNDARY_OUT);
+}
+
+#[test]
+fn overflow_boundary_native() {
+    let (stdout, _stderr, code) = run_capture("--native", "overflow_boundary.rk");
+    assert_eq!(code, 0, "boundary arithmetic must not panic on native");
+    assert_eq!(stdout, OVERFLOW_BOUNDARY_OUT);
+}
+
+/// Assert a fixture panics (nonzero exit) with `needle` in its output on both
+/// backends — the core "panic on overflow in all builds" guarantee.
+fn assert_panics_both(fixture: &str, needle: &str) {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, fixture);
+        assert_ne!(code, 0, "{} on {} should panic, got exit 0", fixture, mode);
+        let combined = format!("{}{}", stdout, stderr);
+        assert!(
+            combined.contains(needle),
+            "{} on {}: expected `{}` in output, got:\n{}",
+            fixture, mode, needle, combined,
+        );
+    }
+}
+
+#[test]
+fn overflow_add_panics() {
+    assert_panics_both("overflow_add.rk", "overflow");
+}
+
+#[test]
+fn overflow_mul_panics() {
+    assert_panics_both("overflow_mul.rk", "overflow");
+}
+
+#[test]
+fn overflow_sub_panics() {
+    // Unsigned subtraction below zero (OV1).
+    assert_panics_both("overflow_sub.rk", "overflow");
+}
+
+#[test]
+fn overflow_neg_panics() {
+    // Negating signed MIN (OV1).
+    assert_panics_both("overflow_neg.rk", "overflow");
+}
+
+#[test]
+fn overflow_div_zero_panics() {
+    // OV2: both backends now agree (native previously had no check).
+    assert_panics_both("overflow_div_zero.rk", "by zero");
+}
+
+#[test]
+fn overflow_div_min_panics() {
+    // OV3: signed MIN / -1.
+    assert_panics_both("overflow_div_min.rk", "overflow");
+}
+
+#[test]
+fn overflow_shift_panics() {
+    // SH1: shift amount exceeds bit width.
+    assert_panics_both("overflow_shift.rk", "shift amount");
+}
+
+#[test]
+fn overflow_roundtrip_panics() {
+    // The u8's width survives storage in a Vec and retrieval — arithmetic on
+    // the pulled-out value still overflows. Locks in self-describing IntKind.
+    assert_panics_both("overflow_roundtrip.rk", "overflow");
+}
+
+#[test]
+fn comptime_overflow_is_compile_error() {
+    // CT1: overflow during comptime evaluation fails compilation with a
+    // diagnostic (routed through the normal diagnostic path, not swallowed).
+    let (ok, output) = compile_only_succeeds("comptime_overflow.rk");
+    assert!(!ok, "comptime overflow must fail compilation: {}", output);
+    assert!(output.contains("overflow"), "should report overflow: {}", output);
+}
+
+#[test]
+fn comptime_div_zero_is_compile_error() {
+    let (ok, output) = compile_only_succeeds("comptime_div_zero.rk");
+    assert!(!ok, "comptime divide-by-zero must fail compilation: {}", output);
+    assert!(output.contains("by zero"), "should report divide by zero: {}", output);
 }
 
 // ─── Regression: issue #236 ─────────────────────────────────
