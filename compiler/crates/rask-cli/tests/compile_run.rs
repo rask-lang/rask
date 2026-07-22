@@ -1114,6 +1114,44 @@ fn comptime_div_zero_is_compile_error() {
     assert!(output.contains("by zero"), "should report divide by zero: {}", output);
 }
 
+// ─── Panic semantics: ensure × panic (ctrl.panic, issue #299) ────
+//
+// Step 1 of task 1.5 covers the interpreter (issues #289/#290/#291). Native
+// codegen still doesn't run ensures on panic, so these assert `--interp` only;
+// the native side lands with step 2.
+
+#[test]
+fn panic_ensure_e2_runs_remaining() {
+    // E2: a panic in one ensure doesn't skip the others. LIFO gives C, then the
+    // panicking ensure, then A — A must still print despite the panic.
+    let (stdout, stderr, code) = run_capture("--interp", "panic_ensure_e2.rk");
+    assert_eq!(code, 101, "panic should exit 101 (P4); stderr: {}", stderr);
+    assert_eq!(stdout, "body\nC\nA\n", "remaining ensures must run after a panicking one (E2)");
+    assert!(stderr.contains("boom"), "task panic message should be `boom`: {}", stderr);
+}
+
+#[test]
+fn panic_ensure_e3_first_panic_wins() {
+    // E3: the body's "primary" panic wins; the ensure's "secondary" panic during
+    // unwind is contained + reported to stderr; the other ensure still runs.
+    let (stdout, stderr, code) = run_capture("--interp", "panic_ensure_e3.rk");
+    assert_eq!(code, 101, "panic should exit 101 (P4)");
+    assert_eq!(stdout, "cleanup\n", "the non-panicking ensure must still run (E2)");
+    assert!(stderr.contains("panic: primary"), "primary panic wins: {}", stderr);
+    assert!(stderr.contains("secondary panic during unwind"),
+        "secondary panic should be reported to stderr: {}", stderr);
+    assert!(stderr.contains("secondary"), "secondary message should appear: {}", stderr);
+}
+
+#[test]
+fn panic_with_keeps_writes_u2() {
+    // U2: a mutation made inside a `with` block before a panic is kept, not
+    // rolled back. The ensure observes v[0] == 99.
+    let (stdout, stderr, code) = run_capture("--interp", "panic_with_u2.rk");
+    assert_eq!(code, 101, "panic should exit 101 (P4); stderr: {}", stderr);
+    assert_eq!(stdout, "99\n", "with-block write must survive the panic (U2)");
+}
+
 // ─── Regression: issue #236 ─────────────────────────────────
 //
 // `rask test <dir>` on a directory of standalone files (no build.rk)

@@ -159,24 +159,36 @@ impl Interpreter {
             }
         }
 
-        let ensure_fatal = self.run_ensures(&ensures);
+        // A panic exiting the body means we're already unwinding; ensure-body
+        // panics during that unwind are secondary (ctrl.panic/E3).
+        let body_panicked = matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
+        let ensure_fatal = self.run_ensures(&ensures, body_panicked);
 
-        if let Some(e) = exit_error {
-            Err(e)
-        } else if let Some(fatal) = ensure_fatal {
-            Err(fatal)
-        } else {
-            Ok(last_value)
+        match (exit_error, ensure_fatal) {
+            // os.exit() inside an ensure terminates immediately, no matter what (P5).
+            (_, Some(f)) if matches!(f.error, RuntimeError::Exit(_)) => Err(f),
+            // A panic/exit from the body is primary; ensure panics were already
+            // reported as secondary inside run_ensures.
+            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_) | RuntimeError::Exit(_)) => Err(e),
+            // A panic raised by an ensure kills the task (E1), overriding a
+            // non-panic body exit (error propagation, return, break, continue).
+            (_, Some(f)) => Err(f),
+            // No ensure fatal: the body's own exit propagates.
+            (Some(e), _) => Err(e),
+            (None, None) => Ok(last_value),
         }
     }
 
-    /// Returns fatal error (Panic/Exit) if one occurs; non-fatal errors passed to else handlers.
-    /// Skips ensure clauses whose receiver resource was already consumed.
-    pub(super) fn run_ensures(&mut self, ensures: &[&Stmt]) -> Option<RuntimeDiagnostic> {
+    /// Runs ensures in LIFO order. Every scheduled ensure runs even if an earlier
+    /// one panics (E2). Returns the first ensure-body panic (E3) — or an `Exit`,
+    /// which stops the remaining ensures (P5). Later panics, and every ensure
+    /// panic when already unwinding from a prior panic, are reported to stderr as
+    /// secondary panics. Skips ensures whose receiver was already consumed.
+    pub(super) fn run_ensures(&mut self, ensures: &[&Stmt], unwinding: bool) -> Option<RuntimeDiagnostic> {
+        let mut first_panic: Option<RuntimeDiagnostic> = None;
         for ensure_stmt in ensures.iter().rev() {
             if let StmtKind::Ensure { body, else_handler } = &ensure_stmt.kind {
-                // Check if the ensure body's receiver is a consumed resource.
-                // If so, skip — explicit consumption cancels ensure.
+                // Explicit consumption cancels ensure.
                 if self.ensure_receiver_consumed(body) {
                     continue;
                 }
@@ -193,16 +205,17 @@ impl Interpreter {
                         }
                     }
                     Err(diag) if matches!(&diag.error, RuntimeError::Panic(_)) => {
-                        if let RuntimeError::Panic(msg) = diag.error {
-                            return Some(RuntimeDiagnostic::new(RuntimeError::Panic(msg), diag.span));
+                        // E3: first panic wins. A panic here while already unwinding,
+                        // or after a prior ensure-panic, is contained + reported.
+                        if unwinding || first_panic.is_some() {
+                            self.report_secondary_panic(&diag);
+                        } else {
+                            first_panic = Some(diag);
                         }
-                        unreachable!()
+                        // E2: keep running the remaining ensures.
                     }
                     Err(diag) if matches!(&diag.error, RuntimeError::Exit(_)) => {
-                        if let RuntimeError::Exit(code) = diag.error {
-                            return Some(RuntimeDiagnostic::new(RuntimeError::Exit(code), diag.span));
-                        }
-                        unreachable!()
+                        return Some(diag);
                     }
                     Err(diag) if matches!(&diag.error, RuntimeError::TryError(_)) => {
                         if let RuntimeError::TryError(val) = diag.error {
@@ -213,7 +226,19 @@ impl Interpreter {
                 }
             }
         }
-        None
+        first_panic
+    }
+
+    /// Report a panic that fired during unwind and was contained (E3). The first
+    /// panic remains the task's panic; this one goes to stderr and continues.
+    fn report_secondary_panic(&self, diag: &RuntimeDiagnostic) {
+        if let RuntimeError::Panic(msg) = &diag.error {
+            eprintln!(
+                "secondary panic during unwind at {}: {}",
+                self.origin_string(diag.span),
+                msg
+            );
+        }
     }
 
     /// Check if the ensure body's receiver variable refers to a consumed resource.

@@ -180,10 +180,11 @@ Silence hides bugs (violates "no unreproducible failures" — the failure didn't
 The interpreter already implements most of this model; compiled code has the big gaps. Deltas to file as issues once the spec is accepted:
 
 **Interpreter** (panic = `Err` propagation, `rask-interp`):
-- Matches P1–P3, U1, U3, LK1–LK2, O1 today: ensures run on unwind, task panic → `JoinError.Panicked`, locks/Cell borrows release cleanly, no poisoning.
-- Diverges from E2/E3: a panic in an ensure body skips the *remaining* ensures, and when it happens during unwind the secondary panic is silently dropped instead of reported (`interp/call.rs`, `run_ensures`).
-- Diverges from U2: `with`-block writes are buffered and the write-back is skipped on panic (`eval_expr.rs`, WithAs) — plain `with` accidentally behaves like ST3 today. Compiled code mutates in place (matches U2). One of the two must move; U2 says the interpreter does.
-- Exits with code 1 on uncaught panic, not 101 (`struct.targets/EX4`).
+- Matches P1–P3, U1, U3, LK1–LK2, O1: ensures run on unwind, task panic → `JoinError.Panicked`, locks/Cell borrows release cleanly, no poisoning.
+- Matches E2/E3 (`interp/call.rs`, `run_ensures`): a panic in an ensure body no longer skips the remaining ensures — they all run in LIFO order; the first panic wins and later ones (including any raised while already unwinding) are reported to stderr as secondary panics.
+- Matches U2 (`eval_expr.rs`, WithAs): `with`-block writes are flushed before the panic propagates, so mutations made before the panic are kept.
+- Exits with code 101 on uncaught panic (`struct.targets/EX4`, `run.rs`).
+- Residual: the `mem.resources/R5` and `conc.async/H1` runtime guards firing at an unwound scope exit still override the primary panic instead of being contained as secondary (`call_function` → `check_scope_exit`) — the E3 guard case, tracked under #298.
 - `staged()` (`conc.sync/ST1–ST4`) is unimplemented in both paths.
 
 **Compiled** (`rask-codegen` + C runtime):

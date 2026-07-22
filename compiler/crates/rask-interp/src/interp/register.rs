@@ -455,7 +455,7 @@ impl Interpreter {
             }
         }
 
-        self.run_ensures(&ensures);
+        self.run_ensures(&ensures, false);
         self.env.pop_scope();
 
         // T13: expect_fail inverts pass/fail

@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/E2: a panic in one ensure body never skips the other scheduled
+// ensures. LIFO order: C runs first, then the panicking ensure, then A — and
+// A must still run despite the panic. Task panics with "boom", exit 101 (P4).
+func main() {
+    ensure println("A")
+    ensure panic("boom")
+    ensure println("C")
+    println("body")
+}

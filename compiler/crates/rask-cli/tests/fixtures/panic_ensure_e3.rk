@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/E3: the first panic wins. The body panics with "primary", then an
+// ensure panics with "secondary" during unwind — that one is contained and
+// reported to stderr as a secondary panic, while the remaining ensure ("cleanup",
+// E2) still runs. The task's panic stays "primary"; exit 101 (P4).
+func main() {
+    ensure println("cleanup")
+    ensure panic("secondary")
+    panic("primary")
+}
