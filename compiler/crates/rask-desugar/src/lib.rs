@@ -467,7 +467,7 @@ impl Desugarer {
             ExprKind::Closure { body, .. } => {
                 self.desugar_expr(body);
             }
-            ExprKind::Cast { expr: inner, .. } => {
+            ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.desugar_expr(inner);
             }
             ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::BlockCall { body, .. }
@@ -824,7 +824,7 @@ fn offset_expr_spans(expr: &mut Expr, offset: usize) {
         }
         ExprKind::IsPresent { expr, .. } => offset_expr_spans(expr, offset),
         ExprKind::Unwrap { expr, .. } => offset_expr_spans(expr, offset),
-        ExprKind::Cast { expr, .. } => offset_expr_spans(expr, offset),
+        ExprKind::Cast { expr, .. } | ExprKind::Convert { expr, .. } => offset_expr_spans(expr, offset),
         ExprKind::NullCoalesce { value, default } => {
             offset_expr_spans(value, offset);
             offset_expr_spans(default, offset);

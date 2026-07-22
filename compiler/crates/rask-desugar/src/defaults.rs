@@ -455,7 +455,9 @@ impl DefaultDesugarer {
             ExprKind::IsPresent { expr: e, .. } => {
                 self.desugar_expr(e);
             }
-            ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
+            ExprKind::Unwrap { expr: e, .. }
+            | ExprKind::Cast { expr: e, .. }
+            | ExprKind::Convert { expr: e, .. } => {
                 self.desugar_expr(e);
             }
             ExprKind::NullCoalesce { value, default } => {

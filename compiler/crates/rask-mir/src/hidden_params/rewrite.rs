@@ -280,7 +280,7 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
         ExprKind::IsPresent { expr: e, .. } => {
             rewrite_expr(pass, caller, e);
         }
-        ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
+        ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } | ExprKind::Convert { expr: e, .. } => {
             rewrite_expr(pass, caller, e);
         }
         ExprKind::GuardPattern {

@@ -114,6 +114,90 @@ pub fn eval_cast(value: &MiriValue, target: &MirType) -> Result<MiriValue, MiriE
     }
 }
 
+/// Inclusive range of a MIR integer type, as i128.
+fn int_bounds(t: &MirType) -> Option<(i128, i128)> {
+    Some(match t {
+        MirType::I8 => (i8::MIN as i128, i8::MAX as i128),
+        MirType::I16 => (i16::MIN as i128, i16::MAX as i128),
+        MirType::I32 => (i32::MIN as i128, i32::MAX as i128),
+        MirType::I64 => (i64::MIN as i128, i64::MAX as i128),
+        MirType::U8 => (0, u8::MAX as i128),
+        MirType::U16 => (0, u16::MAX as i128),
+        MirType::U32 => (0, u32::MAX as i128),
+        MirType::U64 => (0, u64::MAX as i128),
+        _ => return None,
+    })
+}
+
+fn store_int(t: &MirType, v: i128) -> MiriValue {
+    match t {
+        MirType::I8 => MiriValue::I8(v as i8),
+        MirType::I16 => MiriValue::I16(v as i16),
+        MirType::I32 => MiriValue::I32(v as i32),
+        MirType::I64 => MiriValue::I64(v as i64),
+        MirType::U8 => MiriValue::U8(v as u8),
+        MirType::U16 => MiriValue::U16(v as u16),
+        MirType::U32 => MiriValue::U32(v as u32),
+        MirType::U64 => MiriValue::U64(v as u64),
+        _ => MiriValue::I64(v as i64),
+    }
+}
+
+/// Source integer as its logical value (unsigned reinterprets the bits).
+fn logical_i128(value: &MiriValue) -> Option<i128> {
+    match value {
+        MiriValue::U8(_) | MiriValue::U16(_) | MiriValue::U32(_) | MiriValue::U64(_) => {
+            value.to_u64().map(|v| v as i128)
+        }
+        _ => value.to_i64().map(|v| v as i128),
+    }
+}
+
+/// Comptime evaluation of an explicit conversion form (CV5–CV10).
+pub fn eval_convert(
+    value: &MiriValue,
+    target: &MirType,
+    kind: rask_mir::ConvertKind,
+) -> Result<MiriValue, MiriError> {
+    use rask_mir::ConvertKind::*;
+    let bounds = int_bounds(target);
+    match kind {
+        // Wrapping truncation — same as the primitive `as` in eval_cast.
+        Truncate => eval_cast(value, target),
+        Saturate => {
+            let (min, max) = bounds.ok_or_else(|| cant_cast(value, target))?;
+            let src = logical_i128(value).ok_or_else(|| cant_cast(value, target))?;
+            Ok(store_int(target, src.clamp(min, max)))
+        }
+        FloatToInt | FloatToIntSat => {
+            let (min, max) = bounds.ok_or_else(|| cant_cast(value, target))?;
+            let f = value.to_f64().ok_or_else(|| cant_cast(value, target))?;
+            if f.is_nan() {
+                if matches!(kind, FloatToIntSat) {
+                    return Ok(store_int(target, 0));
+                }
+                return Err(MiriError::UnsupportedOperation(format!(
+                    "cannot convert NaN to {target:?}"
+                )));
+            }
+            let t = f.trunc();
+            if t < min as f64 || t > max as f64 {
+                if matches!(kind, FloatToIntSat) {
+                    return Ok(store_int(target, if t > 0.0 { max } else { min }));
+                }
+                return Err(MiriError::UnsupportedOperation(format!(
+                    "float {f} out of range for {target:?}"
+                )));
+            }
+            Ok(store_int(target, t as i128))
+        }
+        // Optional-producing forms aren't evaluated at comptime yet.
+        TryConvert | TryFloatToInt => Err(MiriError::UnsupportedOperation(
+            "`try convert`/`try float to int` is not supported in comptime evaluation".to_string(),
+        )),
+    }
+}
+
 fn neg_ovf(v: impl std::fmt::Display, ty: &str) -> MiriError {
     MiriError::IntegerOverflow(format!("integer overflow: negating {v} exceeds {ty} range"))
 }

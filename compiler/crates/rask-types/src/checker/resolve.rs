@@ -870,6 +870,11 @@ impl TypeChecker {
                 self.unify(&args[0], &Type::Char, span)?;
                 self.unify(ret, &Type::Bool, span)
             }
+            // CH3: runtime construction returns `char?` — `none` on invalid scalar.
+            "from_u32" if args.len() == 1 => {
+                self.unify(&args[0], &Type::U32, span)?;
+                self.unify(ret, &Type::option(Type::Char), span)
+            }
             _ => Err(TypeError::NoSuchMethod {
                 ty: Type::Char,
                 method: method.to_string(),

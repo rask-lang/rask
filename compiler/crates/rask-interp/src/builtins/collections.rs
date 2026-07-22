@@ -1329,6 +1329,21 @@ impl Interpreter {
                     _ => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
                 }
             }
+            (TypeConstructorKind::Char, "from_u32") => {
+                // CH3: returns char? — none for surrogates / out-of-range code points.
+                let n = self.expect_int(&args, 0)? as u32;
+                let opt = match char::from_u32(n) {
+                    Some(c) => Value::Enum {
+                        name: "Option".to_string(), variant: "Some".to_string(),
+                        fields: vec![Value::Char(c)], variant_index: 0, origin: None,
+                    },
+                    None => Value::Enum {
+                        name: "Option".to_string(), variant: "None".to_string(),
+                        fields: vec![], variant_index: 1, origin: None,
+                    },
+                };
+                Ok(opt)
+            }
             (TypeConstructorKind::Pool, "new") => {
                 Ok(Value::Pool(Arc::new(Mutex::new(PoolData::with_type_param(type_param.clone())))))
             }

@@ -62,12 +62,12 @@ extend Document {
     }
 
     func line_count(self) -> i32 {
-        return self.line_order.len() as i32
+        return self.line_order.len() truncate to i32
     }
 
     func get_line(self, index: i32) -> string? {
         if index < 0 || index >= self.line_count(): return none
-        const h = self.line_order[index as usize]
+        const h = self.line_order[index]
         return self.lines[h].text
     }
 
@@ -75,7 +75,7 @@ extend Document {
     func insert_line(self, after: i32, text: string) -> void or Error {
         const h = try self.lines.insert(Line { text: text })
         const raw_pos = (after + 1) as i64
-        const cap = self.line_order.len() as i64
+        const cap = self.line_order.len() truncate to i64
         const insert_pos = if raw_pos > cap: cap else: raw_pos
         self.line_order.insert(insert_pos, h)
 
@@ -102,7 +102,7 @@ extend Document {
     func modify_line(self, at: i32, new_text: string) -> void or Error {
         if at < 0 || at >= self.line_count(): return Error.IndexOutOfBounds
 
-        const h = self.line_order[at as usize]
+        const h = self.line_order[at]
         const old_text = self.lines[h].text
         self.lines[h].text = new_text
 
@@ -146,7 +146,7 @@ extend Document {
                 self.lines.remove(h)
             }
             ModifyLine(at, _, new_text) => {
-                const h = self.line_order[at as usize]
+                const h = self.line_order[at]
                 self.lines[h].text = new_text
             }
         }

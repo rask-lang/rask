@@ -1005,6 +1005,24 @@ impl<'a> MirLowerer<'a> {
                             || self.ctx.find_enum(name).is_some()
                             || is_type_constructor_name(name);
 
+                        // CH3: char.from_u32(n) → char?. Reuse the Convert→Option
+                        // codegen path (same as `try convert`) with a Char target.
+                        if name == "char" && method == "from_u32" {
+                            let (n, _) = self.lower_expr(&args[0].expr)?;
+                            let result_ty = MirType::Option(Box::new(MirType::Char));
+                            let result_local = self.builder.alloc_temp(result_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: result_local,
+                                rvalue: MirRValue::Convert {
+                                    value: n,
+                                    source_ty: MirType::U32,
+                                    target_ty: MirType::Char,
+                                    kind: rask_ast::expr::ConvertKind::TryConvert,
+                                },
+                            }));
+                            return Ok((MirOperand::Local(result_local), result_ty));
+                        }
+
                         if is_known_type {
                             // Strip generic parameters: "Channel<i64>" → "Channel"
                             let base_name = name.split('<').next().unwrap_or(name);
@@ -2873,6 +2891,28 @@ impl<'a> MirLowerer<'a> {
                     },
                 }));
                 Ok((MirOperand::Local(result_local), target_ty))
+            }
+
+            // Explicit lossy conversion (CV5–CV10).
+            ExprKind::Convert { expr, target, kind } => {
+                let (val, source_ty) = self.lower_expr(expr)?;
+                let target_ty = self.ctx.resolve_type_str(target);
+                let result_ty = if kind.is_optional() {
+                    MirType::Option(Box::new(target_ty.clone()))
+                } else {
+                    target_ty.clone()
+                };
+                let result_local = self.builder.alloc_temp(result_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Convert {
+                        value: val,
+                        source_ty,
+                        target_ty,
+                        kind: *kind,
+                    },
+                }));
+                Ok((MirOperand::Local(result_local), result_ty))
             }
 
             // Using block — emit runtime init/shutdown for Multitasking/ThreadPool

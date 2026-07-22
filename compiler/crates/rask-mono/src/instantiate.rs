@@ -539,6 +539,13 @@ impl TypeSubstitutor {
                     ty: self.substitute_type_string(ty),
                 },
 
+                // Explicit conversion (CV5–CV10)
+                ExprKind::Convert { expr, target, kind } => ExprKind::Convert {
+                    expr: Box::new(self.clone_expr(expr)),
+                    target: self.substitute_type_string(target),
+                    kind: *kind,
+                },
+
                 // Context blocks
                 ExprKind::UsingBlock { name, args, body } => ExprKind::UsingBlock {
                     name: name.clone(),

@@ -38,10 +38,10 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need e
 
 | Rule | Conversion | Allowed | Notes |
 |------|------------|---------|-------|
-| **CV1: Widening** | `i8` → `i32`, `u8` → `i16` | `as` | Always lossless |
+| **CV1: Widening** | `i8` → `i32`, `u8` → `i16`, `i32` → `f64` | `as` | Lossless: int→int value-preserving widening, int→float, `f32`→`f64` |
 | **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Use explicit operations below |
 | **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Use explicit operations below |
-| **CV4: Float↔Int** | Any float↔int | ❌ via `as` | Use explicit operations below |
+| **CV4: Float→Int** | Any float→int | ❌ via `as` | Use explicit operations below. Int→float goes via `as` (CV1) — it rounds but never wraps or corrupts |
 
 ```rask
 const wide: i32 = narrow_val as i32   // CV1: OK, lossless

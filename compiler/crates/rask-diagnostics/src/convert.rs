@@ -840,6 +840,61 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(fix)
                     .with_why("Option/Result have no Some/None/Ok/Err constructors or patterns — operators and type patterns cover all cases [type.optionals/OPT2, type.errors/ER2]")
             }
+            InvalidCast { src_ty: source, dst_ty: target, target_name, class, span } => {
+                use rask_types::InvalidCastClass as C;
+                let n = target_name;
+                let (label, why, fix) = match class {
+                    C::Narrowing => (
+                        format!("cannot narrow `{}` to `{}` with `as`", source, target),
+                        "`as` only permits lossless widening — narrowing may lose data [type.primitives/CV2]",
+                        Some(format!("x truncate to {n}   // wraps\n  x saturate to {n}   // clamps\n  try x convert to {n}   // {n}?", n = n)),
+                    ),
+                    C::SignReinterpret => (
+                        format!("cannot reinterpret sign converting `{}` to `{}` with `as`", source, target),
+                        "`as` only permits lossless widening — a negative value has no unsigned representation [type.primitives/CV3]",
+                        Some(format!("x truncate to {n}   // bit-preserving\n  x saturate to {n}   // clamps\n  try x convert to {n}   // {n}?", n = n)),
+                    ),
+                    C::FloatToInt => (
+                        format!("cannot convert float `{}` to integer `{}` with `as`", source, target),
+                        "float-to-int loses the fraction and can overflow — `as` doesn't allow it [type.primitives/CV4]",
+                        Some(format!("x float to int {n}   // truncates toward zero, panics on NaN/inf\n  x float to int {n} (saturating)   // clamps, NaN → 0\n  try x float to int {n}   // {n}?", n = n)),
+                    ),
+                    C::FloatNarrowing => (
+                        format!("cannot narrow `{}` to `{}` with `as`", source, target),
+                        "`as` only permits lossless widening — narrowing a float loses precision [type.primitives/CV4]",
+                        None,
+                    ),
+                    C::IntToChar => (
+                        format!("cannot convert `{}` to `char` with `as`", source),
+                        "not every integer is a valid Unicode scalar value [type.primitives/CH5]",
+                        Some("char.from_u32(n)   // returns char?".to_string()),
+                    ),
+                    C::Bool => (
+                        "no conversion between `bool` and numeric types with `as`".to_string(),
+                        "`bool` is not a number — there is no implicit int↔bool conversion [type.primitives/BL3]",
+                        Some("n != 0   // int → bool\n  if b { 1 } else { 0 }   // bool → int".to_string()),
+                    ),
+                    C::Other => (
+                        format!("cannot convert `{}` to `{}` with `as`", source, target),
+                        "`as` only permits lossless widening [type.primitives/CV1]",
+                        None,
+                    ),
+                };
+                let mut diag = Diagnostic::error(label.clone())
+                    .with_code("E0817")
+                    .with_primary(*span, label)
+                    .with_why(why);
+                if let Some(fix) = fix {
+                    diag = diag.with_fix(fix.clone()).with_help(format!("use an explicit conversion:\n  {}", fix));
+                }
+                diag
+            }
+            InvalidConvert { message, span } => {
+                Diagnostic::error(message.clone())
+                    .with_code("E0818")
+                    .with_primary(*span, "invalid conversion form")
+                    .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV5–CV10]")
+            }
         }
     }
 }

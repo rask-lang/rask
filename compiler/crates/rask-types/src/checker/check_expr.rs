@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Expression type inference and specific type checks.
 
-use rask_ast::expr::{BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern};
+use rask_ast::expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
 use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
-use super::errors::TypeError;
+use super::errors::{InvalidCastClass, TypeError};
 use super::inference::{LiteralKind, TypeConstraint, WrapPosition};
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
@@ -964,9 +964,37 @@ impl TypeChecker {
                             });
                         }
                     }
+                } else if is_scalar_ty(&target) {
+                    // CV1–CV4, CH5, BL3: `as` is lossless widening only. Defer the
+                    // check until literal defaults resolve `inner_ty`.
+                    self.pending_casts.push(PendingCast {
+                        source: inner_ty,
+                        target: target.clone(),
+                        target_name: ty.clone(),
+                        convert: None,
+                        span: expr.span,
+                    });
                 }
 
                 target
+            }
+
+            ExprKind::Convert { expr: inner, target, kind } => {
+                let inner_ty = self.infer_expr(inner);
+                let target_ty = parse_type_string(target, &self.types).unwrap_or(Type::Error);
+                self.pending_casts.push(PendingCast {
+                    source: inner_ty,
+                    target: target_ty.clone(),
+                    target_name: target.clone(),
+                    convert: Some(*kind),
+                    span: expr.span,
+                });
+                // CV7/CV10 yield `T?`; the rest yield `T`.
+                if kind.is_optional() {
+                    Type::option(target_ty)
+                } else {
+                    target_ty
+                }
             }
 
             ExprKind::Loop { body, .. } => {
@@ -1645,6 +1673,23 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &object.kind {
             if self.types.builtin_modules.is_module(name) {
                 return self.check_module_method(name, method, args, type_args, span);
+            }
+        }
+
+        // Primitive type namespace: char.from_u32(n). `char` is a type name here,
+        // not a variable — route to the primitive's method resolver.
+        if let ExprKind::Ident(name) = &object.kind {
+            if name == "char" && self.lookup_local(name).is_none() {
+                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                let ret_ty = self.ctx.fresh_var();
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: Type::Char,
+                    method: method.to_string(),
+                    args: arg_types,
+                    ret: ret_ty.clone(),
+                    span,
+                });
+                return ret_ty;
             }
         }
 
@@ -2565,5 +2610,166 @@ impl TypeChecker {
                 super::BindingKind::Mut => self.define_local(name, *ok),
             }
         }
+    }
+
+    /// CV1–CV10: validate deferred cast/convert sites. Source types are now
+    /// concrete (literal defaults applied), so `1 as bool` sees `i32`.
+    pub(super) fn validate_pending_casts(&mut self) {
+        let pending = std::mem::take(&mut self.pending_casts);
+        for pc in pending {
+            let src = self.ctx.apply(&pc.source);
+            // Skip unresolved/cascading — don't pile errors on an earlier failure.
+            if matches!(src, Type::Var(_) | Type::Error) || matches!(pc.target, Type::Error) {
+                continue;
+            }
+            match pc.convert {
+                None => self.check_as_cast(&src, &pc),
+                Some(kind) => self.check_convert(&src, kind, &pc),
+            }
+        }
+    }
+
+    /// CV1–CV4, CH5, BL3: reject any `as` cast that isn't lossless widening.
+    fn check_as_cast(&mut self, src: &Type, pc: &PendingCast) {
+        let (Some(s), Some(t)) = (prim_of(src), prim_of(&pc.target)) else {
+            return;
+        };
+        if as_cast_is_lossless(src, &pc.target, s, t) {
+            return;
+        }
+        self.errors.push(TypeError::InvalidCast {
+            src_ty: src.clone(),
+            dst_ty: pc.target.clone(),
+            target_name: pc.target_name.clone(),
+            class: classify_invalid_cast(s, t),
+            span: pc.span,
+        });
+    }
+
+    /// CV5–CV10: reject conversion forms applied to the wrong source/target kind.
+    fn check_convert(&mut self, src: &Type, kind: ConvertKind, pc: &PendingCast) {
+        let surface = kind.surface();
+        let target_is_int = matches!(prim_of(&pc.target), Some(Prim::Int { .. }));
+        let src_prim = prim_of(src);
+        let msg = if kind.is_float_source() {
+            // CV8–CV10: float → int.
+            if !matches!(src_prim, Some(Prim::Float { .. })) {
+                Some(format!(
+                    "`{}` converts a float to an integer, but `{}` is not a float — for integer-to-integer use `truncate to`, `saturate to`, or `try convert to`",
+                    surface, src
+                ))
+            } else if !target_is_int {
+                Some(format!(
+                    "`{}` produces an integer, but the target `{}` is not an integer type",
+                    surface, pc.target_name
+                ))
+            } else {
+                None
+            }
+        } else {
+            // CV5–CV7: int → int.
+            if !matches!(src_prim, Some(Prim::Int { .. })) {
+                Some(format!(
+                    "`{}` converts between integer types, but `{}` is not an integer — for float-to-int use `float to int T`",
+                    surface, src
+                ))
+            } else if !target_is_int {
+                Some(format!(
+                    "`{}` produces an integer, but the target `{}` is not an integer type",
+                    surface, pc.target_name
+                ))
+            } else {
+                None
+            }
+        };
+        if let Some(message) = msg {
+            self.errors.push(TypeError::InvalidConvert {
+                message,
+                span: pc.span,
+            });
+        }
+    }
+}
+
+/// A cast/convert site validated after inference finalizes (mod.rs).
+pub(super) struct PendingCast {
+    pub source: Type,
+    pub target: Type,
+    /// Original target spelling (`usize`, `i8`, …) for the suggested fix.
+    pub target_name: String,
+    /// `None` = `as` cast; `Some` = explicit conversion form.
+    pub convert: Option<ConvertKind>,
+    pub span: Span,
+}
+
+/// Primitive scalar classification for conversion rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Prim {
+    Int { bits: u32, signed: bool },
+    Float { bits: u32 },
+    Bool,
+    Char,
+}
+
+fn prim_of(ty: &Type) -> Option<Prim> {
+    Some(match ty {
+        Type::I8 => Prim::Int { bits: 8, signed: true },
+        Type::I16 => Prim::Int { bits: 16, signed: true },
+        Type::I32 => Prim::Int { bits: 32, signed: true },
+        Type::I64 => Prim::Int { bits: 64, signed: true },
+        Type::I128 => Prim::Int { bits: 128, signed: true },
+        Type::U8 => Prim::Int { bits: 8, signed: false },
+        Type::U16 => Prim::Int { bits: 16, signed: false },
+        Type::U32 => Prim::Int { bits: 32, signed: false },
+        Type::U64 => Prim::Int { bits: 64, signed: false },
+        Type::U128 => Prim::Int { bits: 128, signed: false },
+        Type::F32 => Prim::Float { bits: 32 },
+        Type::F64 => Prim::Float { bits: 64 },
+        Type::Bool => Prim::Bool,
+        Type::Char => Prim::Char,
+        _ => return None,
+    })
+}
+
+/// The primitive scalars `as`/conversion forms operate on.
+fn is_scalar_ty(ty: &Type) -> bool {
+    prim_of(ty).is_some()
+}
+
+/// CV1: is this `as` cast lossless widening?
+///
+/// - int→int: value-preserving widening (wider, and same-signed or unsigned source).
+/// - int→float: allowed (spec's own examples use `as`; only float→int is blocked).
+/// - float→float: widening only (f32→f64).
+/// - char→int: lossless when the target holds a full Unicode scalar (≥32 bits) [CH4].
+fn as_cast_is_lossless(src_ty: &Type, tgt_ty: &Type, s: Prim, t: Prim) -> bool {
+    if src_ty == tgt_ty {
+        return true;
+    }
+    match (s, t) {
+        (Prim::Int { bits: sb, signed: ss }, Prim::Int { bits: tb, signed: ts }) => {
+            tb > sb && (ss == ts || !ss)
+        }
+        (Prim::Int { .. }, Prim::Float { .. }) => true,
+        (Prim::Float { bits: sb }, Prim::Float { bits: tb }) => tb >= sb,
+        (Prim::Char, Prim::Int { bits, .. }) => bits >= 32,
+        _ => false,
+    }
+}
+
+fn classify_invalid_cast(s: Prim, t: Prim) -> InvalidCastClass {
+    match (s, t) {
+        (Prim::Bool, _) | (_, Prim::Bool) => InvalidCastClass::Bool,
+        (Prim::Int { .. }, Prim::Char) => InvalidCastClass::IntToChar,
+        (Prim::Float { .. }, Prim::Int { .. }) => InvalidCastClass::FloatToInt,
+        (Prim::Float { .. }, Prim::Float { .. }) => InvalidCastClass::FloatNarrowing,
+        (Prim::Int { signed: ss, .. }, Prim::Int { signed: ts, .. }) => {
+            if ss && !ts {
+                InvalidCastClass::SignReinterpret
+            } else {
+                InvalidCastClass::Narrowing
+            }
+        }
+        _ => InvalidCastClass::Other,
     }
 }

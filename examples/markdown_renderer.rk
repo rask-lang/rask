@@ -172,7 +172,7 @@ func ordered_list_start(line: string) -> i32? {
     const n = num_slice.parse_int() is i64 as v else {
         return none
     }
-    return n as i32
+    return n truncate to i32
 }
 
 // ─── Scanner ────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ struct Scanner {
 
 extend Scanner {
     func new(input: string) -> Scanner {
-        return Scanner { input: input, pos: 0 as usize }
+        return Scanner { input: input, pos: 0 }
     }
 
     func is_done(self) -> bool {

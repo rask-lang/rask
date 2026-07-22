@@ -1486,7 +1486,7 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Unwrap { expr: inner, .. } => {
                 self.walk_free_vars(inner, bound, seen, free);
             }
-            ExprKind::Cast { expr: inner, .. } => {
+            ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.walk_free_vars(inner, bound, seen, free);
             }
             ExprKind::NullCoalesce { value, default } => {

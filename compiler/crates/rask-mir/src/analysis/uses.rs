@@ -20,7 +20,7 @@ pub fn rvalue_reads(rv: &MirRValue, local: LocalId) -> bool {
             operand_reads(left, local) || operand_reads(right, local)
         }
         MirRValue::UnaryOp { operand, .. } => operand_reads(operand, local),
-        MirRValue::Cast { value, .. } => operand_reads(value, local),
+        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => operand_reads(value, local),
         MirRValue::Field { base, .. } => operand_reads(base, local),
         MirRValue::EnumTag { value } => operand_reads(value, local),
         MirRValue::ArrayIndex { base, index, .. } => {

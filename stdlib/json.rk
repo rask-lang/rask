@@ -260,9 +260,9 @@ extend JsonParser {
                 } else if esc == 116 {
                     b.append_char('\t')
                 } else if esc == 98 {
-                    b.append_char(8 as char)
+                    b.append_char('\u{8}')
                 } else if esc == 102 {
-                    b.append_char(12 as char)
+                    b.append_char('\u{c}')
                 } else if esc == 117 {
                     const cp = try self.parse_unicode_escape()
                     b.append_char(cp)
@@ -271,7 +271,7 @@ extend JsonParser {
                 }
                 continue
             }
-            b.append_char(byte as char)
+            b.append_char(char.from_u32(byte as u32) ?? '\u{0}')
         }
 
         return JsonError.ParseError("unterminated string")
@@ -289,10 +289,13 @@ extend JsonParser {
             if digit < 0 {
                 return JsonError.ParseError("invalid hex digit in unicode escape")
             }
-            cp = cp * 16 + digit as u32
+            cp = cp * 16 + (digit truncate to u32)
             i = i + 1
         }
-        return cp as char
+        if char.from_u32(cp)? as c {
+            return c
+        }
+        return JsonError.ParseError("invalid unicode code point")
     }
 
     func parse_string_value(mutate self) -> JsonValue or JsonError {
@@ -391,13 +394,13 @@ extend JsonParser {
 
 func hex_digit(b: u8) -> i32 {
     if b >= 48 && b <= 57 {
-        return b - 48 as i32
+        return b as i32 - 48
     }
     if b >= 65 && b <= 70 {
-        return b - 55 as i32
+        return b as i32 - 55
     }
     if b >= 97 && b <= 102 {
-        return b - 87 as i32
+        return b as i32 - 87
     }
     return -1
 }
@@ -520,7 +523,7 @@ func escape_string(s: string) -> string {
             b.append_char(hex_char(byte / 16))
             b.append_char(hex_char(byte % 16))
         } else {
-            b.append_char(byte as char)
+            b.append_char(char.from_u32(byte as u32) ?? '\u{0}')
         }
         i = i + 1
     }
@@ -530,13 +533,13 @@ func escape_string(s: string) -> string {
 
 func hex_char(n: u8) -> char {
     if n < 10 {
-        return 48 + n as char
+        return char.from_u32((48 + n) as u32) ?? '0'
     }
-    return 87 + n as char
+    return char.from_u32((87 + n) as u32) ?? '0'
 }
 
 func format_number(n: f64) -> string {
-    const i = n as i64
+    const i = n float to int i64 (saturating)
     if i as f64 == n && n >= -9007199254740992.0 && n <= 9007199254740992.0 {
         return "{i}"
     }

@@ -291,7 +291,7 @@ fn rename_rvalue(rv: &mut MirRValue, version_stack: &[Vec<LocalId>], num_orig_lo
             rename_operand(right, version_stack, num_orig_locals);
         }
         MirRValue::UnaryOp { operand, .. } => rename_operand(operand, version_stack, num_orig_locals),
-        MirRValue::Cast { value, .. } => rename_operand(value, version_stack, num_orig_locals),
+        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => rename_operand(value, version_stack, num_orig_locals),
         MirRValue::Field { base, .. } => rename_operand(base, version_stack, num_orig_locals),
         MirRValue::EnumTag { value } => rename_operand(value, version_stack, num_orig_locals),
         MirRValue::ArrayIndex { base, index, .. } => {

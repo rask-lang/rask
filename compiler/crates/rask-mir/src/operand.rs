@@ -42,6 +42,14 @@ pub enum MirRValue {
         value: MirOperand,
         target_ty: MirType,
     },
+    /// Explicit lossy conversion (type.primitives CV5–CV10). Carries the source
+    /// type so codegen has signedness/width without re-deriving it.
+    Convert {
+        value: MirOperand,
+        source_ty: MirType,
+        target_ty: MirType,
+        kind: rask_ast::expr::ConvertKind,
+    },
     Field {
         base: MirOperand,
         field_index: u32,
