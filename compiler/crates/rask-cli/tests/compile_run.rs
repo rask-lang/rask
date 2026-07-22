@@ -286,6 +286,20 @@ fn compile_vec_basic() {
     assert_eq!(stdout, "3\n");
 }
 
+// ─── Trait-object vtable dispatch (task 1.4, issue #194) ─────
+//
+// `Shape` declares an incompatible method (returns Self, TR2) before the
+// compatible ones, so the vtable holds compatible slots at 0/1 while the naive
+// offset would be 1/2. Native codegen goes through the real vtable — the
+// interpreter's by-name dispatch can't catch a wrong-slot miscompile, so this
+// has to run the compiled binary.
+#[test]
+fn compile_trait_object_dispatch() {
+    let (stdout, code) = compile_and_run("trait_object_dispatch.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "square=16\ncircle=75\n");
+}
+
 // ─── Compile-error tests (should fail to compile) ────────────
 
 fn compile_error(name: &str) -> bool {
@@ -356,6 +370,14 @@ fn error_single_letter_type_name() {
 #[test]
 fn error_cast_rules() {
     assert!(compile_error("cast_rules.rk"), "should reject invalid `as` casts and misused conversion forms (CV1–CV10, CH5, BL3)");
+}
+
+#[test]
+fn error_trait_object_generic() {
+    // TR3: a generic trait method has no vtable slot; calling it through
+    // `any Trait` must be rejected at the call site.
+    assert!(compile_error("trait_object_generic.rk"),
+        "should reject calling a generic method through `any Trait` (TR3)");
 }
 
 #[test]

@@ -238,8 +238,9 @@ pub fn cmd_mir(path: &str, format: Format) {
         .collect();
     let trait_methods: std::collections::HashMap<String, Vec<String>> = typed.types.iter()
         .filter_map(|def| {
-            if let rask_types::TypeDef::Trait { name, methods, .. } = def {
-                Some((name.clone(), methods.iter().map(|m| m.name.clone()).collect()))
+            if let rask_types::TypeDef::Trait { name, .. } = def {
+                // Object-compatible methods only (TR1–TR3) — match vtable layout.
+                Some((name.clone(), def.object_compatible_method_names()))
             } else {
                 None
             }

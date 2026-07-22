@@ -516,6 +516,13 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("Self-returning methods are incompatible with trait objects because the concrete type is erased (TR2)")
             }
 
+            TraitObjectGenericMethod { trait_name, method, span } => {
+                Diagnostic::error(format!("generic method `{}` — cannot be called through `any {}`", method, trait_name))
+                    .with_code("E0819")
+                    .with_primary(*span, "generic method")
+                    .with_help("generic methods can't be dispatched dynamically: each instantiation needs its own code, but a trait object erases the concrete type. Call it on the concrete type instead (TR3)")
+            }
+
             TraitNotSatisfied { ty, trait_name, span } => {
                 Diagnostic::error(format!("`{}` does not implement `{}`", ty, trait_name))
                     .with_code("E0333")

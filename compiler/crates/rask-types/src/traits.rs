@@ -410,15 +410,17 @@ impl<'a> TraitChecker<'a> {
         }
 
         // Check parameter modes and types per position.
-        // Type::Var represents Self in builtin trait signatures — skip type
-        // comparison when either side is a type variable.
+        // Type::Var represents Self in builtin trait signatures, and
+        // `UnresolvedNamed("Self")` is the written-out Self of a declared
+        // trait — both stand in for the implementing type, so skip the type
+        // comparison when either side is one of those.
         for ((req_ty, req_mode), (found_ty, found_mode)) in
             required.params.iter().zip(found.params.iter())
         {
             if req_mode != found_mode {
                 return false;
             }
-            if !matches!(req_ty, Type::Var(_))
+            if !is_self_placeholder(req_ty)
                 && !matches!(found_ty, Type::Var(_))
                 && req_ty != found_ty
             {
@@ -426,8 +428,8 @@ impl<'a> TraitChecker<'a> {
             }
         }
 
-        // Check return type (skip type variables)
-        if !matches!(required.ret, Type::Var(_))
+        // Check return type (skip Self placeholders)
+        if !is_self_placeholder(&required.ret)
             && !matches!(found.ret, Type::Var(_))
             && required.ret != found.ret
         {
@@ -503,6 +505,12 @@ pub fn verify_instantiation(
 }
 
 /// Check if a type implements a specific trait.
+/// True if `ty` stands in for the implementing type in a trait signature:
+/// a builtin-trait type variable, or the written-out `Self`.
+fn is_self_placeholder(ty: &Type) -> bool {
+    matches!(ty, Type::Var(_)) || matches!(ty, Type::UnresolvedNamed(n) if n == "Self")
+}
+
 pub fn implements_trait(
     types: &TypeTable,
     ty: &Type,

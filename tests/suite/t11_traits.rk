@@ -49,4 +49,70 @@ test "trait object dispatch different type" {
     assert print_description(c) == "Cat: Luna"
 }
 
+// A trait whose first method is object-incompatible (returns Self, TR2).
+// The vtable holds slots for compatible methods only, so `area`/`kind` land at
+// slots 0/1 — the dispatch offset must index the same compatible-only list or
+// calls hit the wrong slot. Native codegen exercises the real vtable; the
+// interpreter dispatches by name.
+trait Shape {
+    func scaled(self, factor: i64) -> Self   // TR2: incompatible, declared first
+    func area(self) -> i64
+    func kind(self) -> string
+}
+
+struct Square {
+    side: i64
+}
+
+struct Rect {
+    w: i64
+    h: i64
+}
+
+extend Square with Shape {
+    func scaled(self, factor: i64) -> Square {
+        return Square { side: self.side * factor }
+    }
+    func area(self) -> i64 {
+        return self.side * self.side
+    }
+    func kind(self) -> string {
+        return "square"
+    }
+}
+
+extend Rect with Shape {
+    func scaled(self, factor: i64) -> Rect {
+        return Rect { w: self.w * factor, h: self.h * factor }
+    }
+    func area(self) -> i64 {
+        return self.w * self.h
+    }
+    func kind(self) -> string {
+        return "rect"
+    }
+}
+
+func shape_area(s: any Shape) -> i64 {
+    return s.area()
+}
+
+func shape_kind(s: any Shape) -> string {
+    return s.kind()
+}
+
+test "dispatch past an incompatible method" {
+    const sq = Square { side: 6 }
+    assert shape_area(sq as any Shape) == 36
+    assert shape_kind(sq as any Shape) == "square"
+}
+
+test "heterogeneous dispatch through any Shape" {
+    const sq = Square { side: 3 }
+    const r = Rect { w: 4, h: 5 }
+    assert shape_area(sq as any Shape) == 9
+    assert shape_area(r as any Shape) == 20
+    assert shape_kind(r as any Shape) == "rect"
+}
+
 func main() {}

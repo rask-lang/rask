@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: generic methods can't be called through `any Trait` (type.traits/TR3).
+// The method has no vtable slot — each instantiation needs its own code, but the
+// concrete type is erased behind the trait object. Rejected at the call site (TR1),
+// not at the cast, so boxing the value is still fine.
+
+trait Store {
+    func put<T>(self, value: T)     // TR3: generic — no dynamic dispatch
+    func size(self) -> i64          // fine — concrete signature
+}
+
+struct Bin {
+    count: i64
+}
+
+extend Bin with Store {
+    func put<T>(self, value: T) {}
+    func size(self) -> i64 {
+        return self.count
+    }
+}
+
+// ERROR: generic method `put` cannot be called through `any Store` [E0819]
+func use_generic(s: any Store) {
+    s.put(42)
+}
+
+func main() {
+    const b = Bin { count: 3 }
+    use_generic(b as any Store)
+}

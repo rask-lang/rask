@@ -59,6 +59,14 @@ pub struct Monomorphizer<'a> {
     /// Call expression NodeId → mangled callee name.
     /// Used by MIR lowering to rewrite calls to generic function instantiations.
     pub call_rewrites: HashMap<NodeId, String>,
+    /// Trait name → object-compatible method names (TR1–TR3).
+    /// A vtable references a slot per compatible method, so boxing a value as
+    /// `any Trait` makes every such method of the concrete type reachable even
+    /// if it's never called explicitly.
+    trait_methods: HashMap<String, Vec<String>>,
+    /// Expression NodeId → trait name, for implicit TR5 coercion sites (a value
+    /// passed where `any Trait` is expected, with no written-out cast).
+    trait_coercions: HashMap<NodeId, String>,
 }
 
 /// Wrap a method FnDecl as a top-level Decl and register it under its
@@ -151,6 +159,21 @@ impl<'a> Monomorphizer<'a> {
             }
         }
 
+        // TR1–TR3: object-compatible methods per trait — a method drops out if
+        // it declares its own type params (TR3) or returns Self (TR2), matching
+        // the vtable layout in codegen.
+        let mut trait_methods: HashMap<String, Vec<String>> = HashMap::new();
+        for decl in decls {
+            if let DeclKind::Trait(t) = &decl.kind {
+                let compatible = t.methods.iter()
+                    .filter(|m| m.type_params.is_empty()
+                        && m.ret_ty.as_deref() != Some("Self"))
+                    .map(|m| m.name.clone())
+                    .collect();
+                trait_methods.insert(t.name.clone(), compatible);
+            }
+        }
+
         Self {
             fn_table,
             method_table,
@@ -161,6 +184,29 @@ impl<'a> Monomorphizer<'a> {
             queue: VecDeque::new(),
             results: Vec::new(),
             call_rewrites: HashMap::new(),
+            trait_methods,
+            trait_coercions: HashMap::new(),
+        }
+    }
+
+    /// Record implicit trait-coercion sites (TR5) from the type checker.
+    pub fn set_trait_coercions(&mut self, coercions: &HashMap<NodeId, String>) {
+        self.trait_coercions = coercions.clone();
+    }
+
+    /// Boxing a value as `any Trait` needs every object-compatible method of
+    /// the concrete type in the vtable. The receiver type isn't resolved here,
+    /// so enqueue every implementation of each compatible method name — the
+    /// same conservative widening used for ordinary instance calls.
+    fn mark_trait_object_methods(&mut self, trait_name: &str) {
+        let base = trait_name.split('<').next().unwrap_or(trait_name);
+        let Some(methods) = self.trait_methods.get(base).cloned() else { return };
+        for method in methods {
+            if let Some(qualified_names) = self.method_by_bare_name.get(&method).cloned() {
+                for qname in qualified_names {
+                    self.enqueue(qname, Vec::new());
+                }
+            }
         }
     }
 
@@ -299,6 +345,12 @@ impl<'a> Monomorphizer<'a> {
     }
 
     fn visit_expr(&mut self, expr: &Expr) {
+        // TR5: implicit coercion to `any Trait` (function arg, field, element)
+        // with no written-out cast — the checker flags these by NodeId.
+        if let Some(trait_name) = self.trait_coercions.get(&expr.id).cloned() {
+            self.mark_trait_object_methods(&trait_name);
+        }
+
         match &expr.kind {
             ExprKind::Call { func, args } => {
                 if let ExprKind::Ident(name) = &func.kind {
@@ -458,7 +510,14 @@ impl<'a> Monomorphizer<'a> {
             ExprKind::Closure { body, .. } => {
                 self.visit_expr(body);
             }
-            ExprKind::Cast { expr, .. } | ExprKind::Convert { expr, .. } => self.visit_expr(expr),
+            ExprKind::Cast { expr: inner, ty } => {
+                // TR5: `value as any Trait` boxes `value` — pull in the vtable's methods.
+                if let Some(trait_name) = ty.strip_prefix("any ") {
+                    self.mark_trait_object_methods(trait_name);
+                }
+                self.visit_expr(inner);
+            }
+            ExprKind::Convert { expr, .. } => self.visit_expr(expr),
             ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::Comptime { body }
             | ExprKind::Loop { body, .. } => {
                 for s in body {
