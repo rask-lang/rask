@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Ownership branch-merge soundness: the legal forms the stricter merge
+// must still accept. The rejected forms live in
+// tests/compile_errors/branch_merge.rk.
+// Spec: mem.ownership/O3 (use after move), mem.linear/L1 (consume once).
+
+func drain(take v: Vec<i32>) -> bool {
+    return v.is_empty()
+}
+
+@resource
+struct Guard { id: i32 }
+
+extend Guard {
+    func release(take self) -> i32 {
+        return self.id
+    }
+}
+
+// --- Moved on both branches: definite move, legal (O3) ---
+
+test "value moved in both branches" {
+    mut v = Vec<i32>.new()
+    v.push(1)
+    mut empty = true
+    if true {
+        empty = drain(own v)
+    } else {
+        empty = drain(own v)
+    }
+    assert empty == false
+}
+
+// --- Conditional move then reassignment before use (O3) ---
+
+test "conditional move then reassign before use" {
+    mut v = Vec<i32>.new()
+    v.push(1)
+    if true {
+        const moved = v
+        assert moved.len() == 1
+    }
+    v = Vec<i32>.new()
+    v.push(42)
+    assert v.len() == 1
+    assert v[0] == 42
+}
+
+// --- Reassign inside loop body is not a carried move (O3) ---
+
+test "reassign in loop body is not use-after-move" {
+    mut v = Vec<i32>.new()
+    mut count = 0
+    for i in 0..3 {
+        const taken = v
+        assert taken.is_empty() == (count == 0)
+        v = Vec<i32>.new()
+        v.push(i)
+        count = count + 1
+    }
+    assert count == 3
+    assert v.len() == 1
+    assert v[0] == 2
+}
+
+// --- Linear resource consumed on both branches (L1) ---
+
+test "resource consumed in both branches" {
+    mut result = 0
+    const g = Guard { id: 7 }
+    if true {
+        result = g.release()
+    } else {
+        result = g.release()
+    }
+    assert result == 7
+}
+
+func main() {}

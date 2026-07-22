@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: ownership branch-merge soundness
+//
+// A value moved (or a linear resource consumed) on some paths but not all
+// must be treated as unavailable after the paths join.
+// Spec: mem.ownership/O3 (use after move), mem.linear/L1 (consume once).
+// Regression coverage for issue #294.
+
+@resource
+struct Conn { fd: i32 }
+
+extend Conn {
+    func close(take self) {}
+}
+
+func take_vec(take v: Vec<i32>) {}
+
+// --- Use after move in one if/else branch (O3) ---
+// ERROR: 'v' may have been moved
+func move_one_branch_ifelse(cond: bool) {
+    const v = Vec<i32>.new()
+    if cond {
+        const moved = v
+    } else {
+        const x = 1
+    }
+    v.len()            // ERROR: v moved on the then-branch
+}
+
+// --- Use after move in an if-without-else (O3, #294) ---
+// ERROR: 'v' may have been moved
+func move_one_branch_ifnoelse(cond: bool) {
+    const v = Vec<i32>.new()
+    if cond {
+        const moved = v
+    }
+    v.len()            // ERROR: v moved when cond was true
+}
+
+// --- Linear resource consumed in one if/else branch only (L1) ---
+// ERROR: resource 'c' must be consumed before scope exit
+func resource_one_branch_ifelse(cond: bool) {
+    const c = Conn { fd: 3 }
+    if cond {
+        c.close()
+    } else {
+        const x = 1
+    }
+}                      // ERROR: else branch leaks c
+
+// --- Linear resource consumed in an if-without-else (L1, #294) ---
+// ERROR: resource 'c' must be consumed before scope exit
+func resource_one_branch_ifnoelse(cond: bool) {
+    const c = Conn { fd: 3 }
+    if cond {
+        c.close()
+    }
+}                      // ERROR: c leaks when cond is false
+
+// --- Move inside a loop body: use-after-move on the next iteration (O3) ---
+// ERROR: 'v' may have been moved
+func move_in_loop() {
+    const v = Vec<i32>.new()
+    loop {
+        take_vec(own v)   // ERROR: v already moved on the previous iteration
+    }
+}
+
+func main() {}

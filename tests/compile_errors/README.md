@@ -31,6 +31,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | File | What it tests |
 |------|--------------|
 | [ownership_errors.rk](ownership_errors.rk) | Use-after-move, conditional move, @unique, @resource leak/double-consume, Vec never Copy |
+| [branch_merge.rk](branch_merge.rk) | Branch-merge soundness (O3, L1): move/consume on one branch of if, if-without-else, and match arms; move inside a loop body |
 | [borrow_errors.rk](borrow_errors.rk) | Mutating read-only param, moving from borrow, storing slices, borrow escape, structural mutation in `with`, non-Copy element binding |
 | [borrow_stored.rk](borrow_stored.rk) | Storing a string slice in a struct |
 

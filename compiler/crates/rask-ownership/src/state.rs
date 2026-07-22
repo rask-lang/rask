@@ -10,6 +10,11 @@ pub enum BindingState {
     Owned,
     /// The value has been moved; any use is an error.
     Moved { at: Span },
+    /// The value was moved on at least one path reaching here but not all
+    /// (e.g. moved in one `if` branch). The spec treats maybe-moved as moved:
+    /// any later use is an error, and a linear value in this state is not
+    /// definitely consumed. `at` points at one branch's move.
+    MaybeMoved { at: Span },
     /// The value is currently borrowed.
     Borrowed { mode: BorrowMode, scope: BorrowScope },
     /// The value was explicitly discarded; any use is an error (D1).

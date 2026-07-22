@@ -299,6 +299,77 @@ impl<'a> OwnershipChecker<'a> {
         self.current_block = block_id;
     }
 
+    /// Collect the names a pattern binds (for loop per-iteration exclusion).
+    fn collect_pattern_binding_names(pattern: &Pattern, out: &mut Vec<String>) {
+        match pattern {
+            Pattern::Ident(name) if !name.contains('.') => out.push(name.clone()),
+            Pattern::Tuple(pats) | Pattern::Constructor { fields: pats, .. } => {
+                for p in pats {
+                    Self::collect_pattern_binding_names(p, out);
+                }
+            }
+            Pattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    Self::collect_pattern_binding_names(p, out);
+                }
+            }
+            Pattern::Or(pats) => {
+                for p in pats {
+                    Self::collect_pattern_binding_names(p, out);
+                }
+            }
+            Pattern::TypePat { binding: Some(name), .. } => out.push(name.clone()),
+            _ => {}
+        }
+    }
+
+    /// Check a loop body accounting for values carried across iterations.
+    ///
+    /// A move inside a loop body is a use-after-move on the next iteration.
+    /// One linear pass misses it (the move looks like it happens once), so
+    /// after discovering which pre-loop bindings the body moves, re-run the
+    /// body with those pre-moved to catch the second-iteration use. `exclude`
+    /// names the loop's own per-iteration bindings (for/while-let), which are
+    /// freshly bound each iteration and are not carried.
+    fn check_loop_body(&mut self, body: &[Stmt], exclude: &[String]) {
+        let pre_loop = self.bindings.clone();
+        let saved_errors = self.errors.len();
+
+        // Pass 1: discover which pre-loop bindings the body consumes.
+        self.check_block(body);
+
+        let carried: Vec<(String, Span)> = pre_loop
+            .iter()
+            .filter(|(name, pre)| Self::is_available(pre) && !exclude.contains(name))
+            .filter_map(|(name, _)| match self.bindings.get(name) {
+                Some(state) if !Self::is_available(state) => {
+                    Self::unavailable_span(state).map(|at| (name.clone(), at))
+                }
+                _ => None,
+            })
+            .collect();
+
+        if !carried.is_empty() {
+            // Pass 2: re-analyze with carried values pre-moved. Discard pass-1
+            // errors — pass 2 sees a strict superset (stricter entry state).
+            self.errors.truncate(saved_errors);
+            self.bindings = pre_loop;
+            for (name, at) in &carried {
+                self.bindings
+                    .insert(name.clone(), BindingState::MaybeMoved { at: *at });
+            }
+            self.check_block(body);
+        }
+
+        // After the loop, a value the body consumes is only maybe-consumed —
+        // the loop may run zero times (mem.linear/L1, ctrl.ensure/C3). Don't
+        // clobber loop-local binding states.
+        for (name, at) in &carried {
+            self.bindings
+                .insert(name.clone(), BindingState::MaybeMoved { at: *at });
+        }
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Mut { name, name_span: _, ty, init } => {
@@ -397,9 +468,24 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Assign { target, value } => {
                 self.check_expr(value);
-                self.check_expr(target);
+                // A whole-variable assignment reinitializes the target — it is
+                // not a use of the old value, so don't flag a moved/maybe-moved
+                // target here (the type checker already forbids assigning a
+                // `const`). Field/index targets are a genuine use of the root.
+                let reinit_target = match &target.kind {
+                    ExprKind::Ident(_) => true,
+                    _ => {
+                        self.check_expr(target);
+                        false
+                    }
+                };
                 // Assignments move the value
                 self.handle_assignment(value, stmt.span, true);
+                if reinit_target {
+                    if let ExprKind::Ident(target_name) = &target.kind {
+                        self.bindings.insert(target_name.clone(), BindingState::Owned);
+                    }
+                }
                 // SL2: propagate or reject scope-limited closure on assignment.
                 // If the target is a plain binding, propagate the scope limit so
                 // later uses of that binding are still caught. If the target is a
@@ -477,13 +563,15 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::While { cond, body } => {
                 self.check_expr(cond);
-                self.check_block(body);
+                self.check_loop_body(body, &[]);
             }
             StmtKind::WhileLet { pattern, expr, body } => {
                 self.check_expr(expr);
                 let scrutinee_ty = self.program.node_types.get(&expr.id).cloned();
                 self.register_pattern_bindings_typed(pattern, scrutinee_ty.as_ref(), expr.span);
-                self.check_block(body);
+                let mut bound = Vec::new();
+                Self::collect_pattern_binding_names(pattern, &mut bound);
+                self.check_loop_body(body, &bound);
             }
             StmtKind::For { label: _, binding, mutate, iter, body, .. } => {
                 self.check_expr(iter);
@@ -509,13 +597,13 @@ impl<'a> OwnershipChecker<'a> {
                         });
                     }
                 }
-                self.check_block(body);
+                self.check_loop_body(body, &binding_names);
                 if *mutate {
                     self.active_for_mutates.pop();
                 }
             }
             StmtKind::Loop { label: _, body } => {
-                self.check_block(body);
+                self.check_loop_body(body, &[]);
             }
             StmtKind::Break { value, .. } => {
                 if let Some(v) = value {
@@ -572,6 +660,19 @@ impl<'a> OwnershipChecker<'a> {
                                 .unwrap_or_else(|| self.move_reason_for(name));
                             self.errors.push(OwnershipError {
                                 kind: OwnershipErrorKind::UseAfterMove {
+                                    name: name.clone(),
+                                    moved_at: *at,
+                                    reason,
+                                },
+                                span: expr.span,
+                            });
+                        }
+                        BindingState::MaybeMoved { at } => {
+                            let reason = self.program.node_types.get(&expr.id)
+                                .map(|ty| self.move_reason(ty))
+                                .unwrap_or_else(|| self.move_reason_for(name));
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::UseAfterMaybeMove {
                                     name: name.clone(),
                                     moved_at: *at,
                                     reason,
@@ -994,9 +1095,15 @@ impl<'a> OwnershipChecker<'a> {
                     } else {
                         self.merge_branch_bindings(&after_then);
                     }
-                } else if then_terminal {
-                    // if-without-else where then returns — restore pre-branch
+                } else {
+                    // No else — the implicit empty branch keeps the pre-branch
+                    // state. Merge the then-branch against it so a move or
+                    // consumption in the then-branch becomes maybe-moved (#294).
+                    let after_then = self.bindings.clone();
                     self.bindings = pre_branch;
+                    if !then_terminal {
+                        self.merge_branch_bindings(&after_then);
+                    }
                 }
             }
             ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
@@ -1018,8 +1125,13 @@ impl<'a> OwnershipChecker<'a> {
                     } else {
                         self.merge_branch_bindings(&after_then);
                     }
-                } else if then_terminal {
+                } else {
+                    // No else — merge against the implicit empty branch (#294).
+                    let after_then = self.bindings.clone();
                     self.bindings = pre_branch;
+                    if !then_terminal {
+                        self.merge_branch_bindings(&after_then);
+                    }
                 }
             }
             ExprKind::Block(stmts) => {
@@ -1045,7 +1157,14 @@ impl<'a> OwnershipChecker<'a> {
                         );
                     }
                 }
+                // Arms are alternatives, not sequential code: each is checked
+                // from the same pre-match state and their end-states join
+                // (mem.linear/L1 — every arm must consume). A diverging arm
+                // (returns/breaks) contributes nothing to the join.
+                let pre_arms = self.bindings.clone();
+                let mut merged: Option<HashMap<String, BindingState>> = None;
                 for arm in arms {
+                    self.bindings = pre_arms.clone();
                     self.register_pattern_bindings_typed(
                         &arm.pattern,
                         scrutinee_ty.as_ref(),
@@ -1055,7 +1174,21 @@ impl<'a> OwnershipChecker<'a> {
                         self.check_expr(guard);
                     }
                     self.check_expr(&arm.body);
+                    if Self::is_terminal_expr(&arm.body) {
+                        continue;
+                    }
+                    let after_arm = self.bindings.clone();
+                    merged = Some(match merged {
+                        None => after_arm,
+                        Some(acc) => {
+                            self.bindings = acc;
+                            self.merge_branch_bindings(&after_arm);
+                            self.bindings.clone()
+                        }
+                    });
                 }
+                // All arms diverge → code after is unreachable; keep pre-match.
+                self.bindings = merged.unwrap_or(pre_arms);
             }
             ExprKind::Try { expr: inner, ref else_clause } => {
                 self.check_expr(inner);
@@ -1191,8 +1324,11 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Unsafe { body } => {
                 self.check_block(body);
             }
-            ExprKind::Comptime { body } | ExprKind::Loop { body, .. } => {
+            ExprKind::Comptime { body } => {
                 self.check_block(body);
+            }
+            ExprKind::Loop { body, .. } => {
+                self.check_loop_body(body, &[]);
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
                 self.check_expr(condition);
@@ -1235,22 +1371,70 @@ impl<'a> OwnershipChecker<'a> {
         })
     }
 
-    /// Merge binding states after if/else branches.
-    /// `other` is the state after the then-branch; `self.bindings` is after the else-branch.
-    /// A binding is Moved only if moved in both branches.
+    /// Whether a binding can still be used (not moved/maybe-moved/discarded).
+    fn is_available(state: &BindingState) -> bool {
+        matches!(state, BindingState::Owned | BindingState::Borrowed { .. })
+    }
+
+    /// Extract the move/discard span from an unavailable state.
+    fn unavailable_span(state: &BindingState) -> Option<Span> {
+        match state {
+            BindingState::Moved { at }
+            | BindingState::MaybeMoved { at }
+            | BindingState::Discarded { at } => Some(*at),
+            _ => None,
+        }
+    }
+
+    /// Join two binding states at a control-flow merge (O3, mem.linear/L1).
+    /// A value gone on some incoming paths but live on others becomes
+    /// `MaybeMoved`: later use is an error, and a linear value is not
+    /// definitely consumed.
+    fn join_binding_states(a: &BindingState, b: &BindingState) -> BindingState {
+        let a_gone = !Self::is_available(a);
+        let b_gone = !Self::is_available(b);
+        match (a_gone, b_gone) {
+            // Live on both paths — keep the state (borrows already released).
+            (false, false) => a.clone(),
+            // Gone on both paths. Definitely unavailable, unless one side is
+            // only maybe-gone, which keeps the result maybe.
+            (true, true) => {
+                if matches!(a, BindingState::MaybeMoved { .. })
+                    || matches!(b, BindingState::MaybeMoved { .. })
+                {
+                    let at = Self::unavailable_span(a)
+                        .or_else(|| Self::unavailable_span(b))
+                        .unwrap_or(Span::new(0, 0));
+                    BindingState::MaybeMoved { at }
+                } else {
+                    a.clone()
+                }
+            }
+            // Gone on exactly one path — maybe-moved.
+            _ => {
+                let at = if a_gone {
+                    Self::unavailable_span(a)
+                } else {
+                    Self::unavailable_span(b)
+                }
+                .unwrap_or(Span::new(0, 0));
+                BindingState::MaybeMoved { at }
+            }
+        }
+    }
+
+    /// Merge binding states after two branches join (O3, mem.linear/L1).
+    /// `other` holds one branch's post-state; `self.bindings` holds the other's.
+    /// Only bindings that existed before the branch (present in both maps) are
+    /// merged — branch-local bindings are out of scope after the join.
+    /// A value moved on either branch becomes maybe-moved, so any later use is
+    /// an error and a linear value consumed on only one path is not treated as
+    /// consumed.
     fn merge_branch_bindings(&mut self, other: &HashMap<String, BindingState>) {
         for (name, then_state) in other {
-            if let BindingState::Moved { at } = then_state {
-                if let Some(else_state) = self.bindings.get(name) {
-                    if matches!(else_state, BindingState::Moved { .. }) {
-                        // Moved in both branches — stays moved
-                        continue;
-                    }
-                }
-                // Moved in then but not else — keep else state (not moved)
-            } else if let Some(BindingState::Moved { .. }) = self.bindings.get(name) {
-                // Moved in else but not then — restore to not-moved
-                self.bindings.insert(name.clone(), then_state.clone());
+            if let Some(else_state) = self.bindings.get(name) {
+                let merged = Self::join_binding_states(else_state, then_state);
+                self.bindings.insert(name.clone(), merged);
             }
         }
     }
@@ -1294,6 +1478,18 @@ impl<'a> OwnershipChecker<'a> {
                                 let reason = self.move_reason_for(&source_name);
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::UseAfterMove {
+                                        name: source_name.clone(),
+                                        moved_at: *at,
+                                        reason,
+                                    },
+                                    span,
+                                });
+                                return;
+                            }
+                            BindingState::MaybeMoved { at } => {
+                                let reason = self.move_reason_for(&source_name);
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::UseAfterMaybeMove {
                                         name: source_name.clone(),
                                         moved_at: *at,
                                         reason,
@@ -1424,6 +1620,17 @@ impl<'a> OwnershipChecker<'a> {
                     let reason = self.move_reason_for(&source_name);
                     self.errors.push(OwnershipError {
                         kind: OwnershipErrorKind::UseAfterMove {
+                            name: source_name,
+                            moved_at: *at,
+                            reason,
+                        },
+                        span,
+                    });
+                }
+                BindingState::MaybeMoved { at } => {
+                    let reason = self.move_reason_for(&source_name);
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::UseAfterMaybeMove {
                             name: source_name,
                             moved_at: *at,
                             reason,

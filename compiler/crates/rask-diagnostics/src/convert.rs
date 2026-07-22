@@ -981,6 +981,31 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     .with_help(help)
             }
 
+            UseAfterMaybeMove { name, moved_at, reason } => {
+                use rask_ownership::MoveReason;
+                let note = match reason {
+                    MoveReason::Resource { type_name } => format!(
+                        "`{}` is @resource — moved on one branch but not the other",
+                        type_name
+                    ),
+                    _ => format!(
+                        "`{}` is moved on one branch but not the other — after the branches \
+                         join the compiler must assume it was moved",
+                        name
+                    ),
+                };
+                Diagnostic::error(format!("use of maybe-moved value: `{}`", name))
+                    .with_code("E0813")
+                    .with_primary(self.span, "value used here, but it may have been moved")
+                    .with_secondary(*moved_at, "value moved here on one path")
+                    .with_note(note)
+                    .with_help(format!(
+                        "move `{}` on every path, or restructure so the use happens inside the \
+                         branch that still owns it",
+                        name
+                    ))
+            }
+
             BorrowConflict {
                 name,
                 requested,

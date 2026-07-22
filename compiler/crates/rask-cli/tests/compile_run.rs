@@ -343,6 +343,80 @@ fn compile_auto_generic_single_letter() {
     assert_eq!(stdout, "2 1\nhello\n");
 }
 
+// ─── Ownership branch-merge soundness (task 1.1, issue #294) ──
+//
+// A value moved (or a linear resource consumed) on some paths but not all
+// must be treated as unavailable after the paths join. The stricter merge
+// rejects the negative forms; the legal forms live in tests/suite/.
+
+#[test]
+fn error_branch_merge_fixture() {
+    assert!(compile_error("branch_merge.rk"),
+        "should reject the branch-merge soundness violations");
+}
+
+#[test]
+fn error_move_in_one_branch() {
+    let output = check_output(
+        "func main() {\n    const v = Vec<i32>.new()\n    if true {\n        const moved = v\n    } else {\n        const x = 1\n    }\n    v.len()\n}"
+    );
+    assert!(output.contains("E0813"),
+        "move in one if/else branch then use should be E0813 (O3): {}", output);
+}
+
+#[test]
+fn error_move_in_if_without_else() {
+    // #294: the implicit empty else must merge like a real branch.
+    let output = check_output(
+        "func main() {\n    const v = Vec<i32>.new()\n    if true {\n        const moved = v\n    }\n    v.len()\n}"
+    );
+    assert!(output.contains("E0813"),
+        "move in an if-without-else then use should be E0813 (O3): {}", output);
+}
+
+#[test]
+fn error_linear_consumed_one_branch_ifelse() {
+    let output = check_output(
+        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    const c = Conn { fd: 3 }\n    if true {\n        c.close()\n    } else {\n        const x = 1\n    }\n}"
+    );
+    assert!(output.contains("E0805"),
+        "resource consumed in only one if/else branch should be E0805 (L1): {}", output);
+}
+
+#[test]
+fn error_linear_consumed_if_without_else() {
+    // #294: consuming a linear resource in an if-without-else leaks on the
+    // false path.
+    let output = check_output(
+        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    const c = Conn { fd: 3 }\n    if true {\n        c.close()\n    }\n}"
+    );
+    assert!(output.contains("E0805"),
+        "resource consumed in an if-without-else should be E0805 (L1): {}", output);
+}
+
+#[test]
+fn error_move_in_loop_body() {
+    let output = check_output(
+        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    const v = Vec<i32>.new()\n    loop {\n        take_vec(own v)\n    }\n}"
+    );
+    assert!(output.contains("E0813"),
+        "moving a value inside a loop body is a next-iteration use-after-move (O3): {}", output);
+}
+
+#[test]
+fn ok_move_in_both_branches() {
+    assert!(check_succeeds(
+        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    const v = Vec<i32>.new()\n    if true {\n        take_vec(own v)\n    } else {\n        take_vec(own v)\n    }\n}"
+    ), "moving on both branches is a definite move — should type-check");
+}
+
+#[test]
+fn ok_conditional_move_then_reassign() {
+    assert!(check_succeeds(
+        "func main() {\n    mut v = Vec<i32>.new()\n    if true {\n        const moved = v\n    }\n    v = Vec<i32>.new()\n    v.push(1)\n}"
+    ), "reassigning after a conditional move should type-check");
+}
+
 // ─── Error message quality ──────────────────────────────────
 
 /// Run `rask check` and return combined stdout+stderr.
