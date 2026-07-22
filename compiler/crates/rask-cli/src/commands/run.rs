@@ -185,11 +185,9 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                     match rask_mono::monomorphize_with_packages(&typed, &all_decls, package_modules) {
                         Ok(mono) => {
                             let cfg = rask_comptime::CfgConfig::from_host("debug", prepared.resolved_feature_names);
-                            let comptime_globals = super::codegen::evaluate_comptime_globals(
-                                &all_decls, Some(&cfg),
-                                Some(super::codegen::MirEvalContext { mono: &mono, typed: &typed }),
-                                source_files.first().map(|(_, s)| s.as_str()), path, format,
-                            );
+                            let (comptime_globals, ct_diags) =
+                                rask_compiler::evaluate_comptime_globals(&all_decls, &typed, &mono, Some(&cfg));
+                            super::codegen::exit_on_comptime_errors(&ct_diags, &source_files);
 
                             let tmp_dir = std::env::temp_dir();
                             let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
@@ -378,11 +376,9 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
         }
     };
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let comptime_globals = super::codegen::evaluate_comptime_globals(
-        &result.decls, Some(&cfg),
-        Some(super::codegen::MirEvalContext { mono: &mono, typed: &result.typed }),
-        result.source_files.first().map(|(_, s)| s.as_str()), path, format,
-    );
+    let (comptime_globals, ct_diags) =
+        rask_compiler::evaluate_comptime_globals(&result.decls, &result.typed, &mono, Some(&cfg));
+    super::codegen::exit_on_comptime_errors(&ct_diags, &result.source_files);
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
@@ -1040,11 +1036,9 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         }
     };
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let comptime_globals = super::codegen::evaluate_comptime_globals(
-        &result.decls, Some(&cfg),
-        Some(super::codegen::MirEvalContext { mono: &mono, typed: &result.typed }),
-        result.source_files.first().map(|(_, s)| s.as_str()), path, format,
-    );
+    let (comptime_globals, ct_diags) =
+        rask_compiler::evaluate_comptime_globals(&result.decls, &result.typed, &mono, Some(&cfg));
+    super::codegen::exit_on_comptime_errors(&ct_diags, &result.source_files);
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_bench_{}", process::id()));

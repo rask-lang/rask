@@ -1401,6 +1401,7 @@ dependencies = [
  "rask-effects",
  "rask-lexer",
  "rask-mir",
+ "rask-miri",
  "rask-mono",
  "rask-ownership",
  "rask-parser",

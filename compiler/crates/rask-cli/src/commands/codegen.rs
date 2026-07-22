@@ -8,8 +8,19 @@ use std::process;
 
 use crate::{output, Format};
 
-/// Run the full front-end pipeline + monomorphize via rask-compiler. Exits on error.
-fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedProgram, Vec<rask_ast::decl::Decl>, Option<String>, Vec<String>) {
+type PipelineResult = (
+    MonoProgram,
+    rask_types::TypedProgram,
+    Vec<rask_ast::decl::Decl>,
+    std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta>,
+    Option<String>,
+    Vec<String>,
+);
+
+/// Run the full front-end pipeline + monomorphize + comptime eval via
+/// rask-compiler. Exits on error (including comptime hard errors, which are
+/// pipeline diagnostics). Comptime globals are evaluated once, here.
+fn run_pipeline(path: &str, format: Format) -> PipelineResult {
     let config = rask_compiler::CompilerConfig {
         cfg: rask_compiler::CfgConfig::from_host("debug", vec![]),
     };
@@ -41,339 +52,31 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
     let result = output.result.unwrap();
     let source = std::fs::read_to_string(path).ok();
     let package_names = vec![]; // package_modules is in CompileResult but not as names
-    (result.mono, result.typed, result.decls, source, package_names)
+    (result.mono, result.typed, result.decls, result.comptime_globals, source, package_names)
 }
 
-/// Evaluate comptime-initialized consts and return their serialized data.
-///
-/// Comptime evaluation is a compiler pass: its hard errors (overflow,
-/// divide-by-zero — type.overflow CT1/OV2) are real `Diagnostic`s, rendered
-/// through the shared diagnostic path and failing the build, exactly like type
-/// errors. Soft failures (an expression that simply can't be folded) are not
-/// errors — that value is left to run at runtime. `source`/`file` locate the
-/// diagnostics in the user's code.
-///
-/// When `mir_ctx` is provided, tries MIR-based evaluation first (via rask-miri),
-/// falling back to the AST interpreter on soft failure.
-pub fn evaluate_comptime_globals(
-    decls: &[rask_ast::decl::Decl],
-    cfg: Option<&rask_comptime::CfgConfig>,
-    mir_ctx: Option<MirEvalContext<'_>>,
-    source: Option<&str>,
-    file: &str,
-    format: Format,
-) -> std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta> {
-    use rask_ast::decl::DeclKind;
-    use rask_ast::stmt::StmtKind;
 
-    let mut comptime_interp = rask_comptime::ComptimeInterpreter::new();
-    if let Some(c) = cfg {
-        comptime_interp.inject_cfg(c);
+/// Surface comptime hard-error diagnostics and abort. For the test/bench paths
+/// that build their own monomorphized program and call
+/// `rask_compiler::evaluate_comptime_globals` directly (the compile/build paths
+/// get these through the normal pipeline diagnostics instead).
+pub(crate) fn exit_on_comptime_errors(
+    diags: &[rask_diagnostics::Diagnostic],
+    source_files: &[(std::path::PathBuf, String)],
+) {
+    if diags.is_empty() {
+        return;
     }
-    comptime_interp.register_functions(decls);
-
-    let mut globals = std::collections::HashMap::new();
-
-    // Collect (name, init_expr) pairs from both top-level consts and function-body consts
-    let mut comptime_consts: Vec<(String, &rask_ast::expr::Expr)> = Vec::new();
-
-    for decl in decls {
-        match &decl.kind {
-            // Top-level const with comptime initializer
-            DeclKind::Const(c) => {
-                if is_comptime_init(&c.init, decls) {
-                    comptime_consts.push((c.name.clone(), &c.init));
-                }
-            }
-            // Const inside a function body
-            DeclKind::Fn(f) => {
-                for stmt in &f.body {
-                    if let StmtKind::Const { name, init, .. } = &stmt.kind {
-                        if is_comptime_init(init, decls) {
-                            comptime_consts.push((name.clone(), init));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+    for d in diags {
+        crate::show_diagnostic_multi(d, source_files);
     }
-
-    let mut diagnostics: Vec<rask_diagnostics::Diagnostic> = Vec::new();
-
-    for (name, init) in comptime_consts {
-        // Try MIR-based evaluation first.
-        if let Some(ref ctx) = mir_ctx {
-            let mut hard = None;
-            if let Some(meta) = try_eval_comptime_mir(&name, init, ctx, decls, &mut hard) {
-                globals.insert(name, meta);
-                continue;
-            }
-            if let Some(err) = hard {
-                let div0 = matches!(err, rask_miri::MiriError::DivisionByZero);
-                diagnostics.push(comptime_diagnostic(&err.to_string(), div0, init.span));
-                continue;
-            }
-        }
-
-        // Fallback: AST interpreter.
-        comptime_interp.reset_branch_count();
-        match comptime_interp.eval_expr(init) {
-            Ok(val) => {
-                let type_prefix = val.type_prefix().to_string();
-                let elem_count = val.elem_count();
-                if let Some(bytes) = val.serialize() {
-                    globals.insert(name, rask_mir::ComptimeGlobalMeta { bytes, elem_count, type_prefix });
-                }
-            }
-            Err(e) if e.is_hard() => {
-                let div0 = matches!(e, rask_comptime::ComptimeError::DivisionByZero);
-                diagnostics.push(comptime_diagnostic(&e.to_string(), div0, init.span));
-            }
-            // Soft failure: not foldable at comptime, runs at runtime instead.
-            Err(_) => {}
-        }
-    }
-
-    if !diagnostics.is_empty() {
-        let count = diagnostics.len();
-        crate::show_diagnostics(&diagnostics, source.unwrap_or(""), file, "comptime", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Comptime", count));
-        }
-        process::exit(1);
-    }
-
-    globals
-}
-
-/// Build a `Diagnostic` for a hard comptime error at `span`. Overflow shares the
-/// R0010 code with the interpreter's runtime check; divide-by-zero shares R0001.
-fn comptime_diagnostic(message: &str, div_by_zero: bool, span: rask_ast::Span) -> rask_diagnostics::Diagnostic {
-    let (code, why) = if div_by_zero {
-        ("R0001", "division by zero is undefined")
-    } else {
-        ("R0010", "comptime overflow is a compile error (type.overflow/CT1)")
-    };
-    rask_diagnostics::Diagnostic::error(message.to_string())
-        .with_code(code)
-        .with_primary(span, "evaluated here")
-        .with_why(why)
-}
-
-/// Context for MIR-based comptime evaluation.
-pub struct MirEvalContext<'a> {
-    pub mono: &'a MonoProgram,
-    pub typed: &'a rask_types::TypedProgram,
-}
-
-/// Try to evaluate a comptime expression via MIR lowering + MiriEngine.
-/// Returns None on any failure (fallback to AST interpreter).
-fn try_eval_comptime_mir(
-    name: &str,
-    init: &rask_ast::expr::Expr,
-    ctx: &MirEvalContext<'_>,
-    decls: &[rask_ast::decl::Decl],
-    hard_err: &mut Option<rask_miri::MiriError>,
-) -> Option<rask_mir::ComptimeGlobalMeta> {
-    use rask_ast::decl::{DeclKind, FnDecl};
-    use rask_ast::expr::ExprKind;
-    use rask_ast::stmt::{Stmt, StmtKind};
-    use rask_ast::{NodeId, Span};
-
-    // Extract the comptime body
-    let body = match &init.kind {
-        ExprKind::Comptime { body } => body.clone(),
-        ExprKind::Call { func, args } => {
-            // Comptime function call — find the function and use its body
-            if let ExprKind::Ident(func_name) = &func.kind {
-                let fn_decl = decls.iter().find_map(|d| match &d.kind {
-                    DeclKind::Fn(f) if f.name == *func_name && f.is_comptime => Some(f),
-                    _ => None,
-                })?;
-                // For comptime functions with args, bail to AST interpreter for now
-                if !args.is_empty() {
-                    return None;
-                }
-                fn_decl.body.clone()
-            } else {
-                return None;
-            }
-        }
-        _ => return None,
-    };
-
-    // Determine return type from type checker
-    let ret_ty_str = ctx.typed.node_types.get(&init.id)
-        .map(|ty| format!("{ty:?}"))
-        .and_then(|s| {
-            // Map Type debug format to a type string the MIR lowerer understands
-            match s.as_str() {
-                "I64" => Some("i64"),
-                "I32" => Some("i32"),
-                "I16" => Some("i16"),
-                "I8" => Some("i8"),
-                "U64" => Some("u64"),
-                "U32" => Some("u32"),
-                "U16" => Some("u16"),
-                "U8" => Some("u8"),
-                "F64" => Some("f64"),
-                "F32" => Some("f32"),
-                "Bool" => Some("bool"),
-                "Char" => Some("char"),
-                "String" => Some("string"),
-                "Unit" => None,
-                _ => None,
-            }
-        });
-
-    // Build a synthetic function wrapping the comptime block.
-    // Add explicit `return <last_expr>` so MIR lowering captures the value.
-    let mut synth_body = body;
-    if let Some(last) = synth_body.last() {
-        if let StmtKind::Expr(_) = &last.kind {
-            // Last statement is an expression — wrap it in a return
-            let last_owned = synth_body.pop().unwrap();
-            if let StmtKind::Expr(e) = last_owned.kind {
-                synth_body.push(Stmt {
-                    id: NodeId(u32::MAX - 1),
-                    kind: StmtKind::Return(Some(e)),
-                    span: last_owned.span,
-                });
-            }
-        }
-    }
-
-    let synth_name = format!("__comptime_{name}");
-    let synth_decl = rask_ast::decl::Decl {
-        id: NodeId(u32::MAX),
-        kind: DeclKind::Fn(FnDecl {
-            name: synth_name.clone(),
-            type_params: vec![],
-            params: vec![],
-            ret_ty: ret_ty_str.map(|s| s.to_string()),
-            context_clauses: vec![],
-            body: synth_body,
-            is_pub: false,
-            is_private: false,
-            is_comptime: true,
-            is_unsafe: false,
-            abi: None,
-            attrs: vec![],
-            doc: None,
-            span: Span::new(0, 0),
-        }),
-        span: Span::new(0, 0),
-    };
-
-    // Create a minimal MirContext for comptime lowering
-    let empty_comptime = std::collections::HashMap::new();
-    let empty_externs = std::collections::HashSet::new();
-    let empty_packages = std::collections::HashSet::new();
-    let empty_coercions = std::collections::HashMap::new();
-    let empty_rewrites = std::collections::HashMap::new();
-    let empty_resource_types = std::collections::HashSet::new();
-    let type_names: std::collections::HashMap<rask_types::TypeId, String> = ctx.typed.types.iter()
-        .enumerate()
-        .map(|(i, def)| {
-            let tname = match def {
-                rask_types::TypeDef::Struct { name, .. } => name.clone(),
-                rask_types::TypeDef::Enum { name, .. } => name.clone(),
-                rask_types::TypeDef::Trait { name, .. } => name.clone(),
-                rask_types::TypeDef::Union { name, .. } => name.clone(),
-                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
-            };
-            (rask_types::TypeId(i as u32), tname)
-        })
-        .collect();
-
-    let mir_ctx = rask_mir::lower::MirContext {
-        struct_layouts: &ctx.mono.struct_layouts,
-        enum_layouts: &ctx.mono.enum_layouts,
-        node_types: &ctx.typed.node_types,
-        type_names: &type_names,
-        comptime_globals: &empty_comptime,
-        extern_funcs: &empty_externs,
-        package_modules: &empty_packages,
-        trait_methods: std::collections::HashMap::new(),
-        line_map: None,
-        source_file: None,
-        shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
-        comptime_interp: None,
-        trait_coercions: &empty_coercions,
-        call_rewrites: &empty_rewrites,
-        resource_types: &empty_resource_types,
-    };
-
-    // Lower the synthetic function to MIR
-    let mir_fns = rask_mir::lower::MirLowerer::lower_function(
-        &synth_decl, decls, &mir_ctx,
-    ).ok()?;
-
-    let mir_fn = mir_fns.into_iter().next()?;
-
-    // Also lower any comptime functions that might be called
-    let mut engine = rask_miri::MiriEngine::new(Box::new(rask_miri::PureStdlib));
-    engine.set_struct_layouts(ctx.mono.struct_layouts.clone());
-    engine.set_enum_layouts(ctx.mono.enum_layouts.clone());
-
-    // Register comptime-callable functions
-    for decl in decls {
-        if let DeclKind::Fn(f) = &decl.kind {
-            if f.is_comptime {
-                let fn_decl = rask_ast::decl::Decl {
-                    id: decl.id,
-                    kind: DeclKind::Fn(f.clone()),
-                    span: decl.span,
-                };
-                if let Ok(fns) = rask_mir::lower::MirLowerer::lower_function(
-                    &fn_decl, decls, &mir_ctx,
-                ) {
-                    for f in fns {
-                        engine.register_function(f);
-                    }
-                }
-            }
-        }
-    }
-
-    engine.register_function(mir_fn);
-
-    // Execute. A hard error (comptime overflow, divide-by-zero) is a compile
-    // error (CT1) — surface it instead of silently falling back to the AST
-    // evaluator. Soft failures fall through to the fallback.
-    let result = match engine.execute(&synth_name, vec![]) {
-        Ok(r) => r,
-        Err(e) if e.is_hard() => {
-            *hard_err = Some(e);
-            return None;
-        }
-        Err(_) => return None,
-    };
-
-    // Convert to ComptimeGlobalMeta
-    let type_prefix = result.type_prefix().to_string();
-    let elem_count = result.elem_count();
-    let bytes = result.serialize()?;
-
-    Some(rask_mir::ComptimeGlobalMeta { bytes, elem_count, type_prefix })
-}
-
-/// Check if an expression is a comptime initializer.
-fn is_comptime_init(init: &rask_ast::expr::Expr, decls: &[rask_ast::decl::Decl]) -> bool {
-    use rask_ast::decl::DeclKind;
-    use rask_ast::expr::ExprKind;
-
-    matches!(&init.kind, ExprKind::Comptime { .. })
-        || matches!(&init.kind, ExprKind::Call { func, .. }
-            if matches!(&func.kind, ExprKind::Ident(name)
-                if decls.iter().any(|d| matches!(&d.kind,
-                    DeclKind::Fn(f) if f.name == *name && f.is_comptime))))
+    eprintln!("{}", output::banner_fail("Comptime", diags.len()));
+    process::exit(1);
 }
 
 /// Dump monomorphization output for a single file.
 pub fn cmd_mono(path: &str, format: Format) {
-    let (mono, _typed, _decls, _source, _package_names) = run_pipeline(path, format);
+    let (mono, _typed, _decls, _comptime_globals, _source, _package_names) = run_pipeline(path, format);
 
     if format == Format::Human {
         println!(
@@ -480,7 +183,7 @@ pub fn cmd_mono(path: &str, format: Format) {
 
 /// Dump MIR for a single file.
 pub fn cmd_mir(path: &str, format: Format) {
-    let (mono, typed, decls, source, _package_names) = run_pipeline(path, format);
+    let (mono, typed, decls, comptime_globals, source, _package_names) = run_pipeline(path, format);
 
     // Lower each monomorphized function to MIR
     if format == Format::Human {
@@ -517,7 +220,6 @@ pub fn cmd_mir(path: &str, format: Format) {
     }).collect();
     all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }), source.as_deref(), path, format);
     let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
     let empty_resource_types = std::collections::HashSet::new();
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
@@ -609,10 +311,8 @@ pub fn cmd_mir(path: &str, format: Format) {
 /// Dump MIR for a .rk file — runs the full pipeline up to MIR lowering
 /// and prints the MIR functions to stderr. Used for debugging codegen issues.
 pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
-    let (mono, typed, decls, source, package_names) = run_pipeline(path, format);
-    let profile = if release { "release" } else { "debug" };
-    let cfg = rask_comptime::CfgConfig::from_host(profile, vec![]);
-    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }), source.as_deref(), path, format);
+    let (mono, typed, decls, comptime_globals, source, package_names) = run_pipeline(path, format);
+    let _ = release;
     let type_names = super::compile::build_type_names(&typed);
     let trait_methods = super::compile::build_trait_methods(&typed);
     let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
@@ -673,10 +373,9 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
         }
     }
 
-    let (mono, typed, decls, source, package_names) = run_pipeline(path, format);
+    let (mono, typed, decls, comptime_globals, source, package_names) = run_pipeline(path, format);
     let profile = if release { "release" } else { "debug" };
     let cfg = rask_comptime::CfgConfig::from_target_or_host(target, profile, vec![]);
-    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }), source.as_deref(), path, format);
     let build_mode = if release { rask_codegen::BuildMode::Release } else { rask_codegen::BuildMode::Debug };
 
     // Determine output paths

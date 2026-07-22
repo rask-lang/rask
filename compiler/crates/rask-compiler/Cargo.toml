@@ -18,3 +18,4 @@ rask-diagnostics = { path = "../rask-diagnostics" }
 rask-stdlib = { path = "../rask-stdlib" }
 rask-mono = { path = "../rask-mono" }
 rask-mir = { path = "../rask-mir" }
+rask-miri = { path = "../rask-miri" }
