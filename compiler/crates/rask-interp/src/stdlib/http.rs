@@ -26,7 +26,7 @@ fn make_string(s: &str) -> Value {
 
 fn make_response(status: i64, body: &str) -> Value {
     let mut fields = IndexMap::new();
-    fields.insert("status".to_string(), Value::Int(status));
+    fields.insert("status".to_string(), Value::int(status));
     fields.insert(
         "headers".to_string(),
         Value::Map(Arc::new(Mutex::new(vec![]))),
@@ -200,7 +200,7 @@ impl Interpreter {
         match method {
             "with_status" => {
                 let status = match args.first() {
-                    Some(Value::Int(n)) => *n,
+                    Some(Value::Int(n, _)) => *n,
                     _ => {
                         return Err(RuntimeError::TypeError(
                             "with_status requires an integer".to_string(),
@@ -211,7 +211,7 @@ impl Interpreter {
                 if let Value::Struct(ref s) = receiver {
                     let guard = s.lock().unwrap();
                     let mut new_fields = guard.fields.clone();
-                    new_fields.insert("status".to_string(), Value::Int(status));
+                    new_fields.insert("status".to_string(), Value::int(status));
                     Ok(Value::new_struct("Response".to_string(), new_fields, None))
                 } else {
                     Err(RuntimeError::TypeError(
@@ -268,7 +268,7 @@ impl Interpreter {
         match method {
             "new" => {
                 let status = match args.first() {
-                    Some(Value::Int(n)) => *n,
+                    Some(Value::Int(n, _)) => *n,
                     _ => 200,
                 };
                 let body = match args.get(1) {
@@ -290,7 +290,7 @@ impl Interpreter {
                     _ => String::new(),
                 };
                 let mut fields = IndexMap::new();
-                fields.insert("status".to_string(), Value::Int(200));
+                fields.insert("status".to_string(), Value::int(200));
                 let headers = vec![(
                     make_string("Content-Type"),
                     make_string("application/json"),
@@ -331,7 +331,7 @@ impl Interpreter {
                     _ => String::new(),
                 };
                 let mut fields = IndexMap::new();
-                fields.insert("status".to_string(), Value::Int(302));
+                fields.insert("status".to_string(), Value::int(302));
                 let headers = vec![(make_string("Location"), make_string(&url))];
                 fields.insert(
                     "headers".to_string(),

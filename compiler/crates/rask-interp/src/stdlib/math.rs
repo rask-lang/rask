@@ -73,10 +73,10 @@ impl Interpreter {
             "clamp" => {
                 // Works for both int and float
                 match &args[0] {
-                    Value::Int(x) => {
+                    Value::Int(x, _) => {
                         let lo = self.expect_int(&args, 1)?;
                         let hi = self.expect_int(&args, 2)?;
-                        Ok(Value::Int((*x).max(lo).min(hi)))
+                        Ok(Value::int((*x).max(lo).min(hi)))
                     }
                     Value::Float(x) => {
                         let lo = self.expect_float_or_int(&args, 1)?;
@@ -140,7 +140,7 @@ impl Interpreter {
     fn expect_float_or_int(&self, args: &[Value], idx: usize) -> Result<f64, RuntimeError> {
         match args.get(idx) {
             Some(Value::Float(f)) => Ok(*f),
-            Some(Value::Int(n)) => Ok(*n as f64),
+            Some(Value::Int(n, _)) => Ok(*n as f64),
             Some(other) => Err(RuntimeError::TypeError(format!(
                 "expected number, found {}",
                 other.type_name()

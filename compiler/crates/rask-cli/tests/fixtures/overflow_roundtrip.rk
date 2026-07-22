@@ -1,0 +1,8 @@
+// Width must survive round-tripping through a Vec element: the u8 pulled back
+// out still overflows on +. Exercises self-describing IntKind (type.overflow).
+func main() {
+    mut v = Vec<u8>.new()
+    v.push(200)
+    const x = v[0]
+    println((x + x).to_string())
+}

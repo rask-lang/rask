@@ -28,7 +28,7 @@ impl Interpreter {
             "name_of" => Ok(Value::String(Arc::new(Mutex::new(type_name)))),
             "is_struct" => Ok(Value::Bool(self.struct_decls.contains_key(&type_name))),
             "is_enum" => Ok(Value::Bool(self.enums.contains_key(&type_name))),
-            "size_of" | "align_of" => Ok(Value::Int(0)), // Placeholder
+            "size_of" | "align_of" => Ok(Value::int(0)), // Placeholder
             "is_copy" | "is_resource" | "is_flat" => Ok(Value::Bool(false)), // Placeholder
             "is_optional" | "is_vec" | "is_map" | "is_integer" | "is_float" => Ok(Value::Bool(false)),
             _ => Err(RuntimeError::NoSuchMethod {
@@ -60,8 +60,8 @@ impl Interpreter {
                     "type_name".to_string(),
                     Value::String(Arc::new(Mutex::new(f.ty.clone()))),
                 );
-                fields.insert("offset".to_string(), Value::Int(0));
-                fields.insert("size".to_string(), Value::Int(0));
+                fields.insert("offset".to_string(), Value::int(0));
+                fields.insert("size".to_string(), Value::int(0));
                 fields.insert(
                     "is_public".to_string(),
                     Value::Bool(f.visibility.is_pub()),

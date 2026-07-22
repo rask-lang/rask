@@ -157,32 +157,32 @@ impl Interpreter {
             }
             'x' => {
                 match value {
-                    Value::Int(n) => format!("{:x}", n),
+                    Value::Int(n, _) => format!("{:x}", n),
                     _ => format!("{}", value),
                 }
             }
             'X' => {
                 match value {
-                    Value::Int(n) => format!("{:X}", n),
+                    Value::Int(n, _) => format!("{:X}", n),
                     _ => format!("{}", value),
                 }
             }
             'b' => {
                 match value {
-                    Value::Int(n) => format!("{:b}", n),
+                    Value::Int(n, _) => format!("{:b}", n),
                     _ => format!("{}", value),
                 }
             }
             'o' => {
                 match value {
-                    Value::Int(n) => format!("{:o}", n),
+                    Value::Int(n, _) => format!("{:o}", n),
                     _ => format!("{}", value),
                 }
             }
             'e' => {
                 match value {
                     Value::Float(n) => format!("{:e}", n),
-                    Value::Int(n) => format!("{:e}", *n as f64),
+                    Value::Int(n, _) => format!("{:e}", *n as f64),
                     _ => format!("{}", value),
                 }
             }
@@ -347,7 +347,7 @@ impl Interpreter {
                 }
                 format!("{}", f)
             }
-            Value::Int(n) => {
+            Value::Int(n, _) => {
                 match spec {
                     "b" => format!("{:b}", n),
                     "x" => format!("{:x}", n),

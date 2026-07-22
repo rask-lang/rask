@@ -48,10 +48,10 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "as_secs" => Ok(Value::Int((nanos / 1_000_000_000) as i64)),
-            "as_millis" => Ok(Value::Int((nanos / 1_000_000) as i64)),
-            "as_micros" => Ok(Value::Int((nanos / 1_000) as i64)),
-            "as_nanos" => Ok(Value::Int(nanos as i64)),
+            "as_secs" => Ok(Value::int((nanos / 1_000_000_000) as i64)),
+            "as_millis" => Ok(Value::int((nanos / 1_000_000) as i64)),
+            "as_micros" => Ok(Value::int((nanos / 1_000) as i64)),
+            "as_nanos" => Ok(Value::int(nanos as i64)),
             "as_secs_f32" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0)),
             "as_secs_f64" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0)),
             // Arithmetic

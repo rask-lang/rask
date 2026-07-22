@@ -17,7 +17,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "len" => Ok(Value::Int(s.lock().unwrap().len() as i64)),
+            "len" => Ok(Value::int(s.lock().unwrap().len() as i64)),
             "is_empty" => Ok(Value::Bool(s.lock().unwrap().is_empty())),
             "clone" => Ok(Value::String(Arc::clone(s))),
             "starts_with" => {
@@ -56,7 +56,7 @@ impl Interpreter {
                 let trimmed = guard.trim();
                 let start = trimmed.as_ptr() as usize - guard.as_ptr() as usize;
                 let end = start + trimmed.len();
-                Ok(Value::Vec(Arc::new(Mutex::new(vec![Value::Int(start as i64), Value::Int(end as i64)]))))
+                Ok(Value::Vec(Arc::new(Mutex::new(vec![Value::int(start as i64), Value::int(end as i64)]))))
             }
             "to_string" => Ok(Value::String(Arc::clone(s))),
             "debug_string" => {
@@ -104,13 +104,13 @@ impl Interpreter {
             }
             "char_indices" => {
                 let pairs: Vec<Value> = s.lock().unwrap().char_indices()
-                    .map(|(i, c)| Value::Vec(Arc::new(Mutex::new(vec![Value::Int(i as i64), Value::Char(c)]))))
+                    .map(|(i, c)| Value::Vec(Arc::new(Mutex::new(vec![Value::int(i as i64), Value::Char(c)]))))
                     .collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(pairs))))
             }
             "bytes" => {
                 let bytes: Vec<Value> = s.lock().unwrap().bytes()
-                    .map(|b| Value::Int(b as i64))
+                    .map(|b| Value::int(b as i64))
                     .collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(bytes))))
             }
@@ -134,7 +134,7 @@ impl Interpreter {
                 let end = args
                     .get(1)
                     .map(|v| match v {
-                        Value::Int(i) => *i as usize,
+                        Value::Int(i, _) => *i as usize,
                         _ => sb.len(),
                     })
                     .unwrap_or(sb.len());
@@ -146,7 +146,7 @@ impl Interpreter {
                     Ok(n) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
-                        fields: vec![Value::Int(n)],
+                        fields: vec![Value::int(n)],
                         variant_index: 0, origin: None,
                     }),
                     Err(_) => Ok(Value::Enum {
@@ -182,7 +182,7 @@ impl Interpreter {
                     Some(&b) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
-                        fields: vec![Value::Int(b as i64)],
+                        fields: vec![Value::int(b as i64)],
                         variant_index: 0, origin: None,
                     }),
                     None => Ok(Value::Enum {
@@ -217,7 +217,7 @@ impl Interpreter {
                     Some(idx) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
-                        fields: vec![Value::Int(idx as i64)],
+                        fields: vec![Value::int(idx as i64)],
                         variant_index: 0, origin: None,
                     }),
                     None => Ok(Value::Enum {
@@ -234,7 +234,7 @@ impl Interpreter {
                     Some(idx) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
-                        fields: vec![Value::Int(idx as i64)],
+                        fields: vec![Value::int(idx as i64)],
                         variant_index: 0, origin: None,
                     }),
                     None => Ok(Value::Enum {
@@ -294,7 +294,7 @@ impl Interpreter {
             }
             // C interop: returns raw pointer (simulated as Int in interpreter)
             "as_c_str" | "as_ptr" => {
-                Ok(Value::Int(0)) // Opaque pointer — meaningful only in compiled code
+                Ok(Value::int(0)) // Opaque pointer — meaningful only in compiled code
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "string".to_string(),

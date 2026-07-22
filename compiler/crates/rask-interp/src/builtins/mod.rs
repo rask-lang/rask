@@ -37,7 +37,7 @@ impl Interpreter {
         }
 
         match &receiver {
-            Value::Int(a) => return self.call_int_method(*a, method, &args),
+            Value::Int(a, k) => return self.call_int_method(*a, *k, method, &args),
             Value::Int128(a) => return self.call_int128_method(*a, method, &args),
             Value::Uint128(a) => return self.call_uint128_method(*a, method, &args),
             Value::Float(a) => return self.call_float_method(*a, method, &args),
@@ -121,10 +121,10 @@ impl Interpreter {
                 return Ok(Value::Bool(true));
             }
             Value::Struct(..) if method == "hash" => {
-                return Ok(Value::Int(Self::value_hash(&receiver) as i64));
+                return Ok(Value::int(Self::value_hash(&receiver) as i64));
             }
             Value::Enum { .. } if method == "hash" => {
-                return Ok(Value::Int(Self::value_hash(&receiver) as i64));
+                return Ok(Value::int(Self::value_hash(&receiver) as i64));
             }
             Value::Struct(..) if method == "compare" => {
                 if let Some(other) = args.first() {
@@ -193,7 +193,7 @@ impl Interpreter {
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),
             // E9: .discriminant() returns variant index as u16
             Value::Enum { variant_index, .. } if method == "discriminant" => {
-                return Ok(Value::Int(*variant_index as i64));
+                return Ok(Value::int(*variant_index as i64));
             }
             _ => {}
         }

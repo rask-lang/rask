@@ -20,7 +20,7 @@ mod pattern;
 mod collections;
 mod format;
 mod operators;
-mod overflow;
+pub(crate) mod overflow;
 mod dispatch;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};

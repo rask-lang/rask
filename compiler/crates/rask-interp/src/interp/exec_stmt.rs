@@ -199,7 +199,7 @@ impl Interpreter {
                         let end_val = if inclusive { end + 1 } else { end };
                         for i in start..end_val {
                             self.env.push_scope();
-                            self.define_for_binding(binding, Value::Int(i));
+                            self.define_for_binding(binding, Value::int(i));
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
                                 Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {

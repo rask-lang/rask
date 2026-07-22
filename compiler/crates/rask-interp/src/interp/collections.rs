@@ -8,7 +8,7 @@ use super::{Interpreter, RuntimeError};
 impl Interpreter {
     pub(super) fn index_into(&self, collection: &Value, key: &Value) -> Result<Value, RuntimeError> {
         match (collection, key) {
-            (Value::Vec(v), Value::Int(i)) => {
+            (Value::Vec(v), Value::Int(i, _)) => {
                 let vec = v.lock().unwrap();
                 vec.get(*i as usize).cloned().ok_or_else(|| {
                     RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() }
@@ -40,7 +40,7 @@ impl Interpreter {
     /// Write a value back to a collection at the given key (for with...as writeback).
     pub(super) fn write_back_index(&self, collection: &Value, key: &Value, value: Value) -> Result<(), RuntimeError> {
         match (collection, key) {
-            (Value::Vec(v), Value::Int(i)) => {
+            (Value::Vec(v), Value::Int(i, _)) => {
                 let mut vec = v.lock().unwrap();
                 let idx = *i as usize;
                 if idx < vec.len() {

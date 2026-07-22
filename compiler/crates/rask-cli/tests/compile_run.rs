@@ -1064,6 +1064,13 @@ fn overflow_shift_panics() {
     assert_panics_both("overflow_shift.rk", "shift amount");
 }
 
+#[test]
+fn overflow_roundtrip_panics() {
+    // The u8's width survives storage in a Vec and retrieval — arithmetic on
+    // the pulled-out value still overflows. Locks in self-describing IntKind.
+    assert_panics_both("overflow_roundtrip.rk", "overflow");
+}
+
 // ─── Regression: issue #236 ─────────────────────────────────
 //
 // `rask test <dir>` on a directory of standalone files (no build.rk)

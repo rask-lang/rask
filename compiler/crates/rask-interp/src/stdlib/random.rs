@@ -41,7 +41,7 @@ impl Interpreter {
                 x ^= x << 13;
                 x ^= x >> 7;
                 x ^= x << 17;
-                Ok(Value::Int(x as i64))
+                Ok(Value::int(x as i64))
             }
             "bool" => {
                 use std::collections::hash_map::DefaultHasher;
@@ -75,7 +75,7 @@ impl Interpreter {
                 x ^= x << 17;
                 let range = (high - low) as u64;
                 let value = low + (x % range) as i64;
-                Ok(Value::Int(value))
+                Ok(Value::int(value))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "random".to_string(),
@@ -117,8 +117,8 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         let mut state = rng.lock().unwrap();
         match method {
-            "u64" => Ok(Value::Int(state.next_u64() as i64)),
-            "i64" => Ok(Value::Int(state.next_u64() as i64)),
+            "u64" => Ok(Value::int(state.next_u64() as i64)),
+            "i64" => Ok(Value::int(state.next_u64() as i64)),
             "f64" => Ok(Value::Float(state.next_f64())),
             "f32" => Ok(Value::Float(state.next_f32() as f64)),
             "bool" => Ok(Value::Bool(state.next_bool())),
@@ -128,7 +128,7 @@ impl Interpreter {
                 }
                 let lo = args[0].as_int().map_err(|e| RuntimeError::TypeError(e))?;
                 let hi = args[1].as_int().map_err(|e| RuntimeError::TypeError(e))?;
-                Ok(Value::Int(state.range_i64(lo, hi)))
+                Ok(Value::int(state.range_i64(lo, hi)))
             }
             "shuffle" => {
                 if args.is_empty() {
