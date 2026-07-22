@@ -588,6 +588,22 @@ impl TypeChecker {
             Type::TraitObject { ref trait_name } => {
                 let trait_name = trait_name.clone();
                 let checker = crate::traits::TraitChecker::new(&self.types);
+                // TR3: reject generic methods — they can't be monomorphized
+                // into a single vtable slot, so they have no dynamic entry.
+                // Checked before method lookup: trait method names carry their
+                // type params (`convert<T>`) while the call site does not, so
+                // an exact-name lookup would miss and report "no such method".
+                let is_generic = self.types.get_type_id(&trait_name)
+                    .and_then(|id| self.types.get(id))
+                    .map_or(false, |def| def.is_generic_trait_method(&method));
+                if is_generic {
+                    return Err(TypeError::TraitObjectGenericMethod {
+                        trait_name,
+                        method,
+                        span,
+                    });
+                }
+
                 let trait_methods = checker.get_trait_methods_public(&trait_name);
 
                 if let Some(method_sig) = trait_methods.iter().find(|m| m.name == method) {

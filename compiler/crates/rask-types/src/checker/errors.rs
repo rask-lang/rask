@@ -150,6 +150,12 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
+    #[error("generic method `{method}` cannot be called through `any {trait_name}`")]
+    TraitObjectGenericMethod {
+        trait_name: String,
+        method: String,
+        span: Span,
+    },
     #[error("`{ty}` does not implement `{trait_name}`")]
     TraitNotSatisfied {
         ty: String,

@@ -329,11 +329,16 @@ impl TypeChecker {
 
     pub(super) fn register_trait(&mut self, t: &TraitDecl) {
         let methods = t.methods.iter().map(|m| self.method_signature(m)).collect();
+        let generic_methods = t.methods.iter()
+            .filter(|m| !m.type_params.is_empty())
+            .map(|m| m.name.clone())
+            .collect();
 
         self.types.register_type(TypeDef::Trait {
             name: t.name.clone(),
             super_traits: t.super_traits.clone(),
             methods,
+            generic_methods,
             is_unsafe: t.is_unsafe,
         });
     }

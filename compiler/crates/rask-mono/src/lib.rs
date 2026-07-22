@@ -182,6 +182,7 @@ pub fn monomorphize_with_packages(
 ) -> Result<MonoProgram, MonomorphizeError> {
     let mut mono = Monomorphizer::new(decls, &program.call_type_args);
     mono.set_package_modules(package_modules);
+    mono.set_trait_coercions(&program.trait_coercions);
 
     if !mono.add_entry("main") {
         return Err(MonomorphizeError::NoEntryPoint);

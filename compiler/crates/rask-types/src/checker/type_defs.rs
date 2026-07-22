@@ -44,6 +44,9 @@ pub enum TypeDef {
         name: String,
         super_traits: Vec<String>,
         methods: Vec<MethodSig>,
+        /// TR3: names of methods that declare their own type parameters.
+        /// These can't be dispatched through `any` — no vtable slot.
+        generic_methods: Vec<String>,
         is_unsafe: bool,
     },
     Union {
@@ -56,6 +59,39 @@ pub enum TypeDef {
         underlying: Type,
         with_traits: Vec<String>,
     },
+}
+
+/// Method name without its type-parameter suffix: `convert<T>` → `convert`.
+fn method_base(name: &str) -> &str {
+    name.split('<').next().unwrap_or(name)
+}
+
+impl TypeDef {
+    /// TR3: true if `method` is a generic method of this trait (can't dispatch through `any`).
+    /// Trait method names carry their type params (`convert<T>`); the call site does
+    /// not, so compare on the base name.
+    pub fn is_generic_trait_method(&self, method: &str) -> bool {
+        matches!(self, TypeDef::Trait { generic_methods, .. }
+            if generic_methods.iter().any(|m| method_base(m) == method_base(method)))
+    }
+
+    /// TR1–TR3: names of trait methods callable through `any`, in declaration order.
+    /// Skips Self-returning (TR2) and generic (TR3) methods — these have no vtable slot,
+    /// so the vtable layout and the MIR dispatch offset both index this list.
+    pub fn object_compatible_method_names(&self) -> Vec<String> {
+        match self {
+            TypeDef::Trait { methods, generic_methods, .. } => methods
+                .iter()
+                .filter(|m| {
+                    let returns_self = matches!(&m.ret, Type::UnresolvedNamed(n) if n == "Self");
+                    let is_generic = generic_methods.iter().any(|g| g == &m.name);
+                    !returns_self && !is_generic
+                })
+                .map(|m| m.name.clone())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Method signature.

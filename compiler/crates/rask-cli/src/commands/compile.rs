@@ -51,8 +51,11 @@ pub(super) fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask
 pub(super) fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<String>> {
     typed.types.iter()
         .filter_map(|def| {
-            if let rask_types::TypeDef::Trait { name, methods, .. } = def {
-                Some((name.clone(), methods.iter().map(|m| m.name.clone()).collect()))
+            if let rask_types::TypeDef::Trait { name, .. } = def {
+                // Object-compatible methods only (TR1–TR3): the vtable holds
+                // slots for exactly these, and MIR dispatch offsets index the
+                // same list, so both sides agree.
+                Some((name.clone(), def.object_compatible_method_names()))
             } else {
                 None
             }
