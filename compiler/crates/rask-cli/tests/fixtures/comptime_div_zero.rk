@@ -1,0 +1,3 @@
+// OV2/CT1: divide-by-zero during comptime evaluation is a compile error.
+const D: i32 = comptime { 5 / 0 }
+func main() { println(D.to_string()) }

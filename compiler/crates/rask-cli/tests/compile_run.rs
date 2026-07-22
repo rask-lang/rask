@@ -1071,6 +1071,22 @@ fn overflow_roundtrip_panics() {
     assert_panics_both("overflow_roundtrip.rk", "overflow");
 }
 
+#[test]
+fn comptime_overflow_is_compile_error() {
+    // CT1: overflow during comptime evaluation fails compilation with a
+    // diagnostic (routed through the normal diagnostic path, not swallowed).
+    let (ok, output) = compile_only_succeeds("comptime_overflow.rk");
+    assert!(!ok, "comptime overflow must fail compilation: {}", output);
+    assert!(output.contains("overflow"), "should report overflow: {}", output);
+}
+
+#[test]
+fn comptime_div_zero_is_compile_error() {
+    let (ok, output) = compile_only_succeeds("comptime_div_zero.rk");
+    assert!(!ok, "comptime divide-by-zero must fail compilation: {}", output);
+    assert!(output.contains("by zero"), "should report divide by zero: {}", output);
+}
+
 // ─── Regression: issue #236 ─────────────────────────────────
 //
 // `rask test <dir>` on a directory of standalone files (no build.rk)

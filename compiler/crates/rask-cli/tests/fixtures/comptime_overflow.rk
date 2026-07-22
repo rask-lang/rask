@@ -1,0 +1,3 @@
+// CT1: integer overflow during comptime evaluation is a compile error.
+const B: i64 = comptime { 9223372036854775807 + 1 }
+func main() { println(B.to_string()) }

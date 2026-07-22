@@ -766,6 +766,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             let comptime_globals = super::codegen::evaluate_comptime_globals(
                 &result.decls, Some(&cfg),
                 Some(super::codegen::MirEvalContext { mono: &result.mono, typed: &result.typed }),
+                source_files.first().map(|(_, s)| s.as_str()), path, crate::Format::Human,
             );
             let target = opts.target.as_deref();
 

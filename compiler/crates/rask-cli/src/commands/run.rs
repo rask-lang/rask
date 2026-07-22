@@ -188,6 +188,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                             let comptime_globals = super::codegen::evaluate_comptime_globals(
                                 &all_decls, Some(&cfg),
                                 Some(super::codegen::MirEvalContext { mono: &mono, typed: &typed }),
+                                source_files.first().map(|(_, s)| s.as_str()), path, format,
                             );
 
                             let tmp_dir = std::env::temp_dir();
@@ -380,6 +381,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
     let comptime_globals = super::codegen::evaluate_comptime_globals(
         &result.decls, Some(&cfg),
         Some(super::codegen::MirEvalContext { mono: &mono, typed: &result.typed }),
+        result.source_files.first().map(|(_, s)| s.as_str()), path, format,
     );
 
     let tmp_dir = std::env::temp_dir();
@@ -1041,6 +1043,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
     let comptime_globals = super::codegen::evaluate_comptime_globals(
         &result.decls, Some(&cfg),
         Some(super::codegen::MirEvalContext { mono: &mono, typed: &result.typed }),
+        result.source_files.first().map(|(_, s)| s.as_str()), path, format,
     );
 
     let tmp_dir = std::env::temp_dir();
