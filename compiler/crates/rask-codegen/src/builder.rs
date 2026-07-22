@@ -15,6 +15,22 @@ use crate::dispatch::{ArgAdapt, RetAdapt};
 use crate::types::mir_to_cranelift_type;
 use crate::{BuildMode, CodegenError, CodegenResult};
 
+// Checked-arithmetic panic messages (type.overflow). Registered as string
+// globals unconditionally (see `register_strings`) so the message prints in
+// both debug and release builds — OV4 requires consistent behavior.
+pub(crate) const OV_ADD: &str = "integer overflow in addition";
+pub(crate) const OV_SUB: &str = "integer overflow in subtraction";
+pub(crate) const OV_MUL: &str = "integer overflow in multiplication";
+pub(crate) const OV_NEG: &str = "integer overflow in negation";
+pub(crate) const OV_DIV_ZERO: &str = "division by zero";
+pub(crate) const OV_DIV_OVERFLOW: &str = "integer overflow in division (MIN / -1)";
+pub(crate) const OV_SHIFT: &str = "shift amount exceeds bit width";
+
+/// All overflow panic messages, registered up front by codegen.
+pub(crate) const OVERFLOW_MESSAGES: &[&str] = &[
+    OV_ADD, OV_SUB, OV_MUL, OV_NEG, OV_DIV_ZERO, OV_DIV_OVERFLOW, OV_SHIFT,
+];
+
 /// Read-only context bundling parameters for lowering functions.
 struct CodegenCtx<'a> {
     var_map: &'a HashMap<LocalId, Variable>,
@@ -2194,14 +2210,44 @@ impl<'a> FunctionBuilder<'a> {
                         _ => return Err(CodegenError::UnsupportedFeature(format!("Bitwise op {:?} not valid on floats", op))),
                     }
                 } else {
+                    // Checked integer arithmetic (type.overflow OV1–OV4, SH1).
+                    // The *_overflow instructions give a result + overflow flag;
+                    // div/shift guards branch to a panic block. Type is the
+                    // reconciled operand type, so checks are width-correct.
+                    let int_ty = builder.func.dfg.value_type(lhs_val);
                     match op {
-                        BinOp::Add => builder.ins().iadd(lhs_val, rhs_val),
-                        BinOp::Sub => builder.ins().isub(lhs_val, rhs_val),
-                        BinOp::Mul => builder.ins().imul(lhs_val, rhs_val),
+                        BinOp::Add => {
+                            let (res, of) = if is_unsigned {
+                                builder.ins().uadd_overflow(lhs_val, rhs_val)
+                            } else {
+                                builder.ins().sadd_overflow(lhs_val, rhs_val)
+                            };
+                            Self::guard_overflow(builder, ctx, of, OV_ADD);
+                            res
+                        }
+                        BinOp::Sub => {
+                            let (res, of) = if is_unsigned {
+                                builder.ins().usub_overflow(lhs_val, rhs_val)
+                            } else {
+                                builder.ins().ssub_overflow(lhs_val, rhs_val)
+                            };
+                            Self::guard_overflow(builder, ctx, of, OV_SUB);
+                            res
+                        }
+                        BinOp::Mul => {
+                            let (res, of) = if is_unsigned {
+                                builder.ins().umul_overflow(lhs_val, rhs_val)
+                            } else {
+                                builder.ins().smul_overflow(lhs_val, rhs_val)
+                            };
+                            Self::guard_overflow(builder, ctx, of, OV_MUL);
+                            res
+                        }
                         BinOp::Div if is_unsigned => {
                             if let Some(k) = Self::const_power_of_two(right) {
                                 builder.ins().ushr_imm(lhs_val, k as i64)
                             } else {
+                                Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
                                 builder.ins().udiv(lhs_val, rhs_val)
                             }
                         }
@@ -2214,6 +2260,8 @@ impl<'a> FunctionBuilder<'a> {
                                 let adjusted = builder.ins().iadd(lhs_val, correction);
                                 builder.ins().sshr_imm(adjusted, k as i64)
                             } else {
+                                Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
+                                Self::guard_div_overflow(builder, ctx, lhs_val, rhs_val, int_ty);
                                 builder.ins().sdiv(lhs_val, rhs_val)
                             }
                         }
@@ -2223,16 +2271,30 @@ impl<'a> FunctionBuilder<'a> {
                                 let mask = builder.ins().iconst(ty, (1i64 << k) - 1);
                                 builder.ins().band(lhs_val, mask)
                             } else {
+                                Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
                                 builder.ins().urem(lhs_val, rhs_val)
                             }
                         }
-                        BinOp::Mod => builder.ins().srem(lhs_val, rhs_val),
+                        BinOp::Mod => {
+                            Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
+                            Self::guard_div_overflow(builder, ctx, lhs_val, rhs_val, int_ty);
+                            builder.ins().srem(lhs_val, rhs_val)
+                        }
                         BinOp::BitAnd => builder.ins().band(lhs_val, rhs_val),
                         BinOp::BitOr => builder.ins().bor(lhs_val, rhs_val),
                         BinOp::BitXor => builder.ins().bxor(lhs_val, rhs_val),
-                        BinOp::Shl => builder.ins().ishl(lhs_val, rhs_val),
-                        BinOp::Shr if is_unsigned => builder.ins().ushr(lhs_val, rhs_val),
-                        BinOp::Shr => builder.ins().sshr(lhs_val, rhs_val),
+                        BinOp::Shl => {
+                            Self::guard_shift(builder, ctx, rhs_val, int_ty);
+                            builder.ins().ishl(lhs_val, rhs_val)
+                        }
+                        BinOp::Shr if is_unsigned => {
+                            Self::guard_shift(builder, ctx, rhs_val, int_ty);
+                            builder.ins().ushr(lhs_val, rhs_val)
+                        }
+                        BinOp::Shr => {
+                            Self::guard_shift(builder, ctx, rhs_val, int_ty);
+                            builder.ins().sshr(lhs_val, rhs_val)
+                        }
                         BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val),
                         BinOp::Ne => builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val),
                         BinOp::Lt if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThan, lhs_val, rhs_val),
@@ -2256,7 +2318,32 @@ impl<'a> FunctionBuilder<'a> {
 
                 let result = match op {
                     UnaryOp::Neg if val_ty.is_float() => builder.ins().fneg(val),
-                    UnaryOp::Neg => builder.ins().ineg(val),
+                    // A negated integer literal (e.g. `-2147483648`) is a valid
+                    // constant, not a runtime negation — fold it so the literal
+                    // form of a type's MIN doesn't trip the overflow guard.
+                    UnaryOp::Neg if matches!(operand, MirOperand::Constant(MirConst::Int(_))) => {
+                        let n = match operand {
+                            MirOperand::Constant(MirConst::Int(n)) => *n,
+                            _ => unreachable!(),
+                        };
+                        builder.ins().iconst(val_ty, n.wrapping_neg())
+                    }
+                    UnaryOp::Neg => {
+                        // OV1: negation overflows at signed MIN (and for any
+                        // nonzero unsigned value).
+                        let unsigned = Self::operand_mir_type(operand, ctx.locals)
+                            .map(|t| t.is_unsigned())
+                            .unwrap_or(false);
+                        let overflowed = if unsigned {
+                            let zero = builder.ins().iconst(val_ty, 0);
+                            builder.ins().icmp(IntCC::NotEqual, val, zero)
+                        } else {
+                            let min = builder.ins().iconst(val_ty, Self::type_min_i64(val_ty));
+                            builder.ins().icmp(IntCC::Equal, val, min)
+                        };
+                        Self::guard_overflow(builder, ctx, overflowed, OV_NEG);
+                        builder.ins().ineg(val)
+                    }
                     // Logical NOT: XOR with 1 to flip the boolean bit.
                     // bnot flips all bits which is wrong for booleans
                     // (e.g. bnot(1) = 0xFE, not 0).
@@ -2803,6 +2890,57 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Branch to a cold panic block when `overflowed` is nonzero, then continue
+    /// in a fresh block. Used for the checked-arithmetic guards (type.overflow).
+    fn guard_overflow(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        overflowed: Value,
+        msg: &str,
+    ) {
+        let panic_block = builder.create_block();
+        let cont_block = builder.create_block();
+        builder.ins().brif(overflowed, panic_block, &[], cont_block, &[]);
+        Self::emit_panic_block(builder, panic_block, msg, ctx);
+        builder.switch_to_block(cont_block);
+        builder.seal_block(cont_block);
+    }
+
+    /// OV2: panic (with a message) when the divisor is zero.
+    fn guard_div_zero(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx, rhs: Value, ty: Type) {
+        let zero = builder.ins().iconst(ty, 0);
+        let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
+        Self::guard_overflow(builder, ctx, is_zero, OV_DIV_ZERO);
+    }
+
+    /// OV3: panic when a signed division would overflow (`MIN / -1`).
+    fn guard_div_overflow(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx, lhs: Value, rhs: Value, ty: Type) {
+        let min = builder.ins().iconst(ty, Self::type_min_i64(ty));
+        let neg1 = builder.ins().iconst(ty, -1);
+        let l_is_min = builder.ins().icmp(IntCC::Equal, lhs, min);
+        let r_is_neg1 = builder.ins().icmp(IntCC::Equal, rhs, neg1);
+        let both = builder.ins().band(l_is_min, r_is_neg1);
+        Self::guard_overflow(builder, ctx, both, OV_DIV_OVERFLOW);
+    }
+
+    /// SH1: panic when the shift amount is >= the operand's bit width.
+    /// Unsigned comparison also catches negative amounts.
+    fn guard_shift(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx, amount: Value, ty: Type) {
+        let bits = builder.ins().iconst(ty, ty.bits() as i64);
+        let bad = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, amount, bits);
+        Self::guard_overflow(builder, ctx, bad, OV_SHIFT);
+    }
+
+    /// Signed minimum of an integer type as an i64 immediate.
+    fn type_min_i64(ty: Type) -> i64 {
+        match ty.bits() {
+            8 => i8::MIN as i64,
+            16 => i16::MIN as i64,
+            32 => i32::MIN as i64,
+            _ => i64::MIN,
+        }
     }
 
     /// Emit a cold panic block: call rask_panic_at with the given message, then trap.

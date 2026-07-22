@@ -77,21 +77,25 @@ impl Interpreter {
         method: &str,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
+        let overflow = |op: &str, b: i128| RuntimeError::IntegerOverflow(format!(
+            "integer overflow: {} {} {} exceeds i128 range", a, op, b
+        ));
         match method {
-            "add" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a + b)) }
-            "sub" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a - b)) }
-            "mul" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a * b)) }
+            "add" => { let b = self.expect_int128(args, 0)?; a.checked_add(b).map(Value::Int128).ok_or_else(|| overflow("+", b)) }
+            "sub" => { let b = self.expect_int128(args, 0)?; a.checked_sub(b).map(Value::Int128).ok_or_else(|| overflow("-", b)) }
+            "mul" => { let b = self.expect_int128(args, 0)?; a.checked_mul(b).map(Value::Int128).ok_or_else(|| overflow("*", b)) }
             "div" => {
                 let b = self.expect_int128(args, 0)?;
                 if b == 0 { return Err(RuntimeError::DivisionByZero); }
-                Ok(Value::Int128(a / b))
+                a.checked_div(b).map(Value::Int128).ok_or_else(|| overflow("/", b))
             }
             "rem" => {
                 let b = self.expect_int128(args, 0)?;
                 if b == 0 { return Err(RuntimeError::DivisionByZero); }
-                Ok(Value::Int128(a % b))
+                a.checked_rem(b).map(Value::Int128).ok_or_else(|| overflow("%", b))
             }
-            "neg" => Ok(Value::Int128(-a)),
+            "neg" => a.checked_neg().map(Value::Int128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
             "eq" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a == b)) }
             "lt" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a < b)) }
             "le" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a <= b)) }
@@ -101,11 +105,21 @@ impl Interpreter {
             "bit_and" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a & b)) }
             "bit_or" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a | b)) }
             "bit_xor" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a ^ b)) }
-            "shl" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a << b)) }
-            "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a >> b)) }
+            "shl" => {
+                let b = self.expect_int(args, 0)?;
+                a.checked_shl(b as u32).map(Value::Int128).ok_or_else(|| RuntimeError::IntegerOverflow(
+                    format!("shift amount {} exceeds i128 bit width (128)", b)))
+            }
+            "shr" => {
+                let b = self.expect_int(args, 0)?;
+                a.checked_shr(b as u32).map(Value::Int128).ok_or_else(|| RuntimeError::IntegerOverflow(
+                    format!("shift amount {} exceeds i128 bit width (128)", b)))
+            }
             "bit_not" => Ok(Value::Int128(!a)),
-            "abs" => Ok(Value::Int128(a.abs())),
-            "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a.pow(b as u32))) }
+            "abs" => a.checked_abs().map(Value::Int128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
+            "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range", a, b))) }
             "min" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.min(b))) }
             "max" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
@@ -123,10 +137,13 @@ impl Interpreter {
         method: &str,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
+        let overflow = |op: &str, b: u128| RuntimeError::IntegerOverflow(format!(
+            "integer overflow: {} {} {} exceeds u128 range", a, op, b
+        ));
         match method {
-            "add" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a + b)) }
-            "sub" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a - b)) }
-            "mul" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a * b)) }
+            "add" => { let b = self.expect_uint128(args, 0)?; a.checked_add(b).map(Value::Uint128).ok_or_else(|| overflow("+", b)) }
+            "sub" => { let b = self.expect_uint128(args, 0)?; a.checked_sub(b).map(Value::Uint128).ok_or_else(|| overflow("-", b)) }
+            "mul" => { let b = self.expect_uint128(args, 0)?; a.checked_mul(b).map(Value::Uint128).ok_or_else(|| overflow("*", b)) }
             "div" => {
                 let b = self.expect_uint128(args, 0)?;
                 if b == 0 { return Err(RuntimeError::DivisionByZero); }
@@ -146,10 +163,19 @@ impl Interpreter {
             "bit_and" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a & b)) }
             "bit_or" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a | b)) }
             "bit_xor" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a ^ b)) }
-            "shl" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a << b)) }
-            "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a >> b)) }
+            "shl" => {
+                let b = self.expect_int(args, 0)?;
+                a.checked_shl(b as u32).map(Value::Uint128).ok_or_else(|| RuntimeError::IntegerOverflow(
+                    format!("shift amount {} exceeds u128 bit width (128)", b)))
+            }
+            "shr" => {
+                let b = self.expect_int(args, 0)?;
+                a.checked_shr(b as u32).map(Value::Uint128).ok_or_else(|| RuntimeError::IntegerOverflow(
+                    format!("shift amount {} exceeds u128 bit width (128)", b)))
+            }
             "bit_not" => Ok(Value::Uint128(!a)),
-            "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a.pow(b as u32))) }
+            "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range", a, b))) }
             "min" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.min(b))) }
             "max" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),

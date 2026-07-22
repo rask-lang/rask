@@ -506,6 +506,16 @@ impl Interpreter {
                     ));
                 }
 
+                // Width-aware integer overflow (type.overflow OV1–OV4, SH1).
+                // The desugared receiver keeps its NodeId, so node_types gives
+                // the static width. Falls through for i128/u128 (checked in
+                // their method impls) and generic code (no concrete width).
+                if let Some(result) =
+                    self.try_checked_int_arith(&receiver, object.id, method, &arg_vals)
+                {
+                    return result.map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
+
                 self.call_method(receiver, method, arg_vals)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
@@ -534,7 +544,8 @@ impl Interpreter {
                     // expressions which bypass the desugaring pass)
                     let l = self.eval_expr(left)?;
                     let r = self.eval_expr(right)?;
-                    self.eval_binop(*op, l, r)
+                    let width = self.int_width_of(left.id);
+                    self.eval_binop(*op, l, r, width)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
                 }
             },
@@ -553,7 +564,15 @@ impl Interpreter {
                         )),
                     },
                     UnaryOp::Neg => match val {
-                        Value::Int(n) => Ok(Value::Int(-n)),
+                        Value::Int(n) => {
+                            if let Some(w) = self.int_width_of(operand.id) {
+                                super::overflow::checked_neg(w, n)
+                                    .map(Value::Int)
+                                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
+                            } else {
+                                Ok(Value::Int(-n))
+                            }
+                        }
                         Value::Float(n) => Ok(Value::Float(-n)),
                         _ => Err(RuntimeDiagnostic::new(
                             RuntimeError::TypeError(format!(

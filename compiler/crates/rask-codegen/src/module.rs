@@ -692,6 +692,12 @@ impl CodeGenerator {
             )?;
         }
 
+        // Checked-arithmetic panic messages (type.overflow). Registered in all
+        // builds so overflow panics print a message consistently (OV4).
+        for &msg in crate::builder::OVERFLOW_MESSAGES {
+            self.register_string(msg)?;
+        }
+
         // Pre-register panic message for inline pool access (release mode)
         if self.build_mode == BuildMode::Release {
             let has_pool_access = mir_functions.iter().any(|f| {
@@ -937,6 +943,17 @@ impl CodeGenerator {
             if let Some(data_id) = self.string_data.get(s) {
                 let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
                 string_globals.insert(s.clone(), gv);
+            }
+        }
+        // The checked-arithmetic panic messages are emitted by codegen, not
+        // referenced in MIR, so import them into every function that might
+        // overflow (type.overflow). Unused imports are harmless.
+        for &msg in crate::builder::OVERFLOW_MESSAGES {
+            if !string_globals.contains_key(msg) {
+                if let Some(data_id) = self.string_data.get(msg) {
+                    let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+                    string_globals.insert(msg.to_string(), gv);
+                }
             }
         }
         // For main: import source file name global for rask_set_origin_file (ER15)

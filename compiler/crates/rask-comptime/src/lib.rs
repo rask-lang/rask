@@ -542,6 +542,9 @@ pub enum ComptimeError {
     #[error("division by zero in comptime evaluation")]
     DivisionByZero,
 
+    #[error("integer overflow in comptime evaluation: {0}")]
+    IntegerOverflow(String),
+
     #[error("index {index} out of bounds (length is {len})")]
     IndexOutOfBounds { index: usize, len: usize },
 
@@ -1757,18 +1760,21 @@ impl ComptimeInterpreter {
             }
         }
 
-        // Handle numeric operations
+        // Handle numeric operations. CT1: overflow at comptime is a compile
+        // error, never a silent wrap. Checks are at the i64 boundary — narrow
+        // widths (e.g. `200u8 + 100`) need target-type plumbing the comptime
+        // evaluator doesn't have yet (tracked as a follow-up on #325).
         match method {
-            "add" => self.numeric_binop(obj, args, |a, b| a + b, |a, b| a + b),
-            "sub" => self.numeric_binop(obj, args, |a, b| a - b, |a, b| a - b),
-            "mul" => self.numeric_binop(obj, args, |a, b| a * b, |a, b| a * b),
+            "add" => self.checked_numeric_binop(obj, args, i64::checked_add, |a, b| a + b, "+"),
+            "sub" => self.checked_numeric_binop(obj, args, i64::checked_sub, |a, b| a - b, "-"),
+            "mul" => self.checked_numeric_binop(obj, args, i64::checked_mul, |a, b| a * b, "*"),
             "div" => {
                 if let Some(arg) = args.first() {
                     if arg.as_i64() == Some(0) || arg.as_f64() == Some(0.0) {
                         return Err(ComptimeError::DivisionByZero);
                     }
                 }
-                self.numeric_binop(obj, args, |a, b| a / b, |a, b| a / b)
+                self.checked_numeric_binop(obj, args, i64::checked_div, |a, b| a / b, "/")
             }
             "rem" => {
                 if let Some(arg) = args.first() {
@@ -1776,11 +1782,12 @@ impl ComptimeInterpreter {
                         return Err(ComptimeError::DivisionByZero);
                     }
                 }
-                self.numeric_binop(obj, args, |a, b| a % b, |a, b| a % b)
+                self.checked_numeric_binop(obj, args, i64::checked_rem, |a, b| a % b, "%")
             }
             "neg" => {
                 match obj {
-                    ComptimeValue::I64(v) => Ok(ComptimeValue::I64(-v)),
+                    ComptimeValue::I64(v) => v.checked_neg().map(ComptimeValue::I64).ok_or_else(||
+                        ComptimeError::IntegerOverflow(format!("negating {} overflows i64", v))),
                     ComptimeValue::F64(v) => Ok(ComptimeValue::F64(-v)),
                     _ => Err(ComptimeError::TypeMismatch {
                         expected: "numeric".to_string(),
@@ -1822,15 +1829,18 @@ impl ComptimeInterpreter {
         }
     }
 
-    fn numeric_binop<Fi, Ff>(
+    /// Like `numeric_binop` but the integer op is checked (CT1). A `None`
+    /// result is an overflow and becomes a compile error.
+    fn checked_numeric_binop<Fi, Ff>(
         &self,
         obj: &ComptimeValue,
         args: &[ComptimeValue],
         int_op: Fi,
         float_op: Ff,
+        sym: &str,
     ) -> ComptimeResult<ComptimeValue>
     where
-        Fi: Fn(i64, i64) -> i64,
+        Fi: Fn(i64, i64) -> Option<i64>,
         Ff: Fn(f64, f64) -> f64,
     {
         let arg = args.first().ok_or_else(|| ComptimeError::TypeMismatch {
@@ -1838,13 +1848,17 @@ impl ComptimeInterpreter {
             found: "0 arguments".to_string(),
         })?;
 
+        let checked = |a: i64, b: i64| -> ComptimeResult<ComptimeValue> {
+            int_op(a, b).map(ComptimeValue::I64).ok_or_else(||
+                ComptimeError::IntegerOverflow(format!("{} {} {} overflows i64", a, sym, b)))
+        };
+
         match (obj, arg) {
-            (ComptimeValue::I64(a), ComptimeValue::I64(b)) => Ok(ComptimeValue::I64(int_op(*a, *b))),
+            (ComptimeValue::I64(a), ComptimeValue::I64(b)) => checked(*a, *b),
             (ComptimeValue::F64(a), ComptimeValue::F64(b)) => Ok(ComptimeValue::F64(float_op(*a, *b))),
             (obj, arg) => {
-                // Try to coerce to common type
                 if let (Some(a), Some(b)) = (obj.as_i64(), arg.as_i64()) {
-                    Ok(ComptimeValue::I64(int_op(a, b)))
+                    checked(a, b)
                 } else if let (Some(a), Some(b)) = (obj.as_f64(), arg.as_f64()) {
                     Ok(ComptimeValue::F64(float_op(a, b)))
                 } else {

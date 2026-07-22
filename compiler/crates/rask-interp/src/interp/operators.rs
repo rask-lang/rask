@@ -5,6 +5,7 @@ use rask_ast::expr::BinOp;
 
 use crate::value::Value;
 
+use super::overflow::{checked_binop, ArithOp, IntWidth};
 use super::{Interpreter, RuntimeError};
 
 impl Interpreter {
@@ -30,7 +31,32 @@ impl Interpreter {
     }
 
     /// Evaluate a binary operation directly (bypasses desugaring).
-    pub(super) fn eval_binop(&self, op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
+    /// `width` is the operands' static integer type, when known — arithmetic
+    /// on `Value::Int` is then width-aware and panics on overflow. When None
+    /// (e.g. generic code), it falls back to unchecked i64 arithmetic.
+    pub(super) fn eval_binop(
+        &self,
+        op: BinOp,
+        l: Value,
+        r: Value,
+        width: Option<IntWidth>,
+    ) -> Result<Value, RuntimeError> {
+        // Width-aware checked integer arithmetic when the type is known.
+        if let (Some(w), Value::Int(a), Value::Int(b)) = (width, &l, &r) {
+            let arith = match op {
+                BinOp::Add => Some(ArithOp::Add),
+                BinOp::Sub => Some(ArithOp::Sub),
+                BinOp::Mul => Some(ArithOp::Mul),
+                BinOp::Div => Some(ArithOp::Div),
+                BinOp::Mod => Some(ArithOp::Rem),
+                BinOp::Shl => Some(ArithOp::Shl),
+                BinOp::Shr => Some(ArithOp::Shr),
+                _ => None,
+            };
+            if let Some(arith_op) = arith {
+                return checked_binop(w, arith_op, *a, *b).map(Value::Int);
+            }
+        }
         match (op, &l, &r) {
             (BinOp::Add, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
             (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),

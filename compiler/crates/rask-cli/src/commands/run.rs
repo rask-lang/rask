@@ -22,6 +22,7 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let mut interp = rask_interp::Interpreter::with_args(program_args);
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
+    interp.set_node_types(result.typed.node_types.clone());
     // Set source info from the first source file (single-file mode).
     if let Some((_, source)) = result.source_files.first() {
         interp.set_source_info(path, source);
@@ -265,6 +266,7 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     let mut interp = rask_interp::Interpreter::new();
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
+    interp.set_node_types(result.typed.node_types.clone());
     if let Some((_, source)) = result.source_files.first() {
         interp.set_source_info(path, source);
     }
