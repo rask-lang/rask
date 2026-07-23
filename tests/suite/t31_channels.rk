@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Channel send / try_recv over scalar element types.
+
+// try_recv() returns `T or E`: Ok(value) when a value is ready, Err on
+// empty/closed. Native codegen used to leak the empty status as a present
+// value, so a drain loop never terminated (Track 1.6 follow-up). Sends are
+// bare here on purpose — `send().ok()` currently double-sends (tracked
+// separately), which would skew the drained counts.
+
+test "try_recv drains an i64 channel then reports empty" {
+    const (tx, rx) = Channel<i64>.buffered(8)
+    tx.send(10)
+    tx.send(20)
+    tx.send(30)
+    mut sum = 0
+    mut n = 0
+    while rx.try_recv() is i64 as v {
+        sum += v
+        n += 1
+        if n > 8 {
+            assert false, "drain did not terminate"
+            return
+        }
+    }
+    assert n == 3
+    assert sum == 60
+}
+
+test "try_recv drains an f64 channel" {
+    const (tx, rx) = Channel<f64>.buffered(8)
+    tx.send(1.5)
+    tx.send(2.5)
+    mut sum = 0.0
+    mut n = 0
+    while rx.try_recv() is f64 as v {
+        sum += v
+        n += 1
+        if n > 8 {
+            assert false, "drain did not terminate"
+            return
+        }
+    }
+    assert n == 2
+    assert sum == 4.0
+}
+
+test "try_recv on an empty channel reports none-equivalent immediately" {
+    const (tx, rx) = Channel<i64>.buffered(4)
+    mut n = 0
+    while rx.try_recv() is i64 as v {
+        n += 1
+        if n > 4 {
+            assert false, "empty channel yielded a value"
+            return
+        }
+    }
+    assert n == 0
+}
+
+func main() {}

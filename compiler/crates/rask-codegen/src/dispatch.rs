@@ -777,7 +777,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry::simple("Receiver_try_recv", "rask_channel_try_recv_i64", &[types::I64], Some(types::I64), false),
+        // try_recv() -> T or E: out-param recv (handles structs, distinguishes
+        // empty/closed from a real value); Custom adapter builds the Result.
+        StdlibEntry {
+            mir_name: "Receiver_try_recv", c_name: "rask_channel_try_recv_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Receiver_close", "rask_recver_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Receiver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
         StdlibEntry::simple("recv", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),

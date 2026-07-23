@@ -73,6 +73,10 @@ enum CallAdapt {
     /// Result is void* pointing to 16-byte string element in Vec.
     /// Copy to dst's stack slot.
     DerefStringElement,
+    /// Receiver.try_recv: call returned a channel status; the payload was
+    /// written into the given slot. Build a `T or E` Result in dst —
+    /// status==OK → Ok(payload of `elem_size` bytes), else → Err.
+    TryRecvResult(StackSlot, u32),
 }
 
 pub struct FunctionBuilder<'a> {
@@ -1989,6 +1993,64 @@ impl<'a> FunctionBuilder<'a> {
                             }
                             ptr
                         }
+                        CallAdapt::TryRecvResult(payload_ss, elem_size) => {
+                            // Channel status → `T or E` Result. status==OK(0) →
+                            // Ok(payload); anything else (EMPTY/CLOSED) → Err.
+                            let results = builder.inst_results(call_inst);
+                            let status = if !results.is_empty() { results[0] } else {
+                                builder.ins().iconst(types::I64, crate::layouts::TAG_OFFSET as i64)
+                            };
+                            if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id).copied() {
+                                slot_already_written = true;
+                                let zero = builder.ins().iconst(types::I64, 0);
+                                let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
+                                let ok_block = builder.create_block();
+                                let err_block = builder.create_block();
+                                let merge_block = builder.create_block();
+                                builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+
+                                // Ok: tag=0, zero origin, copy payload → RESULT_PAYLOAD_OFFSET
+                                builder.switch_to_block(ok_block);
+                                builder.seal_block(ok_block);
+                                builder.ins().stack_store(zero, dst_ss, crate::layouts::TAG_OFFSET);
+                                builder.ins().stack_store(zero, dst_ss, crate::layouts::ORIGIN_FILE_OFFSET);
+                                builder.ins().stack_store(zero, dst_ss, crate::layouts::ORIGIN_LINE_OFFSET);
+                                let payload_addr = builder.ins().stack_addr(types::I64, payload_ss, 0);
+                                let mut off = 0i32;
+                                let sz = elem_size as i32;
+                                while off + 8 <= sz {
+                                    let w = builder.ins().load(types::I64, MemFlags::new(), payload_addr, off);
+                                    builder.ins().stack_store(w, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET + off);
+                                    off += 8;
+                                }
+                                if sz - off >= 4 {
+                                    let w = builder.ins().load(types::I32, MemFlags::new(), payload_addr, off);
+                                    builder.ins().stack_store(w, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET + off);
+                                    off += 4;
+                                }
+                                if sz - off >= 2 {
+                                    let w = builder.ins().load(types::I16, MemFlags::new(), payload_addr, off);
+                                    builder.ins().stack_store(w, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET + off);
+                                    off += 2;
+                                }
+                                if sz - off >= 1 {
+                                    let w = builder.ins().load(types::I8, MemFlags::new(), payload_addr, off);
+                                    builder.ins().stack_store(w, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET + off);
+                                }
+                                builder.ins().jump(merge_block, &[]);
+
+                                // Err: tag=1
+                                builder.switch_to_block(err_block);
+                                builder.seal_block(err_block);
+                                let one = builder.ins().iconst(types::I64, 1);
+                                builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                                builder.ins().jump(merge_block, &[]);
+
+                                builder.switch_to_block(merge_block);
+                                builder.seal_block(merge_block);
+                            }
+                            builder.ins().iconst(types::I64, 0)
+                        }
                         _ => {
                             let results = builder.inst_results(call_inst);
                             if !results.is_empty() {
@@ -3768,6 +3830,22 @@ impl<'a> FunctionBuilder<'a> {
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
                 CallAdapt::None
+            }
+
+            // Receiver_try_recv: recv into a buffer of the element's real size;
+            // the C call returns the channel status. Args in: [rx, elem_size].
+            // Args out: [rx, out_ptr]. Post-call builds the `T or E` Result.
+            "Receiver_try_recv" => {
+                let elem_size = match mir_args.get(1) {
+                    Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
+                    _ => 8,
+                };
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, elem_size.max(8), 0,
+                ));
+                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
+                CallAdapt::TryRecvResult(ss, elem_size)
             }
 
             // Atomic CAS: append out_ok pointer

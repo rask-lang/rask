@@ -622,6 +622,7 @@ void    rask_recver_drop_i64(int64_t rx);
 int64_t rask_sender_clone_i64(int64_t tx);
 int64_t rask_channel_try_send_i64(int64_t tx, int64_t value);
 int64_t rask_channel_try_recv_i64(int64_t rx);
+int64_t rask_channel_try_recv_into(int64_t rx, int64_t out_ptr);
 int64_t rask_sender_close_i64(int64_t tx);
 int64_t rask_recver_close_i64(int64_t rx);
 

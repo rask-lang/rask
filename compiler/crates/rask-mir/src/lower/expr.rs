@@ -1704,6 +1704,16 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         qualified_name
                     }
+                } else if qualified_name == "Receiver_try_recv" {
+                    // try_recv recvs into a buffer of the element's real size and
+                    // maps status→Result in codegen. Pass elem_size for the buffer.
+                    let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
+                        self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
+                    } else {
+                        8
+                    };
+                    all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
+                    qualified_name
                 } else {
                     qualified_name
                 };
