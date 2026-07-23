@@ -41,6 +41,18 @@ pub enum MirStmtKind {
         cleanup_block: BlockId,
     },
     EnsurePop,
+    /// Register a runtime ensure hook so the body runs if the scope unwinds on
+    /// panic (ctrl.panic/U1). `thunk` is a synthesized `fn(env_ptr)`; each
+    /// capture occupies an 8-byte env slot holding the local's value — for an
+    /// aggregate that value is its address, so the hook sees the live resource.
+    EnsureHookRegister {
+        thunk: String,
+        captures: Vec<ClosureCapture>,
+    },
+    /// Deregister the most recent ensure hook. Emitted at the top of the inline
+    /// cleanup block, so a normal scope exit removes the hook (the inline path
+    /// runs the body) and only a panic reaches it through `rask_ensure_run_all`.
+    EnsureHookPop,
     PoolCheckedAccess {
         dst: LocalId,
         pool: LocalId,
@@ -62,10 +74,15 @@ pub enum MirStmtKind {
         args: Vec<MirOperand>,
     },
     /// Load a captured variable from the closure environment pointer.
+    /// `by_ref`: the env slot holds an 8-byte pointer to the original value
+    /// (not a copy) — used by ensure-hook thunks so cleanup runs against the
+    /// live resource. For an aggregate dst this sets the local's address to the
+    /// original instead of deep-copying the env bytes.
     LoadCapture {
         dst: LocalId,
         env_ptr: LocalId,
         offset: u32,
+        by_ref: bool,
     },
     /// Free a heap-allocated closure. Emitted before returns for owned closures.
     ClosureDrop {

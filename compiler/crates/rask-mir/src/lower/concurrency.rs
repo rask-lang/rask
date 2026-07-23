@@ -92,6 +92,7 @@ impl<'a> MirLowerer<'a> {
                 dst: local_id,
                 env_ptr: env_param_id,
                 offset: cap.offset,
+                by_ref: false,
             }));
             closure_locals.insert(name.clone(), (local_id, ty.clone()));
         }
@@ -202,6 +203,7 @@ impl<'a> MirLowerer<'a> {
                 dst: local_id,
                 env_ptr: env_param_id,
                 offset: cap.offset,
+                by_ref: false,
             }));
             closure_locals.insert(name.clone(), (local_id, ty.clone()));
         }

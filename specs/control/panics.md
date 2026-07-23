@@ -188,9 +188,9 @@ The interpreter already implements most of this model; compiled code has the big
 - `staged()` (`conc.sync/ST1–ST4`) is unimplemented in both paths.
 
 **Compiled** (`rask-codegen` + C runtime):
-- Main-thread panic now runs the ensure-hook stack then `exit(101)` (P4), not `abort()`. The hook stack + `rask_ensure_run_all` (with E2/E3 containment) live in the linked `panic.c` and are shared by every backend; `green.c` uses them through take/set accessors.
-- Ensures are still inlined only on the normal-return path (`CleanupReturn`); **codegen does not yet push hooks**, so nothing runs on the panic path — U1 unmet on native until codegen emits `rask_ensure_push/pop` (the hard part: reifying each ensure body as a thunk over its by-reference captures).
-- `thread.c` tasks: panic → `JoinError.Panicked` via setjmp/longjmp (matches P2/O1); `rask_panic` now drains the hook stack before the longjmp, so ensures will run once codegen pushes them.
+- Main-thread panic runs the ensure-hook stack then `exit(101)` (P4), not `abort()`. The hook stack + `rask_ensure_run_all` (with E2/E3 containment) live in the linked `panic.c` and are shared by every backend; `green.c` uses them through take/set accessors.
+- Ensures run on the native panic path (U1). Each ensure body is reified as a thunk over its captures; codegen pushes `rask_ensure_push` at schedule time and pops it at the top of the inline cleanup block, so a normal exit deregisters it and only a panic reaches it via `rask_ensure_run_all`. Consumption cancellation (C1) is re-checked inside the thunk. Remaining gaps (inline-only, no native panic run): ensures with `else` handlers, multi-statement bodies, or captures of plain scalars (need force-spill to stack slots) — tracked on #299.
+- `thread.c` tasks: panic → `JoinError.Panicked` via setjmp/longjmp (matches P2/O1); `rask_panic` drains the hook stack before the longjmp, so ensures run there too.
 - `green.c` tasks: join of a panicked task *re-panics in the joiner* instead of returning `JoinError.Panicked` — violates O1.
 - Panic messages truncate at 512 bytes; backtrace prints unconditionally (no `RASK_BACKTRACE` gate).
 

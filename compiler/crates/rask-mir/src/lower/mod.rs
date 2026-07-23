@@ -604,6 +604,162 @@ impl<'a> MirLowerer<'a> {
         None
     }
 
+    /// True for types whose MIR value is a single 8-byte pointer to the live
+    /// data — an aggregate's stack address, or a heap pointer (Vec/Map/String).
+    /// Capturing such a value by value is capture-by-reference: the ensure hook
+    /// sees later mutations (U2). Scalars are excluded (a value copy would go
+    /// stale), as are fat pointers (Slice/TraitObject — 16 bytes, don't fit an
+    /// 8-byte env slot).
+    fn is_ref_capturable(ty: &MirType) -> bool {
+        matches!(
+            ty,
+            MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Array { .. }
+                | MirType::Tuple(_)
+                | MirType::Ptr
+                | MirType::String
+                | MirType::Handle
+        )
+    }
+
+    /// Reify an ensure body as a runtime hook thunk so the cleanup runs if the
+    /// scope unwinds on a native panic (ctrl.panic/U1). Returns
+    /// `(thunk_name, captures)` on success; `None` keeps inline-only behavior.
+    ///
+    /// Scoped first cut: only a single-expression body whose free variables are
+    /// all aggregate locals (captured by reference — their MIR value is the
+    /// address). The optional `resource` id is captured by value so the thunk
+    /// can skip a cleanup whose receiver was already consumed (C1). Everything
+    /// else (else-handlers, scalar captures, multi-statement bodies) returns
+    /// `None` — the ensure simply won't run on a native panic, never miscompiles.
+    fn try_reify_ensure_hook(
+        &mut self,
+        body: &[rask_ast::stmt::Stmt],
+        else_handler: &Option<(String, Vec<rask_ast::stmt::Stmt>)>,
+        resource: Option<LocalId>,
+    ) -> Option<(String, Vec<crate::stmt::ClosureCapture>)> {
+        use rask_ast::stmt::StmtKind;
+
+        if else_handler.is_some() {
+            return None;
+        }
+        let expr = match body {
+            [only] => match &only.kind {
+                StmtKind::Expr(e) => e,
+                _ => return None,
+            },
+            _ => return None,
+        };
+
+        // Free variables must all be aggregates (captured by reference).
+        let free = self.collect_free_vars(expr, &[]);
+        if free.iter().any(|(_, _, ty)| !Self::is_ref_capturable(ty)) {
+            return None;
+        }
+
+        // Ordered captures: aggregate free vars (by ref), then the resource id
+        // (by value) when present.
+        struct Cap {
+            outer: LocalId,
+            name: String,
+            ty: MirType,
+            by_ref: bool,
+        }
+        let mut caps: Vec<Cap> = free
+            .iter()
+            .map(|(name, id, ty)| Cap {
+                outer: *id,
+                name: name.clone(),
+                ty: ty.clone(),
+                by_ref: true,
+            })
+            .collect();
+        let res_index = resource.map(|res| {
+            caps.push(Cap {
+                outer: res,
+                name: "__ensure_res".to_string(),
+                ty: MirType::I64,
+                by_ref: false,
+            });
+            caps.len() - 1
+        });
+
+        let thunk_name = format!("{}__ensure_thunk_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+
+        let mut thunk_builder = BlockBuilder::new(thunk_name.clone(), MirType::Void);
+        let env_param = thunk_builder.add_param("__env".to_string(), MirType::Ptr);
+
+        let mut thunk_locals: HashMap<String, (LocalId, MirType)> = HashMap::new();
+        let mut thunk_res_local: Option<LocalId> = None;
+        for (i, cap) in caps.iter().enumerate() {
+            let dst = thunk_builder.alloc_local(cap.name.clone(), cap.ty.clone());
+            thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
+                dst,
+                env_ptr: env_param,
+                offset: (i as u32) * 8,
+                by_ref: cap.by_ref,
+            }));
+            if Some(i) == res_index {
+                thunk_res_local = Some(dst);
+            } else {
+                thunk_locals.insert(cap.name.clone(), (dst, cap.ty.clone()));
+            }
+        }
+
+        // Consumption cancellation (C1): skip the body if already consumed.
+        if let Some(res_local) = thunk_res_local {
+            let consumed = thunk_builder.alloc_temp(MirType::I64);
+            thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(consumed),
+                func: crate::FunctionRef::internal("rask_resource_is_consumed".to_string()),
+                args: vec![MirOperand::Local(res_local)],
+            }));
+            let body_block = thunk_builder.create_block();
+            let skip_block = thunk_builder.create_block();
+            thunk_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(consumed),
+                then_block: skip_block,
+                else_block: body_block,
+            }));
+            thunk_builder.switch_to_block(skip_block);
+            thunk_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+            thunk_builder.switch_to_block(body_block);
+        }
+
+        // Lower the body expression into the thunk (reuses method resolution).
+        let saved_builder = std::mem::replace(&mut self.builder, thunk_builder);
+        let saved_locals = std::mem::replace(&mut self.locals, thunk_locals);
+        let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+        let body_result = self.lower_expr(expr);
+        thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
+        self.locals = saved_locals;
+        self.loop_stack = saved_loop_stack;
+
+        if body_result.is_err() {
+            return None;
+        }
+        if thunk_builder.current_block_unterminated() {
+            thunk_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+        }
+
+        let thunk_fn = thunk_builder.finish();
+        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void });
+        self.synthesized_functions.push(thunk_fn);
+
+        let captures = caps
+            .iter()
+            .enumerate()
+            .map(|(i, c)| crate::stmt::ClosureCapture {
+                local_id: c.outer,
+                offset: (i as u32) * 8,
+                size: 8,
+            })
+            .collect();
+        Some((thunk_name, captures))
+    }
+
     fn emit_loop_cleanup(&mut self, depth: usize) {
         for i in (depth..self.ensure_stack.len()).rev() {
             let block_id = self.ensure_stack[i];

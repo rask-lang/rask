@@ -488,6 +488,7 @@ fn generate_poll_fn(
         dst: tag_local,
         env_ptr: state_ptr,
         offset: 0,
+        by_ref: false,
     }));
 
     // Create segment blocks + default
@@ -524,6 +525,7 @@ fn generate_poll_fn(
                         dst: new_id,
                         env_ptr: state_ptr,
                         offset: field.offset,
+                        by_ref: false,
                     }));
                 }
             }
@@ -588,13 +590,14 @@ fn remap_stmt(
     let span = stmt.span;
 
     // Rewrite LoadCapture from closure env → load from state struct
-    if let MirStmtKind::LoadCapture { dst, env_ptr, offset } = &stmt.kind {
+    if let MirStmtKind::LoadCapture { dst, env_ptr, offset, by_ref } = &stmt.kind {
         if env_param_id == Some(*env_ptr) {
             if let Some(&state_offset) = capture_remap.get(offset) {
                 return MirStmt::new(MirStmtKind::LoadCapture {
                     dst: remap_id(*dst, map),
                     env_ptr: state_ptr,
                     offset: state_offset,
+                    by_ref: *by_ref,
                 }, span);
             }
         }
@@ -634,10 +637,11 @@ fn remap_stmt(
             closure: remap_id(*closure, map),
             args: args.iter().map(|a| remap_operand(a, map)).collect(),
         },
-        MirStmtKind::LoadCapture { dst, env_ptr, offset } => MirStmtKind::LoadCapture {
+        MirStmtKind::LoadCapture { dst, env_ptr, offset, by_ref } => MirStmtKind::LoadCapture {
             dst: remap_id(*dst, map),
             env_ptr: remap_id(*env_ptr, map),
             offset: *offset,
+            by_ref: *by_ref,
         },
         MirStmtKind::ClosureDrop { closure } => MirStmtKind::ClosureDrop {
             closure: remap_id(*closure, map),
@@ -906,6 +910,7 @@ mod tests {
             dst: captured,
             env_ptr: env,
             offset: 0,
+            by_ref: false,
         }));
         builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,

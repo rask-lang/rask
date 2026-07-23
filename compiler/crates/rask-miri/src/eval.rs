@@ -267,6 +267,10 @@ impl MiriEngine {
                 self.stack.current_mut()?.cleanup_stack.pop();
             }
 
+            // Runtime panic-unwind hooks. Comptime has no panic unwinding — the
+            // inline cleanup path (CleanupReturn) handles scope exit here.
+            MirStmtKind::EnsureHookRegister { .. } | MirStmtKind::EnsureHookPop => {}
+
             // Forbidden at comptime
             MirStmtKind::ResourceRegister { .. }
             | MirStmtKind::ResourceConsume { .. }

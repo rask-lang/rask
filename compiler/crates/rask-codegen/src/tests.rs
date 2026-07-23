@@ -1425,6 +1425,7 @@ mod tests {
                         dst: LocalId(1),
                         env_ptr: LocalId(0),
                         offset: 0,
+                        by_ref: false,
                     }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1511,6 +1512,7 @@ mod tests {
                         dst: LocalId(1),
                         env_ptr: LocalId(0),
                         offset: 0,
+                        by_ref: false,
                     }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1681,7 +1683,7 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0 }),
+                    MirStmt::dummy(MirStmtKind::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0, by_ref: false }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -1701,7 +1703,7 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0 }),
+                    MirStmt::dummy(MirStmtKind::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0, by_ref: false }),
                     MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(2),
                         func_name: "main__closure_1".to_string(),

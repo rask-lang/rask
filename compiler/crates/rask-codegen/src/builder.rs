@@ -926,6 +926,48 @@ impl<'a> FunctionBuilder<'a> {
             // CleanupReturn terminators, so these are no-ops.
             MirStmtKind::EnsurePush { .. } | MirStmtKind::EnsurePop => {}
 
+            // ── Runtime ensure hooks (panic unwind) ────────────────────
+            // Register a hook so the cleanup runs if the scope unwinds on a
+            // panic (ctrl.panic/U1). The env is a frame-local array of 8-byte
+            // slots holding each capture's value (aggregate → address).
+            MirStmtKind::EnsureHookRegister { thunk, captures } => {
+                let slots = captures.len().max(1) as u32;
+                let env_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    slots * 8,
+                    3, // 8-byte alignment
+                ));
+                for c in captures {
+                    let var = ctx.var_map.get(&c.local_id).ok_or_else(|| {
+                        CodegenError::UnsupportedFeature("EnsureHookRegister capture not found".to_string())
+                    })?;
+                    let val = builder.use_var(*var);
+                    let vty = builder.func.dfg.value_type(val);
+                    let val64 = if vty == types::I64 {
+                        val
+                    } else if vty.is_int() && vty.bytes() < 8 {
+                        builder.ins().uextend(types::I64, val)
+                    } else {
+                        val
+                    };
+                    builder.ins().stack_store(val64, env_ss, c.offset as i32);
+                }
+                let env_addr = builder.ins().stack_addr(types::I64, env_ss, 0);
+                let thunk_ref = ctx.func_refs.get(thunk)
+                    .ok_or_else(|| CodegenError::FunctionNotFound(thunk.clone()))?;
+                let thunk_ptr = builder.ins().func_addr(types::I64, *thunk_ref);
+                let push_ref = ctx.func_refs.get("rask_ensure_push")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_ensure_push".to_string()))?;
+                builder.ins().call(*push_ref, &[thunk_ptr, env_addr]);
+            }
+
+            // Deregister the most recent hook (normal exit runs the inline path).
+            MirStmtKind::EnsureHookPop => {
+                let pop_ref = ctx.func_refs.get("rask_ensure_pop")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_ensure_pop".to_string()))?;
+                builder.ins().call(*pop_ref, &[]);
+            }
+
             // ── Pool checked access ────────────────────────────────────
             MirStmtKind::PoolCheckedAccess { dst, pool, handle } => {
                 let pool_val = builder.use_var(*ctx.var_map.get(pool)
@@ -1142,7 +1184,7 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
-            MirStmtKind::LoadCapture { dst, env_ptr, offset } => {
+            MirStmtKind::LoadCapture { dst, env_ptr, offset, by_ref } => {
                 let env_val = builder.use_var(*ctx.var_map.get(env_ptr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "LoadCapture env_ptr not found".to_string()
@@ -1156,10 +1198,17 @@ impl<'a> FunctionBuilder<'a> {
                         "LoadCapture destination variable not found".to_string()
                     ))?;
 
-                // Aggregate types (String, Struct, etc.) were deep-copied into
-                // the closure environment. Copy into the local stack slot and
-                // set the variable to the local slot address.
-                if let Some((ss, size)) = ctx.stack_slot_map.get(dst) {
+                if *by_ref {
+                    // Ensure-hook capture: the env slot holds an 8-byte pointer to
+                    // the original value. Point the local's variable straight at it
+                    // (for aggregates the variable already IS the address), so
+                    // cleanup runs against the live resource rather than a copy.
+                    let val = crate::closures::load_capture(builder, env_val, *offset, types::I64);
+                    builder.def_var(*var, val);
+                } else if let Some((ss, size)) = ctx.stack_slot_map.get(dst) {
+                    // Aggregate types (String, Struct, etc.) were deep-copied into
+                    // the closure environment. Copy into the local stack slot and
+                    // set the variable to the local slot address.
                     let env_addr = builder.ins().iadd_imm(env_val, *offset as i64);
                     Self::copy_aggregate(builder, env_addr, *ss, *size);
                     let local_addr = builder.ins().stack_addr(types::I64, *ss, 0);
