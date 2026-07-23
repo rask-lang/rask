@@ -138,6 +138,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
         },
+        // Safe `.get()` (V3): returns T?, none on OOB, no panic. Indexing (`v[i]`)
+        // maps to Vec_get instead. DerefOption encodes NULL → None.
+        StdlibEntry {
+            mir_name: "Vec_get_opt", c_name: "rask_vec_get_opt",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
         StdlibEntry {
             mir_name: "Vec_set", c_name: "rask_vec_set",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,

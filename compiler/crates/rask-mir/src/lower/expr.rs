@@ -1708,14 +1708,25 @@ impl<'a> MirLowerer<'a> {
                     qualified_name
                 };
 
-                // Use tracked element type for Vec_get return instead of default I64.
+                // Use tracked element type for Vec_get/index return instead of default I64.
                 // Checks per-function map first, then shared cross-function map.
-                let ret_ty = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
-                    Self::vec_tracking_key(object)
-                        .and_then(|key| {
-                            self.meta(&key).and_then(|m| m.elem_type.clone())
-                                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
-                        })
+                let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
+                    Self::vec_tracking_key(object).and_then(|key| {
+                        self.meta(&key).and_then(|m| m.elem_type.clone())
+                            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+                    })
+                } else {
+                    None
+                };
+                let ret_ty = if qualified_name == "Vec_get" {
+                    // `.get()` returns T? (Option, none on OOB per V3). The call is
+                    // renamed to Vec_get_opt below so codegen uses the NULL-encoding
+                    // runtime + DerefOption adapter.
+                    let elem = tracked_elem.unwrap_or(MirType::I64);
+                    Some(MirType::Option(Box::new(elem)))
+                } else if qualified_name == "Vec_index" {
+                    // Indexing (`v[i]`) panics on OOB and yields the raw element.
+                    tracked_elem
                 } else if qualified_name == "Pool_get" {
                     // Pool.get returns Option<T> — extract T from tracked element type
                     let elem_ty = Self::vec_tracking_key(object)
@@ -1804,6 +1815,9 @@ impl<'a> MirLowerer<'a> {
                 // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
                 let (final_name, final_args) = if qualified_name == "Pool_alloc" && all_args.len() == 2 {
                     ("Pool_insert".to_string(), all_args)
+                } else if qualified_name == "Vec_get" {
+                    // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
+                    ("Vec_get_opt".to_string(), all_args)
                 } else if qualified_name == "Vec_join" {
                     // Vec_join assumes Vec<string>; use Vec_join_i64 for non-string elements
                     let is_string = Self::vec_tracking_key(object)
