@@ -1721,8 +1721,13 @@ impl<'a> MirLowerer<'a> {
                 let ret_ty = if qualified_name == "Vec_get" {
                     // `.get()` returns T? (Option, none on OOB per V3). The call is
                     // renamed to Vec_get_opt below so codegen uses the NULL-encoding
-                    // runtime + DerefOption adapter.
-                    let elem = tracked_elem.unwrap_or(MirType::I64);
+                    // runtime + DerefOption adapter. The element (Option payload)
+                    // type sizes the result slot, so it must be right even when the
+                    // Vec wasn't push-tracked in this function (e.g. returned from a
+                    // callee): take the checker's `T?` payload first, then tracking.
+                    let elem = self.extract_payload_type(expr)
+                        .or(tracked_elem)
+                        .unwrap_or(MirType::I64);
                     Some(MirType::Option(Box::new(elem)))
                 } else if qualified_name == "Vec_index" {
                     // Indexing (`v[i]`) panics on OOB and yields the raw element.

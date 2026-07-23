@@ -136,4 +136,20 @@ test "struct method averages Vec<f64> via get unwrap" {
     assert a.mean() == 4.0
 }
 
+// The Option payload sizes the result slot, so the element type must come
+// from the checker (`T?`), not from push-tracking — a Vec built in a callee
+// has no local push to track. A wrong (i64-sized) slot smashed the stack.
+func make_names() -> Vec<string> {
+    mut v = Vec.new()
+    v.push("alpha")
+    v.push("beta")
+    return v
+}
+
+test "get on Vec<string> returned from a callee (untracked element)" {
+    const v = make_names()
+    assert v.get(1)! == "beta"
+    assert v.get(9) == none
+}
+
 func main() {}
