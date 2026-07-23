@@ -1407,14 +1407,15 @@ impl<'a> MirLowerer<'a> {
                 // bytes and `opt == none` checks compared stale pointers.
                 if (method == "ok" || method == "to_option") && args.is_empty() {
                     if let Some(handled) = self.try_lower_result_option_method(
-                        expr, object, method.as_str(), args,
+                        expr, object, method.as_str(), args, &obj_op, &obj_ty,
                     )? {
                         return Ok(handled);
                     }
                     // Fallback for cases the inline lowerer couldn't handle
-                    // (no resolved receiver type, etc.) — pass through.
-                    let (obj_op2, obj_ty2) = self.lower_expr(object)?;
-                    return Ok((obj_op2, obj_ty2));
+                    // (no resolved receiver type, etc.) — pass the already-lowered
+                    // receiver through. Re-lowering here would double any side
+                    // effect in `object` (e.g. `tx.send(x).ok()` sending twice).
+                    return Ok((obj_op, obj_ty));
                 }
 
                 // .unwrap(): Option<T>/Result<T,E> → T — panic on None/Err
@@ -1522,8 +1523,10 @@ impl<'a> MirLowerer<'a> {
                     method.clone()
                 };
 
-                // Regular method call
-                let mut all_args = vec![obj_op];
+                // Regular method call. Clone the receiver operand so obj_op stays
+                // available for the inline Result/Option dispatch below (which
+                // must reuse it rather than re-lower `object` — see #349).
+                let mut all_args = vec![obj_op.clone()];
                 let mut arg_types = Vec::new();
                 for arg in args {
                     let (op, ty) = self.lower_expr(&arg.expr)?;
@@ -1551,7 +1554,7 @@ impl<'a> MirLowerer<'a> {
                 // to Vec_map et al. as a fallback and silently
                 // mis-computing on aggregate or non-i64 values.
                 if let Some(handled) = self.try_lower_result_option_method(
-                    expr, object, method.as_str(), args,
+                    expr, object, method.as_str(), args, &obj_op, &obj_ty,
                 )? {
                     return Ok(handled);
                 }

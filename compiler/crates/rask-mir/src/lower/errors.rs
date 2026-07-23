@@ -549,6 +549,8 @@ impl<'a> MirLowerer<'a> {
         object: &Expr,
         method: &str,
         args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
     ) -> Result<Option<super::TypedOperand>, LoweringError> {
         let raw_ty = match self.ctx.lookup_raw_type(object.id) {
             Some(t) => t.clone(),
@@ -565,10 +567,10 @@ impl<'a> MirLowerer<'a> {
         // (unresolved type variables) — MIR lowering may end up with a
         // non-Result MirType and the inline lowering will fail to match.
         let result = match (is_result, method, args.len()) {
-            (true, "map", 1) => self.lower_result_map(expr, object, &args[0].expr).map(Some),
-            (true, "ok", 0) => self.lower_result_ok(expr, object).map(Some),
-            (false, "map", 1) => self.lower_option_map(expr, object, &args[0].expr).map(Some),
-            (false, "filter", 1) => self.lower_option_filter(expr, object, &args[0].expr).map(Some),
+            (true, "map", 1) => self.lower_result_map(expr, obj_op.clone(), obj_ty.clone(), &args[0].expr).map(Some),
+            (true, "ok", 0) => self.lower_result_ok(expr, obj_op.clone(), obj_ty.clone()).map(Some),
+            (false, "map", 1) => self.lower_option_map(expr, obj_op.clone(), obj_ty.clone(), &args[0].expr).map(Some),
+            (false, "filter", 1) => self.lower_option_filter(expr, obj_op.clone(), obj_ty.clone(), &args[0].expr).map(Some),
             _ => Ok(None),
         };
         // If the inline lowering fails because the receiver's MIR type
@@ -586,10 +588,10 @@ impl<'a> MirLowerer<'a> {
     fn lower_result_map(
         &mut self,
         expr: &Expr,
-        object: &Expr,
+        obj_op: MirOperand,
+        obj_ty: MirType,
         closure: &Expr,
     ) -> Result<super::TypedOperand, LoweringError> {
-        let (obj_op, obj_ty) = self.lower_expr(object)?;
         let (closure_op, _) = self.lower_expr(closure)?;
         let closure_local = match closure_op {
             MirOperand::Local(id) => id,
@@ -692,9 +694,9 @@ impl<'a> MirLowerer<'a> {
     fn lower_result_ok(
         &mut self,
         expr: &Expr,
-        object: &Expr,
+        obj_op: MirOperand,
+        obj_ty: MirType,
     ) -> Result<super::TypedOperand, LoweringError> {
-        let (obj_op, obj_ty) = self.lower_expr(object)?;
         let in_ok_ty = match &obj_ty {
             MirType::Result { ok, .. } => (**ok).clone(),
             _ => return Err(LoweringError::InvalidConstruct(
@@ -763,10 +765,10 @@ impl<'a> MirLowerer<'a> {
     fn lower_option_map(
         &mut self,
         expr: &Expr,
-        object: &Expr,
+        obj_op: MirOperand,
+        obj_ty: MirType,
         closure: &Expr,
     ) -> Result<super::TypedOperand, LoweringError> {
-        let (obj_op, obj_ty) = self.lower_expr(object)?;
         let (closure_op, _) = self.lower_expr(closure)?;
         let closure_local = match closure_op {
             MirOperand::Local(id) => id,
@@ -855,10 +857,10 @@ impl<'a> MirLowerer<'a> {
     fn lower_option_filter(
         &mut self,
         expr: &Expr,
-        object: &Expr,
+        obj_op: MirOperand,
+        obj_ty: MirType,
         closure: &Expr,
     ) -> Result<super::TypedOperand, LoweringError> {
-        let (obj_op, obj_ty) = self.lower_expr(object)?;
         let (closure_op, _) = self.lower_expr(closure)?;
         let closure_local = match closure_op {
             MirOperand::Local(id) => id,

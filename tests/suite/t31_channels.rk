@@ -57,4 +57,22 @@ test "try_recv on an empty channel reports none-equivalent immediately" {
     assert n == 0
 }
 
+// `send(x).ok()` must send x exactly once. Native codegen used to lower the
+// receiver of `.ok()` twice, sending every value twice (#349).
+test "send().ok() sends the value exactly once" {
+    const (tx, rx) = Channel<i64>.buffered(8)
+    tx.send(1).ok()
+    tx.send(2).ok()
+    tx.send(3).ok()
+    mut n = 0
+    while rx.try_recv() is i64 as v {
+        n += 1
+        if n > 8 {
+            assert false, "received more values than were sent"
+            return
+        }
+    }
+    assert n == 3
+}
+
 func main() {}
