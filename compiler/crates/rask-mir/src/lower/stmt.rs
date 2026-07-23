@@ -381,12 +381,30 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.ensure_stack.push(cleanup_block);
 
+                // Reify a runtime hook so the body also runs if the scope unwinds
+                // on a native panic (ctrl.panic/U1). Registered in the main flow at
+                // schedule time; popped by the inline cleanup on a normal exit, so
+                // only a panic reaches it via rask_ensure_run_all.
+                let hook_resource = self.ensure_receivers.get(&cleanup_block).map(|(_, id)| *id);
+                let hook = self.try_reify_ensure_hook(body, else_handler, hook_resource);
+                if let Some((thunk, captures)) = &hook {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsureHookRegister {
+                        thunk: thunk.clone(),
+                        captures: captures.clone(),
+                    }));
+                }
+
                 // Main flow skips to continue block (body runs at scope exit)
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
 
                 // Lower ensure body into cleanup block.
                 // C1/C2: if receiver has a resource_id, check consumption first.
                 self.builder.switch_to_block(cleanup_block);
+                // Normal exit runs the inline cleanup — deregister the panic hook
+                // first so it can't double-run.
+                if hook.is_some() {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsureHookPop));
+                }
                 if let Some((_, resource_id)) = receiver_name
                     .as_ref()
                     .and_then(|name| self.ensure_receivers.get(&cleanup_block).cloned())

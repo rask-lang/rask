@@ -114,7 +114,8 @@ fn stmt_reads_local(stmt: &MirStmt, local: LocalId) -> bool {
         MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
             *pool == local || *handle == local
         }
-        MirStmtKind::ClosureCreate { captures, .. } => {
+        MirStmtKind::ClosureCreate { captures, .. }
+        | MirStmtKind::EnsureHookRegister { captures, .. } => {
             captures.iter().any(|c| c.local_id == local)
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => *env_ptr == local,
@@ -136,6 +137,7 @@ fn stmt_reads_local(stmt: &MirStmt, local: LocalId) -> bool {
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
+        | MirStmtKind::EnsureHookPop
         | MirStmtKind::ResourceScopeCheck { .. } => false,
     }
 }

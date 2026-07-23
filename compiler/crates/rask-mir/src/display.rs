@@ -198,9 +198,15 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
-            MirStmtKind::LoadCapture { dst, env_ptr, offset } => {
-                write!(f, "_{} = load_capture(_{}+{})", dst.0, env_ptr.0, offset)
+            MirStmtKind::LoadCapture { dst, env_ptr, offset, by_ref } => {
+                write!(f, "_{} = load_capture{}(_{}+{})",
+                    dst.0, if *by_ref { "_ref" } else { "" }, env_ptr.0, offset)
             }
+            MirStmtKind::EnsureHookRegister { thunk, captures } => {
+                write!(f, "ensure_hook_register({}, [{}])", thunk,
+                    captures.iter().map(|c| format!("_{}", c.local_id.0)).collect::<Vec<_>>().join(", "))
+            }
+            MirStmtKind::EnsureHookPop => write!(f, "ensure_hook_pop()"),
             MirStmtKind::ClosureDrop { closure } => {
                 write!(f, "closure_drop(_{}))", closure.0)
             }

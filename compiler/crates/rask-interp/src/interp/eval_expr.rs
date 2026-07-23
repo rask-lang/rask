@@ -1959,20 +1959,30 @@ impl Interpreter {
                     }
                 }
 
-                // Execute body
-                let mut result = Value::Unit;
+                // Execute body. Capture the exit instead of `?`-returning: unwind
+                // releases access but keeps writes (ctrl.panic/U2), so the
+                // writeback and scope-pop below must run even on panic.
+                let mut body_result: Result<Value, RuntimeDiagnostic> = Ok(Value::Unit);
                 for stmt in body {
-                    result = self.exec_stmt(stmt)?;
+                    match self.exec_stmt(stmt) {
+                        Ok(v) => body_result = Ok(v),
+                        Err(e) => { body_result = Err(e); break; }
+                    }
                 }
 
-                // Writeback for mutable bindings
+                // Writeback for mutable index bindings (U2: mutations made before
+                // the panic are flushed, not rolled back).
+                let mut writeback_err: Option<RuntimeDiagnostic> = None;
                 for info in &infos {
                     if info.mutable {
                         if let Some(updated) = self.env.get(&info.name).cloned() {
                             match &info.source {
                                 WithSource::Index { collection, key } => {
-                                    self.write_back_index(collection, key, updated)
-                                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                                    if let Err(e) = self.write_back_index(collection, key, updated) {
+                                        if writeback_err.is_none() {
+                                            writeback_err = Some(RuntimeDiagnostic::new(e, expr.span));
+                                        }
+                                    }
                                 }
                                 WithSource::Mutex(_) | WithSource::Cell(_) | WithSource::SharedWrite(_) => {
                                     // Writeback handled via guards below
@@ -1985,7 +1995,7 @@ impl Interpreter {
                     }
                 }
 
-                // Write back to Mutex guards
+                // Write back to Mutex/Cell guards
                 for (name, mut guard) in mutex_guards {
                     if let Some(updated) = self.env.get(&name) {
                         *guard = updated.clone();
@@ -2003,7 +2013,15 @@ impl Interpreter {
                 drop(rw_read_guards);
 
                 self.env.pop_scope();
-                Ok(result)
+
+                // A body panic/error wins; otherwise surface a writeback failure.
+                match body_result {
+                    Err(e) => Err(e),
+                    Ok(v) => match writeback_err {
+                        Some(e) => Err(e),
+                        None => Ok(v),
+                    },
+                }
             }
 
             ExprKind::Comptime { body } => {

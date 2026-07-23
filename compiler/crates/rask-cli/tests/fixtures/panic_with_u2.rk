@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/U2: unwind releases access but keeps writes. The `with` block sets
+// v[0] = 99 and then panics — the mutation must survive. The ensure runs during
+// unwind (E2) and prints v[0], which must be 99, not the original 0. exit 101.
+func main() {
+    mut v = Vec.new()
+    v.push(0)
+    ensure println(v[0].to_string())
+    with v[0] as item {
+        item = 99
+        panic("boom")
+    }
+}

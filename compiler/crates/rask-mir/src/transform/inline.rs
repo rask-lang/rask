@@ -560,10 +560,12 @@ fn remap_stmt(
             dst,
             env_ptr,
             offset,
+            by_ref,
         } => MirStmtKind::LoadCapture {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             env_ptr: local_map.get(env_ptr).copied().unwrap_or(*env_ptr),
             offset: *offset,
+            by_ref: *by_ref,
         },
         MirStmtKind::ClosureDrop { closure } => MirStmtKind::ClosureDrop {
             closure: local_map.get(closure).copied().unwrap_or(*closure),
@@ -632,6 +634,18 @@ fn remap_stmt(
         MirStmtKind::RcDec { local } => MirStmtKind::RcDec {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
+        MirStmtKind::EnsureHookRegister { thunk, captures } => MirStmtKind::EnsureHookRegister {
+            thunk: thunk.clone(),
+            captures: captures
+                .iter()
+                .map(|c| crate::ClosureCapture {
+                    local_id: local_map.get(&c.local_id).copied().unwrap_or(c.local_id),
+                    offset: c.offset,
+                    size: c.size,
+                })
+                .collect(),
+        },
+        MirStmtKind::EnsureHookPop => MirStmtKind::EnsureHookPop,
     };
 
     // IN4: preserve original spans from callee

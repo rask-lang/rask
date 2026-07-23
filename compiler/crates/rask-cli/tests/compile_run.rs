@@ -1114,6 +1114,80 @@ fn comptime_div_zero_is_compile_error() {
     assert!(output.contains("by zero"), "should report divide by zero: {}", output);
 }
 
+// ─── Panic semantics: ensure × panic (ctrl.panic, issue #299) ────
+//
+// Step 1 of task 1.5 covers the interpreter (issues #289/#290/#291). Native
+// codegen still doesn't run ensures on panic, so these assert `--interp` only;
+// the native side lands with step 2.
+
+#[test]
+fn panic_ensure_e2_runs_remaining() {
+    // E2: a panic in one ensure doesn't skip the others. LIFO gives C, then the
+    // panicking ensure, then A — A must still print despite the panic. Both
+    // backends now run ensures on panic (native via the reified hook).
+    for mode in ["--interp", "--native"] {
+        let (stdout, _stderr, code) = run_capture(mode, "panic_ensure_e2.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101 (P4)", mode);
+        // stdout carries body + the two non-panicking ensures (C then A). "boom"
+        // itself goes to stderr as the task panic.
+        assert!(stdout.contains("body") && stdout.contains("C") && stdout.contains("A"),
+            "{}: remaining ensures must run after a panicking one (E2): {:?}", mode, stdout);
+    }
+}
+
+#[test]
+fn panic_ensure_e3_first_panic_wins() {
+    // E3: the body's "primary" panic wins; the ensure's "secondary" panic during
+    // unwind is contained + reported to stderr; the other ensure still runs.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_e3.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101 (P4)", mode);
+        assert!(stdout.contains("cleanup"), "{}: the non-panicking ensure must still run (E2): {:?}", mode, stdout);
+        assert!(stderr.contains("primary"), "{}: primary panic wins: {}", mode, stderr);
+        assert!(stderr.contains("secondary panic during unwind"),
+            "{}: secondary panic should be reported to stderr: {}", mode, stderr);
+    }
+}
+
+#[test]
+fn panic_ensure_runs_on_native_with_captured_receiver() {
+    // U1 on native: an ensure calling a method on a captured receiver runs during
+    // unwind, and the by-reference capture sees the pre-panic mutation (42, not 1).
+    for mode in ["--interp", "--native"] {
+        let (stdout, _stderr, code) = run_capture(mode, "panic_ensure_capture.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101", mode);
+        assert_eq!(stdout, "42\n", "{}: ensure runs on panic and sees the live receiver", mode);
+    }
+}
+
+#[test]
+fn panic_exits_101_both_backends() {
+    // P4/EX4: a panic escaping main exits 101 on interp and native alike.
+    // Native previously abort()ed (SIGABRT / 134); step 2's runtime plumbing
+    // switches it to exit(101).
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_exit_code.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101, stderr: {}", mode, stderr);
+        assert_eq!(stdout, "before\n", "{}: pre-panic output should flush", mode);
+        assert!(
+            format!("{}{}", stdout, stderr).contains("boom"),
+            "{}: panic message should appear", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_with_keeps_writes_u2() {
+    // U2: a mutation made inside a `with` block before a panic is kept, not
+    // rolled back. The ensure observes v[0] == 99. Interp-only: on native the
+    // `with` write-back is emitted after the panic point (and Vec is an i64
+    // pointer, not a ref-capturable aggregate), so native with-block U2 is a
+    // separate codegen gap tracked on #290/#299, not covered by the ensure hook.
+    let (stdout, stderr, code) = run_capture("--interp", "panic_with_u2.rk");
+    assert_eq!(code, 101, "panic should exit 101 (P4); stderr: {}", stderr);
+    assert_eq!(stdout, "99\n", "with-block write must survive the panic (U2)");
+}
+
 // ─── Regression: issue #236 ─────────────────────────────────
 //
 // `rask test <dir>` on a directory of standalone files (no build.rk)

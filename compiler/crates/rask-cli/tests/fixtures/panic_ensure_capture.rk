@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/U1 on native: an ensure whose body calls a method on a captured
+// receiver runs during panic unwind. The receiver is captured by reference, so
+// the cleanup sees the mutation made before the panic (n = 42, not 1). Same
+// observable result on both backends; exit 101.
+struct Counter { n: i32 }
+extend Counter {
+    func show(self) {
+        println(self.n.to_string())
+    }
+}
+func main() {
+    mut c = Counter { n: 1 }
+    ensure c.show()
+    c.n = 42
+    panic("boom")
+}

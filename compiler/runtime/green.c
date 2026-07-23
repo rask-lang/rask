@@ -311,45 +311,14 @@ extern char    *rask_panic_take_message(void);
 
 // ─── Ensure hooks (LIFO cleanup stack) ──────────────────────
 //
-// Per-task linked list of cleanup callbacks. Run LIFO on cancel/panic.
-// During task execution tl_ensure_stack points to the active task's stack.
-// execute_task saves/restores it from GreenTask.ensure_stack on entry/exit
-// so hooks don't leak between tasks sharing a worker thread.
+// The stack itself lives in panic.c (always linked, shared by every
+// backend). A fiber worker parks the running task's hooks with
+// rask_ensure_stack_take/set on each context switch, and drains them via
+// rask_ensure_run_all on completion or panic.
 
-typedef struct EnsureHook {
-    void (*fn)(void *ctx);
-    void *ctx;
-    struct EnsureHook *next;
-} EnsureHook;
-
-static __thread EnsureHook *tl_ensure_stack = NULL;
-
-void rask_ensure_push(void (*fn)(void *), void *ctx) {
-    EnsureHook *hook = (EnsureHook *)malloc(sizeof(EnsureHook));
-    if (!hook) return;
-    hook->fn   = fn;
-    hook->ctx  = ctx;
-    hook->next = tl_ensure_stack;
-    tl_ensure_stack = hook;
-}
-
-void rask_ensure_pop(void) {
-    EnsureHook *hook = tl_ensure_stack;
-    if (!hook) return;
-    tl_ensure_stack = hook->next;
-    free(hook);
-}
-
-static void run_ensure_hooks(void) {
-    while (tl_ensure_stack) {
-        EnsureHook *hook = tl_ensure_stack;
-        tl_ensure_stack = hook->next;
-        if (hook->fn) {
-            hook->fn(hook->ctx);
-        }
-        free(hook);
-    }
-}
+extern void  *rask_ensure_stack_take(void);
+extern void   rask_ensure_stack_set(void *head);
+extern void   rask_ensure_run_all(void);
 
 // ─── Execute a single task ──────────────────────────────────
 
@@ -359,7 +328,7 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
     tl_current_task = t;
 
     // Restore per-task ensure hook stack (may have hooks from previous polls)
-    tl_ensure_stack = (EnsureHook *)t->ensure_stack;
+    rask_ensure_stack_set(t->ensure_stack);
 
     // Install panic handler for this task invocation
     rask_panic_install();
@@ -371,7 +340,7 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
         poll_result = t->poll_fn(t->state, t);
     } else {
         // Panicked — run cleanup hooks before completing
-        run_ensure_hooks();
+        rask_ensure_run_all();
         t->panic_msg = rask_panic_take_message();
         poll_result = RASK_POLL_READY;
         t->result = -1;
@@ -380,15 +349,14 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
     rask_panic_remove();
 
     // Save ensure hook stack back to task before switching away
-    t->ensure_stack = tl_ensure_stack;
-    tl_ensure_stack = NULL;
+    t->ensure_stack = rask_ensure_stack_take();
     tl_current_task = NULL;
 
     if (poll_result == RASK_POLL_READY) {
         // Task complete — run remaining ensure hooks
-        tl_ensure_stack = (EnsureHook *)t->ensure_stack;
+        rask_ensure_stack_set(t->ensure_stack);
         t->ensure_stack = NULL;
-        run_ensure_hooks();
+        rask_ensure_run_all();
 
         atomic_store_explicit(&t->task_state, TASK_STATE_COMPLETE,
                               memory_order_release);
