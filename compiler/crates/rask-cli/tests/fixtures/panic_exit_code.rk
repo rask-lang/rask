@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/P4 + struct.targets/EX4: a panic escaping main exits with status
+// 101 on both backends — distinct from an error return from main (status 1).
+func main() {
+    println("before")
+    panic("boom")
+}

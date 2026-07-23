@@ -652,6 +652,13 @@ typedef void (*RaskEnsureFn)(void *ctx);
 void rask_ensure_push(RaskEnsureFn fn, void *ctx);
 void rask_ensure_pop(void);
 
+// Drain the stack LIFO during panic unwind (ctrl.panic/U1, E2, E3).
+void rask_ensure_run_all(void);
+
+// Park/resume the current thread's stack head (opaque; for fiber workers).
+void *rask_ensure_stack_take(void);
+void  rask_ensure_stack_set(void *head);
+
 // ─── Mutex ─────────────────────────────────────────────────
 // Exclusive access wrapper. Closure-based: data accessed only inside lock.
 // Wraps pthread_mutex (conc.sync/MX1-MX2).

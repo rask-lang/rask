@@ -64,6 +64,92 @@ char *rask_panic_take_message(void) {
     return msg;
 }
 
+// ─── Ensure hooks (LIFO cleanup stack) ─────────────────────
+//
+// Per-thread linked list of scheduled cleanups. Codegen pushes one per
+// `ensure` and pops it on normal scope exit; `rask_ensure_run_all` drains
+// what's left when the stack unwinds on panic (ctrl.panic/U1). Lives here,
+// in the always-linked TU, so both the main thread and every backend
+// (thread.c OS tasks, green.c fibers) share one stack. green.c reaches it
+// through the take/set accessors below instead of owning its own copy.
+
+typedef struct EnsureHook {
+    RaskEnsureFn       fn;
+    void              *ctx;
+    struct EnsureHook *next;
+} EnsureHook;
+
+static __thread EnsureHook *tl_ensure_stack = NULL;
+
+// Set while draining hooks, so a panic raised by the unwind machinery
+// itself (A1) doesn't recursively re-drain the stack.
+static __thread int tl_in_unwind = 0;
+
+void rask_ensure_push(RaskEnsureFn fn, void *ctx) {
+    EnsureHook *hook = (EnsureHook *)malloc(sizeof(EnsureHook));
+    if (!hook) return;
+    hook->fn   = fn;
+    hook->ctx  = ctx;
+    hook->next = tl_ensure_stack;
+    tl_ensure_stack = hook;
+}
+
+void rask_ensure_pop(void) {
+    EnsureHook *hook = tl_ensure_stack;
+    if (!hook) return;
+    tl_ensure_stack = hook->next;
+    free(hook);
+}
+
+// Save/restore the current thread's stack head. Lets a worker thread that
+// multiplexes fibers (green.c) park one task's hooks and resume another's
+// without knowing the EnsureHook layout.
+void *rask_ensure_stack_take(void) {
+    void *head = tl_ensure_stack;
+    tl_ensure_stack = NULL;
+    return head;
+}
+
+void rask_ensure_stack_set(void *head) {
+    tl_ensure_stack = (EnsureHook *)head;
+}
+
+// Run every scheduled ensure in LIFO order during unwind. Each body runs
+// even if an earlier one panicked (E2); the first panic is already the
+// task's panic, so a panic raised by a body here is contained and reported
+// to stderr as a secondary panic (E3).
+void rask_ensure_run_all(void) {
+    if (tl_in_unwind) {
+        // A1: panic inside the unwind machinery — don't recurse.
+        return;
+    }
+    tl_in_unwind = 1;
+    while (tl_ensure_stack) {
+        EnsureHook *hook = tl_ensure_stack;
+        tl_ensure_stack = hook->next;
+        RaskEnsureFn fn = hook->fn;
+        void *ctx = hook->ctx;
+        free(hook);
+        if (!fn) continue;
+
+        // Contain a panic thrown by this ensure body: install a local
+        // handler so rask_panic longjmps back here instead of escaping.
+        struct RaskPanicCtx saved = panic_ctx;
+        if (setjmp(panic_ctx.buf) == 0) {
+            panic_ctx.active  = 1;
+            panic_ctx.message = NULL;
+            fn(ctx);
+        } else {
+            char *m = panic_ctx.message;
+            fprintf(stderr, "secondary panic during unwind: %s\n",
+                    m ? m : "(unknown panic)");
+            free(m);
+        }
+        panic_ctx = saved;
+    }
+    tl_in_unwind = 0;
+}
+
 // ─── Backtrace ─────────────────────────────────────────────
 
 static void print_backtrace(void) {
@@ -105,6 +191,10 @@ _Noreturn void rask_panic(const char *msg) {
         rask_panic_at(f, l, c, msg);
     }
 
+    // Unwind: run scheduled ensures for the dying task (U1/E2/E3). The primary
+    // panic message is set afterward, so it wins over any secondary.
+    rask_ensure_run_all();
+
     if (panic_ctx.active) {
         // Spawned task — store message and longjmp back to task entry
         panic_ctx.message = msg ? strdup(msg) : strdup("(unknown panic)");
@@ -112,10 +202,10 @@ _Noreturn void rask_panic(const char *msg) {
         longjmp(panic_ctx.buf, 1);
     }
 
-    // Main thread or no handler — print and abort
+    // Main task — a panic escaping main exits 101 after unwind (P4).
     fprintf(stderr, "panic: %s\n", msg ? msg : "(unknown panic)");
     print_backtrace();
-    abort();
+    exit(101);
 }
 
 _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
@@ -125,6 +215,8 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
              file ? file : "<unknown>", line, col,
              msg ? msg : "(unknown panic)");
 
+    rask_ensure_run_all();
+
     if (panic_ctx.active) {
         panic_ctx.message = strdup(buf);
         panic_ctx.active = 0;
@@ -133,7 +225,7 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
 
     fprintf(stderr, "panic at %s\n", buf);
     print_backtrace();
-    abort();
+    exit(101);
 }
 
 _Noreturn void rask_panic_fmt(const char *fmt, ...) {

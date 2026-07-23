@@ -1144,6 +1144,22 @@ fn panic_ensure_e3_first_panic_wins() {
 }
 
 #[test]
+fn panic_exits_101_both_backends() {
+    // P4/EX4: a panic escaping main exits 101 on interp and native alike.
+    // Native previously abort()ed (SIGABRT / 134); step 2's runtime plumbing
+    // switches it to exit(101).
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_exit_code.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101, stderr: {}", mode, stderr);
+        assert_eq!(stdout, "before\n", "{}: pre-panic output should flush", mode);
+        assert!(
+            format!("{}{}", stdout, stderr).contains("boom"),
+            "{}: panic message should appear", mode,
+        );
+    }
+}
+
+#[test]
 fn panic_with_keeps_writes_u2() {
     // U2: a mutation made inside a `with` block before a panic is kept, not
     // rolled back. The ensure observes v[0] == 99.

@@ -188,9 +188,9 @@ The interpreter already implements most of this model; compiled code has the big
 - `staged()` (`conc.sync/ST1–ST4`) is unimplemented in both paths.
 
 **Compiled** (`rask-codegen` + C runtime):
-- Ensures are inlined only on the normal-return path (`CleanupReturn`); the panic path is `rask_panic_at → trap`. **No ensure runs on panic** — violates U1. The green runtime's `rask_ensure_push/pop` hook stack exists but codegen never emits calls to it.
-- Main-thread panic calls `abort()` (SIGABRT) instead of unwinding + exit 101 — violates P1/P4.
-- `thread.c` tasks: panic → `JoinError.Panicked` via setjmp/longjmp (matches P2/O1), but without running ensures.
+- Main-thread panic now runs the ensure-hook stack then `exit(101)` (P4), not `abort()`. The hook stack + `rask_ensure_run_all` (with E2/E3 containment) live in the linked `panic.c` and are shared by every backend; `green.c` uses them through take/set accessors.
+- Ensures are still inlined only on the normal-return path (`CleanupReturn`); **codegen does not yet push hooks**, so nothing runs on the panic path — U1 unmet on native until codegen emits `rask_ensure_push/pop` (the hard part: reifying each ensure body as a thunk over its by-reference captures).
+- `thread.c` tasks: panic → `JoinError.Panicked` via setjmp/longjmp (matches P2/O1); `rask_panic` now drains the hook stack before the longjmp, so ensures will run once codegen pushes them.
 - `green.c` tasks: join of a panicked task *re-panics in the joiner* instead of returning `JoinError.Panicked` — violates O1.
 - Panic messages truncate at 512 bytes; backtrace prints unconditionally (no `RASK_BACKTRACE` gate).
 
