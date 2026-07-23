@@ -191,8 +191,8 @@ The interpreter already implements most of this model; compiled code has the big
 - Main-thread panic runs the ensure-hook stack then `exit(101)` (P4), not `abort()`. The hook stack + `rask_ensure_run_all` (with E2/E3 containment) live in the linked `panic.c` and are shared by every backend; `green.c` uses them through take/set accessors.
 - Ensures run on the native panic path (U1). Each ensure body is reified as a thunk over its captures; codegen pushes `rask_ensure_push` at schedule time and pops it at the top of the inline cleanup block, so a normal exit deregisters it and only a panic reaches it via `rask_ensure_run_all`. Consumption cancellation (C1) is re-checked inside the thunk. Remaining gaps (inline-only, no native panic run): ensures with `else` handlers, multi-statement bodies, or captures of plain scalars (need force-spill to stack slots) — tracked on #299.
 - `thread.c` tasks: panic → `JoinError.Panicked` via setjmp/longjmp (matches P2/O1); `rask_panic` drains the hook stack before the longjmp, so ensures run there too.
-- `green.c` tasks: join of a panicked task *re-panics in the joiner* instead of returning `JoinError.Panicked` — violates O1.
-- Panic messages truncate at 512 bytes; backtrace prints unconditionally (no `RASK_BACKTRACE` gate).
+- `green.c` tasks: join of a panicked task *re-panics in the joiner* instead of returning `JoinError.Panicked` — still violates O1 (#288; needs a join ABI + codegen change to surface the message as a value, mirroring `thread.c`).
+- Backtrace is now gated behind `RASK_BACKTRACE` (F2). Panic messages still truncate at 512 bytes.
 
 ### See Also
 

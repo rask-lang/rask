@@ -153,6 +153,10 @@ void rask_ensure_run_all(void) {
 // ─── Backtrace ─────────────────────────────────────────────
 
 static void print_backtrace(void) {
+    // F2: backtraces are opt-in and not part of the deterministic surface.
+    if (!getenv("RASK_BACKTRACE")) {
+        return;
+    }
 #if RASK_HAS_BACKTRACE
     void *frames[64];
     int n = backtrace(frames, 64);
