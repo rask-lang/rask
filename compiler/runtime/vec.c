@@ -99,6 +99,15 @@ void *rask_vec_get_unchecked(const RaskVec *v, int64_t index) {
     return v->data + index * v->elem_size;
 }
 
+// Safe get (V3): NULL on OOB (Option None), else pointer to element. No panic.
+// Indexing (`v[i]`) uses rask_vec_get instead, which panics on OOB.
+void *rask_vec_get_opt(const RaskVec *v, int64_t index) {
+    if (!v || index < 0 || index >= v->len) {
+        return NULL;
+    }
+    return v->data + index * v->elem_size;
+}
+
 void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     if (!v || index < 0 || index >= v->len) {
         rask_panic_fmt("index out of bounds: index %lld, len %lld",

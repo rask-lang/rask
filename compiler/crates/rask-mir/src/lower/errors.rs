@@ -549,6 +549,8 @@ impl<'a> MirLowerer<'a> {
         object: &Expr,
         method: &str,
         args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
     ) -> Result<Option<super::TypedOperand>, LoweringError> {
         let raw_ty = match self.ctx.lookup_raw_type(object.id) {
             Some(t) => t.clone(),
@@ -565,10 +567,10 @@ impl<'a> MirLowerer<'a> {
         // (unresolved type variables) — MIR lowering may end up with a
         // non-Result MirType and the inline lowering will fail to match.
         let result = match (is_result, method, args.len()) {
-            (true, "map", 1) => self.lower_result_map(expr, object, &args[0].expr).map(Some),
-            (true, "ok", 0) => self.lower_result_ok(expr, object).map(Some),
-            (false, "map", 1) => self.lower_option_map(expr, object, &args[0].expr).map(Some),
-            (false, "filter", 1) => self.lower_option_filter(expr, object, &args[0].expr).map(Some),
+            (true, "map", 1) => self.lower_result_map(expr, obj_op.clone(), obj_ty.clone(), &args[0].expr).map(Some),
+            (true, "ok", 0) => self.lower_result_ok(expr, obj_op.clone(), obj_ty.clone()).map(Some),
+            (false, "map", 1) => self.lower_option_map(expr, obj_op.clone(), obj_ty.clone(), &args[0].expr).map(Some),
+            (false, "filter", 1) => self.lower_option_filter(expr, obj_op.clone(), obj_ty.clone(), &args[0].expr).map(Some),
             _ => Ok(None),
         };
         // If the inline lowering fails because the receiver's MIR type
@@ -586,10 +588,10 @@ impl<'a> MirLowerer<'a> {
     fn lower_result_map(
         &mut self,
         expr: &Expr,
-        object: &Expr,
+        obj_op: MirOperand,
+        obj_ty: MirType,
         closure: &Expr,
     ) -> Result<super::TypedOperand, LoweringError> {
-        let (obj_op, obj_ty) = self.lower_expr(object)?;
         let (closure_op, _) = self.lower_expr(closure)?;
         let closure_local = match closure_op {
             MirOperand::Local(id) => id,
@@ -630,15 +632,21 @@ impl<'a> MirLowerer<'a> {
             else_block: ok_block,
         }));
 
-        // Ok branch: read T payload, call closure, store new Ok.
+        // Ok branch: read T payload, call closure, store new Ok. Scalars read at
+        // RESULT_PAYLOAD_OFFSET; aggregates use the None fast-path (#350).
         self.builder.switch_to_block(ok_block);
         let payload_local = self.builder.alloc_temp(in_ok_ty.clone());
+        let in_is_aggregate = matches!(
+            in_ok_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+        );
+        let in_byte_offset = if in_is_aggregate { None } else { Some(RESULT_PAYLOAD_OFFSET) };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: payload_local,
             rvalue: MirRValue::Field {
                 base: obj_op.clone(),
                 field_index: 0,
-                byte_offset: None,
+                byte_offset: in_byte_offset,
                 field_size: None,
             },
         }));
@@ -692,9 +700,9 @@ impl<'a> MirLowerer<'a> {
     fn lower_result_ok(
         &mut self,
         expr: &Expr,
-        object: &Expr,
+        obj_op: MirOperand,
+        obj_ty: MirType,
     ) -> Result<super::TypedOperand, LoweringError> {
-        let (obj_op, obj_ty) = self.lower_expr(object)?;
         let in_ok_ty = match &obj_ty {
             MirType::Result { ok, .. } => (**ok).clone(),
             _ => return Err(LoweringError::InvalidConstruct(
@@ -721,15 +729,24 @@ impl<'a> MirLowerer<'a> {
             else_block: ok_block,
         }));
 
-        // Ok branch: result = Some(payload)
+        // Ok branch: result = Some(payload). Read the source Result's ok payload
+        // at RESULT_PAYLOAD_OFFSET (scalars); aggregates use the None fast-path
+        // (the field access yields the payload slot address). Mirrors the `!`
+        // unwrap in emit_option_payload — without the explicit offset the read
+        // lands on the origin fields and returns garbage (#350).
         self.builder.switch_to_block(ok_block);
         let payload_local = self.builder.alloc_temp(in_ok_ty.clone());
+        let ok_is_aggregate = matches!(
+            in_ok_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+        );
+        let ok_byte_offset = if ok_is_aggregate { None } else { Some(RESULT_PAYLOAD_OFFSET) };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: payload_local,
             rvalue: MirRValue::Field {
                 base: obj_op.clone(),
                 field_index: 0,
-                byte_offset: None,
+                byte_offset: ok_byte_offset,
                 field_size: None,
             },
         }));
@@ -763,10 +780,10 @@ impl<'a> MirLowerer<'a> {
     fn lower_option_map(
         &mut self,
         expr: &Expr,
-        object: &Expr,
+        obj_op: MirOperand,
+        obj_ty: MirType,
         closure: &Expr,
     ) -> Result<super::TypedOperand, LoweringError> {
-        let (obj_op, obj_ty) = self.lower_expr(object)?;
         let (closure_op, _) = self.lower_expr(closure)?;
         let closure_local = match closure_op {
             MirOperand::Local(id) => id,
@@ -855,10 +872,10 @@ impl<'a> MirLowerer<'a> {
     fn lower_option_filter(
         &mut self,
         expr: &Expr,
-        object: &Expr,
+        obj_op: MirOperand,
+        obj_ty: MirType,
         closure: &Expr,
     ) -> Result<super::TypedOperand, LoweringError> {
-        let (obj_op, obj_ty) = self.lower_expr(object)?;
         let (closure_op, _) = self.lower_expr(closure)?;
         let closure_local = match closure_op {
             MirOperand::Local(id) => id,

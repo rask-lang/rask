@@ -86,4 +86,70 @@ test "vec get returns option" {
     assert v.get(99) == none
 }
 
+// ─── Vec.get() over f64 / string — Track 1.6 ─────────────────────
+// Bug: native `Vec<f64>.get(i)!` hit a Cranelift verifier error
+// ("load.i8 <f64>"). `.get()` mapped to the panic-on-OOB runtime that
+// returns a raw element, so it never produced a real Option — the `!`
+// unwrap then read that f64 as an Option pointer. Now `.get()` returns
+// T? (V3: none on OOB, no panic), matching the interpreter and spec.
+// Regression source: examples/sensor_processor.rk.
+
+test "vec f64 get unwrap and none" {
+    mut v: Vec<f64> = Vec.new()
+    v.push(1.5)
+    v.push(2.5)
+    assert v.get(0)! == 1.5
+    assert v.get(1)! == 2.5
+    assert v.get(9) == none
+}
+
+test "vec string get unwrap and none" {
+    mut v: Vec<string> = Vec.new()
+    v.push("hi")
+    assert v.get(0)! == "hi"
+    assert v.get(9) == none
+}
+
+// Struct method summing Vec<f64> elements via `.get(i)!` in a loop —
+// the exact shape that miscompiled in sensor_processor.
+struct Averager {
+    samples: Vec<f64>
+    count: i64
+}
+
+extend Averager {
+    func mean(self) -> f64 {
+        mut sum = 0.0
+        for i in 0..self.count {
+            sum += self.samples.get(i)!
+        }
+        return sum / (self.count as f64)
+    }
+}
+
+test "struct method averages Vec<f64> via get unwrap" {
+    mut s = Vec.new()
+    s.push(2.0)
+    s.push(4.0)
+    s.push(6.0)
+    const a = Averager { samples: s, count: 3 }
+    assert a.mean() == 4.0
+}
+
+// The Option payload sizes the result slot, so the element type must come
+// from the checker (`T?`), not from push-tracking — a Vec built in a callee
+// has no local push to track. A wrong (i64-sized) slot smashed the stack.
+func make_names() -> Vec<string> {
+    mut v = Vec.new()
+    v.push("alpha")
+    v.push("beta")
+    return v
+}
+
+test "get on Vec<string> returned from a callee (untracked element)" {
+    const v = make_names()
+    assert v.get(1)! == "beta"
+    assert v.get(9) == none
+}
+
 func main() {}

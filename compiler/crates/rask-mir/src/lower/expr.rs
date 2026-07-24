@@ -1407,14 +1407,15 @@ impl<'a> MirLowerer<'a> {
                 // bytes and `opt == none` checks compared stale pointers.
                 if (method == "ok" || method == "to_option") && args.is_empty() {
                     if let Some(handled) = self.try_lower_result_option_method(
-                        expr, object, method.as_str(), args,
+                        expr, object, method.as_str(), args, &obj_op, &obj_ty,
                     )? {
                         return Ok(handled);
                     }
                     // Fallback for cases the inline lowerer couldn't handle
-                    // (no resolved receiver type, etc.) — pass through.
-                    let (obj_op2, obj_ty2) = self.lower_expr(object)?;
-                    return Ok((obj_op2, obj_ty2));
+                    // (no resolved receiver type, etc.) — pass the already-lowered
+                    // receiver through. Re-lowering here would double any side
+                    // effect in `object` (e.g. `tx.send(x).ok()` sending twice).
+                    return Ok((obj_op, obj_ty));
                 }
 
                 // .unwrap(): Option<T>/Result<T,E> → T — panic on None/Err
@@ -1522,8 +1523,10 @@ impl<'a> MirLowerer<'a> {
                     method.clone()
                 };
 
-                // Regular method call
-                let mut all_args = vec![obj_op];
+                // Regular method call. Clone the receiver operand so obj_op stays
+                // available for the inline Result/Option dispatch below (which
+                // must reuse it rather than re-lower `object` — see #349).
+                let mut all_args = vec![obj_op.clone()];
                 let mut arg_types = Vec::new();
                 for arg in args {
                     let (op, ty) = self.lower_expr(&arg.expr)?;
@@ -1551,7 +1554,7 @@ impl<'a> MirLowerer<'a> {
                 // to Vec_map et al. as a fallback and silently
                 // mis-computing on aggregate or non-i64 values.
                 if let Some(handled) = self.try_lower_result_option_method(
-                    expr, object, method.as_str(), args,
+                    expr, object, method.as_str(), args, &obj_op, &obj_ty,
                 )? {
                     return Ok(handled);
                 }
@@ -1704,18 +1707,44 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         qualified_name
                     }
+                } else if qualified_name == "Receiver_try_recv" {
+                    // try_recv recvs into a buffer of the element's real size and
+                    // maps status→Result in codegen. Pass elem_size for the buffer.
+                    let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
+                        self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
+                    } else {
+                        8
+                    };
+                    all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
+                    qualified_name
                 } else {
                     qualified_name
                 };
 
-                // Use tracked element type for Vec_get return instead of default I64.
+                // Use tracked element type for Vec_get/index return instead of default I64.
                 // Checks per-function map first, then shared cross-function map.
-                let ret_ty = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
-                    Self::vec_tracking_key(object)
-                        .and_then(|key| {
-                            self.meta(&key).and_then(|m| m.elem_type.clone())
-                                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
-                        })
+                let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
+                    Self::vec_tracking_key(object).and_then(|key| {
+                        self.meta(&key).and_then(|m| m.elem_type.clone())
+                            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+                    })
+                } else {
+                    None
+                };
+                let ret_ty = if qualified_name == "Vec_get" {
+                    // `.get()` returns T? (Option, none on OOB per V3). The call is
+                    // renamed to Vec_get_opt below so codegen uses the NULL-encoding
+                    // runtime + DerefOption adapter. The element (Option payload)
+                    // type sizes the result slot, so it must be right even when the
+                    // Vec wasn't push-tracked in this function (e.g. returned from a
+                    // callee): take the checker's `T?` payload first, then tracking.
+                    let elem = self.extract_payload_type(expr)
+                        .or(tracked_elem)
+                        .unwrap_or(MirType::I64);
+                    Some(MirType::Option(Box::new(elem)))
+                } else if qualified_name == "Vec_index" {
+                    // Indexing (`v[i]`) panics on OOB and yields the raw element.
+                    tracked_elem
                 } else if qualified_name == "Pool_get" {
                     // Pool.get returns Option<T> — extract T from tracked element type
                     let elem_ty = Self::vec_tracking_key(object)
@@ -1804,6 +1833,9 @@ impl<'a> MirLowerer<'a> {
                 // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
                 let (final_name, final_args) = if qualified_name == "Pool_alloc" && all_args.len() == 2 {
                     ("Pool_insert".to_string(), all_args)
+                } else if qualified_name == "Vec_get" {
+                    // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
+                    ("Vec_get_opt".to_string(), all_args)
                 } else if qualified_name == "Vec_join" {
                     // Vec_join assumes Vec<string>; use Vec_join_i64 for non-string elements
                     let is_string = Self::vec_tracking_key(object)

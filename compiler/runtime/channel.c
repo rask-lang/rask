@@ -478,6 +478,14 @@ int64_t rask_channel_try_recv_i64(int64_t rx) {
     return data;
 }
 
+// Non-blocking recv into a caller buffer of the element's real size. Returns
+// the status (RASK_CHAN_OK / _EMPTY / _CLOSED); codegen turns that into the
+// `T or E` Result. Unlike the _i64 form this handles elements >8 bytes and
+// never conflates a status with a legitimate value.
+int64_t rask_channel_try_recv_into(int64_t rx, int64_t out_ptr) {
+    return rask_channel_try_recv((RaskRecver *)(intptr_t)rx, (void *)(intptr_t)out_ptr);
+}
+
 // ─── Async channel ops (yield-based for green tasks) ─────────
 //
 // Try non-blocking send/recv. If would block, yield and retry.
