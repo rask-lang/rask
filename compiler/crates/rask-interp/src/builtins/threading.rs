@@ -307,6 +307,11 @@ impl Interpreter {
                     variant_index: 0, origin: None,
                 })
             }
+            "clone" => {
+                // A cloned sender is another handle to the same channel.
+                let inner = tx.lock().unwrap().clone();
+                Ok(Value::Sender(Arc::new(Mutex::new(inner))))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Sender".to_string(),
                 method: method.to_string(),

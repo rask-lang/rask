@@ -132,6 +132,11 @@ pub struct TypeChecker {
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
     pub(super) pending_linear_containers: Vec<(rask_ast::Span, Type)>,
+    /// T1: method-call spans that resolved to a channel `Sender.send`. The
+    /// ownership checker reads these to consume the sent value (`mem.ownership/T1`),
+    /// even when inference leaves the receiver as a bare type variable in
+    /// `node_types` (deferred `Sender.send` resolution).
+    pub(super) channel_send_sites: std::collections::HashSet<rask_ast::Span>,
 }
 
 impl TypeChecker {
@@ -165,6 +170,7 @@ impl TypeChecker {
             pending_casts: Vec::new(),
             pending_index: Vec::new(),
             pending_linear_containers: Vec::new(),
+            channel_send_sites: std::collections::HashSet::new(),
         }
     }
 
@@ -272,6 +278,7 @@ impl TypeChecker {
             trait_coercions,
             unsafe_ops,
             span_types,
+            channel_send_sites: self.channel_send_sites,
         };
 
         (program, errors)

@@ -1399,6 +1399,8 @@ impl TypeChecker {
             }
             // Sender<T>.send(value: T) -> () or string
             ("Sender", "send") if args.len() == 1 => {
+                // T1: record the call so ownership transfers the sent value.
+                self.channel_send_sites.insert(span);
                 let _ = self.unify(&args[0], &inner_type, span);
                 let result_type = Type::Result {
                     ok: Box::new(Type::Unit),

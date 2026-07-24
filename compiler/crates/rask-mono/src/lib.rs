@@ -419,6 +419,7 @@ mod tests {
             trait_coercions: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),
+            channel_send_sites: std::collections::HashSet::new(),
         }
     }
 

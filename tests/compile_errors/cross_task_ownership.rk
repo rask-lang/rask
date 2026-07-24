@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Cross-task ownership (mem.ownership/T1–T3) and take-parameter consumption
+// (#296). Every function below must be rejected by the ownership checker.
+
+enum Fail { Msg(string) }
+extend Fail {
+    func message(self) -> string {
+        match self {
+            Fail.Msg(m) => return m
+        }
+    }
+}
+
+// T1: sending a value over a channel transfers ownership — use after send is
+// use-after-move. Consumption is recognized without a call-site `own`.
+func use_after_send() -> void or Fail {
+    const (tx, rx) = Channel<Vec<i32>>.buffered(4)
+    mut data = Vec.new<i32>()
+    data.push(1)
+    try tx.send(data) else |_| Fail.Msg("send failed")
+    print(data.len())   // ERROR: `data` was sent — ownership transferred [T1]
+    return ()
+}
+
+// #296 / PM3: a `take` parameter consumes its argument even without a call-site
+// `own`. Previously this consumption went unrecognized.
+func consume(take v: Vec<i32>) -> u64 {
+    return v.len()
+}
+func use_after_take() {
+    mut items = Vec.new<i32>()
+    items.push(1)
+    const n = consume(items)
+    print(items.len())  // ERROR: `items` was taken by `consume` [PM3/#296]
+    print(n)
+}
+
+// T3: a scope-limited (non-`own`) closure captured into a spawned task — the
+// task could outlive the borrowed source, so the borrow may not cross.
+func borrow_capturing_spawn() {
+    using Multitasking {
+        mut data = Vec.new<i32>()
+        data.push(1)
+        const h = spawn(|| { return data.len() })  // ERROR: borrow crosses task [T3/SL2]
+        h.detach()
+    }
+}
