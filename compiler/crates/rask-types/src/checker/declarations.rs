@@ -182,6 +182,8 @@ impl TypeChecker {
         // ER3/ER4: validate nested `T or E` in field types.
         for (fspan, fty) in &field_tys {
             self.validate_result_types_in(fty, *fspan);
+            // RC1/RC3: a `Vec`/`Map` field can't hold linear elements.
+            self.note_linear_container_site(*fspan, fty.clone());
         }
         let fields: Vec<_> = s
             .fields
@@ -306,6 +308,8 @@ impl TypeChecker {
         for (_, field_types) in &variants {
             for (fspan, fty) in field_types {
                 self.validate_result_types_in(fty, *fspan);
+                // RC1/RC3: a `Vec`/`Map` payload can't hold linear elements.
+                self.note_linear_container_site(*fspan, fty.clone());
             }
         }
         let variants: Vec<_> = variants
@@ -354,11 +358,17 @@ impl TypeChecker {
                 return;
             }
             self.types.register_alias(a.name.clone(), a.target.clone());
+            // RC1/RC3: `alias Files = Vec<File>` is itself a rejected type.
+            if let Ok(target) = parse_type_string(&a.target, &self.types) {
+                self.note_linear_container_site(span, target);
+            }
         } else {
             // `type X = Y` — nominal, gets its own TypeId
             let underlying = parse_type_string(&a.target, &self.types).unwrap_or(Type::Error);
             // ER3/ER4: validate nested `T or E` in the alias target.
             self.validate_result_types_in(&underlying, span);
+            // RC1/RC3: a nominal alias to a `Vec`/`Map` of linear values.
+            self.note_linear_container_site(span, underlying.clone());
             self.types.register_type(TypeDef::NominalAlias {
                 name: a.name.clone(),
                 underlying,

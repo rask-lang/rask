@@ -902,6 +902,23 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "invalid conversion form")
                     .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV5–CV10]")
             }
+            LinearInContainer { container, elem, span } => {
+                let rule = if container == "Map" { "RC3" } else { "RC1" };
+                let label = format!("`{}` cannot hold linear value `{}`", container, elem);
+                Diagnostic::error(label.clone())
+                    .with_code("E0820")
+                    .with_primary(*span, label)
+                    .with_why(format!(
+                        "`{}` drop can't consume its elements, but `{}` is linear — it must be \
+                         consumed exactly once, so it can't be silently dropped [mem.resource-types/{}]",
+                        container, elem, rule,
+                    ))
+                    .with_help(
+                        "store linear values in a `Pool<T>` (explicit removal, RC2) or an \
+                         optional `T?` (match and consume, RC4) — not a Vec or Map"
+                            .to_string(),
+                    )
+            }
             IndexTypeMismatch { container, found, kind, span } => {
                 use rask_types::IndexErrorKind as K;
                 let (label, why, fix) = match kind {

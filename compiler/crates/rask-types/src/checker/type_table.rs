@@ -310,6 +310,154 @@ impl TypeTable {
         }
     }
 
+    /// RC1/RC3: is a value of this type *itself linear* — a thing the language
+    /// requires be consumed exactly once? `@resource` structs/enums (directly or
+    /// transitively), and the tuples/arrays/optionals/results built from them,
+    /// qualify. Wrapper containers (`Handle`, `WeakHandle`, `Pool`, `Vec`, `Map`)
+    /// do NOT: a `Handle<File>` is a copyable value, and a `Vec<File>`/`Pool<File>`
+    /// is a container whose own drop story is decided separately (Pool is the
+    /// sanctioned one, Vec is the violation `find_linear_container` reports).
+    ///
+    /// This is deliberately narrower than `type_is_transitive_resource`, which
+    /// recurses into *every* generic arg and so treats `Handle<File>` as linear.
+    /// For the container-element rule that's a false positive — the spec's own
+    /// `Vec<Handle<Connection>>` example is legal.
+    pub fn is_linear_value(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Named(id) => self.is_transitive_resource_by_id(*id),
+            Type::Generic { base, args } => {
+                let full = self.type_name(*base);
+                let name = full.split('<').next().unwrap_or(&full);
+                if Self::is_nonlinear_wrapper(name) {
+                    return false;
+                }
+                if self.is_transitive_resource_by_id(*base) {
+                    return true;
+                }
+                args.iter().any(|a| matches!(a, GenericArg::Type(t) if self.is_linear_value(t)))
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                let base = name.split('<').next().unwrap_or(name);
+                if Self::is_nonlinear_wrapper(base) {
+                    return false;
+                }
+                if let Some(&id) = self.type_names.get(base) {
+                    if self.is_transitive_resource_by_id(id) {
+                        return true;
+                    }
+                }
+                args.iter().any(|a| matches!(a, GenericArg::Type(t) if self.is_linear_value(t)))
+            }
+            Type::UnresolvedNamed(name) => {
+                let base = name.split('<').next().unwrap_or(name);
+                self.type_names
+                    .get(base)
+                    .map_or(false, |id| self.is_transitive_resource_by_id(*id))
+            }
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().any(|t| self.is_linear_value(t))
+            }
+            Type::Array { elem, .. } | Type::Slice(elem) => self.is_linear_value(elem),
+            // `T?` is `Result { ok: T, err: none }`; both `T or E` and `T?` carry
+            // their payload linearly (RC4: an optional resource must be matched
+            // and consumed), so a Vec of them is still a violation.
+            Type::Result { ok, err } => self.is_linear_value(ok) || self.is_linear_value(err),
+            _ => false,
+        }
+    }
+
+    /// Container wrappers that hold values without becoming linear themselves.
+    /// `Pool` is the sanctioned resource container (RC2); `Handle`/`WeakHandle`
+    /// are copyable references; `Vec`/`Map` are handled by the outer walk.
+    fn is_nonlinear_wrapper(name: &str) -> bool {
+        matches!(name, "Handle" | "WeakHandle" | "Pool" | "Vec" | "Map")
+    }
+
+    /// RC1/RC3: find the first `Vec<T>` or `Map<K, V>` anywhere in `ty` whose
+    /// element (or key) is a linear value. `Vec` and `Map` can't consume their
+    /// elements on drop, so linear elements are rejected at the type. Returns the
+    /// container spelling ("Vec"/"Map") and the offending element type.
+    ///
+    /// Walks the whole type tree so nested forms (`Vec<Vec<File>>`,
+    /// `Map<string, File>` inside a tuple, a `Vec<File>` return of a `func`
+    /// type) are caught at their innermost violation.
+    pub fn find_linear_container(&self, ty: &Type) -> Option<(String, Type)> {
+        // Check this node if it's a Vec/Map, then always recurse into children so
+        // nested violations surface at their innermost container.
+        match ty {
+            Type::Generic { base, args } => {
+                // `type_name` includes generic params ("Vec<T>"); strip them.
+                let full = self.type_name(*base);
+                let name = full.split('<').next().unwrap_or(&full);
+                if let Some(hit) = self.container_violation(name, args) {
+                    return Some(hit);
+                }
+                self.first_container_in_args(args)
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                let base = name.split('<').next().unwrap_or(name);
+                if let Some(hit) = self.container_violation(base, args) {
+                    return Some(hit);
+                }
+                self.first_container_in_args(args)
+            }
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().find_map(|t| self.find_linear_container(t))
+            }
+            Type::Array { elem, .. } | Type::Slice(elem) | Type::RawPtr(elem) => {
+                self.find_linear_container(elem)
+            }
+            Type::Result { ok, err } => {
+                self.find_linear_container(ok).or_else(|| self.find_linear_container(err))
+            }
+            Type::Fn { params, ret } => params
+                .iter()
+                .find_map(|p| self.find_linear_container(p))
+                .or_else(|| self.find_linear_container(ret)),
+            _ => None,
+        }
+    }
+
+    fn first_container_in_args(&self, args: &[GenericArg]) -> Option<(String, Type)> {
+        args.iter().find_map(|a| match a {
+            GenericArg::Type(t) => self.find_linear_container(t),
+            _ => None,
+        })
+    }
+
+    /// If `name`/`args` describe a `Vec<T>` or `Map<K, V>` with a linear element
+    /// or key, return the violation. The check is head-only; the caller recurses.
+    fn container_violation(&self, name: &str, args: &[GenericArg]) -> Option<(String, Type)> {
+        let elem = |i: usize| match args.get(i) {
+            Some(GenericArg::Type(t)) => Some(t.as_ref()),
+            _ => None,
+        };
+        match name {
+            "Vec" => {
+                let e = elem(0)?;
+                if self.is_linear_value(e) {
+                    return Some(("Vec".to_string(), e.clone()));
+                }
+                None
+            }
+            "Map" => {
+                // A resource key is as unconsumable on drop as a resource value.
+                if let Some(k) = elem(0) {
+                    if self.is_linear_value(k) {
+                        return Some(("Map".to_string(), k.clone()));
+                    }
+                }
+                if let Some(v) = elem(1) {
+                    if self.is_linear_value(v) {
+                        return Some(("Map".to_string(), v.clone()));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Check if a TypeId refers to a `@unique` struct.
     pub fn is_unique_type_by_id(&self, id: TypeId) -> bool {
         if let Some(TypeDef::Struct { is_unique, .. }) = self.types.get(id.0 as usize) {
@@ -495,6 +643,11 @@ impl TypeTable {
             TypeError::DuplicateSumVariant { ty, variant, span } => TypeError::DuplicateSumVariant {
                 ty: self.resolve_type_names(&ty),
                 variant: self.resolve_type_names(&variant),
+                span,
+            },
+            TypeError::LinearInContainer { container, elem, span } => TypeError::LinearInContainer {
+                container,
+                elem: self.resolve_type_names(&elem),
                 span,
             },
             TypeError::IndexTypeMismatch { container, found, kind, span } => TypeError::IndexTypeMismatch {

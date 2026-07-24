@@ -255,6 +255,9 @@ impl Default for ErrorCodeRegistry {
                 "E0819" => ("index type mismatch", Type,
                     "An index expression `c[i]` used the wrong index type. Vec, arrays, slices, and strings are position-indexed by an integer; `Map<K,V>` is indexed by `K`; `Pool<T>` is indexed by `Handle<T>`. Range indexing (slicing) only works on Vec, arrays, slices, and strings.",
                     "const s = \"hi\"\nv[s]  // error: index a Vec with an integer, not a string"),
+                "E0820" => ("linear value in container", Ownership,
+                    "A Vec or Map element (or Map key) is a linear value — an @resource type, a transitively-linear struct/enum, or an optional/tuple/array built from one. Vec/Map drop can't consume linear elements, so they'd be silently dropped (RC1/RC3). Use `Pool<T>` (explicit removal, RC2) or `T?` (match and consume, RC4).",
+                    "@resource\nstruct File { fd: i32 }\nconst files: Vec<File> = Vec.new()  // error: use Pool<File>"),
             },
         }
     }

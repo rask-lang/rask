@@ -410,6 +410,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// mem.resource-types/RC1, RC3: a `Vec<T>` or `Map<K, V>` element (or key)
+    /// is a linear value (`@resource`, transitively-linear, or an optional/
+    /// tuple/array built from one). Vec/Map drop can't consume linear elements,
+    /// so the type is rejected. `container` is "Vec" or "Map".
+    #[error("`{container}` cannot hold linear value `{elem}`")]
+    LinearInContainer {
+        container: String,
+        elem: Type,
+        span: Span,
+    },
+
     /// std.collections/V1, mem.pools/PL4 (#310): an index expression `c[i]`
     /// whose index type doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]

@@ -128,6 +128,10 @@ pub struct TypeChecker {
     /// #310: index sites validated after literal defaults resolve their index
     /// type. Deferred so `v[0]` sees `i32`, not a fresh literal var.
     pub(super) pending_index: Vec<check_expr::PendingIndex>,
+    /// RC1/RC3: container-typed sites (bindings, params, returns, fields, alias
+    /// targets) validated after solving, so an inferred `Vec.new()` element that
+    /// unifies to a resource is caught. (Span, container type).
+    pub(super) pending_linear_containers: Vec<(rask_ast::Span, Type)>,
 }
 
 impl TypeChecker {
@@ -160,6 +164,7 @@ impl TypeChecker {
             multitasking_depth: 0,
             pending_casts: Vec::new(),
             pending_index: Vec::new(),
+            pending_linear_containers: Vec::new(),
         }
     }
 
@@ -201,6 +206,11 @@ impl TypeChecker {
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).
         self.validate_pending_casts();
+
+        // RC1/RC3: reject Vec/Map holding linear elements now that inferred
+        // element types (`Vec.new()` + `push`, `collect`, generic returns) are
+        // concrete.
+        self.validate_pending_linear_containers();
 
         let node_types: HashMap<_, _> = self
             .node_types
