@@ -176,7 +176,9 @@ impl TypeChecker {
             } else {
                 self.define_local_param(param.name.clone(), ty.clone());
             }
-            self.span_types.insert((param.name_span.start, param.name_span.end, param.name_span.file_id), ty);
+            self.span_types.insert((param.name_span.start, param.name_span.end, param.name_span.file_id), ty.clone());
+            // RC1/RC3: a `Vec`/`Map` parameter can't hold linear elements.
+            self.note_linear_container_site(param.name_span, ty);
         }
 
         for stmt in &f.body {
@@ -213,8 +215,11 @@ impl TypeChecker {
             }
         }
 
-        let ret_ty = self.current_return_type.as_ref().unwrap();
-        let resolved_ret_ty = self.ctx.apply(ret_ty);
+        let ret_ty = self.current_return_type.clone().unwrap();
+        let resolved_ret_ty = self.ctx.apply(&ret_ty);
+
+        // RC1/RC3: a `Vec`/`Map` return type can't hold linear elements.
+        self.note_linear_container_site(f.span, resolved_ret_ty.clone());
 
         // Empty body with non-Unit return type is a missing return (unless it's
         // a trait method declaration with no body — those are handled separately).

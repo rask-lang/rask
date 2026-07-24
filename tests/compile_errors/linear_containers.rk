@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: linear values in Vec/Map (mem.resource-types/RC1, RC3)
+//
+// Vec and Map drop can't consume their elements, so a linear value (@resource,
+// a transitively-linear struct/enum, or an optional/tuple/array built from one)
+// can't live inside them — it would be silently dropped, breaking
+// consume-exactly-once. Pool<T> (RC2) and T? (RC4) are the sanctioned
+// containers. Every route a linear type can reach a Vec/Map is covered below.
+
+@resource
+struct File {
+    fd: i32
+}
+
+extend File {
+    func open() -> File {
+        return File { fd: 1 }
+    }
+    func close(take self) -> void {
+        return
+    }
+}
+
+// A plain struct that transitively holds a resource is itself linear.
+struct Wrapper {
+    inner: File
+}
+
+// ── RC1: Vec ────────────────────────────────────────────────────────
+
+// Route: direct binding annotation
+func vec_annotation() -> void {
+    const files: Vec<File> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `File`
+    return
+}
+
+// Route: inferred element via push (no annotation)
+func vec_push() -> void {
+    mut files = Vec.new()
+    files.push(File.open())              // ERROR [RC1]: element unifies to `File`
+    return
+}
+
+// Route: function parameter
+func vec_param(files: Vec<File>) -> void {   // ERROR [RC1]: `Vec` cannot hold linear value `File`
+    return
+}
+
+// Route: return type
+func vec_return() -> Vec<File> {             // ERROR [RC1]: `Vec` cannot hold linear value `File`
+    return Vec.new()
+}
+
+// Route: struct field
+struct HasVec {
+    files: Vec<File>                     // ERROR [RC1]: `Vec` cannot hold linear value `File`
+}
+
+// Route: transitively-linear element
+func vec_transitive() -> void {
+    const ws: Vec<Wrapper> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `Wrapper`
+    return
+}
+
+// Route: nested Vec<Vec<File>>
+func vec_nested() -> void {
+    const vv: Vec<Vec<File>> = Vec.new() // ERROR [RC1]: innermost `Vec` cannot hold `File`
+    return
+}
+
+// Route: optional element (RC4 optional is fine on its own, but not inside a Vec)
+func vec_optional() -> void {
+    const opts: Vec<File?> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `File?`
+    return
+}
+
+// Route: type alias
+type alias FileList = Vec<File>          // ERROR [RC1]: `Vec` cannot hold linear value `File`
+
+// ── RC3: Map ────────────────────────────────────────────────────────
+
+// Route: Map value is linear
+func map_value() -> void {
+    const m: Map<string, File> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `File`
+    return
+}
+
+// Route: Map key is linear (a resource key is as unconsumable on drop as a value)
+func map_key() -> void {
+    const m: Map<File, string> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `File`
+    return
+}
+
+func main() -> void {
+    return
+}

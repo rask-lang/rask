@@ -38,7 +38,7 @@ undermine the core promise (mechanical safety) and get fixed before feature work
 | 1.5 | Panic path in compiled code runs no ensures and aborts the process; interp gets multi-ensure panics wrong (first ensure-panic skips the rest, secondary panic dropped). | ctrl.panic/P1, P4, U1, E2–E3 | `runtime/panic.c:118` aborts | #299 tracking (#287, #288, #289, #290, #291, #298) |
 | 1.6 | Generic layout miscompile: Cranelift verifier errors on generic struct methods (f64 treated as pointer). Breaks sensor_processor today. | — | `rask compile examples/sensor_processor.rk` | #272, #259 family; verify coverage, else file |
 | 1.7 | Index expression types never checked (`vec[string]` typechecks). | stdlib.collections | — | #310 |
-| 1.8 | Linear values in containers unenforced: `Vec<@resource>` / `Map<_, @resource>` accepted; values silently droppable. `Pool<Resource>` drop-non-empty panic unverified. | mem.resource-types/RC1, RC3, R5 | no enforcement in rask-ownership or checker | **(file)** |
+| 1.8 | Linear values in containers unenforced: `Vec<@resource>` / `Map<_, @resource>` accepted; values silently droppable. `Pool<Resource>` drop-non-empty panic unverified. | mem.resource-types/RC1, RC3, R5 | RC1/RC3 now enforced in checker (E0820) | #355 (RC1/RC3 done); #356 (R5 + take_all, split); #357 (native `Pool.remove!` codegen, blocks RC2 native) |
 | 1.9 | Cross-task ownership rules unimplemented: channel send doesn't consume, borrows can cross task boundaries. | mem.ownership/T1–T3 | no logic in rask-ownership | **(file)** |
 | 1.10 | ensure cancellation is runtime drop-flags, spec requires static definiteness. | ctrl.ensure/C3–C5 | spec's own status section | #293, #295, #296 |
 

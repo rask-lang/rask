@@ -381,6 +381,16 @@ fn error_index_types() {
 }
 
 #[test]
+fn error_linear_containers() {
+    // RC1/RC3: Vec/Map can't hold linear elements (@resource, transitively
+    // linear, or optionals/tuples built from them). Covers every entry route:
+    // annotation, push, param, return, field, transitive, nested, optional,
+    // alias, Map value, Map key (E0820).
+    assert!(compile_error("linear_containers.rk"),
+        "should reject Vec/Map of linear values across all entry routes (E0820)");
+}
+
+#[test]
 fn error_trait_object_generic() {
     // TR3: a generic trait method has no vtable slot; calling it through
     // `any Trait` must be rejected at the call site.

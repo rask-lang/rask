@@ -26,6 +26,35 @@ impl TypeChecker {
         check_nested_optional(ty, span, &mut errs);
         self.errors.extend(errs);
     }
+
+    /// RC1/RC3: record a site whose type must not be a `Vec`/`Map` of linear
+    /// values. Validated after constraint solving (see
+    /// `validate_pending_linear_containers`) so inferred element types are
+    /// concrete. `ty` may still contain type vars here — they're resolved later.
+    pub(super) fn note_linear_container_site(&mut self, span: Span, ty: Type) {
+        self.pending_linear_containers.push((span, ty));
+    }
+
+    /// RC1/RC3: reject any recorded site whose resolved type embeds a `Vec<T>`
+    /// or `Map<K, V>` with a linear element/key. One error per span.
+    pub(super) fn validate_pending_linear_containers(&mut self) {
+        let pending = std::mem::take(&mut self.pending_linear_containers);
+        let mut reported: Vec<Span> = Vec::new();
+        for (span, ty) in pending {
+            let ty = self.ctx.apply(&ty);
+            if let Some((container, elem)) = self.types.find_linear_container(&ty) {
+                if reported.contains(&span) {
+                    continue;
+                }
+                reported.push(span);
+                self.errors.push(TypeError::LinearInContainer {
+                    container,
+                    elem,
+                    span,
+                });
+            }
+        }
+    }
 }
 
 fn collect_result_errors(

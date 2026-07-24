@@ -2442,10 +2442,16 @@ impl<'a> OwnershipChecker<'a> {
         false
     }
 
-    /// L1/ER42: a `Type` is transitively linear (carries `@resource` directly
-    /// or through nested fields/variants/tuples/etc.).
+    /// L1/ER42: a `Type` value must be consumed exactly once — `@resource`
+    /// directly, or through nested fields/variants/tuples/optionals.
+    ///
+    /// Uses `is_linear_value`, not `type_is_transitive_resource`: the latter
+    /// recurses into *every* generic arg and so treats `Handle<File>`,
+    /// `Pool<File>`, etc. as linear. A handle is a copyable value and a pool is
+    /// the sanctioned resource container (its own drop story is R5, not L1), so
+    /// binding one must not demand consumption (`mem.resource-types/RC2`).
     fn type_is_resource(&self, ty: &Type) -> bool {
-        self.program.types.type_is_transitive_resource(ty)
+        self.program.types.is_linear_value(ty)
     }
 
     /// Whether an expression's inferred type is transitively linear.
