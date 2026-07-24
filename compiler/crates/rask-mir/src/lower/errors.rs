@@ -632,15 +632,21 @@ impl<'a> MirLowerer<'a> {
             else_block: ok_block,
         }));
 
-        // Ok branch: read T payload, call closure, store new Ok.
+        // Ok branch: read T payload, call closure, store new Ok. Scalars read at
+        // RESULT_PAYLOAD_OFFSET; aggregates use the None fast-path (#350).
         self.builder.switch_to_block(ok_block);
         let payload_local = self.builder.alloc_temp(in_ok_ty.clone());
+        let in_is_aggregate = matches!(
+            in_ok_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+        );
+        let in_byte_offset = if in_is_aggregate { None } else { Some(RESULT_PAYLOAD_OFFSET) };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: payload_local,
             rvalue: MirRValue::Field {
                 base: obj_op.clone(),
                 field_index: 0,
-                byte_offset: None,
+                byte_offset: in_byte_offset,
                 field_size: None,
             },
         }));
@@ -723,15 +729,24 @@ impl<'a> MirLowerer<'a> {
             else_block: ok_block,
         }));
 
-        // Ok branch: result = Some(payload)
+        // Ok branch: result = Some(payload). Read the source Result's ok payload
+        // at RESULT_PAYLOAD_OFFSET (scalars); aggregates use the None fast-path
+        // (the field access yields the payload slot address). Mirrors the `!`
+        // unwrap in emit_option_payload — without the explicit offset the read
+        // lands on the origin fields and returns garbage (#350).
         self.builder.switch_to_block(ok_block);
         let payload_local = self.builder.alloc_temp(in_ok_ty.clone());
+        let ok_is_aggregate = matches!(
+            in_ok_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+        );
+        let ok_byte_offset = if ok_is_aggregate { None } else { Some(RESULT_PAYLOAD_OFFSET) };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: payload_local,
             rvalue: MirRValue::Field {
                 base: obj_op.clone(),
                 field_index: 0,
-                byte_offset: None,
+                byte_offset: ok_byte_offset,
                 field_size: None,
             },
         }));
