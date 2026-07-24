@@ -409,6 +409,16 @@ fn error_trait_object_generic() {
 }
 
 #[test]
+fn error_ensure_cancellation() {
+    // C3/C4 (#293): a resource with a pending `ensure` consumed on some paths
+    // but not all — where the paths then merge — has no statically-definite
+    // consumption state at scope exit. Maybe-consumed is a compile error
+    // (E0821), across if-without-else, single match arm, and nested blocks.
+    assert!(compile_error("ensure_cancellation.rk"),
+        "should reject ensure receiver consumed on only some merging paths (C4, E0821)");
+}
+
+#[test]
 fn compile_auto_generic_single_letter() {
     let (stdout, code) = compile_and_run("auto_generic_single_letter.rk");
     assert_eq!(code, 0);
@@ -1214,6 +1224,36 @@ fn panic_with_keeps_writes_u2() {
     let (stdout, stderr, code) = run_capture("--interp", "panic_with_u2.rk");
     assert_eq!(code, 101, "panic should exit 101 (P4); stderr: {}", stderr);
     assert_eq!(stdout, "99\n", "with-block write must survive the panic (U2)");
+}
+
+// ─── Ensure cancellation: static definiteness (ctrl.ensure C1–C5, #293) ──
+//
+// Every accepted path has a definite consumption state, so both backends must
+// agree on which cleanups run. Covers: no-consume-runs, definite-consume-
+// cancels, the transfer pattern (path-dependent but definite), and the #295
+// nested-block case (consume inside a nested block that then exits).
+#[test]
+fn ensure_cancellation_both_backends() {
+    let expected = "\
+[no_consume]
+no_consume body
+rollback
+[definite_consume]
+definite_consume body
+commit
+[transfer true]
+rollback
+[transfer false]
+commit
+[nested_consume]
+commit
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "ensure_cancellation.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected,
+            "{}: ensure cancellation must match static definiteness", mode);
+    }
 }
 
 // ─── Regression: issue #236 ─────────────────────────────────

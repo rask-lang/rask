@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ensure/C1–C5: ensure cancellation with static definiteness.
+//
+// Every path below has a statically-definite consumption state, so the
+// compiler accepts it and both backends agree on which cleanups run:
+//   - no explicit consume  -> ensure runs (rollback)
+//   - definite consume      -> ensure cancelled (no rollback)
+//   - path-dependent but definite (transfer pattern) -> per-exit decision
+//   - consume in a nested block that then exits (#295) -> ensure cancelled
+
+@resource
+struct Tx { id: i32 }
+
+extend Tx {
+    func commit(take self) { println("commit") }
+    func rollback(take self) { println("rollback") }
+}
+
+// No explicit consumption: rollback runs at scope exit.
+func no_consume() {
+    const tx = Tx { id: 1 }
+    ensure tx.rollback()
+    println("no_consume body")
+}
+
+// Unconditional consume in the same scope: rollback cancelled (C1).
+func definite_consume() {
+    const tx = Tx { id: 2 }
+    ensure tx.rollback()
+    println("definite_consume body")
+    tx.commit()
+}
+
+// Transfer pattern: early return leaves tx unconsumed (rollback runs),
+// fall-through consumes (rollback cancelled). Each exit is definite (C3).
+func transfer(fast: bool) {
+    const tx = Tx { id: 3 }
+    ensure tx.rollback()
+    if fast {
+        return              // tx not consumed -> rollback runs
+    }
+    tx.commit()             // consumed -> rollback cancelled
+}
+
+// #295: consume inside a nested block that then returns. Definite consume,
+// so rollback is cancelled — the earlier interpreter double-ran cleanup here.
+func nested_consume() {
+    const tx = Tx { id: 4 }
+    ensure tx.rollback()
+    {
+        tx.commit()
+        return
+    }
+}
+
+func main() {
+    println("[no_consume]")
+    no_consume()
+    println("[definite_consume]")
+    definite_consume()
+    println("[transfer true]")
+    transfer(true)
+    println("[transfer false]")
+    transfer(false)
+    println("[nested_consume]")
+    nested_consume()
+}

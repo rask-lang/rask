@@ -88,6 +88,18 @@ pub enum OwnershipErrorKind {
         context: String,
     },
 
+    /// C4: an ensured resource is consumed on some paths but not all, and the
+    /// paths merge before scope exit. Which cleanup runs would depend on hidden
+    /// runtime state, so it's a compile error (ctrl.ensure/C3–C4).
+    #[error("consumption of `{name}` depends on which path ran")]
+    EnsureMaybeConsumed {
+        name: String,
+        /// Where the ensure was scheduled.
+        ensure_at: Span,
+        /// One branch's consumption site.
+        consumed_at: Span,
+    },
+
     /// Trying to move a value out of a borrowed parameter.
     #[error("cannot move `{name}` — parameter is borrowed, not owned")]
     MoveFromBorrowedParam {

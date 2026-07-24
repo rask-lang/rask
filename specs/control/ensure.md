@@ -570,12 +570,12 @@ Send is consumption like any other (C5) — it cancels the ensure and falls unde
 
 ### Implementation status (C3–C5)
 
-The implementation currently does the opposite of C3: `ensure` blanket-suppresses the static linear check for its receiver, and cancellation is decided by runtime flags (MIR `ResourceConsume` + `rask_resource_is_consumed`; interpreter `ResourceTracker`). Tracked:
+Static definiteness (C3/C4) is enforced. `ensure` still commits the receiver's linear consumption (EN3/L1), but at scope exit the receiver must be *definitely* consumed (ensure cancelled) or *definitely* not (ensure runs) — a maybe-consumed merge is rejected as `E0821` (`rask-ownership`, `check_resource_consumption`). Runtime cancellation (MIR `ResourceConsume` + `rask_resource_is_consumed`; interpreter `ResourceTracker`) is retained as the per-exit mechanism, now backstopped by the static guarantee: it only ever distinguishes path-dependent-*definite* cases (the transfer pattern), never the maybe-consumed case the checker now rejects. Tracked:
 
-- [#293](https://github.com/rask-lang/rask/issues/293) — implement the static definiteness analysis, retire the runtime flags
+- [#293](https://github.com/rask-lang/rask/issues/293) — *done*: static definiteness analysis (C4, `E0821`). A tree-walking interpreter still observes which path ran, so the runtime flag can't be fully removed — but it's no longer load-bearing for correctness, since the accepted set is exactly the definite programs.
 - [#294](https://github.com/rask-lang/rask/issues/294) — *fixed*: the branch merge now treats a value moved/consumed on some paths but not all as maybe-moved, so if-without-else and single-arm consumption are rejected (`mem.ownership/O3`, `mem.linear/L1`)
-- [#295](https://github.com/rask-lang/rask/issues/295) — interpreter: cancellation misses nested-block consumption, cleanup double-runs today
-- [#296](https://github.com/rask-lang/rask/issues/296) — take-param/send consumption not recognized without call-site `own` (C5 assumes it is)
+- [#295](https://github.com/rask-lang/rask/issues/295) — *mooted by #293*: the double-run repros are now `E0821` compile errors. The definite cases (including nested-block consume-then-exit) run correctly on both backends.
+- [#296](https://github.com/rask-lang/rask/issues/296) — *done*: take-param/send consumption is recognized without call-site `own` (C5 holds)
 
 ### See Also
 

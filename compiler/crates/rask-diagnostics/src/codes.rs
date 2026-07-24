@@ -258,6 +258,9 @@ impl Default for ErrorCodeRegistry {
                 "E0820" => ("linear value in container", Ownership,
                     "A Vec or Map element (or Map key) is a linear value — an @resource type, a transitively-linear struct/enum, or an optional/tuple/array built from one. Vec/Map drop can't consume linear elements, so they'd be silently dropped (RC1/RC3). Use `Pool<T>` (explicit removal, RC2) or `T?` (match and consume, RC4).",
                     "@resource\nstruct File { fd: i32 }\nconst files: Vec<File> = Vec.new()  // error: use Pool<File>"),
+                "E0821" => ("ensure receiver maybe-consumed", Ownership,
+                    "A resource with a pending `ensure` was consumed on some paths but not all, and the paths merge before scope exit (C4). Which cleanup runs must be statically definite — never decided by hidden runtime state (C3). Exit inside the consuming branch, or consume on every path.",
+                    "const tx = try db.begin()\nensure tx.rollback()\nif fast { tx.commit() }  // error: paths merge with tx maybe-consumed\nlog(\"done\")"),
             },
         }
     }

@@ -78,6 +78,8 @@ pub struct OwnershipChecker<'a> {
     resource_bindings: HashSet<String>,
     /// Resource bindings registered with `ensure` (consumption committed).
     ensure_registered: HashSet<String>,
+    /// Span of the `ensure` statement that registered each resource (C4 diagnostics).
+    ensure_spans: HashMap<String, Span>,
     /// True when inside an `ensure` body (defer moves).
     in_ensure: bool,
     /// Pool type names with frozen context (CC3/PF5: no writes, inserts, removes, clears).
@@ -120,6 +122,7 @@ impl<'a> OwnershipChecker<'a> {
             current_stmt: 0,
             resource_bindings: HashSet::new(),
             ensure_registered: HashSet::new(),
+            ensure_spans: HashMap::new(),
             in_ensure: false,
             frozen_contexts: HashSet::new(),
             active_with_bindings: Vec::new(),
@@ -202,6 +205,7 @@ impl<'a> OwnershipChecker<'a> {
         self.borrows.clear();
         self.resource_bindings.clear();
         self.ensure_registered.clear();
+        self.ensure_spans.clear();
         self.frozen_contexts.clear();
         self.current_block = 0;
         self.current_stmt = 0;
@@ -628,7 +632,7 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Ensure { body, else_handler } => {
                 // Mark resources referenced in ensure body as consumption-committed
                 for s in body {
-                    self.mark_ensure_resources(s);
+                    self.mark_ensure_resources(s, stmt.span);
                 }
                 let prev = self.in_ensure;
                 self.in_ensure = true;
@@ -2568,22 +2572,28 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Scan ensure body for resource references and mark them.
-    fn mark_ensure_resources(&mut self, stmt: &Stmt) {
+    fn mark_ensure_resources(&mut self, stmt: &Stmt, ensure_span: Span) {
         match &stmt.kind {
             StmtKind::Expr(expr) => {
-                self.mark_ensure_expr(expr);
+                self.mark_ensure_expr(expr, ensure_span);
             }
             _ => {}
         }
     }
 
+    /// Register a resource as ensure-committed, recording where.
+    fn register_ensure(&mut self, name: &str, ensure_span: Span) {
+        self.ensure_registered.insert(name.to_string());
+        self.ensure_spans.entry(name.to_string()).or_insert(ensure_span);
+    }
+
     /// Extract resource names from ensure expressions (e.g., `file.close()`).
-    fn mark_ensure_expr(&mut self, expr: &Expr) {
+    fn mark_ensure_expr(&mut self, expr: &Expr, ensure_span: Span) {
         match &expr.kind {
             ExprKind::MethodCall { object, .. } => {
                 if let ExprKind::Ident(name) = &object.kind {
                     if self.resource_bindings.contains(name) {
-                        self.ensure_registered.insert(name.clone());
+                        self.register_ensure(name, ensure_span);
                     }
                 }
             }
@@ -2592,11 +2602,11 @@ impl<'a> OwnershipChecker<'a> {
                 for arg in args {
                     if let ExprKind::Ident(name) = &arg.expr.kind {
                         if self.resource_bindings.contains(name) {
-                            self.ensure_registered.insert(name.clone());
+                            self.register_ensure(name, ensure_span);
                         }
                     }
                 }
-                self.mark_ensure_expr(func);
+                self.mark_ensure_expr(func, ensure_span);
             }
             _ => {}
         }
@@ -2604,51 +2614,69 @@ impl<'a> OwnershipChecker<'a> {
 
     /// At closure/spawn exit, emit errors for unconsumed @resource captures.
     fn check_resource_consumption_in_closure(&mut self, span: Span, context: &str) {
-        let unconsumed: Vec<String> = self.resource_bindings.iter()
-            .filter(|name| {
-                if self.ensure_registered.contains(*name) {
-                    return false;
+        let mut names: Vec<String> = self.resource_bindings.iter().cloned().collect();
+        names.sort();
+        for name in names {
+            // C4: an ensured resource consumed on some paths but not all is a
+            // compile error — its cleanup can't be decided statically.
+            if self.ensure_registered.contains(&name) {
+                if let Some(BindingState::MaybeMoved { at }) = self.bindings.get(&name) {
+                    let consumed_at = *at;
+                    let ensure_at = self.ensure_spans.get(&name).copied().unwrap_or(span);
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::EnsureMaybeConsumed {
+                            name: name.clone(),
+                            ensure_at,
+                            consumed_at,
+                        },
+                        span,
+                    });
                 }
-                match self.bindings.get(*name) {
-                    Some(BindingState::Moved { .. }) => false,
-                    _ => true,
-                }
-            })
-            .cloned()
-            .collect();
-
-        for name in unconsumed {
-            self.errors.push(OwnershipError {
-                kind: OwnershipErrorKind::ResourceNotConsumedInClosure {
-                    name,
-                    context: context.to_string(),
-                },
-                span,
-            });
+                continue;
+            }
+            if !matches!(self.bindings.get(&name), Some(BindingState::Moved { .. })) {
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::ResourceNotConsumedInClosure {
+                        name,
+                        context: context.to_string(),
+                    },
+                    span,
+                });
+            }
         }
     }
 
-    /// At function exit, emit errors for unconsumed @resource bindings.
+    /// At function exit, emit errors for unconsumed @resource bindings, and C4
+    /// errors for ensured resources whose consumption isn't statically definite.
     fn check_resource_consumption(&mut self, span: Span) {
-        let unconsumed: Vec<String> = self.resource_bindings.iter()
-            .filter(|name| {
-                // Not moved (consumed) and not registered with ensure
-                if self.ensure_registered.contains(*name) {
-                    return false;
+        let mut names: Vec<String> = self.resource_bindings.iter().cloned().collect();
+        names.sort();
+        for name in names {
+            if self.ensure_registered.contains(&name) {
+                // C3/C4: ensure commits consumption. At scope exit the receiver
+                // must be definitely consumed (ensure cancelled) or definitely
+                // not (ensure runs) — never maybe. Maybe-consumed is a C4 error.
+                if let Some(BindingState::MaybeMoved { at }) = self.bindings.get(&name) {
+                    let consumed_at = *at;
+                    let ensure_at = self.ensure_spans.get(&name).copied().unwrap_or(span);
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::EnsureMaybeConsumed {
+                            name: name.clone(),
+                            ensure_at,
+                            consumed_at,
+                        },
+                        span,
+                    });
                 }
-                match self.bindings.get(*name) {
-                    Some(BindingState::Moved { .. }) => false, // consumed
-                    _ => true, // still owned = not consumed
-                }
-            })
-            .cloned()
-            .collect();
-
-        for name in unconsumed {
-            self.errors.push(OwnershipError {
-                kind: OwnershipErrorKind::ResourceNotConsumed { name },
-                span,
-            });
+                continue;
+            }
+            // Not registered with ensure: must be consumed (Moved) before exit.
+            if !matches!(self.bindings.get(&name), Some(BindingState::Moved { .. })) {
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::ResourceNotConsumed { name },
+                    span,
+                });
+            }
         }
     }
 }

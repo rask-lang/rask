@@ -1230,6 +1230,24 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("resource types must be consumed exactly once — a closure/spawn that captures a resource takes ownership and must consume it")
             }
 
+            EnsureMaybeConsumed { name, ensure_at, consumed_at } => {
+                Diagnostic::error(format!(
+                    "consumption of `{}` depends on which path ran",
+                    name
+                ))
+                .with_code("E0821")
+                .with_primary(*ensure_at, "cleanup scheduled here")
+                .with_secondary(*consumed_at, format!("`{}` consumed only on this branch", name))
+                .with_help(format!(
+                    "exit inside the consuming branch (`return` right after consuming `{}`), \
+                     or consume `{}` on every path",
+                    name, name
+                ))
+                .with_fix(format!("move the exit inside the branch that consumes `{}`", name))
+                .with_why("which cleanups run is decided at compile time (ctrl.ensure/C3) — a value \
+                           consumed on some paths but not others has no definite answer at scope exit (C4)")
+            }
+
             FrozenContextMutation { context_ty, operation } => {
                 Diagnostic::error(format!(
                     "cannot {} in frozen context `{}`",
