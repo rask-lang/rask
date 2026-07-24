@@ -180,4 +180,8 @@ pub struct TypedProgram {
     /// Types for binding names and parameters, keyed by (span.start, span.end, file_id).
     /// Used by the LSP for hover on identifiers that aren't expression nodes.
     pub span_types: HashMap<(usize, usize, u16), Type>,
+    /// T1: method-call spans that resolved to a channel `Sender.send`. Read by
+    /// the ownership checker to transfer ownership of the sent value even when
+    /// inference leaves the receiver as a type variable in `node_types`.
+    pub channel_send_sites: std::collections::HashSet<rask_ast::Span>,
 }

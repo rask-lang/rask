@@ -20,7 +20,7 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{ArgMode, Expr, ExprKind, Pattern};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
-use rask_types::{Type, TypedProgram};
+use rask_types::{ParamMode, Type, TypedProgram};
 
 /// Result of ownership analysis.
 #[derive(Debug)]
@@ -102,6 +102,9 @@ pub struct OwnershipChecker<'a> {
     /// Temporary: scope limit from the last closure expression processed.
     /// Picked up by the next Let/Const binding that uses it.
     last_closure_scope_limit: Option<u32>,
+    /// Free-function `take` parameters by name → per-position take flags.
+    /// Lets a call consume arguments to `take` params without call-site `own` (#296).
+    fn_take_params: HashMap<String, Vec<bool>>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
 }
@@ -126,12 +129,23 @@ impl<'a> OwnershipChecker<'a> {
             binding_decl_blocks: HashMap::new(),
             scope_limited_closures: HashMap::new(),
             last_closure_scope_limit: None,
+            fn_take_params: HashMap::new(),
             errors: Vec::new(),
         }
     }
 
     /// Run ownership analysis on all declarations.
     pub fn check(mut self, decls: &[Decl]) -> OwnershipResult {
+        // Collect `take`-parameter positions for every free function so calls
+        // can consume the matching argument (PM3) without call-site `own` (#296).
+        for decl in decls {
+            if let DeclKind::Fn(fn_decl) = &decl.kind {
+                let takes: Vec<bool> = fn_decl.params.iter().map(|p| p.is_take).collect();
+                if takes.iter().any(|&t| t) {
+                    self.fn_take_params.insert(fn_decl.name.clone(), takes);
+                }
+            }
+        }
         for decl in decls {
             self.check_decl(decl);
         }
@@ -706,7 +720,14 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Call { func, args } => {
                 self.check_expr(func);
-                for arg in args {
+                // #296/PM3: a `take` parameter consumes its argument regardless of
+                // call-site `own`. Look up the callee's take-parameter positions.
+                let callee_takes: Option<Vec<bool>> = if let ExprKind::Ident(name) = &func.kind {
+                    self.fn_take_params.get(name).cloned()
+                } else {
+                    None
+                };
+                for (i, arg) in args.iter().enumerate() {
                     self.check_expr(&arg.expr);
                     // SL2: scope-limited closure passed as function argument
                     if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -729,7 +750,9 @@ impl<'a> OwnershipChecker<'a> {
                             span: arg.expr.span,
                         });
                     }
-                    if arg.mode == ArgMode::Own {
+                    let is_take_param =
+                        callee_takes.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(false);
+                    if arg.mode == ArgMode::Own || is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
                             if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.binding_names.contains(name)) {
@@ -742,14 +765,18 @@ impl<'a> OwnershipChecker<'a> {
                                     span: arg.expr.span,
                                 });
                             }
-                            self.bindings.insert(name.clone(), BindingState::Moved { at: arg.expr.span });
                         }
+                        self.consume_arg(&arg.expr);
                     }
                 }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
-                for arg in args {
+                // #296/PM3: consume arguments bound to `take` parameters of user
+                // methods. T1: a channel `send` transfers ownership of its value.
+                let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(object, method);
+                let channel_send = self.is_channel_send(object, method, expr.span);
+                for (i, arg) in args.iter().enumerate() {
                     self.check_expr(&arg.expr);
                     // SL2: scope-limited closure passed as method argument
                     if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -772,7 +799,11 @@ impl<'a> OwnershipChecker<'a> {
                             span: arg.expr.span,
                         });
                     }
-                    if arg.mode == ArgMode::Own {
+                    let is_take_param = matches!(
+                        method_takes.as_ref().and_then(|t| t.get(i)),
+                        Some(ParamMode::Take)
+                    ) || (channel_send && i == 0);
+                    if arg.mode == ArgMode::Own || is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
                             if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.binding_names.contains(name)) {
@@ -785,8 +816,8 @@ impl<'a> OwnershipChecker<'a> {
                                     span: arg.expr.span,
                                 });
                             }
-                            self.bindings.insert(name.clone(), BindingState::Moved { at: arg.expr.span });
                         }
+                        self.consume_arg(&arg.expr);
                     }
                 }
                 // CC3/PF5: Check for mutations on frozen pool contexts
@@ -2430,6 +2461,82 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
         false
+    }
+
+    /// Mark an argument as consumed (moved) when it names a binding.
+    /// Copy values (VS1/VS2) stay valid — passing them to `take`/`own` copies.
+    fn consume_arg(&mut self, arg_expr: &Expr) {
+        if let ExprKind::Ident(name) = &arg_expr.kind {
+            let is_copy = self
+                .binding_types
+                .get(name)
+                .map(|t| self.is_copy(t))
+                .unwrap_or(false);
+            if !is_copy {
+                self.bindings.insert(name.clone(), BindingState::Moved { at: arg_expr.span });
+            }
+        }
+    }
+    /// Name of the type a receiver expression evaluates to. Handles resolved
+    /// (`Named`/`Generic`) and still-unresolved (`UnresolvedNamed`/
+    /// `UnresolvedGeneric`) forms. Returns the base name without generic params.
+    fn receiver_type_name(&self, object: &Expr) -> Option<String> {
+        let ty = self.program.node_types.get(&object.id)?;
+        let id = match ty {
+            Type::Named(id) => *id,
+            Type::Generic { base, .. } => *base,
+            Type::UnresolvedNamed(name) => {
+                return Some(name.split('<').next().unwrap_or(name).to_string());
+            }
+            Type::UnresolvedGeneric { name, .. } => return Some(name.clone()),
+            _ => return None,
+        };
+        match self.program.types.get(id)? {
+            rask_types::TypeDef::Struct { name, .. }
+            | rask_types::TypeDef::Enum { name, .. }
+            | rask_types::TypeDef::Trait { name, .. }
+            | rask_types::TypeDef::Union { name, .. }
+            | rask_types::TypeDef::NominalAlias { name, .. } => {
+                Some(name.split('<').next().unwrap_or(name).to_string())
+            }
+        }
+    }
+
+    /// Parameter modes of a user method on the receiver's type, if resolvable.
+    fn method_param_modes(&self, object: &Expr, method_name: &str) -> Option<Vec<ParamMode>> {
+        let ty = self.program.node_types.get(&object.id)?;
+        let id = match ty {
+            Type::Named(id) => *id,
+            Type::Generic { base, .. } => *base,
+            _ => return None,
+        };
+        let methods = match self.program.types.get(id)? {
+            rask_types::TypeDef::Struct { methods, .. } => methods,
+            rask_types::TypeDef::Enum { methods, .. } => methods,
+            _ => return None,
+        };
+        methods
+            .iter()
+            .find(|m| m.name == method_name)
+            .map(|m| m.params.iter().map(|(_, mode)| *mode).collect())
+    }
+
+    /// T1: a channel `send` transfers ownership of the sent value.
+    /// `send` is a builtin (no user MethodSig), so recognize it structurally.
+    fn is_channel_send(&self, object: &Expr, method_name: &str, call_span: Span) -> bool {
+        if method_name != "send" {
+            return false;
+        }
+        // Type checker recorded this call as a `Sender.send` — authoritative even
+        // when inference left the receiver as a bare var in node_types (T1).
+        if self.program.channel_send_sites.contains(&call_span) {
+            return true;
+        }
+        // Fallback: receiver type is concrete. TypeDef names carry their generic
+        // params ("Sender<T>"); match the base.
+        self.receiver_type_name(object)
+            .map(|n| n.split('<').next() == Some("Sender"))
+            .unwrap_or(false)
     }
 
     /// L1/ER42: a type-name annotation refers to a transitively-linear type.

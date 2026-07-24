@@ -391,6 +391,16 @@ fn error_linear_containers() {
 }
 
 #[test]
+fn error_cross_task_ownership() {
+    // T1–T3 / #296: sending a value over a channel transfers ownership (use
+    // after send is use-after-move), a `take` parameter consumes its argument
+    // without a call-site `own`, and a scope-limited closure captured into a
+    // spawned task is rejected (E0800, E0813).
+    assert!(compile_error("cross_task_ownership.rk"),
+        "should reject use-after-send, use-after-take, and borrow-capturing spawn (T1–T3, #296)");
+}
+
+#[test]
 fn error_trait_object_generic() {
     // TR3: a generic trait method has no vtable slot; calling it through
     // `any Trait` must be rejected at the call site.
