@@ -252,6 +252,9 @@ impl Default for ErrorCodeRegistry {
                 "E0818" => ("invalid conversion form", Type,
                     "A CV5–CV10 conversion form was applied to the wrong source/target kind — e.g. `float to int` on an integer, or `truncate to` producing a non-integer.",
                     "const x = n float to int i32  // error if n is already an integer"),
+                "E0819" => ("index type mismatch", Type,
+                    "An index expression `c[i]` used the wrong index type. Vec, arrays, slices, and strings are position-indexed by an integer; `Map<K,V>` is indexed by `K`; `Pool<T>` is indexed by `Handle<T>`. Range indexing (slicing) only works on Vec, arrays, slices, and strings.",
+                    "const s = \"hi\"\nv[s]  // error: index a Vec with an integer, not a string"),
             },
         }
     }

@@ -497,6 +497,20 @@ impl TypeTable {
                 variant: self.resolve_type_names(&variant),
                 span,
             },
+            TypeError::IndexTypeMismatch { container, found, kind, span } => TypeError::IndexTypeMismatch {
+                container: self.resolve_type_names(&container),
+                found: self.resolve_type_names(&found),
+                kind: match kind {
+                    super::IndexErrorKind::ExpectedHandle(h) => {
+                        super::IndexErrorKind::ExpectedHandle(self.resolve_type_names(&h))
+                    }
+                    super::IndexErrorKind::ExpectedKey(k) => {
+                        super::IndexErrorKind::ExpectedKey(self.resolve_type_names(&k))
+                    }
+                    other => other,
+                },
+                span,
+            },
             other => other,
         }
     }

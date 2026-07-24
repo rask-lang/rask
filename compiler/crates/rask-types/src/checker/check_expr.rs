@@ -8,7 +8,7 @@ use rask_resolve::{SymbolId, SymbolKind};
 
 use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
-use super::errors::{InvalidCastClass, TypeError};
+use super::errors::{IndexErrorKind, InvalidCastClass, TypeError};
 use super::inference::{LiteralKind, TypeConstraint, WrapPosition};
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
@@ -219,13 +219,14 @@ impl TypeChecker {
 
             ExprKind::Index { object, index } => {
                 let raw_obj_ty = self.infer_expr(object);
-                let _idx_ty = self.infer_expr(index);
+                let idx_ty = self.infer_expr(index);
 
                 // Check if indexing with a range (slicing)
                 let is_range = matches!(index.kind, rask_ast::expr::ExprKind::Range { .. });
 
                 // Resolve type variables so Generic{} is visible
                 let obj_ty = self.ctx.apply(&raw_obj_ty);
+                self.check_index_types(&obj_ty, &idx_ty, is_range, index.span);
                 match &obj_ty {
                     Type::Array { elem, .. } | Type::Slice(elem) => {
                         if is_range {
@@ -2689,6 +2690,273 @@ impl TypeChecker {
             });
         }
     }
+
+    /// #310: classify a container at an index site. A range on a non-sequence
+    /// is rejected immediately; every other index is deferred to
+    /// `validate_pending_index` so a literal index can adapt to the key/element
+    /// type after constraint solving.
+    fn check_index_types(&mut self, container: &Type, index: &Type, is_range: bool, span: Span) {
+        match self.classify_index_container(container) {
+            Some(IndexContainer::Sequence) => {
+                // A range index is a valid slice; a scalar index must be integer.
+                if !is_range {
+                    self.pending_index.push(PendingIndex {
+                        container: container.clone(),
+                        index: index.clone(),
+                        kind: PendingIndexKind::Integer,
+                        span,
+                    });
+                }
+            }
+            Some(IndexContainer::Map(key)) => {
+                if is_range {
+                    self.errors.push(TypeError::IndexTypeMismatch {
+                        container: container.clone(),
+                        found: index.clone(),
+                        kind: IndexErrorKind::NotSliceable,
+                        span,
+                    });
+                } else {
+                    self.pending_index.push(PendingIndex {
+                        container: container.clone(),
+                        index: index.clone(),
+                        kind: PendingIndexKind::MapKey(key),
+                        span,
+                    });
+                }
+            }
+            Some(IndexContainer::Pool(elem)) => {
+                if is_range {
+                    self.errors.push(TypeError::IndexTypeMismatch {
+                        container: container.clone(),
+                        found: index.clone(),
+                        kind: IndexErrorKind::NotSliceable,
+                        span,
+                    });
+                } else {
+                    self.pending_index.push(PendingIndex {
+                        container: container.clone(),
+                        index: index.clone(),
+                        kind: PendingIndexKind::Handle(elem),
+                        span,
+                    });
+                }
+            }
+            // Unknown / unresolved container, or `Handle<T>` itself — leave it.
+            None => {}
+        }
+    }
+
+    /// Recognize the indexable stdlib containers. Returns `None` for anything
+    /// whose index type we don't police (user generics, type vars, `Handle`).
+    fn classify_index_container(&self, ty: &Type) -> Option<IndexContainer> {
+        match ty {
+            Type::Array { .. } | Type::Slice(_) | Type::String => Some(IndexContainer::Sequence),
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+                match self.generic_base_name(ty)? {
+                    "Vec" => Some(IndexContainer::Sequence),
+                    "Map" => match args.first() {
+                        Some(GenericArg::Type(k)) => Some(IndexContainer::Map((**k).clone())),
+                        _ => None,
+                    },
+                    "Pool" => match args.first() {
+                        Some(GenericArg::Type(t)) => Some(IndexContainer::Pool((**t).clone())),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Name of a builtin generic container, matching by TypeId (resolved) or by
+    /// spelling (unresolved).
+    fn generic_base_name(&self, ty: &Type) -> Option<&'static str> {
+        const NAMES: [&str; 4] = ["Vec", "Map", "Pool", "Handle"];
+        match ty {
+            Type::UnresolvedGeneric { name, .. } => {
+                NAMES.iter().copied().find(|n| *n == name)
+            }
+            Type::Generic { base, .. } => NAMES.iter().copied().find(|n| {
+                self.types.get_type_id(n).map_or(false, |id| id == *base)
+            }),
+            _ => None,
+        }
+    }
+
+    /// #310: validate deferred index sites. Runs after constraint solving but
+    /// before literal defaults, so an unsuffixed literal index is still a
+    /// literal var — it can adapt to an integer Map key instead of forcing i32.
+    pub(super) fn validate_pending_index(&mut self) {
+        let pending = std::mem::take(&mut self.pending_index);
+        for pi in pending {
+            let container = self.ctx.apply(&pi.container);
+            let index = self.ctx.apply(&pi.index);
+            // Don't pile errors on an already-failed index type.
+            if matches!(index, Type::Error) {
+                continue;
+            }
+            match pi.kind {
+                PendingIndexKind::Integer => {
+                    match self.index_integerness(&index) {
+                        Integerness::Yes | Integerness::Unknown => {}
+                        Integerness::No => self.errors.push(TypeError::IndexTypeMismatch {
+                            container,
+                            found: index,
+                            kind: IndexErrorKind::ExpectedInteger,
+                            span: pi.span,
+                        }),
+                    }
+                }
+                PendingIndexKind::MapKey(key) => {
+                    let key = self.ctx.apply(&key);
+                    if !self.index_matches_key(&index, &key) {
+                        self.errors.push(TypeError::IndexTypeMismatch {
+                            container,
+                            found: index,
+                            kind: IndexErrorKind::ExpectedKey(key),
+                            span: pi.span,
+                        });
+                    }
+                }
+                PendingIndexKind::Handle(elem) => {
+                    let elem = self.ctx.apply(&elem);
+                    // Skip only a genuinely-unresolved index; a scalar literal
+                    // var is resolved enough to know it isn't a handle.
+                    if let Type::Var(id) = index {
+                        if !self.ctx.is_integer_literal_var(id)
+                            && !self.ctx.is_float_literal_var(id)
+                        {
+                            continue;
+                        }
+                    }
+                    if !self.index_is_matching_handle(&index, &elem) {
+                        let expected = Type::UnresolvedGeneric {
+                            name: "Handle".to_string(),
+                            args: vec![GenericArg::Type(Box::new(elem))],
+                        };
+                        self.errors.push(TypeError::IndexTypeMismatch {
+                            container,
+                            found: index,
+                            kind: IndexErrorKind::ExpectedHandle(expected),
+                            span: pi.span,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Classify an index type as integer / not / can't-tell. A still-unresolved
+    /// literal-integer var counts as integer (it defaults to i32); a plain
+    /// unresolved var is unknown (don't reject).
+    fn index_integerness(&self, index: &Type) -> Integerness {
+        match index {
+            Type::Var(id) => {
+                if self.ctx.is_integer_literal_var(*id) {
+                    Integerness::Yes
+                } else if self.ctx.is_float_literal_var(*id) {
+                    Integerness::No
+                } else {
+                    Integerness::Unknown
+                }
+            }
+            _ if Self::is_integer_type(index) => Integerness::Yes,
+            _ => Integerness::No,
+        }
+    }
+
+    /// True if `index` can serve as a `Map<K, V>` key. A literal-integer index
+    /// adapts to an integer K (and is bound to it so codegen sees K); otherwise
+    /// the resolved index type must equal K. Unresolved sides are accepted.
+    fn index_matches_key(&mut self, index: &Type, key: &Type) -> bool {
+        if let Type::Var(id) = index {
+            let id = *id;
+            // A literal index adapts to a compatible scalar key, binding the var
+            // so the key type flows to codegen instead of defaulting.
+            if self.ctx.is_integer_literal_var(id) {
+                if Self::is_integer_type(key) {
+                    self.ctx.bind_var(id, key.clone());
+                    return true;
+                }
+                return matches!(key, Type::Var(_)); // defer on unknown key, else reject
+            }
+            if self.ctx.is_float_literal_var(id) {
+                if Self::is_float_type(key) {
+                    self.ctx.bind_var(id, key.clone());
+                    return true;
+                }
+                return matches!(key, Type::Var(_));
+            }
+            return true; // genuinely unresolved index — don't guess
+        }
+        if matches!(index, Type::Error) || matches!(key, Type::Var(_) | Type::Error) {
+            return true;
+        }
+        self.types.resolve_type_names(index) == self.types.resolve_type_names(key)
+    }
+
+    /// True if `index` is a `Handle<U>` whose `U` matches the pool's element
+    /// type. Cross-pool handles of the same element type aren't statically
+    /// distinguishable (that's the runtime pool_id check), so accept them;
+    /// only a statically-wrong element type is rejected.
+    fn index_is_matching_handle(&self, index: &Type, pool_elem: &Type) -> bool {
+        let handle_arg = match index {
+            Type::UnresolvedGeneric { name, args } if name == "Handle" => args.first(),
+            Type::Generic { base, args }
+                if self.types.get_type_id("Handle").map_or(false, |id| id == *base) =>
+            {
+                args.first()
+            }
+            _ => return false,
+        };
+        let Some(GenericArg::Type(u)) = handle_arg else {
+            return true; // bare `Handle` — nothing to compare
+        };
+        let u = self.ctx.apply(u);
+        // Unresolved on either side — don't reject.
+        if matches!(u, Type::Var(_) | Type::Error) || matches!(pool_elem, Type::Var(_) | Type::Error)
+        {
+            return true;
+        }
+        self.types.resolve_type_names(&u) == self.types.resolve_type_names(pool_elem)
+    }
+}
+
+/// Indexable container class at an index site (#310).
+enum IndexContainer {
+    /// Vec, array, slice, string — position-indexed by an integer.
+    Sequence,
+    /// `Map<K, V>` — indexed by `K` (carried).
+    Map(Type),
+    /// `Pool<T>` — indexed by `Handle<T>` (T carried).
+    Pool(Type),
+}
+
+/// An index site validated after inference finalizes (mod.rs).
+pub(super) struct PendingIndex {
+    pub container: Type,
+    pub index: Type,
+    pub kind: PendingIndexKind,
+    pub span: Span,
+}
+
+pub(super) enum PendingIndexKind {
+    /// Sequence index — must be an integer type.
+    Integer,
+    /// Map index — must match the carried key type `K`.
+    MapKey(Type),
+    /// Pool index — must be `Handle<T>` for the carried element type `T`.
+    Handle(Type),
+}
+
+/// Whether an index type is an integer (#310).
+enum Integerness {
+    Yes,
+    No,
+    /// Unresolved — can't tell, don't reject.
+    Unknown,
 }
 
 /// A cast/convert site validated after inference finalizes (mod.rs).

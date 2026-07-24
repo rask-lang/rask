@@ -109,6 +109,25 @@ impl InferenceContext {
         Type::Var(id)
     }
 
+    /// True if `id` is an unsuffixed integer-literal var not yet resolved to a
+    /// concrete type. Used by index checking to let a literal index adapt.
+    pub fn is_integer_literal_var(&self, id: TypeVarId) -> bool {
+        !self.substitutions.contains_key(&id)
+            && matches!(self.literal_vars.get(&id), Some(LiteralKind::Integer))
+    }
+
+    /// True if `id` is an unsuffixed float-literal var not yet resolved.
+    pub fn is_float_literal_var(&self, id: TypeVarId) -> bool {
+        !self.substitutions.contains_key(&id)
+            && matches!(self.literal_vars.get(&id), Some(LiteralKind::Float))
+    }
+
+    /// Bind a type variable to a concrete type. Only for callers that have
+    /// already ensured `id` is unresolved (e.g. a fresh literal var).
+    pub fn bind_var(&mut self, id: TypeVarId, ty: Type) {
+        self.substitutions.insert(id, ty);
+    }
+
     /// Apply defaults for unresolved literal type vars.
     pub fn apply_literal_defaults(&mut self) {
         for (&var_id, &kind) in self.literal_vars.iter() {

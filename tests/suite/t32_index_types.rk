@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Index expression types (#310): valid indexing still works on all three
+// backends. Vec takes any integer width; Map takes its key type (string or
+// integer, with literal indices adapting to the key). String char-indexing,
+// range slicing, and Pool handle-indexing type-check fine but hit unrelated
+// native-codegen gaps (string_index, slice `.len()`, Pool_try_insert), so they
+// live in the `check`/interp coverage, not here.
+
+test "vec index with plain and widened integers" {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    assert v[0] == 10
+    assert v[1u64] == 20
+    assert v[2u8] == 30
+}
+
+test "vec index with a loop counter" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    mut sum = 0
+    for i in 0..v.len() {
+        sum += v[i]
+    }
+    assert sum == 6
+}
+
+test "map with string keys" {
+    mut m = Map.new()
+    m.insert("alice", 10)
+    m.insert("bob", 20)
+    assert m["alice"] == 10
+    assert m["bob"] == 20
+}
+
+test "map with integer keys, literal index adapts" {
+    mut m = Map.new()
+    m.insert(1u32, 100)
+    m.insert(2u32, 200)
+    assert m[1] == 100
+    assert m[2u32] == 200
+}

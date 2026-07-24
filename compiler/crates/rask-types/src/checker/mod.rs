@@ -29,7 +29,7 @@ mod validate;
 pub use type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{TypeError, InvalidCastClass};
+pub use errors::{TypeError, InvalidCastClass, IndexErrorKind};
 pub use parse_type::parse_type_string;
 pub use declarations::signature_type_param_names;
 
@@ -125,6 +125,9 @@ pub struct TypeChecker {
     /// CV1–CV10: cast/convert sites validated after literal defaults resolve
     /// their source types. Deferred so `1 as bool` sees `i32`, not a fresh var.
     pub(super) pending_casts: Vec<check_expr::PendingCast>,
+    /// #310: index sites validated after literal defaults resolve their index
+    /// type. Deferred so `v[0]` sees `i32`, not a fresh literal var.
+    pub(super) pending_index: Vec<check_expr::PendingIndex>,
 }
 
 impl TypeChecker {
@@ -156,6 +159,7 @@ impl TypeChecker {
             discarded_bindings: HashMap::new(),
             multitasking_depth: 0,
             pending_casts: Vec::new(),
+            pending_index: Vec::new(),
         }
     }
 
@@ -185,6 +189,11 @@ impl TypeChecker {
         self.pop_scope();
 
         self.solve_constraints();
+
+        // #310: validate index expression types (integer for Vec/slice/string,
+        // K for Map, Handle<T> for Pool) BEFORE literal defaults land, so a
+        // literal index can adapt to an integer Map key instead of forcing i32.
+        self.validate_pending_index();
 
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
@@ -332,6 +341,20 @@ impl TypeChecker {
                 expected: ctx.apply(&expected),
                 found: ctx.apply(&found),
                 nominal_name,
+                span,
+            },
+            TypeError::IndexTypeMismatch { container, found, kind, span } => TypeError::IndexTypeMismatch {
+                container: ctx.apply(&container),
+                found: ctx.apply(&found),
+                kind: match kind {
+                    errors::IndexErrorKind::ExpectedHandle(h) => {
+                        errors::IndexErrorKind::ExpectedHandle(ctx.apply(&h))
+                    }
+                    errors::IndexErrorKind::ExpectedKey(k) => {
+                        errors::IndexErrorKind::ExpectedKey(ctx.apply(&k))
+                    }
+                    other => other,
+                },
                 span,
             },
             other => other,
