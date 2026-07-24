@@ -55,7 +55,7 @@ extend Document {
         mut doc = Document.new()
         for line in file.lines() {
             const text = try line
-            const h = try doc.lines.insert(Line { text: text })
+            const h = doc.lines.insert(Line { text: text })
             doc.line_order.push(h)
         }
         return doc
@@ -73,7 +73,7 @@ extend Document {
 
     // Insert a new line after the given index (-1 for beginning)
     func insert_line(self, after: i32, text: string) -> void or Error {
-        const h = try self.lines.insert(Line { text: text })
+        const h = self.lines.insert(Line { text: text })
         const raw_pos = (after + 1) as i64
         const cap = self.line_order.len() truncate to i64
         const insert_pos = if raw_pos > cap: cap else: raw_pos
@@ -138,7 +138,7 @@ extend Document {
     func apply_command_silent(self, cmd: EditCommand) -> void or Error {
         match cmd {
             InsertLine(after, text) => {
-                const h = try self.lines.insert(Line { text: text })
+                const h = self.lines.insert(Line { text: text })
                 self.line_order.insert((after + 1) as i64, h)
             }
             DeleteLine(at, _) => {
