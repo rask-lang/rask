@@ -373,6 +373,14 @@ fn error_cast_rules() {
 }
 
 #[test]
+fn error_index_types() {
+    // #310: index expression types are checked — integer for Vec/slice/string,
+    // K for Map, Handle<T> for Pool; range slicing only on sequences.
+    assert!(compile_error("index_types.rk"),
+        "should reject wrong index types across container classes (E0819)");
+}
+
+#[test]
 fn error_trait_object_generic() {
     // TR3: a generic trait method has no vtable slot; calling it through
     // `any Trait` must be rejected at the call site.

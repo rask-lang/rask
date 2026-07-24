@@ -80,6 +80,7 @@ const users = Map.from([
 | **V1: Copy out** | `vec[i]` copies T when T: Copy. Panics on OOB |
 | **V2: Expression borrow** | `vec[i].field` borrows for expression, released at `;` |
 | **V3: Safe get** | `vec.get(i)` returns `T?` (T: Copy), no panic |
+| **V8: Integer index** | The index is **any integer type** (no `as usize`). Checked at compile time — a non-integer index is a compile error (`type.operators/IX1`, `E0819`). The value is range-checked at access; negative or too-large panics, no wraparound |
 
 | Method | Returns | Constraint | Panics |
 |--------|---------|------------|--------|
@@ -126,6 +127,7 @@ const name = with vec[i] as v { v.name.clone() }
 | Rule | Description |
 |------|-------------|
 | **K1: Float key warning** | `Map<f32, V>` and `Map<f64, V>` produce a compile-time warning. NaN != NaN by IEEE 754, which breaks map lookup invariants — a NaN key can be inserted but never found |
+| **K2: Key-typed index** | `map[k]` is checked against `K` at compile time — a wrong key type is a compile error (`type.operators/IX2`, `E0819`). An unsuffixed integer literal adapts to an integer `K` |
 
 ## Map -- Key-Based Access
 

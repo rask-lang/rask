@@ -902,6 +902,39 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "invalid conversion form")
                     .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV5–CV10]")
             }
+            IndexTypeMismatch { container, found, kind, span } => {
+                use rask_types::IndexErrorKind as K;
+                let (label, why, fix) = match kind {
+                    K::ExpectedInteger => (
+                        format!("cannot index `{}` with `{}`", container, found),
+                        "position-indexed containers take an integer index — any integer width, range-checked as a value [std.collections/V1]".to_string(),
+                        None,
+                    ),
+                    K::ExpectedKey(key) => (
+                        format!("cannot index `{}` with `{}`", container, found),
+                        format!("a map is indexed by its key type `{}` [std.collections/K1]", key),
+                        None,
+                    ),
+                    K::ExpectedHandle(handle) => (
+                        format!("cannot index `{}` with `{}`", container, found),
+                        format!("a pool is keyed by its handle, not a position — index it with `{}` [mem.pools/PL4]", handle),
+                        Some(format!("const h = pool.insert(value)   // h: {}", handle)),
+                    ),
+                    K::NotSliceable => (
+                        format!("cannot slice `{}` with a range", container),
+                        "range indexing produces a slice — only Vec, arrays, slices, and strings support it [std.collections/V1]".to_string(),
+                        None,
+                    ),
+                };
+                let mut diag = Diagnostic::error(label.clone())
+                    .with_code("E0819")
+                    .with_primary(*span, label)
+                    .with_why(why);
+                if let Some(fix) = fix {
+                    diag = diag.with_help(fix);
+                }
+                diag
+            }
         }
     }
 }

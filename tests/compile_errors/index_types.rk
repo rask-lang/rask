@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: index expression types (#310, std.collections/V1, mem.pools/PL4).
+// Vec/array/slice/string are position-indexed by an integer; `Map<K,V>` by `K`;
+// `Pool<T>` by `Handle<T>`. Range indexing (slicing) works only on sequences.
+
+struct Entity { health: i32 }
+struct Item { weight: i32 }
+
+// --- Vec indexed by a string ---
+// ERROR: cannot index `Vec` with `string` [E0819]
+func vec_string_index() {
+    mut v = Vec.new()
+    v.push(10)
+    const s = "x"
+    const bad = v[s]
+    println("{bad}")
+}
+
+// --- Vec indexed by a float ---
+// ERROR: cannot index `Vec` with `f64` [E0819]
+func vec_float_index() {
+    mut v = Vec.new()
+    v.push(10)
+    const bad = v[1.5]
+    println("{bad}")
+}
+
+// --- string indexed by a string ---
+// ERROR: cannot index `string` with `string` [E0819]
+func string_string_index() {
+    const s = "hello"
+    const k = "x"
+    const bad = s[k]
+    println("{bad}")
+}
+
+// --- Map<string, i32> indexed by an integer key ---
+// ERROR: cannot index `Map` with `i32` [E0819]
+func map_wrong_key() {
+    mut m = Map.new()
+    m.insert("a", 1)
+    const bad = m[5]
+    println("{bad}")
+}
+
+// --- Pool<Entity> indexed by a Handle<Item> (wrong pool, statically known) ---
+// ERROR: cannot index `Pool` with `Handle` [E0819]
+func pool_cross_handle() {
+    const ents: Pool<Entity> = Pool.new()
+    mut items: Pool<Item> = Pool.new()
+    const ih = items.try_insert(Item { weight: 5 })
+    if ih? {
+        const bad = ents[ih]
+        println("{bad.health}")
+    }
+}
+
+// --- Pool<Entity> indexed by an integer ---
+// ERROR: cannot index `Pool` with `i32` [E0819]
+func pool_int_index() {
+    const ents: Pool<Entity> = Pool.new()
+    const bad = ents[0]
+    println("{bad.health}")
+}
+
+// --- range slice on a Map (not sliceable) ---
+// ERROR: cannot slice `Map` with a range [E0819]
+func map_range_slice() {
+    mut m = Map.new()
+    m.insert("a", 1)
+    const bad = m[0..2]
+    println("{bad}")
+}

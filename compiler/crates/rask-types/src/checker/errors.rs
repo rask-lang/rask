@@ -409,6 +409,32 @@ pub enum TypeError {
         message: String,
         span: Span,
     },
+
+    /// std.collections/V1, mem.pools/PL4 (#310): an index expression `c[i]`
+    /// whose index type doesn't match what the container accepts.
+    #[error("cannot index {container} with {found}")]
+    IndexTypeMismatch {
+        /// The container being indexed (for the message).
+        container: Type,
+        /// The index expression's type.
+        found: Type,
+        /// What the container actually accepts.
+        kind: IndexErrorKind,
+        span: Span,
+    },
+}
+
+/// What went wrong at an index site — drives the E0819 diagnostic.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndexErrorKind {
+    /// Vec/array/slice/string are position-indexed: the index must be an integer.
+    ExpectedInteger,
+    /// `Map<K, V>` is indexed by `K` (carried).
+    ExpectedKey(Type),
+    /// `Pool<T>` is indexed by its handle. Carries the expected `Handle<T>`.
+    ExpectedHandle(Type),
+    /// A range was used to slice a container that isn't sliceable (Map, Pool).
+    NotSliceable,
 }
 
 /// Why an `as` cast is rejected — drives the diagnostic and suggested fix.

@@ -31,6 +31,17 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 | 2 | `try` (prefix) `??` `!` (postfix) | Propagation, optional ops | Left |
 | 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | Assignment | Right |
 
+## Indexing
+
+`c[i]` is type-checked against what the container accepts. The index type is not inferred and discarded — a wrong index type is a compile error (`E0819`).
+
+| Rule | Description |
+|------|-------------|
+| **IX1: Sequence index** | Vec, arrays, slices, and strings take **any integer type** as index — no `as usize` ceremony. The value is range-checked at access (a negative or too-large index panics, `std.collections/V1`); there is no wraparound and no negative-from-end indexing |
+| **IX2: Map index** | `Map<K, V>` is indexed by `K`. An unsuffixed integer literal adapts to an integer key type |
+| **IX3: Pool index** | `Pool<T>` is indexed by `Handle<T>` (`mem.pools/PL4`). A handle whose element type differs from the pool's is rejected when statically known; same-type handles from a different pool are caught at runtime by the pool id |
+| **IX4: Range slices sequences** | `c[a..b]` produces a slice and is valid only on Vec, arrays, slices, and strings — not Map or Pool |
+
 ## Bitwise Operators
 
 | Rule | Description |

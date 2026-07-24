@@ -10,7 +10,7 @@ mod traits;
 pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{
     typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, TypeTable, TypeDef,
-    TypeError, InvalidCastClass, InferenceContext, TypeConstraint, MethodSig, SelfParam,
+    TypeError, InvalidCastClass, IndexErrorKind, InferenceContext, TypeConstraint, MethodSig, SelfParam,
     parse_type_string, signature_type_param_names, UnsafeCategory,
 };
 pub use traits::{
