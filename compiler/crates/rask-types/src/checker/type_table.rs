@@ -31,6 +31,10 @@ pub struct TypeTable {
     /// G1: declared/derived trait conformances (nominal). TypeId → trait base
     /// names the type conforms to, from `extend T with Trait` and auto-derive.
     pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
+    /// CC1/CC2: conditional-conformance conditions. (TypeId, trait base) → the
+    /// `where` bounds (type-param name → required trait names) that must hold
+    /// for the conformance, checked per instantiation.
+    pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<String>)>>,
 }
 
 impl TypeTable {
@@ -45,6 +49,7 @@ impl TypeTable {
             builtin_modules: BuiltinModules::new(),
             binary_structs: HashMap::new(),
             conformances: HashMap::new(),
+            conformance_conditions: HashMap::new(),
         };
         table.register_builtins();
         table
@@ -233,6 +238,27 @@ impl TypeTable {
     pub fn declares_conformance(&self, type_id: TypeId, trait_name: &str) -> bool {
         let base = trait_name.split('<').next().unwrap_or(trait_name).trim();
         self.conformances.get(&type_id).is_some_and(|set| set.contains(base))
+    }
+
+    /// CC1/CC2: record the `where` condition for a conditional conformance.
+    pub fn record_conformance_condition(
+        &mut self,
+        type_id: TypeId,
+        trait_name: &str,
+        bounds: Vec<(String, Vec<String>)>,
+    ) {
+        let base = trait_name.split('<').next().unwrap_or(trait_name).trim().to_string();
+        self.conformance_conditions.insert((type_id, base), bounds);
+    }
+
+    /// CC1: the `where` condition for a conformance, if it's conditional.
+    pub fn conformance_condition(
+        &self,
+        type_id: TypeId,
+        trait_name: &str,
+    ) -> Option<&Vec<(String, Vec<String>)>> {
+        let base = trait_name.split('<').next().unwrap_or(trait_name).trim();
+        self.conformance_conditions.get(&(type_id, base.to_string()))
     }
 
     /// Check if a name is registered.

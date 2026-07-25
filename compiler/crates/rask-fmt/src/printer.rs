@@ -713,6 +713,13 @@ impl<'a> Printer<'a> {
             self.emit(" with ");
             self.emit(&imp.trait_names.join(", "));
         }
+        if !imp.where_bounds.is_empty() {
+            let clause: Vec<String> = imp.where_bounds.iter()
+                .map(|tp| format!("{}: {}", tp.name, tp.bounds.join(" + ")))
+                .collect();
+            self.emit(" where ");
+            self.emit(&clause.join(", "));
+        }
         self.emit(" {");
         self.emit_newline();
 

@@ -170,8 +170,16 @@ impl TypeChecker {
         };
         // G1: record each declared conformance. `scoped` methods stay out of the
         // inherent namespace (MN4) but the conformance is still declared.
+        // CC1/CC2: a `where` clause makes every listed conformance conditional
+        // (CD3: one condition per block).
+        let condition: Vec<(String, Vec<String>)> = i.where_bounds.iter()
+            .map(|tp| (tp.name.clone(), tp.bounds.clone()))
+            .collect();
         for trait_name in &i.trait_names {
             self.types.record_conformance(type_id, trait_name);
+            if !condition.is_empty() {
+                self.types.record_conformance_condition(type_id, trait_name, condition.clone());
+            }
         }
         let new_methods: Vec<_> = i.methods.iter().map(|m| self.method_signature(m)).collect();
         if let Some(def) = self.types.get_mut(type_id) {

@@ -259,6 +259,10 @@ pub struct ImplDecl {
     pub is_unsafe: bool,
     /// `scoped extend` — methods stay out of the type's inherent namespace (MN4).
     pub is_scoped: bool,
+    /// CC1/CC2: `where` condition for conditional conformance on a generic
+    /// target (`extend Ring<T> with Displayable where T: Displayable`). Each
+    /// entry is a type param and its required trait bounds.
+    pub where_bounds: Vec<TypeParam>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }

@@ -52,6 +52,7 @@ pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
                                 methods: vec![fn_decl],
                                 is_unsafe: false,
                                 is_scoped: false,
+                                where_bounds: vec![],
                                 doc: None,
                             }),
                             span: DUMMY,

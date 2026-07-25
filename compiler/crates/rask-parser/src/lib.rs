@@ -1458,4 +1458,19 @@ mod tests {
         let stmts = parse_body("const duck = 3\nconst scoped = duck + 1");
         assert_eq!(stmts.len(), 2);
     }
+
+    // CC2: `extend Ring<T> with Show where T: Show` captures the condition.
+    #[test]
+    fn extend_conditional_conformance() {
+        let result = parse("extend Ring<T> with Show where T: Show { func show(self) -> string { return \"r\" } }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Impl(ref i) => {
+                assert_eq!(i.trait_names, vec!["Show".to_string()]);
+                let t = i.where_bounds.iter().find(|tp| tp.name == "T").expect("T bound");
+                assert_eq!(t.bounds, vec!["Show".to_string()]);
+            }
+            _ => panic!("expected impl"),
+        }
+    }
 }

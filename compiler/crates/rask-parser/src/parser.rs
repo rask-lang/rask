@@ -1738,6 +1738,10 @@ impl Parser {
             }
         }
 
+        // CC2: conditional conformance condition — `where T: Displayable`.
+        let mut where_bounds = Vec::new();
+        self.parse_where_clause(&mut where_bounds)?;
+
         self.skip_newlines();
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
@@ -1779,7 +1783,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Impl(ImplDecl { trait_names, target_ty, methods, is_unsafe, is_scoped, doc }))
+        Ok(DeclKind::Impl(ImplDecl { trait_names, target_ty, methods, is_unsafe, is_scoped, where_bounds, doc }))
     }
 
     fn parse_import_decl(&mut self) -> Result<DeclKind, ParseError> {
