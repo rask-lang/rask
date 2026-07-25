@@ -305,6 +305,22 @@ fn native_result_struct_ok() {
     assert_eq!(stdout, "111 222 333\n");
 }
 
+// while-let with an ok-side, uppercase-named type pattern must enter the loop.
+// The capitalization heuristic previously routed `Reading` to the err side.
+#[test]
+fn compile_whilelet_ok_typepat() {
+    let (stdout, code) = compile_and_run("whilelet_ok_typepat.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "0\n10\n20\ndone\n");
+}
+
+#[test]
+fn native_whilelet_ok_typepat() {
+    let (stdout, code) = run_native("whilelet_ok_typepat.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "0\n10\n20\ndone\n");
+}
+
 #[test]
 fn compile_strings() {
     let (stdout, code) = compile_and_run("strings.rk");
