@@ -147,9 +147,15 @@ impl TypeChecker {
                 let target_ty = self.infer_expr(target);
                 self.in_assign_target = false;
                 let value_ty = self.infer_expr_expecting(value, &target_ty);
-                self.ctx.add_constraint(TypeConstraint::Equal(
-                    target_ty, value_ty, stmt.span,
-                ));
+                // Assignment is a widening position (optionals/O-widen, SYNTAX L521):
+                // the optional shape `T` widens to `T?` at the lvalue, same as a
+                // binding. Bind keeps `T or E` (E ≠ none) strict.
+                self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                    ret_ty: value_ty,
+                    expected: target_ty,
+                    position: WrapPosition::Bind,
+                    span: stmt.span,
+                });
                 self.clear_expression_borrows();
             }
             StmtKind::Return(value) => {
