@@ -743,11 +743,14 @@ impl Interpreter {
             }
 
             ExprKind::StructLit { name, fields, spread } => {
-                // Check if this is a generic instantiation
+                // Explicit generic args (`Ring<i64> { }`): run monomorphization
+                // for its side effects, but the value carries the BASE name —
+                // methods and field decls register under the stripped name
+                // (like the inferred `Ring { }` form), so dispatch keys match.
                 let concrete_name = if name.contains('<') {
-                    // Parse generic arguments and monomorphize
                     self.monomorphize_struct_from_name(name)
-                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                    name.split('<').next().unwrap_or(name).to_string()
                 } else {
                     name.clone()
                 };

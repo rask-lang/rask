@@ -373,6 +373,11 @@ fn error_conformance_missing_method() {
 }
 
 #[test]
+fn error_conditional_conformance_unmet() {
+    assert!(compile_error("conditional_conformance_unmet.rk"), "should reject Ring<Blob> when the CC condition `T: Show` isn't met (CC1)");
+}
+
+#[test]
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
 }

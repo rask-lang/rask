@@ -509,7 +509,18 @@ impl TypeChecker {
             }
 
             ExprKind::StructLit { name, fields, .. } => {
-                if let Some(ty) = self.types.lookup(name) {
+                // A struct-lit name may carry explicit generic args:
+                // `Ring<i64> { ... }`. Look up the base, remember the args.
+                let base_name = name.split('<').next().unwrap_or(name);
+                let explicit_args: Option<Vec<GenericArg>> = if name.contains('<') {
+                    match parse_type_string(name, &self.types) {
+                        Ok(Type::Generic { args, .. }) => Some(args),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(ty) = self.types.lookup(base_name) {
                     if let Type::Named(type_id) = &ty {
                         let (struct_fields, type_params, private_fields) = match self.types.get(*type_id) {
                             Some(TypeDef::Struct { fields: sf, type_params: tp, private_fields: pf, .. }) => {
@@ -558,10 +569,14 @@ impl TypeChecker {
                             }
                             ty
                         } else {
-                            // Generic struct: create fresh vars, substitute into fields
-                            let fresh_args: Vec<GenericArg> = type_params.iter()
-                                .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
-                                .collect();
+                            // Generic struct: use explicit args if written
+                            // (`Ring<i64> { }`), else fresh inference vars.
+                            let fresh_args: Vec<GenericArg> = match &explicit_args {
+                                Some(args) if args.len() == type_params.len() => args.clone(),
+                                _ => type_params.iter()
+                                    .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
+                                    .collect(),
+                            };
                             let subst = Self::build_type_param_subst(&type_params, &fresh_args);
 
                             for field_init in fields {
