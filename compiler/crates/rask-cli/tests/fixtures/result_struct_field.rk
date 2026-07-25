@@ -1,0 +1,36 @@
+// Regression: a `T or E` value as a struct field.
+// #370 — the error type's `message()` comes from an `extend` block declared
+//        after the struct, so field-position ER4 validation must run late.
+// #364 — the field must be laid out with the same Result size codegen uses,
+//        so the field after it is not clobbered.
+
+enum DivError { ByZero }
+
+extend DivError {
+    func message(self) -> string {
+        match self {
+            DivError.ByZero => return "division by zero"
+        }
+    }
+}
+
+func divide(a: i32, b: i32) -> i32 or DivError {
+    if b == 0 {
+        return DivError.ByZero
+    }
+    return a / b
+}
+
+struct Holder {
+    r: i32 or DivError
+    tag: i64
+}
+
+func main() {
+    const h = Holder { r: divide(10, 2), tag: 999 }
+    match h.r {
+        i32 as v => println("{v}")
+        DivError => println("err")
+    }
+    println("{h.tag}")
+}

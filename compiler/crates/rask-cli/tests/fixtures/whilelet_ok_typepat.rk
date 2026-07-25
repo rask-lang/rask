@@ -1,0 +1,27 @@
+// while-let with an ok-side type pattern whose name is uppercase.
+// The bare capitalization heuristic mapped `Reading` (uppercase) to the err
+// side (tag 1), so the loop never entered natively (printed only "done").
+
+struct Reading { v: i32 }
+enum RecvErr { Empty }
+extend RecvErr {
+    func message(self) -> string {
+        match self { RecvErr.Empty => return "empty" }
+    }
+}
+
+func next(n: i32) -> Reading or RecvErr {
+    if n < 3 {
+        return Reading { v: n * 10 }
+    }
+    return RecvErr.Empty
+}
+
+func main() {
+    mut n = 0
+    while next(n) is Reading as r {
+        println("{r.v}")
+        n = n + 1
+    }
+    println("done")
+}

@@ -300,14 +300,17 @@ impl<'a> MirLowerer<'a> {
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
                 self.builder.switch_to_block(check_block);
-                let (val, _) = self.lower_expr(expr)?;
+                let (val, val_ty) = self.lower_expr(expr)?;
                 let tag = self.builder.alloc_temp(MirType::U8);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: tag,
                     rvalue: MirRValue::EnumTag { value: val.clone() },
                 }));
-                // Compare tag against expected variant
-                let expected = self.pattern_tag(pattern);
+                // Compare tag against expected variant. Use type-context resolution
+                // so `while c() is Reading as r` against `Reading or RecvErr` routes
+                // to the ok side (tag 0) instead of the bare `pattern_tag`'s
+                // capitalization guess (uppercase ⇒ tag 1, which is the err side).
+                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
                 let matches = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: matches,

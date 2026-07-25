@@ -80,11 +80,12 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::Result { ok, err } => {
             let (ok_size, ok_align) = type_size_align(ok, cache);
             let (err_size, err_align) = type_size_align(err, cache);
-            let max_size = ok_size.max(err_size);
-            let max_align = ok_align.max(err_align);
-            let tag_size = 1u32;
-            let payload_offset = align_up(tag_size, max_align);
-            (payload_offset + max_size, max_align.max(1))
+            // Layout must match rask-codegen/rask-mir (ER15 origin fields):
+            // [tag:8][origin_file:8][origin_line:8][payload:max(ok,err)]. Scalars
+            // occupy 8-byte slots in codegen, so floor each side at 8.
+            let max_size = ok_size.max(8).max(err_size.max(8));
+            let max_align = ok_align.max(err_align).max(8);
+            (align_up(crate::abi::RESULT_PAYLOAD_OFFSET + max_size, max_align), max_align)
         }
         Type::Tuple(types) => {
             let mut offset = 0u32;
@@ -239,6 +240,19 @@ pub(crate) fn parse_field_type(s: &str) -> Type {
             // Option<T> → T or none
             if name == "Option" {
                 return Type::option(parse_field_type(inner));
+            }
+
+            // Result<T, E> — the checker sometimes normalizes `T or E` to this
+            // string form. Without this it falls through to UnresolvedGeneric and
+            // gets mis-sized as a pointer.
+            if name == "Result" {
+                let parts = split_type_args(inner);
+                if parts.len() == 2 {
+                    return Type::Result {
+                        ok: Box::new(parse_field_type(parts[0])),
+                        err: Box::new(parse_field_type(parts[1])),
+                    };
+                }
             }
 
             // Split comma-separated type args (respecting nested angle brackets)
@@ -707,13 +721,14 @@ mod tests {
 
     #[test]
     fn result_i32_i64_layout() {
-        // u8 tag (1) + padding to 8 + max(4, 8) = 16
+        // [tag:8][origin_file:8][origin_line:8][payload:8] — ER15 origin fields
+        // (must match rask-codegen; see rask_mono::abi).
         let (size, align) = tsa(&Type::Result {
             ok: Box::new(Type::I32),
             err: Box::new(Type::I64),
         });
         assert_eq!(align, 8);
-        assert_eq!(size, 16); // 1 tag + 7 padding + 8 payload
+        assert_eq!(size, 32); // 24 (tag + origin) + 8 payload
     }
 
     #[test]
@@ -723,7 +738,7 @@ mod tests {
             err: Box::new(Type::I32),
         });
         assert_eq!(align, 8);
-        assert_eq!(size, 16); // 8 tag + 8 payload (all scalars stored as i64)
+        assert_eq!(size, 32); // 24 (tag + origin) + 8 payload
     }
 
     #[test]

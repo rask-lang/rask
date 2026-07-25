@@ -2783,9 +2783,14 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                     Some(MirType::Enum(id)) => {
-                        if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
-                            // Payload starts at payload_offset; field is relative within payload.
-                            // Use the first variant with enough fields for the offset.
+                        // Prefer the exact payload offset match_lower computed for this
+                        // arm's variant. Guessing "first variant with enough fields"
+                        // picks the wrong payload shape when variants differ at the same
+                        // field index (e.g. Pos(Pt) vs Scalar(i32)). An aggregate payload
+                        // returns a pointer via the field_size > 8 check below (#347).
+                        if let Some(off) = byte_offset {
+                            *off as i32
+                        } else if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
                             let variant = layout.variants.iter()
                                 .find(|v| v.fields.len() > *field_index as usize);
                             match variant {
@@ -3020,8 +3025,50 @@ impl<'a> FunctionBuilder<'a> {
                             builder.ins().return_(&[loaded]);
                         }
                     } else {
-                        // Return pointer to stack slot data for copy_aggregate
-                        Self::emit_return(builder, value.as_ref(), ctx)?;
+                        // >8-byte aggregate in a stack slot. If the function returns
+                        // Result/Option but this local is a bare ok/err component
+                        // (not an already-wrapped Result), wrap it — otherwise the
+                        // callee hands back the raw payload and the caller reads the
+                        // tag from the payload's first bytes (#347).
+                        let local_ty = ctx.locals.iter()
+                            .find(|l| l.id == local_id)
+                            .map(|l| l.ty.clone());
+                        let already_wrapped = local_ty.as_ref() == Some(ctx.ret_ty);
+                        let needs_wrap = !already_wrapped
+                            && matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_));
+                        if needs_wrap {
+                            let is_err = if let MirType::Result { err, .. } = ctx.ret_ty {
+                                local_ty.as_ref().map_or(false, |t| t == err.as_ref())
+                            } else {
+                                false
+                            };
+                            let slot_size = Self::resolve_type_alloc_size(
+                                ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts,
+                            ).unwrap_or(16);
+                            let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot, slot_size, 0,
+                            ));
+                            let payload_off = if matches!(ctx.ret_ty, MirType::Option(_)) {
+                                crate::layouts::PAYLOAD_OFFSET
+                            } else {
+                                crate::layouts::RESULT_PAYLOAD_OFFSET
+                            };
+                            let tag = builder.ins().iconst(types::I64, if is_err { 1 } else { 0 });
+                            builder.ins().stack_store(tag, ret_ss, crate::layouts::TAG_OFFSET);
+                            if matches!(ctx.ret_ty, MirType::Result { .. }) {
+                                let zero = builder.ins().iconst(types::I64, 0);
+                                builder.ins().stack_store(zero, ret_ss, crate::layouts::ORIGIN_FILE_OFFSET);
+                                builder.ins().stack_store(zero, ret_ss, crate::layouts::ORIGIN_LINE_OFFSET);
+                            }
+                            let src = builder.ins().stack_addr(types::I64, ss, 0);
+                            let dst = builder.ins().stack_addr(types::I64, ret_ss, payload_off);
+                            Self::copy_aggregate_to_ptr(builder, src, dst, size);
+                            let addr = builder.ins().stack_addr(types::I64, ret_ss, 0);
+                            builder.ins().return_(&[addr]);
+                        } else {
+                            // Return pointer to stack slot data for copy_aggregate
+                            Self::emit_return(builder, value.as_ref(), ctx)?;
+                        }
                     }
                 } else if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
                     // Function returns Result/Option but value is a plain scalar

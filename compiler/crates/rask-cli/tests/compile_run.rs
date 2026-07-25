@@ -258,6 +258,69 @@ fn compile_closures() {
     assert_eq!(stdout, "42\n");
 }
 
+// #370 (field-position error type accepted) + #364 (Result field sized to match
+// codegen so `tag` isn't clobbered).
+#[test]
+fn compile_result_struct_field() {
+    let (stdout, code) = compile_and_run("result_struct_field.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "5\n999\n");
+}
+
+#[test]
+fn native_result_struct_field() {
+    let (stdout, code) = run_native("result_struct_field.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "5\n999\n");
+}
+
+// #347 — enum variant carrying a struct payload (Pos(Pt)) segfaulted natively;
+// a scalar variant (Scalar(i32)) of the same enum must keep working.
+#[test]
+fn compile_enum_struct_payload() {
+    let (stdout, code) = compile_and_run("enum_struct_payload.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "7\n9\n");
+}
+
+#[test]
+fn native_enum_struct_payload() {
+    let (stdout, code) = run_native("enum_struct_payload.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "7\n9\n");
+}
+
+// #347 family — returning/matching a struct ok-payload through a `T or E`.
+#[test]
+fn compile_result_struct_ok() {
+    let (stdout, code) = compile_and_run("result_struct_ok.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "111 222 333\n");
+}
+
+#[test]
+fn native_result_struct_ok() {
+    let (stdout, code) = run_native("result_struct_ok.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "111 222 333\n");
+}
+
+// while-let with an ok-side, uppercase-named type pattern must enter the loop.
+// The capitalization heuristic previously routed `Reading` to the err side.
+#[test]
+fn compile_whilelet_ok_typepat() {
+    let (stdout, code) = compile_and_run("whilelet_ok_typepat.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "0\n10\n20\ndone\n");
+}
+
+#[test]
+fn native_whilelet_ok_typepat() {
+    let (stdout, code) = run_native("whilelet_ok_typepat.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "0\n10\n20\ndone\n");
+}
+
 #[test]
 fn compile_strings() {
     let (stdout, code) = compile_and_run("strings.rk");

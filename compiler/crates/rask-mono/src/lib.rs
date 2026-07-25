@@ -7,6 +7,7 @@
 //! - Computed memory layouts for all structs and enums
 //! - Reachability analysis starting from main()
 
+pub mod abi;
 mod instantiate;
 mod layout;
 mod reachability;

@@ -195,12 +195,13 @@ impl<'a> MirLowerer<'a> {
                     // enum prefix so the layout lookup matches the variant's
                     // bare name (same as the Pattern::Struct path below).
                     let variant_name = name.rsplit('.').next().unwrap_or(name);
-                    let variant_fields: Option<Vec<(MirType, u32)>> =
+                    // (mir type, absolute byte offset within the enum, field size)
+                    let variant_fields: Option<Vec<(MirType, u32, u32)>> =
                         if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
                             self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
                                 layout.variants.iter().find(|v| v.name == variant_name).map(|v| {
                                     v.fields.iter().map(|f| {
-                                        (self.ctx.type_to_mir(&f.ty), f.offset)
+                                        (self.ctx.type_to_mir(&f.ty), v.payload_offset + f.offset, f.size)
                                     }).collect()
                                 })
                             })
@@ -210,13 +211,18 @@ impl<'a> MirLowerer<'a> {
 
                     for (j, field_pat) in fields.iter().enumerate() {
                         if let Pattern::Ident(binding) = field_pat {
-                            let field_ty = if let Some(ref vf) = variant_fields {
-                                vf.get(j).map(|(ty, _)| ty.clone()).unwrap_or(MirType::I64)
+                            // For a user enum, pass the exact payload offset + size so codegen
+                            // doesn't guess the variant (mixed variants share field indices).
+                            let (field_ty, field_loc) = if let Some(ref vf) = variant_fields {
+                                vf.get(j)
+                                    .map(|(ty, off, sz)| (ty.clone(), Some((*off, *sz))))
+                                    .unwrap_or((MirType::I64, None))
                             } else {
-                                match name.as_str() {
+                                let ty = match name.as_str() {
                                     "Err" => err_payload_ty.clone(),
                                     _ => ok_payload_ty.clone(),
-                                }
+                                };
+                                (ty, None)
                             };
                             let payload_local = self.builder.alloc_local(
                                 binding.clone(), field_ty.clone(),
@@ -227,8 +233,8 @@ impl<'a> MirLowerer<'a> {
                                 MirRValue::Field {
                                     base: scrutinee_op.clone(),
                                     field_index: j as u32,
-                                    byte_offset: None,
-                                    field_size: None,
+                                    byte_offset: field_loc.map(|(off, _)| off),
+                                    field_size: field_loc.map(|(_, sz)| sz),
                                 }
                             };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -279,11 +285,12 @@ impl<'a> MirLowerer<'a> {
                                             let payload_local = self.builder.alloc_local(
                                                 binding.clone(), field_ty.clone(),
                                             );
+                                            // Exact offset/size so codegen doesn't guess the variant.
                                             let rvalue = MirRValue::Field {
                                                 base: scrutinee_op.clone(),
                                                 field_index: field_idx as u32,
-                                                byte_offset: None,
-                                                field_size: None,
+                                                byte_offset: Some(variant.payload_offset + field_layout.offset),
+                                                field_size: Some(field_layout.size),
                                             };
                                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                                 dst: payload_local,

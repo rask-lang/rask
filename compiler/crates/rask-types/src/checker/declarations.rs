@@ -64,6 +64,13 @@ impl TypeChecker {
                 self.register_impl_methods(i);
             }
         }
+        // ER3/ER4: validate `T or E` in declared field/payload/target types now
+        // that all `extend` methods are registered — an error type's `message()`
+        // may be defined in an `extend` block declared after the type that uses it.
+        let pending = std::mem::take(&mut self.pending_result_validations);
+        for (ty, span) in pending {
+            self.validate_result_types_in(&ty, span);
+        }
         self.propagate_uniqueness();
         self.propagate_resource_linearity();
         self.auto_derive_traits();
@@ -179,9 +186,10 @@ impl TypeChecker {
                 (f.name_span, ty)
             })
             .collect();
-        // ER3/ER4: validate nested `T or E` in field types.
+        // ER3/ER4: validate nested `T or E` in field types (deferred — see
+        // pending_result_validations; extend-defined `message()` must be visible).
         for (fspan, fty) in &field_tys {
-            self.validate_result_types_in(fty, *fspan);
+            self.pending_result_validations.push((fty.clone(), *fspan));
             // RC1/RC3: a `Vec`/`Map` field can't hold linear elements.
             self.note_linear_container_site(*fspan, fty.clone());
         }
@@ -304,10 +312,10 @@ impl TypeChecker {
                 (v.name.clone(), field_types)
             })
             .collect();
-        // ER3/ER4: validate nested `T or E` in variant payload types.
+        // ER3/ER4: validate nested `T or E` in variant payload types (deferred).
         for (_, field_types) in &variants {
             for (fspan, fty) in field_types {
-                self.validate_result_types_in(fty, *fspan);
+                self.pending_result_validations.push((fty.clone(), *fspan));
                 // RC1/RC3: a `Vec`/`Map` payload can't hold linear elements.
                 self.note_linear_container_site(*fspan, fty.clone());
             }
@@ -365,8 +373,8 @@ impl TypeChecker {
         } else {
             // `type X = Y` — nominal, gets its own TypeId
             let underlying = parse_type_string(&a.target, &self.types).unwrap_or(Type::Error);
-            // ER3/ER4: validate nested `T or E` in the alias target.
-            self.validate_result_types_in(&underlying, span);
+            // ER3/ER4: validate nested `T or E` in the alias target (deferred).
+            self.pending_result_validations.push((underlying.clone(), span));
             // RC1/RC3: a nominal alias to a `Vec`/`Map` of linear values.
             self.note_linear_container_site(span, underlying.clone());
             self.types.register_type(TypeDef::NominalAlias {
@@ -386,9 +394,9 @@ impl TypeChecker {
                 (f.name.clone(), f.name_span, ty)
             })
             .collect();
-        // ER3/ER4: validate nested `T or E` in union field types.
+        // ER3/ER4: validate nested `T or E` in union field types (deferred).
         for (_, fspan, fty) in &field_tys {
-            self.validate_result_types_in(fty, *fspan);
+            self.pending_result_validations.push((fty.clone(), *fspan));
         }
         let fields: Vec<_> = field_tys.into_iter().map(|(n, _, t)| (n, t)).collect();
 
