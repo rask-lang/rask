@@ -85,7 +85,7 @@ extend Db {
         }
     }
 
-    func put(mutate self, key: string, value: string) -> () or DbError {
+    func put(mutate self, key: string, value: string) -> void or DbError {
         const seq = self.next_seq
         self.next_seq += 1
 
@@ -139,7 +139,7 @@ extend Db {
         return DbError.KeyNotFound(key)
     }
 
-    func delete(mutate self, key: string) -> () or DbError {
+    func delete(mutate self, key: string) -> void or DbError {
         const seq = self.next_seq
         self.next_seq += 1
 
@@ -199,7 +199,7 @@ extend Db {
         return deduped
     }
 
-    func flush(mutate self) -> () or DbError {
+    func flush(mutate self) -> void or DbError {
         if self.memtable.is_empty() { return () }
 
         const id = self.next_sst_id
@@ -226,8 +226,8 @@ extend Db {
         return ()
     }
 
-    func compact_level(mutate self, level: i32) -> () or DbError {
-        const level_idx = level as usize
+    func compact_level(mutate self, level: i32) -> void or DbError {
+        const level_idx = level truncate to usize
         if self.levels[level_idx].len() < 2 { return () }
         if level >= MAX_LEVELS - 1 { return () }
 
@@ -248,7 +248,7 @@ extend Db {
             ssts.remove_at(0)
         }
 
-        const next_level_idx = (level + 1) as usize
+        const next_level_idx = (level + 1) truncate to usize
         with self.levels[next_level_idx] as ssts {
             ssts.push(merged)
         }
@@ -265,17 +265,17 @@ extend Db {
         }
 
         return DbStats {
-            memtable_entries: self.memtable.entries.len() as i32,
+            memtable_entries: self.memtable.entries.len() truncate to i32,
             memtable_bytes: self.memtable.size_bytes,
             sst_count: total_sst as i32,
             level_counts: level_counts,
-            cache_entries: self.cache.count() as i32,
+            cache_entries: self.cache.count() truncate to i32,
             cache_accesses: self.cache.access_counter,
             next_seq: self.next_seq,
         }
     }
 
-    func compact_all(mutate self) -> () or DbError {
+    func compact_all(mutate self) -> void or DbError {
         try self.flush()
         mut level = 0
         while level < MAX_LEVELS - 1 {
@@ -285,7 +285,7 @@ extend Db {
         return ()
     }
 
-    func close(take self) -> () or DbError {
+    func close(take self) -> void or DbError {
         if !self.memtable.is_empty() {
             const id = self.next_sst_id
             const entries = self.memtable.take_sorted()

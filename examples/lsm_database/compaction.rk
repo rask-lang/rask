@@ -5,8 +5,7 @@
 // the bottom level. Background compaction uses spawn + channel.
 
 import fs
-import async.spawn
-import async.Channel
+import async
 
 const MAX_LEVELS: i32 = 4
 const LEVEL_SIZE_MULTIPLIER: i32 = 10
@@ -95,9 +94,9 @@ func spawn_background_compaction(
     new_id: i32,
     target_level: i32,
     dir: string,
-    tx: Channel.Sender<CompactionMsg>,
+    tx: Sender<CompactionMsg>,
 ) {
-    spawn(|| {
+    spawn(own || {
         tx.send(CompactionMsg.Started(a.id, b.id))
 
         match compact_sstables(a.clone(), b.clone(), new_id, target_level, dir) {

@@ -22,7 +22,7 @@ extend Wal {
         return Wal { path: path, entry_count: 0 }
     }
 
-    func append(mutate self, kv: KeyValue) -> () or WalError {
+    func append(mutate self, kv: KeyValue) -> void or WalError {
         const line = encode_kv(kv)
         try fs.append_text(self.path, line)
             else |e| WalError.WriteFailure("write failed: {e}")
@@ -30,17 +30,17 @@ extend Wal {
         return ()
     }
 
-    func sync(mutate self) -> () or WalError {
+    func sync(mutate self) -> void or WalError {
         // No-op: string-based I/O flushes on each write
         return ()
     }
 
-    func close(take self) -> () or WalError {
+    func close(take self) -> void or WalError {
         // No file handle to close with string-based I/O
         return ()
     }
 
-    func truncate(mutate self) -> () or WalError {
+    func truncate(mutate self) -> void or WalError {
         try fs.write_text(self.path, "")
             else |e| WalError.WriteFailure("cannot truncate WAL: {e}")
         self.entry_count = 0
