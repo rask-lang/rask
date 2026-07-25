@@ -1329,4 +1329,61 @@ mod tests {
             panic!("expected const binding");
         }
     }
+
+    /// Extract the first declaration as a function.
+    fn parse_fn(src: &str) -> rask_ast::decl::FnDecl {
+        let result = parse(src);
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Fn(ref f) => f.clone(),
+            _ => panic!("expected function"),
+        }
+    }
+
+    // #313: `where` clauses parse. A bound on an implicit single-letter generic
+    // creates the type param (equivalent to `<T: Comparable>`).
+    #[test]
+    fn where_clause_implicit_generic() {
+        let f = parse_fn("func pick(a: T, b: T) -> T where T: Comparable { return a }");
+        let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
+        assert_eq!(t.bounds, vec!["Comparable".to_string()]);
+    }
+
+    // Multiple `+`-separated bounds in a where clause.
+    #[test]
+    fn where_clause_multiple_bounds() {
+        let f = parse_fn("func s(x: T) where T: Comparable + Debug { }");
+        let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
+        assert_eq!(t.bounds, vec!["Comparable".to_string(), "Debug".to_string()]);
+    }
+
+    // A where bound merges into an explicitly-declared type param, not a duplicate.
+    #[test]
+    fn where_clause_merges_into_explicit_param() {
+        let f = parse_fn("func echo<T>(x: T) -> T where T: Comparable { return x }");
+        assert_eq!(f.type_params.len(), 1);
+        assert_eq!(f.type_params[0].name, "T");
+        assert_eq!(f.type_params[0].bounds, vec!["Comparable".to_string()]);
+    }
+
+    // Full order: generics → params → return → using → where, across lines.
+    #[test]
+    fn where_clause_after_using_multiline() {
+        let f = parse_fn(
+            "func complex<K, V>(map: Map<K, V>, key: K) -> V\n    using values: Pool<V>\n    where K: HashKey, V: Clone\n{ return key }",
+        );
+        assert_eq!(f.context_clauses.len(), 1);
+        let k = f.type_params.iter().find(|p| p.name == "K").expect("K param");
+        let v = f.type_params.iter().find(|p| p.name == "V").expect("V param");
+        assert_eq!(k.bounds, vec!["HashKey".to_string()]);
+        assert_eq!(v.bounds, vec!["Clone".to_string()]);
+    }
+
+    // Generic trait bound inside a where clause: `where T: Iterator<Item>`.
+    #[test]
+    fn where_clause_generic_bound() {
+        let f = parse_fn("func run(x: T) where T: Iterator<Item> { }");
+        let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
+        assert_eq!(t.bounds, vec!["Iterator<Item>".to_string()]);
+    }
 }

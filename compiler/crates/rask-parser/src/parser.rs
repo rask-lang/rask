@@ -741,7 +741,7 @@ impl Parser {
         // Allow keywords as function names (e.g., `or` for Option.or)
         let mut name = self.expect_ident_or_keyword()?;
 
-        let type_params = if self.match_token(&TokenKind::Lt) {
+        let mut type_params = if self.match_token(&TokenKind::Lt) {
             let (params, suffix) = self.parse_type_params()?;
             name.push_str(&suffix);
             params
@@ -778,6 +778,9 @@ impl Parser {
         if context_clauses.is_empty() {
             context_clauses = self.parse_using_clauses()?;
         }
+
+        // `where` closes the signature (after return type + using clauses).
+        self.parse_where_clause(&mut type_params)?;
 
         let body = if self.check(&TokenKind::LBrace) {
             self.parse_block_body()?
@@ -1244,33 +1247,7 @@ impl Parser {
                 // Regular type parameter: `T` or `T: Trait` or `T: A + B`
                 let mut bounds = vec![];
                 if self.match_token(&TokenKind::Colon) {
-                    let mut bound = self.expect_ident()?;
-                    // Support generic trait bounds: `T: Iterator<Item>`
-                    if self.match_token(&TokenKind::Lt) {
-                        bound.push('<');
-                        bound.push_str(&self.parse_type_name()?);
-                        while self.match_token(&TokenKind::Comma) {
-                            bound.push_str(", ");
-                            bound.push_str(&self.parse_type_name()?);
-                        }
-                        self.expect_gt_in_generic()?;
-                        bound.push('>');
-                    }
-                    bounds.push(bound);
-                    while self.match_token(&TokenKind::Plus) {
-                        let mut bound = self.expect_ident()?;
-                        if self.match_token(&TokenKind::Lt) {
-                            bound.push('<');
-                            bound.push_str(&self.parse_type_name()?);
-                            while self.match_token(&TokenKind::Comma) {
-                                bound.push_str(", ");
-                                bound.push_str(&self.parse_type_name()?);
-                            }
-                            self.expect_gt_in_generic()?;
-                            bound.push('>');
-                        }
-                        bounds.push(bound);
-                    }
+                    bounds = self.parse_trait_bounds()?;
                 }
 
                 type_params.push(TypeParam {
@@ -1302,6 +1279,81 @@ impl Parser {
         name_suffix.push('>');
 
         Ok((type_params, name_suffix))
+    }
+
+    /// Parse a single trait bound, e.g. `Comparable` or `Iterator<Item>`.
+    fn parse_one_bound(&mut self) -> Result<String, ParseError> {
+        let mut bound = self.expect_ident()?;
+        // Generic trait bound: `Iterator<Item>`
+        if self.match_token(&TokenKind::Lt) {
+            bound.push('<');
+            bound.push_str(&self.parse_type_name()?);
+            while self.match_token(&TokenKind::Comma) {
+                bound.push_str(", ");
+                bound.push_str(&self.parse_type_name()?);
+            }
+            self.expect_gt_in_generic()?;
+            bound.push('>');
+        }
+        Ok(bound)
+    }
+
+    /// Parse `+`-separated trait bounds: `A + B<X> + C`.
+    fn parse_trait_bounds(&mut self) -> Result<Vec<String>, ParseError> {
+        let mut bounds = vec![self.parse_one_bound()?];
+        while self.match_token(&TokenKind::Plus) {
+            bounds.push(self.parse_one_bound()?);
+        }
+        Ok(bounds)
+    }
+
+    /// Parse an optional `where` clause and fold its bounds into `type_params`.
+    ///
+    /// `where T: A + B, U: C` — bounds attach to the named parameter. A name
+    /// that isn't an explicitly-declared param (an implicit single-letter
+    /// generic like `T` in `func sort(items: Vec<T>) where T: Comparable`)
+    /// gets a fresh entry, so the clause is equivalent to writing `<T: A + B>`.
+    ///
+    /// Signature grammar order is `generics → params → return → using → where`,
+    /// so this runs last, after the return type and `using` clauses.
+    fn parse_where_clause(&mut self, type_params: &mut Vec<TypeParam>) -> Result<(), ParseError> {
+        // `where` may sit on its own line below the signature.
+        if self.check(&TokenKind::Newline) {
+            let saved = self.pos;
+            self.skip_newlines();
+            if !self.check(&TokenKind::Where) {
+                self.pos = saved;
+                return Ok(());
+            }
+        }
+
+        if !self.match_token(&TokenKind::Where) {
+            return Ok(());
+        }
+
+        loop {
+            self.skip_newlines();
+            let name = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let bounds = self.parse_trait_bounds()?;
+
+            match type_params.iter_mut().find(|tp| tp.name == name) {
+                Some(tp) => tp.bounds.extend(bounds),
+                None => type_params.push(TypeParam {
+                    name,
+                    is_comptime: false,
+                    comptime_type: None,
+                    bounds,
+                }),
+            }
+
+            // Constraints are comma-separated; a newline ends the clause.
+            if !self.match_token(&TokenKind::Comma) {
+                break;
+            }
+        }
+
+        Ok(())
     }
 
     fn parse_struct_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
@@ -1602,7 +1654,7 @@ impl Parser {
         let fn_start = self.current().span.start;
         let mut name = self.expect_ident()?;
 
-        let type_params = if self.match_token(&TokenKind::Lt) {
+        let mut type_params = if self.match_token(&TokenKind::Lt) {
             let (params, suffix) = self.parse_type_params()?;
             name.push_str(&suffix);
             params
@@ -1626,6 +1678,8 @@ impl Parser {
         if context_clauses.is_empty() {
             context_clauses = self.parse_using_clauses()?;
         }
+
+        self.parse_where_clause(&mut type_params)?;
 
         if self.check(&TokenKind::Newline) {
             self.skip_newlines();
