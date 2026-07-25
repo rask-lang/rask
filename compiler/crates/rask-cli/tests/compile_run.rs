@@ -258,6 +258,22 @@ fn compile_closures() {
     assert_eq!(stdout, "42\n");
 }
 
+// #370 (field-position error type accepted) + #364 (Result field sized to match
+// codegen so `tag` isn't clobbered).
+#[test]
+fn compile_result_struct_field() {
+    let (stdout, code) = compile_and_run("result_struct_field.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "5\n999\n");
+}
+
+#[test]
+fn native_result_struct_field() {
+    let (stdout, code) = run_native("result_struct_field.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "5\n999\n");
+}
+
 #[test]
 fn compile_strings() {
     let (stdout, code) = compile_and_run("strings.rk");
