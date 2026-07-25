@@ -368,6 +368,11 @@ fn error_nominal_conformance_required() {
 }
 
 #[test]
+fn error_conformance_missing_method() {
+    assert!(compile_error("conformance_missing_method.rk"), "should reject `extend T with Trait` when the type lacks the trait's method (G1)");
+}
+
+#[test]
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
 }

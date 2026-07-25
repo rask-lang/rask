@@ -877,6 +877,31 @@ impl TypeChecker {
                     }
                 }
                 self.current_self_type = self.resolve_impl_self_type(&i.target_ty);
+
+                // G1: verify the declared conformance at the extend site — the
+                // type must have each trait method with a matching signature.
+                // Generic targets (`extend Ring<T> with ...`) are checked per
+                // instantiation (CC1), so skip them here.
+                if !i.trait_names.is_empty() && !i.target_ty.contains('<') {
+                    if let Some(target_ty) = self.current_self_type.clone() {
+                        let mut trait_errors = Vec::new();
+                        {
+                            let mut checker = crate::traits::TraitChecker::new(&self.types);
+                            for trait_name in &i.trait_names {
+                                if let Err(e) = checker.check_satisfies(&target_ty, trait_name, decl.span) {
+                                    trait_errors.push((trait_name.clone(), e));
+                                }
+                            }
+                        }
+                        for (trait_name, _e) in trait_errors {
+                            self.errors.push(TypeError::TraitNotSatisfied {
+                                ty: i.target_ty.clone(),
+                                trait_name,
+                                span: decl.span,
+                            });
+                        }
+                    }
+                }
                 for method in &i.methods {
                     self.check_fn(method);
                 }
