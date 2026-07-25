@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// CC1/CC2: `extend Ring<T> with Show where T: Show` — the conformance holds only
+// for instantiations whose argument satisfies the condition. Ring<Coin> works
+// because Coin declares Show; Ring<Blob> is rejected at the use site (see the
+// conditional_conformance_unmet compile-error fixture).
+
+trait Show {
+    func show(self) -> string
+}
+
+struct Coin { v: i64 }
+extend Coin with Show {
+    func show(self) -> string { return "coin" }
+}
+
+struct Ring<T> { items: Vec<T> }
+extend Ring<T> with Show where T: Show {
+    func show(self) -> string { return "ring-of-show" }
+}
+
+func present(x: T) -> string where T: Show { return x.show() }
+
+test "conditional conformance holds when the argument satisfies the condition" {
+    mut v = Vec.new<Coin>()
+    v.push(Coin { v: 1 })
+    const r = Ring { items: v }
+    assert present(r) == "ring-of-show"
+}
+
+func main() {}

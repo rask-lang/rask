@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `where` clauses parse and their bounds attach to the type parameter,
+// identically to inline `<T: Bound>` (#313). Enforcement that bounds grant
+// trait-method access is tracked separately (#314), so these bodies don't
+// call trait methods on the generic — they exercise parsing + signature
+// handling only.
+
+// Single bound on an implicit single-letter generic.
+func pick(a: T, b: T) -> T where T: Comparable {
+    return a
+}
+
+// Multiple `+`-separated bounds.
+func first_of(x: T, y: T) -> T where T: Comparable + Cloneable {
+    return x
+}
+
+// Explicit `<T>` plus a `where` bound — equivalent to `<T: Comparable>`.
+func echo<T>(x: T) -> T where T: Comparable {
+    return x
+}
+
+// Full signature order: generics → params → return → using → where,
+// with the clause spread across lines.
+func combine<A, B>(a: A, b: B) -> A
+    where A: Comparable,
+          B: Comparable
+{
+    return a
+}
+
+test "where on implicit generic" {
+    assert pick(3, 7) == 3
+    assert pick(10, 2) == 10
+}
+
+test "multiple bounds" {
+    assert first_of(1, 9) == 1
+}
+
+test "explicit generic with where" {
+    assert echo(42) == 42
+}
+
+test "multiline where, two params" {
+    assert combine(5, 8) == 5
+}
+
+func main() {}

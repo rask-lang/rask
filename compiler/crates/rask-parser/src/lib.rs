@@ -1329,4 +1329,148 @@ mod tests {
             panic!("expected const binding");
         }
     }
+
+    /// Extract the first declaration as a function.
+    fn parse_fn(src: &str) -> rask_ast::decl::FnDecl {
+        let result = parse(src);
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Fn(ref f) => f.clone(),
+            _ => panic!("expected function"),
+        }
+    }
+
+    // #313: `where` clauses parse. A bound on an implicit single-letter generic
+    // creates the type param (equivalent to `<T: Comparable>`).
+    #[test]
+    fn where_clause_implicit_generic() {
+        let f = parse_fn("func pick(a: T, b: T) -> T where T: Comparable { return a }");
+        let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
+        assert_eq!(t.bounds, vec!["Comparable".to_string()]);
+    }
+
+    // Multiple `+`-separated bounds in a where clause.
+    #[test]
+    fn where_clause_multiple_bounds() {
+        let f = parse_fn("func s(x: T) where T: Comparable + Debug { }");
+        let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
+        assert_eq!(t.bounds, vec!["Comparable".to_string(), "Debug".to_string()]);
+    }
+
+    // A where bound merges into an explicitly-declared type param, not a duplicate.
+    #[test]
+    fn where_clause_merges_into_explicit_param() {
+        let f = parse_fn("func echo<T>(x: T) -> T where T: Comparable { return x }");
+        assert_eq!(f.type_params.len(), 1);
+        assert_eq!(f.type_params[0].name, "T");
+        assert_eq!(f.type_params[0].bounds, vec!["Comparable".to_string()]);
+    }
+
+    // Full order: generics → params → return → using → where, across lines.
+    #[test]
+    fn where_clause_after_using_multiline() {
+        let f = parse_fn(
+            "func complex<K, V>(map: Map<K, V>, key: K) -> V\n    using values: Pool<V>\n    where K: HashKey, V: Clone\n{ return key }",
+        );
+        assert_eq!(f.context_clauses.len(), 1);
+        let k = f.type_params.iter().find(|p| p.name == "K").expect("K param");
+        let v = f.type_params.iter().find(|p| p.name == "V").expect("V param");
+        assert_eq!(k.bounds, vec!["HashKey".to_string()]);
+        assert_eq!(v.bounds, vec!["Clone".to_string()]);
+    }
+
+    // Generic trait bound inside a where clause: `where T: Iterator<Item>`.
+    #[test]
+    fn where_clause_generic_bound() {
+        let f = parse_fn("func run(x: T) where T: Iterator<Item> { }");
+        let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
+        assert_eq!(t.bounds, vec!["Iterator<Item>".to_string()]);
+    }
+
+    // CD1: `extend T with A, B, C` records every listed conformance.
+    #[test]
+    fn extend_conformance_list() {
+        let result = parse("extend Bag with Countable, Sizable { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Impl(ref i) => {
+                assert_eq!(i.trait_names, vec!["Countable".to_string(), "Sizable".to_string()]);
+                assert_eq!(i.target_ty, "Bag");
+                assert!(!i.is_scoped);
+            }
+            _ => panic!("expected impl"),
+        }
+    }
+
+    // Plain `extend T { }` has no declared conformances.
+    #[test]
+    fn extend_plain_no_conformance() {
+        let result = parse("extend Bag { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Impl(ref i) => assert!(i.trait_names.is_empty()),
+            _ => panic!("expected impl"),
+        }
+    }
+
+    // `duck trait` sets the structural flag.
+    #[test]
+    fn duck_trait_flag() {
+        let result = parse("duck trait Frobber { func frob(self) -> i64 }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Trait(ref t) => {
+                assert!(t.is_duck);
+                assert_eq!(t.name, "Frobber");
+            }
+            _ => panic!("expected trait"),
+        }
+    }
+
+    // A plain trait is not duck.
+    #[test]
+    fn plain_trait_not_duck() {
+        let result = parse("trait Greeter { func greet(self) -> string }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Trait(ref t) => assert!(!t.is_duck),
+            _ => panic!("expected trait"),
+        }
+    }
+
+    // MN4: `scoped extend T with Trait` sets the scoped flag.
+    #[test]
+    fn scoped_extend_flag() {
+        let result = parse("scoped extend Dog with Announcer { func greet(self, v: i32) -> string { return \"x\" } }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Impl(ref i) => {
+                assert!(i.is_scoped);
+                assert_eq!(i.trait_names, vec!["Announcer".to_string()]);
+            }
+            _ => panic!("expected impl"),
+        }
+    }
+
+    // `duck` and `scoped` stay usable as ordinary identifiers.
+    #[test]
+    fn duck_scoped_still_identifiers() {
+        let stmts = parse_body("const duck = 3\nconst scoped = duck + 1");
+        assert_eq!(stmts.len(), 2);
+    }
+
+    // CC2: `extend Ring<T> with Show where T: Show` captures the condition.
+    #[test]
+    fn extend_conditional_conformance() {
+        let result = parse("extend Ring<T> with Show where T: Show { func show(self) -> string { return \"r\" } }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Impl(ref i) => {
+                assert_eq!(i.trait_names, vec!["Show".to_string()]);
+                let t = i.where_bounds.iter().find(|tp| tp.name == "T").expect("T bound");
+                assert_eq!(t.bounds, vec!["Show".to_string()]);
+            }
+            _ => panic!("expected impl"),
+        }
+    }
 }

@@ -53,6 +53,15 @@ impl TypeChecker {
                             .find(|s| s.name == base_name && matches!(s.kind, SymbolKind::Function { .. }))
                         {
                             self.fn_type_params.insert(sym.id, type_param_names);
+                            // #314: record bounds so call sites can verify the
+                            // type arg satisfies the declared trait bounds.
+                            let bounds: std::collections::HashMap<String, Vec<String>> = f.type_params.iter()
+                                .filter(|tp| !tp.bounds.is_empty())
+                                .map(|tp| (tp.name.clone(), tp.bounds.clone()))
+                                .collect();
+                            if !bounds.is_empty() {
+                                self.fn_type_param_bounds.insert(sym.id, bounds);
+                            }
                         }
                     }
                 }
@@ -166,6 +175,19 @@ impl TypeChecker {
             Some(id) => id,
             None => return,
         };
+        // G1: record each declared conformance. `scoped` methods stay out of the
+        // inherent namespace (MN4) but the conformance is still declared.
+        // CC1/CC2: a `where` clause makes every listed conformance conditional
+        // (CD3: one condition per block).
+        let condition: Vec<(String, Vec<String>)> = i.where_bounds.iter()
+            .map(|tp| (tp.name.clone(), tp.bounds.clone()))
+            .collect();
+        for trait_name in &i.trait_names {
+            self.types.record_conformance(type_id, trait_name);
+            if !condition.is_empty() {
+                self.types.record_conformance_condition(type_id, trait_name, condition.clone());
+            }
+        }
         let new_methods: Vec<_> = i.methods.iter().map(|m| self.method_signature(m)).collect();
         if let Some(def) = self.types.get_mut(type_id) {
             match def {
@@ -352,6 +374,7 @@ impl TypeChecker {
             methods,
             generic_methods,
             is_unsafe: t.is_unsafe,
+            is_duck: t.is_duck,
         });
     }
 
@@ -645,6 +668,19 @@ impl TypeChecker {
                             methods.extend(new_methods);
                         }
                     }
+
+                    // G1: mark auto-derived conformances so the nominal check
+                    // accepts eligible types without an explicit `extend ... with`.
+                    let eq_ok = field_types.iter().all(|ty| self.type_has_method(ty, "eq"));
+                    let hash_ok = eq_ok && field_types.iter().all(|ty| self.type_has_method(ty, "hash"));
+                    let clone_ok = field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
+                        && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
+                    let cmp_ok = field_types.iter().all(|ty| self.type_has_method(ty, "compare"));
+                    if eq_ok { self.types.record_conformance(id, "Equal"); }
+                    if hash_ok { self.types.record_conformance(id, "Hashable"); }
+                    if clone_ok { self.types.record_conformance(id, "Cloneable"); }
+                    if cmp_ok { self.types.record_conformance(id, "Comparable"); }
+                    self.types.record_conformance(id, "Debug");
                 }
                 TypeDef::Enum { variants, methods, .. } => {
                     let payload_types: Vec<Type> = variants.iter()
@@ -731,6 +767,18 @@ impl TypeChecker {
                             methods.extend(new_methods);
                         }
                     }
+
+                    // G1: mark auto-derived conformances (enum eligibility).
+                    let eq_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "eq"));
+                    let hash_ok = eq_ok && payload_types.iter().all(|ty| self.type_has_method(ty, "hash"));
+                    let clone_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
+                        && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
+                    let cmp_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "compare"));
+                    if eq_ok { self.types.record_conformance(id, "Equal"); }
+                    if hash_ok { self.types.record_conformance(id, "Hashable"); }
+                    if clone_ok { self.types.record_conformance(id, "Cloneable"); }
+                    if cmp_ok { self.types.record_conformance(id, "Comparable"); }
+                    self.types.record_conformance(id, "Debug");
                 }
                 _ => {}
             }
@@ -831,8 +879,9 @@ impl TypeChecker {
             }
             DeclKind::Impl(i) => {
                 // UT1: implementing an unsafe trait requires `unsafe extend`
-                if let Some(trait_name) = &i.trait_name {
-                    if let Some(type_id) = self.types.get_type_id(trait_name) {
+                for trait_name in &i.trait_names {
+                    let base = trait_name.split('<').next().unwrap_or(trait_name);
+                    if let Some(type_id) = self.types.get_type_id(base) {
                         if let Some(TypeDef::Trait { is_unsafe: true, .. }) = self.types.get(type_id) {
                             if !i.is_unsafe {
                                 self.errors.push(TypeError::UnsafeRequired {
@@ -844,6 +893,31 @@ impl TypeChecker {
                     }
                 }
                 self.current_self_type = self.resolve_impl_self_type(&i.target_ty);
+
+                // G1: verify the declared conformance at the extend site — the
+                // type must have each trait method with a matching signature.
+                // Generic targets (`extend Ring<T> with ...`) are checked per
+                // instantiation (CC1), so skip them here.
+                if !i.trait_names.is_empty() && !i.target_ty.contains('<') {
+                    if let Some(target_ty) = self.current_self_type.clone() {
+                        let mut trait_errors = Vec::new();
+                        {
+                            let mut checker = crate::traits::TraitChecker::new(&self.types);
+                            for trait_name in &i.trait_names {
+                                if let Err(e) = checker.check_satisfies(&target_ty, trait_name, decl.span) {
+                                    trait_errors.push((trait_name.clone(), e));
+                                }
+                            }
+                        }
+                        for (trait_name, _e) in trait_errors {
+                            self.errors.push(TypeError::TraitNotSatisfied {
+                                ty: i.target_ty.clone(),
+                                trait_name,
+                                span: decl.span,
+                            });
+                        }
+                    }
+                }
                 for method in &i.methods {
                     self.check_fn(method);
                 }

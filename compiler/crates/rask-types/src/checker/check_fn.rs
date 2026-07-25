@@ -80,6 +80,19 @@ impl TypeChecker {
                 }
             }
         }
+        // #314: record trait bounds so the body can call trait methods on a
+        // bounded type param (`func f(g: T) where T: Greeter { g.greet() }`).
+        // `where` bounds already folded into `type_params` by the parser.
+        let saved_type_param_bounds = std::mem::take(&mut self.current_type_param_bounds);
+        for tp in &f.type_params {
+            if !tp.bounds.is_empty() {
+                self.current_type_param_bounds
+                    .entry(tp.name.clone())
+                    .or_default()
+                    .extend(tp.bounds.iter().cloned());
+            }
+        }
+
         // PC2: unknown PascalCase names in the return type are errors.
         self.validate_signature_names(&ret_ty, &sig_type_params, f.span);
         // ER3/ER4: validate every `T or E` that appears in the return type.
@@ -260,6 +273,7 @@ impl TypeChecker {
 
         self.pop_scope();
         self.current_return_type = None;
+        self.current_type_param_bounds = saved_type_param_bounds;
         self.in_unsafe = was_unsafe;
 
         // ER20: Restore outer accumulation state

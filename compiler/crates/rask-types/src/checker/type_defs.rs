@@ -48,6 +48,8 @@ pub enum TypeDef {
         /// These can't be dispatched through `any` — no vtable slot.
         generic_methods: Vec<String>,
         is_unsafe: bool,
+        /// G1: `duck trait` — satisfied by shape, no declaration needed.
+        is_duck: bool,
     },
     Union {
         name: String,

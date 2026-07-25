@@ -281,6 +281,29 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("method calls are resolved at compile time against the type's extend blocks")
             }
 
+            UnboundedTypeParamMethod { param, method, bounds, span } => {
+                let bound_list = if bounds.is_empty() {
+                    format!("`{}` has no bounds", param)
+                } else {
+                    format!("bounds on `{}` are {}", param, bounds.join(" + "))
+                };
+                Diagnostic::error(format!(
+                    "no method `{}` provided by the bounds on `{}`",
+                    method, param
+                ))
+                .with_code("E0313")
+                .with_primary(*span, "method not found")
+                .with_help(format!(
+                    "add a trait bound that declares `{}`, e.g. `where {}: SomeTrait`",
+                    method, param
+                ))
+                .with_fix(format!("where {}: /* trait declaring `{}` */", param, method))
+                .with_why(format!(
+                    "a type parameter only has the methods its bounds bring into scope ({})",
+                    bound_list
+                ))
+            }
+
             InfiniteType { span, .. } => {
                 Diagnostic::error("infinite type detected")
                     .with_code("E0314")

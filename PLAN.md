@@ -51,22 +51,25 @@ The trait review and consistency passes are decided design; the compiler still i
 One epic, several mechanical sweeps. (Of the July spec wave, only PC1 — single-letter auto-generics —
 landed compiler-side.)
 
-**2a. Nominal trait flip (the epic).** Trait satisfaction is still purely structural
-(`rask-types/src/traits.rs`). Implement in dependency order:
+**2a. Nominal trait flip (the epic).** Trait satisfaction is now nominal for user
+traits (`rask-types/src/traits.rs`). Progress by dependency order:
 
-1. `where` clause parsing — spec syntax fails today (#313); prerequisite for everything below.
-2. Nominal conformance registry: `extend T with Trait` declares, checker consults declarations
-   instead of shapes (trait-review G1, #283). Explicit bounds must grant methods (#314).
-3. Comma-list conformance `extend T with A, B, C` + block semantics (CD1–CD3) — parser holds a single
-   trait name today (`parser.rs:1654`).
-4. Explicit `as any` at trait-object conversion sites; drop TR5 implicit boxing (#284).
-5. `duck trait` keyword for structural opt-in; `scoped extend` + trait-qualified calls (MN1–MN5).
-6. Auto-derive roster: Default is deleted from the spec but still derived
-   (`declarations.rs:559` DF1) — remove it; struct field defaults replace it (FD1–FD6, #311) —
-   fields don't parse defaults yet. ErrorMessage becomes auto-derived for enums (overridable), not
-   structurally required (`errors.rs:325`).
-7. Override coherence (OC1–OC3), conditional conformance with explicit `where` (CC1–CC3).
-8. Cross-package conformance rules need a decision first (#312).
+1. ✅ `where` clause parsing (#313).
+2. ✅ Nominal conformance registry: `extend T with Trait` declares, checker consults declarations
+   (G1, #283); explicit bounds grant methods + call-site bound checking (#314); conformance is
+   verified at the `extend` declaration. Registry is a side table in `TypeTable`; the gate is scoped
+   to user-declared, non-`duck` traits (core auto-derived traits keep the eligibility path).
+3. ✅ Comma-list conformance `extend T with A, B, C` (CD1) parses and records each conformance.
+   Block semantics (CD2/CD3) inherited (methods are ordinary methods, MN1).
+4. ⬜ Explicit `as any` at conversion sites; drop TR5 implicit boxing (#284).
+5. 🟡 `duck trait` keyword (structural opt-in) — done. `scoped extend` parses (MN4 marker); scoped
+   namespace exclusion + trait-qualified calls (MN2/MN3/MN5) not yet enforced.
+6. ⬜ Auto-derive roster: remove `Default` derive (blocked on struct field defaults, FD1–FD6/#311);
+   auto-derive ErrorMessage for enums.
+7. 🟡 Conditional conformance `where` (CC1/CC2) parses + records + checks (unit-tested); end-to-end
+   blocked on generic-user-struct method resolution (#374). Override coherence (OC1–OC3) not started
+   (would require gating the core traits nominally; zero corpus occurrences today).
+8. ⬜ Cross-package conformance — needs a decision first (#312).
 
 **2b. Rename/name-drift sweep.** Programs written to spec fail to typecheck where implementations
 exist under old names. One reconciliation pass over stubs + interp + runtime + examples (#302):

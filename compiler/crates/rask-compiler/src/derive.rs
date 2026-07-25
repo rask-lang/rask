@@ -47,10 +47,12 @@ pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
                         new_impls.push(Decl {
                             id: NodeId(0),
                             kind: DeclKind::Impl(ImplDecl {
-                                trait_name: None,
+                                trait_names: vec![],
                                 target_ty: name.clone(),
                                 methods: vec![fn_decl],
                                 is_unsafe: false,
+                                is_scoped: false,
+                                where_bounds: vec![],
                                 doc: None,
                             }),
                             span: DUMMY,

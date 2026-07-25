@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: passing a type that doesn't implement the bound's trait (#314)
+// Expected: typecheck error E0333 — `Fish` does not implement `Greeter`
+
+trait Greeter {
+    func greet(self) -> string
+}
+
+struct Fish { name: string }
+
+func announce(g: T) -> string where T: Greeter {
+    return g.greet()
+}
+
+func main() {
+    // Fish has no `extend Fish with Greeter`, so it can't satisfy `T: Greeter`.
+    println("{announce(Fish { name: \"Nemo\" })}")
+}

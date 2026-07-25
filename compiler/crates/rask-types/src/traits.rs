@@ -132,6 +132,31 @@ impl<'a> TraitChecker<'a> {
         }
     }
 
+    /// G1: is this a nominal user-declared trait (registered, not `duck`)?
+    /// Builtin/auto-derived traits (Equal, Comparable, …) are handled by
+    /// eligibility and keep structural matching; only user-declared traits
+    /// require an explicit `extend T with Trait` conformance.
+    fn is_nominal_user_trait(&self, trait_name: &str) -> bool {
+        let base = trait_name.split('<').next().unwrap_or(trait_name);
+        matches!(
+            self.types.get_type_id(base).and_then(|id| self.types.get(id)),
+            Some(TypeDef::Trait { is_duck: false, .. })
+        )
+    }
+
+    /// The registered TypeId of a struct/enum type, for conformance lookup.
+    fn user_type_id(&self, ty: &Type) -> Option<crate::types::TypeId> {
+        let id = match ty {
+            Type::Named(id) => *id,
+            Type::Generic { base, .. } => *base,
+            Type::UnresolvedNamed(name) => self.types.get_type_id(name)?,
+            Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name)?,
+            _ => return None,
+        };
+        matches!(self.types.get(id), Some(TypeDef::Struct { .. } | TypeDef::Enum { .. }))
+            .then_some(id)
+    }
+
     /// Check if a type satisfies a trait bound.
     pub fn check_satisfies(
         &mut self,
@@ -139,6 +164,28 @@ impl<'a> TraitChecker<'a> {
         trait_name: &str,
         span: Span,
     ) -> Result<(), TraitError> {
+        // G1 nominal gate: a user struct/enum satisfies a user-declared trait
+        // only through a declared `extend T with Trait` (or auto-derive). A
+        // matching shape without the declaration is rejected — the flip.
+        if self.is_nominal_user_trait(trait_name) {
+            if let Some(type_id) = self.user_type_id(ty) {
+                if !self.types.declares_conformance(type_id, trait_name) {
+                    return Err(TraitError::NotSatisfied {
+                        ty: self.type_name(ty),
+                        trait_name: trait_name.to_string(),
+                        span,
+                    });
+                }
+                // CC1: a conditional conformance holds only for instantiations
+                // that satisfy the `where` clause, checked here per instantiation.
+                if let Some(cond) = self.types.conformance_condition(type_id, trait_name).cloned() {
+                    if let Some(err) = self.check_conformance_condition(ty, type_id, &cond, span) {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+
         // Get the trait's required methods
         let required_methods = self.get_trait_methods(trait_name)?;
 
@@ -172,6 +219,53 @@ impl<'a> TraitChecker<'a> {
         }
 
         Ok(())
+    }
+
+    /// CC1: verify a conditional conformance's `where` clause against the
+    /// concrete generic arguments. Maps the type's params to the instantiation's
+    /// args and checks each bound. Returns the first failure, or None if the
+    /// condition holds (or the args aren't concrete yet — deferred).
+    fn check_conformance_condition(
+        &mut self,
+        ty: &Type,
+        type_id: crate::types::TypeId,
+        cond: &[(String, Vec<String>)],
+        span: Span,
+    ) -> Option<TraitError> {
+        use crate::types::GenericArg;
+        let type_params = match self.types.get(type_id) {
+            Some(TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. }) => {
+                type_params.clone()
+            }
+            _ => return None,
+        };
+        let args: Vec<Type> = match ty {
+            Type::Generic { args, .. } => args.iter().filter_map(|a| match a {
+                GenericArg::Type(t) => Some((**t).clone()),
+                _ => None,
+            }).collect(),
+            // Not instantiated with concrete type args — defer (checked at the
+            // outermost concrete use).
+            _ => return None,
+        };
+        // Bail if any argument is still abstract (a type var or bare param) —
+        // the condition is verified once the args become concrete.
+        if args.iter().any(is_abstract_arg) {
+            return None;
+        }
+        let subst: std::collections::HashMap<&str, &Type> =
+            type_params.iter().map(|s| s.as_str()).zip(args.iter().map(|t| t)).collect();
+        for (param, bounds) in cond {
+            if let Some(arg_ty) = subst.get(param.as_str()) {
+                let arg_ty = (*arg_ty).clone();
+                for bound in bounds {
+                    if let Err(e) = self.check_satisfies(&arg_ty, bound, span) {
+                        return Some(e);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Check if a type satisfies all bounds.
@@ -347,20 +441,17 @@ impl<'a> TraitChecker<'a> {
 
     /// Get methods available on a type.
     fn get_type_methods(&self, ty: &Type) -> Vec<MethodSig> {
-        match ty {
-            Type::Named(id) => {
-                if let Some(def) = self.types.get(*id) {
-                    match def {
-                        TypeDef::Struct { methods, .. } => methods.clone(),
-                        TypeDef::Enum { methods, .. } => methods.clone(),
-                        TypeDef::Trait { methods, .. } => methods.clone(),
-                        TypeDef::Union { .. } | TypeDef::NominalAlias { .. } => Vec::new(),
-                    }
-                } else {
-                    Vec::new()
-                }
-            }
-            // Primitives have builtin methods checked separately
+        let id = match ty {
+            Type::Named(id) => Some(*id),
+            // A generic instantiation carries the base type's methods.
+            Type::Generic { base, .. } => Some(*base),
+            _ => None,
+        };
+        match id.and_then(|id| self.types.get(id)) {
+            Some(TypeDef::Struct { methods, .. }) => methods.clone(),
+            Some(TypeDef::Enum { methods, .. }) => methods.clone(),
+            Some(TypeDef::Trait { methods, .. }) => methods.clone(),
+            // Primitives / unions / aliases have builtin methods checked separately.
             _ => Vec::new(),
         }
     }
@@ -511,6 +602,19 @@ fn is_self_placeholder(ty: &Type) -> bool {
     matches!(ty, Type::Var(_)) || matches!(ty, Type::UnresolvedNamed(n) if n == "Self")
 }
 
+/// A generic argument that isn't a concrete type yet — an inference var or a
+/// bare type parameter. CC1 conditions on these are deferred until concrete.
+fn is_abstract_arg(ty: &Type) -> bool {
+    match ty {
+        Type::Var(_) | Type::Error => true,
+        Type::UnresolvedNamed(n) => {
+            let mut chars = n.chars();
+            matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
+        }
+        _ => false,
+    }
+}
+
 pub fn implements_trait(
     types: &TypeTable,
     ty: &Type,
@@ -553,5 +657,81 @@ mod tests {
         assert!(implements_trait(&types, &Type::I32, "Add"));
         assert!(implements_trait(&types, &Type::I32, "Equal"));
         assert!(implements_trait(&types, &Type::I32, "Comparable"));
+    }
+
+    // CC1: `extend Ring<T> with Show where T: Show` — the conformance holds for
+    // Ring<Coin> (Coin: Show) and fails for Ring<Blob> (Blob not Show).
+    #[test]
+    fn conditional_conformance_checks_argument() {
+        use crate::checker::{MethodSig, SelfParam};
+        use crate::types::GenericArg;
+        use rask_ast::Span;
+
+        let mut types = TypeTable::new();
+        let show = || MethodSig {
+            name: "show".to_string(),
+            self_param: SelfParam::Value,
+            params: vec![],
+            ret: Type::String,
+        };
+
+        types.register_type(TypeDef::Trait {
+            name: "Show".to_string(),
+            super_traits: vec![],
+            methods: vec![show()],
+            generic_methods: vec![],
+            is_unsafe: false,
+            is_duck: false,
+        });
+        let ring = types.register_type(TypeDef::Struct {
+            name: "Ring".to_string(),
+            type_params: vec!["T".to_string()],
+            fields: vec![],
+            methods: vec![show()],
+            is_resource: false,
+            is_unique: false,
+            is_binary: false,
+            private_fields: vec![],
+            is_transitive_resource: false,
+        });
+        let coin = types.register_type(TypeDef::Struct {
+            name: "Coin".to_string(),
+            type_params: vec![],
+            fields: vec![],
+            methods: vec![show()],
+            is_resource: false,
+            is_unique: false,
+            is_binary: false,
+            private_fields: vec![],
+            is_transitive_resource: false,
+        });
+        let blob = types.register_type(TypeDef::Struct {
+            name: "Blob".to_string(),
+            type_params: vec![],
+            fields: vec![],
+            methods: vec![],
+            is_resource: false,
+            is_unique: false,
+            is_binary: false,
+            private_fields: vec![],
+            is_transitive_resource: false,
+        });
+
+        // extend Ring<T> with Show where T: Show
+        types.record_conformance(ring, "Show");
+        types.record_conformance_condition(ring, "Show", vec![("T".to_string(), vec!["Show".to_string()])]);
+        // extend Coin with Show
+        types.record_conformance(coin, "Show");
+
+        let ring_of = |arg: crate::types::TypeId| Type::Generic {
+            base: ring,
+            args: vec![GenericArg::Type(Box::new(Type::Named(arg)))],
+        };
+
+        let mut checker = TraitChecker::new(&types);
+        assert!(checker.check_satisfies(&ring_of(coin), "Show", Span::new(0, 0)).is_ok(),
+            "Ring<Coin> should satisfy Show (Coin: Show)");
+        assert!(checker.check_satisfies(&ring_of(blob), "Show", Span::new(0, 0)).is_err(),
+            "Ring<Blob> must NOT satisfy Show (Blob is not Show)");
     }
 }

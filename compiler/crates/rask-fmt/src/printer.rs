@@ -704,11 +704,21 @@ impl<'a> Printer<'a> {
 
     fn format_impl_decl(&mut self, imp: &ImplDecl) {
         self.emit_indent();
+        if imp.is_scoped {
+            self.emit("scoped ");
+        }
         self.emit("extend ");
         self.emit(&imp.target_ty);
-        if let Some(ref trait_name) = imp.trait_name {
+        if !imp.trait_names.is_empty() {
             self.emit(" with ");
-            self.emit(trait_name);
+            self.emit(&imp.trait_names.join(", "));
+        }
+        if !imp.where_bounds.is_empty() {
+            let clause: Vec<String> = imp.where_bounds.iter()
+                .map(|tp| format!("{}: {}", tp.name, tp.bounds.join(" + ")))
+                .collect();
+            self.emit(" where ");
+            self.emit(&clause.join(", "));
         }
         self.emit(" {");
         self.emit_newline();

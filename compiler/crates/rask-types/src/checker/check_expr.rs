@@ -509,7 +509,18 @@ impl TypeChecker {
             }
 
             ExprKind::StructLit { name, fields, .. } => {
-                if let Some(ty) = self.types.lookup(name) {
+                // A struct-lit name may carry explicit generic args:
+                // `Ring<i64> { ... }`. Look up the base, remember the args.
+                let base_name = name.split('<').next().unwrap_or(name);
+                let explicit_args: Option<Vec<GenericArg>> = if name.contains('<') {
+                    match parse_type_string(name, &self.types) {
+                        Ok(Type::Generic { args, .. }) => Some(args),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(ty) = self.types.lookup(base_name) {
                     if let Type::Named(type_id) = &ty {
                         let (struct_fields, type_params, private_fields) = match self.types.get(*type_id) {
                             Some(TypeDef::Struct { fields: sf, type_params: tp, private_fields: pf, .. }) => {
@@ -558,10 +569,14 @@ impl TypeChecker {
                             }
                             ty
                         } else {
-                            // Generic struct: create fresh vars, substitute into fields
-                            let fresh_args: Vec<GenericArg> = type_params.iter()
-                                .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
-                                .collect();
+                            // Generic struct: use explicit args if written
+                            // (`Ring<i64> { }`), else fresh inference vars.
+                            let fresh_args: Vec<GenericArg> = match &explicit_args {
+                                Some(args) if args.len() == type_params.len() => args.clone(),
+                                _ => type_params.iter()
+                                    .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
+                                    .collect(),
+                            };
                             let subst = Self::build_type_param_subst(&type_params, &fresh_args);
 
                             for field_init in fields {
@@ -1459,12 +1474,17 @@ impl TypeChecker {
         // links the fresh vars to concrete types from the call arguments.
         let generic_subst: Option<Vec<(String, Type)>> = if let ExprKind::Ident(_) = &func.kind {
             // Resolve the callee's SymbolId, then look up its type params
-            self.resolved.resolutions.get(&func.id)
-                .and_then(|sym_id| self.fn_type_params.get(sym_id).cloned())
-                .map(|type_params| {
+            self.resolved.resolutions.get(&func.id).copied()
+                .and_then(|sym_id| self.fn_type_params.get(&sym_id).cloned().map(|tp| (sym_id, tp)))
+                .map(|(sym_id, type_params)| {
+                    let bounds = self.fn_type_param_bounds.get(&sym_id).cloned();
                     let pairs: Vec<(String, Type)> = type_params.into_iter()
                         .map(|name| {
                             let fresh = self.ctx.fresh_var();
+                            // #314: obligate the type arg to satisfy its bounds.
+                            if let Some(param_bounds) = bounds.as_ref().and_then(|b| b.get(&name)) {
+                                self.pending_bound_checks.push((fresh.clone(), param_bounds.clone(), span));
+                            }
                             (name, fresh)
                         })
                         .collect();

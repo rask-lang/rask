@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: calling a method the type param's bounds don't provide (#314)
+// Expected: typecheck error E0313 — no method `bark` provided by the bounds on `T`
+
+trait Greeter {
+    func greet(self) -> string
+}
+
+func announce(g: T) -> string where T: Greeter {
+    // `bark` isn't declared by Greeter, so the bound doesn't bring it into scope.
+    return g.bark()
+}
+
+func main() {
+    println("unused")
+}

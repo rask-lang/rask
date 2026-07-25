@@ -87,9 +87,10 @@ fn decl_to_symbol(decl: &Decl, source: &str, idx: &LineIndex) -> Option<Document
 }
 
 fn impl_name(i: &ImplDecl) -> String {
-    match &i.trait_name {
-        Some(t) => format!("{} for {}", t, i.target_ty),
-        None => i.target_ty.clone(),
+    if i.trait_names.is_empty() {
+        i.target_ty.clone()
+    } else {
+        format!("{} for {}", i.trait_names.join(", "), i.target_ty)
     }
 }
 

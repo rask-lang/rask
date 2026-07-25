@@ -416,6 +416,31 @@ fn error_nonexhaustive_match() {
 }
 
 #[test]
+fn error_trait_bound_unsatisfied() {
+    assert!(compile_error("trait_bound_unsatisfied.rk"), "should reject a type that doesn't implement the bound's trait (#314)");
+}
+
+#[test]
+fn error_trait_bound_missing_method() {
+    assert!(compile_error("trait_bound_missing_method.rk"), "should reject a method the bounds don't provide (#314)");
+}
+
+#[test]
+fn error_nominal_conformance_required() {
+    assert!(compile_error("nominal_conformance_required.rk"), "should reject a structural match with no declared conformance (G1/#283)");
+}
+
+#[test]
+fn error_conformance_missing_method() {
+    assert!(compile_error("conformance_missing_method.rk"), "should reject `extend T with Trait` when the type lacks the trait's method (G1)");
+}
+
+#[test]
+fn error_conditional_conformance_unmet() {
+    assert!(compile_error("conditional_conformance_unmet.rk"), "should reject Ring<Blob> when the CC condition `T: Show` isn't met (CC1)");
+}
+
+#[test]
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
 }
