@@ -53,6 +53,15 @@ impl TypeChecker {
                             .find(|s| s.name == base_name && matches!(s.kind, SymbolKind::Function { .. }))
                         {
                             self.fn_type_params.insert(sym.id, type_param_names);
+                            // #314: record bounds so call sites can verify the
+                            // type arg satisfies the declared trait bounds.
+                            let bounds: std::collections::HashMap<String, Vec<String>> = f.type_params.iter()
+                                .filter(|tp| !tp.bounds.is_empty())
+                                .map(|tp| (tp.name.clone(), tp.bounds.clone()))
+                                .collect();
+                            if !bounds.is_empty() {
+                                self.fn_type_param_bounds.insert(sym.id, bounds);
+                            }
                         }
                     }
                 }

@@ -1459,12 +1459,17 @@ impl TypeChecker {
         // links the fresh vars to concrete types from the call arguments.
         let generic_subst: Option<Vec<(String, Type)>> = if let ExprKind::Ident(_) = &func.kind {
             // Resolve the callee's SymbolId, then look up its type params
-            self.resolved.resolutions.get(&func.id)
-                .and_then(|sym_id| self.fn_type_params.get(sym_id).cloned())
-                .map(|type_params| {
+            self.resolved.resolutions.get(&func.id).copied()
+                .and_then(|sym_id| self.fn_type_params.get(&sym_id).cloned().map(|tp| (sym_id, tp)))
+                .map(|(sym_id, type_params)| {
+                    let bounds = self.fn_type_param_bounds.get(&sym_id).cloned();
                     let pairs: Vec<(String, Type)> = type_params.into_iter()
                         .map(|name| {
                             let fresh = self.ctx.fresh_var();
+                            // #314: obligate the type arg to satisfy its bounds.
+                            if let Some(param_bounds) = bounds.as_ref().and_then(|b| b.get(&name)) {
+                                self.pending_bound_checks.push((fresh.clone(), param_bounds.clone(), span));
+                            }
                             (name, fresh)
                         })
                         .collect();

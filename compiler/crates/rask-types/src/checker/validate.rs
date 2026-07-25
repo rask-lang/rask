@@ -27,6 +27,45 @@ impl TypeChecker {
         self.errors.extend(errs);
     }
 
+    /// #314: verify each generic call's type argument satisfies the trait
+    /// bounds declared on the callee. Runs after constraint solving so the
+    /// type-arg vars are resolved. Type args that are still generic (a bound
+    /// param forwarded to another generic call) or unresolved are skipped —
+    /// they're checked at the outermost concrete call site.
+    pub(super) fn validate_pending_bound_checks(&mut self) {
+        let pending = std::mem::take(&mut self.pending_bound_checks);
+        // Dedup identical (type, trait, span) reports.
+        let mut reported: Vec<(String, String, Span)> = Vec::new();
+        for (var, traits, span) in pending {
+            // Resolve `UnresolvedNamed("Foo")` to `Named(id)` so `check_satisfies`
+            // can find the type's methods (an unresolved name reports none).
+            let ty = self.resolve_named(&self.ctx.apply(&var));
+            // Only check concrete, registered types — skip vars, errors, and
+            // bare type parameters (unresolved names with no registered type).
+            match &ty {
+                Type::Var(_) | Type::Error => continue,
+                Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => continue,
+                _ => {}
+            }
+            let bound = crate::traits::TraitBound::new("_", traits);
+            if let Err(errs) = crate::traits::verify_instantiation(&self.types, &ty, std::slice::from_ref(&bound), span) {
+                for e in errs {
+                    let (ty_name, trait_name) = trait_error_parts(&e);
+                    let key = (ty_name.clone(), trait_name.clone(), span);
+                    if reported.contains(&key) {
+                        continue;
+                    }
+                    reported.push(key);
+                    self.errors.push(TypeError::TraitNotSatisfied {
+                        ty: ty_name,
+                        trait_name,
+                        span,
+                    });
+                }
+            }
+        }
+    }
+
     /// RC1/RC3: record a site whose type must not be a `Vec`/`Map` of linear
     /// values. Validated after constraint solving (see
     /// `validate_pending_linear_containers`) so inferred element types are
@@ -295,4 +334,16 @@ fn implements_error_message(ty: &Type, checker: &TypeChecker) -> bool {
             && m.params.is_empty()
             && matches!(m.ret, Type::String)
     })
+}
+
+/// Best-effort `(type name, trait name)` for reporting a failed bound.
+fn trait_error_parts(e: &crate::traits::TraitError) -> (String, String) {
+    use crate::traits::TraitError::*;
+    match e {
+        NotSatisfied { ty, trait_name, .. } => (ty.clone(), trait_name.clone()),
+        MissingMethod { ty, trait_name, .. } => (ty.clone(), trait_name.clone()),
+        SignatureMismatch { ty, method, .. } => (ty.clone(), method.clone()),
+        UnknownTrait(name) => (String::from("_"), name.clone()),
+        ConflictingMethods { trait1, .. } => (String::from("_"), trait1.clone()),
+    }
 }

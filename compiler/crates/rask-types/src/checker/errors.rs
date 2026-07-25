@@ -32,6 +32,14 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
+    /// #314: method called on a type param whose bounds don't provide it.
+    #[error("no method '{method}' provided by the bounds on `{param}`")]
+    UnboundedTypeParamMethod {
+        param: String,
+        method: String,
+        bounds: Vec<String>,
+        span: Span,
+    },
     #[error("infinite type: type variable would create infinite type")]
     InfiniteType { var: TypeVarId, ty: Type, span: Span },
     #[error("cannot infer type")]

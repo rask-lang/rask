@@ -712,6 +712,14 @@ impl TypeChecker {
 
                 Ok(progress)
             }
+            // #314: a bounded type param `T where T: Greeter` carries the
+            // trait's method set. Resolve statically against the bound; mono
+            // later substitutes T with the concrete type and re-resolves.
+            Type::UnresolvedNamed(ref name)
+                if self.current_type_param_bounds.contains_key(name) =>
+            {
+                self.resolve_bounded_type_param_method(name.clone(), method, args, ret, span)
+            }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty,
@@ -722,6 +730,96 @@ impl TypeChecker {
                 });
                 Ok(false)
             }
+        }
+    }
+
+    /// Resolve a method call on a type parameter through its trait bounds (#314).
+    /// The bound brings the trait's methods into scope on the parameter; the
+    /// `Self` position in each signature is the parameter itself.
+    fn resolve_bounded_type_param_method(
+        &mut self,
+        param: String,
+        method: String,
+        args: Vec<Type>,
+        ret: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let bounds = self
+            .current_type_param_bounds
+            .get(&param)
+            .cloned()
+            .unwrap_or_default();
+
+        // Find a bound trait that declares `method`, pulling out its signature.
+        let receiver = Type::UnresolvedNamed(param.clone());
+        let sig = {
+            let checker = crate::traits::TraitChecker::new(&self.types);
+            bounds.iter().find_map(|tr| {
+                let base = tr.split('<').next().unwrap_or(tr);
+                checker
+                    .get_trait_methods_public(base)
+                    .into_iter()
+                    .find(|m| m.name == method)
+            })
+        };
+
+        let Some(sig) = sig else {
+            // Bounded, but no bound provides this method.
+            return Err(TypeError::UnboundedTypeParamMethod {
+                param,
+                method,
+                bounds,
+                span,
+            });
+        };
+
+        if sig.params.len() != args.len() {
+            return Err(TypeError::ArityMismatch {
+                expected: sig.params.len(),
+                found: args.len(),
+                span,
+            });
+        }
+
+        let mut progress = false;
+        for ((param_ty, _mode), arg) in sig.params.iter().zip(args.iter()) {
+            let substituted = Self::substitute_self_placeholder(param_ty, &receiver);
+            if self.unify(&substituted, arg, span)? {
+                progress = true;
+            }
+        }
+        let substituted_ret = Self::substitute_self_placeholder(&sig.ret, &receiver);
+        if self.unify(&substituted_ret, &ret, span)? {
+            progress = true;
+        }
+        Ok(progress)
+    }
+
+    /// Replace the `Self` placeholder in a trait-method signature with the
+    /// receiver type. User traits spell it `Self`; builtin trait sigs use the
+    /// `Var(0)` placeholder (see `get_builtin_trait_methods`).
+    fn substitute_self_placeholder(ty: &Type, receiver: &Type) -> Type {
+        match ty {
+            Type::UnresolvedNamed(n) if n == "Self" => receiver.clone(),
+            Type::Var(crate::types::TypeVarId(0)) => receiver.clone(),
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(Self::substitute_self_placeholder(ok, receiver)),
+                err: Box::new(Self::substitute_self_placeholder(err, receiver)),
+            },
+            Type::Slice(elem) => Type::Slice(Box::new(Self::substitute_self_placeholder(elem, receiver))),
+            Type::Array { elem, len } => Type::Array {
+                elem: Box::new(Self::substitute_self_placeholder(elem, receiver)),
+                len: *len,
+            },
+            Type::RawPtr(elem) => Type::RawPtr(Box::new(Self::substitute_self_placeholder(elem, receiver))),
+            Type::Tuple(elems) => Type::Tuple(
+                elems.iter().map(|e| Self::substitute_self_placeholder(e, receiver)).collect(),
+            ),
+            Type::Fn { params, ret } => Type::Fn {
+                params: params.iter().map(|p| Self::substitute_self_placeholder(p, receiver)).collect(),
+                ret: Box::new(Self::substitute_self_placeholder(ret, receiver)),
+            },
+            _ => ty.clone(),
         }
     }
 

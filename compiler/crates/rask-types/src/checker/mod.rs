@@ -83,6 +83,9 @@ pub struct TypeChecker {
     pub(super) current_return_type: Option<Type>,
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
+    /// Trait bounds on the current function's type params (name → trait names).
+    /// Lets `g.greet()` resolve against `T: Greeter` for static dispatch (#314).
+    pub(super) current_type_param_bounds: HashMap<String, Vec<String>>,
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
     pub(super) local_types: Vec<HashMap<String, (Type, BindingKind)>>,
@@ -97,6 +100,12 @@ pub struct TypeChecker {
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
+    /// SymbolId → (type param name → trait bounds) for generic functions.
+    /// Used to check bound satisfaction at call sites (#314).
+    pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<String>>>,
+    /// Call-site bound obligations: (type-arg var, bound trait names, span).
+    /// Verified after constraint solving resolves the var to a concrete type.
+    pub(super) pending_bound_checks: Vec<(Type, Vec<String>, rask_ast::Span)>,
     /// Whether we're inside an `unsafe {}` block (for validating pointer ops and extern calls).
     pub(super) in_unsafe: bool,
     /// Collected unsafe operations with their locations (for tooling/auditing).
@@ -151,11 +160,14 @@ impl TypeChecker {
             errors: Vec::new(),
             current_return_type: None,
             current_self_type: None,
+            current_type_param_bounds: HashMap::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
             fn_type_params: HashMap::new(),
+            fn_type_param_bounds: HashMap::new(),
+            pending_bound_checks: Vec::new(),
             in_unsafe: false,
             unsafe_ops: Vec::new(),
             inferred_fn_types: HashMap::new(),
@@ -205,6 +217,9 @@ impl TypeChecker {
         // K for Map, Handle<T> for Pool) BEFORE literal defaults land, so a
         // literal index can adapt to an integer Map key instead of forcing i32.
         self.validate_pending_index();
+
+        // #314: verify generic call type args satisfy their declared bounds.
+        self.validate_pending_bound_checks();
 
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();

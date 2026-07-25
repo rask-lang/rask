@@ -353,6 +353,16 @@ fn error_nonexhaustive_match() {
 }
 
 #[test]
+fn error_trait_bound_unsatisfied() {
+    assert!(compile_error("trait_bound_unsatisfied.rk"), "should reject a type that doesn't implement the bound's trait (#314)");
+}
+
+#[test]
+fn error_trait_bound_missing_method() {
+    assert!(compile_error("trait_bound_missing_method.rk"), "should reject a method the bounds don't provide (#314)");
+}
+
+#[test]
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
 }
