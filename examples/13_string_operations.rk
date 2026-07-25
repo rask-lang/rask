@@ -31,17 +31,17 @@ func main() {
     print(messy)
     print("'\n")
 
-    const trimmed = messy.trim()
+    const trimmed = messy.trim().to_string()
     print("Trimmed: '")
     print(trimmed)
     print("'\n")
 
-    const trim_start = messy.trim_start()
+    const trim_start = messy.trim_start().to_string()
     print("Trim start: '")
     print(trim_start)
     print("'\n")
 
-    const trim_end = messy.trim_end()
+    const trim_end = messy.trim_end().to_string()
     print("Trim end: '")
     print(trim_end)
     print("'\n\n")
@@ -64,7 +64,7 @@ func main() {
 
     // Splitting strings
     const sentence = "one two three four five"
-    const words = sentence.split_whitespace()
+    const words = sentence.split_whitespace().collect()
 
     print("Words: ")
     for word in words.iter() {
@@ -76,7 +76,7 @@ func main() {
 
     // Split by delimiter
     const csv = "apple,banana,orange,grape"
-    const fruits = csv.split(",")
+    const fruits = csv.split(",").collect()
 
     print("Fruits: ")
     for fruit in fruits.iter() {
@@ -87,8 +87,8 @@ func main() {
 
     // String slicing
     const full = "Hello, World!"
-    const slice1 = full[0..5]    // "Hello"
-    const slice2 = full[7..]     // "World!"
+    const slice1 = full[0..5].to_string()    // "Hello"
+    const slice2 = full[7..].to_string()     // "World!"
 
     print("Slice [0..5]: ")
     print(slice1)
@@ -123,7 +123,7 @@ func main() {
         print("\n")
     } else as e {
         print("Parse error: ")
-        print(e.message())
+        print("{e}")
         print("\n")
     }
 
@@ -135,7 +135,7 @@ func main() {
         print("This shouldn't happen\n")
     } else as e {
         print("Expected error: ")
-        print(e.message())
+        print("{e}")
         print("\n")
     }
 
@@ -173,7 +173,7 @@ func main() {
 
     // Repeating strings
     const pattern = "ab"
-    const repeated = pattern.repeat(3)
+    const repeated = string.repeat(pattern, 3)
 
     print("Repeated: ")
     print(repeated)

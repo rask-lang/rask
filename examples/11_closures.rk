@@ -13,7 +13,7 @@ func apply_binary(f: |i32, i32| -> i32, a: i32, b: i32) -> i32 {
 
 // Higher-order function that returns a closure
 func make_adder(amount: i32) -> |i32| -> i32 {
-    return |x: i32| -> i32 { return x + amount }
+    return own |x: i32| -> i32 { return x + amount }
 }
 
 // Function that applies a function twice
