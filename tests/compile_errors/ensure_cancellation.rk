@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: ensure cancellation must be statically definite (C3–C4)
+//
+// A resource with a pending `ensure` may be consumed before scope exit
+// (which cancels the ensure, C1). But whether the ensure runs must be
+// decided at compile time — never by hidden runtime state. If a value is
+// consumed on some paths but not all and the paths merge before the exit,
+// its consumption state is indefinite: compile error (E0821).
+// Spec: ctrl.ensure/C3, C4. Regression coverage for issue #293.
+
+@resource
+struct Tx { id: i32 }
+
+extend Tx {
+    func commit(take self) {}
+    func rollback(take self) {}
+}
+
+// --- Consumed in an if-without-else, then paths merge (C4) ---
+// ERROR: consumption of 'tx' depends on which path ran
+func maybe_consume_if(fast: bool) {
+    const tx = Tx { id: 1 }
+    ensure tx.rollback()
+
+    if fast {
+        tx.commit()        // consumed only on this branch
+    }
+
+    // scope exits with tx maybe-consumed — indefinite
+}
+
+// --- Consumed in one match arm only, arms merge (C4) ---
+// ERROR: consumption of 'tx' depends on which path ran
+func maybe_consume_match(n: i32) {
+    const tx = Tx { id: 2 }
+    ensure tx.rollback()
+
+    match n {
+        0 => { tx.commit() }   // consumed on this arm only
+        _ => {}                // this arm leaves tx live
+    }
+}
+
+// --- Consumed inside a nested block, then merge (C4) ---
+// ERROR: consumption of 'tx' depends on which path ran
+func maybe_consume_nested(fast: bool) {
+    const tx = Tx { id: 3 }
+    ensure tx.rollback()
+
+    if fast {
+        {
+            tx.commit()
+        }
+    }
+    const done = 1
+}
+
+func main() {}

@@ -40,7 +40,7 @@ undermine the core promise (mechanical safety) and get fixed before feature work
 | 1.7 | Index expression types never checked (`vec[string]` typechecks). | stdlib.collections | — | #310 |
 | 1.8 | Linear values in containers unenforced: `Vec<@resource>` / `Map<_, @resource>` accepted; values silently droppable. `Pool<Resource>` drop-non-empty panic unverified. | mem.resource-types/RC1, RC3, R5 | RC1/RC3 now enforced in checker (E0820) | #355 (RC1/RC3 done); #356 (R5 + take_all, split); #357 (native `Pool.remove!` codegen, blocks RC2 native) |
 | 1.9 | Cross-task ownership rules unimplemented: channel send doesn't consume, borrows can cross task boundaries. | mem.ownership/T1–T3 | T1 send-consumption + take-param consumption now enforced; T3 borrow-capture already rejected by SL2; T2 structural | #359 (done, folds in #296); #360 (native non-scalar channel recv) |
-| 1.10 | ensure cancellation is runtime drop-flags, spec requires static definiteness. | ctrl.ensure/C3–C5 | spec's own status section | #293, #295, #296 |
+| 1.10 | ensure cancellation is runtime drop-flags, spec requires static definiteness. | ctrl.ensure/C3–C5 | C4 enforced (E0821); maybe-consumed merges rejected. Runtime flag kept as per-exit mechanism, backstopped by the static guarantee | #293 (done), #295 (mooted), #296 (done) |
 
 Exit criteria: each item has a compile-error (or panic) conformance test in `tests/compile_errors/` or
 `tests/suite/`, passing on both backends. Ready-to-use session prompts: [PLAN_PROMPTS.md](PLAN_PROMPTS.md).
