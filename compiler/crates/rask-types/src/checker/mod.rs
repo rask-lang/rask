@@ -137,6 +137,10 @@ pub struct TypeChecker {
     /// even when inference leaves the receiver as a bare type variable in
     /// `node_types` (deferred `Sender.send` resolution).
     pub(super) channel_send_sites: std::collections::HashSet<rask_ast::Span>,
+    /// ER3/ER4: `T or E` sites in type declarations (struct/enum/union/alias),
+    /// validated after `register_impl_methods` so an error type whose `message()`
+    /// comes from an `extend` block is recognized regardless of declaration order.
+    pub(super) pending_result_validations: Vec<(Type, rask_ast::Span)>,
 }
 
 impl TypeChecker {
@@ -171,6 +175,7 @@ impl TypeChecker {
             pending_index: Vec::new(),
             pending_linear_containers: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
+            pending_result_validations: Vec::new(),
         }
     }
 
