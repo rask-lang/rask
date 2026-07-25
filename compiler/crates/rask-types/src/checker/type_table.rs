@@ -28,6 +28,9 @@ pub struct TypeTable {
     pub(super) builtin_modules: BuiltinModules,
     /// B1–G4: binary struct metadata indexed by TypeId
     pub binary_structs: HashMap<TypeId, BinaryStructInfo>,
+    /// G1: declared/derived trait conformances (nominal). TypeId → trait base
+    /// names the type conforms to, from `extend T with Trait` and auto-derive.
+    pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
 }
 
 impl TypeTable {
@@ -41,6 +44,7 @@ impl TypeTable {
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
             binary_structs: HashMap::new(),
+            conformances: HashMap::new(),
         };
         table.register_builtins();
         table
@@ -216,6 +220,19 @@ impl TypeTable {
     /// Get a mutable type definition by ID.
     pub fn get_mut(&mut self, id: TypeId) -> Option<&mut TypeDef> {
         self.types.get_mut(id.0 as usize)
+    }
+
+    /// G1: record that a type conforms to a trait (declared or auto-derived).
+    /// Trait names are stored base-only (generic args stripped).
+    pub fn record_conformance(&mut self, type_id: TypeId, trait_name: &str) {
+        let base = trait_name.split('<').next().unwrap_or(trait_name).trim().to_string();
+        self.conformances.entry(type_id).or_default().insert(base);
+    }
+
+    /// G1: does the type declare (or auto-derive) conformance to the trait?
+    pub fn declares_conformance(&self, type_id: TypeId, trait_name: &str) -> bool {
+        let base = trait_name.split('<').next().unwrap_or(trait_name).trim();
+        self.conformances.get(&type_id).is_some_and(|set| set.contains(base))
     }
 
     /// Check if a name is registered.

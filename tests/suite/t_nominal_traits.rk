@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Nominal trait conformance (G1/#283): a type satisfies a user trait through a
+// declared `extend T with Trait`. `duck trait` opts back into shape-matching.
+// CD1: one `extend` header can declare several conformances at once.
+
+trait Greeter {
+    func greet(self) -> string
+}
+
+// duck trait — satisfied by shape, no declaration needed.
+duck trait Frobber {
+    func frob(self) -> i64
+}
+
+trait Countable { func count(self) -> i64 }
+trait Sizable { func size(self) -> i64 }
+
+struct Dog { name: string }
+extend Dog with Greeter {
+    func greet(self) -> string { return "woof:{self.name}" }
+}
+
+struct Widget { v: i64 }
+// No `with Frobber` — a duck trait matches by shape.
+extend Widget {
+    func frob(self) -> i64 { return self.v }
+}
+
+struct Bag { n: i64 }
+// CD1: one header, two nominal conformances.
+extend Bag with Countable, Sizable {
+    func count(self) -> i64 { return self.n }
+    func size(self) -> i64 { return self.n * 2 }
+}
+
+func announce(g: T) -> string where T: Greeter { return g.greet() }
+func frob_it(f: T) -> i64 where T: Frobber { return f.frob() }
+func total(c: T) -> i64 where T: Countable + Sizable { return c.count() + c.size() }
+
+test "nominal user trait via declared conformance" {
+    assert announce(Dog { name: "Rex" }) == "woof:Rex"
+}
+
+test "duck trait matches by shape" {
+    assert frob_it(Widget { v: 42 }) == 42
+}
+
+test "comma-list conformance satisfies both bounds" {
+    assert total(Bag { n: 5 }) == 15
+}
+
+func main() {}

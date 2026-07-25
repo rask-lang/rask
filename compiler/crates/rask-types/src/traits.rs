@@ -132,6 +132,31 @@ impl<'a> TraitChecker<'a> {
         }
     }
 
+    /// G1: is this a nominal user-declared trait (registered, not `duck`)?
+    /// Builtin/auto-derived traits (Equal, Comparable, …) are handled by
+    /// eligibility and keep structural matching; only user-declared traits
+    /// require an explicit `extend T with Trait` conformance.
+    fn is_nominal_user_trait(&self, trait_name: &str) -> bool {
+        let base = trait_name.split('<').next().unwrap_or(trait_name);
+        matches!(
+            self.types.get_type_id(base).and_then(|id| self.types.get(id)),
+            Some(TypeDef::Trait { is_duck: false, .. })
+        )
+    }
+
+    /// The registered TypeId of a struct/enum type, for conformance lookup.
+    fn user_type_id(&self, ty: &Type) -> Option<crate::types::TypeId> {
+        let id = match ty {
+            Type::Named(id) => *id,
+            Type::Generic { base, .. } => *base,
+            Type::UnresolvedNamed(name) => self.types.get_type_id(name)?,
+            Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name)?,
+            _ => return None,
+        };
+        matches!(self.types.get(id), Some(TypeDef::Struct { .. } | TypeDef::Enum { .. }))
+            .then_some(id)
+    }
+
     /// Check if a type satisfies a trait bound.
     pub fn check_satisfies(
         &mut self,
@@ -139,6 +164,21 @@ impl<'a> TraitChecker<'a> {
         trait_name: &str,
         span: Span,
     ) -> Result<(), TraitError> {
+        // G1 nominal gate: a user struct/enum satisfies a user-declared trait
+        // only through a declared `extend T with Trait` (or auto-derive). A
+        // matching shape without the declaration is rejected — the flip.
+        if self.is_nominal_user_trait(trait_name) {
+            if let Some(type_id) = self.user_type_id(ty) {
+                if !self.types.declares_conformance(type_id, trait_name) {
+                    return Err(TraitError::NotSatisfied {
+                        ty: self.type_name(ty),
+                        trait_name: trait_name.to_string(),
+                        span,
+                    });
+                }
+            }
+        }
+
         // Get the trait's required methods
         let required_methods = self.get_trait_methods(trait_name)?;
 

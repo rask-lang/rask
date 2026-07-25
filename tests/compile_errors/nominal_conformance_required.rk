@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: structural match without a declared conformance (nominal flip, G1/#283)
+// Expected: typecheck error E0333 — `Dog` does not implement `Greeter`
+
+trait Greeter {
+    func greet(self) -> string
+}
+
+struct Dog { name: string }
+
+// Plain extend — has the method but does NOT declare `with Greeter`.
+extend Dog {
+    func greet(self) -> string { return "woof" }
+}
+
+func announce(g: T) -> string where T: Greeter {
+    return g.greet()
+}
+
+func main() {
+    // Nominal: matching the shape isn't enough without `extend Dog with Greeter`.
+    println("{announce(Dog { name: \"Rex\" })}")
+}

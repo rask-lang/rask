@@ -168,6 +168,11 @@ impl TypeChecker {
             Some(id) => id,
             None => return,
         };
+        // G1: record each declared conformance. `scoped` methods stay out of the
+        // inherent namespace (MN4) but the conformance is still declared.
+        for trait_name in &i.trait_names {
+            self.types.record_conformance(type_id, trait_name);
+        }
         let new_methods: Vec<_> = i.methods.iter().map(|m| self.method_signature(m)).collect();
         if let Some(def) = self.types.get_mut(type_id) {
             match def {
@@ -647,6 +652,19 @@ impl TypeChecker {
                             methods.extend(new_methods);
                         }
                     }
+
+                    // G1: mark auto-derived conformances so the nominal check
+                    // accepts eligible types without an explicit `extend ... with`.
+                    let eq_ok = field_types.iter().all(|ty| self.type_has_method(ty, "eq"));
+                    let hash_ok = eq_ok && field_types.iter().all(|ty| self.type_has_method(ty, "hash"));
+                    let clone_ok = field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
+                        && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
+                    let cmp_ok = field_types.iter().all(|ty| self.type_has_method(ty, "compare"));
+                    if eq_ok { self.types.record_conformance(id, "Equal"); }
+                    if hash_ok { self.types.record_conformance(id, "Hashable"); }
+                    if clone_ok { self.types.record_conformance(id, "Cloneable"); }
+                    if cmp_ok { self.types.record_conformance(id, "Comparable"); }
+                    self.types.record_conformance(id, "Debug");
                 }
                 TypeDef::Enum { variants, methods, .. } => {
                     let payload_types: Vec<Type> = variants.iter()
@@ -733,6 +751,18 @@ impl TypeChecker {
                             methods.extend(new_methods);
                         }
                     }
+
+                    // G1: mark auto-derived conformances (enum eligibility).
+                    let eq_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "eq"));
+                    let hash_ok = eq_ok && payload_types.iter().all(|ty| self.type_has_method(ty, "hash"));
+                    let clone_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
+                        && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
+                    let cmp_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "compare"));
+                    if eq_ok { self.types.record_conformance(id, "Equal"); }
+                    if hash_ok { self.types.record_conformance(id, "Hashable"); }
+                    if clone_ok { self.types.record_conformance(id, "Cloneable"); }
+                    if cmp_ok { self.types.record_conformance(id, "Comparable"); }
+                    self.types.record_conformance(id, "Debug");
                 }
                 _ => {}
             }

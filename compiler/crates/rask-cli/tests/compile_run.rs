@@ -363,6 +363,11 @@ fn error_trait_bound_missing_method() {
 }
 
 #[test]
+fn error_nominal_conformance_required() {
+    assert!(compile_error("nominal_conformance_required.rk"), "should reject a structural match with no declared conformance (G1/#283)");
+}
+
+#[test]
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
 }
