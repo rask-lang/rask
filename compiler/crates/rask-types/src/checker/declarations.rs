@@ -353,6 +353,7 @@ impl TypeChecker {
             methods,
             generic_methods,
             is_unsafe: t.is_unsafe,
+            is_duck: t.is_duck,
         });
     }
 
@@ -832,8 +833,9 @@ impl TypeChecker {
             }
             DeclKind::Impl(i) => {
                 // UT1: implementing an unsafe trait requires `unsafe extend`
-                if let Some(trait_name) = &i.trait_name {
-                    if let Some(type_id) = self.types.get_type_id(trait_name) {
+                for trait_name in &i.trait_names {
+                    let base = trait_name.split('<').next().unwrap_or(trait_name);
+                    if let Some(type_id) = self.types.get_type_id(base) {
                         if let Some(TypeDef::Trait { is_unsafe: true, .. }) = self.types.get(type_id) {
                             if !i.is_unsafe {
                                 self.errors.push(TypeError::UnsafeRequired {

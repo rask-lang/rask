@@ -631,6 +631,20 @@ impl Parser {
 
         let doc = self.take_doc();
 
+        // Contextual modifiers: `duck trait` (G1 shape-matched) and
+        // `scoped extend` (MN4). Both are plain identifiers followed by the
+        // real keyword, so no lexer keyword is needed.
+        let is_duck = matches!(self.current_kind(), TokenKind::Ident(s) if s == "duck")
+            && matches!(self.peek(1), TokenKind::Trait);
+        if is_duck {
+            self.advance();
+        }
+        let is_scoped = matches!(self.current_kind(), TokenKind::Ident(s) if s == "scoped")
+            && matches!(self.peek(1), TokenKind::Extend);
+        if is_scoped {
+            self.advance();
+        }
+
         // Detect common Rust keywords
         if let TokenKind::Ident(s) = self.current_kind() {
             if s == "pub" {
@@ -653,8 +667,8 @@ impl Parser {
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
-            TokenKind::Trait => self.parse_trait_decl(is_pub, is_unsafe, doc)?,
-            TokenKind::Extend => self.parse_impl_decl(is_unsafe, doc)?,
+            TokenKind::Trait => self.parse_trait_decl(is_pub, is_unsafe, is_duck, doc)?,
+            TokenKind::Extend => self.parse_impl_decl(is_unsafe, is_scoped, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub, doc)?,
@@ -1604,7 +1618,7 @@ impl Parser {
         }))
     }
 
-    fn parse_trait_decl(&mut self, is_pub: bool, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_trait_decl(&mut self, is_pub: bool, is_unsafe: bool, is_duck: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Trait)?;
         let name = self.expect_ident()?;
 
@@ -1647,7 +1661,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, is_unsafe, doc }))
+        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, is_unsafe, is_duck, doc }))
     }
 
     fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
@@ -1708,15 +1722,21 @@ impl Parser {
         })
     }
 
-    fn parse_impl_decl(&mut self, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_impl_decl(&mut self, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Extend)?;
         let target_ty = self.parse_type_name()?;
 
-        let trait_name = if self.match_token(&TokenKind::With) {
-            Some(self.parse_type_name()?)
-        } else {
-            None
-        };
+        // CD1: `extend T with A, B, C` — comma-separated conformance list.
+        let mut trait_names = Vec::new();
+        if self.match_token(&TokenKind::With) {
+            loop {
+                self.skip_newlines();
+                trait_names.push(self.parse_type_name()?);
+                if !self.match_token(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
 
         self.skip_newlines();
         self.expect(&TokenKind::LBrace)?;
@@ -1759,7 +1779,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Impl(ImplDecl { trait_name, target_ty, methods, is_unsafe, doc }))
+        Ok(DeclKind::Impl(ImplDecl { trait_names, target_ty, methods, is_unsafe, is_scoped, doc }))
     }
 
     fn parse_import_decl(&mut self) -> Result<DeclKind, ParseError> {

@@ -242,20 +242,32 @@ pub struct TraitDecl {
     pub is_pub: bool,
     /// Whether this is an `unsafe trait`.
     pub is_unsafe: bool,
+    /// `duck trait` — shape-matched (structural) instead of nominal (G1).
+    pub is_duck: bool,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }
 
-/// An impl block.
+/// An impl block (`extend T`, `extend T with Trait`, `extend T with A, B, C`).
 #[derive(Debug, Clone)]
 pub struct ImplDecl {
-    pub trait_name: Option<String>,
+    /// Declared trait conformances (CD1). Empty for a plain `extend T` block.
+    pub trait_names: Vec<String>,
     pub target_ty: String,
     pub methods: Vec<FnDecl>,
     /// Whether this is an `unsafe extend`.
     pub is_unsafe: bool,
+    /// `scoped extend` — methods stay out of the type's inherent namespace (MN4).
+    pub is_scoped: bool,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
+}
+
+impl ImplDecl {
+    /// The first declared trait, if any (for single-trait consumers/formatting).
+    pub fn trait_name(&self) -> Option<&String> {
+        self.trait_names.first()
+    }
 }
 
 /// An import declaration.

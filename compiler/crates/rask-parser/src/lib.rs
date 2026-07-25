@@ -1386,4 +1386,76 @@ mod tests {
         let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
         assert_eq!(t.bounds, vec!["Iterator<Item>".to_string()]);
     }
+
+    // CD1: `extend T with A, B, C` records every listed conformance.
+    #[test]
+    fn extend_conformance_list() {
+        let result = parse("extend Bag with Countable, Sizable { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Impl(ref i) => {
+                assert_eq!(i.trait_names, vec!["Countable".to_string(), "Sizable".to_string()]);
+                assert_eq!(i.target_ty, "Bag");
+                assert!(!i.is_scoped);
+            }
+            _ => panic!("expected impl"),
+        }
+    }
+
+    // Plain `extend T { }` has no declared conformances.
+    #[test]
+    fn extend_plain_no_conformance() {
+        let result = parse("extend Bag { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Impl(ref i) => assert!(i.trait_names.is_empty()),
+            _ => panic!("expected impl"),
+        }
+    }
+
+    // `duck trait` sets the structural flag.
+    #[test]
+    fn duck_trait_flag() {
+        let result = parse("duck trait Frobber { func frob(self) -> i64 }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Trait(ref t) => {
+                assert!(t.is_duck);
+                assert_eq!(t.name, "Frobber");
+            }
+            _ => panic!("expected trait"),
+        }
+    }
+
+    // A plain trait is not duck.
+    #[test]
+    fn plain_trait_not_duck() {
+        let result = parse("trait Greeter { func greet(self) -> string }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Trait(ref t) => assert!(!t.is_duck),
+            _ => panic!("expected trait"),
+        }
+    }
+
+    // MN4: `scoped extend T with Trait` sets the scoped flag.
+    #[test]
+    fn scoped_extend_flag() {
+        let result = parse("scoped extend Dog with Announcer { func greet(self, v: i32) -> string { return \"x\" } }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Impl(ref i) => {
+                assert!(i.is_scoped);
+                assert_eq!(i.trait_names, vec!["Announcer".to_string()]);
+            }
+            _ => panic!("expected impl"),
+        }
+    }
+
+    // `duck` and `scoped` stay usable as ordinary identifiers.
+    #[test]
+    fn duck_scoped_still_identifiers() {
+        let stmts = parse_body("const duck = 3\nconst scoped = duck + 1");
+        assert_eq!(stmts.len(), 2);
+    }
 }

@@ -151,11 +151,9 @@ impl Hasher {
             }
             DeclKind::Impl(i) => {
                 self.feed_tag(5);
-                if let Some(tn) = &i.trait_name {
-                    self.feed_bool(true);
+                self.feed_u32(i.trait_names.len() as u32);
+                for tn in &i.trait_names {
                     self.feed_str(tn);
-                } else {
-                    self.feed_bool(false);
                 }
                 self.feed_str(&i.target_ty);
                 for m in &i.methods {

@@ -904,13 +904,14 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    trait_name: None,
+                    trait_names: vec![],
                     target_ty: "Point".to_string(),
                     methods: vec![
                         make_method("distance", vec![("self", "Point")], Some("f64"), vec![return_stmt(None)]),
                     ],
                     doc: None,
                     is_unsafe: false,
+                    is_scoped: false,
                 }),
                 span: sp(),
             },
@@ -943,13 +944,14 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    trait_name: None,
+                    trait_names: vec![],
                     target_ty: "Counter".to_string(),
                     methods: vec![
                         make_method("increment", vec![("self", "Counter")], None, vec![return_stmt(None)]),
                     ],
                     doc: None,
                     is_unsafe: false,
+                    is_scoped: false,
                 }),
                 span: sp(),
             },
