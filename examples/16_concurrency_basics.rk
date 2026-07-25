@@ -93,17 +93,17 @@ func main() -> void or MainError {
 
     // Spawn consumer thread
     const consumer = Thread.spawn(|| {
-        const msg1 = try channel.receiver.recv()
+        const msg1 = try channel.receiver.receive()
         print("Received: ")
         print(msg1)
         print("\n")
 
-        const msg2 = try channel.receiver.recv()
+        const msg2 = try channel.receiver.receive()
         print("Received: ")
         print(msg2)
         print("\n")
 
-        const msg3 = try channel.receiver.recv()
+        const msg3 = try channel.receiver.receive()
         print("Received: ")
         print(msg3)
         print("\n")
@@ -129,7 +129,7 @@ func main() -> void or MainError {
 
     const receiver_thread = Thread.spawn(|| {
         print("Waiting to receive...\n")
-        const value = try sync_channel.receiver.recv()  // Blocks until sent
+        const value = try sync_channel.receiver.receive()  // Blocks until sent
         print("Received: ")
         print(value)
         print("\n")
@@ -149,7 +149,7 @@ func main() -> void or MainError {
     try test_channel.sender.send(999)
 
     // Try to receive
-    const maybe_msg = test_channel.receiver.try_recv()
+    const maybe_msg = test_channel.receiver.try_receive()
 
     if maybe_msg? {
         print("Got message: ")
@@ -160,7 +160,7 @@ func main() -> void or MainError {
     }
 
     // Try to receive again (should fail, channel empty)
-    const no_msg = test_channel.receiver.try_recv()
+    const no_msg = test_channel.receiver.try_receive()
 
     if no_msg? {
         print("Got message: ")

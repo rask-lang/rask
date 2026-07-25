@@ -32,6 +32,12 @@ extend TcpConnection {
     /// Write a string to the connection.
     public func write_all(self, data: string) -> void or Error { }
 
+    /// Read all available data, decoding as UTF-8 text.
+    public func read_text(self) -> string or Error { }
+
+    /// Write text to the connection.
+    public func write_text(self, data: string) -> void or Error { }
+
     /// Get the remote address as "ip:port".
     public func remote_addr(self) -> string { }
 

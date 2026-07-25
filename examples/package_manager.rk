@@ -277,7 +277,7 @@ struct LockedPackage {
 //   }
 
 func load_manifest(path: string) -> Manifest or FetchError {
-    const content = try fs.read_file(path) else |e| FetchError.Io(IoErrorMsg.Msg("cannot read {path}: {e.message()}"))
+    const content = try fs.read_text(path) else |e| FetchError.Io(IoErrorMsg.Msg("cannot read {path}: {e.message()}"))
     return try parse_manifest(content) else |e| FetchError.Manifest(e)
 }
 
@@ -401,7 +401,7 @@ extend LocalRegistry with Registry {
 func local_available(root: string, name: string) -> Vec<PackageMeta> or RegistryError {
     // Read index file listing available versions
     const index_path = "{root}/{name}/index.json"
-    const index_content = fs.read_file(index_path) is string as c else {
+    const index_content = fs.read_text(index_path) is string as c else {
         return RegistryError.PackageNotFound(name)
     }
 
@@ -436,7 +436,7 @@ func local_fetch(root: string, name: string, version: Version) -> string or Regi
 // ─── Package Meta Loader ────────────────────────────────────────────
 
 func load_package_meta(path: string) -> PackageMeta or RegistryError {
-    const content = fs.read_file(path) is string as c else {
+    const content = fs.read_text(path) is string as c else {
         return RegistryError.IoError("cannot read {path}")
     }
     const parsed = json.parse(content) is JsonValue as v else {
@@ -537,7 +537,7 @@ func http_fetch(base_url: string, name: string, version: Version) -> string or R
     // Write to cache
     const cache_dir = "/tmp/rask-cache/{name}-{ver_str}"
     fs.create_dir_all(cache_dir)
-    fs.write_file("{cache_dir}/package.tar", resp.body)
+    fs.write_text("{cache_dir}/package.tar", resp.body)
     return cache_dir
 }
 
@@ -753,7 +753,7 @@ func fetch_packages(
         mut first_error: FetchError? = none
         mut received = 0
         while received < items.len() {
-            if rx.recv()? as result {
+            if rx.receive()? as result {
                 if result? {
                     println("  {result}")
                 } else as e {
@@ -782,7 +782,7 @@ func fetch_one(item: FetchItem, registry: any Registry) -> string or FetchError 
 
     // Verify checksum if present
     if !item.checksum.is_empty() {
-        const content = fs.read_file("{pkg_path}/meta.json") is string as c else {
+        const content = fs.read_text("{pkg_path}/meta.json") is string as c else {
             return "fetch   {item.name}@{item.version.to_string()}"
         }
         try verify_checksum(content, item.checksum, item.name)
@@ -856,7 +856,7 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
 func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
     mut packages = Map.new()
 
-    const content = fs.read_file(path) is string as c else {
+    const content = fs.read_text(path) is string as c else {
         // No lock file yet — that's fine
         return packages
     }

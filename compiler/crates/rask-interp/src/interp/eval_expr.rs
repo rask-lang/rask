@@ -850,7 +850,7 @@ impl Interpreter {
                     }
                     Value::Module(ModuleKind::Random) => {
                         match field.as_str() {
-                            "Rng" => Ok(Value::Type("Rng".to_string())),
+                            "Random" => Ok(Value::Type("Random".to_string())),
                             _ => Err(RuntimeDiagnostic::new(
                                 RuntimeError::TypeError(format!(
                                     "random module has no member '{}'",

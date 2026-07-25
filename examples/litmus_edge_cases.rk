@@ -425,8 +425,8 @@ import fs
 test "fs write and read round-trip" {
     const path = "/tmp/rask_test_litmus.txt"
     const content = "hello from rask\nsecond line\n"
-    fs.write_file(path, content)
-    const read_back = fs.read_file(path) is string as data else {
+    fs.write_text(path, content)
+    const read_back = fs.read_text(path) is string as data else {
         assert false, "failed to read back"
         return
     }
@@ -435,7 +435,7 @@ test "fs write and read round-trip" {
 
 test "fs read_lines returns correct line count" {
     const path = "/tmp/rask_test_litmus2.txt"
-    fs.write_file(path, "line1\nline2\nline3\n")
+    fs.write_text(path, "line1\nline2\nline3\n")
     const r = fs.read_lines(path)
     if r? {
         assert r.len() == 3

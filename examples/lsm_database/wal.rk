@@ -16,7 +16,7 @@ extend Wal {
     func open(path: string) -> Wal or WalError {
         // Create the file if it doesn't exist
         if !fs.exists(path) {
-            try fs.write_file(path, "")
+            try fs.write_text(path, "")
                 else |e| WalError.WriteFailure("cannot create WAL: {path}: {e}")
         }
         return Wal { path: path, entry_count: 0 }
@@ -24,7 +24,7 @@ extend Wal {
 
     func append(mutate self, kv: KeyValue) -> () or WalError {
         const line = encode_kv(kv)
-        try fs.append_file(self.path, line)
+        try fs.append_text(self.path, line)
             else |e| WalError.WriteFailure("write failed: {e}")
         self.entry_count += 1
         return ()
@@ -41,7 +41,7 @@ extend Wal {
     }
 
     func truncate(mutate self) -> () or WalError {
-        try fs.write_file(self.path, "")
+        try fs.write_text(self.path, "")
             else |e| WalError.WriteFailure("cannot truncate WAL: {e}")
         self.entry_count = 0
         return ()
@@ -51,7 +51,7 @@ extend Wal {
 func recover_wal(path: string) -> Vec<KeyValue> or WalError {
     if !fs.exists(path) { return Vec.new() }
 
-    const content = fs.read_file(path) is string as c else {
+    const content = fs.read_text(path) is string as c else {
         return WalError.RecoveryFailure("cannot read WAL: {path}")
     }
 

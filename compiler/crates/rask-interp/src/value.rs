@@ -724,7 +724,7 @@ impl Value {
             Value::TcpListener(_) => "TcpListener",
             Value::TcpConnection(_) => "TcpConnection",
             Value::SimdF32x8(_) => "f32x8",
-            Value::Rng(_) => "Rng",
+            Value::Rng(_) => "Random",
             Value::Iterator(_) => "Iterator",
             Value::Nominal { .. } => "nominal",
             Value::NominalConstructor { .. } => "nominal constructor",
@@ -1062,7 +1062,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, ")")
             }
-            Value::Rng(_) => write!(f, "<Rng>"),
+            Value::Rng(_) => write!(f, "<Random>"),
             Value::Iterator(_) => write!(f, "<Iterator>"),
             Value::Nominal { type_name, inner } => write!(f, "{}({})", type_name, inner),
             Value::NominalConstructor { type_name } => write!(f, "<type {}>", type_name),

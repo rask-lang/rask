@@ -92,7 +92,7 @@ func write_sstable(
         out.push_str("===\n")
     }
 
-    try fs.write_file(path, out)
+    try fs.write_text(path, out)
         else |e| SstError.WriteFailure("cannot write {path}: {e}")
 
     const min_key = entries[0].key
@@ -112,7 +112,7 @@ func write_sstable(
 // ─── Read ───────────────────────────────────────────────────────────
 
 func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or SstError {
-    const content = try fs.read_file(path)
+    const content = try fs.read_text(path)
         else |e| SstError.ReadFailure("cannot read {path}: {e}")
 
     const sep_pos = content.find("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")
@@ -154,7 +154,7 @@ func parse_block_lines(lines: Vec<string>, block_id: i32) -> Vec<KeyValue> or Ss
 }
 
 func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
-    const content = try fs.read_file(path)
+    const content = try fs.read_text(path)
         else |e| SstError.ReadFailure("cannot read index: {path}: {e}")
 
     mut index = Vec.new()
@@ -180,7 +180,7 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
 }
 
 func read_sstable_bloom(path: string) -> BloomFilter or SstError {
-    const content = try fs.read_file(path)
+    const content = try fs.read_text(path)
         else |e| SstError.ReadFailure("cannot read bloom: {path}: {e}")
 
     for line in content.lines() {
@@ -195,7 +195,7 @@ func read_sstable_bloom(path: string) -> BloomFilter or SstError {
 }
 
 func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
-    const content = try fs.read_file(path)
+    const content = try fs.read_text(path)
         else |e| SstError.ReadFailure("cannot read {path}: {e}")
 
     const sep_pos = content.find("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")

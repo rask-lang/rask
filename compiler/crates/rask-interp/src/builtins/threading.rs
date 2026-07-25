@@ -326,7 +326,7 @@ impl Interpreter {
         method: &str,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "recv" => {
+            "receive" => {
                 let rx = rx.lock().unwrap();
                 match rx.recv() {
                     Ok(val) => Ok(Value::Enum {
@@ -345,7 +345,7 @@ impl Interpreter {
                     }),
                 }
             }
-            "try_recv" => {
+            "try_receive" => {
                 let rx = rx.lock().unwrap();
                 match rx.try_recv() {
                     Ok(val) => Ok(Value::Enum {

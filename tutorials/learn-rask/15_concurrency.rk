@@ -31,7 +31,7 @@
 //   Channels are like Python's queue.Queue, but type-safe.
 //   const (tx, rx) = Channel<i32>.buffered(100)
 //   tx.send(42)           // put a value in
-//   const v = rx.recv()   // take a value out (waits if empty)
+//   const v = rx.receive()   // take a value out (waits if empty)
 //
 
 import async.spawn

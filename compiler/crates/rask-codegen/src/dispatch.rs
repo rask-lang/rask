@@ -493,14 +493,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Pool_checked_access", "rask_pool_get_packed", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Rng operations ────────────────────────────────────────
-        StdlibEntry::simple("Rng_new", "rask_rng_new", &[], Some(types::I64), false),
-        StdlibEntry::simple("Rng_from_seed", "rask_rng_from_seed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Rng_u64", "rask_rng_u64", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Rng_i64", "rask_rng_i64", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Rng_f64", "rask_rng_f64", &[types::I64], Some(types::F64), false),
-        StdlibEntry::simple("Rng_f32", "rask_rng_f32", &[types::I64], Some(types::F64), false),
-        StdlibEntry::simple("Rng_bool", "rask_rng_bool", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Rng_range", "rask_rng_range", &[types::I64, types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("Random_new", "rask_rng_new", &[], Some(types::I64), false),
+        StdlibEntry::simple("Random_from_seed", "rask_rng_from_seed", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Random_u64", "rask_rng_u64", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Random_i64", "rask_rng_i64", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Random_f64", "rask_rng_f64", &[types::I64], Some(types::F64), false),
+        StdlibEntry::simple("Random_f32", "rask_rng_f32", &[types::I64], Some(types::F64), false),
+        StdlibEntry::simple("Random_bool", "rask_rng_bool", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Random_range", "rask_rng_range", &[types::I64, types::I64, types::I64], Some(types::I64), true),
 
         // ── Random module convenience functions ───────────────────
         StdlibEntry::simple("random_f64", "rask_random_f64", &[], Some(types::F64), false),
@@ -516,7 +516,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("File_write", "rask_file_write", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("File_write_all", "rask_file_write_all", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("File_write_line", "rask_file_write_line", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("File_lines", "rask_file_lines", &[types::I64], Some(types::I64), false),
 
         // ── Stdlib module calls ─────────────────────────────────
         StdlibEntry::simple("cli_args", "rask_cli_args", &[], Some(types::I64), false),
@@ -564,11 +563,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Duration_from_nanos", "rask_time_Duration_from_nanos", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_from_millis", "rask_time_Duration_from_millis", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_as_nanos", "rask_time_Duration_as_nanos", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Duration_as_secs", "rask_time_Duration_as_secs", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Duration_as_secs_f64", "rask_time_Duration_as_secs_f64", &[types::I64], Some(types::F64), false),
+        StdlibEntry::simple("Duration_as_seconds", "rask_time_Duration_as_secs", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Duration_as_seconds_f64", "rask_time_Duration_as_secs_f64", &[types::I64], Some(types::F64), false),
         StdlibEntry::simple("Duration_as_millis", "rask_time_Duration_as_millis", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_as_micros", "rask_time_Duration_as_micros", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Duration_as_secs_f32", "rask_time_Duration_as_secs_f32", &[types::I64], Some(types::F64), false),
+        StdlibEntry::simple("Duration_as_seconds_f32", "rask_time_Duration_as_secs_f32", &[types::I64], Some(types::F64), false),
         StdlibEntry::simple("Duration_seconds", "rask_time_Duration_seconds", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_millis", "rask_time_Duration_millis", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_micros", "rask_time_Duration_micros", &[types::I64], Some(types::I64), false),
@@ -771,22 +770,22 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
 
         // Receiver methods
-        StdlibEntry::simple("Receiver_recv", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
+        StdlibEntry::simple("Receiver_receive", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
         StdlibEntry {
-            mir_name: "Receiver_recv_struct", c_name: "rask_channel_recv_ptr",
+            mir_name: "Receiver_receive_struct", c_name: "rask_channel_recv_ptr",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        // try_recv() -> T or E: out-param recv (handles structs, distinguishes
+        // try_receive() -> T or E: out-param recv (handles structs, distinguishes
         // empty/closed from a real value); Custom adapter builds the Result.
         StdlibEntry {
-            mir_name: "Receiver_try_recv", c_name: "rask_channel_try_recv_into",
+            mir_name: "Receiver_try_receive", c_name: "rask_channel_try_recv_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Receiver_close", "rask_recver_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Receiver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
-        StdlibEntry::simple("recv", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
+        StdlibEntry::simple("receive", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("recver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
 
         // ── Concurrency: Shared<T> ──────────────────────────────────

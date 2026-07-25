@@ -5,7 +5,7 @@ struct time { }
 
 extend time {
     /// Sleep for the given duration.
-    public func sleep(duration: Duration) -> void or Error { }
+    public func sleep(duration: Duration) -> void or SysError { }
 }
 
 /// A span of time.
@@ -34,7 +34,7 @@ extend Duration {
     public func from_nanos(n: i64) -> Duration { }
 
     /// Whole seconds in this duration.
-    public func as_secs(self) -> i64 { }
+    public func as_seconds(self) -> i64 { }
 
     /// Whole milliseconds in this duration.
     public func as_millis(self) -> i64 { }
@@ -46,10 +46,10 @@ extend Duration {
     public func as_nanos(self) -> i64 { }
 
     /// Duration as f32 seconds.
-    public func as_secs_f32(self) -> f64 { }
+    public func as_seconds_f32(self) -> f64 { }
 
     /// Duration as f64 seconds.
-    public func as_secs_f64(self) -> f64 { }
+    public func as_seconds_f64(self) -> f64 { }
 }
 
 /// A point in monotonic time.

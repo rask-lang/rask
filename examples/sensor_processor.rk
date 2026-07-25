@@ -274,12 +274,12 @@ func main() {
 
     mut cycle: i64 = 0
 
-    while (time.Instant.now().duration_since(start_time).as_secs() as i64) < DURATION_SECS {
+    while (time.Instant.now().duration_since(start_time).as_seconds() as i64) < DURATION_SECS {
         const cycle_start = time.Instant.now()
 
-        // Drain available samples without blocking — try_recv returns once
+        // Drain available samples without blocking — try_receive returns once
         // the channel is empty, so the cycle stays bounded.
-        while rx.try_recv() is Reading as r {
+        while rx.try_receive() is Reading as r {
             state.process_reading(r.sensor_id, r.value)
         }
 

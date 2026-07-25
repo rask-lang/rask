@@ -42,8 +42,8 @@ fn is_io_source(callee: &str) -> bool {
     matches!(callee,
         // fs module
         "File.open" | "File.read" | "File.write" | "File.close"
-        | "open" | "read_file" | "write_file" | "exists"
-        | "fs.read_file" | "fs.write_file" | "fs.exists"
+        | "open" | "read_text" | "write_text" | "exists"
+        | "fs.read_text" | "fs.write_text" | "fs.exists"
         // net module
         | "TcpListener.bind" | "TcpListener.accept"
         | "TcpConnection.read" | "TcpConnection.write"
@@ -53,14 +53,14 @@ fn is_io_source(callee: &str) -> bool {
         | "print" | "println" | "eprint" | "eprintln"
         // async sources that are also IO (AS3)
         | "sleep" | "timeout"
-        | "spawn" | "Channel.send" | "Channel.recv" | "TaskHandle.join"
+        | "spawn" | "Channel.send" | "Channel.receive" | "TaskHandle.join"
     )
 }
 
 fn is_async_source(callee: &str) -> bool {
     matches!(callee,
         "spawn" | "sleep" | "timeout"
-        | "Channel.send" | "Channel.recv"
+        | "Channel.send" | "Channel.receive"
         | "TaskHandle.join"
     )
 }
@@ -93,7 +93,7 @@ mod tests {
         assert!(!e.mutation());
 
         assert!(classify_call("println").io);
-        assert!(classify_call("fs.read_file").io);
+        assert!(classify_call("fs.read_text").io);
         assert!(classify_call("TcpListener.accept").io);
     }
 

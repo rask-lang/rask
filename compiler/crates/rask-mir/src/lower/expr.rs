@@ -1618,7 +1618,7 @@ impl<'a> MirLowerer<'a> {
                             => Some("Path".to_string()),
                         // Time
                         "now" | "elapsed" | "duration_since" => Some("Instant".to_string()),
-                        "as_secs_f64" | "as_secs_f32" | "as_secs" | "as_millis" | "as_micros" | "as_nanos"
+                        "as_seconds_f64" | "as_seconds_f32" | "as_seconds" | "as_millis" | "as_micros" | "as_nanos"
                         | "seconds" | "millis" | "micros" | "nanos" | "from_secs_f64" => Some("Duration".to_string()),
                         "sleep" => Some("time".to_string()),
                         // Net/HTTP
@@ -1695,7 +1695,7 @@ impl<'a> MirLowerer<'a> {
 
                 // Channel recv with struct elements: switch to struct variant
                 // and inject elem_size so the builder can allocate the right buffer.
-                let qualified_name = if qualified_name == "Receiver_recv" {
+                let qualified_name = if qualified_name == "Receiver_receive" {
                     let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
                         self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
                     } else {
@@ -1703,12 +1703,12 @@ impl<'a> MirLowerer<'a> {
                     };
                     if elem_size > 8 {
                         all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
-                        "Receiver_recv_struct".to_string()
+                        "Receiver_receive_struct".to_string()
                     } else {
                         qualified_name
                     }
-                } else if qualified_name == "Receiver_try_recv" {
-                    // try_recv recvs into a buffer of the element's real size and
+                } else if qualified_name == "Receiver_try_receive" {
+                    // try_receive recvs into a buffer of the element's real size and
                     // maps status→Result in codegen. Pass elem_size for the buffer.
                     let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
                         self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)

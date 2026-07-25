@@ -261,7 +261,7 @@ impl Resolver {
                 "HttpServer", "Responder", "HttpClient",
             ],
             BuiltinModuleKind::Fs => &["File", "Metadata"],
-            BuiltinModuleKind::Random => &["Rng"],
+            BuiltinModuleKind::Random => &["Random"],
             BuiltinModuleKind::Path => &["Path"],
             BuiltinModuleKind::Cli => &["Args"],
             BuiltinModuleKind::Os => &["Command", "Process", "Output"],
@@ -296,7 +296,7 @@ impl Resolver {
 
         let builtin_types: &[(&str, BuiltinTypeKind)] = match module {
             BuiltinModuleKind::Fs => &[("File", BuiltinTypeKind::File)],
-            BuiltinModuleKind::Random => &[("Rng", BuiltinTypeKind::Rng)],
+            BuiltinModuleKind::Random => &[("Random", BuiltinTypeKind::Rng)],
             BuiltinModuleKind::Math => &[
                 ("f32x4", BuiltinTypeKind::Simd),
                 ("f32x8", BuiltinTypeKind::Simd),
@@ -408,7 +408,7 @@ impl Resolver {
         // Builtin types
         let builtin_type = match (module, symbol) {
             ("fs", "File") => Some(BuiltinTypeKind::File),
-            ("random", "Rng") => Some(BuiltinTypeKind::Rng),
+            ("random", "Random") => Some(BuiltinTypeKind::Rng),
             ("math", "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8") => Some(BuiltinTypeKind::Simd),
             _ => None,
         };

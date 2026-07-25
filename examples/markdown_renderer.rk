@@ -876,7 +876,7 @@ func main() {
         std.exit(1)
     }
 
-    const read_result = fs.read_file(input_path)
+    const read_result = fs.read_text(input_path)
     const content = if read_result? {
         read_result
     } else as e {
@@ -908,7 +908,7 @@ func main() {
             }
         }
 
-        const write_result = fs.write_file(output_path, html)
+        const write_result = fs.write_text(output_path, html)
         if write_result? {
             println("Written: {output_path}")
         } else as e {

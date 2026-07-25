@@ -114,7 +114,6 @@ impl Interpreter {
         let mut align = None;
         let mut width = 0usize;
         let mut precision = None;
-        let mut format_type = ' ';
 
         let spec_chars: Vec<char> = spec.chars().collect();
         let mut pos = 0;
@@ -147,39 +146,38 @@ impl Interpreter {
             precision = Some(prec_str.parse::<usize>().unwrap_or(0));
         }
 
-        if pos < spec_chars.len() {
-            format_type = spec_chars[pos];
-        }
+        // The trailing type token: a word (`debug`) or a single char (x/X/b/o/e).
+        let type_token: String = spec_chars[pos..].iter().collect();
 
-        let formatted = match format_type {
-            '?' => {
+        let formatted = match type_token.as_str() {
+            "debug" => {
                 self.debug_format(value)
             }
-            'x' => {
+            "x" => {
                 match value {
                     Value::Int(n, _) => format!("{:x}", n),
                     _ => format!("{}", value),
                 }
             }
-            'X' => {
+            "X" => {
                 match value {
                     Value::Int(n, _) => format!("{:X}", n),
                     _ => format!("{}", value),
                 }
             }
-            'b' => {
+            "b" => {
                 match value {
                     Value::Int(n, _) => format!("{:b}", n),
                     _ => format!("{}", value),
                 }
             }
-            'o' => {
+            "o" => {
                 match value {
                     Value::Int(n, _) => format!("{:o}", n),
                     _ => format!("{}", value),
                 }
             }
-            'e' => {
+            "e" => {
                 match value {
                     Value::Float(n) => format!("{:e}", n),
                     Value::Int(n, _) => format!("{:e}", *n as f64),
@@ -298,7 +296,11 @@ impl Interpreter {
                 };
                 let value = self.eval_interpolation_expr(expr_part)?;
                 if let Some(spec) = fmt_spec {
-                    result.push_str(&Self::format_value_with_spec(&value, spec));
+                    if spec == ":debug" {
+                        result.push_str(&self.debug_format(&value));
+                    } else {
+                        result.push_str(&Self::format_value_with_spec(&value, spec));
+                    }
                 } else {
                     result.push_str(&format!("{}", value));
                 }

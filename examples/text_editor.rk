@@ -49,13 +49,11 @@ extend Document {
     }
 
     func from_file(path: string) -> Document or fs.IoError {
-        mut file = try fs.open(path)
-        ensure file.close()
+        const lines = try fs.read_lines(path)
 
         mut doc = Document.new()
-        for line in file.lines() {
-            const text = try line
-            const h = doc.lines.insert(Line { text: text })
+        for line in lines {
+            const h = doc.lines.insert(Line { text: line })
             doc.line_order.push(h)
         }
         return doc

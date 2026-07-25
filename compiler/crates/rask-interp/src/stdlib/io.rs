@@ -77,7 +77,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "write_str" => {
+            "write_text" => {
                 let s = self.expect_string(&args, 0)?;
                 use std::io::Write;
                 match std::io::stdout().write_all(s.as_bytes()) {
@@ -117,7 +117,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "write_str" => {
+            "write_text" => {
                 let s = self.expect_string(&args, 0)?;
                 use std::io::Write;
                 match std::io::stderr().write_all(s.as_bytes()) {

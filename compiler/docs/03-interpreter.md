@@ -293,7 +293,7 @@ The interpreter supports real concurrency:
 - **`spawn(|| { ... })`** creates an OS thread (via `std::thread::spawn`),
   captures the closure's environment, runs the body.
 - **Channels**: `Channel.new()` creates an `mpsc` channel pair. `.send()` and
-  `.recv()` work across threads.
+  `.receive()` work across threads.
 - **`Shared<T>`**: `Arc<RwLock<Value>>` for thread-safe shared state.
 - **Mutex, Atomic**: Thin wrappers around Rust's `std::sync` primitives.
 

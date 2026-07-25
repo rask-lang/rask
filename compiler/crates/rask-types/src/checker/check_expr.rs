@@ -1722,7 +1722,7 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &object.kind {
             // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
             let base_name = name.split('<').next().unwrap_or(name);
-            if matches!(base_name, "Vec" | "Map" | "Pool" | "Rng" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
+            if matches!(base_name, "Vec" | "Map" | "Pool" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
                 || rask_stdlib::StubRegistry::load().get_type(base_name).is_some()
             {
                 let obj_ty = if name.contains('<') {

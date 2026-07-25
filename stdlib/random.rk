@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 /// Random number generator.
-public struct Rng { }
+public struct Random { }
 
-extend Rng {
+extend Random {
     /// Create a new RNG with a random seed.
-    public func new() -> Rng { }
+    public func new() -> Random { }
 
     /// Create an RNG with a specific seed (deterministic).
-    public func from_seed(seed: i64) -> Rng { }
+    public func from_seed(seed: i64) -> Random { }
 
     /// Generate a random unsigned 64-bit integer.
     public func u64(mutate self) -> i64 { }

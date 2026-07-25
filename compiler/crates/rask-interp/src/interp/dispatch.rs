@@ -615,8 +615,8 @@ impl Interpreter {
         use crate::value::ModuleKind::*;
         match module {
             Fs => matches!(method,
-                "read_file" | "read_bytes" | "read_lines" | "write_file" | "write_bytes"
-                | "append_file" | "exists" | "open" | "create" | "canonicalize" | "metadata"
+                "read_text" | "read_bytes" | "read_lines" | "write_text" | "write_bytes"
+                | "append_text" | "exists" | "open" | "create" | "canonicalize" | "metadata"
                 | "delete" | "remove" | "remove_dir" | "create_dir" | "create_dir_all"
                 | "rename" | "copy" | "list_dir"
             ),
@@ -631,8 +631,8 @@ impl Interpreter {
                 | "is_nan" | "is_inf" | "is_finite"
             ),
             Os | Std => matches!(method,
-                "env" | "env_or" | "set_env" | "remove_env" | "vars"
-                | "args" | "exit" | "getpid" | "platform" | "arch"
+                "env" | "env_or" | "set_env" | "remove_env" | "env_vars"
+                | "args" | "exit" | "pid" | "platform" | "arch"
             ),
             Json => matches!(method,
                 "parse" | "stringify" | "stringify_pretty"
