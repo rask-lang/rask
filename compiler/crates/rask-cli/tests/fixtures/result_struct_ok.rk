@@ -1,0 +1,23 @@
+// #347 family — returning a bare struct ok-value from a `T or E` function must
+// wrap it in a Result; matching the struct ok-payload must bind a pointer.
+// Native previously produced no output (tag read from the unwrapped payload).
+
+enum DivError { ByZero }
+extend DivError {
+    func message(self) -> string {
+        match self { DivError.ByZero => return "div zero" }
+    }
+}
+
+struct Big { a: i64, b: i64, c: i64 }
+
+func make() -> Big or DivError {
+    return Big { a: 111, b: 222, c: 333 }
+}
+
+func main() {
+    match make() {
+        Big as v => println("{v.a} {v.b} {v.c}")
+        DivError => println("err")
+    }
+}

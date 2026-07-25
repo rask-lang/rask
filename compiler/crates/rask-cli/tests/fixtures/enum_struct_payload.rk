@@ -1,0 +1,18 @@
+// #347 — matching an enum variant that carries a struct payload segfaulted
+// natively (the Field arm loaded the payload as a scalar instead of returning
+// a pointer into the enum). Scalar payloads already worked.
+
+struct Pt { x: i32, y: i32 }
+enum Shape { Pos(Pt), Scalar(i32) }
+
+func sum_shape(s: Shape) -> i32 {
+    match s {
+        Shape.Pos(p) => return p.x + p.y
+        Shape.Scalar(v) => return v
+    }
+}
+
+func main() {
+    println("{sum_shape(Shape.Pos(Pt { x: 3, y: 4 }))}")
+    println("{sum_shape(Shape.Scalar(9))}")
+}

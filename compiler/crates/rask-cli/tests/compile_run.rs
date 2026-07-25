@@ -274,6 +274,37 @@ fn native_result_struct_field() {
     assert_eq!(stdout, "5\n999\n");
 }
 
+// #347 — enum variant carrying a struct payload (Pos(Pt)) segfaulted natively;
+// a scalar variant (Scalar(i32)) of the same enum must keep working.
+#[test]
+fn compile_enum_struct_payload() {
+    let (stdout, code) = compile_and_run("enum_struct_payload.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "7\n9\n");
+}
+
+#[test]
+fn native_enum_struct_payload() {
+    let (stdout, code) = run_native("enum_struct_payload.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "7\n9\n");
+}
+
+// #347 family — returning/matching a struct ok-payload through a `T or E`.
+#[test]
+fn compile_result_struct_ok() {
+    let (stdout, code) = compile_and_run("result_struct_ok.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "111 222 333\n");
+}
+
+#[test]
+fn native_result_struct_ok() {
+    let (stdout, code) = run_native("result_struct_ok.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "111 222 333\n");
+}
+
 #[test]
 fn compile_strings() {
     let (stdout, code) = compile_and_run("strings.rk");
