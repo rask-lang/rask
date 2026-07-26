@@ -1,0 +1,2 @@
+Run 'rask test examples/test_example.rk' to run tests
+Run 'rask benchmark examples/test_example.rk' to run benchmarks

@@ -1,0 +1,39 @@
+# Examples that do NOT yet run cleanly on both backends, so they have no golden
+# in tests/golden/ and are not enrolled in tests/examples_gate.sh. Documented
+# here with the tracking issue / cause. When an example runs identically on
+# interp + native, generate its golden (`rask run --interp examples/<name>.rk >
+# tests/golden/<name>.out`, confirm native matches) and delete its line — the
+# gate then enforces it forever.
+#
+# Classified by running each example on both backends (2026-07-26).
+
+# --- native fails to run (interp OK) — native codegen rot ---
+03_collections.rk        # native exit 1
+09_generics.rk           # native exit 1 (generic layout, #272 family)
+10_enums_advanced.rk     # native exit 1 (prints nothing natively — enum payload)
+12_iterators.rk          # native exit 101 (panic)
+14_borrowing_patterns.rk # native exit 1
+16_concurrency_basics.rk # native exit 1
+18_resource_types.rk     # native exit 1
+game_loop.rk             # native exit 1 (spawn closure-capture MIR lowering, PLAN Track 3)
+sensor_processor.rk      # native exit 1 (generic-layout miscompile, #272 — PLAN 1.6)
+
+# --- both backends agree on exit 0 but stdout DIVERGES ---
+05_loops.rk              # interp vs native output differs
+07_error_handling.rk     # interp vs native output differs
+11_closures.rk           # interp vs native output differs
+pool_test.rk             # interp vs native output differs
+
+# --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
+13_string_operations.rk  # both exit 1
+15_memory_management.rk  # both exit 1 (blocked on compiler bugs — see git log)
+19_unsafe.rk             # both exit 1
+file_copy.rk             # both exit 1
+grep_clone.rk            # both exit 1 (stdin-driven; PLAN validation program)
+markdown_renderer.rk     # both exit 1
+package_manager.rk       # both exit 1
+simple_grep.rk           # both exit 1
+
+# --- block on stdin / network (not auto-runnable as a golden) ---
+cli_calculator.rk        # reads stdin
+http_api_server.rk       # http.serve; PLAN Track 3 validation program

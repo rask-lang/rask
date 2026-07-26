@@ -1,0 +1,27 @@
+// PENDING ctrl.ranges/RV1-RV2 (`.rev()`) and SP1-SP4 (`.step()`) — range
+// adapters don't exist (`no method rev`/`step` found for type Range). Expected
+// RED until built; drives implementation. Do NOT assert current (wrong) behavior.
+
+func main() {}
+
+test "ctrl.ranges/RV1 — .rev() reverses iteration order" {
+    mut first = -1
+    for i in (0..5).rev() {
+        if first == -1 { first = i }
+    }
+    assert first == 4          // reversed: 4,3,2,1,0
+    mut sum = 0
+    for i in (0..5).rev() { sum += i }
+    assert sum == 10           // same elements, still sums to 10
+}
+
+test "ctrl.ranges/SP1 — .step() skips by stride" {
+    mut sum = 0
+    mut n = 0
+    for i in (0..10).step(2) {   // 0,2,4,6,8
+        sum += i
+        n += 1
+    }
+    assert n == 5
+    assert sum == 20
+}

@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Range iteration — the subset correct on BOTH backends.
+// Witnesses ctrl.ranges (R1 half-open, R2 inclusive, R4 empty) plus range use
+// in for-loops with literal and computed bounds. No .rev()/.step() (unimplemented
+// — see report). No unbounded 0.. (needs break + overflow semantics).
+
+func main() {}
+
+// R1: half-open 0..n iterates [0, n) — excludes end
+test "ctrl.ranges/R1 — half-open excludes end" {
+    mut sum = 0
+    mut count = 0
+    for i in 0..5 {
+        sum += i
+        count += 1
+    }
+    assert count == 5          // 0,1,2,3,4
+    assert sum == 10           // 0+1+2+3+4
+}
+
+// R2: inclusive 0..=n iterates [0, n] — includes end
+test "ctrl.ranges/R2 — inclusive includes end" {
+    mut sum = 0
+    mut count = 0
+    for i in 0..=5 {
+        sum += i
+        count += 1
+    }
+    assert count == 6          // 0,1,2,3,4,5
+    assert sum == 15           // 0+1+2+3+4+5
+}
+
+// R1: half-open with non-zero start
+test "ctrl.ranges/R1 — non-zero start half-open" {
+    mut sum = 0
+    for i in 3..7 {
+        sum += i
+    }
+    assert sum == 18           // 3+4+5+6
+}
+
+// R2: inclusive with non-zero start
+test "ctrl.ranges/R2 — non-zero start inclusive" {
+    mut sum = 0
+    for i in 3..=7 {
+        sum += i
+    }
+    assert sum == 25           // 3+4+5+6+7
+}
+
+// R4: start == end is empty (half-open)
+test "ctrl.ranges/R4 — start==end empty half-open" {
+    mut count = 0
+    for _ in 5..5 {
+        count += 1
+    }
+    assert count == 0
+}
+
+// R4: start > end is empty (not reverse)
+test "ctrl.ranges/R4 — start>end empty not reverse" {
+    mut count = 0
+    for _ in 10..0 {
+        count += 1
+    }
+    assert count == 0
+}
+
+// R4: inclusive with start > end is empty
+test "ctrl.ranges/R4 — start>end empty inclusive" {
+    mut count = 0
+    for _ in 10..=0 {
+        count += 1
+    }
+    assert count == 0
+}
+
+// R2: single-element inclusive range start==end
+test "ctrl.ranges/R2 — inclusive single element" {
+    mut count = 0
+    mut last = -1
+    for i in 4..=4 {
+        count += 1
+        last = i
+    }
+    assert count == 1
+    assert last == 4
+}
+
+// Computed bounds — range endpoints from variables/expressions
+test "ctrl.ranges/R1 — computed bounds" {
+    const lo = 2
+    const hi = 8
+    mut sum = 0
+    for i in lo..hi {
+        sum += i
+    }
+    assert sum == 27           // 2+3+4+5+6+7
+}
+
+// Range bound from a function call result
+test "ctrl.ranges/R1 — bound from expression" {
+    mut sum = 0
+    for i in 0..(2 + 3) {
+        sum += i
+    }
+    assert sum == 10           // 0..5
+}
+
+// Nested ranges — product iteration
+test "ctrl.ranges/R1 — nested ranges" {
+    mut count = 0
+    for i in 0..3 {
+        for j in 0..4 {
+            count += 1
+        }
+    }
+    assert count == 12         // 3 * 4
+}
+
+// Range drives index into behavior: last value is n-1 for half-open
+test "ctrl.ranges/R1 — last value is n-1" {
+    mut last = -1
+    for i in 0..5 {
+        last = i
+    }
+    assert last == 4
+}
+
+// Inclusive: last value is n
+test "ctrl.ranges/R2 — last value is n" {
+    mut last = -1
+    for i in 0..=5 {
+        last = i
+    }
+    assert last == 5
+}

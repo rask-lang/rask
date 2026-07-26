@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The task-2b rename sweep (#302) makes the old stdlib names HARD errors, not
+// aliases. Each old name below must be rejected by `rask check` (E0313, no such
+// method). The new names' behavior is witnessed in tests/suite/t40_stdlib_renames.rk.
+//
+// One function per old name so a single rejection doesn't mask the others.
+
+import async.Channel
+import time.Duration
+import os
+import fs
+
+// Channel.recv → receive
+func old_recv(rx: Receiver<i64>) {
+    rx.recv().ok()          // ERROR: no method `recv` (renamed to `receive`)
+}
+
+// Channel.try_recv → try_receive
+func old_try_recv(rx: Receiver<i64>) {
+    rx.try_recv().ok()      // ERROR: no method `try_recv` (renamed to `try_receive`)
+}
+
+// Duration.as_secs → as_seconds
+func old_as_secs(d: Duration) -> i64 {
+    return d.as_secs()      // ERROR: no method `as_secs` (renamed to `as_seconds`)
+}
+
+// Duration.as_secs_f64 → as_seconds_f64
+func old_as_secs_f64(d: Duration) -> f64 {
+    return d.as_secs_f64()  // ERROR: no method `as_secs_f64` (renamed to `as_seconds_f64`)
+}
+
+// os.getpid → os.pid
+func old_getpid() -> i64 {
+    return os.getpid()      // ERROR: no method `getpid` (renamed to `pid`)
+}
+
+// os.vars → os.env_vars
+func old_os_vars() {
+    os.vars()               // ERROR: no method `vars` (renamed to `env_vars`)
+}
+
+// fs.read_file → fs.read_text
+func old_read_file() {
+    fs.read_file("/tmp/x").ok()     // ERROR: no method `read_file` (renamed to `read_text`)
+}
+
+// fs.write_file → fs.write_text
+func old_write_file() {
+    fs.write_file("/tmp/x", "y").ok()  // ERROR: no method `write_file` (renamed to `write_text`)
+}
+
+// fs.append_file → fs.append_text
+func old_append_file() {
+    fs.append_file("/tmp/x", "y").ok() // ERROR: no method `append_file` (renamed to `append_text`)
+}
+
+// File.lines() removed (#276) — only fs.read_lines (eager) survives.
+func old_file_lines(f: File) {
+    for line in f.lines() {            // ERROR: no method `lines` on File (removed; use fs.read_lines)
+        println(line)
+    }
+}
+
+func main() {}

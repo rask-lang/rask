@@ -1,0 +1,12 @@
+Vec length: 3
+v[0] = 10
+v[1] = 20
+v[2] = 30
+Iterating:
+  item: 10
+  item: 20
+  item: 30
+Array length: 5
+Point: x=100, y=200
+match result: two
+Collections test passed!

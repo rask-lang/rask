@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Value semantics: Copy vs move, explicit .clone() independence, the 16-byte
+// threshold. Spec: mem.value (VS1-VS7), mem.ownership (O1-O4).
+//
+// Extends t14_ownership.rk (which covers read-only copy of primitives, string,
+// small structs, plus vec move/clone). This file adds mutation-independence
+// after clone, the >16-byte move boundary, and a 16-byte tuple copy.
+//
+// NOTE: mutation-independence after *implicit* struct copy (`mut b = a; b.x=1`)
+// is NOT tested here — it diverges on interp (implicit struct copy aliases
+// storage; see report). Independence is exercised only through `.clone()`,
+// which is correct on both backends.
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+// Exactly 16 bytes: two i64. Copy-eligible (VS1, VS6).
+struct Vec2 {
+    x: i64
+    y: i64
+}
+
+// 32 bytes > 16: move-only (VS1 size boundary).
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+    d: i64
+}
+
+// --- Primitive copy is independent (VS2) ---
+
+test "mem.value/VS2 — primitive copy is independent" {
+    mut a = 5
+    mut b = a
+    b = 99
+    assert a == 5
+    assert b == 99
+}
+
+// --- Explicit clone yields an independent value (Copy or not) ---
+
+test "mem.value/VS1 — small struct clone is independent" {
+    mut p1 = Point { x: 1, y: 2 }
+    mut p2 = p1.clone()
+    p2.x = 99
+    assert p1.x == 1
+    assert p2.x == 99
+}
+
+test "mem.value/VS1 — large struct clone is independent" {
+    mut a = Big { a: 1, b: 2, c: 3, d: 4 }
+    mut b = a.clone()
+    b.a = 99
+    assert a.a == 1
+    assert b.a == 99
+}
+
+// --- 16-byte tuple is Copy: both bindings usable (VS1, VS6) ---
+
+test "mem.value/VS6 — 16-byte tuple copies, both readable" {
+    const t = (100i64, 200i64)
+    const u = t
+    assert t.0 == 100
+    assert u.1 == 200
+}
+
+// --- >16-byte struct moves; the new binding owns the value (mem.ownership/O2) ---
+
+test "mem.ownership/O2 — large struct moves to new binding" {
+    const a = Big { a: 5, b: 6, c: 7, d: 8 }
+    const b = a
+    assert b.a == 5
+    assert b.d == 8
+}
+
+// --- Clone before mutation keeps the source intact across a mutating helper ---
+
+test "mem.value/VS1 — clone survives independent mutation of the copy" {
+    const original = Big { a: 10, b: 20, c: 30, d: 40 }
+    mut working = original.clone()
+    working.a = 111
+    working.d = 444
+    assert original.a == 10
+    assert original.d == 40
+    assert working.a == 111
+    assert working.d == 444
+}
+
+func main() {}

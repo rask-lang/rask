@@ -1,0 +1,15 @@
+Direct calls:
+Point(10, 20)
+Circle with radius 5.5
+Alice, age 30
+
+Via generic function:
+Point(10, 20)
+Circle with radius 5.5
+Alice, age 30
+
+Mixing types:
+First: Point(10, 20)
+Second: Circle with radius 5.5
+First: Circle with radius 5.5
+Second: Alice, age 30

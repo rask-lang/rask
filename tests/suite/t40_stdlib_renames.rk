@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Semantic witnesses for the task-2b stdlib rename sweep (#302).
+// These lock in the NEW names' behavior on BOTH backends so a future rename or
+// codegen change can't silently break them. The old names are rejected in
+// tests/compile_errors/stdlib_renames.rk.
+//
+// Covers: Duration.as_seconds* / from_secs_f64, Random (from_seed determinism),
+// {:debug} interpolation, fs.read_text/write_text/append_text, time.sleep, and
+// Channel.receive (blocking). Channel.try_receive lives in t31_channels.rk.
+
+import time.Duration
+import time
+import random.Random
+import fs
+import async.Channel
+
+func main() {}
+
+// --- Duration.as_seconds* / constructors (was as_secs*) ---
+
+test "Duration.as_seconds / as_millis (spec std.time)" {
+    const d = Duration.seconds(5)
+    assert d.as_seconds() == 5
+    assert d.as_millis() == 5000
+}
+
+test "Duration.from_secs_f64 / as_seconds_f64 round-trips" {
+    const d = Duration.from_secs_f64(1.5)
+    assert d.as_seconds_f64() == 1.5
+    // whole-second truncation on the integer accessor
+    assert d.as_seconds() == 1
+}
+
+// --- Random (was Rng) ---
+
+test "Random.from_seed is deterministic" {
+    mut a = Random.from_seed(42)
+    mut b = Random.from_seed(42)
+    // Same seed → same sequence; identical on interp and native.
+    assert a.range(0, 1000) == b.range(0, 1000)
+    assert a.range(0, 1000) == b.range(0, 1000)
+}
+
+test "Random.range stays in bounds" {
+    mut r = Random.from_seed(7)
+    mut i = 0
+    while i < 50 {
+        const x = r.range(10, 20)
+        assert x >= 10
+        assert x < 20
+        i += 1
+    }
+}
+
+// --- {:debug} format (was {:?}) ---
+
+test "{x:debug} interpolation" {
+    const n = 7
+    assert "{n:debug}" == "7"
+    assert "val={42:debug}" == "val=42"
+}
+
+// --- fs.read_text / write_text / append_text (was read_file/write_file/append_file) ---
+
+test "fs write_text / append_text / read_text round-trip" {
+    const path = "/tmp/rask_t40_fs.txt"
+    fs.write_text(path, "hello\n").ok()
+    fs.append_text(path, "world\n").ok()
+    const content = fs.read_text(path) ?? "READ_FAILED"
+    assert content == "hello\nworld\n"
+    assert content.len() == 12
+}
+
+// --- time.sleep -> void or SysError (#276/#277/#278) ---
+
+test "time.sleep returns void or SysError" {
+    // A tiny sleep must succeed; the point is the void-or-SysError result shape.
+    const r = time.sleep(Duration.millis(1))
+    assert r?
+}
+
+// --- Channel.receive (blocking; was recv) ---
+
+test "Channel.receive drains buffered values" {
+    const (tx, rx) = Channel<i64>.buffered(4)
+    tx.send(7).ok()
+    tx.send(9).ok()
+    mut sum = 0
+    if rx.receive() is i64 as v { sum += v }
+    if rx.receive() is i64 as v { sum += v }
+    assert sum == 16
+}

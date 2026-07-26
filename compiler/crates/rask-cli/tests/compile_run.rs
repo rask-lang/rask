@@ -385,6 +385,50 @@ fn compile_error(name: &str) -> bool {
     !out.status.success()
 }
 
+/// Like `compile_error`, but returns combined stdout+stderr so a test can
+/// assert the failure is for the RIGHT reason (error code / message), not just
+/// a non-zero exit on some unrelated error.
+fn compile_error_output(name: &str) -> (bool, String) {
+    let rask = rask_binary();
+    let error_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("compile_errors")
+        .join(name);
+
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(&error_fixture)
+        .output()
+        .expect("failed to run rask check");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    (!out.status.success(), combined)
+}
+
+#[test]
+fn error_stdlib_renames() {
+    // task-2b (#302): the old stdlib names are HARD errors, not aliases. Each
+    // old name must be rejected as an unknown method (E0313), not silently
+    // resolved. Witnesses recv/try_recv, as_secs*, getpid, os.vars,
+    // fs.read_file/write_file/append_file, and the removed File.lines().
+    let (failed, out) = compile_error_output("stdlib_renames.rk");
+    assert!(failed, "old stdlib names must be rejected: {}", out);
+    assert!(out.contains("E0313"), "should be an unknown-method error (E0313): {}", out);
+    for old in ["recv", "try_recv", "as_secs", "getpid", "read_file", "lines"] {
+        assert!(
+            out.contains(&format!("no method `{}`", old)),
+            "old name `{}` should be rejected as unknown method: {}", old, out,
+        );
+    }
+}
+
 #[test]
 fn error_type_mismatch_arg() {
     assert!(compile_error("type_mismatch_arg.rk"), "should reject type mismatch in argument");

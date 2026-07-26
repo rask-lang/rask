@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.collections conformance — Vec and Map operations not already covered by
+// t09_vec.rk (push/len/index/pop/get) and t13_map.rk (insert/get/contains_key/
+// len/overwrite). Every test passes on BOTH interp and native.
+//
+// Spec: stdlib/collections.rk
+//
+// Divergences avoided here (see report): Vec.contains (silently dropped),
+// Vec.first/last (return None on native), Map.remove's returned value, and map
+// iter() tuple `.1` access are all wrong/dropped on native — so remove is
+// checked by its effect and map iteration uses keys()/values().
+
+func main() {}
+
+// --- Vec: insert / remove by index ---
+
+test "std.collections/Vec.insert shifts right" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(4)
+    v.insert(2, 3)
+    assert v.len() == 4
+    assert v[0] == 1
+    assert v[2] == 3
+    assert v[3] == 4
+}
+
+test "std.collections/Vec.remove returns element and shifts" {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    const r = v.remove(0)
+    assert r == 10
+    assert v.len() == 2
+    assert v[0] == 20
+    assert v[1] == 30
+}
+
+// --- Vec: clear ---
+
+test "std.collections/Vec.clear empties" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.clear()
+    assert v.is_empty() == true
+    assert v.len() == 0
+}
+
+// --- Vec: reverse (in place) ---
+
+test "std.collections/Vec.reverse" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.reverse()
+    assert v[0] == 3
+    assert v[1] == 2
+    assert v[2] == 1
+}
+
+// --- Vec: iterate ---
+
+test "std.collections/Vec.iter sums elements" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+    mut sum = 0
+    for x in v.iter() {
+        sum = sum + x
+    }
+    assert sum == 10
+}
+
+// --- Map: remove (by effect) ---
+
+test "std.collections/Map.remove deletes key" {
+    mut m = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    m.remove("a")
+    assert m.len() == 1
+    assert m.contains_key("a") == false
+    assert m.contains_key("b") == true
+}
+
+// --- Map: is_empty ---
+
+test "std.collections/Map.is_empty" {
+    mut m = Map.new()
+    assert m.is_empty() == true
+    m.insert("k", 9)
+    assert m.is_empty() == false
+}
+
+// --- Map: get present / absent ---
+
+test "std.collections/Map.get present and absent" {
+    mut m = Map.new()
+    m.insert("k", 42)
+    assert m.get("k")! == 42
+    assert m.get("missing") == none
+}
+
+// --- Map: keys / values iteration ---
+
+test "std.collections/Map.keys counts entries" {
+    mut m = Map.new()
+    m.insert("a", 10)
+    m.insert("b", 20)
+    m.insert("c", 30)
+    mut count = 0
+    for k in m.keys() {
+        count = count + 1
+    }
+    assert count == 3
+}
+
+test "std.collections/Map.values sums" {
+    mut m = Map.new()
+    m.insert("a", 10)
+    m.insert("b", 20)
+    m.insert("c", 30)
+    mut total = 0
+    for val in m.values() {
+        total = total + val
+    }
+    assert total == 60
+}

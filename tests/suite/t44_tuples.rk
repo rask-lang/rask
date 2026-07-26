@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Tuple types: construction, positional access, destructuring, tuple params.
+// Spec: type.tuples (TU1-TU10). Elements kept scalar (int/bool/f64) to stay
+// green on native — string elements, nested tuples, and tuple return values
+// are native divergences (reported separately, not committed here).
+
+// --- TU2/TU5: literal construction + positional access ---
+test "type.tuples/TU5 — positional access .0 .1" {
+    const pair = (42, 7)
+    assert pair.0 == 42
+    assert pair.1 == 7
+}
+
+// --- TU2/TU5: three-element and mixed-scalar tuples ---
+test "type.tuples/TU5 — mixed scalar elements" {
+    const triple = (1, true, 3.5)
+    assert triple.0 == 1
+    assert triple.1 == true
+    assert triple.2 == 3.5
+}
+
+// --- TU5/ctrl.flow: destructuring binding ---
+test "type.tuples/TU5 — destructure const (x, y) = t" {
+    const point = (10, 20)
+    const (x, y) = point
+    assert x == 10
+    assert y == 20
+}
+
+test "type.tuples/TU5 — destructure mixed scalars" {
+    const row = (99, false, 2.0)
+    const (n, flag, ratio) = row
+    assert n == 99
+    assert flag == false
+    assert ratio == 2.0
+}
+
+// --- TU1: annotated tuple type ---
+test "type.tuples/TU1 — annotated tuple type" {
+    const pair: (i32, bool) = (5, true)
+    assert pair.0 == 5
+    assert pair.1 == true
+}
+
+// --- TU5: tuple as parameter, read by position ---
+func second(t: (i32, i32)) -> i32 {
+    return t.1
+}
+
+test "type.tuples/TU5 — tuple parameter positional read" {
+    assert second((5, 8)) == 8
+    assert second((100, -3)) == -3
+}
+
+// --- TU5: tuple parameter destructured inside callee ---
+func sum_pair(t: (i32, i32)) -> i32 {
+    const (a, b) = t
+    return a + b
+}
+
+test "type.tuples/TU5 — tuple parameter destructured in callee" {
+    assert sum_pair((3, 4)) == 7
+    assert sum_pair((-10, 10)) == 0
+}
+
+// --- TU7: tuples are Copy (used after being passed by value) ---
+test "type.tuples/TU7 — tuple copied on pass, original still usable" {
+    const p = (11, 22)
+    const s = second(p)
+    assert s == 22
+    assert p.0 == 11
+    assert p.1 == 22
+}
+
+func main() {}

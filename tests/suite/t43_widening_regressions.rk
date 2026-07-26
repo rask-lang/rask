@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// KNOWN-FAIL regression witnesses — these assert the SPEC-CORRECT behavior and
+// are currently RED because of tracked interp/native divergences. Listed in
+// tests/known_divergences.txt so the differential harness reports them without
+// failing, and flips them green automatically when each bug is fixed. Do NOT
+// weaken these to match the current (wrong) behavior.
+//
+//   KNOWN-FAIL (interp): optional widening at an assignment lvalue and at a
+//     call argument is not applied to the runtime value in the interpreter, so
+//     `!`/`?` on the widened value error ("requires Option, got i64"). The
+//     checker and native backend handle it. Spec: type.optionals/OPT6.
+//     Issue: #INTERP_OPT_WIDEN
+//
+//   KNOWN-FAIL (native): binding the success value of a `T or E` with
+//     `if r? as v` reads the wrong slot on native codegen (yields a stack
+//     address, not the value). Interp is correct. Spec: type.errors/ER19-ER20.
+//     Issue: #NATIVE_RESULT_TBIND
+
+func main() {}
+
+// --- interp: optional widening at assignment lvalue (OPT6) ---
+test "optional assignment-lvalue widening" {
+    mut slot: i64? = none
+    slot = 42                 // bare i64 widens to i64? at the assignment
+    assert slot! == 42
+}
+
+// --- interp: optional widening at call argument, then ? predicate (OPT6/OPT9) ---
+test "optional call-argument widening then predicate" {
+    assert present_bare(3)    // bare i64 widens to i64? at the call site
+    assert present_bare_absent() == false
+}
+
+// --- native: bind the T of a result with if r? as v (ER19/ER20) ---
+test "if r? as v binds the result success value" {
+    const r = ok_value()
+    mut got = 0
+    if r? as v { got = v }
+    assert got == 42
+}
+
+func present_bare(x: i64?) -> bool { return x? }
+func present_bare_absent() -> bool {
+    const x: i64? = none
+    return x?
+}
+
+enum ValError { Bad }
+extend ValError {
+    func message(self) -> string { return "bad" }
+}
+func ok_value() -> i64 or ValError { return 42 }

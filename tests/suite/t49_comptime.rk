@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile-time execution — the subset correct on BOTH backends.
+// Witnesses ctrl.comptime (CT2 comptime const, CT5 comptime block, CT9/CT10
+// return semantics, CT20 arithmetic, CT22 control flow, CT23 structs).
+//
+// Compile-time-evaluation proof (native): the `comptime func`s below are CT3
+// comptime-only — no runtime body is emitted for them (verified via --dump-mir:
+// `factorial` etc. are absent from the runtime function list). The native binary
+// still links and produces the right values, which is only possible if the calls
+// were folded to constants during compilation. An unfolded/deferred call would
+// fail to link ("Function not found"). So a passing native run here IS the
+// compile-time-evaluation witness.
+//
+// Uses marked `comptime func` throughout: an UNMARKED function called only at
+// comptime breaks native codegen (see report). Array-repeat `[T; N]` also breaks
+// native, so comptime consts are exercised as loop bounds, not array sizes.
+
+func main() {}
+
+// CT5 + CT10: comptime block, value is the last expression
+const SUM_BLOCK: i64 = comptime {
+    mut s = 0
+    for i in 0..10 {
+        s += i
+    }
+    s
+}
+
+test "ctrl.comptime/CT5 — block const-eval last expression" {
+    assert SUM_BLOCK == 45
+}
+
+// CT2: const initialized at compile time from a comptime expression
+const PRODUCT: i64 = comptime 6 * 7
+
+test "ctrl.comptime/CT2 — const from comptime expression" {
+    assert PRODUCT == 42
+}
+
+// CT20: full arithmetic (incl. bitwise) at comptime
+const BITS: i64 = comptime (1 << 4) | 3
+
+test "ctrl.comptime/CT20 — arithmetic and bitwise" {
+    assert BITS == 19          // 16 | 3
+}
+
+// CT2: a comptime const feeding another comptime const
+const BASE: i64 = comptime 4 * 4
+const DERIVED: i64 = comptime BASE + 8
+
+test "ctrl.comptime/CT2 — comptime const feeds comptime const" {
+    assert BASE == 16
+    assert DERIVED == 24
+}
+
+// CT3 + CT9: marked comptime func with explicit return, recursion (CT22)
+comptime func factorial(n: i64) -> i64 {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+const FACT5 = comptime factorial(5)
+
+test "ctrl.comptime/CT3 — recursive comptime func call" {
+    assert FACT5 == 120
+}
+
+// CT22: comptime branch selection
+comptime func pick(flag: bool) -> i64 {
+    if flag {
+        return 100
+    }
+    return 200
+}
+
+const PICK_T = comptime pick(true)
+const PICK_F = comptime pick(false)
+
+test "ctrl.comptime/CT22 — comptime branch selection" {
+    assert PICK_T == 100
+    assert PICK_F == 200
+}
+
+// CT22: comptime while loop
+comptime func triangular(n: i64) -> i64 {
+    mut s = 0
+    mut i = 0
+    while i <= n {
+        s += i
+        i += 1
+    }
+    return s
+}
+
+const TRI = comptime triangular(5)
+
+test "ctrl.comptime/CT22 — comptime while loop" {
+    assert TRI == 15           // 0+1+2+3+4+5
+}
+
+// CT23: struct construction + field access at comptime
+struct Point { x: i64, y: i64 }
+
+comptime func manhattan() -> i64 {
+    const p = Point { x: 3, y: 5 }
+    return p.x + p.y
+}
+
+const MH = comptime manhattan()
+
+test "ctrl.comptime/CT23 — struct construction and field access" {
+    assert MH == 8
+}
+
+// CT8-adjacent: a comptime const is compile-time-known, so it drives a
+// loop bound (a position that would reject a deferred/runtime value).
+const LIMIT: i64 = comptime 3 + 4
+
+test "ctrl.comptime/CT2 — comptime const drives loop bound" {
+    mut count = 0
+    for _ in 0..LIMIT {
+        count += 1
+    }
+    assert count == 7
+}

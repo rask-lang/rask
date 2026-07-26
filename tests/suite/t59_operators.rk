@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Comparison operators on a user type (type.operators/ORD1) and the Comparable
+// bound (type.generics). A struct carries user-defined `lt`/`gt` methods that
+// `<`/`>` desugar to (rask-desugar: `a < b` -> `a.lt(b)`). The bodies match
+// lexicographic order, which is also what the compiler auto-derives — so the
+// same assertions hold whether a backend runs the user body or the derived one.
+//
+// Deliberately narrow: user-defined `+`/`==` and enum/`<=`/`>=` comparisons on
+// user types don't yet round-trip on both backends (filed separately), so this
+// file sticks to the operators that do.
+
+struct Version {
+    major: i64
+    minor: i64
+}
+
+extend Version {
+    // `<` desugars to `.lt()`
+    func lt(self, other: Version) -> bool {
+        if self.major != other.major {
+            return self.major < other.major
+        }
+        return self.minor < other.minor
+    }
+    // `>` desugars to `.gt()`
+    func gt(self, other: Version) -> bool {
+        if self.major != other.major {
+            return self.major > other.major
+        }
+        return self.minor > other.minor
+    }
+}
+
+// ORD1: a Comparable bound grants `>`/`<` on the type parameter, resolved to
+// the concrete type's comparison at monomorphization.
+func largest(a: T, b: T) -> T where T: Comparable {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+test "type.operators/ORD1 — `<` on a user type compares minor after major" {
+    const a = Version { major: 1, minor: 2 }
+    const b = Version { major: 1, minor: 5 }
+    assert a < b
+    assert !(b < a)
+}
+
+test "type.operators/ORD1 — `<` on a user type compares major first" {
+    const a = Version { major: 1, minor: 9 }
+    const c = Version { major: 2, minor: 0 }
+    assert a < c
+    assert !(c < a)
+}
+
+test "type.operators/ORD1 — `>` on a user type" {
+    const b = Version { major: 1, minor: 5 }
+    const c = Version { major: 2, minor: 0 }
+    assert c > b
+    assert !(b > c)
+}
+
+test "type.generics — Comparable bound grants `>` over a user type" {
+    const a = Version { major: 1, minor: 2 }
+    const b = Version { major: 1, minor: 5 }
+    const big = largest(a, b)
+    assert big.major == 1
+    assert big.minor == 5
+}
+
+// Integer operator semantics — Type Support Summary (integers: Equal + Comparable).
+test "type.operators — integer comparison operators" {
+    assert 3 == 3
+    assert 3 != 4
+    assert 2 < 9
+    assert 9 > 2
+    assert 3 <= 3
+    assert 4 >= 4
+    assert !(9 < 2)
+}
+
+func main() {}

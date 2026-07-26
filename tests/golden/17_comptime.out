@@ -1,0 +1,58 @@
+=== Compile-Time Computation ===
+
+Squares (computed at compile time):
+Square of 0 = 0
+Square of 1 = 1
+Square of 2 = 4
+Square of 3 = 9
+Square of 4 = 16
+Square of 5 = 25
+Square of 6 = 36
+Square of 7 = 49
+Square of 8 = 64
+Square of 9 = 81
+
+Fibonacci sequence:
+fib(0) = 0
+fib(1) = 1
+fib(2) = 1
+fib(3) = 2
+fib(4) = 3
+fib(5) = 5
+fib(6) = 8
+fib(7) = 13
+fib(8) = 21
+fib(9) = 34
+fib(10) = 55
+fib(11) = 89
+fib(12) = 144
+fib(13) = 233
+fib(14) = 377
+
+Powers of two:
+2^0 = 1
+2^1 = 2
+2^2 = 4
+2^3 = 8
+2^4 = 16
+2^5 = 32
+2^6 = 64
+2^7 = 128
+2^8 = 256
+2^9 = 512
+
+Prime numbers up to 50:
+2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 
+
+Debug mode enabled
+
+Looking up square of 7: 49 (no computation at runtime)
+
+Buffer size: 1024 (determined at compile time)
+
+=== Key Benefits ===
+- Zero runtime cost for computed values
+- Perfect for lookup tables, constants
+- Runs during compilation, not at runtime
+- Can use full language features
+- Great for performance-critical code
