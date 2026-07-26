@@ -209,8 +209,12 @@ Real but not blocking language correctness:
 - `rask test-specs` proves snippets parse; it doesn't prove semantics. Add per-rule conformance tests
   in `tests/suite/` (positive) and `tests/compile_errors/` (negative) as each track lands, tagged with
   the rule ID they witness (`ctrl.panic/E2` etc.).
-- Every suite test runs check + interp + native; divergence is a failure even when both "pass".
-- The five validation programs become CI gates at `rask compile` level, not just `check`.
+- Every suite test runs check + interp + native; divergence is a failure even when both "pass". This is
+  now enforced by `tests/differential.sh` (parity gate) — see [docs/TESTING.md](docs/TESTING.md). Known
+  divergences live in `tests/known_divergences.txt`; the harness fails on any new untracked one.
+- The five validation programs become CI gates at `rask compile` level, not just `check`. Started:
+  `tests/examples_gate.sh` golden-diffs runnable examples on both backends (`tests/known_fail_examples.txt`
+  lists the rest). CI runs cargo test + both gates via `.github/workflows/test.yml`.
 
 ## Issue hygiene
 

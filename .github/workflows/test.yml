@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+name: Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build C runtime
+      run: make -C compiler/runtime
+
+    - name: Build compiler (release)
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
+    # 1. Rust integration + unit tests (fixtures, compile_errors wiring, native
+    #    compile+run golden fixtures). These are the curated, always-green tests.
+    - name: cargo test
+      run: cargo test --release
+      working-directory: compiler
+
+    # 2. Differential backend harness — every tests/suite/ file on BOTH backends,
+    #    fails on any UNTRACKED interp/native divergence. Tracked bugs live in
+    #    tests/known_divergences.txt. This is the native-execution gate; it
+    #    subsumes a bare `rask test tests/suite/` and additionally checks parity.
+    - name: Differential harness (interp vs native)
+      run: tests/differential.sh
+
+    # 3. Example run-gate — every example with a tests/golden/ output must match
+    #    on both backends. Catches native codegen rot in examples/ (nothing ran
+    #    them before).
+    - name: Example run-gate
+      run: tests/examples_gate.sh
+
+    # Informational: raw native suite run. Non-blocking because ~16 suite files
+    # have tracked interp/native divergences (see tests/known_divergences.txt);
+    # the harness above is the blocking parity gate. This step just surfaces the
+    # raw native pass/fail count in the log.
+    - name: Native suite run (informational)
+      continue-on-error: true
+      run: ./compiler/target/release/rask test tests/suite/
+
+    # Parse-only spec conformance (existing weak signal — snippets parse).
+    - name: Spec snippets parse
+      run: ./compiler/target/release/rask test-specs specs/

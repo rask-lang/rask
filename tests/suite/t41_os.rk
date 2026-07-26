@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// os.pid / os.env_vars renames (task-2b: was getpid / vars).
+//
+// KNOWN-FAIL on NATIVE: os.* has no C runtime symbols yet (`os_pid`,
+// `os_env_vars` — Track 4 backend-parity gap, PLAN.md "os.env/platform/arch/pid
+// missing native"). Interp witnesses the behavior; this file is listed in
+// tests/known_fail_native.txt so the differential harness tracks it and flips
+// green automatically when os native lands. Do NOT weaken these to make native
+// pass.
+
+import os
+
+func main() {}
+
+test "os.pid returns the running process id (was getpid)" {
+    // A live process always has a positive pid.
+    assert os.pid() > 0
+}
+
+test "os.env_vars lists the environment (was vars)" {
+    const vars = os.env_vars()
+    // Every process has at least PATH in a normal shell; just assert the list
+    // is well-formed and non-negative in length (the accessor exists + returns).
+    assert vars.len() >= 0
+}
+
+test "os.env reads a single variable as an optional" {
+    // Unlikely-to-exist var reads as absent; the point is the Option shape.
+    const missing = os.env("RASK_DEFINITELY_NOT_SET_12345")
+    assert missing == none
+}

@@ -1,0 +1,34 @@
+# Suite files with a KNOWN, TRACKED interp/native divergence or shared bug.
+# The differential harness (tests/differential.sh) runs these on both backends,
+# reports them as KNOWN-FAIL (non-fatal), and FAILS if one silently starts
+# passing (prune it) or a NEW untracked red file appears.
+#
+# Format: one basename per line. Trailing `# <cluster> — #<issue> (<backend>)`.
+# When a bug is fixed, delete its line so the file rejoins the green gate.
+#
+# Direction is noted because divergence goes both ways: native rot AND interp
+# lag both count. See docs/TESTING.md for the full map.
+
+# --- native codegen bugs (interp correct) ---
+t03_structs.rk             # struct-param + struct-return miscompile — #386 (native)
+t04_enums.rk               # string payload from enum variant = garbage — #387 (native)
+t28_codegen_regressions.rk # string payload from enum variant = garbage — #387 (native)
+t10_generics.rk            # generic method returning string = garbage — #272 (native)
+t19_result_operators.rk    # union try-else / if r? as v mishandled — #389 (native)
+t13_map.rk                 # Map<_,string> in a test block = 0 tests — #390 (native)
+t41_os.rk                  # os.pid/env_vars have no native C symbols — Track 4 (native)
+
+# --- interpreter lag (native correct) ---
+t17b_result.rk             # interp T-or-E type-pattern discrimination wrong — #391 (interp)
+t27_error_narrowing.rk     # interp T-or-E discrimination + && is-pattern binding — #391, #256 (interp)
+t36_cross_task_ownership.rk # interp doesn't register spawn builtin — #267 (interp)
+
+# --- shared / both-backend bugs ---
+t15_borrowing.rk           # mutate disjoint-field write-back regressed — #270 (both)
+t22_parameter_modes.rk     # mutate reassignment/disjoint write-back regressed — #270 (both)
+t20_control_expressions.rk # interp labeled break/continue + native f64 enum payload + && is-pattern — #392, #388, #256 (both)
+t25_iterator_adapters.rk   # fold accumulator type never resolves — #327 (both, check)
+t_conditional_conformance.rk # stray [mir] debug print on native — #258 (native)
+
+# --- new regression witnesses (this session) ---
+t43_widening_regressions.rk # optional widening interp lag (#393) + result T-bind native (#389)

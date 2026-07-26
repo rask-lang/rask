@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Optional (T?) and result (T or E) core semantics — the subset that is correct
+// on BOTH backends. Divergent forms (optional assignment/call widening on
+// interp; result `if r? as v` T-bind on native; `??` on `T or E`) are tracked
+// separately in t43_widening_regressions.rk + tests/known_divergences.txt.
+//
+// Witnesses type.optionals (OPT5/6/9/10/11/13/15/19) and type.errors
+// (ER9/ER12/ER15/ER16/ER23).
+
+func main() {}
+
+struct User { name: string }
+
+// --- Optionals ---
+
+test "optional binding widening + no auto-unwrap (OPT5/OPT6)" {
+    const absent: i64? = none        // none widens
+    const present: i64? = 5          // bare i64 widens at binding
+    assert absent == none
+    assert present! == 5
+}
+
+test "optional return widening (OPT6)" {
+    assert maybe(true)! == 9
+    assert maybe(false) == none
+}
+
+test "optional operators ? ! ?? == none (OPT9/OPT13/OPT11/OPT15)" {
+    const present: i64? = 5
+    const absent: i64? = none
+    assert present?
+    assert absent? == false
+    assert present! == 5
+    assert (absent ?? 7) == 7
+    assert (present ?? 7) == 5
+    assert absent == none
+    assert present != none
+}
+
+test "optional chain ?. short-circuits (OPT10)" {
+    const u: User? = User { name: "ok" }
+    const missing: User? = none
+    assert (u?.name ?? "no") == "ok"
+    assert (missing?.name ?? "no") == "no"
+}
+
+test "if x? as v narrows and binds (OPT19)" {
+    const u: User? = User { name: "bo" }
+    mut got = ""
+    if u? as v { got = v.name }
+    assert got == "bo"
+}
+
+// --- Results (T or E) ---
+
+test "T or E return auto-wrap + force (ER9/ER15)" {
+    // Bare i64 wraps to the T branch, DivError to the E branch, both by type.
+    assert divide(10, 2)! == 5
+    const r = divide(8, 4)
+    assert r?                         // ER12 boolean-ok
+    assert r! == 2
+}
+
+test "try propagates the error early (ER16)" {
+    // propagate returns the error when the inner call fails; the caller sees it.
+    const bad = propagate(3, 0)
+    assert bad? == false
+    assert first_err(bad) == "div by zero"
+}
+
+test "if r is ErrType as e narrows the error side (ER23)" {
+    const r = divide(1, 0)
+    mut msg = ""
+    if r is DivError as e { msg = e.message() }
+    assert msg == "div by zero"
+}
+
+// --- helpers ---
+
+func maybe(b: bool) -> i64? {
+    if b { return 9 }
+    return none
+}
+
+enum DivError { ByZero }
+extend DivError {
+    func message(self) -> string { return "div by zero" }
+}
+
+func divide(a: i64, b: i64) -> i64 or DivError {
+    if b == 0 { return DivError.ByZero }
+    return a / b
+}
+
+// Propagation that only returns the error early; the success path here just
+// returns a fixed value so we don't exercise the native T-bind bug (t43).
+func propagate(a: i64, b: i64) -> i64 or DivError {
+    const q = try divide(a, b)
+    return 100
+}
+
+func first_err(r: i64 or DivError) -> string {
+    if r is DivError as e { return e.message() }
+    return "ok"
+}
