@@ -102,7 +102,7 @@ impl Interpreter {
                 Ok(Value::Rng(Arc::new(Mutex::new(RngState::from_seed(seed as u64)))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
-                ty: "Rng".to_string(),
+                ty: "Random".to_string(),
                 method: method.to_string(),
             }),
         }
@@ -174,7 +174,7 @@ impl Interpreter {
                 }
             }
             _ => Err(RuntimeError::NoSuchMethod {
-                ty: "Rng".to_string(),
+                ty: "Random".to_string(),
                 method: method.to_string(),
             }),
         }

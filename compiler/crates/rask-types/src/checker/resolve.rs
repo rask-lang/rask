@@ -454,8 +454,8 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if name == "Map" => {
                 self.resolve_map_static_method(&method, &args, &ret, span)
             }
-            // Rng (no type params — static and instance methods)
-            Type::UnresolvedNamed(name) if name == "Rng" => {
+            // Random (no type params — static and instance methods)
+            Type::UnresolvedNamed(name) if name == "Random" => {
                 self.resolve_rng_method(&method, &args, &ret, span)
             }
             // Atomic types (AtomicBool, AtomicI8..AtomicU64, AtomicUsize, AtomicIsize)
@@ -1094,8 +1094,8 @@ impl TypeChecker {
                 };
                 self.unify(ret, &result_type, span)
             }
-            "write_all" if args.len() == 1 => {
-                // write_all(data: string) -> () or IoError
+            "write_all" | "write_text" if args.len() == 1 => {
+                // write_all/write_text(data: string) -> () or IoError
                 self.unify(&args[0], &Type::String, span)?;
                 let result_type = Type::Result {
                     ok: Box::new(Type::Unit),
@@ -1244,13 +1244,13 @@ impl TypeChecker {
                 self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
             }
             // Duration methods
-            ("Duration", "as_secs_f64") if args.is_empty() => {
+            ("Duration", "as_seconds_f64") if args.is_empty() => {
                 self.unify(ret, &Type::F64, span)
             }
             ("Duration", "as_nanos") if args.is_empty() => {
                 self.unify(ret, &Type::U64, span)
             }
-            ("Duration", "as_secs") if args.is_empty() => {
+            ("Duration", "as_seconds") if args.is_empty() => {
                 self.unify(ret, &Type::U64, span)
             }
             ("Duration", "from_nanos") if args.len() == 1 => {
@@ -1531,16 +1531,16 @@ impl TypeChecker {
                 };
                 self.unify(ret, &sender_ty, span)
             }
-            // Receiver<T>.recv() -> T or string
-            ("Receiver", "recv") if args.is_empty() => {
+            // Receiver<T>.receive() -> T or string
+            ("Receiver", "receive") if args.is_empty() => {
                 let result_type = Type::Result {
                     ok: Box::new(inner_type),
                     err: Box::new(Type::String),
                 };
                 self.unify(ret, &result_type, span)
             }
-            // Receiver<T>.try_recv() -> T or string
-            ("Receiver", "try_recv") if args.is_empty() => {
+            // Receiver<T>.try_receive() -> T or string
+            ("Receiver", "try_receive") if args.is_empty() => {
                 let result_type = Type::Result {
                     ok: Box::new(inner_type),
                     err: Box::new(Type::String),
@@ -2250,7 +2250,7 @@ impl TypeChecker {
             "Map" => {
                 Some(self.resolve_map_method(type_args, method, args, ret, span))
             }
-            "Rng" => Some(self.resolve_rng_method(method, args, ret, span)),
+            "Random" => Some(self.resolve_rng_method(method, args, ret, span)),
             name if Self::is_atomic_type(name) => {
                 Some(self.resolve_atomic_method(name, method, args, ret, span))
             }
@@ -2275,7 +2275,7 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let rng_ty = Type::UnresolvedNamed("Rng".to_string());
+        let rng_ty = Type::UnresolvedNamed("Random".to_string());
 
         match method {
             "new" if args.is_empty() => {

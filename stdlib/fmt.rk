@@ -27,7 +27,7 @@ public trait Displayable {
 /// Developer-facing representation. Auto-derived for all types (G2).
 /// Override via `extend Type with Debug` (G3).
 ///
-/// format("{:?}", x) calls debug_string() (G4).
+/// format("{:debug}", x) calls debug_string() (G4).
 /// Auto-derived output shows struct fields and enum variants.
 public trait Debug {
     func debug_string(self) -> string

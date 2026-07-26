@@ -124,7 +124,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "read_all" => {
+            "read_all" | "read_text" => {
                 let mut guard = stream.lock().unwrap();
                 let s = guard.as_mut().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
@@ -135,7 +135,7 @@ impl Interpreter {
                     Err(e) => Ok(make_result_err(&e.to_string())),
                 }
             }
-            "write_all" => {
+            "write_all" | "write_text" => {
                 let data = self.expect_string(&args, 0)?;
                 let mut guard = stream.lock().unwrap();
                 let s = guard.as_mut().ok_or_else(|| {

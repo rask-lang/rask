@@ -64,7 +64,7 @@ func main() {
 
     // Iteration via cursor
     println("All entities via cursor:")
-    for h in pool.cursor() {
+    for h in pool.handles() {
         const e = pool[h]
         println("  {e.name}: health={e.health}")
     }
@@ -76,7 +76,7 @@ func main() {
 
     // Safe removal during iteration
     pool[h4].health = 30
-    for h in pool.cursor() {
+    for h in pool.handles() {
         const e = pool[h]
         if e.health < 50 {
             pool.remove(h)
@@ -87,7 +87,7 @@ func main() {
 
     // Verify remaining entities
     println("Remaining entities:")
-    for h in pool.cursor() {
+    for h in pool.handles() {
         const e = pool[h]
         println("  {e.name}: health={e.health}")
     }

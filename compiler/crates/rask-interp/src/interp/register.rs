@@ -50,8 +50,8 @@ impl Interpreter {
                 });
             }
             // Module type exports
-            (ModuleKind::Random, "Rng") => {
-                self.env.define(alias.to_string(), Value::Type("Rng".to_string()));
+            (ModuleKind::Random, "Random") => {
+                self.env.define(alias.to_string(), Value::Type("Random".to_string()));
             }
             (ModuleKind::Time, "Instant") => {
                 self.env.define(alias.to_string(), Value::Type("Instant".to_string()));
@@ -79,7 +79,7 @@ impl Interpreter {
             ModuleKind::Os => &["Command", "Process", "Output", "Stdio", "Signal"],
             ModuleKind::Cli => &["Args"],
             ModuleKind::Net => &["TcpListener", "TcpConnection"],
-            ModuleKind::Random => &["Rng"],
+            ModuleKind::Random => &["Random"],
             _ => &[],
         };
         for name in types {
@@ -246,7 +246,7 @@ impl Interpreter {
 
         // Builtin types (always in scope, matching resolver builtins)
         self.env
-            .define("Rng".to_string(), Value::Type("Rng".to_string()));
+            .define("Random".to_string(), Value::Type("Random".to_string()));
         self.env
             .define("File".to_string(), Value::Type("File".to_string()));
         self.env

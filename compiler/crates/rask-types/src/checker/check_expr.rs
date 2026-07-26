@@ -603,6 +603,40 @@ impl TypeChecker {
                     } else {
                         ty
                     }
+                } else if let Some((enum_name, variant_name)) = base_name.split_once('.') {
+                    // Struct-style enum variant literal: `Shape.Circle { radius: 5.0 }`.
+                    // The value's type is the enum, not the variant — so methods
+                    // declared via `extend Enum` resolve. Variant field names aren't
+                    // stored in the type table (variants carry positional types), so
+                    // constrain each field value by declaration order.
+                    if let Some(type_id) = self.types.get_type_id(enum_name) {
+                        let variant_arity = match self.types.get(type_id) {
+                            Some(TypeDef::Enum { variants, .. }) => variants.iter()
+                                .find(|(v, _)| v == variant_name)
+                                .map(|(_, tys)| tys.len()),
+                            _ => None,
+                        };
+                        if let Some(arity) = variant_arity {
+                            // Variant field names aren't stored, so field values can't
+                            // be matched to declared types by name. Infer them (catches
+                            // errors inside each value) and check arity only.
+                            for field_init in fields.iter() {
+                                self.infer_expr(&field_init.value);
+                            }
+                            if fields.len() != arity {
+                                self.errors.push(TypeError::ArityMismatch {
+                                    expected: arity,
+                                    found: fields.len(),
+                                    span: expr.span,
+                                });
+                            }
+                            Type::Named(type_id)
+                        } else {
+                            Type::UnresolvedNamed(name.clone())
+                        }
+                    } else {
+                        Type::UnresolvedNamed(name.clone())
+                    }
                 } else {
                     Type::UnresolvedNamed(name.clone())
                 }
@@ -1722,7 +1756,7 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &object.kind {
             // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
             let base_name = name.split('<').next().unwrap_or(name);
-            if matches!(base_name, "Vec" | "Map" | "Pool" | "Rng" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
+            if matches!(base_name, "Vec" | "Map" | "Pool" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
                 || rask_stdlib::StubRegistry::load().get_type(base_name).is_some()
             {
                 let obj_ty = if name.contains('<') {

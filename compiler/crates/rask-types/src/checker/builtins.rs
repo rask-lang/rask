@@ -191,18 +191,18 @@ mod tests {
     #[test]
     fn fs_methods_present() {
         let bm = BuiltinModules::new();
-        assert!(bm.get_method("fs", "read_file").is_some());
-        assert!(bm.get_method("fs", "write_file").is_some());
+        assert!(bm.get_method("fs", "read_text").is_some());
+        assert!(bm.get_method("fs", "write_text").is_some());
         assert!(bm.get_method("fs", "exists").is_some());
         assert!(bm.get_method("fs", "open").is_some());
         assert!(bm.get_method("fs", "create").is_some());
-        assert!(bm.get_method("fs", "append_file").is_some());
+        assert!(bm.get_method("fs", "append_text").is_some());
     }
 
     #[test]
-    fn fs_read_file_signature() {
+    fn fs_read_text_signature() {
         let bm = BuiltinModules::new();
-        let sig = bm.get_method("fs", "read_file").unwrap();
+        let sig = bm.get_method("fs", "read_text").unwrap();
         assert_eq!(sig.params, vec![Type::String]);
         assert_eq!(sig.ret, Type::Result {
             ok: Box::new(Type::String),

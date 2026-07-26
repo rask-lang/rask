@@ -3865,8 +3865,8 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // Receiver_recv_struct: replace elem_size arg with stack buffer address
-            "Receiver_recv_struct" => {
+            // Receiver_receive_struct: replace elem_size arg with stack buffer address
+            "Receiver_receive_struct" => {
                 let elem_size = match mir_args.get(1) {
                     Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
                     _ => 8,
@@ -3879,10 +3879,10 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // Receiver_try_recv: recv into a buffer of the element's real size;
+            // Receiver_try_receive: recv into a buffer of the element's real size;
             // the C call returns the channel status. Args in: [rx, elem_size].
             // Args out: [rx, out_ptr]. Post-call builds the `T or E` Result.
-            "Receiver_try_recv" => {
+            "Receiver_try_receive" => {
                 let elem_size = match mir_args.get(1) {
                     Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
                     _ => 8,

@@ -523,7 +523,7 @@ mod tests {
     fn all_types_loaded() {
         let reg = StubRegistry::load();
         let expected = [
-            "Vec", "Map", "Pool", "Handle", "string", "Option", "Result", "File", "Rng",
+            "Vec", "Map", "Pool", "Handle", "string", "Option", "Result", "File", "Random",
             "fs", "net", "json", "cli", "io", "std", "http",
             "JsonValue", "JsonError", "JsonParser",
             "Headers", "Request", "Response", "HttpServer", "Responder", "HttpClient",
@@ -582,8 +582,8 @@ mod tests {
     #[test]
     fn fs_module_methods() {
         let reg = StubRegistry::load();
-        assert!(reg.has_method("fs", "read_file"));
-        assert!(reg.has_method("fs", "write_file"));
+        assert!(reg.has_method("fs", "read_text"));
+        assert!(reg.has_method("fs", "write_text"));
         assert!(reg.has_method("fs", "exists"));
         assert!(reg.has_method("fs", "open"));
         assert!(reg.has_method("fs", "create"));

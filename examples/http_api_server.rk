@@ -6,7 +6,6 @@
 
 import http
 import json
-import async.spawn
 import time
 
 // ─── Domain types ────────────────────────────────────────────────

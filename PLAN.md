@@ -72,19 +72,26 @@ traits (`rask-types/src/traits.rs`). Progress by dependency order:
 8. ⬜ Cross-package conformance — needs a decision first (#312).
 
 **2b. Rename/name-drift sweep.** Programs written to spec fail to typecheck where implementations
-exist under old names. One reconciliation pass over stubs + interp + runtime + examples (#302):
+exist under old names. One reconciliation pass over stubs + interp + runtime + examples (#302).
+Hard renames — old names are rejected, not aliased — across `.rk` stubs, the registry drift list,
+type-checker resolution, interp dispatch, the derived MIR names + codegen dispatch (C ABI symbols
+kept), effects sources, examples, tests, tutorials, and the playground:
 
-- `recv`/`try_recv`/`RecvError` → `receive`/`try_receive`/`ReceiveError` (`stdlib/async.rk:96`,
-  `rask-interp/builtins/threading.rs:324`)
-- `{:?}` → `{:debug}` (`rask-interp/src/interp/format.rs:155`)
-- `fs.read_file/write_file/append_file` → `read_text/write_text/append_text`; `io.write_str` → `write_text`
-- `Duration.as_secs` → `as_seconds`; `Rng` → `Random`; `os.getpid` → `os.pid`; `os.vars` → `os.env_vars`
-- `vec.extend` → `push_all` (`try_push_all` reuses `PushError`; `ExtendError` is gone);
-  `BufReader`/`BufWriter` → `BufferedReader`/`BufferedWriter`
-- #276/#277/#278 signature changes (TcpConnection `read_text/write_text`, shared `SysError`,
-  `time.sleep -> void or SysError`, `File.lines()` dropped — `read_lines` eager, `BufferedReader.lines` lazy)
-- Growth ops panic on alloc failure; `try_` variants return the rejected value (std.collections/C2) —
-  supersedes the `AllocError` line in TODO.md
+- ✅ `recv`/`try_recv`/`RecvError` → `receive`/`try_receive`/`ReceiveError` (plus `TryRecvError`
+  → `TryReceiveError` for consistency)
+- ✅ `{:?}` → `{:debug}` (multi-char type token in `format.rs`; `{x:debug}` interpolation wired too)
+- ✅ `fs.read_file/write_file/append_file` → `read_text/write_text/append_text`; `io.write_str` → `write_text`
+- ✅ `Duration.as_secs`/`as_secs_f32`/`as_secs_f64` → `as_seconds`/…; `Rng` → `Random`;
+  `os.getpid` → `os.pid`; `os.vars` → `os.env_vars`
+- ✅ #276/#277/#278: `File.lines()` dropped (`fs.read_lines` eager stays); TcpConnection gains
+  `read_text/write_text` (interp; native deferred with the rest of the net stubs); `SysError` added
+  to `os.rk`, `time.sleep -> void or SysError`
+- ⬜ `vec.extend` → `push_all`: no-op — no `extend`/`ExtendError` ever existed in code; `push_all`
+  is a missing feature (add stub+interp), not a rename. Left for the collections/C2 work.
+- ⬜ `BufReader`/`BufWriter` → `BufferedReader`/`BufferedWriter`: no-op — the buffered type is
+  spec-only, unimplemented; nothing to rename.
+- ⬜ Growth ops panic on alloc failure; `try_` variants return the rejected value (std.collections/C2)
+  — semantics change, not name drift; tracked with the collections work.
 
 **2c. Origin tracking opt-in.** Spec revised to `@traced` + `any Error`; compiler still captures origin
 on every error, 16 bytes on every `T or E` (ER33/ER34; `rask-mir/src/lower/errors.rs:56-66`).

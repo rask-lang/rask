@@ -9,7 +9,7 @@ test "send delivers a value to the receiver" {
     const (tx, rx) = Channel<i64>.buffered(4)
     tx.send(30)
     mut total = 0
-    if rx.recv() is i64 as v {
+    if rx.receive() is i64 as v {
         total = v
     }
     assert total == 30
@@ -24,7 +24,7 @@ test "clone-then-send keeps the original sender usable" {
     tx.send(2)
     mut sum = 0
     mut n = 0
-    while rx.try_recv() is i64 as v {
+    while rx.try_receive() is i64 as v {
         sum += v
         n += 1
         if n > 4 {
@@ -53,7 +53,7 @@ test "own closure moves its captures into the task" {
             return 0
         }).detach()
         mut result = 0
-        if rx.recv() is i64 as v {
+        if rx.receive() is i64 as v {
             result = v
         }
         assert result == 15

@@ -31,21 +31,21 @@ func main() {
 
     print("Creating linked list with handles:\n")
 
-    // Allocate nodes in the pool — alloc returns Handle or Error
-    const first = node_pool.alloc(Node {
+    // Insert nodes into the pool — insert returns a Handle (panics on failure)
+    const first = node_pool.insert(Node {
         value: 1,
         next: none,
-    })!
+    })
 
-    const second = node_pool.alloc(Node {
+    const second = node_pool.insert(Node {
         value: 2,
         next: none,
-    })!
+    })
 
-    const third = node_pool.alloc(Node {
+    const third = node_pool.insert(Node {
         value: 3,
         next: none,
-    })!
+    })
 
     // Link nodes using handles (pool indexing with handle)
     node_pool[first].next = second
@@ -72,26 +72,26 @@ func main() {
 
     print("Creating game entities:\n")
 
-    const player = entities.alloc(Entity {
+    const player = entities.insert(Entity {
         id: 1,
         name: "Player",
         health: 100,
         target: none,
-    })!
+    })
 
-    const enemy1 = entities.alloc(Entity {
+    const enemy1 = entities.insert(Entity {
         id: 2,
         name: "Goblin",
         health: 50,
         target: player,  // Enemy targets player
-    })!
+    })
 
-    const enemy2 = entities.alloc(Entity {
+    const enemy2 = entities.insert(Entity {
         id: 3,
         name: "Orc",
         health: 80,
         target: player,
-    })!
+    })
 
     // Player targets first enemy
     entities[player].target = enemy1

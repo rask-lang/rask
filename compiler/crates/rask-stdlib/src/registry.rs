@@ -152,7 +152,7 @@ const OPTION_METHODS: &[&str] = &[
 ];
 
 const FILE_METHODS: &[&str] = &[
-    "close", "read_all", "read_text", "write", "write_line", "lines",
+    "close", "read_all", "read_text", "write", "write_line",
 ];
 
 const METADATA_METHODS: &[&str] = &["size", "accessed", "modified"];
@@ -160,7 +160,7 @@ const METADATA_METHODS: &[&str] = &["size", "accessed", "modified"];
 const TCP_LISTENER_METHODS: &[&str] = &["accept", "close", "clone"];
 
 const TCP_CONNECTION_METHODS: &[&str] = &[
-    "read_all", "write_all", "remote_addr",
+    "read_all", "write_all", "read_text", "write_text", "remote_addr",
     "read_http_request", "write_http_response",
     "close", "clone",
 ];
@@ -170,7 +170,7 @@ const JSON_VALUE_METHODS: &[&str] = &[
 ];
 
 const DURATION_METHODS: &[&str] = &[
-    "as_secs", "as_millis", "as_micros", "as_nanos", "as_secs_f32", "as_secs_f64",
+    "as_seconds", "as_millis", "as_micros", "as_nanos", "as_seconds_f32", "as_seconds_f64",
 ];
 
 const INSTANT_METHODS: &[&str] = &["duration_since", "elapsed"];
@@ -188,7 +188,7 @@ const ARGS_METHODS: &[&str] = &[
 const THREAD_HANDLE_METHODS: &[&str] = &["join", "detach"];
 const TASK_HANDLE_METHODS: &[&str] = &["join", "detach", "cancel"];
 const SENDER_METHODS: &[&str] = &["send", "try_send", "close"];
-const RECEIVER_METHODS: &[&str] = &["recv", "try_recv", "close"];
+const RECEIVER_METHODS: &[&str] = &["receive", "try_receive", "close"];
 const SHARED_METHODS: &[&str] = &["read", "write", "try_read", "try_write", "clone"];
 const MUTEX_METHODS: &[&str] = &["lock", "try_lock", "clone"];
 const SIMD_METHODS: &[&str] = &[
@@ -217,8 +217,8 @@ const ATOMIC_INT_METHODS: &[&str] = &[
 // ---------------------------------------------------------------------------
 
 const FS_METHODS: &[&str] = &[
-    "read_file", "read_bytes", "read_lines", "write_file", "write_bytes",
-    "append_file", "exists", "open", "create", "canonicalize", "metadata",
+    "read_text", "read_bytes", "read_lines", "write_text", "write_bytes",
+    "append_text", "exists", "open", "create", "canonicalize", "metadata",
     "remove", "remove_dir", "create_dir", "create_dir_all",
     "rename", "copy",
 ];
@@ -242,8 +242,8 @@ const MATH_METHODS: &[&str] = &[
 const RANDOM_METHODS: &[&str] = &["f32", "f64", "i64", "bool", "range"];
 
 const OS_METHODS: &[&str] = &[
-    "env", "env_or", "set_env", "remove_env", "vars",
-    "args", "exit", "getpid", "platform", "arch",
+    "env", "env_or", "set_env", "remove_env", "env_vars",
+    "args", "exit", "pid", "platform", "arch",
 ];
 
 const IO_METHODS: &[&str] = &["read_line"];

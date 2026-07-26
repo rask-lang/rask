@@ -62,7 +62,7 @@ impl Interpreter {
             }
 
             #[cfg(not(target_arch = "wasm32"))]
-            "set_env" | "remove_env" | "vars" => {
+            "set_env" | "remove_env" | "env_vars" => {
                 match method {
                     "set_env" => {
                         let key = self.expect_string(&args, 0)?;
@@ -75,7 +75,7 @@ impl Interpreter {
                         std::env::remove_var(&key);
                         Ok(Value::Unit)
                     }
-                    "vars" => {
+                    "env_vars" => {
                         let vars: Vec<Value> = std::env::vars()
                             .map(|(k, v)| {
                                 Value::Vec(Arc::new(Mutex::new(vec![
@@ -90,7 +90,7 @@ impl Interpreter {
                 }
             }
             #[cfg(target_arch = "wasm32")]
-            "set_env" | "remove_env" | "vars" => {
+            "set_env" | "remove_env" | "env_vars" => {
                 Err(RuntimeError::Generic(
                     format!("os.{} not available in browser playground", method)
                 ))
@@ -119,13 +119,13 @@ impl Interpreter {
             }
 
             #[cfg(not(target_arch = "wasm32"))]
-            "getpid" => {
+            "pid" => {
                 Ok(Value::int(std::process::id() as i64))
             }
             #[cfg(target_arch = "wasm32")]
-            "getpid" => {
+            "pid" => {
                 Err(RuntimeError::Generic(
-                    "os.getpid() not available in browser playground".to_string()
+                    "os.pid() not available in browser playground".to_string()
                 ))
             }
 

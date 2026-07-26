@@ -17,7 +17,7 @@ extend os {
     public func remove_env(name: string) { }
 
     /// Get all environment variables as key-value pairs.
-    public func vars() -> Vec<(string, string)> { }
+    public func env_vars() -> Vec<(string, string)> { }
 
     /// Get command-line arguments.
     public func args() -> Vec<string> { }
@@ -26,7 +26,7 @@ extend os {
     public func exit(code: i64) { }
 
     /// Get the current process ID.
-    public func getpid() -> i64 { }
+    public func pid() -> i64 { }
 
     /// Get the operating system name.
     public func platform() -> string { }
@@ -123,4 +123,20 @@ public enum Signal {
     Hangup
     User1
     User2
+}
+
+/// Shared platform-error type for rare OS-level failures (sleep, clock ops).
+/// One shared type instead of a one-variant enum per syscall (SY1).
+public enum SysError {
+    Unsupported(string)     // operation not available on this platform
+    Failed(string)          // raw OS error text
+}
+
+extend SysError {
+    public func message(self) -> string {
+        match self {
+            SysError.Unsupported(msg) => return "unsupported: {msg}",
+            SysError.Failed(msg) => return "os error: {msg}",
+        }
+    }
 }

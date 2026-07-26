@@ -114,7 +114,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Vec" => (8, 8), // Opaque pointer (runtime uses RaskVec*)
         Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
-        Type::UnresolvedGeneric { name, .. } if name == "Rng" => (8, 8),  // Pointer to rng state
+        Type::UnresolvedGeneric { name, .. } if name == "Random" => (8, 8),  // Pointer to rng state
         Type::UnresolvedGeneric { name, .. } if name == "Channel" => (8, 8),
         Type::UnresolvedGeneric { name, args } => {
             eprintln!(
@@ -143,7 +143,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 // Stdlib types backed by opaque runtime pointers
                 "TcpListener" | "TcpConnection" | "File" | "ThreadHandle"
                 | "TaskHandle" | "Sender" | "Receiver" | "ThreadPool"
-                | "MultitaskingRuntime" | "Rng" | "Iterator" | "StringBuilder" => (8, 8),
+                | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder" => (8, 8),
                 _ => {
                     // Look up user-defined types from the layout cache
                     if let Some(&cached) = cache.get(name.as_str()) {

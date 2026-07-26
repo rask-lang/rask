@@ -93,10 +93,10 @@ public struct Receiver<T> { }
 
 extend Receiver<T> {
     /// Receive a value. Pauses/blocks if buffer empty.
-    public func recv(self) -> T or RecvError { }
+    public func receive(self) -> T or ReceiveError { }
 
     /// Non-blocking receive. Returns error if empty or closed.
-    public func try_recv(self) -> T or TryRecvError { }
+    public func try_receive(self) -> T or TryReceiveError { }
 
     /// Explicitly close the receiver.
     public func close(self) -> void or CloseError { }
@@ -109,8 +109,8 @@ extend SendError {
     public func message(self) -> string { return "send on closed channel" }
 }
 
-public enum RecvError { Closed }
-extend RecvError {
+public enum ReceiveError { Closed }
+extend ReceiveError {
     public func message(self) -> string { return "receive on closed channel" }
 }
 
@@ -134,12 +134,12 @@ extend TrySendError<T> {
     }
 }
 
-public enum TryRecvError { Empty, Closed }
-extend TryRecvError {
+public enum TryReceiveError { Empty, Closed }
+extend TryReceiveError {
     public func message(self) -> string {
         match self {
-            TryRecvError.Empty => return "channel is empty",
-            TryRecvError.Closed => return "receive on closed channel",
+            TryReceiveError.Empty => return "channel is empty",
+            TryReceiveError.Closed => return "receive on closed channel",
         }
     }
 }

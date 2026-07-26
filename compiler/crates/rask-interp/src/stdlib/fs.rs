@@ -17,7 +17,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "read_file" => {
+            "read_text" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::read_to_string(&path) {
                     Ok(content) => Ok(Value::Enum {
@@ -80,7 +80,7 @@ impl Interpreter {
                     }),
                 }
             }
-            "write_file" => {
+            "write_text" => {
                 let path = self.expect_string(&args, 0)?;
                 let content = self.expect_string(&args, 1)?;
                 match std::fs::write(&path, &content) {
@@ -132,7 +132,7 @@ impl Interpreter {
                     }),
                 }
             }
-            "append_file" => {
+            "append_text" => {
                 use std::io::Write;
                 let path = self.expect_string(&args, 0)?;
                 let content = self.expect_string(&args, 1)?;
@@ -406,7 +406,7 @@ impl Interpreter {
         }
     }
 
-    /// Handle File instance methods (close, read_all, write, lines).
+    /// Handle File instance methods (close, read_all, read_text, write, write_line).
     pub(crate) fn call_file_method(
         &mut self,
         file: &Arc<Mutex<Option<std::fs::File>>>,
@@ -491,20 +491,6 @@ impl Interpreter {
                         variant_index: 0, origin: None,
                     }),
                 }
-            }
-            "lines" => {
-                use std::io::{BufRead, BufReader};
-                let file_opt = file.lock().unwrap();
-                let f = file_opt.as_ref().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "read lines from".to_string() }
-                })?;
-                let reader = BufReader::new(f);
-                let lines: Vec<Value> = reader
-                    .lines()
-                    .filter_map(|r| r.ok())
-                    .map(|l| Value::String(Arc::new(Mutex::new(l))))
-                    .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(lines))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "File".to_string(),

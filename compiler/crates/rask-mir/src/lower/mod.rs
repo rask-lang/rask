@@ -478,7 +478,7 @@ impl<'a> MirContext<'a> {
 /// and channel element size into one struct so they stay in sync.
 #[derive(Clone, Default)]
 pub(crate) struct LocalMeta {
-    /// Stdlib type prefix (e.g. "Rng", "File", "Vec").
+    /// Stdlib type prefix (e.g. "Random", "File", "Vec").
     /// Fallback when the type checker leaves types unresolved.
     pub type_prefix: Option<String>,
     /// Full type annotation string (e.g. "Shared<Database>").

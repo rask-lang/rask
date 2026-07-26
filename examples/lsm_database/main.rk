@@ -43,7 +43,7 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
                     const n = args[i].parse_int() is i64 as v else {
                         return DbError.Io("invalid count: {args[i]}")
                     }
-                    result.count = n as i32
+                    result.count = n truncate to i32
                 }
             }
             "--prefix" => {
@@ -96,7 +96,7 @@ func print_usage() {
 
 // ─── Benchmark ──────────────────────────────────────────────────────
 
-func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
+func run_benchmark(mutate db: Db, count: i32, prefix: string) -> void or DbError {
     println("Running benchmark with {count} operations...")
     println("")
 
@@ -105,7 +105,7 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
     mut i = 0
     while i < count {
         const key = "{prefix}_{i:06}"
-        const padding = "x".repeat(64)
+        const padding = string.repeat("x", 64)
         const value = "value_{i}_{padding}"
         try db.put(key, value)
         i += 1
@@ -174,7 +174,7 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
 
 // ─── Main ───────────────────────────────────────────────────────────
 
-func run(args: CliArgs) -> () or DbError {
+func run(args: CliArgs) -> void or DbError {
     const config = DbConfig.default_for(args.db_dir)
     mut db = try Db.open(config)
     ensure db.close() else |_| {}
@@ -225,7 +225,7 @@ func run(args: CliArgs) -> () or DbError {
             print_stats(db.stats())
         }
         "dump" => {
-            const results = try db.scan("\u{00}", "\u{FF}".repeat(16))
+            const results = try db.scan("\u{00}", string.repeat("\u{FF}", 16))
             for kv in results {
                 println("{kv.key}\t{kv.value}")
             }

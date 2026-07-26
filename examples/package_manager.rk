@@ -15,15 +15,14 @@ import cli
 import std
 import http
 import json
-import async.spawn
 import async.Channel
 
 // ─── Semver ─────────────────────────────────────────────────────────
 
 struct Version {
-    major: i32
-    minor: i32
-    patch: i32
+    major: i64
+    minor: i64
+    patch: i64
 }
 
 extend Version {
@@ -44,9 +43,9 @@ extend Version {
         }
 
         return Version {
-            major: major as i32,
-            minor: minor as i32,
-            patch: patch as i32,
+            major: major,
+            minor: minor,
+            patch: patch,
         }
     }
 
@@ -66,7 +65,7 @@ enum Constraint {
 
 extend Constraint {
     func parse(s: string) -> Constraint or VersionError {
-        const trimmed = s.trim()
+        const trimmed = s.trim().to_string()
 
         if trimmed.starts_with("^") {
             const ver = try Version.parse(trimmed[1..].to_string())
@@ -277,12 +276,12 @@ struct LockedPackage {
 //   }
 
 func load_manifest(path: string) -> Manifest or FetchError {
-    const content = try fs.read_file(path) else |e| FetchError.Io(IoErrorMsg.Msg("cannot read {path}: {e.message()}"))
+    const content = try fs.read_text(path) else |e| FetchError.Io(IoErrorMsg.Msg("cannot read {path}: {e.message()}"))
     return try parse_manifest(content) else |e| FetchError.Manifest(e)
 }
 
 func parse_manifest(content: string) -> Manifest or ManifestError {
-    const lines = content.lines()
+    const lines = content.lines().collect()
     mut name = ""
     mut version_str = ""
     mut deps = Vec.new()
@@ -401,7 +400,7 @@ extend LocalRegistry with Registry {
 func local_available(root: string, name: string) -> Vec<PackageMeta> or RegistryError {
     // Read index file listing available versions
     const index_path = "{root}/{name}/index.json"
-    const index_content = fs.read_file(index_path) is string as c else {
+    const index_content = fs.read_text(index_path) is string as c else {
         return RegistryError.PackageNotFound(name)
     }
 
@@ -436,7 +435,7 @@ func local_fetch(root: string, name: string, version: Version) -> string or Regi
 // ─── Package Meta Loader ────────────────────────────────────────────
 
 func load_package_meta(path: string) -> PackageMeta or RegistryError {
-    const content = fs.read_file(path) is string as c else {
+    const content = fs.read_text(path) is string as c else {
         return RegistryError.IoError("cannot read {path}")
     }
     const parsed = json.parse(content) is JsonValue as v else {
@@ -445,24 +444,40 @@ func load_package_meta(path: string) -> PackageMeta or RegistryError {
     return parse_meta_from_json(parsed, path)
 }
 
+// Pull a string field out of a JSON object map. none if missing or not a string.
+func json_str_field(m: Map<string, JsonValue>, key: string) -> string? {
+    if m.get(key)? as v {
+        return v.as_string()
+    }
+    return none
+}
+
+// Pull an array field out of a JSON object map. none if missing or not an array.
+func json_arr_field(m: Map<string, JsonValue>, key: string) -> Vec<JsonValue>? {
+    if m.get(key)? as v {
+        return v.as_array()
+    }
+    return none
+}
+
 // Shared JSON→PackageMeta extraction — used by both local and HTTP registries.
 // Takes the parsed JSON object value, avoiding type duplication.
 func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or RegistryError {
     const m = obj.as_object() ?? return RegistryError.IoError("expected object in {source}")
 
-    const name = m.get("name")?.as_string() ?? return RegistryError.IoError("missing 'name' in {source}")
-    const ver_str = m.get("version")?.as_string() ?? return RegistryError.IoError("missing 'version' in {source}")
-    const checksum = m.get("checksum")?.as_string() ?? ""
+    const name = json_str_field(m, "name") ?? return RegistryError.IoError("missing 'name' in {source}")
+    const ver_str = json_str_field(m, "version") ?? return RegistryError.IoError("missing 'version' in {source}")
+    const checksum = json_str_field(m, "checksum") ?? ""
     const version = Version.parse(ver_str) is Version as v else {
         return RegistryError.IoError("bad version in {source}: {ver_str}")
     }
 
     mut deps = Vec.new()
-    if m.get("deps")?.as_array()? as dep_arr {
+    if json_arr_field(m, "deps")? as dep_arr {
         for d_val in dep_arr {
             const d_obj = d_val.as_object() ?? continue
-            const dn = d_obj.get("name")?.as_string() ?? ""
-            const dc = d_obj.get("constraint")?.as_string() ?? ""
+            const dn = json_str_field(d_obj, "name") ?? ""
+            const dc = json_str_field(d_obj, "constraint") ?? ""
             if dn.is_empty() || dc.is_empty() { continue }
             const constraint = Constraint.parse(dc) is Constraint as c else { continue }
             deps.push(Dependency { name: dn, constraint: constraint })
@@ -537,7 +552,7 @@ func http_fetch(base_url: string, name: string, version: Version) -> string or R
     // Write to cache
     const cache_dir = "/tmp/rask-cache/{name}-{ver_str}"
     fs.create_dir_all(cache_dir)
-    fs.write_file("{cache_dir}/package.tar", resp.body)
+    fs.write_text("{cache_dir}/package.tar", resp.body)
     return cache_dir
 }
 
@@ -626,7 +641,8 @@ func resolve_one(
         else |e| FetchError.Registry(e)
 
     // Filter to satisfying versions, pick newest via sort_by
-    mut candidates = versions.filter(|m| constraint.satisfies(m.version))
+    const want = constraint.clone()
+    mut candidates = versions.filter(own |m| want.satisfies(m.version.clone()))
     candidates.sort_by(|a, b| b.version.compare(a.version))
 
     const meta = candidates.first() ?? return FetchError.Resolve(ResolveError.NoMatch(name, constraint.to_string()))
@@ -714,6 +730,13 @@ func verify_checksum(data: string, expected: string, pkg_name: string) -> void o
     return ()
 }
 
+// Task outcome carried over the result channel. Channels carry a plain value,
+// not a `T or E` — so success and failure travel as one enum.
+enum FetchResult {
+    Done(string)
+    Failed(FetchError)
+}
+
 func fetch_packages(
     graph: DepGraph,
     registry: any Registry,
@@ -738,13 +761,12 @@ func fetch_packages(
         for item in items {
             const item_tx = tx.clone()
             const item_counter = counter.clone()
-            spawn(|| {
-                const result = fetch_one(item, registry)
-                if result? {
-                    with item_counter as c { c += 1 }
-                    item_tx.send(result)
-                } else {
-                    item_tx.send(result)
+            spawn(own || {
+                if fetch_one(item, registry)? as path {
+                    with item_counter.lock() as c { c += 1 }
+                    item_tx.send(FetchResult.Done(path))
+                } else as e {
+                    item_tx.send(FetchResult.Failed(e))
                 }
             }).detach()
         }
@@ -753,10 +775,10 @@ func fetch_packages(
         mut first_error: FetchError? = none
         mut received = 0
         while received < items.len() {
-            if rx.recv()? as result {
-                if result? {
-                    println("  {result}")
-                } else as e {
+            if rx.receive()? as result {
+                if result is FetchResult.Done(msg) {
+                    println("  {msg}")
+                } else if result is FetchResult.Failed(e) {
                     if first_error == none {
                         first_error = e
                     }
@@ -769,7 +791,7 @@ func fetch_packages(
             return e
         }
 
-        const fetched = with counter as c { c }
+        const fetched = with counter.lock() as c { c }
         println("Fetched {fetched} packages")
     }
 
@@ -782,7 +804,7 @@ func fetch_one(item: FetchItem, registry: any Registry) -> string or FetchError 
 
     // Verify checksum if present
     if !item.checksum.is_empty() {
-        const content = fs.read_file("{pkg_path}/meta.json") is string as c else {
+        const content = fs.read_text("{pkg_path}/meta.json") is string as c else {
             return "fetch   {item.name}@{item.version.to_string()}"
         }
         try verify_checksum(content, item.checksum, item.name)
@@ -841,10 +863,9 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
         }
     }
 
-    try tmp_file.write_all(out)
+    try tmp_file.write(out)
         else |e| FetchError.Io(IoErrorMsg.Msg("cannot write lock file: {e.message()}"))
-    try tmp_file.close()
-        else |e| FetchError.Io(IoErrorMsg.Msg("cannot close lock file: {e.message()}"))
+    tmp_file.close()
 
     // Atomic rename: success path — cancels ensure (EN6)
     try fs.rename(tmp_path, path)
@@ -856,7 +877,7 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
 func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
     mut packages = Map.new()
 
-    const content = fs.read_file(path) is string as c else {
+    const content = fs.read_text(path) is string as c else {
         // No lock file yet — that's fine
         return packages
     }
@@ -957,8 +978,8 @@ func print_dep_graph(graph: DepGraph) {
     print_node(graph, graph.root, 0)
 }
 
-func print_node(graph: DepGraph, handle: Handle<ResolvedPkg>, depth: i32) {
-    const indent = "  ".repeat(depth)
+func print_node(graph: DepGraph, handle: Handle<ResolvedPkg>, depth: usize) {
+    const indent = string.repeat("  ", depth)
 
     with graph.packages[handle] as pkg {
         const ver = pkg.meta.version.to_string()

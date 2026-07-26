@@ -73,7 +73,7 @@ func shared_config_update() -> i32 {
         })
 
         const pilot = spawn(|| {
-            rx.recv()
+            rx.receive()
             return config.read(|c| c)
         })
 

@@ -83,7 +83,7 @@ int64_t rask_rng_bool(RaskRng *rng) {
 
 int64_t rask_rng_range(RaskRng *rng, int64_t lo, int64_t hi) {
     if (lo >= hi) {
-        rask_panic_fmt("Rng.range: lo (%lld) >= hi (%lld)", (long long)lo, (long long)hi);
+        rask_panic_fmt("Random.range: lo (%lld) >= hi (%lld)", (long long)lo, (long long)hi);
     }
     uint64_t range = (uint64_t)(hi - lo);
     return lo + (int64_t)(rng_next_u64(rng) % range);

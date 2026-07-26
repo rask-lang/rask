@@ -55,7 +55,7 @@ func main() {
     const user = User { name: "Alice", age: 30 }
 
     {
-        const borrowed = user
+        const borrowed = user.clone()
         print_user(borrowed)
         print("Age: ")
         print(borrowed.age)
@@ -71,8 +71,8 @@ func main() {
     const user2 = User { name: "Bob", age: 25 }
 
     {
-        const ref1 = user2
-        const ref2 = user2  // OK - multiple immutable borrows
+        const ref1 = user2.clone()
+        const ref2 = user2.clone()  // OK - independent copies
 
         print_user(ref1)
         print_user(ref2)
@@ -150,7 +150,7 @@ func main() {
     // Pattern: inline access in expression, use immediately
     const data = Vec.from([5, 2, 8, 1, 9])
 
-    const max = data.iter()
+    const max_of = data.iter()
         .fold(0, |acc, x| {
             if x > acc {
                 return x
@@ -159,7 +159,7 @@ func main() {
         })
 
     print("Max value: ")
-    print(max)
+    print(max_of)
     print("\n")
 
     // data is still available

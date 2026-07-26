@@ -81,7 +81,7 @@ func estimate_pi(total: i32, num_tasks: i32) -> f64 {
 
         mut total_inside = 0
         for i in 0..num_tasks {
-            total_inside = total_inside + rx.recv()
+            total_inside = total_inside + rx.receive()
         }
 
         return 4.0 * total_inside as f64 / total as f64
