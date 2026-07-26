@@ -47,25 +47,45 @@ example goes green.
 
 ## Current coverage (2026-07-26)
 
-New this session — witnessed on both backends:
+Witnessed on BOTH backends (green in the harness):
 
-| Area | Rules | File |
-|------|-------|------|
+| Area | Rules / surface | File |
+|------|-----------------|------|
 | Stdlib renames (#302) | `receive`, `fs.*_text`, `Duration.as_seconds*`, `Random`, `{:debug}`, `time.sleep`, `Channel.receive` | `suite/t40_stdlib_renames.rk` |
 | Old names rejected | `recv`/`as_secs`/`getpid`/`vars`/`read_file`/`File.lines` (E0313) | `compile_errors/stdlib_renames.rk` |
 | Optionals / results | OPT5/6/9/10/11/13/15/19, ER9/12/15/16/23 | `suite/t42_optionals_results.rk` |
-| os (interp; native = Track 4) | `os.pid`/`env_vars`/`env` | `suite/t41_os.rk` |
+| Tuples | TU1/TU2/TU5/TU7 construction, access, destructuring, params (scalar) | `suite/t44_tuples.rk` |
+| Multi-variant unions | anonymous-enum construction, per-variant `try` widening, success extraction | `suite/t45_unions.rk` |
+| Primitives | P1/P4 sized-int + bounds, CV1/CV5/CV6/CV7 casts, bool, char | `suite/t46_primitives.rk` |
+| Ranges | R1/R2/R4 exclusive/inclusive/empty iteration + bounds | `suite/t47_ranges.rk` |
+| Loops | while/loop/for, break-value, nested break/continue | `suite/t48_loops.rk` |
+| Comptime | CT2/5/9/10/20/22/23 const/block eval; native fold proven | `suite/t49_comptime.rk` |
+| Pools / Handle | insert→Handle, access, len, remove, iterate | `suite/t51_pools.rk` |
+| Value semantics | Copy vs move, clone independence, 16-byte threshold | `suite/t52_value_semantics.rk` |
+| Strings | len/find/contains/trim/case/substring/replace/split/… | `suite/t54_strings.rk` |
+| Collections | Vec + Map method surface (beyond t09/t13) | `suite/t55_collections.rk` |
+| Concurrency | `Thread.spawn`/`join`, own-capture, channel return | `suite/t57_spawn.rk` |
+| Operators | user `<`/`>`, `Comparable` generic bound, int comparisons | `suite/t59_operators.rk` |
+| os (interp; native Track 4) | `os.pid`/`env_vars`/`env` | `suite/t41_os.rk` |
 
-Regression witnesses (RED until fixed, tracked): `suite/t43_widening_regressions.rk`
-(optional widening interp lag #393, result T-bind native #389).
+Tracked KNOWN-FAIL witnesses (RED until fixed, in `known_divergences.txt`):
+`t43_widening_regressions.rk` (optional widening interp #393, result T-bind native #389),
+`t53_math.rk` (math module unlinked in codegen), `t50_boxes.rk` (Cell/Mutex native).
 
-Native codegen bugs surfaced by the harness and filed: #386 (struct param+return),
-#387 (enum string payload), #388 (f64 enum payload), #389 (union error handling),
-#390 (Map<_,string> test blocks), #391 (interp T-or-E discrimination), #392 (interp
-labeled break/continue), #393 (interp optional widening), #394 (`??` on `T or E`),
-#395 (bogus import / `{:?}`). Reopened regressions: #256, #258, #270.
+Filed from the harness — native codegen: #386 (struct param+return), #387 (enum string
+payload), #388 (f64 enum payload), #389 (union error handling), #390 (test-registration
+drop); interp: #391 (T-or-E discrimination), #392 (labeled break/continue), #393 (optional
+widening); checker: #394 (`??` on `T or E`), #395 (bogus import / `{:?}`). Reopened: #256,
+#258, #270. The breadth pass added a second wave (math/bits/collections-codegen/operator-
+overloading/select/boxes/comptime-native/interp-struct-copy-aliasing) — see the issue
+tracker and `known_divergences.txt` for the live list.
 
-Still uncovered (next): overflow on both backends is done (#325); linear-in-containers,
-cross-task send, ensure definiteness have `compile_errors/` coverage — audit each
-against its rule table (Batch 2). Sequence protocol, ranges, SIMD, `Owned<T>` linearity
-have no witnesses yet.
+Withheld (no green-both form exists yet — feature or backend absent, tracked as issues, not
+committed as tests): `t56_bits` (bit methods unregistered on both), `t58_select` (no native
+MIR lowering). Boxes/math are witnessed interp-only above.
+
+Still uncovered (next): SIMD, `Owned<T>` linearity, sequence protocol (all unimplemented);
+`@binary` encoding, typed JSON, net/http (native-thin); panics/ensure have `cargo test` +
+`compile_errors/` coverage but no suite blocks (panics abort test runs). Batch 2 soundness
+(overflow #325 done; linear-in-containers, cross-task send, ensure definiteness) have
+`compile_errors/` coverage — audit each against its rule table.
