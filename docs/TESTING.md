@@ -19,14 +19,27 @@ invocation, so interp/native drift was invisible; the harness runs both, strips
 timings, and compares pass/fail **and** output. A test that passes on interp but
 crashes, mis-prints, or emits nothing on native is a failure — that's the point.
 
-## Tracked divergences
+## Expected-red files: bugs vs. the TDD backlog
 
-Known interp/native divergences (and shared bugs) are registered in
-`tests/known_divergences.txt`, one suite basename per line with its issue. The
-harness reports them as KNOWN-FAIL (non-fatal) and **fails if a tracked file
-silently starts passing** (prune it) or a **new untracked red file appears**. So
-the registry is the complete list of red suite files, and green is enforced for
-everything else.
+Not every suite file is green — some are deliberately red, in two registries the
+harness treats as non-fatal:
+
+- **`tests/known_divergences.txt`** — bugs/regressions: a feature that *should*
+  work but is broken on a backend. Red here is bad news.
+- **`tests/pending_features.txt`** — the **TDD backlog**: tests that assert
+  spec-correct behavior for features that aren't built yet (SIMD, bits, `select`,
+  numeric limits, `.rev()`/`.step()`, operator overloading, `Owned<T>`, the
+  sequence protocol, `@binary`, native math/boxes/os…). These are *supposed* to
+  be red — the test encodes the spec and drives the implementation. When the
+  feature lands, the test flips green and the harness prints **UNEXPECTED PASS**
+  telling you to promote it out of the backlog.
+
+Between them, these two files are the complete list of red suite files. The
+harness **fails if any other file is red** (a new regression) or if a
+registered file silently starts passing (prune/promote it). Green is enforced
+for everything else. Pending files carry a `// PENDING <spec-id> — …` header and
+assert the real expected values, never the current wrong behavior — so the suite
+doubles as an executable spec and a to-do list, not just a regression net.
 
 Examples that don't yet run on both backends have no golden and are listed in
 `tests/known_fail_examples.txt`. Generate a golden and delete the line when an
@@ -44,6 +57,10 @@ example goes green.
 - **Regression for an open bug:** witness the spec-correct behavior (leave it
   RED), add a `// KNOWN-FAIL #NNN` comment, and register the file in
   `known_divergences.txt`. Don't assert the current wrong behavior.
+- **Pending feature (TDD):** write the test for an *unbuilt* spec feature the
+  same way — assert the correct values, `// PENDING <spec-id>` header — and
+  register it in `pending_features.txt`. It's red until someone builds the
+  feature, then it's the acceptance test.
 
 ## Current coverage (2026-07-26)
 
@@ -80,12 +97,14 @@ widening); checker: #394 (`??` on `T or E`), #395 (bogus import / `{:?}`). Reope
 overloading/select/boxes/comptime-native/interp-struct-copy-aliasing) — see the issue
 tracker and `known_divergences.txt` for the live list.
 
-Withheld (no green-both form exists yet — feature or backend absent, tracked as issues, not
-committed as tests): `t56_bits` (bit methods unregistered on both), `t58_select` (no native
-MIR lowering). Boxes/math are witnessed interp-only above.
+Pending-feature backlog (RED tests that assert spec behavior, in `pending_features.txt`):
+`p01_bits`, `p02_numeric_limits`, `p03_comparison_surface` (char/tuple/bool ops),
+`p04_ranges_rev_step`, `p05_operator_overload`, `p06_select`, `p07_owned` (`Owned<T>`),
+`p08_sequence` (sequence protocol), `p09_simd`, `p10_binary` (`@binary`, interp-done/native-gap),
+plus the native-backend gaps `t41_os`, `t50_boxes`, `t53_math`. Each flips green when its
+feature is built.
 
-Still uncovered (next): SIMD, `Owned<T>` linearity, sequence protocol (all unimplemented);
-`@binary` encoding, typed JSON, net/http (native-thin); panics/ensure have `cargo test` +
-`compile_errors/` coverage but no suite blocks (panics abort test runs). Batch 2 soundness
-(overflow #325 done; linear-in-containers, cross-task send, ensure definiteness) have
+Still without a witness (next): typed JSON, net/http (native-thin); panics/ensure have
+`cargo test` + `compile_errors/` coverage but no suite blocks (panics abort test runs); Batch 2
+soundness (overflow #325 done; linear-in-containers, cross-task send, ensure definiteness) have
 `compile_errors/` coverage — audit each against its rule table.

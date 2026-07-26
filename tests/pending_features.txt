@@ -1,0 +1,30 @@
+# TDD backlog: tests that assert SPEC-CORRECT behavior for features that are not
+# implemented yet. They are EXPECTED to be red — each one drives the
+# implementation of its feature and flips green (harness reports UNEXPECTED PASS
+# → promote it out of this file) the moment the feature lands.
+#
+# This is distinct from tests/known_divergences.txt, which tracks BUGS/
+# REGRESSIONS in features that are supposed to work. Red here = roadmap; red
+# there = something broke.
+#
+# Format: one suite basename per line, trailing `# <spec-id> — #<issue>`.
+# The differential harness treats both files as expected-red (non-fatal).
+
+# --- language surface not implemented (red on BOTH backends) ---
+p01_bits.rk                # std.bits integer bit methods unregistered — #397
+p02_numeric_limits.rk      # type.primitives/NT1 numeric constants (i32.MAX…) — #406
+p03_comparison_surface.rk  # char/tuple/bool ordering + equality operators — #406
+p04_ranges_rev_step.rk     # ctrl.ranges .rev()/.step() adapters — RV/SP (PLAN)
+
+# --- works on interp, native backend not built (native RED) ---
+p05_operator_overload.rk   # type.operators user/derived operators native codegen — #399/#400
+p06_select.rk              # conc.select no native MIR lowering — #405
+t41_os.rk                  # os.pid/env_vars have no native C symbols — Track 4
+t50_boxes.rk               # Cell unlinked (Cell_new) + Mutex with garbage — #402/#268
+t53_math.rk                # entire math module unlinked in codegen — #396
+
+# --- spec-heavy pending features ---
+p07_owned.rk               # mem.owned Owned<T> / `own` linear heap pointer — unimplemented
+p08_sequence.rk            # type.sequence function-valued iteration protocol — unimplemented
+p09_simd.rk                # type.simd f32x4 etc. vector types — unimplemented
+p10_binary.rk              # type.binary @binary parse/build (native gap; interp partial)

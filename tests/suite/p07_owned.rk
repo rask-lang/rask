@@ -1,0 +1,30 @@
+// PENDING mem.owned — `own` operator + linear Owned<T> (heap-alloc, consume-once, drop). Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Spec: specs/memory/owned.md — `own expr` heap-allocates Owned<T>; `*ptr`
+// borrows the inner value without consuming; drop(ptr) consumes exactly once
+// (mem.linear/L1-L3). Canonical syntax from owned.md "Allocation and Usage".
+
+// --- own / deref / drop on a scalar (owned.md lines 22-27) ---
+
+test "mem.owned/OW3 — own allocates, *ptr reads back the value, drop consumes" {
+    const ptr: Owned<i32> = own 42    // heap-allocate, Owned<i32>
+    const value = *ptr                // dereference (borrow, does not consume)
+    drop(ptr)                         // consume + deallocate
+    assert value == 42
+}
+
+// --- deref borrows a struct field, still valid until drop (owned.md 62-75) ---
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+test "mem.owned/OW3 — deref borrows a field, own value survives until drop" {
+    const ptr = own Point { x: 1, y: 2 }
+    const x = (*ptr).x                // borrow for read
+    drop(ptr)                         // now consumed
+    assert x == 1
+}
+
+func main() {}

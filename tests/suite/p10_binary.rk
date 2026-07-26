@@ -1,0 +1,34 @@
+// PENDING type.binary — native codegen for @binary .build()/.parse() (works on interp; native links no Packet_build). Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Spec: specs/types/binary.md — @binary makes field order the wire layout (B1),
+// F2 requires be/le on multi-byte fields; G2 generates .build() -> Vec<u8> and
+// G1 generates .parse(data) -> (T, []u8) or ParseError.
+
+@binary
+struct Packet {
+    magic: u16be     // 16-bit big-endian
+    id: u32be        // 32-bit big-endian
+}
+
+// --- G1/G2: build then parse roundtrips every field ---
+
+test "type.binary/G1 — build/parse roundtrip preserves be fields" {
+    const p = Packet { magic: 0x1234, id: 0xDEADBEEF }
+    const bytes = p.build()              // G2: Vec<u8>, 6 bytes
+    const r = Packet.parse(bytes)        // G1: (Packet, []u8) or ParseError
+    assert r?
+    const parsed = r!.0
+    assert parsed.magic == 0x1234
+    assert parsed.id == 0xDEADBEEF
+}
+
+// --- B3: MSB-first / big-endian byte order on the wire ---
+
+test "type.binary/B3 — u16be serializes MSB-first" {
+    const p = Packet { magic: 0x1234, id: 0 }
+    const bytes = p.build()
+    assert bytes[0] == 0x12              // high byte first
+    assert bytes[1] == 0x34
+}
+
+func main() {}

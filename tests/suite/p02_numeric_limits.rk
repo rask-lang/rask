@@ -1,0 +1,16 @@
+// PENDING type.primitives/NT1 — numeric type constants (i32.MAX/MIN, u8.MAX,
+// i64.MAX, …) are not wired to the runtime; `i32.MAX` fails as `undefined
+// variable i32` (#406). Expected RED until built; drives implementation. Do NOT
+// assert current (wrong) behavior.
+
+func main() {}
+
+test "type.primitives/NT1 — i32 bounds" {
+    assert i32.MAX == 2147483647
+    assert i32.MIN == -2147483648
+}
+
+test "type.primitives/NT1 — u8 / i64 bounds" {
+    assert u8.MAX == 255
+    assert i64.MAX == 9223372036854775807
+}

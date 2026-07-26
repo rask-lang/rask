@@ -1,0 +1,24 @@
+// PENDING type.operators — ordering/equality operators are missing on several
+// types the spec lists as Comparable/Equatable: `char` ordering (`'a' < 'b'` →
+// no method lt), tuple equality (`(1,2) == (1,2)` → no method eq, TU9), and
+// `bool` ordering. #406. Expected RED until built; drives implementation. Do
+// NOT assert current (wrong) behavior.
+
+func main() {}
+
+test "type.operators/ORD1 — char ordering" {
+    assert 'a' < 'b'
+    assert 'z' > 'a'
+    assert ('a' < 'a') == false
+}
+
+test "type.tuples/TU9 — tuple equality" {
+    assert (1, 2) == (1, 2)
+    assert ((1, 2) == (1, 3)) == false
+    assert (1, 2) != (2, 1)
+}
+
+test "type.operators — bool ordering (false < true)" {
+    assert false < true
+    assert (true < false) == false
+}
