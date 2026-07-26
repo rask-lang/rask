@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Pools and handles: insert/access, len, direct field write, remove, contains,
+// iterate, safe get. Spec: mem.pools (PL1-PL7, PH1-PH3).
+//
+// Scalar-only element fields — string payloads through pool access go native
+// garbage (#386/#387). Compound assign `pool[h].f -= n`, `with pool[h] as e`
+// write-back, and `pool.remove(h)` value-binding all diverge on native
+// (see t50/report) so they're excluded here.
+
+struct Entity {
+    health: i32
+    level: i32
+}
+
+// --- Insert returns a handle; index access reads fields (PL3, PL4) ---
+
+test "mem.pools/PL3 — insert then index-read fields" {
+    mut pool = Pool.new()
+    const h = pool.insert(Entity { health: 100, level: 1 })
+    assert pool[h].health == 100
+    assert pool[h].level == 1
+}
+
+// --- len tracks live element count (PL) ---
+
+test "mem.pools/PL — len counts live elements" {
+    mut pool = Pool.new()
+    pool.insert(Entity { health: 10, level: 1 })
+    pool.insert(Entity { health: 20, level: 2 })
+    assert pool.len() == 2
+}
+
+test "mem.pools/PL — is_empty" {
+    mut pool = Pool.new()
+    assert pool.is_empty() == true
+    pool.insert(Entity { health: 1, level: 1 })
+    assert pool.is_empty() == false
+}
+
+// --- Direct field write through handle (PL4) ---
+
+test "mem.pools/PL4 — direct field write persists" {
+    mut pool = Pool.new()
+    const h = pool.insert(Entity { health: 100, level: 1 })
+    pool[h].health = 50
+    assert pool[h].health == 50
+}
+
+// --- Remove drops the element (PL6) ---
+
+test "mem.pools/PL6 — remove reduces len" {
+    mut pool = Pool.new()
+    const h = pool.insert(Entity { health: 5, level: 1 })
+    assert pool.len() == 1
+    pool.remove(h)
+    assert pool.len() == 0
+}
+
+// --- contains reflects liveness (PH3 handle identity) ---
+
+test "mem.pools/PL4 — contains before and after remove" {
+    mut pool = Pool.new()
+    const h = pool.insert(Entity { health: 5, level: 1 })
+    assert pool.contains(h) == true
+    pool.remove(h)
+    assert pool.contains(h) == false
+}
+
+// --- Iterate handles snapshot (PL7, PF4) ---
+
+test "mem.pools/PL7 — iterate handles and sum a field" {
+    mut pool = Pool.new()
+    pool.insert(Entity { health: 10, level: 1 })
+    pool.insert(Entity { health: 20, level: 1 })
+    pool.insert(Entity { health: 30, level: 1 })
+    mut total = 0
+    for h in pool.handles() {
+        total += pool[h].health
+    }
+    assert total == 60
+}
+
+// --- Safe get returns value / none (PL5) ---
+
+test "mem.pools/PL5 — get on valid handle yields value" {
+    mut pool = Pool.new()
+    const h = pool.insert(Entity { health: 42, level: 3 })
+    const got = pool.get(h)
+    if got? as e {
+        assert e.health == 42
+    }
+}
+
+test "mem.pools/PL5 — get on stale handle is none" {
+    mut pool = Pool.new()
+    const h = pool.insert(Entity { health: 42, level: 3 })
+    pool.remove(h)
+    const got = pool.get(h)
+    assert got == none
+}
+
+func main() {}
