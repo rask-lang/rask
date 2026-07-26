@@ -32,3 +32,7 @@ t_conditional_conformance.rk # stray [mir] debug print on native — #258 (nativ
 
 # --- new regression witnesses (this session) ---
 t43_widening_regressions.rk # optional widening interp lag (#393) + result T-bind native (#389)
+
+# --- whole-feature native gaps witnessed on interp (native KNOWN-FAIL) ---
+t50_boxes.rk               # Cell unlinked (Function not found: Cell_new) + Mutex with garbage — #268 + math/box native gap (native)
+t53_math.rk                # entire math module unlinked in codegen (Function not found: math_*) (native)

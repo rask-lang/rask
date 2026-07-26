@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.boxes / mem.cell / conc.sync witnesses. Interp is correct; NATIVE is a
+// KNOWN-FAIL — Cell is unlinked in codegen (`Function not found: Cell_new`) and
+// Mutex `with .lock()` reads pointer garbage on native (#268). Tracked in
+// tests/known_divergences.txt; delete that line + this note when box codegen
+// lands. Do NOT weaken to make native pass.
+//
+// (Shared `with` access is broken on BOTH backends, so it isn't witnessed here.)
+
+import memory.Cell
+import sync.Mutex
+
+func main() {}
+
+test "mem.cell/Cell get + set via interior mutability" {
+    mut c = Cell.new(0)
+    assert c.get() == 0
+    c.set(42)
+    assert c.get() == 42
+    c.set(c.get() + 1)
+    assert c.get() == 43
+}
+
+test "conc.sync/Mutex with .lock() mutates the guarded value" {
+    mut m = Mutex.new(0)
+    with m.lock() as v { v += 5 }
+    with m.lock() as v { v += 3 }
+    with m.lock() as v { assert v == 8 }
+}
