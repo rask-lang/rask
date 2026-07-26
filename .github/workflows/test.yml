@@ -30,40 +30,53 @@ jobs:
           compiler/target/
         key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
 
+    # Build steps are hard prerequisites: if either fails, the gates below are
+    # skipped (nothing can run without the binary). Everything AFTER the build
+    # runs on `!cancelled() && builds succeeded`, so a failure in ONE gate never
+    # skips the others — every run reports the full matrix, and the job still
+    # fails if any gate failed.
     - name: Build C runtime
+      id: runtime
       run: make -C compiler/runtime
 
     - name: Build compiler (release)
+      id: compiler
       run: cargo build --release -p rask-cli
       working-directory: compiler
 
-    # 1. Rust integration + unit tests (fixtures, compile_errors wiring, native
-    #    compile+run golden fixtures). These are the curated, always-green tests.
-    - name: cargo test
-      run: cargo test --release
-      working-directory: compiler
-
-    # 2. Differential backend harness — every tests/suite/ file on BOTH backends,
-    #    fails on any UNTRACKED interp/native divergence. Tracked bugs live in
-    #    tests/known_divergences.txt. This is the native-execution gate; it
-    #    subsumes a bare `rask test tests/suite/` and additionally checks parity.
+    # Differential backend harness — every tests/suite/ file on BOTH backends,
+    # fails on any UNTRACKED interp/native divergence. Tracked bugs/pending
+    # features live in tests/known_divergences.txt + tests/pending_features.txt.
+    # This is the native-execution gate; it subsumes a bare `rask test
+    # tests/suite/` and additionally checks parity. Binary-only — independent of
+    # cargo test, so it runs even if cargo test fails.
     - name: Differential harness (interp vs native)
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/differential.sh
 
-    # 3. Example run-gate — every example with a tests/golden/ output must match
-    #    on both backends. Catches native codegen rot in examples/ (nothing ran
-    #    them before).
+    # Example run-gate — every example with a tests/golden/ output must match on
+    # both backends. Catches native codegen rot in examples/.
     - name: Example run-gate
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/examples_gate.sh
-
-    # Informational: raw native suite run. Non-blocking because ~16 suite files
-    # have tracked interp/native divergences (see tests/known_divergences.txt);
-    # the harness above is the blocking parity gate. This step just surfaces the
-    # raw native pass/fail count in the log.
-    - name: Native suite run (informational)
-      continue-on-error: true
-      run: ./compiler/target/release/rask test tests/suite/
 
     # Parse-only spec conformance (existing weak signal — snippets parse).
     - name: Spec snippets parse
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: ./compiler/target/release/rask test-specs specs/
+
+    # Rust integration + unit tests (fixtures, compile_errors wiring, native
+    # compile+run golden fixtures). Runs last and independently: a failure here
+    # no longer skips the gates above.
+    - name: cargo test
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: cargo test --release
+      working-directory: compiler
+
+    # Informational: raw native suite run. Non-blocking (continue-on-error)
+    # because ~16 suite files have tracked divergences; the harness above is the
+    # blocking parity gate. Surfaces the raw native pass/fail count in the log.
+    - name: Native suite run (informational)
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      continue-on-error: true
+      run: ./compiler/target/release/rask test tests/suite/
