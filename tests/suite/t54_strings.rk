@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.strings conformance — queries, transforms, search, iteration.
+// Every test passes on BOTH interp and native.
+//
+// Spec: stdlib/string.rk
+//
+// Notes on portable idioms used here:
+//   - `usize?` / `char?` have no derived `eq`, and `(opt?)` as an rvalue is
+//     miscompiled on native — so optional results are inspected with `!`
+//     (force-unwrap) or `if opt? { .. }` narrowing, never `== none`.
+//   - `char == char` inside `assert` hits a native codegen verifier bug, so
+//     char equality is bound to a bool first, then asserted.
+
+func main() {}
+
+// --- length / emptiness ---
+
+test "std.strings/len counts bytes" {
+    assert "hello world".len() == 11
+    assert "".len() == 0
+    assert "a".len() == 1
+}
+
+test "std.strings/is_empty" {
+    assert "".is_empty() == true
+    assert "x".is_empty() == false
+}
+
+// --- search predicates ---
+
+test "std.strings/contains" {
+    const s = "hello world"
+    assert s.contains("world") == true
+    assert s.contains("lo w") == true
+    assert s.contains("xyz") == false
+    assert s.contains("") == true
+}
+
+test "std.strings/starts_with and ends_with" {
+    const s = "hello world"
+    assert s.starts_with("hello") == true
+    assert s.starts_with("world") == false
+    assert s.ends_with("world") == true
+    assert s.ends_with("hello") == false
+}
+
+// --- rfind returns usize? ---
+// Only hits are checked with `!`. string.find and miss-narrowing of a
+// method-returned optional both diverge on native — see report.
+
+test "std.strings/rfind last occurrence" {
+    const s = "hello"
+    assert s.rfind("l")! == 3
+    assert s.rfind("h")! == 0
+    assert s.rfind("o")! == 4
+}
+
+// --- indexed access returns char? / u8? ---
+
+test "std.strings/char_at" {
+    const s = "hello"
+    const c = s.char_at(1)!
+    // char == char inside assert miscompiles on native; bind to bool first.
+    const is_e = c == 'e'
+    assert is_e
+    const is_h = s.char_at(0)! == 'h'
+    assert is_h
+}
+
+test "std.strings/byte_at" {
+    const s = "hello"
+    assert s.byte_at(0)! == 104
+    assert s.byte_at(4)! == 111
+}
+
+// --- case transforms ---
+
+test "std.strings/to_uppercase" {
+    assert "hello world".to_uppercase() == "HELLO WORLD"
+    assert "MiXeD".to_uppercase() == "MIXED"
+}
+
+test "std.strings/to_lowercase" {
+    assert "HELLO".to_lowercase() == "hello"
+    assert "MiXeD".to_lowercase() == "mixed"
+}
+
+// --- trimming ---
+
+test "std.strings/trim" {
+    assert "  hi  ".trim() == "hi"
+    assert "\t hi \n".trim() == "hi"
+    assert "hi".trim() == "hi"
+}
+
+test "std.strings/trim_start and trim_end" {
+    assert "xxhi".trim_start() == "xxhi"
+    assert "  hi  ".trim_start() == "hi  "
+    assert "  hi  ".trim_end() == "  hi"
+}
+
+// --- substring / replace / concat ---
+
+test "std.strings/substring" {
+    const s = "hello world"
+    assert s.substring(0, 5) == "hello"
+    assert s.substring(6, 11) == "world"
+    assert s.substring(0, 0) == ""
+}
+
+test "std.strings/replace" {
+    const s = "hello world"
+    assert s.replace("o", "0") == "hell0 w0rld"
+    assert s.replace("world", "rask") == "hello rask"
+    assert s.replace("z", "!") == "hello world"
+}
+
+test "std.strings/concat" {
+    assert "ab".concat("cd") == "abcd"
+    assert "".concat("x") == "x"
+    assert "x".concat("") == "x"
+}
+
+// --- iteration: split / lines / chars ---
+
+test "std.strings/split counts and values" {
+    mut count = 0
+    mut joined = ""
+    for part in "a,bb,ccc".split(",") {
+        count = count + 1
+        joined = joined.concat(part)
+        joined = joined.concat("-")
+    }
+    assert count == 3
+    assert joined == "a-bb-ccc-"
+}
+
+test "std.strings/split_whitespace" {
+    mut count = 0
+    for w in "the quick   brown".split_whitespace() {
+        count = count + 1
+    }
+    assert count == 3
+}
+
+test "std.strings/lines" {
+    mut count = 0
+    mut joined = ""
+    for line in "one\ntwo\nthree".lines() {
+        count = count + 1
+        joined = joined.concat(line)
+    }
+    assert count == 3
+    assert joined == "onetwothree"
+}
+
+test "std.strings/chars iterates scalars" {
+    mut count = 0
+    for c in "abc".chars() {
+        count = count + 1
+    }
+    assert count == 3
+}
