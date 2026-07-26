@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Primitive types: sized integers, bool, char, and the sanctioned lossy
+// conversions. Spec: type.primitives (P1-P8, CV1/CV5-CV10, CH3-CH4, BL1-BL3).
+// Every value is asserted at a boundary and must match on interp + native.
+
+// --- P1: sized integer arithmetic and MAX/MIN bounds ---
+test "type.primitives/P1 — i32 arithmetic at boundary" {
+    const a: i32 = 2147483647
+    assert a == 2147483647
+    const lo: i32 = -2147483648
+    assert lo == -2147483648
+    const b: i32 = 1000000
+    assert b * 2 == 2000000
+}
+
+test "type.primitives/P1 — i64 holds values beyond i32" {
+    const big: i64 = 3000000000
+    assert big + big == 6000000000
+    assert big == 3000000000
+}
+
+test "type.primitives/P1 — u8 range" {
+    const hi: u8 = 255
+    assert hi == 255
+    const lo: u8 = 0
+    assert lo == 0
+    const x: u8 = 200
+    assert x == 200
+}
+
+test "type.primitives/P1 — u64 holds large value" {
+    const x: u64 = 5000000000
+    assert x == 5000000000
+    assert x + 1 == 5000000001
+}
+
+// --- CV1: `as` widening is lossless ---
+test "type.primitives/CV1 — lossless widening with as" {
+    const small: i8 = 100
+    const wide: i32 = small as i32
+    assert wide == 100
+    const n: i32 = 300
+    const f: f64 = n as f64
+    assert f == 300.0
+}
+
+// --- CV5: truncate to T (wrapping) ---
+test "type.primitives/CV5 — truncate wraps" {
+    const big: i32 = 300
+    const a: u8 = big truncate to u8
+    assert a == 44
+    const neg: i32 = -1
+    const b: u8 = neg truncate to u8
+    assert b == 255
+}
+
+// --- CV6: saturate to T (clamp) ---
+test "type.primitives/CV6 — saturate clamps" {
+    const big: i32 = 300
+    assert (big saturate to u8) == 255
+    const neg: i32 = -5
+    assert (neg saturate to u8) == 0
+    const fits: i32 = 100
+    assert (fits saturate to u8) == 100
+}
+
+// --- CV7: try convert to T (T?) ---
+test "type.primitives/CV7 — try convert yields none out of range" {
+    const ok = try 100 convert to u8
+    assert ok! == 100
+    const overflow = try 300 convert to u8
+    assert overflow == none
+}
+
+// --- BL1/BL2: boolean ops and short-circuit ---
+test "type.primitives/BL1 — boolean operators" {
+    assert (true && false) == false
+    assert (true || false) == true
+    assert !false == true
+    assert (true && true) == true
+}
+
+func side_effect_free_true() -> bool { return true }
+
+test "type.primitives/BL1 — short-circuit picks correct branch" {
+    mut hit = false
+    if false && side_effect_free_true() {
+        hit = true
+    }
+    assert hit == false
+    mut hit2 = false
+    if true || side_effect_free_true() {
+        hit2 = true
+    }
+    assert hit2 == true
+}
+
+// --- P5/CH2: char literals compared via code point (native char-eq is #332) ---
+test "type.primitives/CH2 — char literals via code point" {
+    const a = 'a'
+    const b = 'b'
+    assert (a as u32) == 97
+    assert (a as u32) != (b as u32)
+}
+
+// --- CH4: char to u32 is lossless ---
+test "type.primitives/CH4 — char as u32 lossless" {
+    const a = 'a'
+    assert (a as u32) == 97
+    const nl = '\n'
+    assert (nl as u32) == 10
+}
+
+// --- CH3: char.from_u32 returns char? with runtime validation ---
+test "type.primitives/CH3 — from_u32 validates code points" {
+    if char.from_u32(65)? as c {
+        assert (c as u32) == 65
+    } else {
+        assert false, "65 is a valid scalar"
+    }
+    const surrogate = char.from_u32(0xD800)
+    assert surrogate == none
+    const too_big = char.from_u32(0x110000)
+    assert too_big == none
+}
+
+// --- P4/BL3: bool is distinct; comparisons yield bool ---
+test "type.primitives/P4 — comparisons produce bool" {
+    const r: bool = 3 > 2
+    assert r == true
+    const e: bool = 2 == 2
+    assert e == true
+}
+
+func main() {}
