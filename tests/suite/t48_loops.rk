@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Loop constructs — the subset correct on BOTH backends.
+// Witnesses ctrl.flow (CF15 break value, CF19-CF21 while, CF17 loop) and
+// ctrl.loops (LP1 value iteration, break/continue). Unlabeled break/continue
+// only — labeled break/continue is broken on interp (#392).
+
+func main() {}
+
+// while: runs while condition holds, produces unit (CF19/CF21)
+test "ctrl.flow/CF19 — while counts down" {
+    mut n = 5
+    mut count = 0
+    while n > 0 {
+        count += 1
+        n -= 1
+    }
+    assert count == 5
+    assert n == 0
+}
+
+// while: zero iterations when condition false at entry
+test "ctrl.flow/CF19 — while false at entry" {
+    mut count = 0
+    while false {
+        count += 1
+    }
+    assert count == 0
+}
+
+// loop + break value: loop is an expression (CF15)
+test "ctrl.flow/CF15 — break value from loop expression" {
+    mut i = 0
+    const found = loop {
+        if i == 7 { break i }
+        i += 1
+    }
+    assert found == 7
+}
+
+// loop + break value: computed value
+test "ctrl.flow/CF15 — break value computed" {
+    mut i = 0
+    mut acc = 0
+    const total = loop {
+        acc += i
+        if i == 4 { break acc }
+        i += 1
+    }
+    assert total == 10         // 0+1+2+3+4
+}
+
+// loop: bare break (statement context, no value) (CF17)
+test "ctrl.flow/CF17 — bare break exits loop" {
+    mut count = 0
+    loop {
+        count += 1
+        if count == 3 { break }
+    }
+    assert count == 3
+}
+
+// for-in over range with break: stop early
+test "ctrl.loops — break stops for-loop early" {
+    mut last = -1
+    for i in 0..100 {
+        last = i
+        if last == 5 { break }
+    }
+    assert last == 5
+}
+
+// continue: skip iterations matching a predicate
+test "ctrl.loops — continue skips odd values" {
+    mut sum = 0
+    for i in 0..10 {
+        if i % 2 != 0 { continue }
+        sum += i
+    }
+    assert sum == 20           // 0+2+4+6+8
+}
+
+// continue in while: skip without infinite loop
+test "ctrl.flow/CF19 — continue in while" {
+    mut i = 0
+    mut sum = 0
+    while i < 10 {
+        i += 1
+        if i % 2 == 0 { continue }
+        sum += i
+    }
+    assert sum == 25           // 1+3+5+7+9
+}
+
+// nested loops: inner break only exits the inner loop
+test "ctrl.loops — inner break exits inner only" {
+    mut outer_iters = 0
+    mut inner_iters = 0
+    for i in 0..3 {
+        outer_iters += 1
+        for j in 0..10 {
+            if j == 2 { break }
+            inner_iters += 1
+        }
+    }
+    assert outer_iters == 3
+    assert inner_iters == 6    // 2 per outer iteration * 3
+}
+
+// nested loops: inner continue affects inner only
+test "ctrl.loops — inner continue affects inner only" {
+    mut count = 0
+    for i in 0..3 {
+        for j in 0..4 {
+            if j == 1 { continue }
+            count += 1
+        }
+    }
+    assert count == 9          // 3 counted per outer (j=0,2,3) * 3
+}
+
+// loop with break value inside a nested for (unlabeled — value carried out of loop)
+test "ctrl.flow/CF15 — break value from loop wrapping a for" {
+    mut i = 0
+    const result = loop {
+        mut hit = -1
+        for j in 0..5 {
+            if j == 3 { hit = j }
+        }
+        if hit == 3 { break hit }
+        i += 1
+    }
+    assert result == 3
+}
+
+// while with a running accumulator producing a known value
+test "ctrl.flow/CF21 — while accumulates sum" {
+    mut i = 1
+    mut sum = 0
+    while i <= 4 {
+        sum += i
+        i += 1
+    }
+    assert sum == 10           // 1+2+3+4
+}
+
+// loop that never breaks on first pass: break value picks first valid
+test "ctrl.flow/CF15 — loop retry until valid" {
+    mut attempt = 0
+    const value = loop {
+        attempt += 1
+        if attempt >= 3 { break attempt * 10 }
+    }
+    assert value == 30
+}
