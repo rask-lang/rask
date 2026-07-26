@@ -121,8 +121,10 @@ fn type_errors_dont_block_subsequent_stages() {
     //
     // This program has a type error (return "str" when i32 expected) AND
     // a use-after-move in a separate function. Both should be reported.
+    // Data is >16 bytes so it's move-only (not Copy) — otherwise the double
+    // consume below is a legal copy and produces no ownership error.
     let path = tmp_rk(r#"
-        struct Data { value: i32 }
+        struct Data { a: i64, b: i64, c: i64 }
 
         func wrong_type() -> i32 {
             return "not an int"
@@ -131,7 +133,7 @@ fn type_errors_dont_block_subsequent_stages() {
         func consume(take d: Data) {}
 
         func main() {
-            const d = Data { value: 1 }
+            const d = Data { a: 1, b: 2, c: 3 }
             consume(own d)
             consume(own d)
         }
@@ -152,13 +154,15 @@ fn type_and_ownership_errors_accumulate() {
     // Type-check succeeds, ownership fails. The pipeline should run both.
     // (If there were type errors, the driver stops before ownership.)
     // This test verifies that ownership-only errors come through.
+    // Data is >16 bytes → move-only (not Copy), so the second consume is a real
+    // use-after-move. A Copy struct here would legally copy and never fail.
     let path = tmp_rk(r#"
-        struct Data { value: i32 }
+        struct Data { a: i64, b: i64, c: i64 }
         func consume(take d: Data) {
             // take d
         }
         func main() {
-            const d = Data { value: 1 }
+            const d = Data { a: 1, b: 2, c: 3 }
             consume(own d)
             consume(own d)   // use after move
         }
