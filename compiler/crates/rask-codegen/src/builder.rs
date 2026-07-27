@@ -2088,8 +2088,12 @@ impl<'a> FunctionBuilder<'a> {
                                 // Larger aggregates: copy from returned pointer
                                 Self::copy_aggregate(builder, final_val, *ss, *size);
                             }
-                        } else if Self::is_negative_err_fn(&func.name) {
-                            // C function uses negative return = error convention.
+                        } else if ctx.adapt_table.get(&func.name)
+                            .map(|(_, r)| *r == RetAdapt::NegErr)
+                            .unwrap_or(false)
+                        {
+                            // C function uses negative return = error convention
+                            // (declared as RetAdapt::NegErr on the dispatch entry).
                             Self::wrap_result_into_slot(builder, final_val, *ss);
                         } else {
                             // C stdlib function returns a plain value (not a pointer to an aggregate).
@@ -3538,16 +3542,6 @@ impl<'a> FunctionBuilder<'a> {
     /// C functions that use "negative return = error" convention.
     /// For these, return value < 0 maps to Err(value), >= 0 maps to Ok(value).
     /// Note: fs_open/fs_create return NULL (0) for errors, not -1 — handled separately.
-    fn is_negative_err_fn(name: &str) -> bool {
-        matches!(name,
-            "net_tcp_listen" | "TcpListener_accept" |
-            "TcpConnection_read_http_request" | "TcpConnection_write_http_response" |
-            "Sender_send" | "Sender_try_send" | "Sender_close" |
-            "Receiver_close" |
-            "ThreadHandle_join" | "Thread_join"
-        )
-    }
-
     /// Wrap a C return value into a Result stack slot, checking for errors.
     /// If value < 0: tag=1 (Err), payload=value. Otherwise: tag=0 (Ok), payload=value.
     fn wrap_result_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
@@ -3816,6 +3810,9 @@ impl<'a> FunctionBuilder<'a> {
             RetAdapt::DerefOrString => Self::deref_or_string(dst, ctx),
             RetAdapt::DerefOption => CallAdapt::DerefOption,
             RetAdapt::FromArgAdapt => call_adapt,
+            // Negative-return=Err wrapping happens in the result-store path,
+            // keyed off the entry's RetAdapt::NegErr — arg handling is untouched.
+            RetAdapt::NegErr => call_adapt,
         }
     }
 
