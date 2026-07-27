@@ -799,27 +799,7 @@ impl<'a> FunctionBuilder<'a> {
                         let src_var = ctx.var_map.get(src_id)
                             .ok_or_else(|| CodegenError::UnsupportedFeature("Aggregate source not found".to_string()))?;
                         let src_addr = builder.use_var(*src_var);
-                        let mut byte_offset = 0i32;
-                        let size = effective_size as i32;
-                        while byte_offset + 8 <= size {
-                            let word = builder.ins().load(types::I64, MemFlags::new(), src_addr, byte_offset);
-                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
-                            byte_offset += 8;
-                        }
-                        if size - byte_offset >= 4 {
-                            let word = builder.ins().load(types::I32, MemFlags::new(), src_addr, byte_offset);
-                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
-                            byte_offset += 4;
-                        }
-                        if size - byte_offset >= 2 {
-                            let word = builder.ins().load(types::I16, MemFlags::new(), src_addr, byte_offset);
-                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
-                            byte_offset += 2;
-                        }
-                        if size - byte_offset >= 1 {
-                            let word = builder.ins().load(types::I8, MemFlags::new(), src_addr, byte_offset);
-                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
-                        }
+                        Self::copy_bytes(builder, src_addr, 0, addr_val, *offset as i32, effective_size);
                         true
                         } // end else (effective_size > 8)
                     } else { false }
@@ -832,22 +812,8 @@ impl<'a> FunctionBuilder<'a> {
                     // (e.g., string constant → 16-byte SSO). Copy word-by-word from
                     // the source pointer instead of storing the pointer itself.
                     if store_size.map_or(false, |s| s > 8) {
-                        let size = store_size.unwrap() as i32;
-                        let mut byte_offset = 0i32;
-                        while byte_offset + 8 <= size {
-                            let word = builder.ins().load(types::I64, MemFlags::new(), val, byte_offset);
-                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
-                            byte_offset += 8;
-                        }
-                        if size - byte_offset >= 4 {
-                            let word = builder.ins().load(types::I32, MemFlags::new(), val, byte_offset);
-                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
-                            byte_offset += 4;
-                        }
-                        if size - byte_offset >= 1 {
-                            let word = builder.ins().load(types::I8, MemFlags::new(), val, byte_offset);
-                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
-                        }
+                        let size = store_size.unwrap();
+                        Self::copy_bytes(builder, val, 0, addr_val, *offset as i32, size);
                     } else {
                         let val_ty = builder.func.dfg.value_type(val);
 
@@ -1933,28 +1899,10 @@ impl<'a> FunctionBuilder<'a> {
                                 builder.ins().stack_store(tag_some, *ss, crate::layouts::TAG_OFFSET);
                                 // Copy payload: for scalars (slot_size=16) just load one word;
                                 // for aggregates copy word-by-word from ptr into slot at offset 8+.
-                                let payload_size = *slot_size as i32 - crate::layouts::PAYLOAD_OFFSET;
-                                let payload_base = crate::layouts::PAYLOAD_OFFSET;
-                                let mut off = 0i32;
-                                while off + 8 <= payload_size {
-                                    let word = builder.ins().load(types::I64, MemFlags::new(), ptr, off);
-                                    builder.ins().stack_store(word, *ss, payload_base + off);
-                                    off += 8;
-                                }
-                                if payload_size - off >= 4 {
-                                    let word = builder.ins().load(types::I32, MemFlags::new(), ptr, off);
-                                    builder.ins().stack_store(word, *ss, payload_base + off);
-                                    off += 4;
-                                }
-                                if payload_size - off >= 2 {
-                                    let word = builder.ins().load(types::I16, MemFlags::new(), ptr, off);
-                                    builder.ins().stack_store(word, *ss, payload_base + off);
-                                    off += 2;
-                                }
-                                if payload_size - off >= 1 {
-                                    let word = builder.ins().load(types::I8, MemFlags::new(), ptr, off);
-                                    builder.ins().stack_store(word, *ss, payload_base + off);
-                                }
+                                let payload_size = *slot_size - crate::layouts::PAYLOAD_OFFSET as u32;
+                                Self::copy_aggregate_at(
+                                    builder, ptr, *ss, crate::layouts::PAYLOAD_OFFSET, payload_size,
+                                );
                                 builder.ins().jump(merge_block, &[]);
 
                                 builder.switch_to_block(merge_block);
@@ -2016,27 +1964,10 @@ impl<'a> FunctionBuilder<'a> {
                                 builder.ins().stack_store(zero, dst_ss, crate::layouts::ORIGIN_FILE_OFFSET);
                                 builder.ins().stack_store(zero, dst_ss, crate::layouts::ORIGIN_LINE_OFFSET);
                                 let payload_addr = builder.ins().stack_addr(types::I64, payload_ss, 0);
-                                let mut off = 0i32;
-                                let sz = elem_size as i32;
-                                while off + 8 <= sz {
-                                    let w = builder.ins().load(types::I64, MemFlags::new(), payload_addr, off);
-                                    builder.ins().stack_store(w, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET + off);
-                                    off += 8;
-                                }
-                                if sz - off >= 4 {
-                                    let w = builder.ins().load(types::I32, MemFlags::new(), payload_addr, off);
-                                    builder.ins().stack_store(w, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET + off);
-                                    off += 4;
-                                }
-                                if sz - off >= 2 {
-                                    let w = builder.ins().load(types::I16, MemFlags::new(), payload_addr, off);
-                                    builder.ins().stack_store(w, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET + off);
-                                    off += 2;
-                                }
-                                if sz - off >= 1 {
-                                    let w = builder.ins().load(types::I8, MemFlags::new(), payload_addr, off);
-                                    builder.ins().stack_store(w, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET + off);
-                                }
+                                Self::copy_aggregate_at(
+                                    builder, payload_addr, dst_ss,
+                                    crate::layouts::RESULT_PAYLOAD_OFFSET, elem_size,
+                                );
                                 builder.ins().jump(merge_block, &[]);
 
                                 // Err: tag=1
@@ -3146,27 +3077,7 @@ impl<'a> FunctionBuilder<'a> {
                         }
                         let dst = builder.ins().stack_addr(types::I64, ss, payload_off);
                         if inner_size > 0 {
-                            let mut off = 0i32;
-                            let size = inner_size as i32;
-                            while off + 8 <= size {
-                                let word = builder.ins().load(types::I64, MemFlags::new(), val, off);
-                                builder.ins().store(MemFlags::new(), word, dst, off);
-                                off += 8;
-                            }
-                            if size - off >= 4 {
-                                let w = builder.ins().load(types::I32, MemFlags::new(), val, off);
-                                builder.ins().store(MemFlags::new(), w, dst, off);
-                                off += 4;
-                            }
-                            if size - off >= 2 {
-                                let w = builder.ins().load(types::I16, MemFlags::new(), val, off);
-                                builder.ins().store(MemFlags::new(), w, dst, off);
-                                off += 2;
-                            }
-                            if size - off >= 1 {
-                                let w = builder.ins().load(types::I8, MemFlags::new(), val, off);
-                                builder.ins().store(MemFlags::new(), w, dst, off);
-                            }
+                            Self::copy_bytes(builder, val, 0, dst, 0, inner_size);
                         }
                     } else if is_err_value {
                         // Scalar Err — tag=1, payload at RESULT_PAYLOAD_OFFSET.
@@ -3464,58 +3375,55 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// Copy `size` bytes from `src_ptr + src_off` to `dst_ptr + dst_off`.
+    ///
+    /// The one canonical aggregate byte-copy. Emits the full 8→4→2→1 ladder so
+    /// every trailing size is covered — dropping the 2-byte step here silently
+    /// lost a byte for sizes ≡ 2,3,6,7 (mod 8) (#365). Route ALL aggregate copies
+    /// through this; do not hand-inline the ladder.
+    fn copy_bytes(
+        builder: &mut ClifFunctionBuilder,
+        src_ptr: Value,
+        src_off: i32,
+        dst_ptr: Value,
+        dst_off: i32,
+        size: u32,
+    ) {
+        let size = size as i32;
+        let mut off = 0i32;
+        for (chunk, ty) in [(8, types::I64), (4, types::I32), (2, types::I16), (1, types::I8)] {
+            while size - off >= chunk {
+                let val = builder.ins().load(ty, MemFlags::new(), src_ptr, src_off + off);
+                builder.ins().store(MemFlags::new(), val, dst_ptr, dst_off + off);
+                off += chunk;
+            }
+        }
+    }
+
     /// Copy aggregate data from a source pointer into a caller-owned stack slot.
-    /// Emits 8-byte load/store pairs. Used after calls that return aggregate types
-    /// (struct, enum, Result, etc.) to avoid dangling pointers to callee stack frames.
+    /// Used after calls that return aggregate types (struct, enum, Result, etc.)
+    /// to avoid dangling pointers to callee stack frames.
     fn copy_aggregate(builder: &mut ClifFunctionBuilder, src_ptr: Value, dst_slot: StackSlot, size: u32) {
-        let mut offset = 0i32;
-        while (offset as u32) + 8 <= size {
-            let val = builder.ins().load(types::I64, MemFlags::new(), src_ptr, offset);
-            builder.ins().stack_store(val, dst_slot, offset);
-            offset += 8;
-        }
-        // Handle trailing bytes (1-7 remaining)
-        let remaining = size as i32 - offset;
-        if remaining >= 4 {
-            let val = builder.ins().load(types::I32, MemFlags::new(), src_ptr, offset);
-            builder.ins().stack_store(val, dst_slot, offset);
-            offset += 4;
-        }
-        if (size as i32 - offset) >= 2 {
-            let val = builder.ins().load(types::I16, MemFlags::new(), src_ptr, offset);
-            builder.ins().stack_store(val, dst_slot, offset);
-            offset += 2;
-        }
-        if (size as i32 - offset) >= 1 {
-            let val = builder.ins().load(types::I8, MemFlags::new(), src_ptr, offset);
-            builder.ins().stack_store(val, dst_slot, offset);
-        }
+        Self::copy_aggregate_at(builder, src_ptr, dst_slot, 0, size);
+    }
+
+    /// Copy `size` bytes from `src_ptr` into `dst_slot` starting at `dst_off`.
+    fn copy_aggregate_at(
+        builder: &mut ClifFunctionBuilder,
+        src_ptr: Value,
+        dst_slot: StackSlot,
+        dst_off: i32,
+        size: u32,
+    ) {
+        let dst_ptr = builder.ins().stack_addr(types::I64, dst_slot, 0);
+        Self::copy_bytes(builder, src_ptr, 0, dst_ptr, dst_off, size);
     }
 
     /// Copy `size` bytes from `src_ptr` to `dst_ptr`. Mirror of `copy_aggregate`
     /// but for through-pointer destinations (mutate-params, where the dst's
     /// variable holds an external pointer instead of a stack-slot address).
     fn copy_aggregate_to_ptr(builder: &mut ClifFunctionBuilder, src_ptr: Value, dst_ptr: Value, size: u32) {
-        let mut offset = 0i32;
-        while (offset as u32) + 8 <= size {
-            let val = builder.ins().load(types::I64, MemFlags::new(), src_ptr, offset);
-            builder.ins().store(MemFlags::new(), val, dst_ptr, offset);
-            offset += 8;
-        }
-        if (size as i32 - offset) >= 4 {
-            let val = builder.ins().load(types::I32, MemFlags::new(), src_ptr, offset);
-            builder.ins().store(MemFlags::new(), val, dst_ptr, offset);
-            offset += 4;
-        }
-        if (size as i32 - offset) >= 2 {
-            let val = builder.ins().load(types::I16, MemFlags::new(), src_ptr, offset);
-            builder.ins().store(MemFlags::new(), val, dst_ptr, offset);
-            offset += 2;
-        }
-        if (size as i32 - offset) >= 1 {
-            let val = builder.ins().load(types::I8, MemFlags::new(), src_ptr, offset);
-            builder.ins().store(MemFlags::new(), val, dst_ptr, offset);
-        }
+        Self::copy_bytes(builder, src_ptr, 0, dst_ptr, 0, size);
     }
 
     /// Wrap a plain return value as Ok(value) in a Result stack slot.

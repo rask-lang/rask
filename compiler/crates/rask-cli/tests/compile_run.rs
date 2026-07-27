@@ -305,6 +305,22 @@ fn native_result_struct_ok() {
     assert_eq!(stdout, "111 222 333\n");
 }
 
+// #365 family — one aggregate byte-copy helper. A struct payload copied
+// through an Option slot must land byte-identical on both backends.
+#[test]
+fn compile_agg_copy_paths() {
+    let (stdout, code) = compile_and_run("agg_copy_paths.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 2 3\nnone\n");
+}
+
+#[test]
+fn native_agg_copy_paths() {
+    let (stdout, code) = run_native("agg_copy_paths.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 2 3\nnone\n");
+}
+
 // while-let with an ok-side, uppercase-named type pattern must enter the loop.
 // The capitalization heuristic previously routed `Reading` to the err side.
 #[test]

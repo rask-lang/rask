@@ -1,0 +1,31 @@
+// #365 family — aggregate byte-copy consolidation. A struct payload flows
+// through an Option payload slot (the store_size>8 copy path in Store and the
+// Return inner-aggregate path). Every currently-reachable aggregate size is an
+// 8-multiple, so the dropped-byte truncation was latent; this locks
+// native == interp across the Option copy paths (result_struct_ok covers the
+// Result side).
+
+struct Big { a: i64, b: i64, c: i64 }
+
+func find(hit: bool) -> Big? {
+    if hit {
+        return Big { a: 1, b: 2, c: 3 }
+    }
+    return none
+}
+
+func main() {
+    const present: Big? = find(true)
+    if present? {
+        println("{present.a} {present.b} {present.c}")
+    } else {
+        println("none")
+    }
+
+    const absent: Big? = find(false)
+    if absent? {
+        println("{absent.a} {absent.b} {absent.c}")
+    } else {
+        println("none")
+    }
+}
