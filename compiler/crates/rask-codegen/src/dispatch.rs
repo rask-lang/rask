@@ -50,6 +50,8 @@ pub enum ArgAdapt {
     AppendZero,
     /// Append iconst(8) as elem_size (Shared_read/write)
     AppendElemSize,
+    /// Atomic compare-exchange: append an out_ok pointer (result written there).
+    AtomicCas,
     /// Complex case handled by hand-written code
     Custom,
 }
@@ -934,14 +936,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             c_name: "rask_atomic_int_compare_exchange",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
         });
         entries.push(StdlibEntry {
             mir_name: leak_str(&format!("{}_compare_exchange_weak", ty)),
             c_name: "rask_atomic_int_compare_exchange_weak",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
         });
         for op in &["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor", "fetch_nand", "fetch_max", "fetch_min"] {
             entries.push(StdlibEntry::simple(leak_str(&format!("{}_{}", ty, op)), leak_str(&format!("rask_atomic_int_{}", op)), &[types::I64, types::I64, types::I64], Some(types::I64), false));
@@ -959,13 +961,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         mir_name: "AtomicBool_compare_exchange", c_name: "rask_atomic_bool_compare_exchange",
         params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
         ret_ty: Some(types::I64), can_panic: false,
-        arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
     });
     entries.push(StdlibEntry {
         mir_name: "AtomicBool_compare_exchange_weak", c_name: "rask_atomic_bool_compare_exchange_weak",
         params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
         ret_ty: Some(types::I64), can_panic: false,
-        arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
     });
     for op in &["fetch_and", "fetch_or", "fetch_xor", "fetch_nand"] {
         entries.push(StdlibEntry::simple(leak_str(&format!("AtomicBool_{}", op)), leak_str(&format!("rask_atomic_bool_{}", op)), &[types::I64, types::I64, types::I64], Some(types::I64), false));

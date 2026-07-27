@@ -3799,6 +3799,16 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
+            ArgAdapt::AtomicCas => {
+                // compare-exchange writes the observed value through an out_ok
+                // pointer; the call returns success as its scalar result.
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                ));
+                args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                CallAdapt::PopOutParam(ss)
+            }
+
             ArgAdapt::Custom => {
                 return Self::adapt_stdlib_custom(builder, func_name, args, mir_args, dst, ctx);
             }
@@ -3890,15 +3900,6 @@ impl<'a> FunctionBuilder<'a> {
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
                 CallAdapt::TryRecvResult(ss, elem_size)
-            }
-
-            // Atomic CAS: append out_ok pointer
-            _ if func_name.contains("_compare_exchange") => {
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, 8, 0,
-                ));
-                args.push(builder.ins().stack_addr(types::I64, ss, 0));
-                CallAdapt::PopOutParam(ss)
             }
 
             _ => CallAdapt::None,
