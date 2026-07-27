@@ -2503,37 +2503,18 @@ impl<'a> MirLowerer<'a> {
 
                 // Then block: bind payload, evaluate body
                 self.builder.switch_to_block(then_block);
-                // ER23: `Type as v` on the err side needs the err type, not ok.
-                // Match `ty_name` against the actual ok/err names first; fall back
-                // to the case heuristic only when neither side has a discoverable
-                // name (string, primitives, generics).
+                // ER23: `Type as v` binds the matching side's payload. Which side
+                // is decided by type identity (capitalization only as last resort,
+                // inside pattern_is_err_side).
                 let bind_ty = if let rask_ast::expr::Pattern::TypePat { ty_name, .. } = pattern {
-                    let val_ty = &val_ty;
-                    let mut chosen: Option<MirType> = None;
-                    if let MirType::Result { ok, err } = val_ty {
-                        let ok_name = self.mir_type_name(ok);
-                        let err_name = self.mir_type_name(err);
-                        if ok_name.as_deref() == Some(ty_name.as_str()) {
-                            chosen = Some(*ok.clone());
-                        } else if err_name.as_deref() == Some(ty_name.as_str()) {
-                            chosen = Some(*err.clone());
-                        } else if err_name.is_some() {
-                            // Generic ok types collapse to Ptr in MIR and lose
-                            // their nominal name. If err is a known name that
-                            // doesn't match, the pattern must be the ok side.
-                            chosen = Some(*ok.clone());
-                        } else if ok_name.is_some() {
-                            chosen = Some(*err.clone());
-                        }
+                    let err_side = self.pattern_is_err_side(ty_name, &val_ty);
+                    if let MirType::Result { ok, err } = &val_ty {
+                        if err_side { *err.clone() } else { *ok.clone() }
+                    } else if err_side {
+                        self.extract_err_type(expr).unwrap_or(MirType::I64)
+                    } else {
+                        self.extract_payload_type(expr).unwrap_or(MirType::I64)
                     }
-                    chosen.unwrap_or_else(|| {
-                        let is_ok_side = ty_name.chars().next().map_or(false, |c| c.is_lowercase());
-                        if is_ok_side {
-                            self.extract_payload_type(expr).unwrap_or(MirType::I64)
-                        } else {
-                            self.extract_err_type(expr).unwrap_or(MirType::I64)
-                        }
-                    })
                 } else {
                     self.extract_payload_type(expr).unwrap_or(MirType::I64)
                 };

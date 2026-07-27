@@ -337,6 +337,35 @@ fn native_wrap_constructors() {
     assert_eq!(stdout, "ok 5\nerr\neven 4\nno even\n");
 }
 
+// #259 family — ok/err arm routing by type identity, not capitalization.
+// A lowercase-named err type used to be sent to the ok side on native (the
+// err arm never ran); an uppercase ok struct is the mirror case. Both must
+// route identically to the interpreter now.
+const ERR_ROUTING_OUT: &str = "cfg 8080\ncfg err\nnum 7\nnum err\n";
+
+#[test]
+fn compile_err_routing() {
+    let (stdout, code) = compile_and_run("err_routing.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, ERR_ROUTING_OUT);
+}
+
+#[test]
+fn native_err_routing() {
+    let (stdout, code) = run_native("err_routing.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, ERR_ROUTING_OUT);
+}
+
+#[test]
+fn err_routing_native_matches_interp() {
+    let (native, ncode) = run_native("err_routing.rk");
+    let (interp, icode) = run_interp("err_routing.rk");
+    assert_eq!(ncode, 0);
+    assert_eq!(icode, 0);
+    assert_eq!(native, interp, "native and interp must agree on ok/err routing");
+}
+
 // while-let with an ok-side, uppercase-named type pattern must enter the loop.
 // The capitalization heuristic previously routed `Reading` to the err side.
 #[test]

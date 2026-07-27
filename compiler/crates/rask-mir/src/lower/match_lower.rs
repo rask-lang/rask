@@ -124,12 +124,10 @@ impl<'a> MirLowerer<'a> {
                     if let Some(tag) = self.resolve_pattern_tag(name) {
                         cases.push((tag, arm_blocks[i]));
                     } else if has_tag && is_result_or_option {
-                        // Result match: ok arm = tag 0, err arm = tag 1.
-                        // Determine which by comparing name to the ok payload type.
-                        let ok_name = self.mir_type_name(&ok_payload_ty);
-                        let is_ok_arm = ok_name.as_deref() == Some(name.as_str())
-                            || name.chars().next().map_or(false, |c| c.is_lowercase());
-                        cases.push((if is_ok_arm { 0 } else { 1 }, arm_blocks[i]));
+                        // Result match: ok arm = tag 0, err arm = tag 1, decided
+                        // by the scrutinee's real ok/err type identities.
+                        let tag = self.pattern_is_err_side(name, &scrutinee_ty) as u64;
+                        cases.push((tag, arm_blocks[i]));
                     } else if has_tag && is_variant_name(name) {
                         cases.push((self.variant_tag(name) as u64, arm_blocks[i]));
                     } else {
@@ -163,11 +161,10 @@ impl<'a> MirLowerer<'a> {
                 }
                 Pattern::TypePat { ty_name, .. } => {
                     if is_result_or_option {
-                        // Result/Option match: ok arm = tag 0, err arm = tag 1.
-                        let ok_name = self.mir_type_name(&ok_payload_ty);
-                        let is_ok_arm = ok_name.as_deref() == Some(ty_name.as_str())
-                            || ty_name.chars().next().map_or(false, |c| c.is_lowercase());
-                        cases.push((if is_ok_arm { 0 } else { 1 }, arm_blocks[i]));
+                        // Result/Option match: ok arm = tag 0, err arm = tag 1,
+                        // decided by the real ok/err type identities.
+                        let tag = self.pattern_is_err_side(ty_name, &scrutinee_ty) as u64;
+                        cases.push((tag, arm_blocks[i]));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
                     }
@@ -314,14 +311,12 @@ impl<'a> MirLowerer<'a> {
                 } else if let Pattern::TypePat { ty_name, binding } = &arm.pattern {
                     if let Some(binding_name) = binding {
                         if is_result_or_option {
-                            // Determine ok vs err branch by the ok_payload type name.
-                            let ok_name = self.mir_type_name(&ok_payload_ty);
-                            let is_ok_arm = ok_name.as_deref() == Some(ty_name.as_str())
-                                || ty_name.chars().next().map_or(false, |c| c.is_lowercase());
-                            let payload_ty = if is_ok_arm {
-                                ok_payload_ty.clone()
-                            } else {
+                            // Bind the matching side's payload — the side is
+                            // decided by type identity, same as the tag routing.
+                            let payload_ty = if self.pattern_is_err_side(ty_name, &scrutinee_ty) {
                                 err_payload_ty.clone()
+                            } else {
+                                ok_payload_ty.clone()
                             };
                             let payload_local = self.builder.alloc_local(
                                 binding_name.clone(), payload_ty.clone(),
