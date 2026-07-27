@@ -1,0 +1,17 @@
+// CC5/CALL4 propagation: a `using` caller threads its hidden pool param into a
+// callee that also declares the same context. Must agree on both backends.
+struct Player { health: i32 }
+
+func heal(h: Handle<Player>) using players: Pool<Player> {
+    print(players[h].health)
+}
+
+func report(h: Handle<Player>) using players: Pool<Player> {
+    heal(h)
+}
+
+func main() {
+    mut players = Pool<Player>.new()
+    const p = players.insert(Player { health: 42 })
+    report(p)
+}

@@ -59,8 +59,12 @@ pub fn rewrite_decls(pass: &mut HiddenParamPass, decls: &mut [rask_ast::decl::De
 /// Rewrite a single function: add hidden params + rewrite body.
 fn rewrite_fn(pass: &mut HiddenParamPass, qname: &str, f: &mut FnDecl) {
     // Phase 4 (SIG1-SIG6): Add hidden params to signature
-    if let Some(reqs) = pass.func_contexts.get(qname) {
-        for req in reqs.clone() {
+    if let Some(reqs) = pass.func_contexts.get(qname).cloned() {
+        // SIG2: named contexts (`using players: Pool<T>`) need a local alias
+        // so body code written against the context name resolves to the hidden
+        // param. Collect them while adding params, then prepend to the body.
+        let mut aliases: Vec<(String, String)> = Vec::new();
+        for req in &reqs {
             // Check idempotency (HP4): skip if param already exists
             if f.params.iter().any(|p| p.name == req.param_name) {
                 continue;
@@ -74,10 +78,35 @@ fn rewrite_fn(pass: &mut HiddenParamPass, qname: &str, f: &mut FnDecl) {
                 is_mutate: false,
                 default: None,
             });
+
+            if let Some(alias) = &req.alias {
+                aliases.push((alias.clone(), req.param_name.clone()));
+            }
         }
 
         // Clear context clauses — they're now expressed as params
         f.context_clauses.clear();
+
+        // Prepend `const <alias> = <param_name>` bindings. Insert in reverse so
+        // the declared order is preserved once each lands at index 0.
+        for (alias, param_name) in aliases.into_iter().rev() {
+            let init = Expr {
+                id: pass.fresh_id(),
+                kind: ExprKind::Ident(param_name),
+                span: Span::new(0, 0),
+            };
+            let alias_stmt = Stmt {
+                id: pass.fresh_id(),
+                kind: StmtKind::Const {
+                    name: alias,
+                    name_span: Span::new(0, 0),
+                    ty: None,
+                    init,
+                },
+                span: Span::new(0, 0),
+            };
+            f.body.insert(0, alias_stmt);
+        }
     }
 
     // Phase 5-6: Rewrite body (call sites and using blocks)

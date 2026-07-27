@@ -1,0 +1,14 @@
+// comp.hidden-params/SIG2: a named `using players: Pool<Player>` context lowers
+// on native (add hidden param, insert the named alias, pass the pool at the
+// call site) and reads the pool element — matching the interpreter.
+struct Player { health: i32 }
+
+func report(h: Handle<Player>) using players: Pool<Player> {
+    print(players[h].health)
+}
+
+func main() {
+    mut players = Pool<Player>.new()
+    const p = players.insert(Player { health: 100 })
+    report(p)
+}

@@ -141,29 +141,43 @@ fn collect_locals_from_stmt(
 }
 
 /// Try to infer a Pool<T> type from an initializer expression.
-/// Recognizes patterns like `Pool.new()`, `Pool::<Player>.new()`.
+/// Recognizes `Pool<Player>.new()` (parsed as a method call on the type name)
+/// and the `Call { Field }` form. Returns the source type string verbatim so
+/// it matches the clause string exactly.
 fn infer_pool_type_from_expr(expr: &rask_ast::expr::Expr) -> Option<String> {
     use rask_ast::expr::ExprKind;
     match &expr.kind {
-        // Pool.new() — look for Type.method pattern
+        // `Pool<Player>.new()` — parses as a method call on the type name.
+        ExprKind::MethodCall { object, method, .. } if method == "new" => {
+            pool_type_from_ctor_object(&object.kind)
+        }
+        // `Pool.new()` in the `Call { Field }` shape.
         ExprKind::Call { func, .. } => {
             if let ExprKind::Field { object, field } = &func.kind {
                 if field == "new" {
-                    if let ExprKind::Ident(name) = &object.kind {
-                        if name == "Pool" {
-                            // Bare Pool.new() — type comes from context
-                            return Some("Pool<_>".to_string());
-                        }
-                        if name.starts_with("Pool") && name.contains('<') {
-                            return Some(name.clone());
-                        }
-                    }
+                    return pool_type_from_ctor_object(&object.kind);
                 }
             }
             None
         }
         _ => None,
     }
+}
+
+/// Extract the pool type string from a constructor receiver (`Pool<Player>` or
+/// bare `Pool`).
+fn pool_type_from_ctor_object(obj: &rask_ast::expr::ExprKind) -> Option<String> {
+    use rask_ast::expr::ExprKind;
+    if let ExprKind::Ident(name) = obj {
+        if name == "Pool" {
+            // Bare Pool.new() — element type comes from context, unknown here.
+            return Some("Pool<_>".to_string());
+        }
+        if name.starts_with("Pool") && name.contains('<') {
+            return Some(name.clone());
+        }
+    }
+    None
 }
 
 /// True for runtime contexts that use the process-global slot, not hidden params.

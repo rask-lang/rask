@@ -953,6 +953,10 @@ impl<'a> MirLowerer<'a> {
             } else {
                 &param.ty
             };
+            // Hidden context params carry `&Pool<T>` (comp.hidden-params/SIG1).
+            // Rask has no reference types at the backend — a pool is an opaque
+            // handle passed by value — so strip the `&` and lower the pointee.
+            let param_ty_str = param_ty_str.trim_start_matches('&');
             let param_ty = ctx.resolve_type_str(param_ty_str);
             let local_id = lowerer.builder.add_param(param.name.clone(), param_ty.clone());
             lowerer.locals.insert(param.name.clone(), (local_id, param_ty.clone()));
