@@ -1,4 +1,16 @@
-Keep docs short. In chat, explain things to me—I'm not a language architect expert.
+Keep docs short.
+
+## Talk to me in plain language
+
+I'm a working programmer, not a compiler expert. Explain what you did so a normal developer can follow it — in chat, and in commit/PR descriptions.
+
+- Lead with the plain-English point: what broke, what you changed, why. Save the internals for after.
+- Don't assume I know compiler jargon. When a term like *MIR, lowering, monomorphization, borrow checker, codegen, SSA, aliasing, desugar* is unavoidable, add a few plain words the first time (e.g. "MIR — the simplified form of the code the compiler works on before generating machine code").
+- Say it like a person, not a spec. "Both variables were secretly sharing one copy of the struct, so changing one changed the other" beats "the aggregate aliases the source cell."
+- Show a concrete example when you can: this input → got this wrong result → now gives this right result.
+- Short and clear wins. Three sentences I understand beat a precise paragraph I don't.
+
+(This is about explaining to me. Code comments still follow the style guide below.)
 
 Prefer long term proper fixes over quick-fixes.
 
