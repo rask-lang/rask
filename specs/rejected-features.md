@@ -451,11 +451,26 @@ Removed (it existed briefly with auto-derived universal zeros: `0` for ints, `fa
 
 Rust's most hand-implemented trait, deliberately absent. Its three jobs dissolve at the language level: error conversion for `?` (Rask's `try` widens error *unions* structurally — the `impl From<LibError> for MyError` ceremony class never exists), flexible string parameters (one `string` type — no `String`/`&str`/`Cow` to abstract over), and general conversion (the residue, covered by opt-in `Convert<From, To>`). Rust immigrants will ask; this is the answer.
 
+## Higher-Kinded Types
+
+**Looked at:** Haskell, Scala
+
+HKT lets a type parameter itself take a parameter — `F<_>`. That's what buys you one `map` that works for `Vec`, `T?`, and `T or E` at once, and lets you *name* Functor/Monad/Traversable as reusable abstractions instead of re-writing the same shape per container. It's genuinely powerful and it reads well at the definition site. I'm still not adding the open form.
+
+The felt value splits in two, and only one half is expensive. Consistency — `map`, `and_then`, `fold` meaning the same thing with the same shape on every container — is the part people actually feel, and I already bought it by convention (the stdlib naming pass, #303, plus `canonical-patterns.md` and lints). Rust's per-container impls drift because nothing forces them; Rask's can't, because the lint won't let them. Same user-visible payoff, no kind system. The expensive half is *abstraction over the container* — writing `process<F>` once — and systems code hits that far less than functional library code does.
+
+Where a real "write it once" need shows up, the Rask-shaped tools are:
+
+- **Specialize the monads that earn it into first-order syntax.** `try` *is* the error/option monad's bind, baked into a keyword. `Sequence` *is* the list monad, specialized to a fusing function type. When a third instance pays its rent, it gets its own specialization — the general `Monad` never gets a name.
+- **Associated types** (deferred, not rejected — see [types/generics.md](types/generics.md)) cover most of the "powerful function, fewer lines" cases — a `collect` that targets `Vec` or `Map`, say — at `*`-level, with no kind polymorphism and no inference blowup. That's the borrow worth promoting off the deferred list, not HKT.
+
+What stays out is user-declarable Functor/Monad. A `where F: Monad` bound in a diagnostic is exactly the abstract spec-speak Rask is built against, and Monad-as-effect is the function coloring I already deleted (see Algebraic Effects, above). So: borrow the data-container ergonomics, refuse the effect-abstraction machinery. If Rask grew the kind of functional tower that truly needs HKT, it stopped being Rask somewhere earlier.
+
 ## Summary
 
 Common thread: I optimize for transparency and local reasoning, but not at the cost of ergonomics.
 
-**Rejected:** Exceptions, async/await keywords, lifetime annotations, automatic supervision, algebraic effects, implicit receivers, general macro system.
+**Rejected:** Exceptions, async/await keywords, lifetime annotations, automatic supervision, algebraic effects, implicit receivers, general macro system, higher-kinded types.
 
 **Chose:** Result types, green tasks without coloring, block-scoped borrows, library patterns, explicit parameters.
 
