@@ -321,6 +321,44 @@ fn native_whilelet_ok_typepat() {
     assert_eq!(stdout, "0\n10\n20\ndone\n");
 }
 
+// ─── Stdlib method dispatch (T0.2) ───────────────────────────
+// Dispatch is driven by the resolved receiver type + stub metadata, so
+// native and interp must agree. Each fixture exercises one type family;
+// the assertion pins native == interp == expected.
+
+/// Assert a fixture's native and interpreter stdout match each other and
+/// the expected output, and both exit 0.
+fn assert_native_eq_interp(fixture_name: &str, expected: &str) {
+    let (native, ncode) = run_native(fixture_name);
+    let (interp, icode) = run_interp(fixture_name);
+    assert_eq!(ncode, 0, "native exit for {}", fixture_name);
+    assert_eq!(icode, 0, "interp exit for {}", fixture_name);
+    assert_eq!(
+        native, interp,
+        "native != interp for {}\nnative: {:?}\ninterp: {:?}",
+        fixture_name, native, interp
+    );
+    assert_eq!(native, expected, "unexpected output for {}", fixture_name);
+}
+
+#[test]
+fn dispatch_vec_native_eq_interp() {
+    assert_native_eq_interp("dispatch_vec.rk", "3\nfalse\n20\n30\n2\n");
+}
+
+#[test]
+fn dispatch_map_native_eq_interp() {
+    assert_native_eq_interp("dispatch_map.rk", "3\ntrue\n2\nfalse\n2\n");
+}
+
+#[test]
+fn dispatch_string_native_eq_interp() {
+    assert_native_eq_interp(
+        "dispatch_string.rk",
+        "11\ntrue\ntrue\nHELLO, RASK\nhello, rask\nHello, World\n",
+    );
+}
+
 #[test]
 fn compile_strings() {
     let (stdout, code) = compile_and_run("strings.rk");
