@@ -21,7 +21,8 @@ use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{ContextClause, Decl, DeclKind};
 use rask_ast::expr::{Expr, ExprKind};
-use rask_ast::{NodeId, Span};
+use rask_ast::NodeId;
+use rask_types::Type;
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -30,12 +31,11 @@ use rask_ast::{NodeId, Span};
 pub(crate) struct ContextReq {
     /// Hidden parameter name: `__ctx_pool_Player`, etc.
     pub param_name: String,
-    /// Type string for the parameter: `&Pool<Player>`, `RuntimeContext`
+    /// Type string emitted into the AST parameter: `&Pool<Player>`.
     pub param_type: String,
-    /// Original clause type string: `Pool<Player>`, `Multitasking`
-    pub clause_type: String,
-    /// Is this a runtime context (optional `?` param) vs pool (required)?
-    pub is_runtime: bool,
+    /// The pool type, resolved through the type table so it compares equal to
+    /// the types recorded for locals/params/fields (`Pool<Player>`).
+    pub clause_type: Type,
     /// Named alias from `using players: Pool<Player>`
     pub alias: Option<String>,
 }
@@ -45,9 +45,7 @@ pub(crate) struct ContextReq {
 pub(crate) struct ScopePool {
     /// Variable name in user code: `players`, `self.players`, etc.
     pub var_name: String,
-    /// Pool type string: `Pool<Player>`
-    pub pool_type: String,
-    /// Where it came from (for error messages).
+    /// Where it came from (for priority ordering / error messages).
     pub source: PoolSource,
 }
 
@@ -62,26 +60,19 @@ pub(crate) enum PoolSource {
 /// Qualified function name for call graph: "damage" or "Player.take_damage".
 pub(crate) type FuncName = String;
 
-/// Information about a function for context resolution.
+/// Information about a function for context resolution. Types are resolved
+/// through the type table so they compare equal regardless of how a name was
+/// spelled at each site.
 #[derive(Debug, Clone)]
 pub(crate) struct FuncInfo {
     /// Explicit context requirements (from `using` clauses or propagation).
     pub reqs: Vec<ContextReq>,
-    /// Is this function public?
-    pub is_public: bool,
-    /// Parameter names and type strings.
-    pub params: Vec<(String, String)>,
-    /// Fields of `self` type (if method): (field_name, field_type_string).
-    pub self_fields: Vec<(String, String)>,
-    /// Local variable declarations: (var_name, type_string).
-    pub locals: Vec<(String, String)>,
-}
-
-/// Errors from the hidden parameter pass.
-#[derive(Debug, Clone)]
-pub struct HiddenParamError {
-    pub message: String,
-    pub span: Span,
+    /// Parameters: (name, type).
+    pub params: Vec<(String, Type)>,
+    /// Fields of `self` type (if a method): (field name, type).
+    pub self_fields: Vec<(String, Type)>,
+    /// Local variable declarations: (name, type).
+    pub locals: Vec<(String, Type)>,
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -93,19 +84,22 @@ pub struct HiddenParamError {
 /// - Call sites to those functions gain hidden arguments
 /// - `using Multitasking { }` blocks become context construction + teardown
 ///
-/// Accepts optional TypedProgram for proper CC4 scope resolution.
-/// Without it, falls back to hidden-param-name matching (still correct
-/// for the propagation case).
+/// Without a TypedProgram, falls back to name-based call-graph keying (still
+/// correct for free functions; method callees can't be keyed consistently).
 pub fn desugar_hidden_params(decls: &mut [Decl]) {
     desugar_hidden_params_with_types(decls, None);
 }
 
-/// Run the hidden parameter pass with type information for full CC4 resolution.
+/// Run the hidden parameter pass with the typed program.
+///
+/// The typed program supplies the recorded call targets (CALL6): each call
+/// resolves to a structured id, so method callees key by `Type.method` exactly
+/// as their declarations do — no reconstruction from a bare method name.
 pub fn desugar_hidden_params_with_types(
     decls: &mut [Decl],
-    node_types: Option<&HashMap<NodeId, rask_types::Type>>,
+    typed: Option<&rask_types::TypedProgram>,
 ) {
-    let mut pass = HiddenParamPass::new(node_types);
+    let mut pass = HiddenParamPass::new(typed);
     pass.run(decls);
 }
 
@@ -122,25 +116,140 @@ pub(crate) struct HiddenParamPass<'a> {
     pub public_funcs: HashSet<FuncName>,
     /// Struct name → field list (name, type string).
     pub struct_fields: HashMap<String, Vec<(String, String)>>,
-    /// Type information from the type checker (CC4 resolution).
-    pub node_types: Option<&'a HashMap<NodeId, rask_types::Type>>,
+    /// The type checker's output — recorded call targets, symbols, and type
+    /// table. The single source of truth for which function a call resolves to.
+    pub typed: Option<&'a rask_types::TypedProgram>,
     /// Fresh NodeId counter (high range to avoid parser collisions).
     pub next_id: u32,
-    /// Errors collected during the pass.
-    pub errors: Vec<HiddenParamError>,
 }
 
 impl<'a> HiddenParamPass<'a> {
-    pub fn new(node_types: Option<&'a HashMap<NodeId, rask_types::Type>>) -> Self {
+    pub fn new(typed: Option<&'a rask_types::TypedProgram>) -> Self {
         Self {
             func_contexts: HashMap::new(),
             func_info: HashMap::new(),
             call_graph: HashMap::new(),
             public_funcs: HashSet::new(),
             struct_fields: HashMap::new(),
-            node_types,
+            typed,
             next_id: 2_000_000,
-            errors: Vec::new(),
+        }
+    }
+
+    /// Parse a source type string, resolving names through the type table so the
+    /// result compares equal to types recorded elsewhere. A leading `&` (hidden
+    /// context params) is stripped — the backend has no reference types.
+    pub fn parse_ty(&self, s: &str) -> Option<Type> {
+        let typed = self.typed?;
+        let ty = rask_types::parse_type_string(s.trim_start_matches('&'), &typed.types).ok()?;
+        Some(self.canonical_type(&ty))
+    }
+
+    /// The recorded type of an expression node.
+    pub fn node_ty(&self, id: NodeId) -> Option<Type> {
+        let ty = self.typed?.node_types.get(&id)?;
+        Some(self.canonical_type(ty))
+    }
+
+    /// Put a type in canonical form so two spellings of the same type compare
+    /// equal: every `UnresolvedNamed`/`UnresolvedGeneric` head that the type
+    /// table knows becomes its `Named`/`Generic` form, recursively. The checker
+    /// leaves some inner types unresolved (`Pool<UnresolvedNamed("Player")>`)
+    /// while a freshly parsed annotation resolves them (`Pool<Named(70)>`);
+    /// canonicalizing both sides bridges that.
+    pub fn canonical_type(&self, ty: &Type) -> Type {
+        use rask_types::GenericArg;
+        let arg = |a: &GenericArg| match a {
+            GenericArg::Type(t) => GenericArg::Type(Box::new(self.canonical_type(t))),
+            other => other.clone(),
+        };
+        let type_id = |name: &str| self.typed.and_then(|t| t.types.get_type_id(name));
+        match ty {
+            Type::UnresolvedNamed(n) => type_id(n).map(Type::Named).unwrap_or_else(|| ty.clone()),
+            Type::UnresolvedGeneric { name, args } => {
+                let args: Vec<GenericArg> = args.iter().map(arg).collect();
+                match type_id(name) {
+                    Some(base) => Type::Generic { base, args },
+                    None => Type::UnresolvedGeneric { name: name.clone(), args },
+                }
+            }
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(arg).collect(),
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.canonical_type(ok)),
+                err: Box::new(self.canonical_type(err)),
+            },
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.canonical_type(e)).collect()),
+            Type::Slice(e) => Type::Slice(Box::new(self.canonical_type(e))),
+            Type::Array { elem, len } => Type::Array {
+                elem: Box::new(self.canonical_type(elem)),
+                len: *len,
+            },
+            Type::RawPtr(e) => Type::RawPtr(Box::new(self.canonical_type(e))),
+            _ => ty.clone(),
+        }
+    }
+
+    /// User-facing name of a type's head, resolving `Named(id)` through the type
+    /// table. Used to build readable hidden-param names (`__ctx_pool_Player`).
+    pub fn type_head_name(&self, ty: &Type) -> Option<String> {
+        match ty {
+            Type::Named(id) => self.typed.map(|t| t.types.type_name(*id)),
+            Type::UnresolvedNamed(n) => Some(n.clone()),
+            _ => None,
+        }
+    }
+
+    /// Render a type back to a parseable source string, resolving `Named(id)`
+    /// through the type table (`Pool<Player>`, not `Pool<<type#3>>`). Used to
+    /// emit hidden-param annotations that MIR lowering can resolve.
+    pub fn type_to_source(&self, ty: &Type) -> String {
+        use rask_types::GenericArg;
+        let render_args = |args: &[GenericArg]| -> String {
+            args.iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => self.type_to_source(t),
+                    GenericArg::ConstUsize(n) => n.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match ty {
+            Type::Named(id) => self
+                .typed
+                .map(|t| t.types.type_name(*id))
+                .unwrap_or_else(|| format!("{}", ty)),
+            Type::UnresolvedNamed(n) => n.clone(),
+            Type::UnresolvedGeneric { name, args } => {
+                format!("{}<{}>", name, render_args(args))
+            }
+            Type::Generic { base, args } => {
+                let head = self
+                    .typed
+                    .map(|t| t.types.type_name(*base))
+                    .unwrap_or_else(|| format!("{}", ty));
+                format!("{}<{}>", head, render_args(args))
+            }
+            _ => format!("{}", ty),
+        }
+    }
+
+    /// CALL6: the canonical call-graph key for the call at `call_node`, from the
+    /// recorded dispatch target. Free functions key by their symbol name; methods
+    /// by `Type.method` — matching how declarations are keyed. Returns `None` when
+    /// no target was recorded (builtins, or no typed program), so callers fall
+    /// back to name-based extraction.
+    pub fn callee_key(&self, call_node: NodeId) -> Option<FuncName> {
+        let typed = self.typed?;
+        match typed.call_targets.get(&call_node)? {
+            rask_types::Callee::Free(sym) => {
+                typed.symbols.get(*sym).map(|s| s.name.clone())
+            }
+            rask_types::Callee::Method { type_id, method } => {
+                Some(format!("{}.{}", typed.types.type_name(*type_id), method))
+            }
         }
     }
 
@@ -188,34 +297,40 @@ impl<'a> HiddenParamPass<'a> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-/// Convert a ContextClause into a ContextReq.
-///
-/// Only called for pool contexts — runtime types (Multitasking, ThreadPool)
-/// are filtered out before this point (see `collect::is_runtime_context`).
-pub(crate) fn context_clause_to_req(cc: &ContextClause) -> ContextReq {
-    // Pool<T> → __ctx_pool_T with type &Pool<T>
-    let inner = extract_generic_arg(&cc.ty).unwrap_or_default();
-    let param_name = if let Some(alias) = &cc.name {
-        format!("__ctx_{}", alias)
-    } else {
-        format!("__ctx_pool_{}", inner)
-    };
-    let param_type = format!("&{}", cc.ty);
-
-    ContextReq {
-        param_name,
-        param_type,
-        clause_type: cc.ty.clone(),
-        is_runtime: false,
-        alias: cc.name.clone(),
+impl HiddenParamPass<'_> {
+    /// Convert a ContextClause into a ContextReq, resolving the pool type
+    /// through the type table. Only pool contexts reach here — runtime types
+    /// (Multitasking, ThreadPool) are filtered by `collect::is_runtime_context`.
+    pub(crate) fn context_clause_to_req(&self, cc: &ContextClause) -> ContextReq {
+        let clause_type = self
+            .parse_ty(&cc.ty)
+            .unwrap_or_else(|| Type::UnresolvedNamed(cc.ty.clone()));
+        let param_name = if let Some(alias) = &cc.name {
+            format!("__ctx_{}", alias)
+        } else {
+            let elem = self.pool_elem_name(&clause_type).unwrap_or_default();
+            format!("__ctx_pool_{}", elem)
+        };
+        ContextReq {
+            param_name,
+            param_type: format!("&{}", cc.ty),
+            clause_type,
+            alias: cc.name.clone(),
+        }
     }
-}
 
-/// Extract T from "Pool<T>" → "T".
-pub(crate) fn extract_generic_arg(ty: &str) -> Option<String> {
-    let start = ty.find('<')?;
-    let end = ty.rfind('>')?;
-    Some(ty[start + 1..end].to_string())
+    /// The element name of a `Pool<T>` type (`Player`), for naming a hidden
+    /// param. Resolves `Named(id)` through the type table.
+    pub(crate) fn pool_elem_name(&self, pool_ty: &Type) -> Option<String> {
+        let args = match pool_ty {
+            Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
+            _ => return None,
+        };
+        match args.first()? {
+            rask_types::GenericArg::Type(t) => self.type_head_name(t),
+            _ => None,
+        }
+    }
 }
 
 /// Extract the function name from a Call expression's func field.
@@ -234,55 +349,11 @@ pub(crate) fn extract_callee_name(func: &Expr) -> Option<String> {
     }
 }
 
-/// Check if a type string looks like `Handle<...>`.
-pub(crate) fn is_handle_type(ty: &str) -> bool {
-    ty.starts_with("Handle<") && ty.ends_with('>')
-}
-
-/// Convert a Handle<T> type to the Pool<T> it requires.
-pub(crate) fn handle_to_pool_type(handle_ty: &str) -> Option<String> {
-    let inner = extract_generic_arg(handle_ty)?;
-    Some(format!("Pool<{}>", inner))
-}
-
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rask_ast::decl::ContextClause;
-
-    #[test]
-    fn test_extract_generic_arg() {
-        assert_eq!(extract_generic_arg("Pool<Player>"), Some("Player".to_string()));
-        assert_eq!(extract_generic_arg("Pool<Vec<i32>>"), Some("Vec<i32>".to_string()));
-        assert_eq!(extract_generic_arg("Multitasking"), None);
-    }
-
-    #[test]
-    fn test_context_clause_to_req_pool() {
-        let cc = ContextClause {
-            name: None,
-            ty: "Pool<Player>".to_string(),
-            is_frozen: false,
-        };
-        let req = context_clause_to_req(&cc);
-        assert_eq!(req.param_name, "__ctx_pool_Player");
-        assert_eq!(req.param_type, "&Pool<Player>");
-        assert!(!req.is_runtime);
-    }
-
-    #[test]
-    fn test_context_clause_to_req_named() {
-        let cc = ContextClause {
-            name: Some("players".to_string()),
-            ty: "Pool<Player>".to_string(),
-            is_frozen: false,
-        };
-        let req = context_clause_to_req(&cc);
-        assert_eq!(req.param_name, "__ctx_players");
-        assert_eq!(req.param_type, "&Pool<Player>");
-    }
 
     #[test]
     fn test_runtime_context_filtered() {
@@ -292,12 +363,5 @@ mod tests {
         assert!(is_runtime_context("ThreadPool"));
         assert!(is_runtime_context("threadpool"));
         assert!(!is_runtime_context("Pool<Player>"));
-    }
-
-    #[test]
-    fn test_handle_to_pool_type() {
-        assert_eq!(handle_to_pool_type("Handle<Player>"), Some("Pool<Player>".to_string()));
-        assert_eq!(handle_to_pool_type("Handle<Vec<i32>>"), Some("Pool<Vec<i32>>".to_string()));
-        assert_eq!(handle_to_pool_type("i32"), None);
     }
 }

@@ -2,11 +2,12 @@
 //! Phase 1: Collect context requirements from `using` clauses.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::stmt::StmtKind;
+use rask_ast::stmt::{Stmt, StmtKind};
+use rask_types::Type;
 
-use super::{context_clause_to_req, ContextReq, FuncInfo, HiddenParamPass};
+use super::{ContextReq, FuncInfo, HiddenParamPass};
 
-impl<'a> HiddenParamPass<'a> {
+impl HiddenParamPass<'_> {
     /// Collect explicit context requirements from all function declarations.
     pub fn collect_contexts(&mut self, decls: &[Decl]) {
         for decl in decls {
@@ -48,136 +49,86 @@ impl<'a> HiddenParamPass<'a> {
             self.public_funcs.insert(qname.to_string());
         }
 
-        // Collect parameter info
-        let params: Vec<(String, String)> = f
+        // Parameter types, resolved through the type table.
+        let params: Vec<(String, Type)> = f
             .params
             .iter()
-            .map(|p| (p.name.clone(), p.ty.clone()))
+            .map(|p| (p.name.clone(), self.resolve_ty_str(&p.ty)))
             .collect();
 
-        // Collect local variable info from body
-        let locals = collect_locals_from_body(&f.body);
+        // Local variable types (from annotations or inferred node types).
+        let mut locals = Vec::new();
+        for stmt in &f.body {
+            self.collect_locals_from_stmt(stmt, &mut locals);
+        }
 
-        // Collect self fields (if this is a method on a struct)
-        let self_fields = if let Some(ty_name) = self_type {
-            self.struct_fields
-                .get(ty_name)
-                .cloned()
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // Fields of `self` (if a method on a struct).
+        let self_fields: Vec<(String, Type)> = self_type
+            .and_then(|ty_name| self.struct_fields.get(ty_name).cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, ty_str)| (name, self.resolve_ty_str(&ty_str)))
+            .collect();
 
-        // Collect explicit context requirements.
-        // Runtime contexts (Multitasking, ThreadPool) use the process-global slot.
+        // Explicit context requirements. Runtime contexts (Multitasking,
+        // ThreadPool) use the process-global slot, not hidden params.
         let reqs: Vec<ContextReq> = f
             .context_clauses
             .iter()
             .filter(|cc| !is_runtime_context(&cc.ty))
-            .map(|cc| context_clause_to_req(cc))
+            .map(|cc| self.context_clause_to_req(cc))
             .collect();
 
         if !reqs.is_empty() {
-            self.func_contexts
-                .insert(qname.to_string(), reqs.clone());
+            self.func_contexts.insert(qname.to_string(), reqs.clone());
         }
 
         self.func_info.insert(
             qname.to_string(),
             FuncInfo {
                 reqs,
-                is_public: f.is_pub,
                 params,
                 self_fields,
                 locals,
             },
         );
     }
-}
 
-/// Collect local variable declarations from a function body.
-/// Returns (name, type_string) pairs.
-fn collect_locals_from_body(stmts: &[rask_ast::stmt::Stmt]) -> Vec<(String, String)> {
-    let mut locals = Vec::new();
-    for stmt in stmts {
-        collect_locals_from_stmt(stmt, &mut locals);
+    /// Parse a type string, keeping the unresolved name as a fallback so a
+    /// still-unregistered type never silently drops out of scope matching.
+    fn resolve_ty_str(&self, s: &str) -> Type {
+        self.parse_ty(s)
+            .unwrap_or_else(|| Type::UnresolvedNamed(s.to_string()))
     }
-    locals
-}
 
-fn collect_locals_from_stmt(
-    stmt: &rask_ast::stmt::Stmt,
-    locals: &mut Vec<(String, String)>,
-) {
-    match &stmt.kind {
-        StmtKind::Mut { name, ty, init, .. } | StmtKind::Const { name, ty, init, .. } => {
-            // If explicit type annotation, use it
-            if let Some(t) = ty {
-                locals.push((name.clone(), t.clone()));
-            } else {
-                // Try to infer Pool type from init expression
-                if let Some(pool_ty) = infer_pool_type_from_expr(init) {
-                    locals.push((name.clone(), pool_ty));
+    /// Record the type of every `const`/`mut` binding in a body, recursing into
+    /// nested blocks. Annotated bindings parse their annotation; inferred ones
+    /// take the type the checker recorded for the initializer.
+    fn collect_locals_from_stmt(&self, stmt: &Stmt, locals: &mut Vec<(String, Type)>) {
+        match &stmt.kind {
+            StmtKind::Mut { name, ty, init, .. } | StmtKind::Const { name, ty, init, .. } => {
+                let ty = match ty {
+                    Some(ann) => self.parse_ty(ann),
+                    None => self.node_ty(init.id),
+                };
+                if let Some(ty) = ty {
+                    locals.push((name.clone(), ty));
                 }
             }
-        }
-        StmtKind::While { body, .. }
-        | StmtKind::WhileLet { body, .. }
-        | StmtKind::Loop { body, .. }
-        | StmtKind::For { body, .. }
-        | StmtKind::Comptime(body)
-        | StmtKind::ComptimeFor { body, .. } => {
-            for s in body {
-                collect_locals_from_stmt(s, locals);
-            }
-        }
-        StmtKind::Ensure { body, .. } => {
-            for s in body {
-                collect_locals_from_stmt(s, locals);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Try to infer a Pool<T> type from an initializer expression.
-/// Recognizes `Pool<Player>.new()` (parsed as a method call on the type name)
-/// and the `Call { Field }` form. Returns the source type string verbatim so
-/// it matches the clause string exactly.
-fn infer_pool_type_from_expr(expr: &rask_ast::expr::Expr) -> Option<String> {
-    use rask_ast::expr::ExprKind;
-    match &expr.kind {
-        // `Pool<Player>.new()` — parses as a method call on the type name.
-        ExprKind::MethodCall { object, method, .. } if method == "new" => {
-            pool_type_from_ctor_object(&object.kind)
-        }
-        // `Pool.new()` in the `Call { Field }` shape.
-        ExprKind::Call { func, .. } => {
-            if let ExprKind::Field { object, field } = &func.kind {
-                if field == "new" {
-                    return pool_type_from_ctor_object(&object.kind);
+            StmtKind::While { body, .. }
+            | StmtKind::WhileLet { body, .. }
+            | StmtKind::Loop { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::Comptime(body)
+            | StmtKind::ComptimeFor { body, .. }
+            | StmtKind::Ensure { body, .. } => {
+                for s in body {
+                    self.collect_locals_from_stmt(s, locals);
                 }
             }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// Extract the pool type string from a constructor receiver (`Pool<Player>` or
-/// bare `Pool`).
-fn pool_type_from_ctor_object(obj: &rask_ast::expr::ExprKind) -> Option<String> {
-    use rask_ast::expr::ExprKind;
-    if let ExprKind::Ident(name) = obj {
-        if name == "Pool" {
-            // Bare Pool.new() — element type comes from context, unknown here.
-            return Some("Pool<_>".to_string());
-        }
-        if name.starts_with("Pool") && name.contains('<') {
-            return Some(name.clone());
+            _ => {}
         }
     }
-    None
 }
 
 /// True for runtime contexts that use the process-global slot, not hidden params.

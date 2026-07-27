@@ -9,11 +9,9 @@
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
+use rask_types::{GenericArg, Type};
 
-use super::{
-    extract_generic_arg, handle_to_pool_type, is_handle_type,
-    ContextReq, HiddenParamPass, PoolSource, ScopePool,
-};
+use super::{ContextReq, HiddenParamPass, PoolSource, ScopePool};
 
 // ── CC4: Scope Resolution ───────────────────────────────────────────────
 
@@ -24,11 +22,12 @@ use super::{
 ///   3. Fields of `self`
 ///   4. Own `using` clause (hidden param)
 ///
-/// Returns None if no resolution found, or an error string if ambiguous (CC8).
+/// Returns None if no resolution found, or Ambiguous if two pools of the same
+/// type sit at the same priority (CC8).
 pub(crate) fn resolve_context_in_scope(
     pass: &HiddenParamPass,
     caller_name: &str,
-    clause_type: &str,
+    clause_type: &Type,
 ) -> ResolveResult {
     let info = match pass.func_info.get(caller_name) {
         Some(i) => i,
@@ -42,7 +41,6 @@ pub(crate) fn resolve_context_in_scope(
         if ty == clause_type {
             candidates.push(ScopePool {
                 var_name: name.clone(),
-                pool_type: ty.clone(),
                 source: PoolSource::Local,
             });
         }
@@ -50,10 +48,9 @@ pub(crate) fn resolve_context_in_scope(
 
     // CC4 priority 2: Function parameters
     for (name, ty) in &info.params {
-        if ty == clause_type || ty == &format!("&{}", clause_type) {
+        if ty == clause_type {
             candidates.push(ScopePool {
                 var_name: name.clone(),
-                pool_type: clause_type.to_string(),
                 source: PoolSource::Parameter,
             });
         }
@@ -64,7 +61,6 @@ pub(crate) fn resolve_context_in_scope(
         if ty == clause_type {
             candidates.push(ScopePool {
                 var_name: format!("self.{}", field_name),
-                pool_type: ty.clone(),
                 source: PoolSource::SelfField,
             });
         }
@@ -72,10 +68,9 @@ pub(crate) fn resolve_context_in_scope(
 
     // CC4 priority 4: Own using clause (already a hidden param)
     for req in &info.reqs {
-        if req.clause_type == clause_type {
+        if &req.clause_type == clause_type {
             candidates.push(ScopePool {
                 var_name: req.param_name.clone(),
-                pool_type: req.clause_type.clone(),
                 source: PoolSource::UsingClause,
             });
         }
@@ -184,44 +179,54 @@ fn maybe_infer_context(
         return None;
     }
 
-    // Find Handle<T> parameters
-    let handle_types: Vec<String> = f
+    // Handle<T> parameters, by element type.
+    let handle_params: Vec<(&str, Type)> = f
         .params
         .iter()
-        .filter(|p| is_handle_type(&p.ty))
-        .map(|p| p.ty.clone())
+        .filter_map(|p| handle_elem(pass, &p.ty).map(|elem| (p.name.as_str(), elem)))
         .collect();
 
-    if handle_types.is_empty() {
+    if handle_params.is_empty() {
         return None;
     }
 
-    // Check if body accesses handle fields (h.field patterns)
-    let handle_param_names: Vec<&str> = f
-        .params
-        .iter()
-        .filter(|p| is_handle_type(&p.ty))
-        .map(|p| p.name.as_str())
-        .collect();
-
-    let has_field_access = body_accesses_handle_fields(&f.body, &handle_param_names);
-
-    if !has_field_access {
+    // Only infer when the body actually reaches handle fields (h.field).
+    let handle_param_names: Vec<&str> = handle_params.iter().map(|(n, _)| *n).collect();
+    if !body_accesses_handle_fields(&f.body, &handle_param_names) {
         return None;
     }
 
-    // Infer unnamed context for the first handle type found
-    let pool_type = handle_to_pool_type(&handle_types[0])?;
-    let inner = extract_generic_arg(&pool_type)?;
-    let param_name = format!("__ctx_pool_{}", inner);
+    // Infer an unnamed Pool<T> context from the first handle's element type.
+    let elem = &handle_params[0].1;
+    let pool_type = pass.canonical_type(&pool_of(elem));
+    let elem_name = pass.type_head_name(elem)?;
 
     Some(ContextReq {
-        param_name,
-        param_type: format!("&{}", pool_type),
+        param_name: format!("__ctx_pool_{}", elem_name),
+        param_type: format!("&{}", pass.type_to_source(&pool_type)),
         clause_type: pool_type,
-        is_runtime: false,
         alias: None,
     })
+}
+
+/// The element type of a `Handle<T>` parameter (given its source string), or
+/// `None` if the parameter isn't a handle.
+fn handle_elem(pass: &HiddenParamPass, ty_str: &str) -> Option<Type> {
+    match pass.parse_ty(ty_str)? {
+        Type::UnresolvedGeneric { name, args } if name == "Handle" => match args.into_iter().next() {
+            Some(GenericArg::Type(t)) => Some(*t),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Build `Pool<T>` from an element type `T`.
+fn pool_of(elem: &Type) -> Type {
+    Type::UnresolvedGeneric {
+        name: "Pool".to_string(),
+        args: vec![GenericArg::Type(Box::new(elem.clone()))],
+    }
 }
 
 /// Check if a function body accesses fields on handle-typed variables.
