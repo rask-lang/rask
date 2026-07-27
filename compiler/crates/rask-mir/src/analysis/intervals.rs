@@ -6,13 +6,13 @@
 //! Used by bounds check elimination to prove indices are in-bounds.
 //!
 //! Design: lazy evaluation (IV1) — only runs on functions with indexing ops.
-//! Per-function, no interprocedural (IV7). Widen at loop headers (IV5).
+//! Per-function, no interprocedural (IV7). Widening currently runs at every
+//! block; gating it to loop headers (IV5) is deferred — see #419.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::analysis::dataflow::{self, DataflowAnalysis, DataflowResults, Direction};
 use crate::analysis::dominators::DominatorTree;
-use crate::analysis::loops;
 use crate::{
     BlockId, LocalId, MirBlock, MirFunction, MirOperand, MirConst,
     MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
@@ -163,8 +163,6 @@ impl IntervalDomain {
 pub struct IntervalAnalysis {
     /// Integer locals we care about.
     int_locals: HashSet<LocalId>,
-    /// Loop header blocks (for targeted widening — future refinement).
-    _loop_headers: HashSet<BlockId>,
     /// Locals that are known Vec/array lengths (from Vec_len calls).
     pub len_locals: HashMap<LocalId, LenSource>,
     /// Initial state: integer parameters set to TOP.
@@ -273,13 +271,6 @@ impl IntervalAnalysis {
             return None;
         }
 
-        // Detect loop headers for widening (IV5)
-        let dom_tree = DominatorTree::build(func);
-        let natural_loops = loops::detect_loops(func, &dom_tree);
-        let loop_headers: HashSet<BlockId> = natural_loops.iter()
-            .map(|l| l.header)
-            .collect();
-
         // Parameters start as TOP (unknown range)
         let mut init_state = IntervalDomain::new();
         for local in &func.locals {
@@ -289,7 +280,7 @@ impl IntervalAnalysis {
         }
 
         Some((
-            Self { int_locals, _loop_headers: loop_headers, len_locals, init_state },
+            Self { int_locals, len_locals, init_state },
             index_ops,
         ))
     }
@@ -332,10 +323,11 @@ impl DataflowAnalysis for IntervalAnalysis {
     }
 
     fn widen(&self, old: &IntervalDomain, new: &IntervalDomain) -> IntervalDomain {
-        // Only widen at loop headers — checked by the framework at block granularity.
-        // For non-loop blocks, return new unchanged.
-        // The framework calls widen(old_exit, new_exit) for every block.
-        // We widen conservatively: if a bound is moving, push to infinity.
+        // The framework calls widen(old_exit, new_exit) for every block — it has
+        // no block context — so this widens everywhere, not just at loop headers.
+        // Widening only at loop headers would be more precise but needs a block
+        // id threaded through the dataflow trait; deferred to #419.
+        // Conservative rule: if a bound is moving, push it to infinity.
         let mut result = new.clone();
         for (&local, new_iv) in &new.ranges {
             if let Some(old_iv) = old.ranges.get(&local) {
