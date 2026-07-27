@@ -80,6 +80,14 @@ impl Interpreter {
             return Err(RuntimeDiagnostic::new(RuntimeError::Panic(msg), Span::new(0, 0)));
         }
 
+        // mem.parameters/PM2: snapshot the final values of `mutate` params before
+        // the scope is dropped, so the call site can write each back to its
+        // argument place. Keyed by parameter index (self is param 0 for methods).
+        self.mutate_writebacks = func.params.iter().enumerate()
+            .filter(|(_, p)| p.is_mutate)
+            .filter_map(|(i, p)| self.env.get(&p.name).map(|v| (i, v.clone())))
+            .collect();
+
         self.env.pop_scope();
 
         let value = match result {

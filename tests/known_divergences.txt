@@ -13,6 +13,8 @@
 t10_generics.rk            # generic method returning string = garbage — #272 (native)
 t19_result_operators.rk    # union try-else / if r? as v mishandled — #389 (native)
 t13_map.rk                 # Map<_,string> in a test block = 0 tests — #390 (native)
+t15_borrowing.rk           # native scalar disjoint-field mutate has no write-back — #270 (native)
+t22_parameter_modes.rk     # native scalar disjoint-field mutate has no write-back — #270 (native)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
 
@@ -22,8 +24,6 @@ t27_error_narrowing.rk     # interp T-or-E discrimination + && is-pattern bindin
 t36_cross_task_ownership.rk # interp doesn't register spawn builtin — #267 (interp)
 
 # --- shared / both-backend bugs ---
-t15_borrowing.rk           # mutate disjoint-field write-back regressed — #270 (both)
-t22_parameter_modes.rk     # mutate reassignment/disjoint write-back regressed — #270 (both)
 t20_control_expressions.rk # interp labeled break/continue + native f64 enum payload + && is-pattern — #392, #388, #256 (both)
 t25_iterator_adapters.rk   # fold accumulator type never resolves — #327 (both, check)
 t_conditional_conformance.rk # stray [mir] debug print on native — #258 (native)

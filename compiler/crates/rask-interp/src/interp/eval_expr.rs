@@ -21,6 +21,21 @@ const SPAWN_NO_RUNTIME_MSG: &str =
      \n\
      Install a `using Multitasking { ... }` block that encloses the call.";
 
+/// Copy scalar primitives are copied into a `mutate` param, so a whole-variable
+/// argument of scalar type isn't written back (mem.parameters Copy interaction).
+fn value_is_copy_scalar(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Int(..)
+            | Value::Int128(_)
+            | Value::Uint128(_)
+            | Value::Float(_)
+            | Value::Bool(_)
+            | Value::Char(_)
+            | Value::Unit
+    )
+}
+
 /// Set origin on an error value (the inner payload of Err). Only sets if not already set (ER15).
 fn set_error_origin(val: Value, origin: &Arc<str>) -> Value {
     match val {
@@ -173,6 +188,34 @@ impl Interpreter {
             expr.kind,
             ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. }
         )
+    }
+
+    /// Write each `mutate` parameter's captured final value back to its argument
+    /// place (mem.parameters/PM2). Consumes the pending writebacks. Parameter
+    /// index i maps to `args[i]` for a plain call.
+    fn apply_mutate_writebacks(&mut self, args: &[rask_ast::expr::CallArg]) -> Result<(), RuntimeError> {
+        let writebacks = std::mem::take(&mut self.mutate_writebacks);
+        for (param_idx, final_value) in writebacks {
+            if let Some(call_arg) = args.get(param_idx) {
+                self.writeback_mutate_place(&call_arg.expr, final_value)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Write a `mutate` param's final value back to its argument place. A whole
+    /// Copy scalar variable is copied in — the caller keeps the original — so
+    /// only field/index projections and aggregate values write back (this is the
+    /// `modify_int(x)` vs `swap_fields(p.x, p.y)` distinction in the spec).
+    fn writeback_mutate_place(&mut self, arg: &Expr, value: Value) -> Result<(), RuntimeError> {
+        match &arg.kind {
+            ExprKind::Ident(_) if value_is_copy_scalar(&value) => Ok(()),
+            ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
+                self.assign_target(arg, value)
+            }
+            // Non-place arguments (temporaries) have nowhere to write back.
+            _ => Ok(()),
+        }
     }
 
     pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
@@ -361,8 +404,16 @@ impl Interpreter {
                     .map(|a| self.eval_expr(&a.expr))
                     .collect::<Result<_, _>>()?;
 
-                self.call_value(func_val, arg_vals)
-                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
+                // Clear any writebacks left by sub-calls during arg evaluation, so
+                // only this call's `mutate` finals are applied below.
+                self.mutate_writebacks.clear();
+                let result = self.call_value(func_val, arg_vals)
+                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                // mem.parameters/PM2: write each `mutate` param's final value back
+                // to its argument place. For a plain call, param index i is args[i].
+                self.apply_mutate_writebacks(args)
+                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                Ok(result)
             }
 
             ExprKind::MethodCall {
