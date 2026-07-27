@@ -1,0 +1,63 @@
+// #259 family — ok/err arm routing decided by the scrutinee's real type
+// identities, not by the capitalization of the pattern's type name.
+//
+// Old native routed by "lowercase first char ⇒ ok side": a lowercase-named
+// err type (`failure`) was sent to the ok side, so the err arm never ran and
+// `load_num(false)` fell through printing nothing. An uppercase struct on the
+// ok side (`Cfg`) is the mirror case. Both now route by type identity and
+// agree with the interpreter.
+//
+// Match form only: the `if r is X` form has a pre-existing interpreter bug
+// (#391) and union-err members a pre-existing native bug (#375), so neither is
+// asserted here.
+
+struct Cfg { port: i64 }
+enum CfgError { Bad }
+extend CfgError {
+    func message(self) -> string {
+        match self { CfgError.Bad => return "bad" }
+    }
+}
+
+// Lowercase-named error type — the adversarial case for the case heuristic.
+enum failure { Down }
+extend failure {
+    func message(self) -> string {
+        match self { failure.Down => return "down" }
+    }
+}
+
+func load_cfg(ok: bool) -> Cfg or CfgError {
+    if ok {
+        return Cfg { port: 8080 }
+    }
+    return CfgError.Bad
+}
+
+func load_num(ok: bool) -> i64 or failure {
+    if ok {
+        return 7
+    }
+    return failure.Down
+}
+
+func main() {
+    // Uppercase struct on the ok side → ok arm.
+    match load_cfg(true) {
+        Cfg as c => println("cfg {c.port}")
+        CfgError => println("cfg err")
+    }
+    match load_cfg(false) {
+        Cfg as c => println("cfg {c.port}")
+        CfgError => println("cfg err")
+    }
+    // Lowercase err type on the err side → err arm.
+    match load_num(true) {
+        i64 as v => println("num {v}")
+        failure => println("num err")
+    }
+    match load_num(false) {
+        i64 as v => println("num {v}")
+        failure => println("num err")
+    }
+}

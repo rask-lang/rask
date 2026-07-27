@@ -253,15 +253,4 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), MirType::I64))
     }
 
-    /// Extract the inner struct size from a generic type name like "Channel<LogEntry>".
-    pub(super) fn generic_inner_struct_size(&self, generic_name: &str) -> i64 {
-        let inner = generic_name.split('<').nth(1)
-            .and_then(|s| s.strip_suffix('>'));
-        if let Some(type_name) = inner {
-            if let Some((_, layout)) = self.ctx.find_struct(type_name) {
-                return layout.size as i64;
-            }
-        }
-        8 // scalar default
-    }
 }

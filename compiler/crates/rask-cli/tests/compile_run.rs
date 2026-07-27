@@ -305,6 +305,95 @@ fn native_result_struct_ok() {
     assert_eq!(stdout, "111 222 333\n");
 }
 
+// #365 family — one aggregate byte-copy helper. A struct payload copied
+// through an Option slot must land byte-identical on both backends.
+#[test]
+fn compile_agg_copy_paths() {
+    let (stdout, code) = compile_and_run("agg_copy_paths.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 2 3\nnone\n");
+}
+
+#[test]
+fn native_agg_copy_paths() {
+    let (stdout, code) = run_native("agg_copy_paths.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 2 3\nnone\n");
+}
+
+// Option/Result slot constructors — scalar Ok/Err/Some/none round-trip
+// identically on both backends after routing through one constructor set.
+#[test]
+fn compile_wrap_constructors() {
+    let (stdout, code) = compile_and_run("wrap_constructors.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "ok 5\nerr\neven 4\nno even\n");
+}
+
+#[test]
+fn native_wrap_constructors() {
+    let (stdout, code) = run_native("wrap_constructors.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "ok 5\nerr\neven 4\nno even\n");
+}
+
+// #259 family — ok/err arm routing by type identity, not capitalization.
+// A lowercase-named err type used to be sent to the ok side on native (the
+// err arm never ran); an uppercase ok struct is the mirror case. Both must
+// route identically to the interpreter now.
+const ERR_ROUTING_OUT: &str = "cfg 8080\ncfg err\nnum 7\nnum err\n";
+
+#[test]
+fn compile_err_routing() {
+    let (stdout, code) = compile_and_run("err_routing.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, ERR_ROUTING_OUT);
+}
+
+#[test]
+fn native_err_routing() {
+    let (stdout, code) = run_native("err_routing.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, ERR_ROUTING_OUT);
+}
+
+#[test]
+fn err_routing_native_matches_interp() {
+    let (native, ncode) = run_native("err_routing.rk");
+    let (interp, icode) = run_interp("err_routing.rk");
+    assert_eq!(ncode, 0);
+    assert_eq!(icode, 0);
+    assert_eq!(native, interp, "native and interp must agree on ok/err routing");
+}
+
+// One element-size query — collections must allocate correctly-sized slots for
+// i32 (8-byte slot, no truncation), string (16), and struct (layout) elements,
+// with Map keys/values sized independently. Native must equal interp.
+const COLLECTION_SIZES_OUT: &str = "100\n200000\nalpha\nbeta\n1 2 3\n2\n";
+
+#[test]
+fn compile_collection_elem_sizes() {
+    let (stdout, code) = compile_and_run("collection_elem_sizes.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, COLLECTION_SIZES_OUT);
+}
+
+#[test]
+fn native_collection_elem_sizes() {
+    let (stdout, code) = run_native("collection_elem_sizes.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, COLLECTION_SIZES_OUT);
+}
+
+#[test]
+fn collection_elem_sizes_native_matches_interp() {
+    let (native, ncode) = run_native("collection_elem_sizes.rk");
+    let (interp, icode) = run_interp("collection_elem_sizes.rk");
+    assert_eq!(ncode, 0);
+    assert_eq!(icode, 0);
+    assert_eq!(native, interp, "native and interp must agree on element sizes");
+}
+
 // while-let with an ok-side, uppercase-named type pattern must enter the loop.
 // The capitalization heuristic previously routed `Reading` to the err side.
 #[test]

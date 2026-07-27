@@ -1233,34 +1233,64 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Resolve a pattern to its expected discriminant tag value.
+    /// Which side of a Result/Option scrutinee a pattern's `Type`/variant name
+    /// refers to: `true` = err/none side (tag 1), `false` = ok/Some side (tag 0).
+    ///
+    /// The single home of the ok/err routing decision. Real type identities
+    /// decide — the name is matched against the scrutinee's actual ok and err
+    /// type names (and union members on the err side). The lowercase-first-char
+    /// guess is the ONE documented last resort in the lowerer (#259), reached
+    /// only when neither side has a discoverable nominal name: generics collapse
+    /// to `Ptr`, primitives and strings carry none.
+    pub(crate) fn pattern_is_err_side(&self, name: &str, val_ty: &MirType) -> bool {
+        let (ok_ty, err_ty) = match val_ty {
+            MirType::Result { ok, err } => (Some(ok.as_ref()), Some(err.as_ref())),
+            MirType::Option(inner) => (Some(inner.as_ref()), None),
+            _ => (None, None),
+        };
+        // Exact identity match wins.
+        if let Some(ok) = ok_ty {
+            if self.mir_type_name(ok).as_deref() == Some(name) {
+                return false;
+            }
+        }
+        if let Some(err) = err_ty {
+            if self.mir_type_name(err).as_deref() == Some(name) {
+                return true;
+            }
+            if let MirType::Union(variants) = err {
+                if variants.iter().any(|v| self.mir_type_name(v).as_deref() == Some(name)) {
+                    return true;
+                }
+            }
+        }
+        // One side named but unmatched ⇒ the pattern is the other side. Handles
+        // generic ok types (`Vec<i32>` → Ptr) that lose their nominal name.
+        if err_ty.map_or(false, |t| self.mir_type_name(t).is_some()) {
+            return false;
+        }
+        if ok_ty.map_or(false, |t| self.mir_type_name(t).is_some()) {
+            return true;
+        }
+        // Last resort: lowercase ⇒ ok, uppercase ⇒ err.
+        !name.chars().next().map_or(false, |c| c.is_lowercase())
+    }
+
+    /// Resolve a pattern to its discriminant tag with no type context. Only the
+    /// nominal-variant cases are meaningful here — Ident/TypePat routing that
+    /// needs the scrutinee type goes through `pattern_tag_in_type_context`.
     fn pattern_tag(&self, pattern: &rask_ast::expr::Pattern) -> i64 {
         use rask_ast::expr::Pattern;
         match pattern {
             Pattern::Constructor { name, .. } => self.variant_tag(name),
-            Pattern::Ident(name) => {
-                // Could be a variant name (Some, None, Ok, Err) or a binding
-                if is_variant_name(name) {
-                    self.variant_tag(name)
-                } else {
-                    0
-                }
-            }
-            // ER23/ER27: `Type as v` — lowercase first char ⇒ ok side (tag 0),
-            // uppercase ⇒ user enum on the err side (tag 1). Same convention as
-            // match_lower's TypePat handling.
-            Pattern::TypePat { ty_name, .. } => {
-                if ty_name.chars().next().map_or(false, |c| c.is_lowercase()) { 0 } else { 1 }
-            }
+            Pattern::Ident(name) if is_variant_name(name) => self.variant_tag(name),
             _ => 0,
         }
     }
 
-    /// Like `pattern_tag` but uses the matched value's type to resolve ambiguity.
-    ///
-    /// When matching `r is DivError` where `r: T or DivError`, "DivError" is the
-    /// error enum type name, not a variant — it should map to tag 1 (Err).
-    /// `pattern_tag` can't detect this without type context.
+    /// Resolve a pattern to its expected discriminant tag using the scrutinee's
+    /// real type. `r is DivError` on `T or DivError` routes to tag 1 (err) by
+    /// type identity, not by the capitalization of "DivError".
     pub(crate) fn pattern_tag_in_type_context(
         &self,
         pattern: &rask_ast::expr::Pattern,
@@ -1268,79 +1298,44 @@ impl<'a> MirLowerer<'a> {
     ) -> i64 {
         use rask_ast::expr::Pattern;
         match pattern {
-            Pattern::Ident(name) => {
-                if is_variant_name(name) {
-                    // If the name matches the err side of a Result, tag = 1.
-                    // Handles enum errors, struct errors, and union errors
-                    // (e.g. `result is ParseError` where err side is
-                    // `ParseError | DivError`). Without these branches a
-                    // `result is StructError` check compared against tag 0
-                    // and inverted the entire control flow [#259 family].
-                    let name_matches_type = |ty: &MirType, n: &str| -> bool {
-                        match ty {
-                            MirType::Enum(eid) => {
-                                let idx = eid.id as usize;
-                                idx < self.ctx.enum_layouts.len()
-                                    && self.ctx.enum_layouts[idx].name == n
-                            }
-                            MirType::Struct(sid) => {
-                                let idx = sid.id as usize;
-                                idx < self.ctx.struct_layouts.len()
-                                    && self.ctx.struct_layouts[idx].name == n
-                            }
-                            _ => false,
-                        }
-                    };
-                    if let MirType::Result { ok, err } = val_ty {
-                        if name_matches_type(err.as_ref(), name) {
-                            return 1;
-                        }
-                        if let MirType::Union(variants) = err.as_ref() {
-                            if variants.iter().any(|v| name_matches_type(v, name)) {
-                                return 1;
-                            }
-                        }
-                        // Symmetric: name matches the ok side → tag 0 (Ok).
-                        if name_matches_type(ok.as_ref(), name) {
-                            return 0;
-                        }
+            Pattern::Ident(name) if is_variant_name(name) => {
+                // A nominal name on a Result/Option side → that side's tag;
+                // otherwise a nested enum variant → its own tag.
+                if matches!(val_ty, MirType::Result { .. } | MirType::Option(_)) {
+                    let matches_side = self.mir_side_names_contain(val_ty, name);
+                    if matches_side {
+                        return if self.pattern_is_err_side(name, val_ty) { 1 } else { 0 };
                     }
-                    return self.variant_tag(name);
                 }
-                0
+                self.variant_tag(name)
             }
-            // ER23: `Type as v` — for Result<T, E>, prefer matching `ty_name` against
-            // the actual ok / err names. Without this, a user struct on the ok side
-            // (uppercase, e.g. `Cfg or CfgError`) wrongly maps to tag=1 because of
-            // the case heuristic.
+            Pattern::Ident(_) => 0,
             Pattern::TypePat { ty_name, .. } => {
-                if let MirType::Result { ok, err } = val_ty {
-                    let ok_name = self.mir_type_name(ok);
-                    let err_name = self.mir_type_name(err);
-                    if ok_name.as_deref() == Some(ty_name.as_str()) {
-                        return 0;
-                    }
-                    if err_name.as_deref() == Some(ty_name.as_str()) {
-                        return 1;
-                    }
-                    // Generic ok types like `Vec<i32>` collapse to MirType::Ptr
-                    // and lose their nominal name. If the err side has a known
-                    // name and it doesn't match, the pattern must be the ok side.
-                    if err_name.is_some() {
-                        return 0;
-                    }
-                    if ok_name.is_some() {
-                        return 1;
-                    }
-                }
-                if ty_name.chars().next().map_or(false, |c| c.is_lowercase()) {
-                    0
-                } else {
-                    1
-                }
+                if self.pattern_is_err_side(ty_name, val_ty) { 1 } else { 0 }
             }
             _ => self.pattern_tag(pattern),
         }
+    }
+
+    /// True when `name` is the nominal name of the ok side, err side, or an err
+    /// union member of a Result/Option scrutinee.
+    fn mir_side_names_contain(&self, val_ty: &MirType, name: &str) -> bool {
+        let sides: [Option<&MirType>; 2] = match val_ty {
+            MirType::Result { ok, err } => [Some(ok.as_ref()), Some(err.as_ref())],
+            MirType::Option(inner) => [Some(inner.as_ref()), None],
+            _ => [None, None],
+        };
+        for side in sides.into_iter().flatten() {
+            if self.mir_type_name(side).as_deref() == Some(name) {
+                return true;
+            }
+            if let MirType::Union(variants) = side {
+                if variants.iter().any(|v| self.mir_type_name(v).as_deref() == Some(name)) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Look up the tag value for a variant name.
@@ -1481,23 +1476,12 @@ impl<'a> MirLowerer<'a> {
                     // Wildcard, Literal in field position — skip binding
                 }
             }
-            // ER23/ER27: `Type as name` — bind the matching side's payload
-            // as a fresh local. The caller already routed control flow to the
-            // correct branch via `pattern_tag`, so here we just emit the
-            // payload extraction with the appropriate offset.
-            Pattern::TypePat { ty_name, binding: Some(name) } => {
-                let is_ok_side = ty_name.chars().next().map_or(false, |c| c.is_lowercase());
-                // payload_ty is the ok payload (passed by the IfLet caller via
-                // extract_payload_type). For the err side, look up the err type
-                // and use that instead.
-                let bound_ty = if is_ok_side {
-                    payload_ty.clone()
-                } else {
-                    // Walk the locals' raw type via the value's nominal — we
-                    // can't recover the err type from `payload_ty` alone, so
-                    // fall back to payload_ty if extract fails.
-                    payload_ty.clone()
-                };
+            // ER23/ER27: `Type as name` — bind the payload as a fresh local. The
+            // only caller (WhileLet) already routed control flow via
+            // `pattern_tag_in_type_context` and passes the ok payload type, so
+            // bind that directly — no case guess needed.
+            Pattern::TypePat { ty_name: _, binding: Some(name) } => {
+                let bound_ty = payload_ty.clone();
                 let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
                 let is_aggregate = matches!(
                     bound_ty,
