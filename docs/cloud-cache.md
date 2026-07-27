@@ -17,8 +17,12 @@ set the **Setup script** to:
 
 ```bash
 #!/bin/bash
-./scripts/warm-cache.sh
+/home/user/rask/scripts/warm-cache.sh
 ```
+
+Use the absolute path: the setup script doesn't start in the repo root, so a
+relative `./scripts/...` fails with exit 127. The script itself finds the repo
+from its own location, so it works from any working directory.
 
 That's it. The build fits under the ~5-minute setup-script budget, `crates.io`
 is on the default Trusted network allowlist, and the snapshot rebuilds itself
