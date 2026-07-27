@@ -13,7 +13,7 @@ impl Interpreter {
             StmtKind::Expr(expr) => self.eval_expr(expr),
 
             StmtKind::Const { name, init, ty, .. } => {
-                let mut value = self.eval_expr(init)?;
+                let mut value = self.eval_owned(init)?;
                 if let Some(ty_str) = ty {
                     value = auto_wrap_for_annotation(value, ty_str);
                 }
@@ -25,7 +25,7 @@ impl Interpreter {
             }
 
             StmtKind::Mut { name, name_span: _, ty, init } => {
-                let value = self.eval_expr(init)?;
+                let value = self.eval_owned(init)?;
                 // Coerce Vec to SimdF32x8 when type annotation says f32x8
                 let value = if ty.as_deref() == Some("f32x8") {
                     Self::coerce_to_simd_f32x8(value)
@@ -47,21 +47,21 @@ impl Interpreter {
             }
 
             StmtKind::MutTuple { patterns, init } => {
-                let value = self.eval_expr(init)?;
+                let value = self.eval_owned(init)?;
                 self.destructure_tuple_pats(patterns, value)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
             }
 
             StmtKind::ConstTuple { patterns, init } => {
-                let value = self.eval_expr(init)?;
+                let value = self.eval_owned(init)?;
                 self.destructure_tuple_pats(patterns, value)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
             }
 
             StmtKind::Assign { target, value } => {
-                let val = self.eval_expr(value)?;
+                let val = self.eval_owned(value)?;
                 self.assign_target(target, val)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)

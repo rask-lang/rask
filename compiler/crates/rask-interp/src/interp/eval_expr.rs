@@ -151,6 +151,30 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
 }
 
 impl Interpreter {
+    /// Evaluate an expression whose result is transferred into a new owner
+    /// (a binding, an assignment target, a struct field, a collection slot).
+    /// Reading a place — a variable, field, or index — copies value-type
+    /// aggregates so the new owner can't alias the source (VS1). Fresh
+    /// temporaries (literals, calls, arithmetic) are already independent and
+    /// pass through untouched.
+    pub(crate) fn eval_owned(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
+        let value = self.eval_expr(expr)?;
+        if Self::expr_is_place(expr) {
+            Ok(value.copy_on_bind())
+        } else {
+            Ok(value)
+        }
+    }
+
+    /// A place expression names existing storage that may still be live after
+    /// the read, so copying it on transfer is required for value semantics.
+    fn expr_is_place(expr: &Expr) -> bool {
+        matches!(
+            expr.kind,
+            ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. }
+        )
+    }
+
     pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         match &expr.kind {
             ExprKind::Int(n, suffix) => {
@@ -760,12 +784,16 @@ impl Interpreter {
                 if let Some(spread_expr) = spread {
                     if let Value::Struct(ref s) = self.eval_expr(spread_expr)? {
                         let guard = s.lock().unwrap();
-                        field_values.extend(guard.fields.clone());
+                        // Spread copies the source's fields into the new struct
+                        // (VS1) — sharing them would alias the spread source.
+                        for (k, v) in guard.fields.iter() {
+                            field_values.insert(k.clone(), v.copy_on_bind());
+                        }
                     }
                 }
 
                 for field in fields {
-                    let value = self.eval_expr(&field.value)?;
+                    let value = self.eval_owned(&field.value)?;
                     field_values.insert(field.name.clone(), value);
                 }
 

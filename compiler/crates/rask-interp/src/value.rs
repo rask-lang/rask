@@ -750,6 +750,45 @@ impl Value {
         }
     }
 
+    /// Copy a value into a new owner, giving value-type aggregates independent
+    /// storage (mem value semantics VS1). A ≤16-byte struct is Copy; binding or
+    /// storing it must copy, so mutating the copy can't alias the source.
+    ///
+    /// Structs, enums, and nominals are copied structurally — their value-type
+    /// fields recurse, so nested aggregates are independent too. Reference/box
+    /// types (Vec, Map, String, Cell, Shared, Mutex, Pool, handles) keep sharing
+    /// their storage: they're move-only, so the source is already dead, and boxes
+    /// alias by design. Resource-tracked structs (@resource) are move-only linear
+    /// values — never duplicate their storage.
+    pub fn copy_on_bind(&self) -> Value {
+        match self {
+            Value::Struct(s) => {
+                let guard = s.lock().unwrap();
+                if guard.resource_id.is_some() {
+                    // Linear resource: moved, not copied. Keep the shared cell.
+                    return Value::Struct(Arc::clone(s));
+                }
+                let fields: IndexMap<String, Value> = guard.fields.iter()
+                    .map(|(k, v)| (k.clone(), v.copy_on_bind()))
+                    .collect();
+                Value::new_struct(guard.name.clone(), fields, guard.resource_id)
+            }
+            Value::Enum { name, variant, fields, variant_index, origin } => Value::Enum {
+                name: name.clone(),
+                variant: variant.clone(),
+                fields: fields.iter().map(|f| f.copy_on_bind()).collect(),
+                variant_index: *variant_index,
+                origin: origin.clone(),
+            },
+            Value::Nominal { type_name, inner } => Value::Nominal {
+                type_name: type_name.clone(),
+                inner: Box::new(inner.copy_on_bind()),
+            },
+            // Reference/box types share; scalars are cheap clones.
+            other => other.clone(),
+        }
+    }
+
     /// Deep clone a value — creates independent copies of reference-counted internals.
     pub fn deep_clone(&self) -> Value {
         match self {

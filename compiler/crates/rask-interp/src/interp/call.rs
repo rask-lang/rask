@@ -42,6 +42,15 @@ impl Interpreter {
         self.env.push_scope();
 
         for (param, arg) in func.params.iter().zip(args.into_iter()) {
+            // A by-value parameter receives an independent copy (VS1): mutating
+            // it inside the callee can't alias the caller's value. `mutate`/`self`
+            // borrows share the caller's storage by design; `take` moves it, so
+            // the source is already dead — none of those copy.
+            let arg = if param.is_mutate || param.is_take || param.name == "self" {
+                arg
+            } else {
+                arg.copy_on_bind()
+            };
             self.env.define(param.name.clone(), arg);
         }
 
