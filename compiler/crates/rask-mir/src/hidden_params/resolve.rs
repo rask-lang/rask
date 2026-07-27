@@ -50,7 +50,7 @@ pub(crate) fn resolve_context_in_scope(
 
     // CC4 priority 2: Function parameters
     for (name, ty) in &info.params {
-        if ty == clause_type || ty == &format!("&{}", clause_type) {
+        if ty == clause_type {
             candidates.push(ScopePool {
                 var_name: name.clone(),
                 pool_type: clause_type.to_string(),

@@ -504,10 +504,7 @@ fn finalize_compile(
     };
 
     // --- Hidden parameter desugaring ---
-    rask_mir::hidden_params::desugar_hidden_params_with_types(
-        &mut check.decls,
-        Some(&check.typed.node_types),
-    );
+    rask_mir::hidden_params::desugar_hidden_params(&mut check.decls, &check.typed);
 
     // --- Derive synthetic method bodies (compare, etc.) ---
     derive::generate_derived_methods(&mut check.decls, &check.typed);

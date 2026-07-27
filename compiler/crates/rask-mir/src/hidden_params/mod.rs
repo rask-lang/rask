@@ -20,7 +20,6 @@ mod rewrite;
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{ContextClause, Decl, DeclKind};
-use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::{NodeId, Span};
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -101,19 +100,11 @@ pub struct HiddenParamError {
 /// - Call sites to those functions gain hidden arguments
 /// - `using Multitasking { }` blocks become context construction + teardown
 ///
-/// Accepts optional TypedProgram for proper CC4 scope resolution.
-/// Without it, falls back to hidden-param-name matching (still correct
-/// for the propagation case).
-pub fn desugar_hidden_params(decls: &mut [Decl]) {
-    desugar_hidden_params_with_types(decls, None);
-}
-
-/// Run the hidden parameter pass with type information for full CC4 resolution.
-pub fn desugar_hidden_params_with_types(
-    decls: &mut [Decl],
-    node_types: Option<&HashMap<NodeId, rask_types::Type>>,
-) {
-    let mut pass = HiddenParamPass::new(node_types);
+/// Uses the type checker's recorded dispatch (`call_targets`, CALL6) as the
+/// single source of truth for which function each call resolves to — the call
+/// graph and call-site rewrites key off that, not a name mangled from the AST.
+pub fn desugar_hidden_params(decls: &mut [Decl], typed: &rask_types::TypedProgram) {
+    let mut pass = HiddenParamPass::new(typed);
     pass.run(decls);
 }
 
@@ -131,7 +122,14 @@ pub(crate) struct HiddenParamPass<'a> {
     /// Struct name → field list (name, type string).
     pub struct_fields: HashMap<String, Vec<(String, String)>>,
     /// Type information from the type checker (CC4 resolution).
-    pub node_types: Option<&'a HashMap<NodeId, rask_types::Type>>,
+    pub node_types: &'a HashMap<NodeId, rask_types::Type>,
+    /// CALL6: resolved call target per Call/MethodCall node — the source of
+    /// truth for dispatch. Read via `callee_key`.
+    pub call_targets: &'a HashMap<NodeId, rask_types::Callee>,
+    /// Resolved symbols — maps a `Callee::Function` back to its name.
+    pub symbols: &'a rask_resolve::SymbolTable,
+    /// Type table — maps a `Callee::Method`'s receiver `TypeId` to its name.
+    pub types: &'a rask_types::TypeTable,
     /// Fresh NodeId counter (high range to avoid parser collisions).
     pub next_id: u32,
     /// Errors collected during the pass.
@@ -142,17 +140,34 @@ pub(crate) struct HiddenParamPass<'a> {
 }
 
 impl<'a> HiddenParamPass<'a> {
-    pub fn new(node_types: Option<&'a HashMap<NodeId, rask_types::Type>>) -> Self {
+    pub fn new(typed: &'a rask_types::TypedProgram) -> Self {
         Self {
             func_contexts: HashMap::new(),
             func_info: HashMap::new(),
             call_graph: HashMap::new(),
             public_funcs: HashSet::new(),
             struct_fields: HashMap::new(),
-            node_types,
+            node_types: &typed.node_types,
+            call_targets: &typed.call_targets,
+            symbols: &typed.symbols,
+            types: &typed.types,
             next_id: 2_000_000,
             errors: Vec::new(),
             active_renames: Vec::new(),
+        }
+    }
+
+    /// CALL6: canonical call-graph key for a call node, derived from the
+    /// recorded dispatch target — never re-mangled from the call AST. Matches
+    /// the keys `collect_contexts` builds from declarations ("f", "Type.method").
+    pub fn callee_key(&self, call_id: NodeId) -> Option<FuncName> {
+        match self.call_targets.get(&call_id)? {
+            rask_types::Callee::Function(sym) => {
+                self.symbols.get(*sym).map(|s| s.name.clone())
+            }
+            rask_types::Callee::Method { ty, method } => {
+                Some(format!("{}.{}", self.types.type_name(*ty), method))
+            }
         }
     }
 
@@ -228,22 +243,6 @@ pub(crate) fn extract_generic_arg(ty: &str) -> Option<String> {
     let start = ty.find('<')?;
     let end = ty.rfind('>')?;
     Some(ty[start + 1..end].to_string())
-}
-
-/// Extract the function name from a Call expression's func field.
-pub(crate) fn extract_callee_name(func: &Expr) -> Option<String> {
-    match &func.kind {
-        ExprKind::Ident(name) => Some(name.clone()),
-        ExprKind::Field { object, field } => {
-            // Type.method style: extract "Type.method"
-            if let ExprKind::Ident(obj_name) = &object.kind {
-                Some(format!("{}.{}", obj_name, field))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
 }
 
 /// Check if a type string looks like `Handle<...>`.

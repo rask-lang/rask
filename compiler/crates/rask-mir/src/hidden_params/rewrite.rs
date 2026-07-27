@@ -7,7 +7,7 @@ use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
 
 use super::resolve::{resolve_context_in_scope, ResolveResult};
-use super::{extract_callee_name, HiddenParamPass, PoolSource};
+use super::{FuncName, HiddenParamPass, PoolSource};
 
 /// Rewrite all declarations.
 pub fn rewrite_decls(pass: &mut HiddenParamPass, decls: &mut [rask_ast::decl::Decl]) {
@@ -157,61 +157,28 @@ fn rewrite_stmt(pass: &mut HiddenParamPass, caller: &str, stmt: &mut Stmt) {
 }
 
 fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
+    // CALL6: identify the callee by the recorded dispatch target for this node.
+    let callee_key = pass.callee_key(expr.id);
+    let span = expr.span;
     match &mut expr.kind {
-        // Phase 5 (CALL1-CALL6): Insert hidden args at call sites
+        // Phase 5 (CALL1-CALL6): Insert hidden args at call sites. Free calls
+        // and method calls are the same here — both resolve to a recorded
+        // target, so context threads into methods exactly as into free
+        // functions.
         ExprKind::Call { func, args } => {
             rewrite_expr(pass, caller, func);
             for arg in args.iter_mut() {
                 rewrite_expr(pass, caller, &mut arg.expr);
             }
-
-            // Check if callee needs hidden params
-            if let Some(callee_name) = extract_callee_name(func) {
-                if let Some(reqs) = pass.func_contexts.get(&callee_name).cloned() {
-                    for req in &reqs {
-                        // Don't add duplicate hidden args
-                        let already_has = args.iter().any(|a| {
-                            matches!(&a.expr.kind, ExprKind::Ident(name) if name == &req.param_name)
-                        });
-                        if already_has {
-                            continue;
-                        }
-
-                        // CC4: Resolve from scope, not just hidden param name
-                        let resolved_name = resolve_arg_name(pass, caller, req);
-
-                        // Non-frozen pools thread `mutate` so the callee can
-                        // mutate the shared pool (matches the hidden param).
-                        let mode = if req.is_mutate {
-                            ArgMode::Mutate
-                        } else {
-                            ArgMode::Default
-                        };
-
-                        args.push(CallArg {
-                            name: None,
-                            mode,
-                            expr: Expr {
-                                id: pass.fresh_id(),
-                                kind: ExprKind::Ident(resolved_name),
-                                span: expr.span,
-                            },
-                        });
-                    }
-                }
-            }
+            insert_context_args(pass, caller, callee_key, args, span);
         }
 
-        ExprKind::MethodCall {
-            object, args, ..
-        } => {
+        ExprKind::MethodCall { object, args, .. } => {
             rewrite_expr(pass, caller, object);
             for arg in args.iter_mut() {
                 rewrite_expr(pass, caller, &mut arg.expr);
             }
-            // Method call context resolution requires type info for the
-            // receiver. Deferred — method dispatch doesn't commonly carry
-            // context in Phase A patterns.
+            insert_context_args(pass, caller, callee_key, args, span);
         }
 
         // Phase 6 (BLK1-BLK4): Desugar `using` blocks
@@ -401,6 +368,50 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
         | ExprKind::Bool(_)
         | ExprKind::Null
         | ExprKind::None => {}
+    }
+}
+
+/// Append hidden context arguments to a call whose target needs them (CALL3).
+/// `callee_key` is the recorded dispatch target; free calls and method calls
+/// share this path.
+fn insert_context_args(
+    pass: &mut HiddenParamPass,
+    caller: &str,
+    callee_key: Option<FuncName>,
+    args: &mut Vec<CallArg>,
+    span: Span,
+) {
+    let Some(key) = callee_key else { return };
+    let Some(reqs) = pass.func_contexts.get(&key).cloned() else { return };
+    for req in &reqs {
+        // Don't add a duplicate hidden arg (HP4 idempotency).
+        let already_has = args.iter().any(|a| {
+            matches!(&a.expr.kind, ExprKind::Ident(name) if name == &req.param_name)
+        });
+        if already_has {
+            continue;
+        }
+
+        // CC4: resolve the pool from the caller's scope.
+        let resolved_name = resolve_arg_name(pass, caller, req);
+
+        // Non-frozen pools thread `mutate` so the callee can mutate the shared
+        // pool (matches the hidden param).
+        let mode = if req.is_mutate {
+            ArgMode::Mutate
+        } else {
+            ArgMode::Default
+        };
+
+        args.push(CallArg {
+            name: None,
+            mode,
+            expr: Expr {
+                id: pass.fresh_id(),
+                kind: ExprKind::Ident(resolved_name),
+                span,
+            },
+        });
     }
 }
 

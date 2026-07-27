@@ -1535,6 +1535,7 @@ dependencies = [
  "rask-comptime",
  "rask-diagnostics",
  "rask-mono",
+ "rask-resolve",
  "rask-stdlib",
  "rask-types",
 ]
