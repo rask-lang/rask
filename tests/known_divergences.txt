@@ -10,9 +10,6 @@
 # lag both count. See docs/TESTING.md for the full map.
 
 # --- native codegen bugs (interp correct) ---
-t03_structs.rk             # struct-param + struct-return miscompile — #386 (native)
-t04_enums.rk               # string payload from enum variant = garbage — #387 (native)
-t28_codegen_regressions.rk # string payload from enum variant = garbage — #387 (native)
 t10_generics.rk            # generic method returning string = garbage — #272 (native)
 t19_result_operators.rk    # union try-else / if r? as v mishandled — #389 (native)
 t13_map.rk                 # Map<_,string> in a test block = 0 tests — #390 (native)

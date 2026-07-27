@@ -865,16 +865,21 @@ impl<'a> MirLowerer<'a> {
                             // Store payload fields
                             for (i, arg) in args.iter().enumerate() {
                                 let (val, _) = self.lower_expr(&arg.expr)?;
-                                let offset = if i < fields.len() {
-                                    payload_offset + fields[i].offset
+                                let (offset, field_size) = if i < fields.len() {
+                                    (payload_offset + fields[i].offset, fields[i].size)
                                 } else {
-                                    payload_offset + (i as u32 * 8)
+                                    (payload_offset + (i as u32 * 8), 8)
                                 };
+                                // Aggregate payloads (string = 16 bytes, embedded
+                                // structs) must copy the full value. Without store_size
+                                // a string constant stores only its 8-byte data pointer
+                                // and the length word is left uninitialized (#387).
+                                let store_size = if field_size > 8 { Some(field_size) } else { None };
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                     addr: result_local,
                                     offset,
                                     value: val,
-                                    store_size: None,
+                                    store_size,
                                 }));
                             }
 
@@ -1270,6 +1275,22 @@ impl<'a> MirLowerer<'a> {
                         false
                     }
                 };
+
+                // User struct/enum operator overload: `a + b` desugars to
+                // `a.add(b)`. When the receiver is a user aggregate with a real
+                // operator method, dispatch to it instead of emitting a native
+                // BinaryOp — the latter would `sadd` the two struct pointers as
+                // integers and hand back garbage (#386).
+                let user_operator_method = matches!(obj_ty, MirType::Struct(_) | MirType::Enum(_))
+                    && self.ctx.lookup_raw_type(object.id)
+                        .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+                        .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+                        .map(|prefix| {
+                            let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                            self.func_sigs.contains_key(&format!("{}_{}", base, method))
+                        })
+                        .unwrap_or(false);
+                let skip_binop = skip_binop || user_operator_method;
 
                 // Detect binary operator methods (desugared from a + b → a.add(b))
                 // Skip for SIMD types and raw pointers — they use method dispatch.
@@ -2344,7 +2365,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Struct literal
-            ExprKind::StructLit { name, fields, .. } => {
+            ExprKind::StructLit { name, fields, spread } => {
                 // Check for enum variant constructor: "EnumName.VariantName { ... }"
                 let (result_ty, layout, enum_variant_info) = if let Some(dot_pos) = name.find('.') {
                     let enum_name = &name[..dot_pos];
@@ -2415,6 +2436,43 @@ impl<'a> MirLowerer<'a> {
                             let field_key = format!("self.{}", field.name);
                             self.meta_mut(&field_key).elem_type = Some(elem_ty.clone());
                             self.ctx.shared_elem_types.borrow_mut().insert(field_key, elem_ty);
+                        }
+                    }
+                }
+
+                // Struct update syntax: `Point { x: 10, ..p }`. Every field not
+                // given explicitly is copied from the spread base. Without this
+                // the un-listed fields are left uninitialized and read garbage on
+                // native (interp happens to zero-init).
+                if let Some(spread_expr) = spread {
+                    if let Some(sl) = layout {
+                        let explicit: std::collections::HashSet<&str> =
+                            fields.iter().map(|f| f.name.as_str()).collect();
+                        // Clone the field layouts we need before lowering the
+                        // spread expression (which borrows self mutably).
+                        let missing: Vec<(usize, MirType, u32, u32)> = sl.fields.iter()
+                            .enumerate()
+                            .filter(|(_, f)| !explicit.contains(f.name.as_str()))
+                            .map(|(i, f)| (i, self.ctx.type_to_mir(&f.ty), f.offset, f.size))
+                            .collect();
+                        let (base_op, _) = self.lower_expr(spread_expr)?;
+                        for (idx, field_ty, offset, size) in missing {
+                            let tmp = self.builder.alloc_temp(field_ty);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: tmp,
+                                rvalue: MirRValue::Field {
+                                    base: base_op.clone(),
+                                    field_index: idx as u32,
+                                    byte_offset: Some(offset),
+                                    field_size: Some(size),
+                                },
+                            }));
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                addr: result_local,
+                                offset,
+                                value: MirOperand::Local(tmp),
+                                store_size: Some(size),
+                            }));
                         }
                     }
                 }
