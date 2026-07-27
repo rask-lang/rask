@@ -437,15 +437,19 @@ impl<'a> MirContext<'a> {
                     .filter(|name| name.chars().next().map_or(false, |c| c.is_uppercase()))
                     .cloned()
             }
+            // A prefix is the base type name — strip any generic args. A raw
+            // `UnresolvedNamed("Pool<Player>")` (how a `using Pool<T>` context var
+            // is typed) must yield "Pool", not the whole string, so pool indexing
+            // takes the checked-access path rather than a bogus `Pool_index`.
             Type::UnresolvedNamed(name)
                 if name.chars().next().map_or(false, |c| c.is_uppercase()) =>
             {
-                Some(name.clone())
+                Some(name.split('<').next().unwrap_or(name).to_string())
             }
             Type::UnresolvedGeneric { name, .. }
                 if name.chars().next().map_or(false, |c| c.is_uppercase()) =>
             {
-                Some(name.clone())
+                Some(name.split('<').next().unwrap_or(name).to_string())
             }
             _ => None,
         }

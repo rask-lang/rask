@@ -217,10 +217,11 @@ fn maybe_infer_context(
 
     Some(ContextReq {
         param_name,
-        param_type: format!("&{}", pool_type),
+        param_type: pool_type.clone(),
         clause_type: pool_type,
         is_runtime: false,
         alias: None,
+        is_mutate: true,
     })
 }
 

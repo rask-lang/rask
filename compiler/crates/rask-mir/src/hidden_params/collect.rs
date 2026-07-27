@@ -141,28 +141,36 @@ fn collect_locals_from_stmt(
 }
 
 /// Try to infer a Pool<T> type from an initializer expression.
-/// Recognizes patterns like `Pool.new()`, `Pool::<Player>.new()`.
+/// Recognizes `Pool<T>.new()` in both parse shapes: a `Call` on a field access
+/// and a `MethodCall` (how `Pool<Player>.new()` actually parses).
+///
+/// This string matching is a stopgap — #421 replaces local typing with the real
+/// `node_types` info from the type checker.
 fn infer_pool_type_from_expr(expr: &rask_ast::expr::Expr) -> Option<String> {
     use rask_ast::expr::ExprKind;
-    match &expr.kind {
-        // Pool.new() — look for Type.method pattern
+    let name = match &expr.kind {
+        // Pool<T>.new() parsed as a method call on the type namespace
+        ExprKind::MethodCall { object, method, .. } if method == "new" => {
+            if let ExprKind::Ident(name) = &object.kind { name } else { return None }
+        }
+        // Pool.new() parsed as a call on a field access
         ExprKind::Call { func, .. } => {
             if let ExprKind::Field { object, field } = &func.kind {
                 if field == "new" {
-                    if let ExprKind::Ident(name) = &object.kind {
-                        if name == "Pool" {
-                            // Bare Pool.new() — type comes from context
-                            return Some("Pool<_>".to_string());
-                        }
-                        if name.starts_with("Pool") && name.contains('<') {
-                            return Some(name.clone());
-                        }
-                    }
-                }
-            }
-            None
+                    if let ExprKind::Ident(name) = &object.kind { name } else { return None }
+                } else { return None }
+            } else { return None }
         }
-        _ => None,
+        _ => return None,
+    };
+
+    if name == "Pool" {
+        // Bare Pool.new() — type comes from context
+        Some("Pool<_>".to_string())
+    } else if name.starts_with("Pool") && name.contains('<') {
+        Some(name.clone())
+    } else {
+        None
     }
 }
 

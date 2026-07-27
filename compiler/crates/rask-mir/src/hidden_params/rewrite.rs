@@ -59,8 +59,17 @@ pub fn rewrite_decls(pass: &mut HiddenParamPass, decls: &mut [rask_ast::decl::De
 /// Rewrite a single function: add hidden params + rewrite body.
 fn rewrite_fn(pass: &mut HiddenParamPass, qname: &str, f: &mut FnDecl) {
     // Phase 4 (SIG1-SIG6): Add hidden params to signature
-    if let Some(reqs) = pass.func_contexts.get(qname) {
-        for req in reqs.clone() {
+    if let Some(reqs) = pass.func_contexts.get(qname).cloned() {
+        // Named contexts (SIG2): the body refers to the pool by its source name
+        // (`players`); after the rewrite that name IS the hidden param. Rename
+        // references rather than inserting `const players = __ctx_players` — an
+        // alias binding carries no type metadata, so MIR lowering can't tell the
+        // aliased local is a pool. The param does carry it (type + element type
+        // from its signature), so pointing uses straight at the param keeps pool
+        // indexing on the checked-access path.
+        let mut renames: Vec<(String, String)> = Vec::new();
+
+        for req in &reqs {
             // Check idempotency (HP4): skip if param already exists
             if f.params.iter().any(|p| p.name == req.param_name) {
                 continue;
@@ -71,18 +80,27 @@ fn rewrite_fn(pass: &mut HiddenParamPass, qname: &str, f: &mut FnDecl) {
                 name_span: Span::new(0, 0),
                 ty: req.param_type.clone(),
                 is_take: false,
-                is_mutate: false,
+                is_mutate: req.is_mutate,
                 default: None,
             });
+
+            if let Some(alias) = &req.alias {
+                renames.push((alias.clone(), req.param_name.clone()));
+            }
         }
 
         // Clear context clauses — they're now expressed as params
         f.context_clauses.clear();
+
+        // Applied while rewriting the body below (see the Ident leaf).
+        pass.active_renames = renames;
     }
 
-    // Phase 5-6: Rewrite body (call sites and using blocks)
+    // Phase 5-6: Rewrite body (call sites and using blocks), renaming named
+    // context references to their hidden param along the way.
     let caller_name = qname.to_string();
     rewrite_stmts(pass, &caller_name, &mut f.body);
+    pass.active_renames.clear();
 }
 
 fn rewrite_stmts(pass: &mut HiddenParamPass, caller: &str, stmts: &mut [Stmt]) {
@@ -162,9 +180,17 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
                         // CC4: Resolve from scope, not just hidden param name
                         let resolved_name = resolve_arg_name(pass, caller, req);
 
+                        // Non-frozen pools thread `mutate` so the callee can
+                        // mutate the shared pool (matches the hidden param).
+                        let mode = if req.is_mutate {
+                            ArgMode::Mutate
+                        } else {
+                            ArgMode::Default
+                        };
+
                         args.push(CallArg {
                             name: None,
-                            mode: ArgMode::Default,
+                            mode,
                             expr: Expr {
                                 id: pass.fresh_id(),
                                 kind: ExprKind::Ident(resolved_name),
@@ -360,6 +386,13 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
                 rewrite_expr(pass, caller, &mut arm.body);
             }
         }
+        // SIG2: rename a named-context reference to its hidden param.
+        ExprKind::Ident(name) => {
+            if let Some((_, to)) = pass.active_renames.iter().find(|(from, _)| from == name) {
+                *name = to.clone();
+            }
+        }
+
         // Leaves
         ExprKind::Int(_, _)
         | ExprKind::Float(_, _)
@@ -367,8 +400,7 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Null
-        | ExprKind::None
-        | ExprKind::Ident(_) => {}
+        | ExprKind::None => {}
     }
 }
 

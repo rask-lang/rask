@@ -30,7 +30,11 @@ use rask_ast::{NodeId, Span};
 pub(crate) struct ContextReq {
     /// Hidden parameter name: `__ctx_pool_Player`, etc.
     pub param_name: String,
-    /// Type string for the parameter: `&Pool<Player>`, `RuntimeContext`
+    /// Type string for the parameter: `Pool<Player>`.
+    ///
+    /// The spec (SIG1) says `&Pool<T>`, but Rask has no reference types yet, so
+    /// the pool threads by value. Non-frozen contexts pass it `mutate` (see
+    /// `is_mutate`) so the callee can mutate the shared pool.
     pub param_type: String,
     /// Original clause type string: `Pool<Player>`, `Multitasking`
     pub clause_type: String,
@@ -38,6 +42,10 @@ pub(crate) struct ContextReq {
     pub is_runtime: bool,
     /// Named alias from `using players: Pool<Player>`
     pub alias: Option<String>,
+    /// Non-frozen `using Pool<T>` grants mutable access — the hidden param and
+    /// the call-site argument are `mutate`. Frozen (`using frozen Pool<T>`) is
+    /// read-only.
+    pub is_mutate: bool,
 }
 
 /// A pool found in scope during CC4 resolution.
@@ -128,6 +136,9 @@ pub(crate) struct HiddenParamPass<'a> {
     pub next_id: u32,
     /// Errors collected during the pass.
     pub errors: Vec<HiddenParamError>,
+    /// SIG2: (source name → hidden param name) renames active while rewriting
+    /// the body of the function that owns a named `using` context.
+    pub active_renames: Vec<(String, String)>,
 }
 
 impl<'a> HiddenParamPass<'a> {
@@ -141,6 +152,7 @@ impl<'a> HiddenParamPass<'a> {
             node_types,
             next_id: 2_000_000,
             errors: Vec::new(),
+            active_renames: Vec::new(),
         }
     }
 
@@ -193,21 +205,21 @@ impl<'a> HiddenParamPass<'a> {
 /// Only called for pool contexts — runtime types (Multitasking, ThreadPool)
 /// are filtered out before this point (see `collect::is_runtime_context`).
 pub(crate) fn context_clause_to_req(cc: &ContextClause) -> ContextReq {
-    // Pool<T> → __ctx_pool_T with type &Pool<T>
+    // Pool<T> → __ctx_pool_T with type Pool<T> (by value — no refs yet).
     let inner = extract_generic_arg(&cc.ty).unwrap_or_default();
     let param_name = if let Some(alias) = &cc.name {
         format!("__ctx_{}", alias)
     } else {
         format!("__ctx_pool_{}", inner)
     };
-    let param_type = format!("&{}", cc.ty);
 
     ContextReq {
         param_name,
-        param_type,
+        param_type: cc.ty.clone(),
         clause_type: cc.ty.clone(),
         is_runtime: false,
         alias: cc.name.clone(),
+        is_mutate: !cc.is_frozen,
     }
 }
 
@@ -268,8 +280,9 @@ mod tests {
         };
         let req = context_clause_to_req(&cc);
         assert_eq!(req.param_name, "__ctx_pool_Player");
-        assert_eq!(req.param_type, "&Pool<Player>");
+        assert_eq!(req.param_type, "Pool<Player>");
         assert!(!req.is_runtime);
+        assert!(req.is_mutate);
     }
 
     #[test]
@@ -281,7 +294,7 @@ mod tests {
         };
         let req = context_clause_to_req(&cc);
         assert_eq!(req.param_name, "__ctx_players");
-        assert_eq!(req.param_type, "&Pool<Player>");
+        assert_eq!(req.param_type, "Pool<Player>");
     }
 
     #[test]
