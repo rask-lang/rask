@@ -170,12 +170,3 @@ fn infer_pool_type_from_expr(expr: &rask_ast::expr::Expr) -> Option<String> {
 pub(crate) fn is_runtime_context(ty: &str) -> bool {
     matches!(ty, "Multitasking" | "MultiTasking" | "multitasking" | "ThreadPool" | "threadpool")
 }
-
-/// Check if any parameter in a function is a Handle<T> type.
-pub(crate) fn find_handle_params(f: &FnDecl) -> Vec<String> {
-    f.params
-        .iter()
-        .filter(|p| super::is_handle_type(&p.ty))
-        .map(|p| p.ty.clone())
-        .collect()
-}

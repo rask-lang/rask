@@ -12,6 +12,5 @@ pub mod intervals;
 pub mod liveness;
 pub mod loops;
 pub mod uses;
-pub mod local_index;
 pub mod pool_ops;
 pub mod typestate;

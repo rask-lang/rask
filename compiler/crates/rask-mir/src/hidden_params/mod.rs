@@ -234,11 +234,6 @@ pub(crate) fn extract_callee_name(func: &Expr) -> Option<String> {
     }
 }
 
-/// Check if a type string looks like `Pool<...>`.
-pub(crate) fn is_pool_type(ty: &str) -> bool {
-    ty.starts_with("Pool<") && ty.ends_with('>')
-}
-
 /// Check if a type string looks like `Handle<...>`.
 pub(crate) fn is_handle_type(ty: &str) -> bool {
     ty.starts_with("Handle<") && ty.ends_with('>')
@@ -248,11 +243,6 @@ pub(crate) fn is_handle_type(ty: &str) -> bool {
 pub(crate) fn handle_to_pool_type(handle_ty: &str) -> Option<String> {
     let inner = extract_generic_arg(handle_ty)?;
     Some(format!("Pool<{}>", inner))
-}
-
-/// Format a rask_types::Type into a string for matching.
-pub(crate) fn format_type(ty: &rask_types::Type) -> String {
-    format!("{}", ty)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -302,13 +292,6 @@ mod tests {
         assert!(is_runtime_context("ThreadPool"));
         assert!(is_runtime_context("threadpool"));
         assert!(!is_runtime_context("Pool<Player>"));
-    }
-
-    #[test]
-    fn test_is_pool_type() {
-        assert!(is_pool_type("Pool<Player>"));
-        assert!(!is_pool_type("Vec<Player>"));
-        assert!(!is_pool_type("Pool"));
     }
 
     #[test]

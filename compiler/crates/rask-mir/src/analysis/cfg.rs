@@ -36,27 +36,6 @@ pub fn predecessors(func: &MirFunction) -> HashMap<BlockId, Vec<BlockId>> {
     preds
 }
 
-/// Build a predecessor map considering only forward edges (target index > source index
-/// in block order). Useful for dataflow that ignores loop back-edges.
-pub fn forward_predecessors(func: &MirFunction) -> HashMap<BlockId, Vec<BlockId>> {
-    let block_index: HashMap<BlockId, usize> = func.blocks.iter()
-        .enumerate()
-        .map(|(i, b)| (b.id, i))
-        .collect();
-
-    let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for (src_idx, block) in func.blocks.iter().enumerate() {
-        for target in successors(&block.terminator) {
-            if let Some(&tgt_idx) = block_index.get(&target) {
-                if tgt_idx > src_idx {
-                    preds.entry(target).or_default().push(block.id);
-                }
-            }
-        }
-    }
-    preds
-}
-
 /// Set of all block IDs reachable from `start` via BFS.
 pub fn reachable_from(func: &MirFunction, start: BlockId) -> HashSet<BlockId> {
     let mut visited = HashSet::new();

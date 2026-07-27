@@ -16,10 +16,9 @@ use std::collections::HashSet;
 
 /// Elide unnecessary RC operations on string locals.
 pub fn elide_rc_ops(func: &mut MirFunction) {
-    let removed_re2 = elide_local_only(func);
-    let removed_re3 = elide_literals(func);
-    let removed_re1 = cancel_inc_dec_pairs(func);
-    let _total = removed_re1 + removed_re2 + removed_re3;
+    elide_local_only(func);
+    elide_literals(func);
+    cancel_inc_dec_pairs(func);
 }
 
 /// RE2: Remove all RcInc/RcDec for string locals that never escape the function.
