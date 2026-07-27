@@ -2,75 +2,125 @@
 
 //! Use/def analysis for MIR locals — which locals are read or written by
 //! statements and terminators.
+//!
+//! This is the one place that knows how each `MirStmtKind`/`MirRValue` touches
+//! locals. Predicates (`stmt_reads`) and collectors (`stmt_uses`) both derive
+//! from the same visitors, so a new statement kind needs one edit here, not one
+//! per pass.
 
 use crate::{LocalId, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind};
 
-/// True if `op` references the given local.
-pub fn operand_reads(op: &MirOperand, local: LocalId) -> bool {
-    matches!(op, MirOperand::Local(id) if *id == local)
+/// The local an operand refers to, if it's a local (not a constant).
+pub fn operand_local(op: &MirOperand) -> Option<LocalId> {
+    match op {
+        MirOperand::Local(id) => Some(*id),
+        MirOperand::Constant(_) => None,
+    }
 }
 
-/// True if the rvalue reads the given local.
-pub fn rvalue_reads(rv: &MirRValue, local: LocalId) -> bool {
+/// True if `op` references the given local.
+pub fn operand_reads(op: &MirOperand, local: LocalId) -> bool {
+    operand_local(op) == Some(local)
+}
+
+/// Feed the operand's local (if any) to the visitor.
+fn visit_operand_uses(op: &MirOperand, f: &mut impl FnMut(LocalId)) {
+    if let Some(id) = operand_local(op) {
+        f(id);
+    }
+}
+
+/// Visit every local read by an rvalue.
+fn visit_rvalue_uses(rv: &MirRValue, f: &mut impl FnMut(LocalId)) {
     match rv {
-        MirRValue::Use(op) => operand_reads(op, local),
-        MirRValue::Ref(id) => *id == local,
-        MirRValue::Deref(op) => operand_reads(op, local),
+        MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_uses(o, f),
+        MirRValue::Ref(id) => f(*id),
         MirRValue::BinaryOp { left, right, .. } => {
-            operand_reads(left, local) || operand_reads(right, local)
+            visit_operand_uses(left, f);
+            visit_operand_uses(right, f);
         }
-        MirRValue::UnaryOp { operand, .. } => operand_reads(operand, local),
-        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => operand_reads(value, local),
-        MirRValue::Field { base, .. } => operand_reads(base, local),
-        MirRValue::EnumTag { value } => operand_reads(value, local),
+        MirRValue::UnaryOp { operand, .. } => visit_operand_uses(operand, f),
+        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => {
+            visit_operand_uses(value, f)
+        }
+        MirRValue::Field { base, .. } => visit_operand_uses(base, f),
+        MirRValue::EnumTag { value } => visit_operand_uses(value, f),
         MirRValue::ArrayIndex { base, index, .. } => {
-            operand_reads(base, local) || operand_reads(index, local)
+            visit_operand_uses(base, f);
+            visit_operand_uses(index, f);
         }
     }
 }
 
-/// True if the statement reads the given local as an operand.
-pub fn stmt_reads(stmt: &MirStmt, local: LocalId) -> bool {
+/// Visit every local read by a statement (as an operand, not as a write dst).
+fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
     match &stmt.kind {
-        MirStmtKind::Assign { rvalue, .. } => rvalue_reads(rvalue, local),
+        MirStmtKind::Assign { rvalue, .. } => visit_rvalue_uses(rvalue, f),
         MirStmtKind::Store { addr, value, .. } => {
-            *addr == local || operand_reads(value, local)
+            f(*addr);
+            visit_operand_uses(value, f);
         }
         MirStmtKind::Call { args, .. } => {
-            args.iter().any(|a| operand_reads(a, local))
+            args.iter().for_each(|a| visit_operand_uses(a, f))
         }
         MirStmtKind::ClosureCall { closure, args, .. } => {
-            *closure == local || args.iter().any(|a| operand_reads(a, local))
+            f(*closure);
+            args.iter().for_each(|a| visit_operand_uses(a, f));
         }
         MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
-            *pool == local || *handle == local
+            f(*pool);
+            f(*handle);
         }
         MirStmtKind::ClosureCreate { captures, .. }
         | MirStmtKind::EnsureHookRegister { captures, .. } => {
-            captures.iter().any(|c| c.local_id == local)
+            captures.iter().for_each(|c| f(c.local_id));
         }
-        MirStmtKind::LoadCapture { env_ptr, .. } => *env_ptr == local,
-        MirStmtKind::ClosureDrop { closure } => *closure == local,
-        MirStmtKind::ResourceConsume { resource_id } => *resource_id == local,
+        MirStmtKind::LoadCapture { env_ptr, .. } => f(*env_ptr),
+        MirStmtKind::ClosureDrop { closure } => f(*closure),
+        MirStmtKind::ResourceConsume { resource_id } => f(*resource_id),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
-            *base == local || operand_reads(index, local) || operand_reads(value, local)
+            f(*base);
+            visit_operand_uses(index, f);
+            visit_operand_uses(value, f);
         }
-        MirStmtKind::TraitBox { value, .. } => operand_reads(value, local),
+        MirStmtKind::TraitBox { value, .. } => visit_operand_uses(value, f),
         MirStmtKind::TraitCall { trait_object, args, .. } => {
-            *trait_object == local || args.iter().any(|a| operand_reads(a, local))
+            f(*trait_object);
+            args.iter().for_each(|a| visit_operand_uses(a, f));
         }
-        MirStmtKind::TraitDrop { trait_object } => *trait_object == local,
+        MirStmtKind::TraitDrop { trait_object } => f(*trait_object),
         MirStmtKind::Phi { args, .. } => {
-            args.iter().any(|(_, op)| operand_reads(op, local))
+            args.iter().for_each(|(_, o)| visit_operand_uses(o, f))
         }
-        MirStmtKind::RcInc { local: id } | MirStmtKind::RcDec { local: id } => *id == local,
+        MirStmtKind::RcInc { local } | MirStmtKind::RcDec { local } => f(*local),
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
         | MirStmtKind::EnsureHookPop
-        | MirStmtKind::ResourceScopeCheck { .. } => false,
+        | MirStmtKind::ResourceScopeCheck { .. } => {}
     }
+}
+
+/// True if the rvalue reads the given local.
+pub fn rvalue_reads(rv: &MirRValue, local: LocalId) -> bool {
+    let mut hit = false;
+    visit_rvalue_uses(rv, &mut |id| hit |= id == local);
+    hit
+}
+
+/// True if the statement reads the given local as an operand.
+pub fn stmt_reads(stmt: &MirStmt, local: LocalId) -> bool {
+    let mut hit = false;
+    visit_stmt_uses(stmt, &mut |id| hit |= id == local);
+    hit
+}
+
+/// All locals read by a statement (with duplicates — callers dedup if needed).
+pub fn stmt_uses(stmt: &MirStmt) -> Vec<LocalId> {
+    let mut uses = Vec::new();
+    visit_stmt_uses(stmt, &mut |id| uses.push(id));
+    uses
 }
 
 /// True if the terminator reads a given local.

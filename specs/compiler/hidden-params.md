@@ -96,6 +96,7 @@ Pool contexts are required because `Handle<T>` field access doesn't work without
 | **CALL3: Insert hidden argument** | Append resolved context value as hidden argument at call site |
 | **CALL4: Propagation** | If the caller also has a `using` clause for the same type, its hidden parameter satisfies the callee's requirement (`mem.context/CC5`) |
 | **CALL5: Ambiguity is error** | Multiple pools of same type in scope → compile error (`mem.context/CC8`) |
+| **CALL6: Context follows dispatch** | Context threads to the function a call *resolves to* — methods included — using the same dispatch as everything else. `f(...)` targets `f`; `recv.m(...)` and `T.m(...)` target the method dispatch selects on the receiver. The compiler records that resolved target once, during type checking, and reuses it — it is never re-derived from a reconstructed name (#425). So propagation (CALL4) and resolution reach method callees exactly as they do free functions |
 
 ### Resolution algorithm
 
@@ -157,6 +158,33 @@ func update_player(h: Handle<Player>) using Pool<Player> {
 func update_player(h: Handle<Player>, __ctx_pool_Player: &Pool<Player>) {
     take_damage(h, 5, __ctx_pool_Player)    // Propagated from own hidden param
     check_death(h, __ctx_pool_Player)       // Same
+}
+```
+
+Method callees are no different (CALL6). `self.post(...)` resolves to `Ledger.post`
+by ordinary dispatch — not by matching a bare method name — so its context
+requirement propagates into the caller just like a free function's:
+
+<!-- test: skip -->
+```rask
+// Before:
+extend Ledger {
+    func settle(h: Handle<Account>) using Pool<Account> {
+        self.post(h, 10)    // Ledger.post needs Pool<Account>
+    }
+    func post(h: Handle<Account>, n: i32) using Pool<Account> {
+        h.balance += n
+    }
+}
+
+// After:
+extend Ledger {
+    func settle(h: Handle<Account>, __ctx_pool_Account: &Pool<Account>) {
+        self.post(h, 10, __ctx_pool_Account)   // Propagated from own hidden param
+    }
+    func post(h: Handle<Account>, n: i32, __ctx_pool_Account: &Pool<Account>) {
+        __ctx_pool_Account[h].balance += n
+    }
 }
 ```
 
@@ -359,6 +387,7 @@ FIX: Pass the pool as an explicit parameter.
 | Function with `using Pool<T>` called outside any pool scope | Compile error | CALL1 |
 | Public function without `using` calls private function with context | Compile error on public function | PUB1 |
 | Recursive function with `using` clause | Self-propagation, one hidden param | Propagation |
+| Context needed by an instance-method callee (`recv.m()`) | Threads in via the method dispatch resolves to, reusing the recorded target | CALL6 |
 | `comptime` function with `using Pool<T>` | Compile error (no pools at comptime) | `ctrl.comptime/CT20` |
 | Generic function with `using Pool<T>` | Hidden param is generic, specialized at monomorphization | MONO2 |
 | Closure captures two different pool contexts | Two hidden captures, ordered same as enclosing function | CL1, SIG5 |

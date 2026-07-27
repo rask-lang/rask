@@ -36,8 +36,12 @@ pub fn predecessors(func: &MirFunction) -> HashMap<BlockId, Vec<BlockId>> {
     preds
 }
 
-/// Build a predecessor map considering only forward edges (target index > source index
-/// in block order). Useful for dataflow that ignores loop back-edges.
+/// Predecessor map over forward edges only — an edge counts when the target
+/// appears later than the source in block-vector order. Dataflow that must
+/// ignore loop back-edges (fresh state per iteration) uses this instead of the
+/// full `predecessors`. The block-order test is an approximation of "not a
+/// back-edge"; it holds when blocks are emitted in roughly topological order,
+/// which lowering does.
 pub fn forward_predecessors(func: &MirFunction) -> HashMap<BlockId, Vec<BlockId>> {
     let block_index: HashMap<BlockId, usize> = func.blocks.iter()
         .enumerate()

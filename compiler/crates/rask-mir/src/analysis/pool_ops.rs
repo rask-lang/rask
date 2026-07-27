@@ -11,13 +11,6 @@ pub const POOL_GROWERS: &[&str] = &[
     "Pool_alloc",
 ];
 
-/// Pool-mutating function names that remove elements (Shrink effect).
-pub const POOL_SHRINKERS: &[&str] = &[
-    "Pool_remove",
-    "Pool_clear",
-    "Pool_drain",
-];
-
 /// All structural pool mutators (union of growers and shrinkers).
 pub const POOL_MUTATORS: &[&str] = &[
     "Pool_insert",
@@ -47,10 +40,6 @@ pub fn is_pool_mutator(name: &str) -> bool {
 
 pub fn is_pool_grower(name: &str) -> bool {
     POOL_GROWERS.iter().any(|m| *m == name)
-}
-
-pub fn is_pool_shrinker(name: &str) -> bool {
-    POOL_SHRINKERS.iter().any(|m| *m == name)
 }
 
 pub fn is_safe_pool_call(name: &str) -> bool {

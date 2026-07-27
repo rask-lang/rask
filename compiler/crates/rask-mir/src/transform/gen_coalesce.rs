@@ -67,25 +67,12 @@ fn cross_block_coalesce(func: &mut MirFunction, pool_locals: &HashSet<LocalId>) 
         return;
     }
 
-    // Build block index for fast lookup
-    let block_ids: Vec<BlockId> = func.blocks.iter().map(|b| b.id).collect();
-    let block_index: HashMap<BlockId, usize> = block_ids.iter()
-        .enumerate()
-        .map(|(i, &id)| (id, i))
-        .collect();
-
-    // Compute predecessor map (only forward edges — target index > source index)
-    let mut predecessors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for (src_idx, block) in func.blocks.iter().enumerate() {
-        for target in cfg::successors(&block.terminator) {
-            if let Some(&tgt_idx) = block_index.get(&target) {
-                // CF3: Skip back-edges (loop boundaries)
-                if tgt_idx > src_idx {
-                    predecessors.entry(target).or_default().push(block.id);
-                }
-            }
-        }
-    }
+    // Forward-edge predecessors only — CF3 wants a fresh check each loop
+    // iteration, so loop back-edges must not propagate validated pairs. The
+    // shared helper drops them via block order. Keeping block order (rather
+    // than the dominator tree) is deliberate: the single-pass propagation below
+    // depends on it, and the cross-block merge is frozen pending #368.
+    let predecessors = cfg::forward_predecessors(func);
 
     // Compute exit state for each block (simulate without modifying)
     let mut exit_states: HashMap<BlockId, CheckedMap> = HashMap::new();
@@ -225,38 +212,9 @@ fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
     let mut checked: HashMap<CheckKey, LocalId> = HashMap::new();
 
     for stmt in stmts.iter_mut() {
-        // Check for pool mutations before processing this statement
-        if let Some(mutated_pool) = pool_ops::pool_mutation(stmt) {
-            checked.retain(|&(pool, _), _| pool != mutated_pool);
-        }
-
-        // Unknown calls with a pool arg invalidate that pool's entries (MT3, CF4)
-        if let MirStmtKind::Call { func, args, .. } = &stmt.kind {
-            if !pool_ops::is_pool_mutator(&func.name) && !pool_ops::is_safe_pool_call(&func.name) {
-                for arg in args.iter() {
-                    if let MirOperand::Local(id) = arg {
-                        if pool_locals.contains(id) {
-                            let id = *id;
-                            checked.retain(|&(pool, _), _| pool != id);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Closure calls could capture pool references (conservative)
-        if matches!(&stmt.kind, MirStmtKind::ClosureCall { .. }) {
-            checked.clear();
-        }
-
-        // Handle reassignment invalidates entries referencing that local (GC3)
-        if let Some(assigned) = uses::stmt_def(stmt) {
-            if !matches!(&stmt.kind, MirStmtKind::PoolCheckedAccess { .. }) {
-                checked.retain(|&(pool, handle), &mut dst| {
-                    pool != assigned && handle != assigned && dst != assigned
-                });
-            }
-        }
+        // Same invalidation rules as the cross-block pass (mutations, unknown
+        // pool-arg calls, closure calls, reassigned locals).
+        process_invalidations(stmt, &mut checked, pool_locals);
 
         // Coalesce PoolCheckedAccess
         if let MirStmtKind::PoolCheckedAccess { dst, pool, handle } = &stmt.kind {

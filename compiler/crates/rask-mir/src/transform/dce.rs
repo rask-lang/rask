@@ -48,7 +48,7 @@ fn remove_dead_assignments_with_liveness(func: &mut MirFunction) -> usize {
         for si in 0..stmts_len {
             // Pure assignments and phi nodes can be eliminated if their dst is dead.
             let dst = match &block.statements[si].kind {
-                MirStmtKind::Assign { dst, rvalue } if is_pure_rvalue(rvalue) => *dst,
+                MirStmtKind::Assign { dst, .. } => *dst,
                 MirStmtKind::Phi { dst, .. } => *dst,
                 _ => continue,
             };
@@ -84,13 +84,6 @@ fn remove_dead_assignments_with_liveness(func: &mut MirFunction) -> usize {
         }
     }
     removed
-}
-
-
-/// An rvalue is pure if evaluating it has no side effects.
-/// All current MirRValue variants are pure (no calls, no stores).
-fn is_pure_rvalue(_rv: &crate::MirRValue) -> bool {
-    true
 }
 
 #[cfg(test)]

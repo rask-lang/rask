@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::analysis::uses;
 use crate::{
     BlockBuilder, LocalId, MirFunction, MirOperand,
     MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
@@ -228,82 +229,6 @@ fn segment(linear: &[MirStmt], yield_indices: &[usize]) -> Vec<Segment> {
 
 // ── Liveness analysis ───────────────────────────────────────────────
 
-/// Collect locals defined by a statement.
-fn stmt_defs(stmt: &MirStmt) -> Vec<LocalId> {
-    match &stmt.kind {
-        MirStmtKind::Assign { dst, .. }
-        | MirStmtKind::ClosureCreate { dst, .. }
-        | MirStmtKind::LoadCapture { dst, .. }
-        | MirStmtKind::ResourceRegister { dst, .. }
-        | MirStmtKind::PoolCheckedAccess { dst, .. } => vec![*dst],
-        MirStmtKind::Call { dst: Some(d), .. }
-        | MirStmtKind::ClosureCall { dst: Some(d), .. } => vec![*d],
-        _ => vec![],
-    }
-}
-
-/// Collect locals used by a statement.
-fn stmt_uses(stmt: &MirStmt) -> Vec<LocalId> {
-    let mut uses = Vec::new();
-    match &stmt.kind {
-        MirStmtKind::Assign { rvalue, .. } => rvalue_uses(rvalue, &mut uses),
-        MirStmtKind::Store { addr, value, .. } => {
-            uses.push(*addr);
-            operand_uses(value, &mut uses);
-        }
-        MirStmtKind::Call { args, .. } => {
-            for arg in args {
-                operand_uses(arg, &mut uses);
-            }
-        }
-        MirStmtKind::ClosureCreate { captures, .. } => {
-            for cap in captures {
-                uses.push(cap.local_id);
-            }
-        }
-        MirStmtKind::ClosureCall { closure, args, .. } => {
-            uses.push(*closure);
-            for arg in args {
-                operand_uses(arg, &mut uses);
-            }
-        }
-        MirStmtKind::LoadCapture { env_ptr, .. } => uses.push(*env_ptr),
-        MirStmtKind::ClosureDrop { closure } => uses.push(*closure),
-        MirStmtKind::ResourceConsume { resource_id } => uses.push(*resource_id),
-        MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
-            uses.push(*pool);
-            uses.push(*handle);
-        }
-        _ => {}
-    }
-    uses
-}
-
-fn operand_uses(op: &MirOperand, uses: &mut Vec<LocalId>) {
-    if let MirOperand::Local(id) = op {
-        uses.push(*id);
-    }
-}
-
-fn rvalue_uses(rv: &MirRValue, uses: &mut Vec<LocalId>) {
-    match rv {
-        MirRValue::Use(op) | MirRValue::Deref(op) => operand_uses(op, uses),
-        MirRValue::Ref(id) => uses.push(*id),
-        MirRValue::BinaryOp { left, right, .. } => {
-            operand_uses(left, uses);
-            operand_uses(right, uses);
-        }
-        MirRValue::UnaryOp { operand, .. } => operand_uses(operand, uses),
-        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => operand_uses(value, uses),
-        MirRValue::Field { base, .. } => operand_uses(base, uses),
-        MirRValue::EnumTag { value } => operand_uses(value, uses),
-        MirRValue::ArrayIndex { base, index, .. } => {
-            operand_uses(base, uses);
-            operand_uses(index, uses);
-        }
-    }
-}
-
 /// Compute locals live across at least one yield boundary.
 ///
 /// A local is live-across if it's defined in segments 0..=i and used in
@@ -319,7 +244,7 @@ fn compute_liveness(segments: &[Segment]) -> HashSet<LocalId> {
     let mut defs_before_last: HashSet<LocalId> = HashSet::new();
     for seg in &segments[..segments.len() - 1] {
         for stmt in &seg.stmts {
-            for d in stmt_defs(stmt) {
+            if let Some(d) = uses::stmt_def(stmt) {
                 defs_before_last.insert(d);
             }
         }
@@ -329,7 +254,7 @@ fn compute_liveness(segments: &[Segment]) -> HashSet<LocalId> {
     let mut uses_after_first: HashSet<LocalId> = HashSet::new();
     for seg in &segments[1..] {
         for stmt in &seg.stmts {
-            for u in stmt_uses(stmt) {
+            for u in uses::stmt_uses(stmt) {
                 uses_after_first.insert(u);
             }
         }

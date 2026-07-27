@@ -13,6 +13,7 @@
 //! overwritten, the old value is dead and mutating in place is equivalent.
 //! Eliminates O(n²) copying and per-iteration allocation.
 
+use crate::analysis::uses;
 use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
 
 /// Rewrite self-concat patterns to in-place append across all functions.
@@ -82,101 +83,20 @@ fn match_self_concat(call_stmt: &MirStmt, assign_stmt: &MirStmt) -> Option<(Loca
 fn temp_used_elsewhere(stmts: &[MirStmt], call_idx: usize, temp: LocalId) -> bool {
     // Check before the pair
     for j in 0..call_idx {
-        if stmt_reads_local(&stmts[j], temp) {
+        if uses::stmt_reads(&stmts[j], temp) {
             return true;
         }
     }
     // Check after the pair, stopping at the next redefine of temp
     for j in (call_idx + 2)..stmts.len() {
-        if stmt_reads_local(&stmts[j], temp) {
+        if uses::stmt_reads(&stmts[j], temp) {
             return true;
         }
-        if stmt_defines_local(&stmts[j], temp) {
+        if uses::stmt_def(&stmts[j]) == Some(temp) {
             break;
         }
     }
     false
-}
-
-/// Check if a statement reads a given local (as an operand, not as a write destination).
-fn stmt_reads_local(stmt: &MirStmt, local: LocalId) -> bool {
-    match &stmt.kind {
-        MirStmtKind::Assign { rvalue, .. } => rvalue_references(rvalue, local),
-        MirStmtKind::Call { args, .. } => {
-            args.iter().any(|a| operand_is(a, local))
-        }
-        MirStmtKind::ClosureCall { closure, args, .. } => {
-            *closure == local || args.iter().any(|a| operand_is(a, local))
-        }
-        MirStmtKind::Store { addr, value, .. } => {
-            *addr == local || operand_is(value, local)
-        }
-        MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
-            *pool == local || *handle == local
-        }
-        MirStmtKind::ClosureCreate { captures, .. }
-        | MirStmtKind::EnsureHookRegister { captures, .. } => {
-            captures.iter().any(|c| c.local_id == local)
-        }
-        MirStmtKind::LoadCapture { env_ptr, .. } => *env_ptr == local,
-        MirStmtKind::ClosureDrop { closure } => *closure == local,
-        MirStmtKind::ResourceConsume { resource_id } => *resource_id == local,
-        MirStmtKind::ArrayStore { base, index, value, .. } => {
-            *base == local || operand_is(index, local) || operand_is(value, local)
-        }
-        MirStmtKind::TraitBox { value, .. } => operand_is(value, local),
-        MirStmtKind::TraitCall { trait_object, args, .. } => {
-            *trait_object == local || args.iter().any(|a| operand_is(a, local))
-        }
-        MirStmtKind::TraitDrop { trait_object } => *trait_object == local,
-        MirStmtKind::Phi { args, .. } => {
-            args.iter().any(|(_, op)| operand_is(op, local))
-        }
-        MirStmtKind::RcInc { local: id } | MirStmtKind::RcDec { local: id } => *id == local,
-        MirStmtKind::ResourceRegister { .. }
-        | MirStmtKind::GlobalRef { .. }
-        | MirStmtKind::EnsurePush { .. }
-        | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop
-        | MirStmtKind::ResourceScopeCheck { .. } => false,
-    }
-}
-
-/// Return true if this statement writes (defines) the given local.
-fn stmt_defines_local(stmt: &MirStmt, local: LocalId) -> bool {
-    match &stmt.kind {
-        MirStmtKind::Assign { dst, .. }
-        | MirStmtKind::PoolCheckedAccess { dst, .. }
-        | MirStmtKind::ClosureCreate { dst, .. }
-        | MirStmtKind::LoadCapture { dst, .. }
-        | MirStmtKind::ResourceRegister { dst, .. }
-        | MirStmtKind::GlobalRef { dst, .. } => *dst == local,
-        MirStmtKind::Call { dst: Some(d), .. }
-        | MirStmtKind::ClosureCall { dst: Some(d), .. } => *d == local,
-        _ => false,
-    }
-}
-
-fn operand_is(op: &MirOperand, local: LocalId) -> bool {
-    matches!(op, MirOperand::Local(id) if *id == local)
-}
-
-fn rvalue_references(rv: &MirRValue, local: LocalId) -> bool {
-    match rv {
-        MirRValue::Use(op) => operand_is(op, local),
-        MirRValue::Ref(id) => *id == local,
-        MirRValue::Deref(op) => operand_is(op, local),
-        MirRValue::BinaryOp { left, right, .. } => {
-            operand_is(left, local) || operand_is(right, local)
-        }
-        MirRValue::UnaryOp { operand, .. } => operand_is(operand, local),
-        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => operand_is(value, local),
-        MirRValue::Field { base, .. } => operand_is(base, local),
-        MirRValue::EnumTag { value } => operand_is(value, local),
-        MirRValue::ArrayIndex { base, index, .. } => {
-            operand_is(base, local) || operand_is(index, local)
-        }
-    }
 }
 
 /// Rewrite a `concat` call to in-place append.

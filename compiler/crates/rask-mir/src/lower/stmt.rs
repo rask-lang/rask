@@ -518,8 +518,6 @@ impl<'a> MirLowerer<'a> {
                 Ok(())
             }
 
-            StmtKind::Discard { .. } => Ok(()),
-
             // Comptime (compile-time evaluated)
             StmtKind::Comptime(stmts) => {
                 // Try to evaluate comptime if at compile time (CC1)

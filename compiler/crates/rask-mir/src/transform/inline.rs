@@ -195,6 +195,7 @@ fn try_inline_call(
     // the inline pass can't emit that wrapping logic, so the inlined code would
     // assign a raw scalar to a Result-typed variable and crash when the caller
     // later dereferences it as a struct pointer.
+    // Band-aid: it can drop once lowering emits uniform return wraps (#376).
     if is_result_or_option(&callee.ret_ty) && has_unwrapped_return(callee) {
         return false;
     }
@@ -316,7 +317,6 @@ fn try_inline_call(
             &local_map,
             &block_map,
             merge_block_id,
-            ret_local,
         );
 
         caller.blocks.push(MirBlock {
@@ -657,35 +657,11 @@ fn remap_terminator(
     local_map: &HashMap<LocalId, LocalId>,
     block_map: &HashMap<BlockId, BlockId>,
     merge_block: BlockId,
-    ret_local: Option<LocalId>,
 ) -> MirTerminator {
     let kind = match &term.kind {
-        MirTerminatorKind::Return { value } => {
-            // Callee return → assign return value + goto merge block
-            // The assignment is handled by prepending to the merge block
-            // or by emitting it as the last statement before the goto.
-            // For simplicity, we create a block that assigns and gotos.
-            // Actually, we handle this inline: just goto merge.
-            // The return value assignment is handled below.
-            if let (Some(dst), Some(val)) = (ret_local, value) {
-                // We can't emit a statement in the terminator, so we need
-                // the caller to handle this. For now, we rely on the fact
-                // that the callee should have assigned to its return local
-                // already, and we map that local. But Return { value } means
-                // the operand IS the return value.
-                //
-                // We need to emit an Assign before the Goto. This is a
-                // slight hack — we'll handle it by returning a special
-                // terminator and post-processing.
-                //
-                // Actually, the cleanest approach: convert Return to a
-                // block with an Assign + Goto. But we're constructing the
-                // block here... Let me handle it at block construction time.
-                //
-                // For now: we'll place the assignment as a statement in the
-                // block and use Goto as the terminator.
-                return MirTerminator::new(MirTerminatorKind::Goto { target: merge_block }, term.span);
-            }
+        MirTerminatorKind::Return { .. } => {
+            // Return value (if any) is appended to this block as an Assign by
+            // fixup_return_values; the terminator itself just jumps to merge.
             MirTerminatorKind::Goto { target: merge_block }
         }
         MirTerminatorKind::Goto { target } => MirTerminatorKind::Goto {
@@ -729,21 +705,6 @@ fn remap_terminator(
 
     MirTerminator::new(kind, term.span)
 }
-
-/// Post-process inlined blocks: for Return terminators that had a value,
-/// insert an Assign statement at the end of the block (before the Goto).
-///
-/// This is called during try_inline_call after block construction.
-/// Actually, we handle this differently — see the revised approach below.
-
-// --- Revised approach for return values ---
-//
-// When the callee has `Return { value: Some(op) }`, we need to assign
-// that operand to the caller's destination local. We do this by appending
-// an Assign statement to the block just before the Goto terminator.
-//
-// This is handled inside try_inline_call by post-processing the newly
-// created blocks.
 
 /// Fixup: for each inlined block whose original callee terminator was
 /// Return { value: Some(op) }, insert an Assign to the caller's dst local.
