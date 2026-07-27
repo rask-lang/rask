@@ -205,7 +205,7 @@ impl TypeChecker {
                 method,
                 args,
                 type_args,
-            } => self.check_method_call(object, method, args, type_args.as_deref(), expr.span),
+            } => self.check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span),
 
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
@@ -1496,6 +1496,15 @@ impl TypeChecker {
             }
         }
 
+        // CALL6: record the resolved free-function target once, keyed by the
+        // call node. Downstream passes read this instead of re-deriving the
+        // callee from its name.
+        if let ExprKind::Ident(_) = &func.kind {
+            if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
+                self.call_targets.insert(call_id, super::Callee::Free(sym_id));
+            }
+        }
+
         // Call-site annotations (mutate/own) are optional — IDE shows ghost
         // annotations but the compiler doesn't require them (spec decision).
         // Validate when present, but don't error on missing annotations.
@@ -1718,6 +1727,7 @@ impl TypeChecker {
 
     pub(super) fn check_method_call(
         &mut self,
+        call_id: NodeId,
         object: &Expr,
         method: &str,
         args: &[CallArg],
@@ -1743,6 +1753,7 @@ impl TypeChecker {
                     args: arg_types,
                     ret: ret_ty.clone(),
                     span,
+                    call_node: Some(call_id),
                 });
                 return ret_ty;
             }
@@ -1782,6 +1793,7 @@ impl TypeChecker {
                     args: arg_types,
                     ret: ret_ty.clone(),
                     span,
+                    call_node: Some(call_id),
                 });
                 return ret_ty;
             }
@@ -1905,6 +1917,7 @@ impl TypeChecker {
             args: arg_types,
             ret: ret_ty.clone(),
             span,
+            call_node: Some(call_id),
         });
 
         ret_ty

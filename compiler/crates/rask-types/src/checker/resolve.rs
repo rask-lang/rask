@@ -3,9 +3,9 @@
 
 use std::collections::HashMap;
 
-use rask_ast::Span;
+use rask_ast::{NodeId, Span};
 
-use super::type_defs::TypeDef;
+use super::type_defs::{Callee, TypeDef};
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
 use super::TypeChecker;
@@ -207,6 +207,7 @@ impl TypeChecker {
         args: Vec<Type>,
         ret: Type,
         span: Span,
+        call_node: Option<NodeId>,
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
 
@@ -235,10 +236,25 @@ impl TypeChecker {
                     args,
                     ret,
                     span,
+                    call_node,
                 });
                 Ok(false)
             }
             Type::Named(type_id) => {
+                // CALL6: record the resolved method target once dispatch settles.
+                if let Some(node) = call_node {
+                    let is_method = matches!(
+                        self.types.get(*type_id),
+                        Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. })
+                            if methods.iter().any(|m| m.name == method)
+                    );
+                    if is_method {
+                        self.call_targets.insert(
+                            node,
+                            Callee::Method { type_id: *type_id, method: method.clone() },
+                        );
+                    }
+                }
                 let (methods, type_params) = match self.types.get(*type_id) {
                     Some(TypeDef::Struct { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
@@ -503,6 +519,20 @@ impl TypeChecker {
                 self.resolve_runtime_method(name, &method, &args, &ret, span)
             }
             Type::Generic { base, args: generic_args } => {
+                // CALL6: record the resolved method target (generic receiver).
+                if let Some(node) = call_node {
+                    let is_method = matches!(
+                        self.types.get(*base),
+                        Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. })
+                            if methods.iter().any(|m| m.name == method)
+                    );
+                    if is_method {
+                        self.call_targets.insert(
+                            node,
+                            Callee::Method { type_id: *base, method: method.clone() },
+                        );
+                    }
+                }
                 let (methods, type_params) = match self.types.get(*base) {
                     Some(TypeDef::Struct { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
@@ -676,6 +706,7 @@ impl TypeChecker {
                         args,
                         ret,
                         span,
+                        call_node,
                     });
                     return Ok(false);
                 }
@@ -683,12 +714,14 @@ impl TypeChecker {
                 let mut missing: Vec<Type> = Vec::new();
                 let mut progress = false;
                 for variant in &variants {
+                    // No single target for a union receiver — don't record.
                     match self.resolve_method(
                         variant.clone(),
                         method.clone(),
                         args.clone(),
                         ret.clone(),
                         span,
+                        None,
                     ) {
                         Ok(p) => {
                             if p {
@@ -727,6 +760,7 @@ impl TypeChecker {
                     args,
                     ret,
                     span,
+                    call_node,
                 });
                 Ok(false)
             }
@@ -1287,6 +1321,7 @@ impl TypeChecker {
                             args: args.to_vec(),
                             ret: ret.clone(),
                             span,
+                            call_node: None,
                         });
                         Ok(false)
                     }
@@ -1607,6 +1642,7 @@ impl TypeChecker {
                     args: args.to_vec(),
                     ret: ret.clone(),
                     span,
+                    call_node: None,
                 });
                 Ok(false)
             }
@@ -1761,6 +1797,7 @@ impl TypeChecker {
                     args: args.to_vec(),
                     ret: ret.clone(),
                     span,
+                    call_node: None,
                 });
                 Ok(false)
             }
