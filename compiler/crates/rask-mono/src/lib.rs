@@ -417,6 +417,7 @@ mod tests {
             types: rask_types::TypeTable::new(),
             node_types: std::collections::HashMap::new(),
             call_type_args: std::collections::HashMap::new(),
+            call_targets: std::collections::HashMap::new(),
             trait_coercions: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),

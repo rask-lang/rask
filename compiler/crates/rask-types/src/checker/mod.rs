@@ -26,7 +26,7 @@ mod generics;
 mod resolve;
 mod validate;
 
-pub use type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram};
+pub use type_defs::{Callee, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, InvalidCastClass, IndexErrorKind};
@@ -96,6 +96,16 @@ pub struct TypeChecker {
     /// Pending generic call sites: (call NodeId, fresh type vars for type params).
     /// Resolved after constraint solving to populate TypedProgram.call_type_args.
     pub(super) pending_call_type_args: Vec<(NodeId, Vec<Type>)>,
+    /// CALL6: resolved targets of free-function calls, known immediately from
+    /// name resolution. Merged with resolved method targets into
+    /// TypedProgram.call_targets.
+    pub(super) call_targets: HashMap<NodeId, Callee>,
+    /// CALL6: method call sites awaiting dispatch resolution: (call NodeId,
+    /// receiver type, method name). The receiver type may still be a var here;
+    /// after constraint solving it resolves to a concrete `Named(TypeId)` and
+    /// the target is recorded. This reads the dispatched receiver type from the
+    /// substitution — it does not reconstruct a name.
+    pub(super) pending_method_targets: Vec<(NodeId, Type, String)>,
     /// SymbolId → type param names for generic functions.
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
@@ -169,6 +179,8 @@ impl TypeChecker {
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
+            call_targets: HashMap::new(),
+            pending_method_targets: Vec::new(),
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
             pending_bound_checks: Vec::new(),
@@ -264,6 +276,19 @@ impl TypeChecker {
             })
             .collect();
 
+        // CALL6: resolve method dispatch targets now that receiver types are
+        // concrete, and merge with the free-function targets recorded inline.
+        let mut call_targets = self.call_targets.clone();
+        for (node_id, recv_ty, method) in &self.pending_method_targets {
+            let resolved = self.resolve_named(&self.ctx.apply(recv_ty));
+            if let Type::Named(type_id) = resolved {
+                call_targets.insert(
+                    *node_id,
+                    Callee::Method { ty: type_id, method: method.clone() },
+                );
+            }
+        }
+
         let trait_coercions = self.trait_coercions.clone();
 
         let unsafe_ops = self.unsafe_ops;
@@ -295,6 +320,7 @@ impl TypeChecker {
             types: self.types,
             node_types,
             call_type_args,
+            call_targets,
             trait_coercions,
             unsafe_ops,
             span_types,

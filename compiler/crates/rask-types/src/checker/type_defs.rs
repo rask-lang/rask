@@ -8,7 +8,22 @@ use rask_resolve::SymbolId;
 
 use super::type_table::TypeTable;
 
-use crate::types::Type;
+use crate::types::{Type, TypeId};
+
+/// The function a call expression resolves to (CALL6).
+///
+/// One source of truth for "which function does this call target," recorded
+/// once during type checking. Structured — never a reconstructed name string.
+/// MIR lowering and the hidden-param pass read this instead of re-deriving
+/// dispatch from mangled type names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Callee {
+    /// Free function resolved to its symbol.
+    Function(SymbolId),
+    /// Method resolved by dispatch on the receiver type: `(receiver type, method name)`.
+    /// No single def id exists for methods yet, so the pair identifies it.
+    Method { ty: TypeId, method: String },
+}
 
 /// Information about a user-defined type.
 #[derive(Debug, Clone)]
@@ -175,6 +190,10 @@ pub struct TypedProgram {
     /// Resolved type arguments for each generic call site.
     /// Key is the Call/MethodCall expression's NodeId.
     pub call_type_args: HashMap<NodeId, Vec<Type>>,
+    /// CALL6: resolved target of each call, keyed by the Call/MethodCall
+    /// expression's NodeId. The single source of truth for dispatch —
+    /// recorded here, never re-derived from a reconstructed name downstream.
+    pub call_targets: HashMap<NodeId, Callee>,
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     pub trait_coercions: HashMap<NodeId, String>,
     /// Unsafe operations recorded during type checking (span + category).

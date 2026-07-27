@@ -6,7 +6,7 @@ use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
-use super::type_defs::TypeDef;
+use super::type_defs::{Callee, TypeDef};
 use super::borrow::BorrowMode;
 use super::errors::{IndexErrorKind, InvalidCastClass, TypeError};
 use super::inference::{LiteralKind, TypeConstraint, WrapPosition};
@@ -205,7 +205,7 @@ impl TypeChecker {
                 method,
                 args,
                 type_args,
-            } => self.check_method_call(object, method, args, type_args.as_deref(), expr.span),
+            } => self.check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span),
 
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
@@ -1496,6 +1496,14 @@ impl TypeChecker {
             }
         }
 
+        // CALL6: record which function this call resolves to, once, here —
+        // downstream passes read it instead of re-mangling a name.
+        if let ExprKind::Ident(_) = &func.kind {
+            if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
+                self.call_targets.insert(call_id, Callee::Function(sym_id));
+            }
+        }
+
         // Call-site annotations (mutate/own) are optional — IDE shows ghost
         // annotations but the compiler doesn't require them (spec decision).
         // Validate when present, but don't error on missing annotations.
@@ -1718,6 +1726,7 @@ impl TypeChecker {
 
     pub(super) fn check_method_call(
         &mut self,
+        call_id: NodeId,
         object: &Expr,
         method: &str,
         args: &[CallArg],
@@ -1898,6 +1907,12 @@ impl TypeChecker {
         }
 
         let ret_ty = self.ctx.fresh_var();
+
+        // CALL6: record the dispatch target for this method call. The receiver
+        // type may still be a var; it's resolved from the substitution after
+        // constraint solving (see finalize in mod.rs).
+        self.pending_method_targets
+            .push((call_id, obj_ty.clone(), method.to_string()));
 
         self.ctx.add_constraint(TypeConstraint::HasMethod {
             ty: obj_ty,
