@@ -2,8 +2,9 @@
 //! CC4: Context resolution order (local > param > self.field > using clause).
 //! CC7: Private function context inference from handle field access.
 //! CC8: Ambiguity detection (multiple pools of same type in scope).
-//! CC9: Immediate closure context inheritance.
-//! CC10: Storable closure context exclusion.
+//!
+//! CC9 (immediate closure context inheritance) and CC10 (storable closure
+//! exclusion) are not implemented — see #420.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind};
@@ -304,27 +305,4 @@ fn expr_accesses_handle_fields(expr: &Expr, handle_names: &[&str]) -> bool {
         ExprKind::Block(stmts) => body_accesses_handle_fields(stmts, handle_names),
         _ => false,
     }
-}
-
-// ── CC9/CC10: Closure context rules ─────────────────────────────────────
-
-/// Check if an expression is an expression-scoped (immediate) closure.
-/// Expression-scoped closures appear as arguments to calls like:
-///   vec.map(|x| x.field)
-///   pool.cursor().for_each(|h| ...)
-/// These inherit enclosing contexts (CC9).
-pub(crate) fn is_expression_scoped_closure(expr: &Expr) -> bool {
-    // Closures used as arguments to iterator/collection methods are expression-scoped.
-    // Closures assigned to variables with Func type are storable.
-    // This heuristic: if a closure appears directly inside a Call or MethodCall arg, it's CC9.
-    // If it appears in a Let/Const init, it's CC10 (storable).
-    true // Default to expression-scoped; rewrite phase checks assignment context
-}
-
-/// Check if a closure is storable (CC10 — cannot inherit contexts).
-/// Storable closures are assigned to variables: `const callback: |Handle<Player>| = |h| { ... }`
-pub(crate) fn is_storable_closure(_stmt: &Stmt) -> bool {
-    // A closure is storable if it's the init expression of a Let/Const
-    // where the type annotation is a function type.
-    false // Conservative: most closures are expression-scoped
 }
