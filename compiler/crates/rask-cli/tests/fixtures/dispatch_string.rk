@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Dispatch regression (T0.2): string methods resolve via type-driven dispatch
+// and must produce identical native/interp output. Exercises unambiguous
+// (starts_with, ends_with, to_uppercase) and ambiguous-name (replace) methods.
+
+func main() {
+    const s = "Hello, Rask"
+    print(s.len())
+    print("\n")
+    print(s.starts_with("Hello"))
+    print("\n")
+    print(s.ends_with("Rask"))
+    print("\n")
+    print(s.to_uppercase())
+    print("\n")
+    print(s.to_lowercase())
+    print("\n")
+    print(s.replace("Rask", "World"))
+    print("\n")
+}

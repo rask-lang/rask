@@ -93,6 +93,29 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand>
     Some((MirOperand::Constant(MirConst::Int(val)), ty))
 }
 
+/// Disambiguation policy for method names that are shared across stdlib types
+/// (e.g. `get`, `map`, `find`) or absent from the stub API (iterator terminals
+/// like `collect`). Used ONLY when the type checker leaves the receiver type
+/// unresolved — a resolved receiver type always takes precedence. This is a
+/// deliberate policy choice (e.g. bare `.get()` means `Map`, since `Vec` uses
+/// index syntax), not a lookup table for well-typed calls: adding or renaming
+/// an unambiguous stdlib method needs no edit here.
+fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static str> {
+    Some(match method {
+        "contains" | "substr" | "reverse" | "index_of"
+        | "push_str" | "push_char" | "compare" | "as_ptr" => "string",
+        "remove_at" | "to_vec" | "map" | "filter" | "collect"
+        | "find" | "for_each" => "Vec",
+        "join" if arg_count == 2 => "Vec",
+        "values" | "get" | "insert" | "remove" => "Map",
+        "sleep" => "time",
+        "read_all" | "write_all" => "TcpConnection",
+        "accept" => "TcpListener",
+        "detach" => "TaskHandle",
+        _ => return None,
+    })
+}
+
 impl<'a> MirLowerer<'a> {
     /// Resolve a MirType to its named type prefix using struct/enum layouts.
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
@@ -1580,6 +1603,22 @@ impl<'a> MirLowerer<'a> {
                     return Ok(handled);
                 }
 
+                // Resolve the receiver's stdlib type prefix, then mangle to
+                // `{Type}_{method}`. Dispatch is driven by the resolved receiver
+                // type and the stub-derived metadata — not a hand-maintained
+                // method-name table. Priority:
+                //   1. user struct/enum from the type checker
+                //   2. tracked local/field type (LocalMeta, struct layout)
+                //   3. resolved receiver type, when that stdlib type actually
+                //      declares the method (validated against the stub API)
+                //   4. the method's sole defining stdlib type, when unambiguous
+                //   5. disambiguation policy for shared/absent names on
+                //      receivers the checker left unresolved
+                //   6. resolved type / MIR type as a last resort
+                let type_prefix_of_receiver = || {
+                    self.ctx.lookup_raw_type(object.id)
+                        .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+                };
                 let qualified_name = user_type_prefix
                     .or_else(|| if let ExprKind::Ident(var_name) = &object.kind {
                         self.meta(var_name).and_then(|m| m.type_prefix.clone())
@@ -1606,62 +1645,24 @@ impl<'a> MirLowerer<'a> {
                             None
                         }
                     })
-                    // Unambiguous method names — each belongs to exactly one type.
-                    // Checked early because type-checker info can be wrong for
-                    // unresolved types (e.g. tuple destructures from stdlib methods).
-                    // Only methods unique to a single type belong here.
-                    .or_else(|| match method.as_str() {
-                        // String (unique to string — Vec/Map don't have these)
-                        "contains" | "starts_with" | "ends_with" | "trim"
-                        | "to_lowercase" | "to_uppercase" | "replace"
-                        | "substr" | "substring" | "repeat" | "reverse"
-                        | "lines" | "split" | "split_whitespace"
-                        | "char_at" | "index_of"
-                        | "chars" | "push_str" | "push_char"
-                        | "compare"
-                        | "as_c_str" | "as_ptr" => Some("string".to_string()),
-                        // Vec / iterator (no other Rask type has these)
-                        "push" | "remove_at" | "to_vec" | "chunks" | "skip"
-                        | "map" | "filter" | "collect"
-                        | "enumerate" | "any" | "all" | "find" | "fold"
-                        | "for_each" | "flat_map" | "take" | "zip"
-                        | "sort_by" | "sort" | "dedup"
-                        | "first" | "last" => Some("Vec".to_string()),
-                        "join" if all_args.len() == 2 => Some("Vec".to_string()),
-                        // Map (Vec uses index syntax for element access, so .get()/.insert()/.remove()
-                        // as method calls are effectively Map-only in practice)
-                        "values" | "keys" | "contains_key"
-                        | "get" | "insert" | "remove" => Some("Map".to_string()),
-                        // Path (unique to Path — Vec/Map/string don't have these)
-                        "parent" | "file_name" | "extension" | "stem"
-                        | "components" | "is_absolute" | "is_relative"
-                        | "has_extension" | "with_extension" | "with_file_name"
-                            => Some("Path".to_string()),
-                        // Time
-                        "now" | "elapsed" | "duration_since" => Some("Instant".to_string()),
-                        "as_seconds_f64" | "as_seconds_f32" | "as_seconds" | "as_millis" | "as_micros" | "as_nanos"
-                        | "seconds" | "millis" | "micros" | "nanos" | "from_secs_f64" => Some("Duration".to_string()),
-                        "sleep" => Some("time".to_string()),
-                        // Net/HTTP
-                        "read_http_request" | "write_http_response"
-                        | "read_all" | "write_all" | "remote_addr"
-                            => Some("TcpConnection".to_string()),
-                        "accept" => Some("TcpListener".to_string()),
-                        "respond" => Some("Responder".to_string()),
-                        // Metadata
-                        "size" | "accessed" | "modified" => Some("Metadata".to_string()),
-                        // Args
-                        "flag" | "option" | "option_or" | "positional" | "program"
-                            => Some("Args".to_string()),
-                        // TaskHandle/ThreadHandle
-                        "cancel" | "detach" => Some("TaskHandle".to_string()),
-                        _ => None,
-                    })
-                    .or_else(|| {
-                        self.ctx.lookup_raw_type(object.id)
-                            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-                    })
-                    // Fallback: derive prefix from MIR type (catches F64, String, etc.)
+                    // Resolved receiver type is authoritative when that stdlib
+                    // type declares the method (checked against the stub API).
+                    .or_else(|| type_prefix_of_receiver().filter(|p| {
+                        let base = p.split('<').next().unwrap_or(p).trim();
+                        rask_stdlib::mir_metadata::type_has_method(base, &method)
+                    }))
+                    // Unambiguous stub method → its sole defining type.
+                    .or_else(|| rask_stdlib::mir_metadata::unique_method_prefix(&method)
+                        .map(|s| s.to_string()))
+                    // Disambiguation policy for method names shared across (or
+                    // absent from) stub types, used only when the receiver type
+                    // is unresolved. A resolved receiver above always wins.
+                    .or_else(|| ambiguous_method_prefix(&method, all_args.len())
+                        .map(|s| s.to_string()))
+                    // Last resort: resolved type even if the stub doesn't list
+                    // the method (user types, monomorphized aggregates), then
+                    // the MIR type (catches F64, String, etc.).
+                    .or_else(type_prefix_of_receiver)
                     .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
                     // parse<T> always belongs to string (structural, not type-prefix related)
                     .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
@@ -1671,33 +1672,17 @@ impl<'a> MirLowerer<'a> {
                         // call name is `Vec<T>_len` which has no codegen entry.
                         let base = prefix.split('<').next().unwrap_or(&prefix).trim();
                         format!("{}_{}", base, method)
-                    })
-                    .unwrap_or_else(|| {
-                        eprintln!(
-                            "[mir] method `{}` has no type prefix — type checker should have resolved this",
-                            method
-                        );
-                        method.clone()
                     });
-
-                // If still unqualified, search func_sigs for a matching *_method entry
-                let qualified_name = if qualified_name == method {
-                    let suffix = format!("_{}", method);
-                    self.func_sigs.keys()
-                        .find(|k| k.ends_with(&suffix))
-                        .cloned()
-                        .unwrap_or(qualified_name)
-                } else {
-                    qualified_name
-                };
-
-                // Last resort: unqualified operator methods on strings.
-                // When qualification fails for lt/gt/le/ge/compare/push/push_str
-                // and the obj_ty is String, prefix with "string_".
-                let qualified_name = if qualified_name == method && matches!(obj_ty, MirType::String) {
-                    format!("string_{}", method)
-                } else {
-                    qualified_name
+                let qualified_name = match qualified_name {
+                    Some(name) => name,
+                    // Type-driven dispatch failed for a call the checker accepted
+                    // — an internal invariant violation, surfaced through the
+                    // MIR-lowering error path rather than a stray print.
+                    None => return Err(LoweringError::InvalidConstruct(format!(
+                        "method `{}` on receiver of unresolved type — dispatch could \
+                         not determine a stdlib type prefix",
+                        method
+                    ))),
                 };
 
                 // Track collection element types from push/insert so get returns the right type.

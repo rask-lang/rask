@@ -50,6 +50,8 @@ pub enum ArgAdapt {
     AppendZero,
     /// Append iconst(8) as elem_size (Shared_read/write)
     AppendElemSize,
+    /// Atomic compare-exchange: append an out_ok pointer (result written there).
+    AtomicCas,
     /// Complex case handled by hand-written code
     Custom,
 }
@@ -65,6 +67,9 @@ pub enum RetAdapt {
     DerefOption,
     /// Determined by ArgAdapt (StringOutParam → slot addr, AppendOutParam → slot load)
     FromArgAdapt,
+    /// C FFI convention: a negative scalar return means Err, otherwise Ok.
+    /// Codegen wraps the return into the destination `T or E` Result slot.
+    NegErr,
 }
 
 /// A stdlib function entry: MIR name → C runtime function + adaptation.
@@ -95,6 +100,17 @@ impl StdlibEntry {
         can_panic: bool,
     ) -> Self {
         Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None }
+    }
+
+    /// Shorthand for C FFI functions using the negative-return=Err convention.
+    const fn neg_err(
+        mir_name: &'static str,
+        c_name: &'static str,
+        params: &'static [Type],
+        ret_ty: Option<Type>,
+        can_panic: bool,
+    ) -> Self {
+        Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::NegErr }
     }
 }
 
@@ -594,9 +610,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("io_close_fd", "rask_io_close_fd", &[types::I64], None, false),
 
         // ── Net module ──────────────────────────────────────────────
-        StdlibEntry::simple("net_tcp_listen", "rask_net_tcp_listen", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_err("net_tcp_listen", "rask_net_tcp_listen", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("net_tcp_connect", "rask_net_tcp_connect", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("TcpListener_accept", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_err("TcpListener_accept", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpListener_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry {
@@ -610,8 +626,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::simple("TcpConnection_read_http_request", "rask_net_read_http_request", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("TcpConnection_write_http_response", "rask_net_write_http_response", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::neg_err("TcpConnection_read_http_request", "rask_net_read_http_request", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_err("TcpConnection_write_http_response", "rask_net_write_http_response", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpConnection_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpConnection_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
 
@@ -688,8 +704,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── ThreadPool ─────────────────────────────────────────────
         StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Thread_spawn", "rask_closure_spawn", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("ThreadHandle_join", "rask_task_join_simple", &[types::I64], Some(types::I64), true),
-        StdlibEntry::simple("Thread_join", "rask_task_join_simple", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("ThreadHandle_join", "rask_task_join_simple", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("Thread_join", "rask_task_join_simple", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("ThreadHandle_detach", "rask_task_detach", &[types::I64], None, false),
         StdlibEntry::simple("Thread_detach", "rask_task_detach", &[types::I64], None, false),
         StdlibEntry::simple("time_sleep", "rask_sleep_ns", &[types::I64], Some(types::I64), false),
@@ -755,10 +771,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "Sender_send", c_name: "rask_channel_send_ptr",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::NegErr,
         },
-        StdlibEntry::simple("Sender_try_send", "rask_channel_try_send_i64", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Sender_close", "rask_sender_close_i64", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_err("Sender_try_send", "rask_channel_try_send_i64", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::neg_err("Sender_close", "rask_sender_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
         StdlibEntry {
@@ -783,7 +799,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry::simple("Receiver_close", "rask_recver_close_i64", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_err("Receiver_close", "rask_recver_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Receiver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
         StdlibEntry::simple("receive", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("recver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
@@ -920,14 +936,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             c_name: "rask_atomic_int_compare_exchange",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
         });
         entries.push(StdlibEntry {
             mir_name: leak_str(&format!("{}_compare_exchange_weak", ty)),
             c_name: "rask_atomic_int_compare_exchange_weak",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
         });
         for op in &["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor", "fetch_nand", "fetch_max", "fetch_min"] {
             entries.push(StdlibEntry::simple(leak_str(&format!("{}_{}", ty, op)), leak_str(&format!("rask_atomic_int_{}", op)), &[types::I64, types::I64, types::I64], Some(types::I64), false));
@@ -945,13 +961,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         mir_name: "AtomicBool_compare_exchange", c_name: "rask_atomic_bool_compare_exchange",
         params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
         ret_ty: Some(types::I64), can_panic: false,
-        arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
     });
     entries.push(StdlibEntry {
         mir_name: "AtomicBool_compare_exchange_weak", c_name: "rask_atomic_bool_compare_exchange_weak",
         params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
         ret_ty: Some(types::I64), can_panic: false,
-        arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
     });
     for op in &["fetch_and", "fetch_or", "fetch_xor", "fetch_nand"] {
         entries.push(StdlibEntry::simple(leak_str(&format!("AtomicBool_{}", op)), leak_str(&format!("rask_atomic_bool_{}", op)), &[types::I64, types::I64, types::I64], Some(types::I64), false));

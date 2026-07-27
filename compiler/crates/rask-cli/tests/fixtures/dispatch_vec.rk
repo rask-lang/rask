@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Dispatch regression (T0.2): Vec methods resolve via type-driven dispatch and
+// must produce identical native/interp output. Avoids first()/last() (#412)
+// and contains() (#413), which have pre-existing native codegen bugs.
+
+func main() {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    print(v.len())
+    print("\n")
+    print(v.is_empty())
+    print("\n")
+    if v.get(1)? as g {
+        print(g)
+        print("\n")
+    }
+    const popped = v.pop()
+    if popped? as p {
+        print(p)
+        print("\n")
+    }
+    print(v.len())
+    print("\n")
+}

@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Dispatch regression (T0.2): Map methods resolve via type-driven dispatch and
+// must produce identical native/interp output.
+
+func main() {
+    mut m = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    m.insert("c", 3)
+    print(m.len())
+    print("\n")
+    print(m.contains_key("b"))
+    print("\n")
+    if m.get("b")? as v {
+        print(v)
+        print("\n")
+    }
+    m.remove("b")
+    print(m.contains_key("b"))
+    print("\n")
+    print(m.len())
+    print("\n")
+}

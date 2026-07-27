@@ -49,6 +49,11 @@ struct MetadataCache {
     method_metas: Vec<StdlibMethodMeta>,
     /// qualified_name → index into method_metas
     by_name: HashMap<std::string::String, usize>,
+    /// Method name → the single stdlib type prefix that defines it, when it is
+    /// unambiguous (exactly one type has a method of that name). Absent when the
+    /// name is shared across types or defined by none. Only type prefixes count
+    /// (uppercase names + "string"); modules (fs, io, ...) are excluded.
+    unique_method_prefix: HashMap<std::string::String, std::string::String>,
 }
 
 static CACHE: OnceLock<MetadataCache> = OnceLock::new();
@@ -59,13 +64,16 @@ fn build_cache() -> MetadataCache {
     let mut type_names = HashSet::new();
     let mut module_names = HashSet::new();
     let mut method_metas = Vec::new();
+    // method name → set of type prefixes defining it (type prefixes only).
+    let mut method_to_types: HashMap<std::string::String, HashSet<std::string::String>> =
+        HashMap::new();
 
     for type_name in reg.type_names() {
         // Module-like types start lowercase (fs, cli, io, etc.)
         // Actual types start uppercase (Vec, Map, File, etc.) or are "string"
-        if type_name == "string"
-            || type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-        {
+        let is_type = type_name == "string"
+            || type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+        if is_type {
             type_names.insert(type_name.to_string());
         } else {
             module_names.insert(type_name.to_string());
@@ -80,8 +88,25 @@ fn build_cache() -> MetadataCache {
                 ret_category: ret_cat,
                 ret_type_prefix: ret_prefix,
             });
+            if is_type {
+                method_to_types
+                    .entry(method.name.clone())
+                    .or_default()
+                    .insert(type_name.to_string());
+            }
         }
     }
+
+    let unique_method_prefix = method_to_types
+        .into_iter()
+        .filter_map(|(method, tys)| {
+            if tys.len() == 1 {
+                Some((method, tys.into_iter().next().unwrap()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Top-level functions (println, print, etc. are builtins — skip them)
     for func in reg.functions() {
@@ -105,6 +130,7 @@ fn build_cache() -> MetadataCache {
         module_names,
         method_metas,
         by_name,
+        unique_method_prefix,
     }
 }
 
@@ -133,6 +159,18 @@ pub fn method_metas() -> &'static [StdlibMethodMeta] {
 pub fn lookup(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
     let idx = cache().by_name.get(qualified_name)?;
     Some(&cache().method_metas[*idx])
+}
+
+/// Does stdlib type `prefix` define a method `method`? Keyed on the stub API.
+pub fn type_has_method(prefix: &str, method: &str) -> bool {
+    cache().by_name.contains_key(&format!("{}_{}", prefix, method))
+}
+
+/// The single stdlib type prefix that defines `method`, when unambiguous
+/// (exactly one type has it). Used to resolve a method call whose receiver
+/// type the checker left unresolved, without a hand-maintained name table.
+pub fn unique_method_prefix(method: &str) -> Option<&'static str> {
+    cache().unique_method_prefix.get(method).map(|s| s.as_str())
 }
 
 // ── Return type string parsing ──────────────────────────────────
@@ -438,3 +476,5 @@ mod tests {
         assert_eq!(meta.ret_category, RetCategory::String);
     }
 }
+
+
