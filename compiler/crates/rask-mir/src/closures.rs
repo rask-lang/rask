@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::analysis::uses;
 use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind};
 
 /// Optimize closures across all functions with cross-function analysis.
@@ -107,7 +108,7 @@ fn param_escapes_from(func: &MirFunction, param_id: LocalId) -> bool {
         for stmt in &block.statements {
             match &stmt.kind {
                 MirStmtKind::Call { args, .. } => {
-                    if args.iter().any(|a| matches!(a, MirOperand::Local(id) if *id == param_id)) {
+                    if args.iter().any(|a| uses::operand_reads(a, param_id)) {
                         return true;
                     }
                 }
@@ -148,15 +149,15 @@ fn find_escaping_closures(
             match &stmt.kind {
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
-                        if let MirOperand::Local(id) = arg {
-                            if closure_locals.contains_key(id) {
+                        if let Some(id) = uses::operand_local(arg) {
+                            if closure_locals.contains_key(&id) {
                                 let is_borrow = callee_escapes.get(&callee.name)
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
                                     .unwrap_or(false);
 
                                 if !is_borrow {
-                                    escaping.insert(*id);
+                                    escaping.insert(id);
                                 }
                             }
                         }
@@ -206,15 +207,15 @@ fn find_transferred_closures(
             match &stmt.kind {
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
-                        if let MirOperand::Local(id) = arg {
-                            if closure_locals.contains_key(id) {
+                        if let Some(id) = uses::operand_local(arg) {
+                            if closure_locals.contains_key(&id) {
                                 let is_borrow = callee_escapes.get(&callee.name)
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
                                     .unwrap_or(false);
 
                                 if !is_borrow {
-                                    passed_or_stored.insert(*id);
+                                    passed_or_stored.insert(id);
                                 }
                             }
                         }

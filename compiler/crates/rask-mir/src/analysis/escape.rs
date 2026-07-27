@@ -9,6 +9,7 @@
 //!
 //! See `comp.string-refcount-elision` spec, "Escape Analysis" section.
 
+use crate::analysis::uses;
 use crate::{LocalId, MirFunction, MirOperand, MirStmtKind, MirTerminatorKind, MirType};
 use std::collections::HashSet;
 
@@ -52,9 +53,9 @@ pub fn escaping_strings(func: &MirFunction) -> HashSet<LocalId> {
                         .any(|name| fref.name.contains(name));
                     if is_escape_fn {
                         for arg in args {
-                            if let MirOperand::Local(id) = arg {
-                                if string_locals.contains(id) {
-                                    escaped.insert(*id);
+                            if let Some(id) = uses::operand_local(arg) {
+                                if string_locals.contains(&id) {
+                                    escaped.insert(id);
                                 }
                             }
                         }
