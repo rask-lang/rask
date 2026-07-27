@@ -1064,10 +1064,13 @@ impl<'a> MirLowerer<'a> {
                             // Inject elem_size/data_size for generic constructors.
                             // The C runtime needs actual sizes for struct types;
                             // the dispatch table expects these as extra arguments.
+                            // The element type is read from the call's resolved
+                            // result type (`Channel<T>` returns a Sender/Receiver
+                            // tuple; generic_arg_slot_size unwraps that).
                             if (base_name == "Channel" && (method == "buffered" || method == "unbuffered"))
                                 || ((base_name == "Shared" || base_name == "Mutex") && method == "new")
                             {
-                                let elem_size = self.generic_inner_struct_size(name);
+                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 if base_name == "Channel" {
                                     // Channel: elem_size goes first → (elem_size, capacity)
@@ -1080,27 +1083,21 @@ impl<'a> MirLowerer<'a> {
                             // Pool.new(): inject elem_size so pool allocates
                             // correctly-sized slots for struct elements.
                             if base_name == "Pool" && method == "new" {
-                                let elem_size = self.generic_inner_struct_size(name);
+                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);
                             }
 
                             // Vec.new(): inject elem_size so runtime allocates correct slots.
-                            // string elements need 16 bytes; structs use layout size; default 8.
-                            // For bare `Vec.new()` (no generic args), the syntactic name
-                            // carries no `<T>`, so fall back to the inferred call type.
                             if base_name == "Vec" && method == "new" {
-                                let elem_size = self.inferred_generic_param_size(expr.id, 0)
-                                    .unwrap_or_else(|| self.generic_type_param_size(name, 0));
+                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);
                             }
                             // Map.new(): inject key_size, val_size
                             if (base_name == "Map") && method == "new" {
-                                let key_size = self.inferred_generic_param_size(expr.id, 0)
-                                    .unwrap_or_else(|| self.generic_type_param_size(name, 0));
-                                let val_size = self.inferred_generic_param_size(expr.id, 1)
-                                    .unwrap_or_else(|| self.generic_type_param_size(name, 1));
+                                let key_size = self.generic_arg_slot_size(expr.id, 0);
+                                let val_size = self.generic_arg_slot_size(expr.id, 1);
                                 arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
                             }

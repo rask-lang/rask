@@ -367,90 +367,74 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Size of the Nth generic type parameter in a name like "Vec<string>" or "Map<string, i64>".
-    /// Returns 16 for string, struct layout size for structs, 8 otherwise.
-    pub(super) fn generic_type_param_size(&self, generic_name: &str, index: usize) -> i64 {
-        let inner = generic_name.split('<').nth(1)
-            .and_then(|s| s.strip_suffix('>'));
-        if let Some(params_str) = inner {
-            let params: Vec<&str> = params_str.split(',').map(|s| s.trim()).collect();
-            if let Some(type_name) = params.get(index) {
-                return match *type_name {
-                    "string" => 16,
-                    // All scalar types use 8-byte slots — matches the codegen
-                    // layout convention (rask-mono::layout::type_size_align)
-                    // where every value is stored as i64. Sub-i64 storage caused
-                    // 32-bit truncation: pushes wrote 4 bytes, but `for x in v`
-                    // loaded 8 bytes (the dst is i64), pulling stale bits from
-                    // the next slot.
-                    "bool" | "u8" | "i8"
-                    | "u16" | "i16"
-                    | "u32" | "i32" | "f32"
-                    | "u64" | "i64" | "f64" | "usize" | "isize" | "char" => 8,
-                    _ => {
-                        if let Some((_, layout)) = self.ctx.find_struct(type_name) {
-                            return layout.size as i64;
-                        }
-                        8
-                    }
-                };
-            }
-        }
-        8 // scalar default
-    }
-
-    /// Size of a Type used as an element/key/value slot. Mirrors
-    /// `generic_type_param_size`'s rules but works on the type checker's
-    /// `Type` directly so bare `Vec.new()` / `Map.new()` can pick up an
-    /// inferred element type.
+    /// The single slot-size authority for a value stored in a collection
+    /// (Vec/Map element or key/value, Channel/Shared/Mutex/Pool element).
+    ///
+    /// Keyed on the resolved `Type` — no type-name string parsing. Delegates to
+    /// the mono layout tables (via `type_to_mir`): scalars occupy an 8-byte slot
+    /// (storing a scalar in a narrower slot truncated it on the i64 load-back),
+    /// string is 16, `T?` is `[tag:8][payload]` with the payload floored to a
+    /// word, and aggregates use their computed layout size. `None` when the type
+    /// is still an unresolved variable.
     pub(super) fn slot_size_for_type(&self, ty: &rask_types::Type) -> Option<i64> {
         use rask_types::Type;
         match ty {
-            Type::String => Some(16),
-            Type::Bool
-            | Type::I8 | Type::I16 | Type::I32 | Type::I64
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64
-            | Type::F32 | Type::F64 | Type::Char => Some(8),
-            Type::UnresolvedNamed(name) => match name.as_str() {
-                "string" => Some(16),
-                "bool" | "u8" | "i8" | "u16" | "i16"
-                | "u32" | "i32" | "f32"
-                | "u64" | "i64" | "f64"
-                | "usize" | "isize" | "char" => Some(8),
-                _ => self.ctx.find_struct(name).map(|(_, l)| l.size as i64).or(Some(8)),
-            },
-            Type::Named(id) => {
-                let name = self.ctx.type_names.get(id)?;
-                self.ctx.find_struct(name).map(|(_, l)| l.size as i64).or(Some(8))
-            }
-            // `T?` (Option) lays out as [tag:8][payload:8+]. Pick max(8) for the
-            // payload so scalar inners still get a full word.
-            Type::Result { ok, err } if **err == Type::None => {
-                let inner = self.slot_size_for_type(ok)?;
-                Some(8 + inner.max(8))
-            }
             Type::Var(_) => None,
-            _ => Some(8),
+            // `T?` (`T or none`) lays out as [tag:8][payload]; floor the payload
+            // to a full word so scalar inners aren't truncated.
+            Type::Result { ok, err } if **err == Type::None => {
+                Some(8 + self.slot_size_for_type(ok)?.max(8))
+            }
+            _ => Some(Self::mir_slot_size(&self.ctx.type_to_mir(ty))),
         }
     }
 
-    /// Resolve the Nth generic argument's slot size from the inferred type
-    /// at `node_id`. Falls back to `None` when the argument is missing or
-    /// still an unresolved type variable.
-    pub(super) fn inferred_generic_param_size(
+    /// Slot size for an already-lowered `MirType`: scalars and pointers occupy
+    /// one 8-byte slot, string is 16, aggregates use their layout size.
+    fn mir_slot_size(ty: &MirType) -> i64 {
+        match ty {
+            MirType::String => 16,
+            MirType::Void => 0,
+            MirType::Bool | MirType::I8 | MirType::U8
+            | MirType::I16 | MirType::U16
+            | MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char
+            | MirType::I64 | MirType::U64 | MirType::F64
+            | MirType::Ptr | MirType::FuncPtr(_) | MirType::Handle => 8,
+            // Struct/Enum/Tuple/Slice/Option/Result/Union/Array/... — layout size.
+            _ => ty.size() as i64,
+        }
+    }
+
+    /// Slot size of the Nth generic argument of the collection/box type inferred
+    /// at `node_id` (e.g. the `T` of `Vec<T>` / `Channel<T>`, or the key/value of
+    /// `Map<K, V>`). Routes through `slot_size_for_type`; falls back to an 8-byte
+    /// scalar slot when the argument is missing or still an unresolved variable.
+    pub(super) fn generic_arg_slot_size(
         &self,
         node_id: rask_ast::NodeId,
         index: usize,
-    ) -> Option<i64> {
+    ) -> i64 {
         use rask_types::{GenericArg, Type};
-        let ty = self.ctx.lookup_raw_type(node_id)?;
-        let args = match ty {
-            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
-            _ => return None,
-        };
-        let arg = args.get(index)?;
-        let GenericArg::Type(inner) = arg else { return None; };
-        self.slot_size_for_type(inner)
+        fn generic_args(ty: &Type) -> Option<&[GenericArg]> {
+            match ty {
+                Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => Some(args),
+                _ => None,
+            }
+        }
+        let size = self.ctx.lookup_raw_type(node_id).and_then(|ty| {
+            // `Channel<T>.buffered()` resolves to `(Sender<T>, Receiver<T>)` — the
+            // element type lives in the tuple's first component. Everything else
+            // (Vec/Map/Shared/Mutex/Pool) resolves to the wrapper directly.
+            let container = match ty {
+                Type::Tuple(elems) => elems.first()?,
+                other => other,
+            };
+            let GenericArg::Type(inner) = generic_args(container)?.get(index)? else {
+                return None;
+            };
+            self.slot_size_for_type(inner)
+        });
+        size.unwrap_or(8)
     }
 
     /// Clone function name for a type, or None if the type is Copy.

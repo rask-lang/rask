@@ -366,6 +366,34 @@ fn err_routing_native_matches_interp() {
     assert_eq!(native, interp, "native and interp must agree on ok/err routing");
 }
 
+// One element-size query — collections must allocate correctly-sized slots for
+// i32 (8-byte slot, no truncation), string (16), and struct (layout) elements,
+// with Map keys/values sized independently. Native must equal interp.
+const COLLECTION_SIZES_OUT: &str = "100\n200000\nalpha\nbeta\n1 2 3\n2\n";
+
+#[test]
+fn compile_collection_elem_sizes() {
+    let (stdout, code) = compile_and_run("collection_elem_sizes.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, COLLECTION_SIZES_OUT);
+}
+
+#[test]
+fn native_collection_elem_sizes() {
+    let (stdout, code) = run_native("collection_elem_sizes.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, COLLECTION_SIZES_OUT);
+}
+
+#[test]
+fn collection_elem_sizes_native_matches_interp() {
+    let (native, ncode) = run_native("collection_elem_sizes.rk");
+    let (interp, icode) = run_interp("collection_elem_sizes.rk");
+    assert_eq!(ncode, 0);
+    assert_eq!(icode, 0);
+    assert_eq!(native, interp, "native and interp must agree on element sizes");
+}
+
 // while-let with an ok-side, uppercase-named type pattern must enter the loop.
 // The capitalization heuristic previously routed `Reading` to the err side.
 #[test]

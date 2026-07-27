@@ -1,0 +1,35 @@
+// One element-size query, keyed on the resolved element `Type`. Each collection
+// must allocate correctly-sized slots so native == interp:
+//   - i32 elements use an 8-byte slot (a 4-byte slot truncated the i64 load-back)
+//   - string elements need 16 bytes (SSO), not the scalar default
+//   - struct elements use their layout size
+//   - Map keys/values are sized independently
+
+struct Big { a: i64, b: i64, c: i64 }
+
+func main() {
+    mut vi = Vec<i32>.new()
+    vi.push(100)
+    vi.push(200000)          // > 16 bits — a 4-byte slot would truncate the read
+    for x in vi {
+        println("{x}")
+    }
+
+    mut vs = Vec<string>.new()
+    vs.push("alpha")
+    vs.push("beta")
+    for s in vs {
+        println("{s}")
+    }
+
+    mut vb = Vec<Big>.new()
+    vb.push(Big { a: 1, b: 2, c: 3 })
+    for b in vb {
+        println("{b.a} {b.b} {b.c}")
+    }
+
+    mut m = Map<string, i64>.new()
+    m.insert("x", 10)
+    m.insert("y", 20)
+    println("{m.len()}")
+}
