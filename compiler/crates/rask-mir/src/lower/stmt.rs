@@ -144,14 +144,21 @@ impl<'a> MirLowerer<'a> {
                             .get(name)
                             .cloned()
                             .ok_or_else(|| LoweringError::UnresolvedVariable(name.clone()))?;
-                        // mem.borrowing/M-rules: `p = expr` on a `mutate` param
-                        // copies bytes through the caller's pointer. Lower as a
-                        // Store so DCE doesn't drop it as a "dead local write"
-                        // and codegen emits the through-pointer copy.
+                        // mem.borrowing/M-rules: `p = expr` on an aggregate `mutate`
+                        // param copies bytes through the caller's pointer. Aggregates
+                        // are passed by pointer, so lower as a Store — DCE keeps it and
+                        // codegen emits the through-pointer copy so the caller sees the
+                        // reassignment. Scalar (Copy) params are passed by value, not
+                        // by pointer: storing through them would dereference the value
+                        // as an address (segfault), so they fall through to a plain
+                        // local Assign — the Copy is mutated in place with no writeback,
+                        // matching `modify_int(x)` in the spec.
                         let is_mutate_param = self.meta(name)
                             .map(|m| m.is_mutate_param)
                             .unwrap_or(false);
-                        if is_mutate_param {
+                        let store_through_ptr = is_mutate_param
+                            && mutate_param_by_pointer(&dst_ty);
+                        if store_through_ptr {
                             let store_size = match &dst_ty {
                                 MirType::Struct(layout) => Some(layout.byte_size),
                                 MirType::Enum(layout) => Some(layout.byte_size),
@@ -1816,4 +1823,22 @@ impl<'a> MirLowerer<'a> {
         Ok(())
     }
 
+}
+
+/// A `mutate` param is passed by pointer only for aggregate types (structs,
+/// enums, tuples, and other by-reference layouts). Reassigning such a param
+/// stores bytes through the caller's pointer so the change is visible. Scalar
+/// Copy types are passed by value — reassignment stays local (no writeback).
+fn mutate_param_by_pointer(ty: &MirType) -> bool {
+    !matches!(
+        ty,
+        MirType::Void
+            | MirType::Bool
+            | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+            | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+            | MirType::F32 | MirType::F64
+            | MirType::Char
+            | MirType::Handle
+            | MirType::FuncPtr(_)
+    )
 }

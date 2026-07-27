@@ -42,6 +42,15 @@ impl Interpreter {
         self.env.push_scope();
 
         for (param, arg) in func.params.iter().zip(args.into_iter()) {
+            // A by-value parameter receives an independent copy (VS1): mutating
+            // it inside the callee can't alias the caller's value. `mutate`/`self`
+            // borrows share the caller's storage by design; `take` moves it, so
+            // the source is already dead — none of those copy.
+            let arg = if param.is_mutate || param.is_take || param.name == "self" {
+                arg
+            } else {
+                arg.copy_on_bind()
+            };
             self.env.define(param.name.clone(), arg);
         }
 
@@ -70,6 +79,14 @@ impl Interpreter {
             self.env.pop_scope();
             return Err(RuntimeDiagnostic::new(RuntimeError::Panic(msg), Span::new(0, 0)));
         }
+
+        // mem.parameters/PM2: snapshot the final values of `mutate` params before
+        // the scope is dropped, so the call site can write each back to its
+        // argument place. Keyed by parameter index (self is param 0 for methods).
+        self.mutate_writebacks = func.params.iter().enumerate()
+            .filter(|(_, p)| p.is_mutate)
+            .filter_map(|(i, p)| self.env.get(&p.name).map(|v| (i, v.clone())))
+            .collect();
 
         self.env.pop_scope();
 

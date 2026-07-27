@@ -63,7 +63,9 @@ impl Interpreter {
                     self.env.define(name, val);
                 }
                 for (param, arg) in params.iter().zip(args.into_iter()) {
-                    self.env.define(param.clone(), arg);
+                    // Closure params are by-value bindings (VS1) — copy so the
+                    // body can't alias the caller's value.
+                    self.env.define(param.clone(), arg.copy_on_bind());
                 }
                 let result = self.eval_expr(&body).map_err(|diag| diag.error);
                 self.env.pop_scope();

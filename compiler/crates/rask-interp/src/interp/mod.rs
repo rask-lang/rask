@@ -94,6 +94,11 @@ pub struct Interpreter {
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
     pub(crate) node_types: HashMap<rask_ast::NodeId, rask_types::Type>,
+    /// Final values of `mutate` parameters from the most recent user-function
+    /// call, keyed by parameter index (mem.parameters/PM2). The call site reads
+    /// this to write each value back to its argument place. Cleared before every
+    /// call so stale entries can't leak into an unrelated call's arguments.
+    pub(crate) mutate_writebacks: Vec<(usize, Value)>,
 }
 
 /// Source location info for computing error origins (ER15).
@@ -119,6 +124,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            mutate_writebacks: Vec::new(),
         }
     }
 
@@ -137,6 +143,7 @@ impl Interpreter {
             node_types: HashMap::new(),
             build_state: None,
             source_info: None,
+            mutate_writebacks: Vec::new(),
         }
     }
 
@@ -157,6 +164,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            mutate_writebacks: Vec::new(),
         };
         (interp, buffer)
     }

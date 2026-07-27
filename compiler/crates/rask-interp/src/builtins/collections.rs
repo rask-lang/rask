@@ -28,12 +28,12 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match method {
             "push" => {
-                let item = args.into_iter().next().unwrap_or(Value::Unit);
+                let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
                 v.lock().unwrap().push(item);
                 Ok(Value::Unit)
             }
             "try_push" => {
-                let item = args.into_iter().next().unwrap_or(Value::Unit);
+                let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
                 v.lock().unwrap().push(item);
                 Ok(Value::Enum {
                     name: "Result".to_string(),
@@ -175,7 +175,7 @@ impl Interpreter {
             }
             "set" => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                let val = args.into_iter().nth(1).unwrap_or(Value::Unit);
+                let val = args.into_iter().nth(1).unwrap_or(Value::Unit).copy_on_bind();
                 let mut vec = v.lock().unwrap();
                 if idx >= vec.len() {
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
@@ -185,7 +185,7 @@ impl Interpreter {
             }
             "insert" => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                let item = args.into_iter().nth(1).unwrap_or(Value::Unit);
+                let item = args.into_iter().nth(1).unwrap_or(Value::Unit).copy_on_bind();
                 let mut vec = v.lock().unwrap();
                 if idx > vec.len() {
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
@@ -593,7 +593,7 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match method {
             "insert" | "alloc" => {
-                let item = args.into_iter().next().unwrap_or(Value::Unit);
+                let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
                 let mut pool = p.lock().unwrap();
                 let pool_id = pool.pool_id;
                 let (index, generation) = pool.insert(item);
@@ -1036,8 +1036,8 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match method {
             "insert" => {
-                let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let value = args.get(1).cloned().unwrap_or(Value::Unit);
+                let key = args.get(0).cloned().unwrap_or(Value::Unit).copy_on_bind();
+                let value = args.get(1).cloned().unwrap_or(Value::Unit).copy_on_bind();
                 let mut map = m.lock().unwrap();
 
                 // Check if key exists, update if so

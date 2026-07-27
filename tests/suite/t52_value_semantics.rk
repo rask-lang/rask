@@ -6,10 +6,8 @@
 // small structs, plus vec move/clone). This file adds mutation-independence
 // after clone, the >16-byte move boundary, and a 16-byte tuple copy.
 //
-// NOTE: mutation-independence after *implicit* struct copy (`mut b = a; b.x=1`)
-// is NOT tested here — it diverges on interp (implicit struct copy aliases
-// storage; see report). Independence is exercised only through `.clone()`,
-// which is correct on both backends.
+// Implicit-copy independence (`mut b = a; b.x = 1` leaves `a` untouched) is
+// exercised below — the interpreter used to alias the source storage (#401).
 
 struct Point {
     x: i32
@@ -87,6 +85,58 @@ test "mem.value/VS1 — clone survives independent mutation of the copy" {
     assert original.d == 40
     assert working.a == 111
     assert working.d == 444
+}
+
+// --- Implicit copy is independent, no .clone() needed (#401, VS1) ---
+
+struct Line {
+    a: Point
+    b: Point
+}
+
+func bump_local(p: Point) -> i32 {
+    mut q = p
+    q.x = 99
+    return q.x
+}
+
+test "mem.value/VS1 — implicit mut-binding copy is independent" {
+    const a = Point { x: 1, y: 2 }
+    mut b = a
+    b.x = 99
+    assert a.x == 1
+    assert b.x == 99
+}
+
+test "mem.value/VS1 — assignment copies, source untouched" {
+    mut c = Point { x: 5, y: 6 }
+    const d = Point { x: 7, y: 8 }
+    c = d
+    c.x = 100
+    assert d.x == 7
+}
+
+test "mem.value/VS1 — struct literal captures a copy of each field source" {
+    mut p = Point { x: 3, y: 4 }
+    const ln = Line { a: p, b: p }
+    p.x = 99                // mutate the source after construction
+    assert ln.a.x == 3      // the literal captured a copy, not a reference
+    assert ln.b.x == 3
+}
+
+test "mem.value/VS1 — by-value param is a copy of the argument" {
+    const src = Point { x: 7, y: 8 }
+    const got = bump_local(src)
+    assert got == 99
+    assert src.x == 7
+}
+
+test "mem.value/VS1 — Vec push stores a copy of the argument" {
+    mut a = Point { x: 1, y: 2 }
+    mut v = Vec.new()
+    v.push(a)
+    a.x = 99                // mutate the source after the push
+    assert v[0].x == 1      // the vec stored a copy, not a reference
 }
 
 func main() {}

@@ -1,4 +1,17 @@
-Keep docs short. In chat, explain things to me—I'm not a language architect expert.
+Keep docs short.
+
+## Talk to me in plain language
+
+I know the compiler pipeline — MIR, lowering, codegen, and the rest aren't the problem. What loses me is dense, abstract phrasing: spec-speak, piled-up noun phrases, and internal rule IDs dropped into a sentence as if they explained something. Explain your work so a colleague could follow it at a whiteboard — in chat, and in commit/PR descriptions.
+
+- Lead with the plain-English point: what broke, what you changed, why. Save the fine detail for after.
+- Say it like a person, not the spec. "Both variables were pointing at the same struct, so editing one edited the other" beats "the aggregate aliases the source cell."
+- Don't cite rule IDs (VS1, PM2, …) as if they carry meaning — say what the rule actually requires, in words.
+- Show a concrete example when you can: this input → got X → now gives Y.
+- Don't over-explain things I clearly know. The goal is clarity, not a glossary.
+- Short and clear wins. Three sentences I understand beat a precise paragraph I don't.
+
+(This is about explaining to me. Code comments still follow the style guide below.)
 
 Prefer long term proper fixes over quick-fixes.
 
