@@ -1,0 +1,43 @@
+// Option/Result slot constructors — scalar Ok/Err/Some/none must round-trip
+// identically on both backends. Exercises build_ok, build_err, build_some,
+// build_none (and the type-identity err-side detection, not capitalization).
+
+enum Fail { Bad }
+extend Fail {
+    func message(self) -> string {
+        match self { Fail.Bad => return "bad" }
+    }
+}
+
+func div(n: i64, d: i64) -> i64 or Fail {
+    if d == 0 {
+        return Fail.Bad
+    }
+    return n / d
+}
+
+func first_even(a: i64, b: i64) -> i64? {
+    if a % 2 == 0 {
+        return a
+    }
+    if b % 2 == 0 {
+        return b
+    }
+    return none
+}
+
+func main() {
+    match div(10, 2) {
+        i64 as v => println("ok {v}")
+        Fail => println("err")
+    }
+    match div(10, 0) {
+        i64 as v => println("ok {v}")
+        Fail => println("err")
+    }
+
+    const e: i64? = first_even(3, 4)
+    if e? { println("even {e}") } else { println("no even") }
+    const none_case: i64? = first_even(1, 3)
+    if none_case? { println("even {none_case}") } else { println("no even") }
+}

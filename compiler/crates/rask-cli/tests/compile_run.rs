@@ -321,6 +321,22 @@ fn native_agg_copy_paths() {
     assert_eq!(stdout, "1 2 3\nnone\n");
 }
 
+// Option/Result slot constructors — scalar Ok/Err/Some/none round-trip
+// identically on both backends after routing through one constructor set.
+#[test]
+fn compile_wrap_constructors() {
+    let (stdout, code) = compile_and_run("wrap_constructors.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "ok 5\nerr\neven 4\nno even\n");
+}
+
+#[test]
+fn native_wrap_constructors() {
+    let (stdout, code) = run_native("wrap_constructors.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "ok 5\nerr\neven 4\nno even\n");
+}
+
 // while-let with an ok-side, uppercase-named type pattern must enter the loop.
 // The capitalization heuristic previously routed `Reading` to the err side.
 #[test]

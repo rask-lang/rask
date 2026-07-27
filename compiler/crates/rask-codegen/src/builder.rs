@@ -733,41 +733,17 @@ impl<'a> FunctionBuilder<'a> {
                         builder.def_var(*var, val);
                     }
                 } else if wrap_as_some_aggregate {
-                    // tag=Some at offset 0, then memcpy payload bytes at PAYLOAD_OFFSET.
+                    // Some(aggregate): tag + payload bytes copied at PAYLOAD_OFFSET.
                     let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
                     let inner_size = if let MirType::Option(inner) = &dst_local.ty {
                         Self::resolve_type_alloc_size(
                             inner.as_ref(), ctx.struct_layouts, ctx.enum_layouts,
                         ).unwrap_or(inner.size())
                     } else { 0 };
-                    let zero = builder.ins().iconst(types::I64, 0);
-                    builder.ins().stack_store(zero, *dst_ss, crate::layouts::TAG_OFFSET);
-                    // Copy `inner_size` bytes from `val` (pointer to source aggregate)
-                    // to dst_slot + PAYLOAD_OFFSET.
-                    let mut offset = 0i32;
-                    let payload_base = crate::layouts::PAYLOAD_OFFSET;
-                    while (offset as u32) + 8 <= inner_size {
-                        let word = builder.ins().load(types::I64, MemFlags::new(), val, offset);
-                        builder.ins().stack_store(word, *dst_ss, payload_base + offset);
-                        offset += 8;
-                    }
-                    if (inner_size as i32 - offset) >= 4 {
-                        let word = builder.ins().load(types::I32, MemFlags::new(), val, offset);
-                        builder.ins().stack_store(word, *dst_ss, payload_base + offset);
-                        offset += 4;
-                    }
-                    if (inner_size as i32 - offset) >= 2 {
-                        let word = builder.ins().load(types::I16, MemFlags::new(), val, offset);
-                        builder.ins().stack_store(word, *dst_ss, payload_base + offset);
-                        offset += 2;
-                    }
-                    if (inner_size as i32 - offset) >= 1 {
-                        let word = builder.ins().load(types::I8, MemFlags::new(), val, offset);
-                        builder.ins().stack_store(word, *dst_ss, payload_base + offset);
-                    }
+                    Self::build_wrapped_aggregate(builder, *dst_ss, false, 0, val, inner_size);
                 } else if wrap_as_some {
                     let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
-                    Self::wrap_some_into_slot(builder, val, *dst_ss);
+                    Self::build_some(builder, *dst_ss, val);
                 } else {
                     let var = ctx.var_map.get(dst)
                         .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
@@ -1774,9 +1750,9 @@ impl<'a> FunctionBuilder<'a> {
                                 .map(|l| matches!(l.ty, MirType::Option(_)))
                                 .unwrap_or(false);
                             if dst_is_option {
-                                Self::wrap_some_into_slot(builder, val, *ss);
+                                Self::build_some(builder, *ss, val);
                             } else {
-                                Self::wrap_ok_into_slot(builder, val, *ss);
+                                Self::build_ok(builder, *ss, val);
                             }
                         } else {
                             builder.def_var(*var, val);
@@ -1885,24 +1861,17 @@ impl<'a> FunctionBuilder<'a> {
                                 let merge_block = builder.create_block();
                                 builder.ins().brif(is_null, then_block, &[], else_block, &[]);
 
-                                // NULL path: tag = 1 (None)
+                                // NULL path: none
                                 builder.switch_to_block(then_block);
                                 builder.seal_block(then_block);
-                                let one = builder.ins().iconst(types::I64, 1);
-                                builder.ins().stack_store(one, *ss, crate::layouts::TAG_OFFSET);
+                                Self::build_none(builder, *ss);
                                 builder.ins().jump(merge_block, &[]);
 
-                                // non-NULL path: tag = 0 (Some), payload copied from ptr
+                                // non-NULL path: Some(payload copied from ptr)
                                 builder.switch_to_block(else_block);
                                 builder.seal_block(else_block);
-                                let tag_some = builder.ins().iconst(types::I64, 0);
-                                builder.ins().stack_store(tag_some, *ss, crate::layouts::TAG_OFFSET);
-                                // Copy payload: for scalars (slot_size=16) just load one word;
-                                // for aggregates copy word-by-word from ptr into slot at offset 8+.
                                 let payload_size = *slot_size - crate::layouts::PAYLOAD_OFFSET as u32;
-                                Self::copy_aggregate_at(
-                                    builder, ptr, *ss, crate::layouts::PAYLOAD_OFFSET, payload_size,
-                                );
+                                Self::build_wrapped_aggregate(builder, *ss, false, 0, ptr, payload_size);
                                 builder.ins().jump(merge_block, &[]);
 
                                 builder.switch_to_block(merge_block);
@@ -1957,20 +1926,16 @@ impl<'a> FunctionBuilder<'a> {
                                 let merge_block = builder.create_block();
                                 builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
 
-                                // Ok: tag=0, zero origin, copy payload → RESULT_PAYLOAD_OFFSET
+                                // Ok(payload) copied into the Result slot.
                                 builder.switch_to_block(ok_block);
                                 builder.seal_block(ok_block);
-                                builder.ins().stack_store(zero, dst_ss, crate::layouts::TAG_OFFSET);
-                                builder.ins().stack_store(zero, dst_ss, crate::layouts::ORIGIN_FILE_OFFSET);
-                                builder.ins().stack_store(zero, dst_ss, crate::layouts::ORIGIN_LINE_OFFSET);
                                 let payload_addr = builder.ins().stack_addr(types::I64, payload_ss, 0);
-                                Self::copy_aggregate_at(
-                                    builder, payload_addr, dst_ss,
-                                    crate::layouts::RESULT_PAYLOAD_OFFSET, elem_size,
+                                Self::build_wrapped_aggregate(
+                                    builder, dst_ss, true, 0, payload_addr, elem_size,
                                 );
                                 builder.ins().jump(merge_block, &[]);
 
-                                // Err: tag=1
+                                // Err: tag only (recv failure carries no payload).
                                 builder.switch_to_block(err_block);
                                 builder.seal_block(err_block);
                                 let one = builder.ins().iconst(types::I64, 1);
@@ -2034,9 +1999,9 @@ impl<'a> FunctionBuilder<'a> {
                                 .map(|l| matches!(l.ty, MirType::Option(_)))
                                 .unwrap_or(false);
                             if dst_is_option {
-                                Self::wrap_some_into_slot(builder, final_val, *ss);
+                                Self::build_some(builder, *ss, final_val);
                             } else {
-                                Self::wrap_ok_into_slot(builder, final_val, *ss);
+                                Self::build_ok(builder, *ss, final_val);
                             }
                         }
                     } else {
@@ -2279,7 +2244,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Build `Option<T>` in a stack slot: tag 0 (Some) if `present`, else 1 (None).
-    /// Layout matches `wrap_some_into_slot`: [tag:8][payload:8].
+    /// Layout matches `build_some`: [tag:8][payload:8].
     fn build_option(
         builder: &mut ClifFunctionBuilder,
         payload: Value,
@@ -2934,25 +2899,15 @@ impl<'a> FunctionBuilder<'a> {
                             let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
                                 StackSlotKind::ExplicitSlot, slot_size, 0,
                             ));
-                            let is_err = if let MirType::Result { err, .. } = ctx.ret_ty {
-                                ctx.locals.iter()
-                                    .find(|l| l.id == local_id)
-                                    .map(|l| &l.ty == err.as_ref())
-                                    .unwrap_or(false)
-                            } else {
-                                false
-                            };
-                            if is_err {
-                                let tag = builder.ins().iconst(types::I64, 1);
-                                builder.ins().stack_store(tag, ret_ss, crate::layouts::TAG_OFFSET);
-                                let zero = builder.ins().iconst(types::I64, 0);
-                                builder.ins().stack_store(zero, ret_ss, crate::layouts::ORIGIN_FILE_OFFSET);
-                                builder.ins().stack_store(zero, ret_ss, crate::layouts::ORIGIN_LINE_OFFSET);
-                                builder.ins().stack_store(loaded, ret_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
+                            let local_ty = ctx.locals.iter()
+                                .find(|l| l.id == local_id)
+                                .map(|l| &l.ty);
+                            if Self::is_err_component(ctx.ret_ty, local_ty) {
+                                Self::build_err(builder, ret_ss, loaded);
                             } else if matches!(ctx.ret_ty, MirType::Option(_)) {
-                                Self::wrap_some_into_slot(builder, loaded, ret_ss);
+                                Self::build_some(builder, ret_ss, loaded);
                             } else {
-                                Self::wrap_ok_into_slot(builder, loaded, ret_ss);
+                                Self::build_ok(builder, ret_ss, loaded);
                             }
                             let addr = builder.ins().stack_addr(types::I64, ret_ss, 0);
                             builder.ins().return_(&[addr]);
@@ -2972,32 +2927,18 @@ impl<'a> FunctionBuilder<'a> {
                         let needs_wrap = !already_wrapped
                             && matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_));
                         if needs_wrap {
-                            let is_err = if let MirType::Result { err, .. } = ctx.ret_ty {
-                                local_ty.as_ref().map_or(false, |t| t == err.as_ref())
-                            } else {
-                                false
-                            };
+                            let is_err = Self::is_err_component(ctx.ret_ty, local_ty.as_ref());
+                            let is_result = matches!(ctx.ret_ty, MirType::Result { .. });
                             let slot_size = Self::resolve_type_alloc_size(
                                 ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts,
                             ).unwrap_or(16);
                             let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
                                 StackSlotKind::ExplicitSlot, slot_size, 0,
                             ));
-                            let payload_off = if matches!(ctx.ret_ty, MirType::Option(_)) {
-                                crate::layouts::PAYLOAD_OFFSET
-                            } else {
-                                crate::layouts::RESULT_PAYLOAD_OFFSET
-                            };
-                            let tag = builder.ins().iconst(types::I64, if is_err { 1 } else { 0 });
-                            builder.ins().stack_store(tag, ret_ss, crate::layouts::TAG_OFFSET);
-                            if matches!(ctx.ret_ty, MirType::Result { .. }) {
-                                let zero = builder.ins().iconst(types::I64, 0);
-                                builder.ins().stack_store(zero, ret_ss, crate::layouts::ORIGIN_FILE_OFFSET);
-                                builder.ins().stack_store(zero, ret_ss, crate::layouts::ORIGIN_LINE_OFFSET);
-                            }
                             let src = builder.ins().stack_addr(types::I64, ss, 0);
-                            let dst = builder.ins().stack_addr(types::I64, ret_ss, payload_off);
-                            Self::copy_aggregate_to_ptr(builder, src, dst, size);
+                            Self::build_wrapped_aggregate(
+                                builder, ret_ss, is_result, if is_err { 1 } else { 0 }, src, size,
+                            );
                             let addr = builder.ins().stack_addr(types::I64, ret_ss, 0);
                             builder.ins().return_(&[addr]);
                         } else {
@@ -3027,11 +2968,7 @@ impl<'a> FunctionBuilder<'a> {
                             .map(|l| l.ty.clone()),
                         _ => None,
                     });
-                    let is_err_value = if let MirType::Result { err, .. } = ctx.ret_ty {
-                        val_ty.as_ref().map_or(false, |t| t == err.as_ref())
-                    } else {
-                        false
-                    };
+                    let is_err_value = Self::is_err_component(ctx.ret_ty, val_ty.as_ref());
                     let val = if let Some(val_op) = value.as_ref() {
                         Self::lower_operand_typed(builder, val_op, Some(types::I64), ctx)?
                     } else {
@@ -3062,35 +2999,16 @@ impl<'a> FunctionBuilder<'a> {
                         let inner_size = Self::resolve_type_alloc_size(
                             inner, ctx.struct_layouts, ctx.enum_layouts,
                         ).unwrap_or(inner.size());
-                        let payload_off = if matches!(ctx.ret_ty, MirType::Option(_)) {
-                            crate::layouts::PAYLOAD_OFFSET
-                        } else {
-                            crate::layouts::RESULT_PAYLOAD_OFFSET
-                        };
-                        let tag_val = if is_err_value { 1 } else { 0 };
-                        let tag = builder.ins().iconst(types::I64, tag_val);
-                        builder.ins().stack_store(tag, ss, crate::layouts::TAG_OFFSET);
-                        if matches!(ctx.ret_ty, MirType::Result { .. }) {
-                            let zero = builder.ins().iconst(types::I64, 0);
-                            builder.ins().stack_store(zero, ss, crate::layouts::ORIGIN_FILE_OFFSET);
-                            builder.ins().stack_store(zero, ss, crate::layouts::ORIGIN_LINE_OFFSET);
-                        }
-                        let dst = builder.ins().stack_addr(types::I64, ss, payload_off);
-                        if inner_size > 0 {
-                            Self::copy_bytes(builder, val, 0, dst, 0, inner_size);
-                        }
+                        let is_result = matches!(ctx.ret_ty, MirType::Result { .. });
+                        Self::build_wrapped_aggregate(
+                            builder, ss, is_result, if is_err_value { 1 } else { 0 }, val, inner_size,
+                        );
                     } else if is_err_value {
-                        // Scalar Err — tag=1, payload at RESULT_PAYLOAD_OFFSET.
-                        let tag = builder.ins().iconst(types::I64, 1);
-                        builder.ins().stack_store(tag, ss, crate::layouts::TAG_OFFSET);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        builder.ins().stack_store(zero, ss, crate::layouts::ORIGIN_FILE_OFFSET);
-                        builder.ins().stack_store(zero, ss, crate::layouts::ORIGIN_LINE_OFFSET);
-                        builder.ins().stack_store(val, ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
+                        Self::build_err(builder, ss, val);
                     } else if matches!(ctx.ret_ty, MirType::Option(_)) {
-                        Self::wrap_some_into_slot(builder, val, ss);
+                        Self::build_some(builder, ss, val);
                     } else {
-                        Self::wrap_ok_into_slot(builder, val, ss);
+                        Self::build_ok(builder, ss, val);
                     }
                     let addr = builder.ins().stack_addr(types::I64, ss, 0);
                     builder.ins().return_(&[addr]);
@@ -3426,40 +3344,94 @@ impl<'a> FunctionBuilder<'a> {
         Self::copy_bytes(builder, src_ptr, 0, dst_ptr, 0, size);
     }
 
-    /// Wrap a plain return value as Ok(value) in a Result stack slot.
-    fn wrap_ok_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
-        let tag = builder.ins().iconst(types::I64, 0);
-        builder.ins().stack_store(tag, dst_slot, crate::layouts::TAG_OFFSET);
-        // Zero origin fields (Ok path has no origin)
+    // ─── Option/Result slot constructors ────────────────────────
+    // One place that knows the tag + origin-fields + payload layout, keyed off
+    // the rask_mono::abi offsets. Every wrapping site routes through these
+    // instead of re-emitting the store sequence inline.
+    //
+    //   Result slot: [tag:8][origin_file:8][origin_line:8][payload]
+    //   Option slot: [tag:8][payload]     (no origin fields)
+    // Tag 0 = Ok/Some, tag 1 = Err/none.
+
+    /// Zero the Result origin-file/line fields. Ok and C-FFI errors have no
+    /// Rask origin; real Err origins are filled by the error-construction path.
+    fn zero_result_origin(builder: &mut ClifFunctionBuilder, slot: StackSlot) {
         let zero = builder.ins().iconst(types::I64, 0);
-        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_FILE_OFFSET);
-        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_LINE_OFFSET);
-        builder.ins().stack_store(value, dst_slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
+        builder.ins().stack_store(zero, slot, crate::layouts::ORIGIN_FILE_OFFSET);
+        builder.ins().stack_store(zero, slot, crate::layouts::ORIGIN_LINE_OFFSET);
     }
 
-    /// Wrap a scalar value as Some(value) into an Option stack slot.
-    ///
-    /// Option layout: [tag:8][payload:8]. Much smaller than Result — no origin fields.
-    /// Using `wrap_ok_into_slot` for Options writes past the end of the slot (UB/crash).
-    fn wrap_some_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
-        let tag = builder.ins().iconst(types::I64, 0); // 0 = Some
-        builder.ins().stack_store(tag, dst_slot, crate::layouts::TAG_OFFSET);
-        builder.ins().stack_store(value, dst_slot, crate::layouts::PAYLOAD_OFFSET);
+    /// Ok(scalar) into a Result slot.
+    fn build_ok(builder: &mut ClifFunctionBuilder, slot: StackSlot, payload: Value) {
+        let tag = builder.ins().iconst(types::I64, 0);
+        builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
+        Self::zero_result_origin(builder, slot);
+        builder.ins().stack_store(payload, slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
+    }
+
+    /// Err(scalar) into a Result slot (origin zeroed — no source location here).
+    fn build_err(builder: &mut ClifFunctionBuilder, slot: StackSlot, payload: Value) {
+        let tag = builder.ins().iconst(types::I64, 1);
+        builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
+        Self::zero_result_origin(builder, slot);
+        builder.ins().stack_store(payload, slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
+    }
+
+    /// Some(scalar) into an Option slot. Option layout has no origin fields —
+    /// using the Result constructor here would write past the end of the slot.
+    fn build_some(builder: &mut ClifFunctionBuilder, slot: StackSlot, payload: Value) {
+        let tag = builder.ins().iconst(types::I64, 0);
+        builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
+        builder.ins().stack_store(payload, slot, crate::layouts::PAYLOAD_OFFSET);
+    }
+
+    /// none into an Option slot (tag only — payload is dead).
+    fn build_none(builder: &mut ClifFunctionBuilder, slot: StackSlot) {
+        let tag = builder.ins().iconst(types::I64, 1);
+        builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
+    }
+
+    /// Wrap an aggregate payload (copied from `src_ptr`) into an Option/Result
+    /// slot. `is_result` picks the payload offset and whether origin is zeroed;
+    /// `tag` is 0 (Ok/Some) or 1 (Err/none).
+    fn build_wrapped_aggregate(
+        builder: &mut ClifFunctionBuilder,
+        slot: StackSlot,
+        is_result: bool,
+        tag: i64,
+        src_ptr: Value,
+        size: u32,
+    ) {
+        let tag_v = builder.ins().iconst(types::I64, tag);
+        builder.ins().stack_store(tag_v, slot, crate::layouts::TAG_OFFSET);
+        let payload_off = if is_result {
+            Self::zero_result_origin(builder, slot);
+            crate::layouts::RESULT_PAYLOAD_OFFSET
+        } else {
+            crate::layouts::PAYLOAD_OFFSET
+        };
+        Self::copy_aggregate_at(builder, src_ptr, slot, payload_off, size);
+    }
+
+    /// True when `local_ty` is the err side of `ret_ty` (a Result). Drives the
+    /// Ok-vs-Err tag choice when a bare component is returned/assigned into a
+    /// Result — the type identity, not name capitalization, decides (#259).
+    fn is_err_component(ret_ty: &MirType, local_ty: Option<&MirType>) -> bool {
+        match ret_ty {
+            MirType::Result { err, .. } => local_ty == Some(err.as_ref()),
+            _ => false,
+        }
     }
 
     /// C functions that use "negative return = error" convention.
-    /// For these, return value < 0 maps to Err(value), >= 0 maps to Ok(value).
-    /// Note: fs_open/fs_create return NULL (0) for errors, not -1 — handled separately.
-    /// Wrap a C return value into a Result stack slot, checking for errors.
     /// If value < 0: tag=1 (Err), payload=value. Otherwise: tag=0 (Ok), payload=value.
+    /// Note: fs_open/fs_create return NULL (0) for errors, not -1 — handled separately.
     fn wrap_result_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
         let zero = builder.ins().iconst(types::I64, 0);
         let is_err = builder.ins().icmp(IntCC::SignedLessThan, value, zero);
         let tag = builder.ins().uextend(types::I64, is_err);
         builder.ins().stack_store(tag, dst_slot, crate::layouts::TAG_OFFSET);
-        // Zero origin fields — C FFI errors don't carry Rask origin
-        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_FILE_OFFSET);
-        builder.ins().stack_store(zero, dst_slot, crate::layouts::ORIGIN_LINE_OFFSET);
+        Self::zero_result_origin(builder, dst_slot);
         builder.ins().stack_store(value, dst_slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
     }
 
