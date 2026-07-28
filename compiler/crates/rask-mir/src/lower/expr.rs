@@ -2869,332 +2869,7 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
-                // Generic method: append type arg to name (e.g. parse<i32> → parse_i32)
-                let method = if let Some(ta) = type_args {
-                    if let Some(ty_name) = ta.first() {
-                        format!("{}_{}", method, ty_name)
-                    } else {
-                        method.clone()
-                    }
-                } else {
-                    method.clone()
-                };
-
-                // Regular method call. Clone the receiver operand so obj_op stays
-                // available for the inline Result/Option dispatch below (which
-                // must reuse it rather than re-lower `object` — see #349).
-                let mut all_args = vec![obj_op.clone()];
-                let mut arg_types = Vec::new();
-                for arg in args {
-                    let (op, ty) = self.lower_expr(&arg.expr)?;
-                    all_args.push(op);
-                    arg_types.push(ty);
-                }
-
-                // Qualify method name with receiver type to avoid dispatch
-                // ambiguity (e.g. Vec.get vs Map.get vs Pool.get).
-                // Priority: user-defined struct/enum from type checker first
-                // (`extend E { func get(self) }` would otherwise be shadowed by
-                // the hardcoded Map.get fallback below). Skip stdlib types
-                // (Option, Result, ...) so their methods stay on the existing
-                // dispatch path.
-                let user_type_prefix = self.ctx.lookup_raw_type(object.id)
-                    .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
-                    .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-                    .filter(|prefix| {
-                        let base = prefix.split('<').next().unwrap_or(prefix);
-                        self.ctx.find_struct(base).is_some()
-                            || self.ctx.find_enum(base).is_some()
-                    });
-                // Inline Result/Option methods that have no runtime impl —
-                // `.map(f)`, `.ok()`, `.filter(f)`. These were dispatching
-                // to Vec_map et al. as a fallback and silently
-                // mis-computing on aggregate or non-i64 values.
-                if let Some(handled) = self.try_lower_result_option_method(
-                    expr, object, method.as_str(), args, &obj_op, &obj_ty,
-                )? {
-                    return Ok(handled);
-                }
-
-                // Resolve the receiver's stdlib type prefix, then mangle to
-                // `{Type}_{method}`. Dispatch is driven by the resolved receiver
-                // type and the stub-derived metadata — not a hand-maintained
-                // method-name table. Priority:
-                //   1. user struct/enum from the type checker
-                //   2. tracked local/field type (LocalMeta, struct layout)
-                //   3. resolved receiver type, when that stdlib type actually
-                //      declares the method (validated against the stub API)
-                //   4. the method's sole defining stdlib type, when unambiguous
-                //   5. disambiguation policy for shared/absent names on
-                //      receivers the checker left unresolved
-                //   6. resolved type / MIR type as a last resort
-                let type_prefix_of_receiver = || {
-                    self.ctx.lookup_raw_type(object.id)
-                        .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-                };
-                let qualified_name = user_type_prefix
-                    .or_else(|| if let ExprKind::Ident(var_name) = &object.kind {
-                        self.meta(var_name).and_then(|m| m.type_prefix.clone())
-                    } else {
-                        None
-                    })
-                    // Field access on struct: resolve field type from struct layout
-                    .or_else(|| {
-                        if let ExprKind::Field { object: inner_obj, field: field_name } = &object.kind {
-                            if let ExprKind::Ident(var_name) = &inner_obj.kind {
-                                if let Some((local_id, _)) = self.locals.get(var_name) {
-                                    let local_ty = self.builder.local_type(*local_id);
-                                    if let Some(MirType::Struct(StructLayoutId { id, .. })) = local_ty {
-                                        if let Some(layout) = self.ctx.struct_layouts.get(id as usize) {
-                                            if let Some(fl) = layout.fields.iter().find(|f| f.name == *field_name) {
-                                                return super::MirContext::type_prefix(&fl.ty, self.ctx.type_names);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            None
-                        } else {
-                            None
-                        }
-                    })
-                    // Resolved receiver type is authoritative when that stdlib
-                    // type declares the method (checked against the stub API).
-                    .or_else(|| type_prefix_of_receiver().filter(|p| {
-                        let base = p.split('<').next().unwrap_or(p).trim();
-                        rask_stdlib::mir_metadata::type_has_method(base, &method)
-                    }))
-                    // Unambiguous stub method → its sole defining type.
-                    .or_else(|| rask_stdlib::mir_metadata::unique_method_prefix(&method)
-                        .map(|s| s.to_string()))
-                    // Disambiguation policy for method names shared across (or
-                    // absent from) stub types, used only when the receiver type
-                    // is unresolved. A resolved receiver above always wins.
-                    .or_else(|| ambiguous_method_prefix(&method, all_args.len())
-                        .map(|s| s.to_string()))
-                    // Last resort: resolved type even if the stub doesn't list
-                    // the method (user types, monomorphized aggregates), then
-                    // the MIR type (catches F64, String, etc.).
-                    .or_else(type_prefix_of_receiver)
-                    .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
-                    // parse<T> always belongs to string (structural, not type-prefix related)
-                    .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
-                    .map(|prefix| {
-                        // Strip generic params from the prefix before mangling:
-                        // "Vec<T>" → "Vec", "Map<K, V>" → "Map". Otherwise the
-                        // call name is `Vec<T>_len` which has no codegen entry.
-                        let base = prefix.split('<').next().unwrap_or(&prefix).trim();
-                        format!("{}_{}", base, method)
-                    });
-                let qualified_name = match qualified_name {
-                    Some(name) => name,
-                    // Type-driven dispatch failed for a call the checker accepted
-                    // — an internal invariant violation, surfaced through the
-                    // MIR-lowering error path rather than a stray print.
-                    None => return Err(LoweringError::InvalidConstruct(format!(
-                        "method `{}` on receiver of unresolved type — dispatch could \
-                         not determine a stdlib type prefix",
-                        method
-                    ))),
-                };
-
-                // Track collection element types from push/insert so get returns the right type.
-                // Handles both `v.push(x)` and `self.field.push(x)`.
-                // Writes to both per-function and shared cross-function maps.
-                if matches!(qualified_name.as_str(), "Vec_push" | "Vec_set" | "Pool_insert") {
-                    if let Some(arg_ty) = arg_types.first() {
-                        if !matches!(arg_ty, MirType::I64) {
-                            if let Some(key) = Self::vec_tracking_key(object) {
-                                self.meta_mut(&key).elem_type = Some(arg_ty.clone());
-                                self.ctx.shared_elem_types.borrow_mut().insert(key, arg_ty.clone());
-                            }
-                        }
-                    }
-                }
-
-                // Channel recv with struct elements: switch to struct variant
-                // and inject elem_size so the builder can allocate the right buffer.
-                let qualified_name = if qualified_name == "Receiver_receive" {
-                    let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
-                        self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
-                    } else {
-                        8
-                    };
-                    if elem_size > 8 {
-                        all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
-                        "Receiver_receive_struct".to_string()
-                    } else {
-                        qualified_name
-                    }
-                } else if qualified_name == "Receiver_try_receive" {
-                    // try_receive recvs into a buffer of the element's real size and
-                    // maps status→Result in codegen. Pass elem_size for the buffer.
-                    let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
-                        self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
-                    } else {
-                        8
-                    };
-                    all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
-                    qualified_name
-                } else {
-                    qualified_name
-                };
-
-                // Use tracked element type for Vec_get/index return instead of default I64.
-                // Checks per-function map first, then shared cross-function map.
-                let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
-                    Self::vec_tracking_key(object).and_then(|key| {
-                        self.meta(&key).and_then(|m| m.elem_type.clone())
-                            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
-                    })
-                } else {
-                    None
-                };
-                let ret_ty = if qualified_name == "Vec_get" {
-                    // `.get()` returns T? (Option, none on OOB per V3). The call is
-                    // renamed to Vec_get_opt below so codegen uses the NULL-encoding
-                    // runtime + DerefOption adapter. The element (Option payload)
-                    // type sizes the result slot, so it must be right even when the
-                    // Vec wasn't push-tracked in this function (e.g. returned from a
-                    // callee): take the checker's `T?` payload first, then tracking.
-                    let elem = self.extract_payload_type(expr)
-                        .or(tracked_elem)
-                        .unwrap_or(MirType::I64);
-                    Some(MirType::Option(Box::new(elem)))
-                } else if qualified_name == "Vec_index" {
-                    // Indexing (`v[i]`) panics on OOB and yields the raw element.
-                    tracked_elem
-                } else if qualified_name == "Pool_get" {
-                    // Pool.get returns Option<T> — extract T from tracked element type
-                    let elem_ty = Self::vec_tracking_key(object)
-                        .and_then(|key| {
-                            self.meta(&key).and_then(|m| m.elem_type.clone())
-                                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
-                        })
-                        // Fallback: extract from Pool<T> generic parameter
-                        .or_else(|| {
-                            self.ctx.lookup_raw_type(object.id)
-                                .and_then(|ty| match ty {
-                                    rask_types::Type::UnresolvedGeneric { args, .. } => {
-                                        args.first().and_then(|a| match a {
-                                            rask_types::GenericArg::Type(t) => Some(t.as_ref()),
-                                            _ => None,
-                                        })
-                                    }
-                                    _ => None,
-                                })
-                                .map(|elem_ty| self.ctx.type_to_mir(elem_ty))
-                                .filter(|t| !matches!(t, MirType::Ptr))
-                        })
-                        .unwrap_or(MirType::I64);
-                    Some(MirType::Option(Box::new(elem_ty)))
-                } else {
-                    None
-                }.unwrap_or_else(|| self
-                    .func_sigs
-                    .get(&method)
-                    .or_else(|| self.func_sigs.get(&qualified_name))
-                    .map(|s| s.ret_ty.clone())
-                    .unwrap_or_else(|| super::stdlib_return_mir_type(&qualified_name)));
-
-                // Struct clone: inline field-by-field copy with deep clone for
-                // heap fields (string, Vec, Map). Avoids needing a generated
-                // runtime clone function for every user struct.
-                if method == "clone" {
-                    if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
-                        if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
-                            let result_local = self.builder.alloc_temp(obj_ty.clone());
-                            let src = all_args[0].clone();
-                            for field in &layout.fields {
-                                let field_val = self.builder.alloc_temp(MirType::I64);
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                    dst: field_val,
-                                    rvalue: MirRValue::Field {
-                                        base: src.clone(),
-                                        field_index: field.offset,
-                                        byte_offset: None,
-                                        field_size: None,
-                                    },
-                                }));
-                                // Deep clone heap types
-                                let clone_fn = Self::clone_fn_for_type(&field.ty);
-                                let store_val = if let Some(cfn) = clone_fn {
-                                    let cloned = self.builder.alloc_temp(MirType::I64);
-                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                        dst: Some(cloned),
-                                        func: FunctionRef::internal(cfn.to_string()),
-                                        args: vec![MirOperand::Local(field_val)],
-                                    }));
-                                    MirOperand::Local(cloned)
-                                } else {
-                                    MirOperand::Local(field_val)
-                                };
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                    addr: result_local,
-                                    offset: field.offset,
-                                    value: store_val,
-                                    store_size: None,
-                                }));
-                            }
-                            return Ok((MirOperand::Local(result_local), obj_ty));
-                        }
-                    }
-                    // Enum clone: copy tag, then switch on tag to deep-clone
-                    // heap fields per variant.
-                    if let MirType::Enum(EnumLayoutId { id, .. }) = &obj_ty {
-                        if let Some(layout) = self.ctx.enum_layouts.get(*id as usize).cloned() {
-                            return self.lower_enum_clone(&layout, &all_args[0], obj_ty);
-                        }
-                    }
-                }
-
-                // Pool.alloc(value) → Pool_insert(pool, elem_ptr)
-                // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
-                let (final_name, final_args) = if qualified_name == "Pool_alloc" && all_args.len() == 2 {
-                    ("Pool_insert".to_string(), all_args)
-                } else if qualified_name == "Vec_get" {
-                    // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
-                    ("Vec_get_opt".to_string(), all_args)
-                } else if qualified_name == "Vec_join" {
-                    // Vec_join assumes Vec<string>; use Vec_join_i64 for non-string elements
-                    let is_string = Self::vec_tracking_key(object)
-                        .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
-                            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
-                        .map_or(false, |ty| matches!(ty, MirType::String));
-                    if is_string {
-                        (qualified_name.clone(), all_args)
-                    } else {
-                        ("Vec_join_i64".to_string(), all_args)
-                    }
-                } else {
-                    (qualified_name.clone(), all_args)
-                };
-
-                let result_local = self.builder.alloc_temp(ret_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef::internal(final_name.clone()),
-                    args: final_args,
-                }));
-
-                // W2a/W2b: Re-resolve pool bindings after pool mutators inside `with` blocks
-                if matches!(final_name.as_str(),
-                    "Pool_insert" | "Pool_remove" | "Pool_clear" | "Pool_drain" | "Pool_alloc"
-                ) {
-                    if let ExprKind::Ident(pool_var) = &object.kind {
-                        if let Some(bindings) = self.with_pool_bindings.get(pool_var) {
-                            for &(handle_local, binding_local, pool_local) in bindings {
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
-                                    dst: binding_local,
-                                    pool: pool_local,
-                                    handle: handle_local,
-                                }));
-                            }
-                        }
-                    }
-                }
-
-                Ok((MirOperand::Local(result_local), ret_ty))
+                self.lower_regular_method_call(expr, object, method, args, type_args, obj_op, obj_ty)
     }
 
     /// Calls where the receiver is a type or module name, not a value:
@@ -3595,6 +3270,348 @@ impl<'a> MirLowerer<'a> {
             }
         }
         Ok(None)
+    }
+
+    /// Ordinary method dispatch: mangle the method to `{Type}_{method}` from
+    /// the resolved receiver type, then emit the call. Also carries the inline
+    /// Result/Option handling, struct/enum clone, and collection element
+    /// tracking the plain call path needs.
+    fn lower_regular_method_call(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        method: &String,
+        args: &[CallArg],
+        type_args: &Option<Vec<String>>,
+        obj_op: MirOperand,
+        obj_ty: MirType,
+    ) -> Result<TypedOperand, LoweringError> {
+                // Generic method: append type arg to name (e.g. parse<i32> → parse_i32)
+                let method = if let Some(ta) = type_args {
+                    if let Some(ty_name) = ta.first() {
+                        format!("{}_{}", method, ty_name)
+                    } else {
+                        method.clone()
+                    }
+                } else {
+                    method.clone()
+                };
+
+                // Regular method call. Clone the receiver operand so obj_op stays
+                // available for the inline Result/Option dispatch below (which
+                // must reuse it rather than re-lower `object` — see #349).
+                let mut all_args = vec![obj_op.clone()];
+                let mut arg_types = Vec::new();
+                for arg in args {
+                    let (op, ty) = self.lower_expr(&arg.expr)?;
+                    all_args.push(op);
+                    arg_types.push(ty);
+                }
+
+                // Qualify method name with receiver type to avoid dispatch
+                // ambiguity (e.g. Vec.get vs Map.get vs Pool.get).
+                // Priority: user-defined struct/enum from type checker first
+                // (`extend E { func get(self) }` would otherwise be shadowed by
+                // the hardcoded Map.get fallback below). Skip stdlib types
+                // (Option, Result, ...) so their methods stay on the existing
+                // dispatch path.
+                let user_type_prefix = self.ctx.lookup_raw_type(object.id)
+                    .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+                    .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+                    .filter(|prefix| {
+                        let base = prefix.split('<').next().unwrap_or(prefix);
+                        self.ctx.find_struct(base).is_some()
+                            || self.ctx.find_enum(base).is_some()
+                    });
+                // Inline Result/Option methods that have no runtime impl —
+                // `.map(f)`, `.ok()`, `.filter(f)`. These were dispatching
+                // to Vec_map et al. as a fallback and silently
+                // mis-computing on aggregate or non-i64 values.
+                if let Some(handled) = self.try_lower_result_option_method(
+                    expr, object, method.as_str(), args, &obj_op, &obj_ty,
+                )? {
+                    return Ok(handled);
+                }
+
+                // Resolve the receiver's stdlib type prefix, then mangle to
+                // `{Type}_{method}`. Dispatch is driven by the resolved receiver
+                // type and the stub-derived metadata — not a hand-maintained
+                // method-name table. Priority:
+                //   1. user struct/enum from the type checker
+                //   2. tracked local/field type (LocalMeta, struct layout)
+                //   3. resolved receiver type, when that stdlib type actually
+                //      declares the method (validated against the stub API)
+                //   4. the method's sole defining stdlib type, when unambiguous
+                //   5. disambiguation policy for shared/absent names on
+                //      receivers the checker left unresolved
+                //   6. resolved type / MIR type as a last resort
+                let type_prefix_of_receiver = || {
+                    self.ctx.lookup_raw_type(object.id)
+                        .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+                };
+                let qualified_name = user_type_prefix
+                    .or_else(|| if let ExprKind::Ident(var_name) = &object.kind {
+                        self.meta(var_name).and_then(|m| m.type_prefix.clone())
+                    } else {
+                        None
+                    })
+                    // Field access on struct: resolve field type from struct layout
+                    .or_else(|| {
+                        if let ExprKind::Field { object: inner_obj, field: field_name } = &object.kind {
+                            if let ExprKind::Ident(var_name) = &inner_obj.kind {
+                                if let Some((local_id, _)) = self.locals.get(var_name) {
+                                    let local_ty = self.builder.local_type(*local_id);
+                                    if let Some(MirType::Struct(StructLayoutId { id, .. })) = local_ty {
+                                        if let Some(layout) = self.ctx.struct_layouts.get(id as usize) {
+                                            if let Some(fl) = layout.fields.iter().find(|f| f.name == *field_name) {
+                                                return super::MirContext::type_prefix(&fl.ty, self.ctx.type_names);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            None
+                        } else {
+                            None
+                        }
+                    })
+                    // Resolved receiver type is authoritative when that stdlib
+                    // type declares the method (checked against the stub API).
+                    .or_else(|| type_prefix_of_receiver().filter(|p| {
+                        let base = p.split('<').next().unwrap_or(p).trim();
+                        rask_stdlib::mir_metadata::type_has_method(base, &method)
+                    }))
+                    // Unambiguous stub method → its sole defining type.
+                    .or_else(|| rask_stdlib::mir_metadata::unique_method_prefix(&method)
+                        .map(|s| s.to_string()))
+                    // Disambiguation policy for method names shared across (or
+                    // absent from) stub types, used only when the receiver type
+                    // is unresolved. A resolved receiver above always wins.
+                    .or_else(|| ambiguous_method_prefix(&method, all_args.len())
+                        .map(|s| s.to_string()))
+                    // Last resort: resolved type even if the stub doesn't list
+                    // the method (user types, monomorphized aggregates), then
+                    // the MIR type (catches F64, String, etc.).
+                    .or_else(type_prefix_of_receiver)
+                    .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
+                    // parse<T> always belongs to string (structural, not type-prefix related)
+                    .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
+                    .map(|prefix| {
+                        // Strip generic params from the prefix before mangling:
+                        // "Vec<T>" → "Vec", "Map<K, V>" → "Map". Otherwise the
+                        // call name is `Vec<T>_len` which has no codegen entry.
+                        let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                        format!("{}_{}", base, method)
+                    });
+                let qualified_name = match qualified_name {
+                    Some(name) => name,
+                    // Type-driven dispatch failed for a call the checker accepted
+                    // — an internal invariant violation, surfaced through the
+                    // MIR-lowering error path rather than a stray print.
+                    None => return Err(LoweringError::InvalidConstruct(format!(
+                        "method `{}` on receiver of unresolved type — dispatch could \
+                         not determine a stdlib type prefix",
+                        method
+                    ))),
+                };
+
+                // Track collection element types from push/insert so get returns the right type.
+                // Handles both `v.push(x)` and `self.field.push(x)`.
+                // Writes to both per-function and shared cross-function maps.
+                if matches!(qualified_name.as_str(), "Vec_push" | "Vec_set" | "Pool_insert") {
+                    if let Some(arg_ty) = arg_types.first() {
+                        if !matches!(arg_ty, MirType::I64) {
+                            if let Some(key) = Self::vec_tracking_key(object) {
+                                self.meta_mut(&key).elem_type = Some(arg_ty.clone());
+                                self.ctx.shared_elem_types.borrow_mut().insert(key, arg_ty.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Channel recv with struct elements: switch to struct variant
+                // and inject elem_size so the builder can allocate the right buffer.
+                let qualified_name = if qualified_name == "Receiver_receive" {
+                    let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
+                        self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
+                    } else {
+                        8
+                    };
+                    if elem_size > 8 {
+                        all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
+                        "Receiver_receive_struct".to_string()
+                    } else {
+                        qualified_name
+                    }
+                } else if qualified_name == "Receiver_try_receive" {
+                    // try_receive recvs into a buffer of the element's real size and
+                    // maps status→Result in codegen. Pass elem_size for the buffer.
+                    let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
+                        self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
+                    } else {
+                        8
+                    };
+                    all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
+                    qualified_name
+                } else {
+                    qualified_name
+                };
+
+                // Use tracked element type for Vec_get/index return instead of default I64.
+                // Checks per-function map first, then shared cross-function map.
+                let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
+                    Self::vec_tracking_key(object).and_then(|key| {
+                        self.meta(&key).and_then(|m| m.elem_type.clone())
+                            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+                    })
+                } else {
+                    None
+                };
+                let ret_ty = if qualified_name == "Vec_get" {
+                    // `.get()` returns T? (Option, none on OOB per V3). The call is
+                    // renamed to Vec_get_opt below so codegen uses the NULL-encoding
+                    // runtime + DerefOption adapter. The element (Option payload)
+                    // type sizes the result slot, so it must be right even when the
+                    // Vec wasn't push-tracked in this function (e.g. returned from a
+                    // callee): take the checker's `T?` payload first, then tracking.
+                    let elem = self.extract_payload_type(expr)
+                        .or(tracked_elem)
+                        .unwrap_or(MirType::I64);
+                    Some(MirType::Option(Box::new(elem)))
+                } else if qualified_name == "Vec_index" {
+                    // Indexing (`v[i]`) panics on OOB and yields the raw element.
+                    tracked_elem
+                } else if qualified_name == "Pool_get" {
+                    // Pool.get returns Option<T> — extract T from tracked element type
+                    let elem_ty = Self::vec_tracking_key(object)
+                        .and_then(|key| {
+                            self.meta(&key).and_then(|m| m.elem_type.clone())
+                                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+                        })
+                        // Fallback: extract from Pool<T> generic parameter
+                        .or_else(|| {
+                            self.ctx.lookup_raw_type(object.id)
+                                .and_then(|ty| match ty {
+                                    rask_types::Type::UnresolvedGeneric { args, .. } => {
+                                        args.first().and_then(|a| match a {
+                                            rask_types::GenericArg::Type(t) => Some(t.as_ref()),
+                                            _ => None,
+                                        })
+                                    }
+                                    _ => None,
+                                })
+                                .map(|elem_ty| self.ctx.type_to_mir(elem_ty))
+                                .filter(|t| !matches!(t, MirType::Ptr))
+                        })
+                        .unwrap_or(MirType::I64);
+                    Some(MirType::Option(Box::new(elem_ty)))
+                } else {
+                    None
+                }.unwrap_or_else(|| self
+                    .func_sigs
+                    .get(&method)
+                    .or_else(|| self.func_sigs.get(&qualified_name))
+                    .map(|s| s.ret_ty.clone())
+                    .unwrap_or_else(|| super::stdlib_return_mir_type(&qualified_name)));
+
+                // Struct clone: inline field-by-field copy with deep clone for
+                // heap fields (string, Vec, Map). Avoids needing a generated
+                // runtime clone function for every user struct.
+                if method == "clone" {
+                    if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
+                        if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
+                            let result_local = self.builder.alloc_temp(obj_ty.clone());
+                            let src = all_args[0].clone();
+                            for field in &layout.fields {
+                                let field_val = self.builder.alloc_temp(MirType::I64);
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: field_val,
+                                    rvalue: MirRValue::Field {
+                                        base: src.clone(),
+                                        field_index: field.offset,
+                                        byte_offset: None,
+                                        field_size: None,
+                                    },
+                                }));
+                                // Deep clone heap types
+                                let clone_fn = Self::clone_fn_for_type(&field.ty);
+                                let store_val = if let Some(cfn) = clone_fn {
+                                    let cloned = self.builder.alloc_temp(MirType::I64);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                        dst: Some(cloned),
+                                        func: FunctionRef::internal(cfn.to_string()),
+                                        args: vec![MirOperand::Local(field_val)],
+                                    }));
+                                    MirOperand::Local(cloned)
+                                } else {
+                                    MirOperand::Local(field_val)
+                                };
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: result_local,
+                                    offset: field.offset,
+                                    value: store_val,
+                                    store_size: None,
+                                }));
+                            }
+                            return Ok((MirOperand::Local(result_local), obj_ty));
+                        }
+                    }
+                    // Enum clone: copy tag, then switch on tag to deep-clone
+                    // heap fields per variant.
+                    if let MirType::Enum(EnumLayoutId { id, .. }) = &obj_ty {
+                        if let Some(layout) = self.ctx.enum_layouts.get(*id as usize).cloned() {
+                            return self.lower_enum_clone(&layout, &all_args[0], obj_ty);
+                        }
+                    }
+                }
+
+                // Pool.alloc(value) → Pool_insert(pool, elem_ptr)
+                // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
+                let (final_name, final_args) = if qualified_name == "Pool_alloc" && all_args.len() == 2 {
+                    ("Pool_insert".to_string(), all_args)
+                } else if qualified_name == "Vec_get" {
+                    // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
+                    ("Vec_get_opt".to_string(), all_args)
+                } else if qualified_name == "Vec_join" {
+                    // Vec_join assumes Vec<string>; use Vec_join_i64 for non-string elements
+                    let is_string = Self::vec_tracking_key(object)
+                        .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
+                            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+                        .map_or(false, |ty| matches!(ty, MirType::String));
+                    if is_string {
+                        (qualified_name.clone(), all_args)
+                    } else {
+                        ("Vec_join_i64".to_string(), all_args)
+                    }
+                } else {
+                    (qualified_name.clone(), all_args)
+                };
+
+                let result_local = self.builder.alloc_temp(ret_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(result_local),
+                    func: FunctionRef::internal(final_name.clone()),
+                    args: final_args,
+                }));
+
+                // W2a/W2b: Re-resolve pool bindings after pool mutators inside `with` blocks
+                if matches!(final_name.as_str(),
+                    "Pool_insert" | "Pool_remove" | "Pool_clear" | "Pool_drain" | "Pool_alloc"
+                ) {
+                    if let ExprKind::Ident(pool_var) = &object.kind {
+                        if let Some(bindings) = self.with_pool_bindings.get(pool_var) {
+                            for &(handle_local, binding_local, pool_local) in bindings {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
+                                    dst: binding_local,
+                                    pool: pool_local,
+                                    handle: handle_local,
+                                }));
+                            }
+                        }
+                    }
+                }
+
+                Ok((MirOperand::Local(result_local), ret_ty))
     }
 
     fn lower_if(
