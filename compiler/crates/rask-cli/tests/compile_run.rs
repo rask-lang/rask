@@ -170,6 +170,19 @@ fn wide_basic_interp() {
     assert_eq!(stdout, WIDE_EXPECTED);
 }
 
+// Closure-free Wide path runs natively; the CPU result is the reference
+// semantics a device backend must match (conc.data-parallel/W3). Assert
+// native and interp agree, and both are correct.
+#[test]
+fn wide_native_sum_matches_interp() {
+    let (interp_out, interp_code) = run_interp("wide_native_sum.rk");
+    let (native_out, native_code) = run_native("wide_native_sum.rk");
+    assert_eq!(interp_code, 0, "interp failed");
+    assert_eq!(native_code, 0, "native failed");
+    assert_eq!(interp_out, "sum=10\n");
+    assert_eq!(native_out, interp_out, "native != interp (W3 oracle)");
+}
+
 // ─── rask compile tests ──────────────────────────────────────
 
 #[test]

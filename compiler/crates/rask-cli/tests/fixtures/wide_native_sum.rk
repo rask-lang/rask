@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Closure-free Wide path that runs natively (conc.data-parallel).
+// map/zip_with need the closure-callback path, which segfaults natively
+// today (pre-existing) — those are interpreter-only for now.
+func main() {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+    print("sum={v.wide().sum()}\n")   // 10
+}
