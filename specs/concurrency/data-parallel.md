@@ -1,175 +1,115 @@
 <!-- id: conc.data-parallel -->
 <!-- status: proposed -->
-<!-- summary: Data-parallel offload to GPUs and accelerators via a device box, a kernel region, and explicit dispatch — no function coloring -->
+<!-- summary: Early sketch of map-only data-parallel offload — deliberately incomplete, known weaknesses documented -->
 <!-- depends: memory/boxes.md, memory/linear.md, types/simd.md, concurrency/async.md -->
 
-# Data-Parallel Offload (exploration)
+# Data-Parallel Offload (early sketch — weak on purpose)
 
-**Status: proposed.** This is a design sketch, not a decision. It answers one question — *can Rask say "run this across 10,000 lanes" without betraying its principles?* — and shows what the answer would cost to build. Nothing here is settled.
+**Status: proposed, and known-incomplete.** This is not at the bar of `conc.async`. It covers one easy case (independent map over a buffer), models the hardware as synchronous when it isn't, and leans on an earlier claim — "GPUs without function coloring, same bet as async" — that does not survive scrutiny. It's kept because the *shape* (device buffer as a box, explicit transfers) is worth reacting to, and because writing down why it's fragile is more useful than a confident sketch that hides the holes. Read "Known weaknesses" before taking anything here as a direction.
 
-## The gap
+## The gap it's aimed at
 
-Rask has two parallelism stories today, both CPU-only:
+Rask has two parallelism stories, both CPU-only:
 
 - **SIMD** (`type.simd`) — `Vec[T, N]`, tens of lanes, one core.
 - **Tasks + thread pool** (`conc.async`) — tens of cores.
 
-Neither reaches the hardware this note is about: GPUs, NPUs, and other wide accelerators where the unit of work is *thousands of identical lanes over a buffer*. That class of program is growing, and Rask currently has nothing to say to it. Stretching `Vec[T, N]` to `N = 10000` isn't the answer — a GPU has a separate memory space, explicit transfers, launch latency, and severe penalties for divergent control flow. Pretending it's just a wider SIMD register would be a lie about the cost model, and cost honesty is principle #1.
+Neither reaches GPUs, NPUs, or other wide accelerators where the unit of work is *thousands of identical lanes over a buffer*. Stretching `Vec[T, N]` to `N = 10000` isn't the answer — a GPU has a separate memory space, explicit transfers, launch latency, and severe penalties for divergent control flow. Modelling it as a wider SIMD register would lie about the cost model.
 
-So this is a genuinely new execution target, and the interesting question isn't "add a backend." It's whether Rask's existing shapes — boxes, `with`, regions, effect metadata — already compose into a data-parallel model that *avoids the mistakes other languages made here*. I think they mostly do.
+That much is solid. Everything below is where it gets shaky.
 
-## What it looks like
+## What the surface might look like
 
-Three pieces: a **device box**, a **kernel region**, and **dispatch**.
+Three pieces: a **device box**, a **kernel region**, and **dispatch**. This is the *only* case the sketch handles — an independent per-lane map:
 
 <!-- test: skip -->
 ```rask
 func scale_all(data: []f32, factor: f32) -> Vec[f32] {
     using Gpu {
         with device as d {
-            const input  = d.upload(data)              // []f32 → Buffer[f32]  (transfer — visible)
-            const output = d.alloc[f32](data.len())    // device allocation      (visible)
+            const input  = d.upload(data)              // []f32 → Buffer[f32]  (transfer)
+            const output = d.alloc[f32](data.len())    // device allocation
 
-            dispatch(data.len()) |lane| {              // kernel region
+            dispatch(data.len()) |lane| {              // kernel region — map only
                 output[lane] = input[lane] * factor
             }
 
-            return output.download()                   // Buffer[f32] → Vec[f32] (transfer — visible)
+            return output.download()                   // Buffer[f32] → Vec[f32] (transfer + sync)
         }
     }
 }
 ```
 
-- `using Gpu { }` declares the capability, exactly like `using ThreadPool { }`. No device, no offload — a compile error at `with device`, not a silent CPU fallback.
-- `with device as d` is the ordinary box `with` (`mem.boxes`). Buffers are reachable only inside it; at scope end, device allocations are freed. Same discipline as every other box.
-- `d.upload` / `d.alloc` / `.download` are the cost. Each is an explicit call, so every host↔device transfer and every device allocation shows up in the source. Nothing moves across the bus invisibly.
-- `dispatch(N) |lane| { … }` runs the closure body for lanes `0..N`. `lane` is the only per-invocation input. This is the kernel.
+The parts worth keeping:
 
-That's the whole surface. It reads like the rest of Rask because it *is* the rest of Rask — a capability, a box, a `with`, a closure.
+- `with device as d` is the ordinary box `with` (`mem.boxes`). Buffers are reachable only inside it. A `Buffer[T]` fits the linear/`Owned` discipline (`mem.linear`) — consumed by `.download()` or freed at scope end.
+- `d.upload` / `d.alloc` / `.download` are explicit calls, so transfers and device allocations are visible in the source. That's the one real transparency win.
 
-## The one idea that matters: a region, not a color
+The parts that are already wrong are in the next section — starting with the fact that this code *reads* like three blocking calls over hardware that is fundamentally asynchronous.
 
-Every other systems language solves "which code runs on the device" by **coloring functions**:
+## Known weaknesses
 
-- CUDA/C++ tags functions `__global__` / `__device__`. A `__device__` function can't be called from the host. Two worlds, split at the signature.
-- SYCL kernels are lambdas, but any function they call must live in the device translation unit.
-- Rust's GPU story (`rust-gpu`, `cust`) puts kernels in separate crates with `#[spirv]` entry points and separate compilation.
+These are load-bearing, not polish. Ranked worst first.
 
-This is the same disease as `async`/sync coloring: a function's *type* now records where it can run, and that color propagates up every caller. Rask rejected that for I/O (principle #5, `conc.async`). It would be incoherent to reintroduce it for GPUs.
+### W1 — "No function coloring, same bet as async" is false
 
-**So the kernel constraint lives on the region, not on the function.** `dispatch(N) |lane| { … }` is a *lexical region*, like `comptime { }` or `unsafe { }` — a place in the source, not a property of a signature. Inside it, some things are illegal: no I/O, no host allocation, no locks, no unbounded recursion, no dynamic dispatch. The compiler checks the region by walking the code reachable from it and consulting the **effect metadata it already tracks** (`conc.async` calls effects "information without enforcement" — surfaced by tooling, not baked into types). If a called function performs a device-illegal effect, the error points at the call site *inside the region*, not at a missing annotation.
+Async earns no-coloring because there is no real fork: a function runs the *same compiled code* whether called from a green task or sync — the runtime just pauses the task instead of the thread. A GPU kernel is the opposite. The "same" `square` in a `dispatch` is compiled to a **different ISA** (SPIR-V, not x86), runs in a **different address space**, with a **different capability set** (no heap, no I/O, no recursion), under a **different cost model**. That is not one function behaving the same way — it's one source text compiled to two incompatible targets. CUDA/SYCL color functions because the color carries real information ("this artifact exists as device code"); it isn't stubbornness.
 
-The payoff, concretely:
+What actually survives is much narrower: the compiler can reachability-close from a `dispatch` and emit device code for every pure function it reaches (this is `rask-mono` retargeted). That avoids **annotation**, not coloring. And the closure breaks exactly where async is robust — function pointers, dynamic dispatch, stored closures. Async falls back to a runtime panic there; a kernel *can't* (the device code doesn't exist). So the model is forced to **ban** those constructs rather than handle them. The clean "region not color" story is really "we amputated everything that would force a color."
 
-<!-- test: skip -->
-```rask
-func square(x: f32) -> f32 { return x * x }   // ordinary function. no @gpu. no @device.
+**Correct framing:** GPU *is* a colored domain. The only design choice is *where the color lives* — Rask's bet is a lexical region plus compiler-driven reachability instead of a signature annotation. That buys no-annotation and pure-function sharing, and buys nothing on portability, reductions, async, or dynamic dispatch.
 
-// host use
-const y = square(3.0)
+### W2 — No concurrency model for the device (in a concurrency spec)
 
-// device use — same function, no second version, no color on its signature
-dispatch(buf.len()) |lane| { out[lane] = square(in[lane]) }
-```
+Real dispatch is asynchronous: enqueue upload, enqueue kernel, enqueue download, *then synchronize*. The example above reads like three blocking calls. There is no handle, no explicit sync point, and no way to express "launch these three kernels, then wait" — the exact lifetime machinery `conc.async` gets right with must-use handles and drain-on-exit. Making `.download()` the implicit sync point silently serializes independent kernels and throws away the overlap that is the whole point of the hardware. A device dispatch needs a handle story at least as careful as `TaskHandle`; this sketch has none.
 
-`square` is legal in a kernel because *it does nothing device-illegal*, and the compiler can see that from the effect info it already has. No annotation, no duplicate `__device__` copy, no signature split. A function is kernel-legal when its behavior is, and Rask learns that by looking — not by making you paint it.
+### W3 — E1 (per-lane independence) writes a check that can't be cashed
 
-**This is the thing to react to.** If Rask ships GPU support as a region checked against effect metadata rather than a color on function types, it solves the exact problem that makes CUDA and SYCL codebases bifurcate. The effect-tracking machinery that principle #5 already committed to is what makes it possible. That's not a lucky accident — it's the same bet paying off twice (async was the first time).
+The earlier draft claimed the compiler enforces that no lane reads another lane's output. Deciding that for `out[lane] = in[f(lane)]` is alias analysis over arbitrary index arithmetic — undecidable in general. So the rule is either (a) a brutal syntactic restriction ("you may only write `out[lane]`, index literally `lane`"), which makes stencils, gather, and matmul tiles illegal and reduces the model to a toy, or (b) unsound. It has to pick one, out loud. `conc.async` never claims to check something undecidable — must-use handles are a genuinely checkable property.
 
-## Killing the color has a cost — pay it honestly
+### W4 — Map-only covers the easy 20%
 
-Coloring had one real virtue: you could never miss the boundary, because it infected the type. Drop the color and you have to earn that visibility another way, or GPU code becomes invisible inside code that looks identical to a host loop. Two separate questions:
+`dispatch |lane|` handles scale-a-buffer. It does **not** handle sum, dot product, softmax, prefix-sum, or histogram — anything needing cross-lane communication (workgroups, shared memory, barriers). That layer is absent and it is not optional; it's most of what people actually offload. `conc.async` is a complete model of its domain (channels, select, cancellation, groups). This is the easy slice with the hard majority deferred.
 
-### Seeing that you're on the device
+### W5 — "No fallback" is coloring, resurfaced at the block level
 
-The `dispatch(N) |lane| { … }` block **is** the marker — the same role `comptime { }` and `unsafe { }` play. Reading stays honest on one invariant:
+A program using `dispatch` can't run on a machine without the accelerator (`with device` is a compile error under `using Gpu`). So the *program* is now colored by whether it contains a `with device` block — the same coloring evicted from signatures, back at the block level. Async runs the same program with or without its runtime; this doesn't. "No silent cost cliff" is a defensible reason, but calling it a transparency win while it reintroduces coloring is dishonest.
 
-| Rule | Description |
-|------|-------------|
-| **V1: No implicit dispatch** | Device execution is entered *only* through a written `dispatch`. No operator, method, or conversion may launch a kernel. The door is always visible in the source. |
-| **V2: No nested dispatch** | A `dispatch` may not contain another `dispatch`. Kernels stay flat — one visible region, not a tree of hidden ones. |
-| **V3: Context is shown, not typed** | A helper called inside a kernel runs on the device, but its *signature* says nothing — exactly like a function called inside `comptime`. Tooling surfaces "runs on device here" (an IDE ghost); the type does not carry it. |
+### W6 — It fails its own headline metric
 
-V3 is the honest concession. Coloring makes the boundary impossible to *miss* by poisoning every caller's type. Rask instead makes it impossible to *enter implicitly* (V1) and pushes the rest to tooling (principle #5). The price: to answer "does `square` ever run on a GPU?" you look at its call sites or ask the IDE, not its signature. That's the same deal `comptime` already makes, and Rask already accepted it there.
+By making device code look identical to host code (great syntactic-noise score), the sketch *hides* that a different machine, memory space, and cost model are in play — the opposite of Transparency of Cost, the metric that matters most here. Divergence, the GPU's sharpest cost, has no representation in the source at all.
 
-### Knowing whether work is even dispatchable
-
-"When can I use `dispatch`?" splits into what the compiler *enforces* and what tooling *advises* — the enforcement/information split of principle #5:
-
-| Tier | Rule | Description |
-|------|------|-------------|
-| Enforced | **E1: Per-lane independence** | A lane may not read another lane's output. `out[lane] = out[lane-1] + x` is rejected — the error explains that all lanes run at once, so the dependency is undefined. Cross-lane reductions need a dedicated primitive, not raw `dispatch`. |
-| Enforced | **E2: No host effects** | I/O, host allocation, locks, `ensure` — rejected at the offending line inside the region, with the fix. This is the region/effect check from above. |
-| Advised | **A1: Worth-it cost** | Whether the transfer pays off is a size judgment the compiler can't make. A lint/ghost flags it — "moves 40 B/lane, does one multiply; transfer dominates, a CPU `Vec` loop is likely faster" — without blocking. |
-
-So the rule a programmer actually applies:
-
-**Reach for `dispatch` when** the work is a map over a large buffer, each element independent, arithmetic-heavy, and the data is worth moving (or already on device from a prior dispatch).
-
-**Don't when** `N` is small (launch + transfer dominate), lanes depend on each other (E1 — use a reduction primitive), the body is branch-heavy (divergence), or you'd move more bytes than you compute (A1).
-
-The compiler guarantees the independence half (E1, E2). Tooling nags about the transfer half (A1). Neither is a color.
-
-## How the pieces reuse what exists
-
-| Piece | Reuses | New? |
-|-------|--------|------|
-| `using Gpu { }` | `using` capability blocks (`conc.async`) | Capability wiring only |
-| `with device as d` | box `with` access (`mem.boxes`) | `Device` is a resource box |
-| `Buffer[T]` | linear/`Owned` discipline (`mem.linear`) | Consumed by `.download()` or freed at scope end |
-| kernel region | `comptime`/`unsafe` region checking + effect metadata (`conc.async`) | One new analysis pass |
-| `dispatch(N) \|lane\|` | closure syntax | A builtin, not new grammar |
-
-The buffer is a box in the family (`mem.boxes`), sendable and linear like `Owned<T>` — you can't read device memory from the host without a `.download()`, and you can't leak a buffer past its `with device`. The linearity rules (`mem.linear`) already give "consumed exactly once"; a `Buffer` freed at scope end or moved into `.download()` fits without new rules.
-
-## What it deliberately won't do
-
-Naming the non-goals is how the region check stays simple and the cost model stays honest:
-
-- **No host closures captured into kernels.** A kernel captures buffers and scalars, not arbitrary host state. (Keeps the address-space boundary real.)
-- **No dynamic dispatch or heap allocation on-device.** Kernels are monomorphic and flat.
-- **No I/O, no locks, no `ensure` inside a kernel.** Those are host effects; the region check rejects them.
-- **No automatic CPU fallback.** If there's no device, `with device` fails to compile under `using Gpu`. Silent fallback would hide a 100× cost cliff — the opposite of transparency.
-- **Divergence is not yet visible in the source.** Per-lane branches that diverge are the GPU's worst cost, and this sketch has no way to surface them. That's the biggest honesty gap here — see open questions.
-
-## How hard is it, really?
+## How hard is a *real* version?
 
 Honest tiers, against the pipeline (`.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Comptime → Ownership → MIR → Codegen`):
 
-**Cheap — frontend.** `with device`, `using Gpu`, and `dispatch(N) |lane|` need essentially no new grammar. `with` and `using` exist; `dispatch` is a builtin taking a count and a closure. Resolve/typecheck treat `Buffer[T]` as another box type. Days-to-weeks of parser/type work, not months.
+- **Cheap — frontend.** `with device`, `using Gpu`, `dispatch(N) |lane|` need little new grammar. Days-to-weeks.
+- **Moderate — the region check.** One analysis pass walking the call graph from each `dispatch`, rejecting device-illegal effects at the call site. Reuses effect metadata and the `comptime`-legality pattern. The work is diagnostics.
+- **The mountain — a second codegen backend.** MIR → SPIR-V (portable across Vulkan/WebGPU) plus a host driver (alloc, transfer, launch). Bounded because kernel MIR is a subset, but it's the bulk of the effort by far.
 
-**Moderate — the region check.** One new analysis pass: from each `dispatch` closure, walk the reachable call graph in MIR and reject device-illegal effects, reporting at the offending call site. This reuses the effect metadata and mirrors how `comptime`-legality is already checked. The work is writing good diagnostics (a first-class concern here — "you called `print` inside a kernel, that's a host effect" with the fix), not inventing analysis.
+None of that is the real difficulty, though. W1–W4 are: the design is unfinished at the *model* level, before any backend exists. The cheap frontend would just let you write the toy sooner.
 
-**The mountain — a second codegen backend.** Cranelift lowers MIR to CPU. Kernels need MIR → **SPIR-V** (portable across Vulkan/WebGPU) or WGSL. This is the real cost. Two things make it *bounded* rather than open-ended:
-
-1. Kernel MIR is a **subset** — numeric ops, array indexing, bounded loops, per-lane branches. No heap, no runtime calls, no closures-in-closures. You lower that subset, not all of MIR.
-2. The region check *guarantees* only that subset reaches the backend, so the backend can reject-by-assertion anything it doesn't handle, and the error still surfaces as a clean diagnostic upstream.
-
-Still, a working MIR→SPIR-V lowering plus a host-side driver (buffer alloc, transfer, launch — a runtime library alongside the existing C runtime, targeting Vulkan or WebGPU first for portability) is the bulk of the effort by a wide margin. Everything else is small next to it.
-
-**Net:** the language design is cheap and reuses Rask's existing shapes almost perfectly. The compiler cost is concentrated in one place — a second backend — and that place is a bounded subset problem, not a rewrite. If someone wanted to prototype, the order is: (1) region check with diagnostics over a CPU-simulated `dispatch` (runs kernels as a parallel-for on the thread pool — proves the model end-to-end with zero backend work), then (2) SPIR-V backend behind the same surface.
-
-That staging matters: **step 1 delivers the whole programming model — coloring-free kernels, cost-visible transfers, the region check — using only the CPU.** You can validate whether the design feels like Rask before committing to the backend mountain.
-
-## Open questions
-
-- **Divergence cost.** How does per-lane branch divergence become visible in the source, the way an allocation is? Without an answer, the model hides the GPU's sharpest cost — a real tension with principle #1.
-- **`native` lane groups.** SIMD has `native` width; does dispatch expose workgroup/warp size, or stay fully abstract? Abstract is simpler; exposing it may be necessary for reductions.
-- **Reductions across lanes.** `dispatch` writes per-lane outputs cleanly. Cross-lane reductions (sum over 10,000 lanes) need either a device-side reduce primitive or a documented multi-pass pattern.
-- **Buffer aliasing.** Can two buffers in one `with device` overlap? The box/linear rules say no by construction, but gather/scatter (`type.simd/MEM4`) complicates it.
-- **Is this in scope at all?** CORE_DESIGN draws the line at "web services, CLI, games, data pipelines." Data pipelines and game physics *want* this; web/CLI never will. Committing means widening the stated target — a decision for `CORE_DESIGN`, not this file.
+**If anyone prototypes:** do step 1 only — the region check plus a CPU-simulated `dispatch` (run kernels as a parallel-for on the thread pool). That validates the *ergonomics* end-to-end with zero backend work, and — more importantly — forces W2 and W3 into the open, because you have to pick an actual independence rule and an actual sync model to make it run at all.
 
 ---
 
-## Appendix (non-normative)
+## TODO — what a non-fragile version has to settle
 
-### Why the region approach is the whole argument
+Ordered by how much each unblocks the rest. None is a footnote; each is real design work.
 
-If you take one thing from this note: the reason Rask can plausibly do GPUs *well* is that it already refused to color functions for async. That refusal forced an effect-metadata system (principle #5). GPU kernels are the second customer for that same system. A language that colored async would have to color kernels too, and end up with the two-worlds split that makes CUDA/SYCL code hard to share. Rask gets to check a region instead of paint a signature — and the same `square` runs in both worlds, unannotated. That's the payoff, and it's worth prototyping the CPU-simulated version just to feel whether it holds up.
+1. **Pick the framing (W1, W5).** Drop "no coloring." State plainly that GPU is a colored domain and Rask's choice is region + reachability over signature annotation. Decide whether the program-level color (has-a-device-block) is acceptable or needs a fallback path. Everything downstream depends on this being honest.
+2. **Design the dispatch handle and sync model (W2).** What `dispatch` returns, when the host blocks, how to overlap independent kernels, how buffers stay alive until a kernel that reads them completes. Should reach the care level of `TaskHandle` / drain-on-exit in `conc.async`.
+3. **Pin down the independence rule (W3).** Choose the *checkable* syntactic restriction (likely: write only `out[lane]`, reads unrestricted) and state exactly what it forbids. If stencils/gather are out, say so; they belong to the reduction/shared-memory layer, not raw `dispatch`.
+4. **Design the cross-lane layer (W4).** Workgroups, shared memory, barriers, and reduction primitives (`sum`, `scan`, `histogram`). This is the 80% the map model skips, and it drags in warp/workgroup size — decide whether that's exposed (like SIMD `native`) or abstract.
+5. **Make divergence visible (W6).** Find the source-level representation for per-lane branch divergence, the way an allocation is visible. Without it the design fails its own transparency metric. This may be the hardest item and has no obvious answer yet.
+6. **Reachability-to-device closure (W1 detail).** Specify how pure functions reachable from a kernel get compiled to device code, and exactly which constructs (function pointers, dynamic dispatch, closures-over-host-state, recursion) are rejected and with what diagnostic. This is the concrete mechanism the "region not color" claim actually rests on.
+7. **Scope decision.** Whether accelerators are in Rask's target at all — a `CORE_DESIGN` question, not this file's. Data pipelines and game physics want it; web/CLI never will.
+
+Until items 1–5 have answers, this stays `proposed` and map-only. Don't cite it as a direction.
 
 ### See also
 
 - `type.simd` — CPU vector types (the tens-of-lanes story)
-- `conc.async` — capability blocks, no function coloring (the precedent)
-- `mem.boxes` — scoped access via `with` (the device box shape)
+- `conc.async` — the quality bar this note does not yet meet
+- `mem.boxes` — scoped access via `with` (the device box shape, the one solid borrowing)
 - `mem.linear` — consume-exactly-once (the buffer discipline)
