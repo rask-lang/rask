@@ -27,8 +27,13 @@ Concurrency model for Rask.
 | [sync.md](sync.md) | Draft | **Shared state**: Shared<T>, Mutex<T> for cross-task access |
 | [select.md](select.md) | Draft | Select statement, multiplexing |
 | [phase-b-transforms.md](phase-b-transforms.md) | Proposed | **Phase B transforms**: vtable ABI, closures, separate compilation, FFI |
+| [heterogeneous-hardware.md](heterogeneous-hardware.md) | Proposed | **GPU/accelerator map + decisions**: read this first for the Wide story |
+| [data-parallel.md](data-parallel.md) | Proposed | **Wide[T] algebra**: stage/commit, primitives, observability (partially superseded) |
+| [wide-backend.md](wide-backend.md) | Proposed | **Backend contract**: the library-implemented interface to devices |
 
 **Start here:** [async.md](async.md) for the execution model overview, then [runtime-strategy.md](runtime-strategy.md) for implementation plan.
+
+**Heterogeneous hardware (GPU/accelerator):** start at [heterogeneous-hardware.md](heterogeneous-hardware.md) — the model, the decisions, and what's still open.
 
 ## Quick Reference
 

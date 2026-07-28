@@ -9,6 +9,8 @@ A backend is the thing that actually runs a `Wide` plan on some device. The core
 
 This spec is about the *contract*, not any backend. That's deliberate: the contract is the part that can't be cheaply changed once libraries depend on it, while SPIR-V, Vulkan, CUDA, and whatever replaces them in 2032 are details that must be free to churn underneath. **The energy goes into the API so the language stays extendable when the tech turns over.** Status: `proposed`.
 
+> **⚠ Read `conc.heterogeneous` first.** Two revisions since this was written: (1) the additive-**versioning** rule (N5) and compat-policy TODO are premature — pre-v1 there's no compat burden, so optimize the shape, not stability; (2) this contract still reads as **synchronous**, but the device is an async executor — it needs the `submit → completion-handle → await` model, queues, and completion-bound buffer lifetime folded in. The capability-negotiation shape (N1–N4), host-in/host-out memory, kernel-format slot, and the "what stays out" boundary (X1–X4) are still current.
+
 ## What has to stay stable, and what must be free to change
 
 | Layer | Who owns it | Stability |

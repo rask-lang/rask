@@ -9,6 +9,8 @@ A `Wide[T]` is a value spread across lanes. You **stage** operations on it — `
 
 This replaces an earlier `dispatch |lane|` sketch that colored functions and hand-rolled lanes. That version is gone; the reasoning that killed it is in [Appendix: what v1 got wrong](#appendix-non-normative). This spec is `proposed`, not decided — but it is a coherent direction, not a toy.
 
+> **⚠ Partially superseded — read `conc.heterogeneous` first.** Later design revised two things here: (1) the `using Simd/ThreadPool/Gpu` **width contexts** — a device is now a `@resource` acquired with `with`, non-exclusive, and "widths" turned out to be three different kinds of thing, not one construct; (2) the single blocking **`commit`** — the device is an async executor, so the model is now `submit → must-use handle → await` (with `commit`/`read` as the no-overlap sugar). The algebra, primitives, coloring-on-data, observability, and core/library split below are still current.
+
 ## The staging/commit model
 
 The whole design rests on one split: building the plan is free, running it is the one visible, fallible event.
