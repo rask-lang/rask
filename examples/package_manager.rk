@@ -979,7 +979,7 @@ func print_dep_graph(graph: DepGraph) {
 }
 
 func print_node(graph: DepGraph, handle: Handle<ResolvedPkg>, depth: usize) {
-    const indent = string.repeat("  ", depth)
+    const indent = "  ".repeat(depth)
 
     with graph.packages[handle] as pkg {
         const ver = pkg.meta.version.to_string()

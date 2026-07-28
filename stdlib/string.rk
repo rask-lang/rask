@@ -21,9 +21,6 @@ extend string {
     /// Single-character string.
     public func from_char(c: char) -> string { }
 
-    /// String repeated n times.
-    public func repeat(s: string, n: usize) -> string { }
-
     /// Concatenate two strings. Allocates.
     public func concat(self, other: string) -> string { }
 

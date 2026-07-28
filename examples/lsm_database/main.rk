@@ -105,7 +105,7 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> void or DbError
     mut i = 0
     while i < count {
         const key = "{prefix}_{i:06}"
-        const padding = string.repeat("x", 64)
+        const padding = "x".repeat(64)
         const value = "value_{i}_{padding}"
         try db.put(key, value)
         i += 1
@@ -225,7 +225,7 @@ func run(args: CliArgs) -> void or DbError {
             print_stats(db.stats())
         }
         "dump" => {
-            const results = try db.scan("\u{00}", string.repeat("\u{FF}", 16))
+            const results = try db.scan("\u{00}", "\u{FF}".repeat(16))
             for kv in results {
                 println("{kv.key}\t{kv.value}")
             }

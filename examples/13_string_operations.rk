@@ -173,7 +173,7 @@ func main() {
 
     // Repeating strings
     const pattern = "ab"
-    const repeated = string.repeat(pattern, 3)
+    const repeated = pattern.repeat(3)
 
     print("Repeated: ")
     print(repeated)
