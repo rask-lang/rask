@@ -2479,392 +2479,8 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
-                // When the object is a type name (not a local variable), intercept
-                // before lowering it as a value expression.
-                if let ExprKind::Ident(name) = &object.kind {
-                    if !self.locals.contains_key(name) {
-                        // Cross-package call: pkg.func() → direct call to func
-                        // Skip builtin stdlib modules — they use prefixed names
-                        // (e.g. net.tcp_listen → net_tcp_listen) handled by
-                        // the is_known_type path below.
-                        if self.ctx.package_modules.contains(name)
-                            && !super::is_type_constructor_name(name)
-                        {
-                            let func_name = method.clone();
-                            let mut arg_operands = Vec::new();
-                            for arg in args {
-                                let (op, _) = self.lower_expr(&arg.expr)?;
-                                arg_operands.push(op);
-                            }
-                            let ret_ty = self
-                                .func_sigs
-                                .get(&func_name)
-                                .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
-                            let result_local = self.builder.alloc_temp(ret_ty.clone());
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: FunctionRef::internal(func_name),
-                                args: arg_operands,
-                            }));
-                            return Ok((MirOperand::Local(result_local), ret_ty));
-                        }
-
-                        // Comptime global: TABLE.get(0) → GlobalRef + Vec_get
-                        if let Some(meta) = self.ctx.comptime_globals.get(name) {
-                            let type_prefix = meta.type_prefix.clone();
-                            let elem_count = meta.elem_count;
-
-                            // Load the comptime global data pointer
-                            let global_local = self.builder.alloc_temp(MirType::Ptr);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-                                dst: global_local,
-                                name: name.clone(),
-                            }));
-
-                            // Wrap raw data into a Vec: rask_vec_from_static(ptr, count)
-                            let vec_local = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(vec_local),
-                                func: FunctionRef::internal("rask_vec_from_static".to_string()),
-                                args: vec![
-                                    MirOperand::Local(global_local),
-                                    MirOperand::Constant(MirConst::Int(elem_count as i64)),
-                                ],
-                            }));
-
-                            // Dispatch method using the type prefix
-                            let func_name = format!("{}_{}", type_prefix, method);
-                            let mut arg_operands = vec![MirOperand::Local(vec_local)];
-                            for arg in args {
-                                let (op, _) = self.lower_expr(&arg.expr)?;
-                                arg_operands.push(op);
-                            }
-                            let ret_ty = self
-                                .func_sigs
-                                .get(&func_name)
-                                .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
-                            let result_local = self.builder.alloc_temp(ret_ty.clone());
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: FunctionRef::internal(func_name),
-                                args: arg_operands,
-                            }));
-                            return Ok((MirOperand::Local(result_local), ret_ty));
-                        }
-
-                        // Enum variant constructor: Shape.Circle(r)
-                        // Extract layout data before mutable borrows in lower_expr
-                        let enum_variant = self.ctx.find_enum(name).and_then(|(idx, layout)| {
-                            let variant = layout.variants.iter().find(|v| v.name == *method)?;
-                            Some((
-                                idx,
-                                layout.size,
-                                layout.align,
-                                layout.tag_offset,
-                                variant.tag,
-                                variant.payload_offset,
-                                variant.fields.clone(),
-                            ))
-                        });
-
-                        if let Some((idx, enum_size, enum_align, tag_offset, tag_val, payload_offset, fields)) =
-                            enum_variant
-                        {
-                            let enum_ty = MirType::Enum(EnumLayoutId::new(idx, enum_size, enum_align));
-                            let result_local = self.builder.alloc_temp(enum_ty.clone());
-
-                            // Store discriminant tag
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                addr: result_local,
-                                offset: tag_offset,
-                                value: MirOperand::Constant(MirConst::Int(tag_val as i64)),
-                                store_size: None,
-                            }));
-
-                            // Store payload fields
-                            for (i, arg) in args.iter().enumerate() {
-                                let (val, _) = self.lower_expr(&arg.expr)?;
-                                let (offset, field_size) = if i < fields.len() {
-                                    (payload_offset + fields[i].offset, fields[i].size)
-                                } else {
-                                    (payload_offset + (i as u32 * 8), 8)
-                                };
-                                // Aggregate payloads (string = 16 bytes, embedded
-                                // structs) must copy the full value. Without store_size
-                                // a string constant stores only its 8-byte data pointer
-                                // and the length word is left uninitialized (#387).
-                                let store_size = if field_size > 8 { Some(field_size) } else { None };
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                    addr: result_local,
-                                    offset,
-                                    value: val,
-                                    store_size,
-                                }));
-                            }
-
-                            return Ok((MirOperand::Local(result_local), enum_ty));
-                        }
-
-                        // .variants() on enum types: build a Vec of tag values
-                        if method == "variants" && args.is_empty() {
-                            if let Some((_idx, layout)) = self.ctx.find_enum(name) {
-                                // Create a new Vec
-                                let vec_local = self.builder.alloc_temp(MirType::I64);
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                    dst: Some(vec_local),
-                                    func: FunctionRef::internal("Vec_new".to_string()),
-                                    args: vec![],
-                                }));
-                                // Push each variant's tag value
-                                for variant in &layout.variants {
-                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                        dst: None,
-                                        func: FunctionRef::internal("Vec_push".to_string()),
-                                        args: vec![
-                                            MirOperand::Local(vec_local),
-                                            MirOperand::Constant(MirConst::Int(variant.tag as i64)),
-                                        ],
-                                    }));
-                                }
-                                return Ok((MirOperand::Local(vec_local), MirType::I64));
-                            }
-                        }
-
-                        // json.encode — expand struct/vec/primitive serialization at MIR level
-                        if name == "json" && method == "encode" && args.len() == 1 {
-                            let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
-                            if let MirType::Struct(StructLayoutId { id, .. }) = &arg_ty {
-                                if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
-                                    return self.lower_json_encode_struct(arg_op, layout.clone());
-                                }
-                            }
-
-                            // Vec<T>: generate loop that encodes each element.
-                            // Detection: check type checker first, fall back to local_meta type_prefix.
-                            let raw_ty = self.ctx.lookup_raw_type(args[0].expr.id);
-                            let is_vec_from_type = raw_ty.map_or(false, |ty| {
-                                matches!(ty,
-                                    rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec"
-                                ) || matches!(ty, rask_types::Type::UnresolvedNamed(n) if n == "Vec")
-                            });
-                            let is_vec_from_prefix = if !is_vec_from_type {
-                                if let ExprKind::Ident(var_name) = &args[0].expr.kind {
-                                    self.meta(var_name)
-                                        .and_then(|m| m.type_prefix.as_deref())
-                                        .map(|p| p == "Vec")
-                                        .unwrap_or(false)
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            };
-                            if is_vec_from_type || is_vec_from_prefix {
-                                // Extract element type from generic args when available
-                                let elem_ty = raw_ty.and_then(|ty| match ty {
-                                    rask_types::Type::UnresolvedGeneric { args: ga, .. } => {
-                                        ga.first().and_then(|a| match a {
-                                            rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
-                                            _ => None,
-                                        })
-                                    }
-                                    _ => None,
-                                });
-                                return self.lower_json_encode_vec(arg_op, elem_ty);
-                            }
-
-                            // Non-struct: string or integer
-                            let helper = if matches!(arg_ty, MirType::String) {
-                                "json_encode_string"
-                            } else {
-                                "json_encode_i64"
-                            };
-                            let result_local = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: FunctionRef::internal(helper.to_string()),
-                                args: vec![arg_op],
-                            }));
-                            return Ok((MirOperand::Local(result_local), MirType::I64));
-                        }
-
-                        // json.decode<T> — expand struct deserialization at MIR level
-                        if name == "json" && method == "decode" && args.len() == 1 {
-                            let (str_op, _) = self.lower_expr(&args[0].expr)?;
-                            if let Some(ta) = type_args {
-                                if let Some(target_name) = ta.first() {
-                                    if let Some((_, layout)) = self.ctx.find_struct(target_name) {
-                                        return self.lower_json_decode_struct(str_op, layout.clone());
-                                    }
-                                }
-                            }
-                            // Fallback: opaque decode
-                            let result_local = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: FunctionRef::internal("json_decode".to_string()),
-                                args: vec![str_op],
-                            }));
-                            return Ok((MirOperand::Local(result_local), MirType::I64));
-                        }
-
-                        // Vec.from([...]) → stack array + rask_vec_from_static(ptr, count)
-                        // Map.from([("k", "v"), ...]) → Map.new() + Map.insert() per pair
-                        {
-                            let base = name.split('<').next().unwrap_or(name);
-                            if base == "Vec" && method == "from" && args.len() == 1 {
-                                if let ExprKind::Array(elems) = &args[0].expr.kind {
-                                    return self.lower_vec_from_array(elems);
-                                }
-                            }
-                            if base == "Map" && method == "from" && args.len() == 1 {
-                                if let ExprKind::Array(elems) = &args[0].expr.kind {
-                                    return self.lower_map_from_pairs(elems);
-                                }
-                            }
-                        }
-
-                        // Static method on a type: Vec.new(), string.new()
-                        let is_known_type = self.ctx.find_struct(name).is_some()
-                            || self.ctx.find_enum(name).is_some()
-                            || is_type_constructor_name(name);
-
-                        // CH3: char.from_u32(n) → char?. Reuse the Convert→Option
-                        // codegen path (same as `try convert`) with a Char target.
-                        if name == "char" && method == "from_u32" {
-                            let (n, _) = self.lower_expr(&args[0].expr)?;
-                            let result_ty = MirType::Option(Box::new(MirType::Char));
-                            let result_local = self.builder.alloc_temp(result_ty.clone());
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: result_local,
-                                rvalue: MirRValue::Convert {
-                                    value: n,
-                                    source_ty: MirType::U32,
-                                    target_ty: MirType::Char,
-                                    kind: rask_ast::expr::ConvertKind::TryConvert,
-                                },
-                            }));
-                            return Ok((MirOperand::Local(result_local), result_ty));
-                        }
-
-                        if is_known_type {
-                            // Strip generic parameters: "Channel<i64>" → "Channel"
-                            let base_name = name.split('<').next().unwrap_or(name);
-                            let func_name = format!("{}_{}", base_name, method);
-                            let mut arg_operands = Vec::new();
-                            for arg in args {
-                                let (op, _) = self.lower_expr(&arg.expr)?;
-                                arg_operands.push(op);
-                            }
-
-                            // Inject elem_size/data_size for generic constructors.
-                            // The C runtime needs actual sizes for struct types;
-                            // the dispatch table expects these as extra arguments.
-                            // The element type is read from the call's resolved
-                            // result type (`Channel<T>` returns a Sender/Receiver
-                            // tuple; generic_arg_slot_size unwraps that).
-                            if (base_name == "Channel" && (method == "buffered" || method == "unbuffered"))
-                                || ((base_name == "Shared" || base_name == "Mutex") && method == "new")
-                            {
-                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
-                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
-                                if base_name == "Channel" {
-                                    // Channel: elem_size goes first → (elem_size, capacity)
-                                    arg_operands.insert(0, size_op);
-                                } else {
-                                    // Shared: data_size goes last → (data_ptr, data_size)
-                                    arg_operands.push(size_op);
-                                }
-                            }
-                            // Pool.new() / Pool.with_capacity(n): inject elem_size
-                            // so the pool allocates correctly-sized slots for struct
-                            // elements. with_capacity keeps its `n` after elem_size.
-                            if base_name == "Pool" && (method == "new" || method == "with_capacity") {
-                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
-                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
-                                arg_operands.insert(0, size_op);
-                            }
-
-                            // Vec.new() / Vec.with_capacity(n): inject elem_size so
-                            // the runtime allocates correct slots.
-                            if base_name == "Vec" && (method == "new" || method == "with_capacity") {
-                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
-                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
-                                arg_operands.insert(0, size_op);
-                            }
-                            // Map.new(): inject key_size, val_size
-                            if (base_name == "Map") && method == "new" {
-                                let key_size = self.generic_arg_slot_size(expr.id, 0);
-                                let val_size = self.generic_arg_slot_size(expr.id, 1);
-                                arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
-                                arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
-                            }
-
-                            // Map.new() with string keys → use string hash/eq.
-                            // Inspect the first generic arg of the Map type for
-                            // any string-flavored shape (resolved or unresolved),
-                            // OR fall back to the syntactic type name when the
-                            // user wrote `Map<string, _>.new()` explicitly.
-                            let func_name = if func_name == "Map_new" {
-                                fn arg_is_string(arg: &rask_types::GenericArg) -> bool {
-                                    if let rask_types::GenericArg::Type(t) = arg {
-                                        match t.as_ref() {
-                                            rask_types::Type::String => true,
-                                            rask_types::Type::UnresolvedNamed(n) => n == "string",
-                                            _ => false,
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                }
-                                let has_string_keys = self.ctx.lookup_raw_type(expr.id)
-                                    .map(|ty| match ty {
-                                        rask_types::Type::Generic { args, .. }
-                                        | rask_types::Type::UnresolvedGeneric { args, .. } => {
-                                            args.first().map_or(false, arg_is_string)
-                                        }
-                                        _ => false,
-                                    })
-                                    .unwrap_or(false)
-                                    || (name.starts_with("Map<") && name.contains("string"));
-                                if has_string_keys {
-                                    "Map_new_string_keys".to_string()
-                                } else {
-                                    func_name
-                                }
-                            } else {
-                                func_name
-                            };
-
-                            let ret_ty = self
-                                .func_sigs
-                                .get(&func_name)
-                                .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
-                            // Channel.buffered()/unbuffered() C runtime returns a
-                            // single i64 (raw channel pair pointer), not a tuple.
-                            // Override the Tuple return type from stubs to I64 so the
-                            // codegen allocates a register, not a stack slot. The
-                            // tuple destructure emits channel_tx/channel_rx calls.
-                            let ret_ty = if base_name == "Channel"
-                                && (method == "buffered" || method == "unbuffered")
-                            {
-                                MirType::I64
-                            } else {
-                                ret_ty
-                            };
-                            let result_local = self.builder.alloc_temp(ret_ty.clone());
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: FunctionRef::internal(func_name),
-                                args: arg_operands,
-                            }));
-
-                            return Ok((MirOperand::Local(result_local), ret_ty));
-                        }
-                    }
+                if let Some(r) = self.try_lower_type_name_call(expr, object, method, args, type_args)? {
+                    return Ok(r);
                 }
 
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
@@ -3579,6 +3195,406 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 Ok((MirOperand::Local(result_local), ret_ty))
+    }
+
+    /// Calls where the receiver is a type or module name, not a value:
+    /// `Vec.new()`, `pkg.func()`, `Shape.Circle(r)`, `json.encode(x)`, enum
+    /// variants, etc. Returns None when the receiver is a local variable or
+    /// the form isn't a recognized type-name call.
+    fn try_lower_type_name_call(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        method: &String,
+        args: &[CallArg],
+        type_args: &Option<Vec<String>>,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if let ExprKind::Ident(name) = &object.kind {
+            if !self.locals.contains_key(name) {
+                        // Cross-package call: pkg.func() → direct call to func
+                        // Skip builtin stdlib modules — they use prefixed names
+                        // (e.g. net.tcp_listen → net_tcp_listen) handled by
+                        // the is_known_type path below.
+                        if self.ctx.package_modules.contains(name)
+                            && !super::is_type_constructor_name(name)
+                        {
+                            let func_name = method.clone();
+                            let mut arg_operands = Vec::new();
+                            for arg in args {
+                                let (op, _) = self.lower_expr(&arg.expr)?;
+                                arg_operands.push(op);
+                            }
+                            let ret_ty = self
+                                .func_sigs
+                                .get(&func_name)
+                                .map(|s| s.ret_ty.clone())
+                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                            let result_local = self.builder.alloc_temp(ret_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef::internal(func_name),
+                                args: arg_operands,
+                            }));
+                            return Ok(Some((MirOperand::Local(result_local), ret_ty)));
+                        }
+
+                        // Comptime global: TABLE.get(0) → GlobalRef + Vec_get
+                        if let Some(meta) = self.ctx.comptime_globals.get(name) {
+                            let type_prefix = meta.type_prefix.clone();
+                            let elem_count = meta.elem_count;
+
+                            // Load the comptime global data pointer
+                            let global_local = self.builder.alloc_temp(MirType::Ptr);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
+                                dst: global_local,
+                                name: name.clone(),
+                            }));
+
+                            // Wrap raw data into a Vec: rask_vec_from_static(ptr, count)
+                            let vec_local = self.builder.alloc_temp(MirType::I64);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: Some(vec_local),
+                                func: FunctionRef::internal("rask_vec_from_static".to_string()),
+                                args: vec![
+                                    MirOperand::Local(global_local),
+                                    MirOperand::Constant(MirConst::Int(elem_count as i64)),
+                                ],
+                            }));
+
+                            // Dispatch method using the type prefix
+                            let func_name = format!("{}_{}", type_prefix, method);
+                            let mut arg_operands = vec![MirOperand::Local(vec_local)];
+                            for arg in args {
+                                let (op, _) = self.lower_expr(&arg.expr)?;
+                                arg_operands.push(op);
+                            }
+                            let ret_ty = self
+                                .func_sigs
+                                .get(&func_name)
+                                .map(|s| s.ret_ty.clone())
+                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                            let result_local = self.builder.alloc_temp(ret_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef::internal(func_name),
+                                args: arg_operands,
+                            }));
+                            return Ok(Some((MirOperand::Local(result_local), ret_ty)));
+                        }
+
+                        // Enum variant constructor: Shape.Circle(r)
+                        // Extract layout data before mutable borrows in lower_expr
+                        let enum_variant = self.ctx.find_enum(name).and_then(|(idx, layout)| {
+                            let variant = layout.variants.iter().find(|v| v.name == *method)?;
+                            Some((
+                                idx,
+                                layout.size,
+                                layout.align,
+                                layout.tag_offset,
+                                variant.tag,
+                                variant.payload_offset,
+                                variant.fields.clone(),
+                            ))
+                        });
+
+                        if let Some((idx, enum_size, enum_align, tag_offset, tag_val, payload_offset, fields)) =
+                            enum_variant
+                        {
+                            let enum_ty = MirType::Enum(EnumLayoutId::new(idx, enum_size, enum_align));
+                            let result_local = self.builder.alloc_temp(enum_ty.clone());
+
+                            // Store discriminant tag
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                addr: result_local,
+                                offset: tag_offset,
+                                value: MirOperand::Constant(MirConst::Int(tag_val as i64)),
+                                store_size: None,
+                            }));
+
+                            // Store payload fields
+                            for (i, arg) in args.iter().enumerate() {
+                                let (val, _) = self.lower_expr(&arg.expr)?;
+                                let (offset, field_size) = if i < fields.len() {
+                                    (payload_offset + fields[i].offset, fields[i].size)
+                                } else {
+                                    (payload_offset + (i as u32 * 8), 8)
+                                };
+                                // Aggregate payloads (string = 16 bytes, embedded
+                                // structs) must copy the full value. Without store_size
+                                // a string constant stores only its 8-byte data pointer
+                                // and the length word is left uninitialized (#387).
+                                let store_size = if field_size > 8 { Some(field_size) } else { None };
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: result_local,
+                                    offset,
+                                    value: val,
+                                    store_size,
+                                }));
+                            }
+
+                            return Ok(Some((MirOperand::Local(result_local), enum_ty)));
+                        }
+
+                        // .variants() on enum types: build a Vec of tag values
+                        if method == "variants" && args.is_empty() {
+                            if let Some((_idx, layout)) = self.ctx.find_enum(name) {
+                                // Create a new Vec
+                                let vec_local = self.builder.alloc_temp(MirType::I64);
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: Some(vec_local),
+                                    func: FunctionRef::internal("Vec_new".to_string()),
+                                    args: vec![],
+                                }));
+                                // Push each variant's tag value
+                                for variant in &layout.variants {
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                        dst: None,
+                                        func: FunctionRef::internal("Vec_push".to_string()),
+                                        args: vec![
+                                            MirOperand::Local(vec_local),
+                                            MirOperand::Constant(MirConst::Int(variant.tag as i64)),
+                                        ],
+                                    }));
+                                }
+                                return Ok(Some((MirOperand::Local(vec_local), MirType::I64)));
+                            }
+                        }
+
+                        // json.encode — expand struct/vec/primitive serialization at MIR level
+                        if name == "json" && method == "encode" && args.len() == 1 {
+                            let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
+                            if let MirType::Struct(StructLayoutId { id, .. }) = &arg_ty {
+                                if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
+                                    return self.lower_json_encode_struct(arg_op, layout.clone()).map(Some);
+                                }
+                            }
+
+                            // Vec<T>: generate loop that encodes each element.
+                            // Detection: check type checker first, fall back to local_meta type_prefix.
+                            let raw_ty = self.ctx.lookup_raw_type(args[0].expr.id);
+                            let is_vec_from_type = raw_ty.map_or(false, |ty| {
+                                matches!(ty,
+                                    rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec"
+                                ) || matches!(ty, rask_types::Type::UnresolvedNamed(n) if n == "Vec")
+                            });
+                            let is_vec_from_prefix = if !is_vec_from_type {
+                                if let ExprKind::Ident(var_name) = &args[0].expr.kind {
+                                    self.meta(var_name)
+                                        .and_then(|m| m.type_prefix.as_deref())
+                                        .map(|p| p == "Vec")
+                                        .unwrap_or(false)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            if is_vec_from_type || is_vec_from_prefix {
+                                // Extract element type from generic args when available
+                                let elem_ty = raw_ty.and_then(|ty| match ty {
+                                    rask_types::Type::UnresolvedGeneric { args: ga, .. } => {
+                                        ga.first().and_then(|a| match a {
+                                            rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
+                                            _ => None,
+                                        })
+                                    }
+                                    _ => None,
+                                });
+                                return self.lower_json_encode_vec(arg_op, elem_ty).map(Some);
+                            }
+
+                            // Non-struct: string or integer
+                            let helper = if matches!(arg_ty, MirType::String) {
+                                "json_encode_string"
+                            } else {
+                                "json_encode_i64"
+                            };
+                            let result_local = self.builder.alloc_temp(MirType::I64);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef::internal(helper.to_string()),
+                                args: vec![arg_op],
+                            }));
+                            return Ok(Some((MirOperand::Local(result_local), MirType::I64)));
+                        }
+
+                        // json.decode<T> — expand struct deserialization at MIR level
+                        if name == "json" && method == "decode" && args.len() == 1 {
+                            let (str_op, _) = self.lower_expr(&args[0].expr)?;
+                            if let Some(ta) = type_args {
+                                if let Some(target_name) = ta.first() {
+                                    if let Some((_, layout)) = self.ctx.find_struct(target_name) {
+                                        return self.lower_json_decode_struct(str_op, layout.clone()).map(Some);
+                                    }
+                                }
+                            }
+                            // Fallback: opaque decode
+                            let result_local = self.builder.alloc_temp(MirType::I64);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef::internal("json_decode".to_string()),
+                                args: vec![str_op],
+                            }));
+                            return Ok(Some((MirOperand::Local(result_local), MirType::I64)));
+                        }
+
+                        // Vec.from([...]) → stack array + rask_vec_from_static(ptr, count)
+                        // Map.from([("k", "v"), ...]) → Map.new() + Map.insert() per pair
+                        {
+                            let base = name.split('<').next().unwrap_or(name);
+                            if base == "Vec" && method == "from" && args.len() == 1 {
+                                if let ExprKind::Array(elems) = &args[0].expr.kind {
+                                    return self.lower_vec_from_array(elems).map(Some);
+                                }
+                            }
+                            if base == "Map" && method == "from" && args.len() == 1 {
+                                if let ExprKind::Array(elems) = &args[0].expr.kind {
+                                    return self.lower_map_from_pairs(elems).map(Some);
+                                }
+                            }
+                        }
+
+                        // Static method on a type: Vec.new(), string.new()
+                        let is_known_type = self.ctx.find_struct(name).is_some()
+                            || self.ctx.find_enum(name).is_some()
+                            || is_type_constructor_name(name);
+
+                        // CH3: char.from_u32(n) → char?. Reuse the Convert→Option
+                        // codegen path (same as `try convert`) with a Char target.
+                        if name == "char" && method == "from_u32" {
+                            let (n, _) = self.lower_expr(&args[0].expr)?;
+                            let result_ty = MirType::Option(Box::new(MirType::Char));
+                            let result_local = self.builder.alloc_temp(result_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: result_local,
+                                rvalue: MirRValue::Convert {
+                                    value: n,
+                                    source_ty: MirType::U32,
+                                    target_ty: MirType::Char,
+                                    kind: rask_ast::expr::ConvertKind::TryConvert,
+                                },
+                            }));
+                            return Ok(Some((MirOperand::Local(result_local), result_ty)));
+                        }
+
+                        if is_known_type {
+                            // Strip generic parameters: "Channel<i64>" → "Channel"
+                            let base_name = name.split('<').next().unwrap_or(name);
+                            let func_name = format!("{}_{}", base_name, method);
+                            let mut arg_operands = Vec::new();
+                            for arg in args {
+                                let (op, _) = self.lower_expr(&arg.expr)?;
+                                arg_operands.push(op);
+                            }
+
+                            // Inject elem_size/data_size for generic constructors.
+                            // The C runtime needs actual sizes for struct types;
+                            // the dispatch table expects these as extra arguments.
+                            // The element type is read from the call's resolved
+                            // result type (`Channel<T>` returns a Sender/Receiver
+                            // tuple; generic_arg_slot_size unwraps that).
+                            if (base_name == "Channel" && (method == "buffered" || method == "unbuffered"))
+                                || ((base_name == "Shared" || base_name == "Mutex") && method == "new")
+                            {
+                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
+                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
+                                if base_name == "Channel" {
+                                    // Channel: elem_size goes first → (elem_size, capacity)
+                                    arg_operands.insert(0, size_op);
+                                } else {
+                                    // Shared: data_size goes last → (data_ptr, data_size)
+                                    arg_operands.push(size_op);
+                                }
+                            }
+                            // Pool.new() / Pool.with_capacity(n): inject elem_size
+                            // so the pool allocates correctly-sized slots for struct
+                            // elements. with_capacity keeps its `n` after elem_size.
+                            if base_name == "Pool" && (method == "new" || method == "with_capacity") {
+                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
+                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
+                                arg_operands.insert(0, size_op);
+                            }
+
+                            // Vec.new() / Vec.with_capacity(n): inject elem_size so
+                            // the runtime allocates correct slots.
+                            if base_name == "Vec" && (method == "new" || method == "with_capacity") {
+                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
+                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
+                                arg_operands.insert(0, size_op);
+                            }
+                            // Map.new(): inject key_size, val_size
+                            if (base_name == "Map") && method == "new" {
+                                let key_size = self.generic_arg_slot_size(expr.id, 0);
+                                let val_size = self.generic_arg_slot_size(expr.id, 1);
+                                arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
+                                arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
+                            }
+
+                            // Map.new() with string keys → use string hash/eq.
+                            // Inspect the first generic arg of the Map type for
+                            // any string-flavored shape (resolved or unresolved),
+                            // OR fall back to the syntactic type name when the
+                            // user wrote `Map<string, _>.new()` explicitly.
+                            let func_name = if func_name == "Map_new" {
+                                fn arg_is_string(arg: &rask_types::GenericArg) -> bool {
+                                    if let rask_types::GenericArg::Type(t) = arg {
+                                        match t.as_ref() {
+                                            rask_types::Type::String => true,
+                                            rask_types::Type::UnresolvedNamed(n) => n == "string",
+                                            _ => false,
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                let has_string_keys = self.ctx.lookup_raw_type(expr.id)
+                                    .map(|ty| match ty {
+                                        rask_types::Type::Generic { args, .. }
+                                        | rask_types::Type::UnresolvedGeneric { args, .. } => {
+                                            args.first().map_or(false, arg_is_string)
+                                        }
+                                        _ => false,
+                                    })
+                                    .unwrap_or(false)
+                                    || (name.starts_with("Map<") && name.contains("string"));
+                                if has_string_keys {
+                                    "Map_new_string_keys".to_string()
+                                } else {
+                                    func_name
+                                }
+                            } else {
+                                func_name
+                            };
+
+                            let ret_ty = self
+                                .func_sigs
+                                .get(&func_name)
+                                .map(|s| s.ret_ty.clone())
+                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                            // Channel.buffered()/unbuffered() C runtime returns a
+                            // single i64 (raw channel pair pointer), not a tuple.
+                            // Override the Tuple return type from stubs to I64 so the
+                            // codegen allocates a register, not a stack slot. The
+                            // tuple destructure emits channel_tx/channel_rx calls.
+                            let ret_ty = if base_name == "Channel"
+                                && (method == "buffered" || method == "unbuffered")
+                            {
+                                MirType::I64
+                            } else {
+                                ret_ty
+                            };
+                            let result_local = self.builder.alloc_temp(ret_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef::internal(func_name),
+                                args: arg_operands,
+                            }));
+
+                            return Ok(Some((MirOperand::Local(result_local), ret_ty)));
+                        }
+            }
+        }
+        Ok(None)
     }
 
     fn lower_if(
