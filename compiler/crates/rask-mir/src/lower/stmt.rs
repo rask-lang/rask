@@ -15,6 +15,46 @@ use rask_ast::{
 };
 
 impl<'a> MirLowerer<'a> {
+    /// OPT6/#380: wrap a bare `T` operand into `Some(T)` when it's stored into an
+    /// `Option<T>` place. Same two-store construction the return-path auto-wrap
+    /// uses (tag 0 at offset 0, payload at offset 8). Returns the value unchanged
+    /// when no wrap applies.
+    fn wrap_for_option_place(
+        &mut self,
+        val_op: MirOperand,
+        val_ty: MirType,
+        place_ty: &MirType,
+    ) -> (MirOperand, MirType) {
+        // The checker already accepted this assignment, so an `Option<T>` place
+        // with a non-`Option` value is a widen. Don't require the inner MIR type
+        // to match `val_ty` — handles carry an inconsistent repr (`handle` vs the
+        // raw `i64` an insert returns), which would spuriously skip the wrap.
+        if let MirType::Option(inner) = place_ty {
+            // `Option<Handle>` (and `WeakHandle`) is niche-optimized in the layout
+            // (mem.pools): a live handle *is* `Some`, the sentinel is `None`. So a
+            // bare handle stored straight in is already the `Some` repr — a tag +
+            // payload wrap would be both wrong and 8 bytes too big for the slot.
+            let niche = matches!(**inner, MirType::Handle);
+            if !niche && !matches!(val_ty, MirType::Option(_)) {
+                let wrap_local = self.builder.alloc_temp(place_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: wrap_local,
+                    offset: 0,
+                    value: MirOperand::Constant(MirConst::Int(0)),
+                    store_size: Some(8),
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: wrap_local,
+                    offset: 8,
+                    value: val_op,
+                    store_size: Some(val_ty.size()),
+                }));
+                return (MirOperand::Local(wrap_local), place_ty.clone());
+            }
+        }
+        (val_op, val_ty)
+    }
+
     /// Project a nested place (`base.f.g`, tuples included) to a base local plus
     /// a byte offset, so an assignment stores straight into the base's storage
     /// rather than materializing an intermediate field as a value copy — the
@@ -189,6 +229,19 @@ impl<'a> MirLowerer<'a> {
 
             StmtKind::Assign { target, value } => {
                 let (val_op, val_ty) = self.lower_expr(value)?;
+                // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
+                // `Option<T>` place (reassignment or index/field store). The checker
+                // accepts the widening; without the wrap the bare value lands in the
+                // slot and a later `?` read misses the `Some` (or corrupts the tag).
+                let place_ty = self
+                    .ctx
+                    .lookup_raw_type(target.id)
+                    .cloned()
+                    .map(|t| self.ctx.type_to_mir(&t));
+                let (val_op, val_ty) = match &place_ty {
+                    Some(pt) => self.wrap_for_option_place(val_op, val_ty, pt),
+                    None => (val_op, val_ty),
+                };
                 match &target.kind {
                     ExprKind::Ident(name) => {
                         let (local_id, dst_ty) = self

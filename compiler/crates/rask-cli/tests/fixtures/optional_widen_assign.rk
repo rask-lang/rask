@@ -1,0 +1,14 @@
+// #380: `T` widens to `T?` at an assignment lvalue — reassignment (`x = v`) and
+// a struct field store (`s.v = w`) — and the value is wrapped to `Some` so a
+// later `?` read sees it. Native and interp agree.
+struct Box { v: i32? }
+
+func main() {
+    mut x: i32? = none
+    x = 10                       // reassignment widening
+    if x? as v { print(v) } else { print(-1) }
+
+    mut s = Box { v: none }
+    s.v = 42                     // field-store widening
+    if s.v? as w { print(w) } else { print(-1) }
+}

@@ -483,6 +483,24 @@ fn frozen_pool_read_native_eq_interp() {
     assert_native_eq_interp("frozen_pool_read.rk", "50");
 }
 
+// #380: `T` widens to `T?` at an assignment lvalue (reassignment + field store)
+// and the value is wrapped to `Some` on both backends.
+#[test]
+fn optional_widen_assign_native_eq_interp() {
+    assert_native_eq_interp("optional_widen_assign.rk", "1042");
+}
+
+// #382 + #380: a Handle is Copy, so `pool[a].next = b` links without consuming
+// `b`, and the widen reads back as Some. Interp is the reference (native pool
+// niche-Option<Handle> reads are tracked in #438), and it must type-check
+// (exit 0) — proving no E0800/E0308 remain.
+#[test]
+fn handle_copy_link_interp() {
+    let (out, code) = run_interp("handle_copy_link.rk");
+    assert_eq!(code, 0, "handle_copy_link must type-check and run: {}", out);
+    assert_eq!(out, "12", "unexpected interp output: {:?}", out);
+}
+
 // #411: nested struct-field assignment (`ln.a.x = v`) persists on native — the
 // projected place stores into the base local instead of a value copy.
 #[test]
