@@ -875,629 +875,14 @@ impl<'a> FunctionBuilder<'a> {
         args: &[MirOperand],
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
-            // Builtin print/println — dispatch per-arg to typed runtime functions
-            if func.name == "print" || func.name == "println" {
-                for (i, a) in args.iter().enumerate() {
-                    if i > 0 {
-                        let sp = Self::lower_operand_typed(
-                            builder, &MirOperand::Constant(MirConst::String(" ".to_string())),
-                            Some(types::I64), ctx,
-                        )?;
-                        let print_str = ctx.func_refs.get("rask_print_string")
-                            .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_string".into()))?;
-                        builder.ins().call(*print_str, &[sp]);
-                    }
-                    let runtime_fn = Self::runtime_print_for_operand(a, ctx.locals);
-                    let fr = ctx.func_refs.get(runtime_fn)
-                        .ok_or_else(|| CodegenError::FunctionNotFound(runtime_fn.into()))?;
-                    // Get the expected param type from the runtime function's signature
-                    let ext_func = &builder.func.dfg.ext_funcs[*fr];
-                    let sig = &builder.func.dfg.signatures[ext_func.signature];
-                    let expected_ty = sig.params.first().map(|p| p.value_type);
-                    let mut val = Self::lower_operand_typed(builder, a, expected_ty, ctx)?;
-                    if let Some(expected) = expected_ty {
-                        let actual = builder.func.dfg.value_type(val);
-                        if actual != expected {
-                            val = Self::convert_value(builder, val, actual, expected);
-                        }
-                    }
-                    builder.ins().call(*fr, &[val]);
-                }
-                if func.name == "println" {
-                    let nl = ctx.func_refs.get("rask_print_newline")
-                        .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_newline".into()))?;
-                    builder.ins().call(*nl, &[]);
-                }
-                // print/println return void — define dest as zero if needed
-                if let Some(dst_id) = dst {
-                    if let Some(var) = ctx.var_map.get(dst_id) {
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        builder.def_var(*var, zero);
-                    }
-                }
-            } else if func.name == "panic" || func.name == "todo" || func.name == "unreachable" {
-                // User-level diverging builtin: emit rask_panic_at with the
-                // message string and trap. todo/unreachable map to fixed
-                // messages when called without args.
-                let msg_ptr = if let Some(arg) = args.first() {
-                    Self::lower_operand_as_cstr(builder, arg, ctx)?
-                } else {
-                    let label = match func.name.as_str() {
-                        "todo" => "not yet implemented",
-                        "unreachable" => "entered unreachable code",
-                        _ => "panic",
-                    };
-                    ctx.string_globals.get(label)
-                        .map(|gv| builder.ins().global_value(types::I64, *gv))
-                        .unwrap_or_else(|| builder.ins().iconst(types::I64, 0))
-                };
-                if let Some(panic_ref) = ctx.func_refs.get("panic_at") {
-                    let file_ptr = ctx.source_file.and_then(|f| ctx.string_globals.get(f))
-                        .map(|gv| builder.ins().global_value(types::I64, *gv))
-                        .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
-                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                    builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, msg_ptr]);
-                }
-                builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
-                // After a trap, codegen needs to enter an unreachable block
-                // so subsequent Cranelift instructions are still well-formed.
-                let unreach_block = builder.create_block();
-                builder.switch_to_block(unreach_block);
-                builder.seal_block(unreach_block);
-                return Ok(());
-            } else if func.name == "assert_fail" {
-                // MIR already handled branching; this is the fail path.
-                // If a message arg is provided, pass it as raw C string pointer.
-                if !args.is_empty() {
-                    let msg_val = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
-                    if let Some(file_str) = ctx.source_file {
-                        if let (Some(func_ref), Some(gv)) = (
-                            ctx.func_refs.get("assert_fail_msg_at"),
-                            ctx.string_globals.get(file_str),
-                        ) {
-                            let file_ptr = builder.ins().global_value(types::I64, *gv);
-                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                            builder.ins().call(*func_ref, &[msg_val, file_ptr, line_val, col_val]);
-                        } else {
-                            let assert_fn = ctx.func_refs.get("assert_fail")
-                                .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
-                            builder.ins().call(*assert_fn, &[]);
-                        }
-                    } else {
-                        let assert_fn = ctx.func_refs.get("assert_fail")
-                            .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
-                        builder.ins().call(*assert_fn, &[]);
-                    }
-                } else if let Some(file_str) = ctx.source_file {
-                    if let (Some(func_ref), Some(gv)) = (
-                        ctx.func_refs.get("assert_fail_at"),
-                        ctx.string_globals.get(file_str),
-                    ) {
-                        let file_ptr = builder.ins().global_value(types::I64, *gv);
-                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                        builder.ins().call(*func_ref, &[file_ptr, line_val, col_val]);
-                    } else {
-                        let assert_fn = ctx.func_refs.get("assert_fail")
-                            .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
-                        builder.ins().call(*assert_fn, &[]);
-                    }
-                } else {
-                    let assert_fn = ctx.func_refs.get("assert_fail")
-                        .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
-                    builder.ins().call(*assert_fn, &[]);
-                }
-            } else if func.name == "assert_fail_cmp_i64" {
-                // Comparison assert failure with i64 values: args = [left, right, op_str]
-                if args.len() >= 3 {
-                    let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
-                    let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
-                    let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
-                    if let Some(file_str) = ctx.source_file {
-                        if let (Some(func_ref), Some(gv)) = (
-                            ctx.func_refs.get("assert_fail_cmp_i64"),
-                            ctx.string_globals.get(file_str),
-                        ) {
-                            let file_ptr = builder.ins().global_value(types::I64, *gv);
-                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                            builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
-                        }
-                    }
-                }
-            } else if func.name == "assert_fail_cmp_str" {
-                // Comparison assert failure with string values: args = [left, right, op_str]
-                if args.len() >= 3 {
-                    let left_val = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
-                    let right_val = Self::lower_operand_as_cstr(builder, &args[1], ctx)?;
-                    let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
-                    if let Some(file_str) = ctx.source_file {
-                        if let (Some(func_ref), Some(gv)) = (
-                            ctx.func_refs.get("assert_fail_cmp_str"),
-                            ctx.string_globals.get(file_str),
-                        ) {
-                            let file_ptr = builder.ins().global_value(types::I64, *gv);
-                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                            builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
-                        }
-                    }
-                }
-            } else if func.name == "assert_fail_cmp_f64" {
-                // Comparison assert failure with f64 values: args = [left, right, op_str]
-                if args.len() >= 3 {
-                    let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::F64), ctx)?;
-                    let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::F64), ctx)?;
-                    let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
-                    if let Some(file_str) = ctx.source_file {
-                        if let (Some(func_ref), Some(gv)) = (
-                            ctx.func_refs.get("assert_fail_cmp_f64"),
-                            ctx.string_globals.get(file_str),
-                        ) {
-                            let file_ptr = builder.ins().global_value(types::I64, *gv);
-                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                            builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
-                        }
-                    }
-                }
-            } else if func.name == "check_fail" {
-                // check failed — record failure, don't unwind
-                let msg = if !args.is_empty() {
-                    Self::lower_operand_as_cstr(builder, &args[0], ctx)?
-                } else {
-                    // Create a default "check failed" message
-                    if let Some(gv) = ctx.string_globals.get("check failed") {
-                        builder.ins().global_value(types::I64, *gv)
-                    } else {
-                        builder.ins().iconst(types::I64, 0)
-                    }
-                };
-                let func_ref = ctx.func_refs.get("rask_check_fail")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_check_fail".into()))?;
-                builder.ins().call(*func_ref, &[msg]);
-            } else if func.name == "rask_test_skip" {
-                // skip("reason") — pass reason as C string, calls rask_test_skip
-                let reason = if !args.is_empty() {
-                    Self::lower_operand_as_cstr(builder, &args[0], ctx)?
-                } else {
-                    builder.ins().iconst(types::I64, 0)
-                };
-                let func_ref = ctx.func_refs.get("rask_test_skip")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_test_skip".into()))?;
-                builder.ins().call(*func_ref, &[reason]);
-            } else if func.name == "rask_test_expect_fail" {
-                // expect_fail() — set thread-local flag
-                let func_ref = ctx.func_refs.get("rask_test_expect_fail")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_test_expect_fail".into()))?;
-                builder.ins().call(*func_ref, &[]);
-                if let Some(dst_id) = dst {
-                    if let Some(var) = ctx.var_map.get(dst_id) {
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        builder.def_var(*var, zero);
-                    }
-                }
-            } else if func.name == "rask_assert_eq" {
-                // assert_eq(got, expected) — compare as i64
-                if args.len() >= 2 {
-                    let got_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
-                    let expected_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
-                    let func_ref = ctx.func_refs.get("rask_assert_eq")
-                        .ok_or_else(|| CodegenError::FunctionNotFound("rask_assert_eq".into()))?;
-                    builder.ins().call(*func_ref, &[got_val, expected_val]);
-                }
-            } else if func.name == "panic_unwrap" {
-                // MIR already handled branching; this is the panic path.
-                if let Some(file_str) = ctx.source_file {
-                    if let (Some(func_ref), Some(gv)) = (
-                        ctx.func_refs.get("panic_unwrap_at"),
-                        ctx.string_globals.get(file_str),
-                    ) {
-                        let file_ptr = builder.ins().global_value(types::I64, *gv);
-                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                        builder.ins().call(*func_ref, &[file_ptr, line_val, col_val]);
-                    } else {
-                        let unwrap_fn = ctx.func_refs.get("panic_unwrap")
-                            .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
-                        builder.ins().call(*unwrap_fn, &[]);
-                    }
-                } else {
-                    let unwrap_fn = ctx.func_refs.get("panic_unwrap")
-                        .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
-                    builder.ins().call(*unwrap_fn, &[]);
-                }
-            } else if func.name == "Ptr_add" || func.name == "Ptr_sub" || func.name == "Ptr_offset" {
-                // Pointer arithmetic: ptr.add(n) → ptr + n*elem_size
-                // Element size is passed as the third arg by MIR lowering.
-                let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
-                let n_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
-                let elem_size = if args.len() > 2 {
-                    Self::lower_operand_typed(builder, &args[2], Some(types::I64), ctx)?
-                } else {
-                    builder.ins().iconst(types::I64, 8)
-                };
-                let byte_offset = builder.ins().imul(n_val, elem_size);
-                let result = if func.name == "Ptr_sub" {
-                    builder.ins().isub(ptr_val, byte_offset)
-                } else {
-                    builder.ins().iadd(ptr_val, byte_offset)
-                };
-                if let Some(dst_id) = dst {
-                    if let Some(var) = ctx.var_map.get(dst_id) {
-                        builder.def_var(*var, result);
-                    }
-                }
-            } else if func.name == "Ptr_is_null" {
-                // ptr.is_null() → ptr == 0 (returns I8 boolean)
-                let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
-                let result = builder.ins().icmp_imm(IntCC::Equal, ptr_val, 0);
-                if let Some(dst_id) = dst {
-                    if let Some(var) = ctx.var_map.get(dst_id) {
-                        builder.def_var(*var, result);
-                    }
-                }
-            } else if func.name == "Ptr_cast" {
-                // ptr.cast<U>() → identity (pointer is always i64)
-                let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
-                if let Some(dst_id) = dst {
-                    if let Some(var) = ctx.var_map.get(dst_id) {
-                        builder.def_var(*var, ptr_val);
-                    }
-                }
-            } else if func.is_extern {
-                // Extern "C" call — use declared signature directly, no stdlib adaptation
-                // EXCEPT for string-out-param functions where the C ABI uses an out-param
-                // that the Rask source doesn't expose.
-                let func_ref = ctx.func_refs.get(&func.name)
-                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
-
-                // Read declared signature to get expected param types
-                let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
-                let sig = &builder.func.dfg.signatures[ext_func.signature];
-                let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
-
-                let mut arg_vals = Vec::with_capacity(args.len());
-                for (i, a) in args.iter().enumerate() {
-                    let expected = param_types.get(i).copied();
-                    let val = Self::lower_operand_typed(builder, a, expected, ctx)?;
-                    let actual = builder.func.dfg.value_type(val);
-                    if let Some(exp) = expected {
-                        if actual != exp {
-                            arg_vals.push(Self::convert_value(builder, val, actual, exp));
-                        } else {
-                            arg_vals.push(val);
-                        }
-                    } else {
-                        arg_vals.push(val);
-                    }
-                }
-
-                // Inject string out-param for extern C functions that use the
-                // out-param ABI (declared with N+1 params, called with N args)
-                let needs_out_param = param_types.len() == arg_vals.len() + 1
-                    && ctx.adapt_table.get(func.name.as_str())
-                        .map(|(a, _)| *a == ArgAdapt::StringOutParam)
-                        .unwrap_or(false);
-                let out_param_slot = if needs_out_param {
-                    let ss = dst
-                        .and_then(|id| ctx.stack_slot_map.get(id))
-                        .map(|(ss, _)| *ss)
-                        .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot, 16, 0,
-                        )));
-                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
-                    arg_vals.insert(0, addr);
-                    Some(ss)
-                } else {
-                    None
-                };
-
-                let call_inst = builder.ins().call(*func_ref, &arg_vals);
-
-                if let Some(ss) = out_param_slot {
-                    // String out-param: result is in the stack slot, define dst var as pointer
-                    if let Some(dst_id) = dst {
-                        if let Some(var) = ctx.var_map.get(dst_id) {
-                            let addr = builder.ins().stack_addr(types::I64, ss, 0);
-                            builder.def_var(*var, addr);
-                        }
-                    }
-                } else if let Some(dst_id) = dst {
-                    let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
-                    let is_void = matches!(dst_local.map(|l| &l.ty), Some(MirType::Void));
-                    if !is_void {
-                        let var = ctx.var_map.get(dst_id)
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                                "Call destination variable not found".to_string()
-                            ))?;
-                        let results = builder.inst_results(call_inst);
-                        let val = if !results.is_empty() {
-                            let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
-                            let result = results[0];
-                            if let Some(local) = dst_local {
-                                let dst_ty = mir_to_cranelift_type(&local.ty)?;
-                                let val_ty = builder.func.dfg.value_type(result);
-                                if val_ty != dst_ty {
-                                    Self::convert_value(builder, result, val_ty, dst_ty)
-                                } else {
-                                    result
-                                }
-                            } else {
-                                result
-                            }
-                        } else {
-                            builder.ins().iconst(types::I64, 0)
-                        };
-                        if let Some((ss, _size)) = ctx.stack_slot_map.get(dst_id) {
-                            let dst_is_option = ctx.locals.iter()
-                                .find(|l| l.id == *dst_id)
-                                .map(|l| matches!(l.ty, MirType::Option(_)))
-                                .unwrap_or(false);
-                            if dst_is_option {
-                                Self::build_some(builder, *ss, val);
-                            } else {
-                                Self::build_ok(builder, *ss, val);
-                            }
-                        } else {
-                            builder.def_var(*var, val);
-                        }
-                    }
-                }
-            } else {
-                let func_ref = ctx.func_refs.get(&func.name)
-                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
-
-                // Lower MIR args to Cranelift values
-                let mut arg_vals = Vec::with_capacity(args.len());
-                for (arg_idx, a) in args.iter().enumerate() {
-                    // string_append_cstr: second arg is raw char*, skip RaskString wrapping
-                    let val = if func.name == "string_append_cstr" && arg_idx == 1 {
-                        Self::lower_string_const_as_cstr(builder, a, ctx)?
-                    } else {
-                        Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?
-                    };
-                    let actual = builder.func.dfg.value_type(val);
-                    let converted = if actual != types::I64 && actual.is_int() {
-                        Self::convert_value(builder, val, actual, types::I64)
-                    } else {
-                        val
-                    };
-                    arg_vals.push(converted);
-                }
-
-                // Adapt args for typed runtime API
-                let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, dst, ctx, ctx.adapt_table);
-
-                // Re-read signature after adaptation (arg count may have changed)
-                let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
-                let sig = &builder.func.dfg.signatures[ext_func.signature];
-                let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
-
-                // Convert arg types to match the declared signature
-                for (i, val) in arg_vals.iter_mut().enumerate() {
-                    if let Some(&expected) = param_types.get(i) {
-                        let actual = builder.func.dfg.value_type(*val);
-                        if actual != expected {
-                            *val = Self::convert_value(builder, *val, actual, expected);
-                        }
-                    }
-                }
-
-                // Store source location before calling panicking functions
-                if ctx.panicking_fns.contains(&func.name) {
-                    if let Some(file_str) = ctx.source_file {
-                        if let (Some(set_loc_fn), Some(gv)) = (
-                            ctx.func_refs.get("set_panic_location"),
-                            ctx.string_globals.get(file_str),
-                        ) {
-                            let file_ptr = builder.ins().global_value(types::I64, *gv);
-                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                            builder.ins().call(*set_loc_fn, &[file_ptr, line_val, col_val]);
-                        }
-                    }
-                }
-
-                let call_inst = builder.ins().call(*func_ref, &arg_vals);
-
-                if let Some(dst_id) = dst {
-                    // Skip void-typed destinations — nothing to store
-                    let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
-                    let is_void = matches!(dst_local.map(|l| &l.ty), Some(MirType::Void));
-
-                    if !is_void {
-                    let var = ctx.var_map.get(dst_id)
-                        .ok_or_else(|| CodegenError::UnsupportedFeature(
-                            "Call destination variable not found".to_string()
-                        ))?;
-
-                    // Post-call result handling
-                    let mut slot_already_written = false;
-                    let val = match adapt {
-                        CallAdapt::DerefResult => {
-                            // Result is void* — load the value from it.
-                            // Use the destination type so f64 elements load as f64,
-                            // not as i64 bit patterns that need conversion.
-                            let load_ty = dst_local
-                                .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
-                                .unwrap_or(types::I64);
-                            let results = builder.inst_results(call_inst);
-                            if !results.is_empty() {
-                                let ptr = results[0];
-                                builder.ins().load(load_ty, MemFlags::new(), ptr, 0)
-                            } else {
-                                builder.ins().iconst(types::I64, 0)
-                            }
-                        }
-                        CallAdapt::DerefOption => {
-                            // Result is void*: NULL → None, non-NULL → Some(deref).
-                            // Write tag+payload into the destination stack slot.
-                            let results = builder.inst_results(call_inst);
-                            let ptr = if !results.is_empty() { results[0] } else {
-                                builder.ins().iconst(types::I64, 0)
-                            };
-                            if let Some((ss, slot_size)) = ctx.stack_slot_map.get(dst_id) {
-                                slot_already_written = true;
-                                let zero = builder.ins().iconst(types::I64, 0);
-                                let is_null = builder.ins().icmp(IntCC::Equal, ptr, zero);
-                                let then_block = builder.create_block();
-                                let else_block = builder.create_block();
-                                let merge_block = builder.create_block();
-                                builder.ins().brif(is_null, then_block, &[], else_block, &[]);
-
-                                // NULL path: none
-                                builder.switch_to_block(then_block);
-                                builder.seal_block(then_block);
-                                Self::build_none(builder, *ss);
-                                builder.ins().jump(merge_block, &[]);
-
-                                // non-NULL path: Some(payload copied from ptr)
-                                builder.switch_to_block(else_block);
-                                builder.seal_block(else_block);
-                                let payload_size = *slot_size - crate::layouts::PAYLOAD_OFFSET as u32;
-                                Self::build_wrapped_aggregate(builder, *ss, false, 0, ptr, payload_size);
-                                builder.ins().jump(merge_block, &[]);
-
-                                builder.switch_to_block(merge_block);
-                                builder.seal_block(merge_block);
-                                // Return dummy value — real data is in the stack slot
-                                builder.ins().iconst(types::I64, 0)
-                            } else {
-                                // No stack slot — just deref like DerefResult
-                                builder.ins().load(types::I64, MemFlags::new(), ptr, 0)
-                            }
-                        }
-                        CallAdapt::PopOutParam(ss) => {
-                            // Value was written to stack slot by callee
-                            builder.ins().stack_load(types::I64, ss, 0)
-                        }
-                        CallAdapt::StringOutParam(ss) => {
-                            // 16-byte RaskStr written to stack slot — return slot address.
-                            // If this slot is the dst's own slot, mark as already written.
-                            if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
-                                if *dst_ss == ss {
-                                    slot_already_written = true;
-                                }
-                            }
-                            builder.ins().stack_addr(types::I64, ss, 0)
-                        }
-                        CallAdapt::DerefStringElement => {
-                            // void* pointing to aggregate data in collection.
-                            // Copy `slot_size` bytes into the dst's own slot.
-                            let results = builder.inst_results(call_inst);
-                            let ptr = if !results.is_empty() { results[0] } else {
-                                builder.ins().iconst(types::I64, 0)
-                            };
-                            if let Some((ss, slot_size)) = ctx.stack_slot_map.get(dst_id) {
-                                Self::copy_aggregate(builder, ptr, *ss, *slot_size);
-                                slot_already_written = true;
-                            }
-                            ptr
-                        }
-                        CallAdapt::TryRecvResult(payload_ss, elem_size) => {
-                            // Channel status → `T or E` Result. status==OK(0) →
-                            // Ok(payload); anything else (EMPTY/CLOSED) → Err.
-                            let results = builder.inst_results(call_inst);
-                            let status = if !results.is_empty() { results[0] } else {
-                                builder.ins().iconst(types::I64, crate::layouts::TAG_OFFSET as i64)
-                            };
-                            if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id).copied() {
-                                slot_already_written = true;
-                                let zero = builder.ins().iconst(types::I64, 0);
-                                let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
-                                let ok_block = builder.create_block();
-                                let err_block = builder.create_block();
-                                let merge_block = builder.create_block();
-                                builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
-
-                                // Ok(payload) copied into the Result slot.
-                                builder.switch_to_block(ok_block);
-                                builder.seal_block(ok_block);
-                                let payload_addr = builder.ins().stack_addr(types::I64, payload_ss, 0);
-                                Self::build_wrapped_aggregate(
-                                    builder, dst_ss, true, 0, payload_addr, elem_size,
-                                );
-                                builder.ins().jump(merge_block, &[]);
-
-                                // Err: tag only (recv failure carries no payload).
-                                builder.switch_to_block(err_block);
-                                builder.seal_block(err_block);
-                                let one = builder.ins().iconst(types::I64, 1);
-                                builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
-                                builder.ins().jump(merge_block, &[]);
-
-                                builder.switch_to_block(merge_block);
-                                builder.seal_block(merge_block);
-                            }
-                            builder.ins().iconst(types::I64, 0)
-                        }
-                        _ => {
-                            let results = builder.inst_results(call_inst);
-                            if !results.is_empty() {
-                                results[0]
-                            } else {
-                                builder.ins().iconst(types::I64, 0)
-                            }
-                        }
-                    };
-
-                    let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
-                    let final_val = if let Some(local) = dst_local {
-                        let dst_ty = mir_to_cranelift_type(&local.ty)?;
-                        let val_ty = builder.func.dfg.value_type(val);
-                        if val_ty != dst_ty {
-                            Self::convert_value(builder, val, val_ty, dst_ty)
-                        } else {
-                            val
-                        }
-                    } else {
-                        val
-                    };
-                    // If destination has a stack slot (aggregate type), handle differently
-                    // for internal Rask functions vs C stdlib functions.
-                    // DerefOption already wrote directly to the stack slot.
-                    if slot_already_written {
-                        // Nothing to do — DerefOption already populated the slot
-                    } else if let Some((ss, size)) = ctx.stack_slot_map.get(dst_id) {
-                        if ctx.internal_fns.contains(&func.name) {
-                            // Internal function returns aggregate data loaded from its stack.
-                            // Store directly into our stack slot (value, not pointer).
-                            if *size <= 8 {
-                                builder.ins().stack_store(final_val, *ss, 0);
-                            } else {
-                                // Larger aggregates: copy from returned pointer
-                                Self::copy_aggregate(builder, final_val, *ss, *size);
-                            }
-                        } else if ctx.adapt_table.get(&func.name)
-                            .map(|(_, r)| *r == RetAdapt::NegErr)
-                            .unwrap_or(false)
-                        {
-                            // C function uses negative return = error convention
-                            // (declared as RetAdapt::NegErr on the dispatch entry).
-                            Self::wrap_result_into_slot(builder, final_val, *ss);
-                        } else {
-                            // C stdlib function returns a plain value (not a pointer to an aggregate).
-                            // Wrap as Some/Ok depending on destination type.
-                            let dst_is_option = ctx.locals.iter()
-                                .find(|l| l.id == *dst_id)
-                                .map(|l| matches!(l.ty, MirType::Option(_)))
-                                .unwrap_or(false);
-                            if dst_is_option {
-                                Self::build_some(builder, *ss, final_val);
-                            } else {
-                                Self::build_ok(builder, *ss, final_val);
-                            }
-                        }
-                    } else {
-                        builder.def_var(*var, final_val);
-                    }
-                    } // !is_void
-                }
-            }
-        Ok(())
+        if Self::try_lower_builtin_call(builder, dst, func, args, ctx)? {
+            return Ok(());
+        }
+        if func.is_extern {
+            Self::lower_extern_call(builder, dst, func, args, ctx)
+        } else {
+            Self::lower_ordinary_call(builder, dst, func, args, ctx)
+        }
     }
 
     /// Convert a value between Cranelift types (integer widening/narrowing, float conversion).
@@ -2951,6 +2336,664 @@ impl<'a> FunctionBuilder<'a> {
             loaded
         };
         Ok(result)
+    }
+
+    /// Builtin/intrinsic call dispatch (print, panic, assert_*, Ptr_*, ...).
+    /// Returns Ok(true) when the call was a recognized builtin, Ok(false)
+    /// otherwise so the caller falls through to extern/ordinary emission.
+    fn try_lower_builtin_call(
+        builder: &mut ClifFunctionBuilder,
+        dst: Option<&LocalId>,
+        func: &rask_mir::FunctionRef,
+        args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<bool> {
+        // Builtin print/println — dispatch per-arg to typed runtime functions
+        if func.name == "print" || func.name == "println" {
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    let sp = Self::lower_operand_typed(
+                        builder, &MirOperand::Constant(MirConst::String(" ".to_string())),
+                        Some(types::I64), ctx,
+                    )?;
+                    let print_str = ctx.func_refs.get("rask_print_string")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_string".into()))?;
+                    builder.ins().call(*print_str, &[sp]);
+                }
+                let runtime_fn = Self::runtime_print_for_operand(a, ctx.locals);
+                let fr = ctx.func_refs.get(runtime_fn)
+                    .ok_or_else(|| CodegenError::FunctionNotFound(runtime_fn.into()))?;
+                // Get the expected param type from the runtime function's signature
+                let ext_func = &builder.func.dfg.ext_funcs[*fr];
+                let sig = &builder.func.dfg.signatures[ext_func.signature];
+                let expected_ty = sig.params.first().map(|p| p.value_type);
+                let mut val = Self::lower_operand_typed(builder, a, expected_ty, ctx)?;
+                if let Some(expected) = expected_ty {
+                    let actual = builder.func.dfg.value_type(val);
+                    if actual != expected {
+                        val = Self::convert_value(builder, val, actual, expected);
+                    }
+                }
+                builder.ins().call(*fr, &[val]);
+            }
+            if func.name == "println" {
+                let nl = ctx.func_refs.get("rask_print_newline")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_newline".into()))?;
+                builder.ins().call(*nl, &[]);
+            }
+            // print/println return void — define dest as zero if needed
+            if let Some(dst_id) = dst {
+                if let Some(var) = ctx.var_map.get(dst_id) {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder.def_var(*var, zero);
+                }
+            }
+        } else if func.name == "panic" || func.name == "todo" || func.name == "unreachable" {
+            // User-level diverging builtin: emit rask_panic_at with the
+            // message string and trap. todo/unreachable map to fixed
+            // messages when called without args.
+            let msg_ptr = if let Some(arg) = args.first() {
+                Self::lower_operand_as_cstr(builder, arg, ctx)?
+            } else {
+                let label = match func.name.as_str() {
+                    "todo" => "not yet implemented",
+                    "unreachable" => "entered unreachable code",
+                    _ => "panic",
+                };
+                ctx.string_globals.get(label)
+                    .map(|gv| builder.ins().global_value(types::I64, *gv))
+                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0))
+            };
+            if let Some(panic_ref) = ctx.func_refs.get("panic_at") {
+                let file_ptr = ctx.source_file.and_then(|f| ctx.string_globals.get(f))
+                    .map(|gv| builder.ins().global_value(types::I64, *gv))
+                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, msg_ptr]);
+            }
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+            // After a trap, codegen needs to enter an unreachable block
+            // so subsequent Cranelift instructions are still well-formed.
+            let unreach_block = builder.create_block();
+            builder.switch_to_block(unreach_block);
+            builder.seal_block(unreach_block);
+            return Ok(true);
+        } else if func.name == "assert_fail" {
+            // MIR already handled branching; this is the fail path.
+            // If a message arg is provided, pass it as raw C string pointer.
+            if !args.is_empty() {
+                let msg_val = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
+                if let Some(file_str) = ctx.source_file {
+                    if let (Some(func_ref), Some(gv)) = (
+                        ctx.func_refs.get("assert_fail_msg_at"),
+                        ctx.string_globals.get(file_str),
+                    ) {
+                        let file_ptr = builder.ins().global_value(types::I64, *gv);
+                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                        builder.ins().call(*func_ref, &[msg_val, file_ptr, line_val, col_val]);
+                    } else {
+                        let assert_fn = ctx.func_refs.get("assert_fail")
+                            .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
+                        builder.ins().call(*assert_fn, &[]);
+                    }
+                } else {
+                    let assert_fn = ctx.func_refs.get("assert_fail")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
+                    builder.ins().call(*assert_fn, &[]);
+                }
+            } else if let Some(file_str) = ctx.source_file {
+                if let (Some(func_ref), Some(gv)) = (
+                    ctx.func_refs.get("assert_fail_at"),
+                    ctx.string_globals.get(file_str),
+                ) {
+                    let file_ptr = builder.ins().global_value(types::I64, *gv);
+                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                    builder.ins().call(*func_ref, &[file_ptr, line_val, col_val]);
+                } else {
+                    let assert_fn = ctx.func_refs.get("assert_fail")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
+                    builder.ins().call(*assert_fn, &[]);
+                }
+            } else {
+                let assert_fn = ctx.func_refs.get("assert_fail")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
+                builder.ins().call(*assert_fn, &[]);
+            }
+        } else if func.name == "assert_fail_cmp_i64" {
+            // Comparison assert failure with i64 values: args = [left, right, op_str]
+            if args.len() >= 3 {
+                let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
+                let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
+                let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
+                if let Some(file_str) = ctx.source_file {
+                    if let (Some(func_ref), Some(gv)) = (
+                        ctx.func_refs.get("assert_fail_cmp_i64"),
+                        ctx.string_globals.get(file_str),
+                    ) {
+                        let file_ptr = builder.ins().global_value(types::I64, *gv);
+                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                        builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
+                    }
+                }
+            }
+        } else if func.name == "assert_fail_cmp_str" {
+            // Comparison assert failure with string values: args = [left, right, op_str]
+            if args.len() >= 3 {
+                let left_val = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
+                let right_val = Self::lower_operand_as_cstr(builder, &args[1], ctx)?;
+                let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
+                if let Some(file_str) = ctx.source_file {
+                    if let (Some(func_ref), Some(gv)) = (
+                        ctx.func_refs.get("assert_fail_cmp_str"),
+                        ctx.string_globals.get(file_str),
+                    ) {
+                        let file_ptr = builder.ins().global_value(types::I64, *gv);
+                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                        builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
+                    }
+                }
+            }
+        } else if func.name == "assert_fail_cmp_f64" {
+            // Comparison assert failure with f64 values: args = [left, right, op_str]
+            if args.len() >= 3 {
+                let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::F64), ctx)?;
+                let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::F64), ctx)?;
+                let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
+                if let Some(file_str) = ctx.source_file {
+                    if let (Some(func_ref), Some(gv)) = (
+                        ctx.func_refs.get("assert_fail_cmp_f64"),
+                        ctx.string_globals.get(file_str),
+                    ) {
+                        let file_ptr = builder.ins().global_value(types::I64, *gv);
+                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                        builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
+                    }
+                }
+            }
+        } else if func.name == "check_fail" {
+            // check failed — record failure, don't unwind
+            let msg = if !args.is_empty() {
+                Self::lower_operand_as_cstr(builder, &args[0], ctx)?
+            } else {
+                // Create a default "check failed" message
+                if let Some(gv) = ctx.string_globals.get("check failed") {
+                    builder.ins().global_value(types::I64, *gv)
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                }
+            };
+            let func_ref = ctx.func_refs.get("rask_check_fail")
+                .ok_or_else(|| CodegenError::FunctionNotFound("rask_check_fail".into()))?;
+            builder.ins().call(*func_ref, &[msg]);
+        } else if func.name == "rask_test_skip" {
+            // skip("reason") — pass reason as C string, calls rask_test_skip
+            let reason = if !args.is_empty() {
+                Self::lower_operand_as_cstr(builder, &args[0], ctx)?
+            } else {
+                builder.ins().iconst(types::I64, 0)
+            };
+            let func_ref = ctx.func_refs.get("rask_test_skip")
+                .ok_or_else(|| CodegenError::FunctionNotFound("rask_test_skip".into()))?;
+            builder.ins().call(*func_ref, &[reason]);
+        } else if func.name == "rask_test_expect_fail" {
+            // expect_fail() — set thread-local flag
+            let func_ref = ctx.func_refs.get("rask_test_expect_fail")
+                .ok_or_else(|| CodegenError::FunctionNotFound("rask_test_expect_fail".into()))?;
+            builder.ins().call(*func_ref, &[]);
+            if let Some(dst_id) = dst {
+                if let Some(var) = ctx.var_map.get(dst_id) {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder.def_var(*var, zero);
+                }
+            }
+        } else if func.name == "rask_assert_eq" {
+            // assert_eq(got, expected) — compare as i64
+            if args.len() >= 2 {
+                let got_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
+                let expected_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
+                let func_ref = ctx.func_refs.get("rask_assert_eq")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_assert_eq".into()))?;
+                builder.ins().call(*func_ref, &[got_val, expected_val]);
+            }
+        } else if func.name == "panic_unwrap" {
+            // MIR already handled branching; this is the panic path.
+            if let Some(file_str) = ctx.source_file {
+                if let (Some(func_ref), Some(gv)) = (
+                    ctx.func_refs.get("panic_unwrap_at"),
+                    ctx.string_globals.get(file_str),
+                ) {
+                    let file_ptr = builder.ins().global_value(types::I64, *gv);
+                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                    builder.ins().call(*func_ref, &[file_ptr, line_val, col_val]);
+                } else {
+                    let unwrap_fn = ctx.func_refs.get("panic_unwrap")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
+                    builder.ins().call(*unwrap_fn, &[]);
+                }
+            } else {
+                let unwrap_fn = ctx.func_refs.get("panic_unwrap")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
+                builder.ins().call(*unwrap_fn, &[]);
+            }
+        } else if func.name == "Ptr_add" || func.name == "Ptr_sub" || func.name == "Ptr_offset" {
+            // Pointer arithmetic: ptr.add(n) → ptr + n*elem_size
+            // Element size is passed as the third arg by MIR lowering.
+            let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
+            let n_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
+            let elem_size = if args.len() > 2 {
+                Self::lower_operand_typed(builder, &args[2], Some(types::I64), ctx)?
+            } else {
+                builder.ins().iconst(types::I64, 8)
+            };
+            let byte_offset = builder.ins().imul(n_val, elem_size);
+            let result = if func.name == "Ptr_sub" {
+                builder.ins().isub(ptr_val, byte_offset)
+            } else {
+                builder.ins().iadd(ptr_val, byte_offset)
+            };
+            if let Some(dst_id) = dst {
+                if let Some(var) = ctx.var_map.get(dst_id) {
+                    builder.def_var(*var, result);
+                }
+            }
+        } else if func.name == "Ptr_is_null" {
+            // ptr.is_null() → ptr == 0 (returns I8 boolean)
+            let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
+            let result = builder.ins().icmp_imm(IntCC::Equal, ptr_val, 0);
+            if let Some(dst_id) = dst {
+                if let Some(var) = ctx.var_map.get(dst_id) {
+                    builder.def_var(*var, result);
+                }
+            }
+        } else if func.name == "Ptr_cast" {
+            // ptr.cast<U>() → identity (pointer is always i64)
+            let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
+            if let Some(dst_id) = dst {
+                if let Some(var) = ctx.var_map.get(dst_id) {
+                    builder.def_var(*var, ptr_val);
+                }
+            }
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Extern "C" call — declared signature drives arg types; handles the
+    /// string out-param ABI.
+    fn lower_extern_call(
+        builder: &mut ClifFunctionBuilder,
+        dst: Option<&LocalId>,
+        func: &rask_mir::FunctionRef,
+        args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        // Extern "C" call — use declared signature directly, no stdlib adaptation
+        // EXCEPT for string-out-param functions where the C ABI uses an out-param
+        // that the Rask source doesn't expose.
+        let func_ref = ctx.func_refs.get(&func.name)
+            .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+
+        // Read declared signature to get expected param types
+        let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
+        let sig = &builder.func.dfg.signatures[ext_func.signature];
+        let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
+
+        let mut arg_vals = Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            let expected = param_types.get(i).copied();
+            let val = Self::lower_operand_typed(builder, a, expected, ctx)?;
+            let actual = builder.func.dfg.value_type(val);
+            if let Some(exp) = expected {
+                if actual != exp {
+                    arg_vals.push(Self::convert_value(builder, val, actual, exp));
+                } else {
+                    arg_vals.push(val);
+                }
+            } else {
+                arg_vals.push(val);
+            }
+        }
+
+        // Inject string out-param for extern C functions that use the
+        // out-param ABI (declared with N+1 params, called with N args)
+        let needs_out_param = param_types.len() == arg_vals.len() + 1
+            && ctx.adapt_table.get(func.name.as_str())
+                .map(|(a, _)| *a == ArgAdapt::StringOutParam)
+                .unwrap_or(false);
+        let out_param_slot = if needs_out_param {
+            let ss = dst
+                .and_then(|id| ctx.stack_slot_map.get(id))
+                .map(|(ss, _)| *ss)
+                .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 16, 0,
+                )));
+            let addr = builder.ins().stack_addr(types::I64, ss, 0);
+            arg_vals.insert(0, addr);
+            Some(ss)
+        } else {
+            None
+        };
+
+        let call_inst = builder.ins().call(*func_ref, &arg_vals);
+
+        if let Some(ss) = out_param_slot {
+            // String out-param: result is in the stack slot, define dst var as pointer
+            if let Some(dst_id) = dst {
+                if let Some(var) = ctx.var_map.get(dst_id) {
+                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    builder.def_var(*var, addr);
+                }
+            }
+        } else if let Some(dst_id) = dst {
+            let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
+            let is_void = matches!(dst_local.map(|l| &l.ty), Some(MirType::Void));
+            if !is_void {
+                let var = ctx.var_map.get(dst_id)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "Call destination variable not found".to_string()
+                    ))?;
+                let results = builder.inst_results(call_inst);
+                let val = if !results.is_empty() {
+                    let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
+                    let result = results[0];
+                    if let Some(local) = dst_local {
+                        let dst_ty = mir_to_cranelift_type(&local.ty)?;
+                        let val_ty = builder.func.dfg.value_type(result);
+                        if val_ty != dst_ty {
+                            Self::convert_value(builder, result, val_ty, dst_ty)
+                        } else {
+                            result
+                        }
+                    } else {
+                        result
+                    }
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                };
+                if let Some((ss, _size)) = ctx.stack_slot_map.get(dst_id) {
+                    let dst_is_option = ctx.locals.iter()
+                        .find(|l| l.id == *dst_id)
+                        .map(|l| matches!(l.ty, MirType::Option(_)))
+                        .unwrap_or(false);
+                    if dst_is_option {
+                        Self::build_some(builder, *ss, val);
+                    } else {
+                        Self::build_ok(builder, *ss, val);
+                    }
+                } else {
+                    builder.def_var(*var, val);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ordinary Rask call — lowers args, applies stdlib arg/return adaptation.
+    fn lower_ordinary_call(
+        builder: &mut ClifFunctionBuilder,
+        dst: Option<&LocalId>,
+        func: &rask_mir::FunctionRef,
+        args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let func_ref = ctx.func_refs.get(&func.name)
+            .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+
+        // Lower MIR args to Cranelift values
+        let mut arg_vals = Vec::with_capacity(args.len());
+        for (arg_idx, a) in args.iter().enumerate() {
+            // string_append_cstr: second arg is raw char*, skip RaskString wrapping
+            let val = if func.name == "string_append_cstr" && arg_idx == 1 {
+                Self::lower_string_const_as_cstr(builder, a, ctx)?
+            } else {
+                Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?
+            };
+            let actual = builder.func.dfg.value_type(val);
+            let converted = if actual != types::I64 && actual.is_int() {
+                Self::convert_value(builder, val, actual, types::I64)
+            } else {
+                val
+            };
+            arg_vals.push(converted);
+        }
+
+        // Adapt args for typed runtime API
+        let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, dst, ctx, ctx.adapt_table);
+
+        // Re-read signature after adaptation (arg count may have changed)
+        let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
+        let sig = &builder.func.dfg.signatures[ext_func.signature];
+        let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
+
+        // Convert arg types to match the declared signature
+        for (i, val) in arg_vals.iter_mut().enumerate() {
+            if let Some(&expected) = param_types.get(i) {
+                let actual = builder.func.dfg.value_type(*val);
+                if actual != expected {
+                    *val = Self::convert_value(builder, *val, actual, expected);
+                }
+            }
+        }
+
+        // Store source location before calling panicking functions
+        if ctx.panicking_fns.contains(&func.name) {
+            if let Some(file_str) = ctx.source_file {
+                if let (Some(set_loc_fn), Some(gv)) = (
+                    ctx.func_refs.get("set_panic_location"),
+                    ctx.string_globals.get(file_str),
+                ) {
+                    let file_ptr = builder.ins().global_value(types::I64, *gv);
+                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                    builder.ins().call(*set_loc_fn, &[file_ptr, line_val, col_val]);
+                }
+            }
+        }
+
+        let call_inst = builder.ins().call(*func_ref, &arg_vals);
+
+        if let Some(dst_id) = dst {
+            // Skip void-typed destinations — nothing to store
+            let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
+            let is_void = matches!(dst_local.map(|l| &l.ty), Some(MirType::Void));
+
+            if !is_void {
+            let var = ctx.var_map.get(dst_id)
+                .ok_or_else(|| CodegenError::UnsupportedFeature(
+                    "Call destination variable not found".to_string()
+                ))?;
+
+            // Post-call result handling
+            let mut slot_already_written = false;
+            let val = match adapt {
+                CallAdapt::DerefResult => {
+                    // Result is void* — load the value from it.
+                    // Use the destination type so f64 elements load as f64,
+                    // not as i64 bit patterns that need conversion.
+                    let load_ty = dst_local
+                        .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
+                        .unwrap_or(types::I64);
+                    let results = builder.inst_results(call_inst);
+                    if !results.is_empty() {
+                        let ptr = results[0];
+                        builder.ins().load(load_ty, MemFlags::new(), ptr, 0)
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    }
+                }
+                CallAdapt::DerefOption => {
+                    // Result is void*: NULL → None, non-NULL → Some(deref).
+                    // Write tag+payload into the destination stack slot.
+                    let results = builder.inst_results(call_inst);
+                    let ptr = if !results.is_empty() { results[0] } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    if let Some((ss, slot_size)) = ctx.stack_slot_map.get(dst_id) {
+                        slot_already_written = true;
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_null = builder.ins().icmp(IntCC::Equal, ptr, zero);
+                        let then_block = builder.create_block();
+                        let else_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.ins().brif(is_null, then_block, &[], else_block, &[]);
+
+                        // NULL path: none
+                        builder.switch_to_block(then_block);
+                        builder.seal_block(then_block);
+                        Self::build_none(builder, *ss);
+                        builder.ins().jump(merge_block, &[]);
+
+                        // non-NULL path: Some(payload copied from ptr)
+                        builder.switch_to_block(else_block);
+                        builder.seal_block(else_block);
+                        let payload_size = *slot_size - crate::layouts::PAYLOAD_OFFSET as u32;
+                        Self::build_wrapped_aggregate(builder, *ss, false, 0, ptr, payload_size);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        // Return dummy value — real data is in the stack slot
+                        builder.ins().iconst(types::I64, 0)
+                    } else {
+                        // No stack slot — just deref like DerefResult
+                        builder.ins().load(types::I64, MemFlags::new(), ptr, 0)
+                    }
+                }
+                CallAdapt::PopOutParam(ss) => {
+                    // Value was written to stack slot by callee
+                    builder.ins().stack_load(types::I64, ss, 0)
+                }
+                CallAdapt::StringOutParam(ss) => {
+                    // 16-byte RaskStr written to stack slot — return slot address.
+                    // If this slot is the dst's own slot, mark as already written.
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                        if *dst_ss == ss {
+                            slot_already_written = true;
+                        }
+                    }
+                    builder.ins().stack_addr(types::I64, ss, 0)
+                }
+                CallAdapt::DerefStringElement => {
+                    // void* pointing to aggregate data in collection.
+                    // Copy `slot_size` bytes into the dst's own slot.
+                    let results = builder.inst_results(call_inst);
+                    let ptr = if !results.is_empty() { results[0] } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    if let Some((ss, slot_size)) = ctx.stack_slot_map.get(dst_id) {
+                        Self::copy_aggregate(builder, ptr, *ss, *slot_size);
+                        slot_already_written = true;
+                    }
+                    ptr
+                }
+                CallAdapt::TryRecvResult(payload_ss, elem_size) => {
+                    // Channel status → `T or E` Result. status==OK(0) →
+                    // Ok(payload); anything else (EMPTY/CLOSED) → Err.
+                    let results = builder.inst_results(call_inst);
+                    let status = if !results.is_empty() { results[0] } else {
+                        builder.ins().iconst(types::I64, crate::layouts::TAG_OFFSET as i64)
+                    };
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id).copied() {
+                        slot_already_written = true;
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+
+                        // Ok(payload) copied into the Result slot.
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        let payload_addr = builder.ins().stack_addr(types::I64, payload_ss, 0);
+                        Self::build_wrapped_aggregate(
+                            builder, dst_ss, true, 0, payload_addr, elem_size,
+                        );
+                        builder.ins().jump(merge_block, &[]);
+
+                        // Err: tag only (recv failure carries no payload).
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let one = builder.ins().iconst(types::I64, 1);
+                        builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                    }
+                    builder.ins().iconst(types::I64, 0)
+                }
+                _ => {
+                    let results = builder.inst_results(call_inst);
+                    if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    }
+                }
+            };
+
+            let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
+            let final_val = if let Some(local) = dst_local {
+                let dst_ty = mir_to_cranelift_type(&local.ty)?;
+                let val_ty = builder.func.dfg.value_type(val);
+                if val_ty != dst_ty {
+                    Self::convert_value(builder, val, val_ty, dst_ty)
+                } else {
+                    val
+                }
+            } else {
+                val
+            };
+            // If destination has a stack slot (aggregate type), handle differently
+            // for internal Rask functions vs C stdlib functions.
+            // DerefOption already wrote directly to the stack slot.
+            if slot_already_written {
+                // Nothing to do — DerefOption already populated the slot
+            } else if let Some((ss, size)) = ctx.stack_slot_map.get(dst_id) {
+                if ctx.internal_fns.contains(&func.name) {
+                    // Internal function returns aggregate data loaded from its stack.
+                    // Store directly into our stack slot (value, not pointer).
+                    if *size <= 8 {
+                        builder.ins().stack_store(final_val, *ss, 0);
+                    } else {
+                        // Larger aggregates: copy from returned pointer
+                        Self::copy_aggregate(builder, final_val, *ss, *size);
+                    }
+                } else if ctx.adapt_table.get(&func.name)
+                    .map(|(_, r)| *r == RetAdapt::NegErr)
+                    .unwrap_or(false)
+                {
+                    // C function uses negative return = error convention
+                    // (declared as RetAdapt::NegErr on the dispatch entry).
+                    Self::wrap_result_into_slot(builder, final_val, *ss);
+                } else {
+                    // C stdlib function returns a plain value (not a pointer to an aggregate).
+                    // Wrap as Some/Ok depending on destination type.
+                    let dst_is_option = ctx.locals.iter()
+                        .find(|l| l.id == *dst_id)
+                        .map(|l| matches!(l.ty, MirType::Option(_)))
+                        .unwrap_or(false);
+                    if dst_is_option {
+                        Self::build_some(builder, *ss, final_val);
+                    } else {
+                        Self::build_ok(builder, *ss, final_val);
+                    }
+                }
+            } else {
+                builder.def_var(*var, final_val);
+            }
+            } // !is_void
+        }
+        Ok(())
     }
 
     fn lower_terminator(
