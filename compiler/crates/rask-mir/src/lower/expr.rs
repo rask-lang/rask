@@ -3146,12 +3146,28 @@ impl<'a> MirLowerer<'a> {
                     };
 
                     let (val, val_ty) = self.lower_expr(&binding.source)?;
-                    let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
-                    self.locals.insert(binding.name.clone(), (local, val_ty.clone()));
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: local,
-                        rvalue: MirRValue::Use(val),
-                    }));
+                    // A `with pool[h] as e` binding must alias the pool slot, not
+                    // copy it: `pool[h]` yields a pointer into the arena, and a
+                    // struct `Assign Use` would value-copy it, so writes through
+                    // `e` would land in the copy and never reach the pool (#402).
+                    // Reuse the access result local directly as the binding. Vec/
+                    // Map bindings still copy + write back below (their element
+                    // isn't a stable pointer).
+                    let local = match (&pool_info, &val) {
+                        (Some(_), MirOperand::Local(id)) => {
+                            self.locals.insert(binding.name.clone(), (*id, val_ty.clone()));
+                            *id
+                        }
+                        _ => {
+                            let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
+                            self.locals.insert(binding.name.clone(), (local, val_ty.clone()));
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: local,
+                                rvalue: MirRValue::Use(val),
+                            }));
+                            local
+                        }
+                    };
 
                     if let Some((obj_op, idx_op, setter_name)) = coll_writeback_info {
                         let _ = val_ty;

@@ -470,6 +470,13 @@ fn pool_compound_assign_native_eq_interp() {
     assert_native_eq_interp("pool_compound_assign.rk", "65");
 }
 
+// #402: `with pool[h] as e { e.f = v }` writes through to the pool on native —
+// the binding aliases the slot instead of copying the element.
+#[test]
+fn with_pool_writeback_native_eq_interp() {
+    assert_native_eq_interp("with_pool_writeback.rk", "78");
+}
+
 // comp.hidden-params/CALL2: a pool held in `self.players` resolves as a hidden
 // context arg (lowered as a field access) for a free callee.
 #[test]
