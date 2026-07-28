@@ -5,7 +5,7 @@
 
 # Wide Data Parallelism
 
-A `Wide[T]` is a value spread across lanes. You **stage** operations on it — `map`, `sum`, `filter` — which build a plan and run nothing. You **commit** the plan, and that is the single point where the hardware runs. The `using` context decides how wide the lanes are: one core's vector unit, the thread pool, or a GPU's thousands of threads. Same source, three widths.
+A `Wide[T]` is a value spread across lanes. You **stage** operations on it — `map`, `sum`, `filter` — which build a plan and run nothing. You **commit** the plan, and that is the single point where the hardware runs. The `using` context decides how wide the lanes are: one core's vector unit, the thread pool, or a GPU's thousands of threads. Same source, one algebra, any width — because the algebra is fixed to the GPU-expressible subset, and the CPU is a superset of it, every plan runs everywhere.
 
 This replaces an earlier `dispatch |lane|` sketch that colored functions and hand-rolled lanes. That version is gone; the reasoning that killed it is in [Appendix: what v1 got wrong](#appendix-non-normative). This spec is `proposed`, not decided — but it is a coherent direction, not a toy.
 
@@ -39,16 +39,19 @@ Read that function and you can point at exactly one line where the GPU runs: `co
 
 `.read()` sounds cheap — "just fetch the array" — and hides that it triggers all deferred compute. `commit` carries the transaction meaning: do it now, for real, blocking, this is the point where cost and failure land. That connotation is what makes laziness honest. **If you can't see where the device runs, the model has failed** — `commit` is how you always can.
 
-## Width: one algebra, three backends
+## Width: the GPU subset runs everywhere
+
+The GPU can express *less* than the CPU — pure lane work, no recursion, no dynamic dispatch, no host effects. The `Wide` algebra is deliberately pinned to exactly that GPU-expressible subset. Because every CPU is a superset of it, **CPU is not a fallback — it is the baseline the algebra is defined against**, and it can always run any plan. GPU is acceleration of a plan the CPU could already run.
 
 | Rule | Description |
 |------|-------------|
-| **W1: Three widths** | `using Simd` realizes lanes on one core's vector unit. `using ThreadPool` realizes them across cores. `using Gpu` realizes them on the device. |
-| **W2: Context picks the backend** | The backend is chosen by the `using` block, visible at the top of the region — not inferred, not hidden. |
-| **W3: Portable source** | The staged plan is backend-agnostic. The same `xs.map(f).sum()` commits to SIMD, cores, or GPU depending only on the context. |
-| **W4: CPU is a real fallback** | A plan written for `using Gpu` runs unchanged under `using ThreadPool` on a machine with no device. No silent 100× cliff — you change one visible line, not the algorithm. |
+| **W1: Widths** | `using Simd` = one core's vector unit. `using ThreadPool` = cores. `using Gpu` = the device. `using Accelerated` = the widest available (GPU if present, else cores). |
+| **W2: Context picks the width, visibly** | The width is the `using` block at the top of the region — explicit, never inferred. `using Accelerated` is the one adaptive choice, and it too is named in the source, so degradation is never a silent surprise. |
+| **W3: One subset, checked once** | A plan type-checks against the GPU subset regardless of width. There is no per-backend capability matrix — a plan that is legal is legal on *all* widths. You never get "runs on cores but not GPU." Need more than the subset? Drop out of `Wide` into ordinary host Rask. |
+| **W4: CPU is baseline, not fallback** | Switching `using Gpu` → `using ThreadPool` is a one-line, always-valid change, *guaranteed* by the subset relation — not a degraded emergency path. |
+| **W5: CPU run is the reference semantics** | What a plan *means* is defined by its CPU execution. The GPU backend is correct iff it matches, modulo documented float reassociation in reductions (`type.simd/R2`). This gives a test oracle: run any plan on both widths and diff. |
 
-The payoff: `using Simd` **is** today's `type.simd`, re-expressed. SIMD is not a separate feature sitting beside GPU — it's the narrowest width of this one model. Cores are the middle width. GPU is the widest. `type.simd`'s `Vec[T, N]` becomes the fixed-width, one-core corner of `Wide[T]`.
+The payoff is twofold. First, `using Simd` **is** today's `type.simd`, re-expressed — the narrowest width of one model, not a bolt-on; `Vec[T, N]` is the fixed-width, one-core corner of `Wide[T]`. Second, portability is *structural*, not hoped-for: because the subset is fixed by what the GPU can do, the question was never *can* the CPU run a plan (a superset always can) — only whether it runs it *fast*.
 
 ## The primitive algebra
 
@@ -123,10 +126,10 @@ FIX: monomorphize the call, or move it out of the plan (run it on the host befor
 ```
 
 ```
-ERROR [conc.data-parallel/W4]: no active width context
+ERROR [conc.data-parallel/W2]: no active width context
    |
 7  |     data.wide()
-   |     ^^^^^^ `.wide()` needs a `using Gpu`, `using ThreadPool`, or `using Simd` block
+   |     ^^^^^^ `.wide()` needs a width block: `using Simd`, `using ThreadPool`, `using Gpu`, or `using Accelerated`
 ```
 
 ```
@@ -139,9 +142,9 @@ RUNTIME (returned, not panicked) [conc.data-parallel/C3]: GpuError.OutOfMemory
 
 | Case | Rule | Handling |
 |------|------|----------|
-| `.wide()` outside any width context | W4 | Compile error |
+| `.wide()` outside any width context | W2 | Compile error |
 | Staged plan never committed | C1 | Warning — the plan is dead code, nothing ran (like an unused `Result`) |
-| `commit` on a machine with no GPU under `using Gpu` | W4 | Compile error at the `using Gpu` — switch to `using ThreadPool` for fallback |
+| `commit` under `using Gpu` with no device present | C3, W4 | Returns `GpuError.NoDevice` — or use `using Accelerated` to run the same plan on cores automatically |
 | Device out of memory at commit | C3 | Returns `GpuError.OutOfMemory`, not a panic |
 | Two lanes scatter to the same index | P8 | Combined by the required `op`; no plain racing scatter exists |
 | Dynamic dispatch inside a staged op | D4 | Compile error |
@@ -175,7 +178,7 @@ The `dispatch |lane|` sketch failed six ways, and this design is the point-by-po
 | No device concurrency/sync model | C1–C5 — staged plan is the handle, `commit` is the join |
 | Per-lane independence check undecidable | P1–P9 — primitives encode dependency; raw lanes only behind `kernel` (K1) |
 | Map-only skipped the cross-lane 80% | P4, P5, P8 — reduce/scan/scatter are first-class |
-| "No fallback" was coloring at the block level | W4 — the algebra is portable; CPU is a real backend |
+| "No fallback" was coloring at the block level | W3/W4 — the algebra *is* the GPU subset, so CPU (a superset) always runs it; portability is structural, not a fallback |
 | Divergence invisible | P6–P8 — irregular ops are named operators, visible in source |
 
 ### TODO — what v2 still must settle
@@ -183,7 +186,7 @@ The `dispatch |lane|` sketch failed six ways, and this design is the point-by-po
 1. **Materialization across commits.** Keeping a result on-device between two commits (avoiding a host round-trip) — is that automatic via fusion, or an explicit on-device checkpoint? Affects multi-stage pipelines.
 2. **`stencil` boundary handling (P9).** Halo/edge behavior — clamp, wrap, or caller-supplied — needs pinning down.
 3. **Mixed-width plans.** Can one plan span `using Gpu` and `using ThreadPool` (offload part, keep part on cores)? Probably no for v1; confirm.
-4. **The `GpuError` set (C3).** Enumerate: `OutOfMemory`, `DeviceLost`, `Unsupported`, transfer failures. Mirror the care `conc.async` gave `JoinError`.
+4. **The `GpuError` set (C3).** Enumerate: `OutOfMemory`, `DeviceLost`, `NoDevice`, `Unsupported`, transfer failures. Mirror the care `conc.async` gave `JoinError`. (Note: under `using Accelerated`, `NoDevice` can't occur — it degrades to cores instead.)
 5. **Tooling for divergence (P1).** The lint that flags a branchy `map` lambda — spec what it detects and how it reads.
 6. **Scope decision.** Whether accelerators are in Rask's stated target at all — a `CORE_DESIGN` call, not this file's.
 
