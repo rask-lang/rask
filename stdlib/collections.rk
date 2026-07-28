@@ -277,4 +277,13 @@ extend Wide<T> {
 
     /// Run the plan, reducing the lanes with `+`.
     public func sum(self) -> T { }
+
+    /// Run the plan, folding the lanes from an initial accumulator.
+    public func reduce(self, init: U, f: func(U, T) -> U) -> U { }
+
+    /// Run the plan, returning the smallest lane.
+    public func min(self) -> T { }
+
+    /// Run the plan, returning the largest lane.
+    public func max(self) -> T { }
 }

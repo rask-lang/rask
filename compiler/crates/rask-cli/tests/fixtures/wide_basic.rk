@@ -15,4 +15,9 @@ func main() {
 
     // lazy map, then read back to a Vec
     print("{xs.map(|x| x * 2.0).read().join(\", \")}\n") // 2, 4, 6, 8
+
+    // reduction family
+    print("{xs.min()}\n")                              // 1
+    print("{xs.max()}\n")                              // 4
+    print("{xs.reduce(1.0, |a, x| a * x)}\n")          // 24
 }

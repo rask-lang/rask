@@ -87,6 +87,24 @@ impl Interpreter {
                 let lanes = self.eval_wide(plan)?;
                 sum_lanes(&lanes)
             }
+            "reduce" => {
+                let mut it = args.into_iter();
+                let mut acc = it.next().unwrap_or(Value::Unit);
+                let f = it.next().unwrap_or(Value::Unit);
+                let lanes = self.eval_wide(plan)?;
+                for item in lanes {
+                    acc = self.call_value(f.clone(), vec![acc, item])?;
+                }
+                Ok(acc)
+            }
+            "min" => {
+                let lanes = self.eval_wide(plan)?;
+                extreme_lane(&lanes, method)
+            }
+            "max" => {
+                let lanes = self.eval_wide(plan)?;
+                extreme_lane(&lanes, method)
+            }
             other => Err(RuntimeError::TypeError(format!(
                 "Wide has no method `{}`",
                 other
@@ -130,4 +148,34 @@ fn sum_lanes(lanes: &[Value]) -> Result<Value, RuntimeError> {
     } else {
         Ok(Value::int(sum))
     }
+}
+
+/// Numeric value of a lane for min/max comparison.
+fn numeric(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(n, _) => Some(*n as f64),
+        Value::Float(f) => Some(*f),
+        _ => None,
+    }
+}
+
+/// `min`/`max` over lanes. Errors on an empty plan or non-numeric lanes.
+fn extreme_lane(lanes: &[Value], which: &str) -> Result<Value, RuntimeError> {
+    let mut best: Option<Value> = None;
+    let mut best_key = 0.0f64;
+    for item in lanes {
+        let k = numeric(item).ok_or_else(|| {
+            RuntimeError::TypeError(format!("{} requires numeric lanes, got {}", which, item.type_name()))
+        })?;
+        let take = match &best {
+            None => true,
+            Some(_) if which == "min" => k < best_key,
+            Some(_) => k > best_key,
+        };
+        if take {
+            best = Some(item.clone());
+            best_key = k;
+        }
+    }
+    best.ok_or_else(|| RuntimeError::TypeError(format!("{} on an empty Wide", which)))
 }
