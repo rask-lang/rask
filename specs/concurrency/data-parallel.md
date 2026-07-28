@@ -244,13 +244,14 @@ The `dispatch |lane|` sketch failed six ways, and this design is the point-by-po
 3. **Mixed-width plans.** Can one plan span `using Gpu` and `using ThreadPool` (offload part, keep part on cores)? Probably no for v1; confirm.
 4. **The `GpuError` set (C3).** Enumerate: `OutOfMemory`, `DeviceLost`, `NoDevice`, `Unsupported`, transfer failures. Mirror the care `conc.async` gave `JoinError`. (Note: under `using Accelerated`, `NoDevice` can't occur — it degrades to cores instead.)
 5. **Tooling for divergence (P1).** The lint that flags a branchy `map` lambda — spec what it detects and how it reads.
-6. **The backend interface (L4).** Its exact shape — how a library backend consumes the plan/SPIR-V, reports memory and timing to `explain`, and advertises the device. This is the whole extension surface; it needs its own spec once the model settles.
+6. **The backend interface (L4).** Drafted in `conc.wide-backend` — the stable contract a library backend implements. Its own open questions (primitive-set representation, version policy, registration, async) live there.
 7. **The `Accelerated` policy (W2).** How it decides (input size thresholds, measured vs. modeled cost), and whether the policy is a fixed stdlib default or itself pluggable. Must never become a hidden autotuner.
 8. **`explain` memory formulas (O1).** How exact the footprint can be when `Wide` lengths are runtime values — symbolic in `N` at compile time, concrete at commit. Pin down what's guaranteed.
 9. **Scope decision.** Whether accelerators are in Rask's stated target at all — a `CORE_DESIGN` call, not this file's.
 
 ### See also
 
+- `conc.wide-backend` — the stable contract a device backend implements
 - `type.simd` — the one-core width of this model (`using Simd`)
 - `conc.async` — the quality bar; `commit`/plan mirrors `join`/handle
 - `mem.boxes` — scoped access; `using Gpu` scopes device memory
