@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.pools/PF5: a `using frozen Pool<T>` context is read-only. Writing through
+// a handle (`h.field = v`, compound assign) must be rejected (E0325). Reads are
+// fine. Structural ops are caught separately by the effects analysis.
+struct Player { health: i32 }
+
+func read_ok(h: Handle<Player>) using frozen Pool<Player> -> i32 {
+    return h.health          // OK: read through a frozen context
+}
+
+func write_bad(h: Handle<Player>) using frozen Pool<Player> {
+    h.health = 0             // E0325: write in a frozen context
+}
+
+func compound_bad(h: Handle<Player>) using frozen Pool<Player> {
+    h.health -= 5            // E0325: compound assign in a frozen context
+}

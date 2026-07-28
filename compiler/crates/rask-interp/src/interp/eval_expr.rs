@@ -166,6 +166,33 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
 }
 
 impl Interpreter {
+    /// Find the `Pool` backing a handle by its pool id. Handle auto-deref
+    /// (mem.context/CC1) resolves the element through whichever `Pool<T>` is in
+    /// scope; the handle's pool id names it unambiguously, so a match by id
+    /// agrees with the compiler's CC4 resolution without needing the name.
+    /// Searches struct fields too, so a pool held in `self` (CC4 priority 3) is
+    /// reached from a method body.
+    pub(crate) fn pool_for_handle(&self, pool_id: u32) -> Option<Arc<Mutex<crate::value::PoolData>>> {
+        self.env.find_map(|v| Self::search_pool(v, pool_id, 0))
+    }
+
+    fn search_pool(v: &Value, pool_id: u32, depth: usize) -> Option<Arc<Mutex<crate::value::PoolData>>> {
+        // Bound the walk so a cyclic struct graph can't loop forever.
+        if depth > 8 {
+            return None;
+        }
+        match v {
+            Value::Pool(p) => (p.lock().unwrap().pool_id == pool_id).then(|| p.clone()),
+            Value::Struct(s) => {
+                // Clone field values out before recursing so a self-referential
+                // struct can't deadlock on its own lock.
+                let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
+                fields.iter().find_map(|fv| Self::search_pool(fv, pool_id, depth + 1))
+            }
+            _ => None,
+        }
+    }
+
     /// Evaluate an expression whose result is transferred into a new owner
     /// (a binding, an assignment target, a struct field, a collection slot).
     /// Reading a place — a variable, field, or index — copies value-type
@@ -887,6 +914,37 @@ impl Interpreter {
                 match obj {
                     Value::Struct(ref s) => {
                         Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
+                    }
+                    // mem.context/CC1: `h.field` auto-resolves through the active
+                    // Pool<T> context — read the element's field. Same generation
+                    // check as `pool[h]` (PF5 note: reads check in any context).
+                    Value::Handle { pool_id, index, generation } => {
+                        let pool = self.pool_for_handle(pool_id).ok_or_else(|| {
+                            RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!(
+                                    "no Pool in scope to resolve handle field `.{}`",
+                                    field
+                                )),
+                                expr.span,
+                            )
+                        })?;
+                        let pool = pool.lock().unwrap();
+                        let idx = pool
+                            .validate(pool_id, index, generation)
+                            .map_err(|e| RuntimeDiagnostic::new(RuntimeError::Panic(e), expr.span))?;
+                        match pool.slots[idx].1.as_ref() {
+                            Some(Value::Struct(s)) => {
+                                Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
+                            }
+                            other => Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "cannot access field '{}' on pool element {}",
+                                    field,
+                                    other.map(|v| v.type_name()).unwrap_or("empty slot")
+                                )),
+                                expr.span,
+                            )),
+                        }
                     }
                     // Nominal type .value extraction
                     Value::Nominal { ref inner, .. } if field == "value" => {

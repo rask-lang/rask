@@ -1,0 +1,13 @@
+// mem.pools/PF5: reads through a handle in a `using frozen Pool<T>` context are
+// allowed (and generation-checked) — native and interp agree.
+struct Player { health: i32 }
+
+func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
+    return h.health
+}
+
+func main() {
+    mut players = Pool.new()
+    const p = players.insert(Player { health: 50 })
+    print(get_health(p))
+}

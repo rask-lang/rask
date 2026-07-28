@@ -456,6 +456,87 @@ fn using_pool_method_native_eq_interp() {
     assert_native_eq_interp("using_pool_method.rk", "5");
 }
 
+// mem.context/CC1 (#434): `h.field` reads auto-resolve through a named
+// `using Pool<T>` context — the spec's headline pattern.
+#[test]
+fn handle_autoderef_read_native_eq_interp() {
+    assert_native_eq_interp("handle_autoderef_read.rk", "100");
+}
+
+// mem.context/CC1 (#434): `h.field` writes (plain + compound) through named and
+// unnamed contexts mutate the pool element on both backends.
+#[test]
+fn handle_autoderef_write_native_eq_interp() {
+    assert_native_eq_interp("handle_autoderef_write.rk", "705");
+}
+
+// mem.context/CC7 (#434): a private function infers its unnamed Pool<T> context
+// from `h.field` access, so auto-deref works with no `using` clause.
+#[test]
+fn handle_autoderef_inferred_native_eq_interp() {
+    assert_native_eq_interp("handle_autoderef_inferred.rk", "42");
+}
+
+// mem.pools/PF5: reads through a handle in a frozen context work on both backends.
+#[test]
+fn frozen_pool_read_native_eq_interp() {
+    assert_native_eq_interp("frozen_pool_read.rk", "50");
+}
+
+// #380: `T` widens to `T?` at an assignment lvalue (reassignment + field store)
+// and the value is wrapped to `Some` on both backends.
+#[test]
+fn optional_widen_assign_native_eq_interp() {
+    assert_native_eq_interp("optional_widen_assign.rk", "1042");
+}
+
+// #270: scalar `mutate` params write back through field/index projections
+// (`swap_fields(mutate p.x, mutate p.y)`, `boost(mutate p.x)`), while a whole
+// Copy variable stays unchanged (`modify_int(z)`). Native == interp.
+#[test]
+fn scalar_mutate_writeback_native_eq_interp() {
+    assert_native_eq_interp("scalar_mutate_writeback.rk", "211242");
+}
+
+// mem.pools/PL2 (#435): a bounded `with_capacity` pool works like a normal pool
+// for inserts within the bound, on both backends.
+#[test]
+fn bounded_pool_with_capacity_native_eq_interp() {
+    assert_native_eq_interp("bounded_pool_with_capacity.rk", "230");
+}
+
+// mem.pools/PL8 (#435): `insert` into a full bounded pool panics (exit 101) on
+// both backends — nothing after the failing insert runs.
+#[test]
+fn bounded_pool_insert_full_panics() {
+    let (nout, ncode) = run_native("bounded_pool_insert_full.rk");
+    let (iout, icode) = run_interp("bounded_pool_insert_full.rk");
+    assert_eq!(ncode, 101, "native should panic on full insert: {}", nout);
+    assert_eq!(icode, 101, "interp should panic on full insert: {}", iout);
+    assert!(!nout.contains("99"), "native must not reach past the panic: {}", nout);
+    assert!(!iout.contains("99"), "interp must not reach past the panic: {}", iout);
+}
+
+// mem.pools/PL8 (#435): `try_insert` returns Some until the bounded pool is full,
+// then none. Interpreter is the reference (native try_insert is tracked in #438).
+#[test]
+fn bounded_pool_try_insert_interp() {
+    let (out, code) = run_interp("bounded_pool_try_insert.rk");
+    assert_eq!(code, 0, "try_insert program must run: {}", out);
+    assert_eq!(out, "110", "unexpected try_insert output: {:?}", out);
+}
+
+// #382 + #380: a Handle is Copy, so `pool[a].next = b` links without consuming
+// `b`, and the widen reads back as Some. Interp is the reference (native pool
+// niche-Option<Handle> reads are tracked in #438), and it must type-check
+// (exit 0) — proving no E0800/E0308 remain.
+#[test]
+fn handle_copy_link_interp() {
+    let (out, code) = run_interp("handle_copy_link.rk");
+    assert_eq!(code, 0, "handle_copy_link must type-check and run: {}", out);
+    assert_eq!(out, "12", "unexpected interp output: {:?}", out);
+}
+
 // #411: nested struct-field assignment (`ln.a.x = v`) persists on native — the
 // projected place stores into the base local instead of a value copy.
 #[test]
@@ -624,6 +705,17 @@ fn error_stdlib_renames() {
             "old name `{}` should be rejected as unknown method: {}", old, out,
         );
     }
+}
+
+// mem.pools/PF5: writing through a handle in a `using frozen Pool<T>` context is
+// rejected (E0325); reads in the same file are fine.
+#[test]
+fn error_frozen_pool_write() {
+    let (failed, out) = compile_error_output("frozen_pool_write.rk");
+    assert!(failed, "frozen-context handle writes must be rejected: {}", out);
+    assert!(out.contains("E0325"), "should be a frozen-context write error (E0325): {}", out);
+    // Both the plain store and the compound assign are rejected; the read is not.
+    assert_eq!(out.matches("error[E0325]").count(), 2, "exactly the two writes rejected: {}", out);
 }
 
 #[test]

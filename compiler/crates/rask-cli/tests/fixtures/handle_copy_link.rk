@@ -1,0 +1,15 @@
+// #382 + #380: a Handle is Copy, so linking a node (`pool[a].next = b`) doesn't
+// consume `b` (no E0800), and the widen `Handle -> Handle?` is wrapped so the
+// link reads back as Some. Interp is the reference here — native reads of a
+// niche Option<Handle> from a pool element are tracked separately (#438).
+struct Node { value: i64, next: Handle<Node>? }
+
+func main() {
+    mut pool = Pool.new()
+    const a = pool.insert(Node { value: 1, next: none })
+    const b = pool.insert(Node { value: 2, next: none })
+    pool[a].next = b
+    const still_usable = pool.get(b)   // b not moved by the link
+    print(pool[a].value)
+    if pool[a].next? as nxt { print(pool[nxt].value) } else { print(-1) }
+}

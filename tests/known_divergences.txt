@@ -13,8 +13,6 @@
 t10_generics.rk            # generic method returning string = garbage — #272 (native)
 t19_result_operators.rk    # union try-else / if r? as v mishandled — #389 (native)
 t13_map.rk                 # Map<_,string> in a test block = 0 tests — #390 (native)
-t15_borrowing.rk           # native scalar disjoint-field mutate has no write-back — #270 (native)
-t22_parameter_modes.rk     # native scalar disjoint-field mutate has no write-back — #270 (native)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
 

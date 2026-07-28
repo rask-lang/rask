@@ -142,6 +142,9 @@ pub struct PoolData {
     pub len: usize,
     /// Type parameter for generic Pool<T> (e.g., "Node" in Pool<Node>).
     pub type_param: Option<String>,
+    /// mem.pools/PL2: capacity bound. `None` = unbounded (grows on demand);
+    /// `Some(n)` = a `with_capacity(n)` pool that never exceeds `n` live elements.
+    pub capacity: Option<usize>,
 }
 
 impl PoolData {
@@ -152,6 +155,7 @@ impl PoolData {
             free_list: Vec::new(),
             len: 0,
             type_param: None,
+            capacity: None,
         }
     }
 
@@ -162,7 +166,13 @@ impl PoolData {
             free_list: Vec::new(),
             len: 0,
             type_param,
+            capacity: None,
         }
+    }
+
+    /// mem.pools/PL8: a bounded pool at its capacity limit rejects new inserts.
+    pub fn is_full(&self) -> bool {
+        self.capacity.map_or(false, |cap| self.len >= cap)
     }
 
     /// Validate a handle against this pool. Returns the slot index on success.
@@ -826,6 +836,7 @@ impl Value {
                 new_pool.free_list = pool.free_list.clone();
                 new_pool.len = pool.len;
                 new_pool.type_param = pool.type_param.clone();
+                new_pool.capacity = pool.capacity;
                 Value::Pool(Arc::new(Mutex::new(new_pool)))
             }
             Value::Closure { params, body, captured_env } => {

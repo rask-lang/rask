@@ -154,6 +154,12 @@ pub struct TypeChecker {
     /// validated after `register_impl_methods` so an error type whose `message()`
     /// comes from an `extend` block is recognized regardless of declaration order.
     pub(super) pending_result_validations: Vec<(Type, rask_ast::Span)>,
+    /// mem.pools/PF5: element types `T` of the current function's
+    /// `using frozen Pool<T>` clauses. A write through a `Handle<T>`
+    /// (`h.field = v`) in such a context is rejected. Structural ops
+    /// (insert/remove/clear on the named binding) are caught by the effects
+    /// analysis (`rask-effects`), so they aren't re-checked here.
+    pub(super) frozen_context_elems: Vec<Type>,
 }
 
 impl TypeChecker {
@@ -193,6 +199,7 @@ impl TypeChecker {
             pending_linear_containers: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
             pending_result_validations: Vec::new(),
+            frozen_context_elems: Vec::new(),
         }
     }
 

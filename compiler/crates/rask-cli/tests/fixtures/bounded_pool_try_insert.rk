@@ -1,0 +1,14 @@
+// mem.pools/PL8: try_insert on a bounded pool returns Some(handle) until the
+// pool is full, then none. (Interpreter is the reference; native try_insert is
+// tracked with the handle-repr issue #438.)
+struct Ent { hp: i32 }
+
+func main() {
+    mut p = Pool.with_capacity(2)
+    const a = p.try_insert(Ent { hp: 1 })
+    const b = p.try_insert(Ent { hp: 2 })
+    const c = p.try_insert(Ent { hp: 3 })   // full -> none
+    if a? as ha { print(1) } else { print(0) }
+    if b? as hb { print(1) } else { print(0) }
+    if c? as hc { print(1) } else { print(0) }
+}

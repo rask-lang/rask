@@ -129,6 +129,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::InjectOneSize, ret_adapt: RetAdapt::None,
         },
+        // Vec.with_capacity(n): (elem_size, cap) — elem_size injected at lowering.
+        StdlibEntry::simple("Vec_with_capacity", "rask_vec_with_capacity", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("rask_vec_from_static", "rask_vec_from_static", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
@@ -480,6 +482,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Pool operations ────────────────────────────────────
         StdlibEntry::simple("Pool_free", "rask_pool_free", &[types::I64], None, false),
         StdlibEntry::simple("Pool_new", "rask_pool_new", &[types::I64], Some(types::I64), false),
+        // PL2: bounded pool. Args (elem_size, cap) — elem_size injected at lowering
+        // like Pool_new. Enforcement (panic on full / try_insert sentinel) lives in
+        // the runtime.
+        StdlibEntry::simple("Pool_with_capacity", "rask_pool_with_capacity", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_alloc", "rask_pool_alloc_packed", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_remove", "rask_pool_remove_packed", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry {
@@ -502,9 +508,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Pool_insert", c_name: "rask_pool_insert_packed_sized",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
+        // NOTE: `Pool_try_insert` is intentionally not dispatched yet. Its result
+        // is a niche `Option<Handle>`, but inference records pool insert/try_insert
+        // results as bare `i64`, so codegen reads the return as a tagged `i64?` and
+        // misinterprets the runtime's niche sentinel. Tracked with the handle-repr
+        // issue (#438); the runtime helper exists for when that lands.
         StdlibEntry::simple("Pool_drain", "rask_pool_drain", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_checked_access", "rask_pool_get_packed", &[types::I64, types::I64], Some(types::I64), false),
 

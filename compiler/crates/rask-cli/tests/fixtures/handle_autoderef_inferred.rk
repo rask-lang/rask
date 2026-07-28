@@ -1,0 +1,13 @@
+// mem.context/CC7 (#434): a private function with a Handle param and no `using`
+// clause infers an unnamed Pool<Player> context from its `h.field` access.
+struct Player { health: i32 }
+
+func report(h: Handle<Player>) {
+    print(h.health)
+}
+
+func main() {
+    mut players = Pool.new()
+    const p = players.insert(Player { health: 42 })
+    report(p)
+}

@@ -15,13 +15,53 @@ use rask_ast::{
 };
 
 impl<'a> MirLowerer<'a> {
+    /// OPT6/#380: wrap a bare `T` operand into `Some(T)` when it's stored into an
+    /// `Option<T>` place. Same two-store construction the return-path auto-wrap
+    /// uses (tag 0 at offset 0, payload at offset 8). Returns the value unchanged
+    /// when no wrap applies.
+    fn wrap_for_option_place(
+        &mut self,
+        val_op: MirOperand,
+        val_ty: MirType,
+        place_ty: &MirType,
+    ) -> (MirOperand, MirType) {
+        // The checker already accepted this assignment, so an `Option<T>` place
+        // with a non-`Option` value is a widen. Don't require the inner MIR type
+        // to match `val_ty` — handles carry an inconsistent repr (`handle` vs the
+        // raw `i64` an insert returns), which would spuriously skip the wrap.
+        if let MirType::Option(inner) = place_ty {
+            // `Option<Handle>` (and `WeakHandle`) is niche-optimized in the layout
+            // (mem.pools): a live handle *is* `Some`, the sentinel is `None`. So a
+            // bare handle stored straight in is already the `Some` repr — a tag +
+            // payload wrap would be both wrong and 8 bytes too big for the slot.
+            let niche = matches!(**inner, MirType::Handle);
+            if !niche && !matches!(val_ty, MirType::Option(_)) {
+                let wrap_local = self.builder.alloc_temp(place_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: wrap_local,
+                    offset: 0,
+                    value: MirOperand::Constant(MirConst::Int(0)),
+                    store_size: Some(8),
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: wrap_local,
+                    offset: 8,
+                    value: val_op,
+                    store_size: Some(val_ty.size()),
+                }));
+                return (MirOperand::Local(wrap_local), place_ty.clone());
+            }
+        }
+        (val_op, val_ty)
+    }
+
     /// Project a nested place (`base.f.g`, tuples included) to a base local plus
     /// a byte offset, so an assignment stores straight into the base's storage
     /// rather than materializing an intermediate field as a value copy — the
     /// copy is what dropped `ln.a.x = v` on native (#411). Returns `None` for
     /// anything not rooted at an aggregate local (pool index, Vec element,
     /// function result), which the caller lowers separately.
-    fn lower_place_chain(&self, expr: &Expr) -> Option<(crate::LocalId, u32, MirType)> {
+    pub(crate) fn lower_place_chain(&self, expr: &Expr) -> Option<(crate::LocalId, u32, MirType)> {
         match &expr.kind {
             ExprKind::Ident(name) => {
                 let (id, ty) = self.locals.get(name).cloned()?;
@@ -189,6 +229,19 @@ impl<'a> MirLowerer<'a> {
 
             StmtKind::Assign { target, value } => {
                 let (val_op, val_ty) = self.lower_expr(value)?;
+                // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
+                // `Option<T>` place (reassignment or index/field store). The checker
+                // accepts the widening; without the wrap the bare value lands in the
+                // slot and a later `?` read misses the `Some` (or corrupts the tag).
+                let place_ty = self
+                    .ctx
+                    .lookup_raw_type(target.id)
+                    .cloned()
+                    .map(|t| self.ctx.type_to_mir(&t));
+                let (val_op, val_ty) = match &place_ty {
+                    Some(pt) => self.wrap_for_option_place(val_op, val_ty, pt),
+                    None => (val_op, val_ty),
+                };
                 match &target.kind {
                     ExprKind::Ident(name) => {
                         let (local_id, dst_ty) = self
@@ -208,13 +261,18 @@ impl<'a> MirLowerer<'a> {
                         let is_mutate_param = self.meta(name)
                             .map(|m| m.is_mutate_param)
                             .unwrap_or(false);
+                        // #270: a scalar `mutate` param's local is a pointer — the
+                        // store must use the *scalar* size, not the pointer's, or it
+                        // clobbers the adjacent field (e.g. `swap_fields(p.x, p.y)`).
+                        let scalar_mutate = self.meta(name).and_then(|m| m.scalar_mutate_ptr.clone());
                         let store_through_ptr = is_mutate_param
-                            && mutate_param_by_pointer(&dst_ty);
+                            && (scalar_mutate.is_some() || mutate_param_by_pointer(&dst_ty));
                         if store_through_ptr {
-                            let store_size = match &dst_ty {
-                                MirType::Struct(layout) => Some(layout.byte_size),
-                                MirType::Enum(layout) => Some(layout.byte_size),
-                                _ => Some(dst_ty.size()),
+                            let store_size = match (&scalar_mutate, &dst_ty) {
+                                (Some(sty), _) => Some(sty.size()),
+                                (None, MirType::Struct(layout)) => Some(layout.byte_size),
+                                (None, MirType::Enum(layout)) => Some(layout.byte_size),
+                                (None, _) => Some(dst_ty.size()),
                             };
                             let _ = val_ty;
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -917,7 +975,7 @@ impl<'a> MirLowerer<'a> {
             if let Some(rask_types::Type::Fn { ret, .. }) = self.ctx.node_types.get(&init.id) {
                 self.closure_locals.insert(name.to_string());
                 let ret_mir = self.ctx.type_to_mir(ret);
-                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir });
+                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new() });
             }
         }
 
@@ -1948,7 +2006,7 @@ impl<'a> MirLowerer<'a> {
 /// enums, tuples, and other by-reference layouts). Reassigning such a param
 /// stores bytes through the caller's pointer so the change is visible. Scalar
 /// Copy types are passed by value — reassignment stays local (no writeback).
-fn mutate_param_by_pointer(ty: &MirType) -> bool {
+pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
     !matches!(
         ty,
         MirType::Void

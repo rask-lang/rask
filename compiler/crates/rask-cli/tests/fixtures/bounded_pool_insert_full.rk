@@ -1,0 +1,9 @@
+// mem.pools/PL8: insert on a full bounded pool panics (both backends, exit 101).
+struct Ent { hp: i32 }
+
+func main() {
+    mut p = Pool.with_capacity(1)
+    const a = p.insert(Ent { hp: 1 })
+    const b = p.insert(Ent { hp: 2 })   // panic: at capacity
+    print(99)
+}

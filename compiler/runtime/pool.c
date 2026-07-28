@@ -25,10 +25,14 @@ struct RaskPool {
     uint32_t  _pad;          // offset 4 (alignment)
     int64_t   elem_size;     // offset 8
     int64_t   slot_stride;   // offset 16
-    int64_t   cap;           // offset 24
-    int64_t   len;           // offset 32
+    int64_t   cap;           // offset 24 — allocated slots (grows)
+    int64_t   len;           // offset 32 — live elements
     char     *slots;         // offset 40
     int32_t   free_head;     // offset 48
+    // mem.pools/PL2: live-element bound. -1 = unbounded; >= 0 = a with_capacity
+    // pool that never exceeds this many live elements. Added after the codegen-
+    // hardcoded offsets (0..48), so the layout asserts below still hold.
+    int32_t   max_cap;       // offset 52
 };
 
 // Compile-time layout verification — codegen hardcodes these offsets
@@ -39,6 +43,7 @@ _Static_assert(offsetof(struct RaskPool, cap) == 24, "cap offset");
 _Static_assert(offsetof(struct RaskPool, len) == 32, "len offset");
 _Static_assert(offsetof(struct RaskPool, slots) == 40, "slots offset");
 _Static_assert(offsetof(struct RaskPool, free_head) == 48, "free_head offset");
+_Static_assert(offsetof(struct RaskPool, max_cap) == 52, "max_cap offset");
 
 static uint32_t g_next_pool_id = 1;
 
@@ -103,6 +108,7 @@ RaskPool *rask_pool_new(int64_t elem_size) {
     p->len = 0;
     p->slots = NULL;
     p->free_head = -1;
+    p->max_cap = -1;  // unbounded by default
     return p;
 }
 
@@ -111,7 +117,14 @@ RaskPool *rask_pool_with_capacity(int64_t elem_size, int64_t cap) {
     if (cap > 0) {
         pool_grow(p, cap);
     }
+    // PL2: bound live elements to cap — this pool never grows past it.
+    p->max_cap = (int32_t)cap;
     return p;
+}
+
+// PL8: a bounded pool at its live-element limit rejects new inserts.
+static inline int pool_is_full(const RaskPool *p) {
+    return p->max_cap >= 0 && p->len >= (int64_t)p->max_cap;
 }
 
 void rask_pool_free(RaskPool *p) {
@@ -128,11 +141,43 @@ int64_t rask_pool_is_empty(const RaskPool *p) {
     return !p || p->len == 0;
 }
 
+// Insert core: no bound check. Callers enforce PL8 (insert panics, try_insert
+// returns a sentinel) before calling this.
+static RaskHandle pool_insert_core(RaskPool *p, const void *elem) {
+    RaskHandle h = RASK_HANDLE_INVALID;
+#ifdef RASK_DEBUG
+    if (!p) return h;
+#endif
+
+    // Grow if no free slots
+    if (p->free_head < 0) {
+        int64_t new_cap = p->cap ? p->cap * 2 : 4;
+        pool_grow(p, new_cap);
+    }
+
+    int32_t idx = p->free_head;
+    char *slot = slot_at(p, idx);
+    p->free_head = slot_next(slot);
+    slot_set_next(slot, SLOT_OCCUPIED);
+
+    memcpy(slot_data(slot), elem, (size_t)p->elem_size);
+    p->len++;
+
+    h.pool_id = p->pool_id;
+    h.index = (uint32_t)idx;
+    h.generation = slot_gen(slot);
+    return h;
+}
+
 RaskHandle rask_pool_insert(RaskPool *p, const void *elem) {
     RaskHandle h = RASK_HANDLE_INVALID;
 #ifdef RASK_DEBUG
     if (!p) return h;
 #endif
+    // PL8: a bounded pool at capacity panics on insert.
+    if (pool_is_full(p)) {
+        rask_panic("pool at capacity: insert into a full bounded pool (use try_insert)");
+    }
 
     // Grow if no free slots
     if (p->free_head < 0) {
@@ -240,6 +285,20 @@ int64_t rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t ele
         p->slot_stride = compute_stride(elem_size);
     }
     return rask_pool_insert_packed(p, elem);
+}
+
+// PL8: try_insert returns the niche-Option<Handle> `None` sentinel (-1) when a
+// bounded pool is full, instead of panicking. Otherwise it inserts and returns
+// the packed handle (which niche-encodes `Some`).
+int64_t rask_pool_try_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size) {
+    if (pool_is_full(p)) {
+        return -1;
+    }
+    if (p->len == 0 && p->cap == 0 && elem_size > p->elem_size) {
+        p->elem_size = elem_size;
+        p->slot_stride = compute_stride(elem_size);
+    }
+    return handle_pack(pool_insert_core(p, elem));
 }
 
 void *rask_pool_get_packed(const RaskPool *p, int64_t packed) {

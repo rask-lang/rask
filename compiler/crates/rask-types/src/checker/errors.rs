@@ -86,6 +86,14 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
+    /// mem.pools/PF5: a write, insert, remove, or clear inside a
+    /// `using frozen Pool<T>` context. `op` names the rejected operation.
+    #[error("cannot {op} in a frozen `Pool<{elem}>` context")]
+    FrozenContextWrite {
+        op: String,
+        elem: String,
+        span: Span,
+    },
     #[error("cannot mutate `{name}` — declared `const`")]
     MutateConst {
         name: String,

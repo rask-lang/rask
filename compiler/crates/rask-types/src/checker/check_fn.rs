@@ -119,6 +119,23 @@ impl TypeChecker {
             }
         }
 
+        // mem.pools/PF5: record frozen pool element types so a `h.field = v`
+        // write through a handle backed by a frozen context can be rejected at
+        // the assignment site. Structural ops (insert/remove/clear) are caught
+        // separately by the effects analysis.
+        self.frozen_context_elems.clear();
+        for cc in &f.context_clauses {
+            if !cc.is_frozen || is_runtime_context(&cc.ty) {
+                continue;
+            }
+            if let Some(elem) = crate::parse_type_string(&cc.ty, &self.types)
+                .ok()
+                .and_then(|ty| self.pool_element_type(&self.resolve_named(&ty)))
+            {
+                self.frozen_context_elems.push(elem);
+            }
+        }
+
         // UF1: unsafe func body is implicitly unsafe
         let was_unsafe = self.in_unsafe;
         if f.is_unsafe {

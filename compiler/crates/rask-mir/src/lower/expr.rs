@@ -205,6 +205,67 @@ impl<'a> MirLowerer<'a> {
         Some((idx as u32, elem_ty, Some(offset), Some(size)))
     }
 
+    /// #270: lower a call argument for a callee param. When `scalar_mutate` is
+    /// `Some(scalar_ty)` the callee expects a by-pointer scalar `mutate` param, so
+    /// pass an address instead of a value:
+    ///   - a field/index projection → the place's address (write-back visible);
+    ///   - a chained scalar-mutate param → its pointer, passed through;
+    ///   - anything else (a whole Copy var) → the address of a spilled copy, so the
+    ///     write-back is discarded (matching `modify_int(x)`).
+    fn lower_call_arg(
+        &mut self,
+        arg: &Expr,
+        scalar_mutate: Option<&MirType>,
+    ) -> Result<TypedOperand, LoweringError> {
+        let sty = match scalar_mutate {
+            Some(t) => t.clone(),
+            None => return self.lower_expr(arg),
+        };
+        // Chained: the arg is itself a by-pointer scalar mutate param — pass the
+        // pointer straight through rather than loading + re-spilling it.
+        if let ExprKind::Ident(name) = &arg.kind {
+            if self.meta(name).and_then(|m| m.scalar_mutate_ptr.clone()).is_some() {
+                if let Some((id, _)) = self.locals.get(name).cloned() {
+                    return Ok((MirOperand::Local(id), MirType::Ptr));
+                }
+            }
+        }
+        // Field/index projection: pass the address of the place so the callee's
+        // store lands in the caller's storage.
+        if matches!(&arg.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
+            if let Some((base, offset, _)) = self.lower_place_chain(arg) {
+                let addr = if offset == 0 {
+                    MirOperand::Local(base)
+                } else {
+                    let tmp = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: tmp,
+                        rvalue: MirRValue::BinaryOp {
+                            op: crate::operand::BinOp::Add,
+                            left: MirOperand::Local(base),
+                            right: MirOperand::Constant(MirConst::Int(offset as i64)),
+                        },
+                    }));
+                    MirOperand::Local(tmp)
+                };
+                return Ok((addr, MirType::Ptr));
+            }
+        }
+        // Whole Copy var / other scalar expr: spill a copy and pass its address.
+        let (val, _) = self.lower_expr(arg)?;
+        let tmp = self.builder.alloc_temp(sty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tmp,
+            rvalue: MirRValue::Use(val),
+        }));
+        let addr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::Ref(tmp),
+        }));
+        Ok((MirOperand::Local(addr), MirType::Ptr))
+    }
+
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         self.builder.set_span(expr.span);
         match &expr.kind {
@@ -273,6 +334,23 @@ impl<'a> MirLowerer<'a> {
 
             // Variable reference (or bare enum variant like None)
             ExprKind::Ident(name) => {
+                // #270: a scalar `mutate` param is a pointer — a bare read loads
+                // the scalar through it (writes store through it; see stmt.rs).
+                if let Some(sty) = self.meta(name).and_then(|m| m.scalar_mutate_ptr.clone()) {
+                    if let Some((id, _)) = self.locals.get(name).cloned() {
+                        let tmp = self.builder.alloc_temp(sty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: tmp,
+                            rvalue: MirRValue::Field {
+                                base: MirOperand::Local(id),
+                                field_index: 0,
+                                byte_offset: Some(0),
+                                field_size: Some(sty.size()),
+                            },
+                        }));
+                        return Ok((MirOperand::Local(tmp), sty));
+                    }
+                }
                 if let Some((id, ty)) = self.locals.get(name).cloned() {
                     // ER24/CF22: ER24 narrowing redefines the binding's type in
                     // the type checker's scope, but the MIR local keeps its
@@ -424,17 +502,33 @@ impl<'a> MirLowerer<'a> {
 
             // Function call — direct or through closure
             ExprKind::Call { func, args } => {
+                // #270: peek the callee's scalar-`mutate` param classification so
+                // those args are passed by address (write-back visible).
+                let callee_smut: Vec<Option<MirType>> = match &func.kind {
+                    ExprKind::Ident(name) => {
+                        let key = self.ctx.call_rewrites.get(&expr.id).cloned()
+                            .unwrap_or_else(|| name.clone());
+                        self.func_sigs.get(&key)
+                            .map(|s| s.scalar_mutate_params.clone())
+                            .unwrap_or_default()
+                    }
+                    _ => Vec::new(),
+                };
                 let mut arg_operands = Vec::new();
                 let mut arg_mir_types = Vec::new();
-                for a in args {
-                    let (op, mir_ty) = self.lower_expr(&a.expr)?;
+                for (i, a) in args.iter().enumerate() {
+                    let smut = callee_smut.get(i).and_then(|o| o.as_ref());
+                    let (op, mir_ty) = self.lower_call_arg(&a.expr, smut)?;
                     // TR5: implicit trait coercion — emit TraitBox if type checker flagged this arg
-                    if let Some(trait_name) = self.ctx.trait_coercions.get(&a.expr.id) {
-                        let (boxed_op, _) = self.emit_trait_box(op, &mir_ty, trait_name);
-                        arg_operands.push(boxed_op);
-                    } else {
-                        arg_operands.push(op);
+                    if smut.is_none() {
+                        if let Some(trait_name) = self.ctx.trait_coercions.get(&a.expr.id) {
+                            let (boxed_op, _) = self.emit_trait_box(op, &mir_ty, trait_name);
+                            arg_operands.push(boxed_op);
+                            arg_mir_types.push(mir_ty);
+                            continue;
+                        }
                     }
+                    arg_operands.push(op);
                     arg_mir_types.push(mir_ty);
                 }
 
@@ -1080,16 +1174,18 @@ impl<'a> MirLowerer<'a> {
                                     arg_operands.push(size_op);
                                 }
                             }
-                            // Pool.new(): inject elem_size so pool allocates
-                            // correctly-sized slots for struct elements.
-                            if base_name == "Pool" && method == "new" {
+                            // Pool.new() / Pool.with_capacity(n): inject elem_size
+                            // so the pool allocates correctly-sized slots for struct
+                            // elements. with_capacity keeps its `n` after elem_size.
+                            if base_name == "Pool" && (method == "new" || method == "with_capacity") {
                                 let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);
                             }
 
-                            // Vec.new(): inject elem_size so runtime allocates correct slots.
-                            if base_name == "Vec" && method == "new" {
+                            // Vec.new() / Vec.with_capacity(n): inject elem_size so
+                            // the runtime allocates correct slots.
+                            if base_name == "Vec" && (method == "new" || method == "with_capacity") {
                                 let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);

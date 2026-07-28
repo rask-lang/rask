@@ -1755,8 +1755,12 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
 
-            // Generic types: conservative
-            Type::Generic { .. } => false,
+            // Handle/WeakHandle are Copy: an 8-byte index+generation pair whose
+            // whole point is to be duplicated freely (mem.pools). Other generic
+            // containers stay conservative.
+            Type::Generic { base, .. } => {
+                matches!(self.program.types.type_name(*base).as_str(), "Handle" | "WeakHandle")
+            }
 
             // Function types are Copy (just a pointer)
             Type::Fn { .. } => true,
@@ -1770,8 +1774,12 @@ impl<'a> OwnershipChecker<'a> {
             // SIMD vectors: NOT Copy (large, stack-allocated)
             Type::SimdVector { .. } => false,
 
-            // Unresolved types: conservative
-            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => false,
+            // Unresolved types: conservative, except Handle/WeakHandle, which are
+            // Copy regardless of how the name was spelled.
+            Type::UnresolvedGeneric { name, .. } => {
+                matches!(name.as_str(), "Handle" | "WeakHandle")
+            }
+            Type::UnresolvedNamed(_) => false,
 
             // Trait objects: never Copy (TR11 — owns heap data)
             Type::TraitObject { .. } => false,

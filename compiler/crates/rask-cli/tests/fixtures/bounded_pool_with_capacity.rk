@@ -1,0 +1,11 @@
+// mem.pools/PL2: a with_capacity pool holds up to its bound; inserts within the
+// bound work like a normal pool. Native and interp agree.
+struct Ent { hp: i32 }
+
+func main() {
+    mut p = Pool.with_capacity(4)
+    const a = p.insert(Ent { hp: 10 })
+    const b = p.insert(Ent { hp: 20 })
+    print(p.len())
+    print(p[a].hp + p[b].hp)
+}

@@ -8,6 +8,27 @@ use crate::value::Value;
 
 use super::{Interpreter, RuntimeError};
 
+/// OPT6/#380: widen a bare `T` to `Some(T)` when it's stored into a slot that
+/// currently holds an `Option` (an `Option<T>`-typed place). Storing `none`
+/// (already an `Option`) passes through. This matches the type checker accepting
+/// `x = v` / `pool[h].f = v` as widening positions — without it, the bare value
+/// lands in the slot and a later `?` read sees no `Some`.
+fn wrap_like(old: Option<&Value>, new: Value) -> Value {
+    let old_is_option = matches!(old, Some(Value::Enum { name, .. }) if name == "Option");
+    let new_is_option = matches!(&new, Value::Enum { name, .. } if name == "Option");
+    if old_is_option && !new_is_option {
+        Value::Enum {
+            name: "Option".to_string(),
+            variant: "Some".to_string(),
+            fields: vec![new],
+            variant_index: 0,
+            origin: None,
+        }
+    } else {
+        new
+    }
+}
+
 impl Interpreter {
     /// Destructure a value according to a list of TuplePat patterns.
     /// Handles nested patterns like `(a, (b, c), _)` recursively.
@@ -80,14 +101,16 @@ impl Interpreter {
             let field = &field_chain[0];
             match obj {
                 Value::Struct(s) => {
-                    s.lock().unwrap().fields.insert(field.clone(), value);
+                    let mut guard = s.lock().unwrap();
+                    let value = wrap_like(guard.fields.get(field), value);
+                    guard.fields.insert(field.clone(), value);
                     return Ok(());
                 }
                 Value::Vec(v) if field.parse::<usize>().is_ok() => {
                     let idx = field.parse::<usize>().unwrap();
                     let mut vec = v.lock().unwrap();
                     if idx < vec.len() {
-                        vec[idx] = value;
+                        vec[idx] = wrap_like(Some(&vec[idx]), value);
                         return Ok(());
                     }
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
@@ -136,7 +159,7 @@ impl Interpreter {
                     let idx = *i as usize;
                     let mut vec = v.lock().unwrap();
                     if idx < vec.len() {
-                        vec[idx] = value;
+                        vec[idx] = wrap_like(Some(&vec[idx]), value);
                         Ok(())
                     } else {
                         Err(RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() })
@@ -150,6 +173,7 @@ impl Interpreter {
                     let mut pool = p.lock().unwrap();
                     let slot_idx = pool.validate(*pool_id, *index, *generation)
                         .map_err(|e| RuntimeError::Panic(e))?;
+                    let value = wrap_like(pool.slots[slot_idx].1.as_ref(), value);
                     pool.slots[slot_idx].1 = Some(value);
                     Ok(())
                 } else {
@@ -226,6 +250,7 @@ impl Interpreter {
     pub(super) fn assign_target(&mut self, target: &Expr, value: Value) -> Result<(), RuntimeError> {
         match &target.kind {
             ExprKind::Ident(name) => {
+                let value = wrap_like(self.env.get(name), value);
                 if !self.env.assign(name, value) {
                     return Err(RuntimeError::UndefinedVariable(name.clone()));
                 }
@@ -244,7 +269,19 @@ impl Interpreter {
                     ExprKind::Ident(var_name) => {
                         if let Some(obj) = self.env.get(var_name) {
                             let obj = obj.clone();
-                            Self::assign_nested_field(&obj, &field_chain, value)
+                            // mem.context/CC1: `h.field = v` auto-resolves through
+                            // the active Pool<T> — write to the element's field.
+                            if let Value::Handle { pool_id, .. } = &obj {
+                                let pool = self.pool_for_handle(*pool_id).ok_or_else(|| {
+                                    RuntimeError::Panic(format!(
+                                        "no Pool in scope to resolve handle field `.{}`",
+                                        field_chain.first().cloned().unwrap_or_default()
+                                    ))
+                                })?;
+                                Self::assign_index_field(&Value::Pool(pool), &obj, &field_chain, value)
+                            } else {
+                                Self::assign_nested_field(&obj, &field_chain, value)
+                            }
                         } else {
                             Err(RuntimeError::UndefinedVariable(var_name.clone()))
                         }

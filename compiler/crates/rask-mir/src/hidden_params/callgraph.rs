@@ -121,7 +121,7 @@ pub fn propagate(pass: &mut HiddenParamPass) {
 
 /// CC4: Check if a function can resolve a context type from its own scope
 /// (local variables, parameters, self fields) without needing propagation.
-fn can_resolve_locally(pass: &HiddenParamPass, func_name: &str, clause_type: &Type) -> bool {
+pub(crate) fn can_resolve_locally(pass: &HiddenParamPass, func_name: &str, clause_type: &Type) -> bool {
     if let Some(info) = pass.func_info.get(func_name) {
         let candidates = info
             .params

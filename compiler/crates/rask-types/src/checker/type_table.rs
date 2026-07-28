@@ -543,15 +543,21 @@ impl TypeTable {
     }
 
     /// Get the display name for a TypeId.
+    ///
+    /// Generic type defs store their declaration signature as the name
+    /// (`Handle<T>`, `Pool<T>`, `Foo<K, V>`). The display/base name is just the
+    /// head — strip the parameter list so `Type::Generic { base, args }` renders
+    /// as `Handle<Player>`, not `Handle<T><Player>`.
     pub fn type_name(&self, id: TypeId) -> String {
-        match self.get(id) {
-            Some(TypeDef::Struct { name, .. }) => name.clone(),
-            Some(TypeDef::Enum { name, .. }) => name.clone(),
-            Some(TypeDef::Trait { name, .. }) => name.clone(),
-            Some(TypeDef::Union { name, .. }) => name.clone(),
-            Some(TypeDef::NominalAlias { name, .. }) => name.clone(),
-            None => format!("<type#{}>", id.0),
-        }
+        let name = match self.get(id) {
+            Some(TypeDef::Struct { name, .. }) => name,
+            Some(TypeDef::Enum { name, .. }) => name,
+            Some(TypeDef::Trait { name, .. }) => name,
+            Some(TypeDef::Union { name, .. }) => name,
+            Some(TypeDef::NominalAlias { name, .. }) => name,
+            None => return format!("<type#{}>", id.0),
+        };
+        name.split('<').next().unwrap_or(name).to_string()
     }
 
     /// Get the underlying type for a nominal alias.

@@ -595,6 +595,14 @@ impl Interpreter {
             "insert" | "alloc" => {
                 let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
                 let mut pool = p.lock().unwrap();
+                // mem.pools/PL8: a bounded pool at capacity panics on `insert`.
+                if pool.is_full() {
+                    let cap = pool.capacity.unwrap_or(0);
+                    return Err(RuntimeError::Panic(format!(
+                        "pool at capacity: cannot insert into a bounded pool of capacity {} (use try_insert)",
+                        cap
+                    )));
+                }
                 let pool_id = pool.pool_id;
                 let (index, generation) = pool.insert(item);
                 Ok(Value::Handle { pool_id, index, generation })
@@ -727,12 +735,22 @@ impl Interpreter {
                 new_pool.free_list = pool.free_list.clone();
                 new_pool.len = pool.len;
                 new_pool.type_param = pool.type_param.clone();
+                new_pool.capacity = pool.capacity;
                 Ok(Value::Pool(Arc::new(Mutex::new(new_pool))))
             }
             "try_insert" => {
-                // Pools don't have capacity limits yet, so try_insert always succeeds
-                let item = args.into_iter().next().unwrap_or(Value::Unit);
+                // mem.pools/PL8: `try_insert` on a full bounded pool returns `none`
+                // instead of panicking; otherwise `Some(handle)`.
+                let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
                 let mut pool = p.lock().unwrap();
+                if pool.is_full() {
+                    return Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                        variant_index: 1, origin: None,
+                    });
+                }
                 let pool_id = pool.pool_id;
                 let (index, generation) = pool.insert(item);
                 Ok(Value::Enum {
@@ -1351,6 +1369,8 @@ impl Interpreter {
                 let cap = self.expect_int(&args, 0)? as usize;
                 let mut pool = PoolData::with_type_param(type_param.clone());
                 pool.slots.reserve(cap);
+                // mem.pools/PL2: a with_capacity pool is bounded — enforce the limit.
+                pool.capacity = Some(cap);
                 Ok(Value::Pool(Arc::new(Mutex::new(pool))))
             }
             (TypeConstructorKind::Channel, "buffered") => {

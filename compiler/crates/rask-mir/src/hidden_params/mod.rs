@@ -166,6 +166,31 @@ impl<'a> HiddenParamPass<'a> {
         Some(self.canonical_type(ty))
     }
 
+    /// The element type `T` of a `Handle<T>`, in either canonical (`Generic`) or
+    /// unresolved form. `None` for anything else. `WeakHandle` is excluded — it
+    /// can't auto-deref (mem.context/CC1).
+    pub fn handle_elem_of_type(&self, ty: &Type) -> Option<Type> {
+        use rask_types::GenericArg;
+        let (name, args) = match ty {
+            Type::Generic { base, args } => (self.typed?.types.type_name(*base), args.as_slice()),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
+            _ => return None,
+        };
+        if name != "Handle" {
+            return None;
+        }
+        match args.first()? {
+            GenericArg::Type(t) => Some((**t).clone()),
+            _ => None,
+        }
+    }
+
+    /// If the node has type `Handle<T>`, its element type `T`. Drives the
+    /// `h.field` rewrite: only strong-handle field access lowers to `pool[h].field`.
+    pub fn node_handle_elem(&self, id: NodeId) -> Option<Type> {
+        self.handle_elem_of_type(&self.node_ty(id)?)
+    }
+
     /// Put a type in canonical form so two spellings of the same type compare
     /// equal: every `UnresolvedNamed`/`UnresolvedGeneric` head that the type
     /// table knows becomes its `Named`/`Generic` form, recursively. The checker
@@ -241,14 +266,13 @@ impl<'a> HiddenParamPass<'a> {
                 format!("{}<{}>", name, render_args(args))
             }
             Type::Generic { base, args } => {
+                // `type_name` returns the base head (`Pool`), not the stored
+                // declaration signature (`Pool<T>`), so appending the concrete
+                // args renders `Pool<Player>` directly.
                 let head = self
                     .typed
                     .map(|t| t.types.type_name(*base))
                     .unwrap_or_else(|| format!("{}", ty));
-                // The registered base name carries its param placeholder
-                // (`Pool<T>`); drop it before appending the concrete args so we
-                // render `Pool<Player>`, not `Pool<T><Player>`.
-                let head = head.split('<').next().unwrap_or(&head);
                 format!("{}<{}>", head, render_args(args))
             }
             _ => format!("{}", ty),
