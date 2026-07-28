@@ -448,6 +448,21 @@ fn using_pool_propagate_native_eq_interp() {
     assert_native_eq_interp("using_pool_propagate.rk", "42");
 }
 
+// comp.hidden-params/CALL6: instance-method `using` context threads through
+// method dispatch on both the top-level `l.settle(a)` and the inner
+// `self.post(h)`. Native must match the interpreter.
+#[test]
+fn using_pool_method_native_eq_interp() {
+    assert_native_eq_interp("using_pool_method.rk", "5");
+}
+
+// comp.hidden-params/CALL2: a pool held in `self.players` resolves as a hidden
+// context arg (lowered as a field access) for a free callee.
+#[test]
+fn using_pool_self_field_native_eq_interp() {
+    assert_native_eq_interp("using_pool_self_field.rk", "7");
+}
+
 #[test]
 fn dispatch_map_native_eq_interp() {
     assert_native_eq_interp("dispatch_map.rk", "3\ntrue\n2\nfalse\n2\n");

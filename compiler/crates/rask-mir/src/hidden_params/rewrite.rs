@@ -171,50 +171,32 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
     match &mut expr.kind {
         // Phase 5 (CALL1-CALL6): Insert hidden args at call sites
         ExprKind::Call { func, args } => {
+            let span = expr.span;
+            let key = pass.callee_key(expr.id).or_else(|| extract_callee_name(func));
             rewrite_expr(pass, caller, func);
             for arg in args.iter_mut() {
                 rewrite_expr(pass, caller, &mut arg.expr);
             }
-
-            // Check if callee needs hidden params
-            if let Some(callee_name) = extract_callee_name(func) {
-                if let Some(reqs) = pass.func_contexts.get(&callee_name).cloned() {
-                    for req in &reqs {
-                        // Don't add duplicate hidden args
-                        let already_has = args.iter().any(|a| {
-                            matches!(&a.expr.kind, ExprKind::Ident(name) if name == &req.param_name)
-                        });
-                        if already_has {
-                            continue;
-                        }
-
-                        // CC4: Resolve from scope, not just hidden param name
-                        let resolved_name = resolve_arg_name(pass, caller, req);
-
-                        args.push(CallArg {
-                            name: None,
-                            mode: ArgMode::Default,
-                            expr: Expr {
-                                id: pass.fresh_id(),
-                                kind: ExprKind::Ident(resolved_name),
-                                span: expr.span,
-                            },
-                        });
-                    }
-                }
+            // CALL6: key the callee by the recorded dispatch target, so the
+            // hidden args match the callee's rewritten signature.
+            if let Some(key) = key {
+                insert_hidden_args(pass, caller, &key, args, span);
             }
         }
 
-        ExprKind::MethodCall {
-            object, args, ..
-        } => {
+        ExprKind::MethodCall { object, args, .. } => {
+            // CALL6: a method callee (`recv.m()` / `self.m()` / `T.m()`) keys by
+            // the recorded `Type.method` dispatch target — same as its declaration
+            // — so its context requirement threads in exactly like a free call's.
+            let span = expr.span;
+            let key = pass.callee_key(expr.id);
             rewrite_expr(pass, caller, object);
             for arg in args.iter_mut() {
                 rewrite_expr(pass, caller, &mut arg.expr);
             }
-            // Method call context resolution requires type info for the
-            // receiver. Deferred — method dispatch doesn't commonly carry
-            // context in Phase A patterns.
+            if let Some(key) = key {
+                insert_hidden_args(pass, caller, &key, args, span);
+            }
         }
 
         // Phase 6 (BLK1-BLK4): Desugar `using` blocks
@@ -401,34 +383,83 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
     }
 }
 
-/// CC4: Resolve the argument name for a context requirement.
-/// Uses scope resolution when possible, falls back to hidden param name.
-fn resolve_arg_name(
-    pass: &HiddenParamPass,
+/// CALL3: append the hidden context arguments a callee requires to `args`,
+/// resolving each from the caller's scope (CC4). Shared by free calls and
+/// method calls — both identify their callee by the recorded dispatch target.
+fn insert_hidden_args(
+    pass: &mut HiddenParamPass,
+    caller: &str,
+    callee_key: &str,
+    args: &mut Vec<CallArg>,
+    span: Span,
+) {
+    let reqs = match pass.func_contexts.get(callee_key).cloned() {
+        Some(r) => r,
+        None => return,
+    };
+    for req in &reqs {
+        // HP4: don't re-append a hidden arg that's already present.
+        let already_has = args
+            .iter()
+            .any(|a| matches!(&a.expr.kind, ExprKind::Ident(name) if name == &req.param_name));
+        if already_has {
+            continue;
+        }
+
+        let kind = resolve_arg_kind(pass, caller, req);
+        args.push(CallArg {
+            name: None,
+            mode: ArgMode::Default,
+            expr: Expr {
+                id: pass.fresh_id(),
+                kind,
+                span,
+            },
+        });
+    }
+}
+
+/// CC4: Build the argument expression for a context requirement, resolving from
+/// the caller's scope. A `self.field` pool becomes a real field-access
+/// expression (`self.players`), not an ident whose name happens to contain a
+/// dot — MIR can't resolve the latter. Locals/params/hidden-params are plain
+/// idents. Falls back to the hidden param name when scope resolution finds
+/// nothing (propagation should have added it to the signature).
+fn resolve_arg_kind(
+    pass: &mut HiddenParamPass,
     caller: &str,
     req: &super::ContextReq,
-) -> String {
+) -> ExprKind {
     if caller.is_empty() {
-        return req.param_name.clone();
+        return ExprKind::Ident(req.param_name.clone());
     }
 
     match resolve_context_in_scope(pass, caller, &req.clause_type) {
-        ResolveResult::Resolved(pool) => {
-            match pool.source {
-                PoolSource::UsingClause => pool.var_name,
-                // For locals/params/self.fields, use the actual variable name
-                _ => pool.var_name,
+        ResolveResult::Resolved(pool) => match pool.source {
+            PoolSource::SelfField => {
+                // var_name is "self.<field>"; rebuild as a Field access so the
+                // backend sees a struct field read, not an unknown variable.
+                let field = pool
+                    .var_name
+                    .strip_prefix("self.")
+                    .unwrap_or(&pool.var_name)
+                    .to_string();
+                let object = Expr {
+                    id: pass.fresh_id(),
+                    kind: ExprKind::Ident("self".to_string()),
+                    span: Span::new(0, 0),
+                };
+                ExprKind::Field {
+                    object: Box::new(object),
+                    field,
+                }
             }
-        }
-        ResolveResult::Ambiguous(_pools) => {
-            // CC8: Ambiguous — for now, fall back to hidden param name.
-            // The type checker should have already reported this error.
-            req.param_name.clone()
-        }
-        ResolveResult::NotFound => {
-            // No local resolution — use the hidden param name
-            // (propagation should have added it to the signature)
-            req.param_name.clone()
+            _ => ExprKind::Ident(pool.var_name),
+        },
+        // CC8 (ambiguous) and NotFound both fall back to the hidden param name;
+        // ambiguity is reported as a diagnostic before this pass runs.
+        ResolveResult::Ambiguous(_) | ResolveResult::NotFound => {
+            ExprKind::Ident(req.param_name.clone())
         }
     }
 }

@@ -1,0 +1,22 @@
+// comp.hidden-params/CALL6: an instance method's `using` context threads through
+// method dispatch. `l.settle(a)` and the inner `self.post(h)` both resolve to
+// their `Ledger.method` target and receive the hidden pool arg — native must
+// match the interpreter.
+struct Account { balance: i32 }
+struct Ledger { name: i32 }
+
+extend Ledger {
+    func settle(self, h: Handle<Account>) using accounts: Pool<Account> {
+        self.post(h)
+    }
+    func post(self, h: Handle<Account>) using accounts: Pool<Account> {
+        print(accounts[h].balance)
+    }
+}
+
+func main() {
+    mut accounts = Pool<Account>.new()
+    const a = accounts.insert(Account { balance: 5 })
+    mut l = Ledger { name: 1 }
+    l.settle(a)
+}

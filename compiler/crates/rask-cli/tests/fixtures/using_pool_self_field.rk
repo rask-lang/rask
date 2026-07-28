@@ -1,0 +1,22 @@
+// comp.hidden-params/CALL2 pri 3: a pool held in `self.players` satisfies a free
+// callee's Pool<Player> context. The hidden arg lowers as a real field-access
+// expression (`self.players`), so native reads the pool the same as interp.
+struct Player { score: i32 }
+struct Game { players: Pool<Player> }
+
+func bump(h: Handle<Player>) using players: Pool<Player> {
+    print(players[h].score)
+}
+
+extend Game {
+    func tick(self, h: Handle<Player>) {
+        bump(h)
+    }
+}
+
+func main() {
+    mut players = Pool<Player>.new()
+    const h = players.insert(Player { score: 7 })
+    mut g = Game { players: players }
+    g.tick(h)
+}
