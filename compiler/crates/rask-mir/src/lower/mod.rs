@@ -63,10 +63,37 @@ pub(crate) enum IterAdapter<'a> {
     Enumerate,
 }
 
+/// #270: classify a function's params for scalar `mutate` write-back. Returns one
+/// entry per param: `Some(scalar_ty)` for a `mutate` param of a Copy scalar type
+/// (passed by pointer), `None` otherwise. Aggregates already pass by pointer, so
+/// they stay `None` here.
+fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> Vec<Option<MirType>> {
+    params
+        .iter()
+        .map(|p| {
+            if !p.is_mutate || p.ty.is_empty() {
+                return None;
+            }
+            let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
+            if crate::lower::stmt::mutate_param_by_pointer(&ty) {
+                None
+            } else {
+                Some(ty)
+            }
+        })
+        .collect()
+}
+
 /// Function signature for type inference
 #[derive(Clone)]
 struct FuncSig {
     ret_ty: MirType,
+    /// #270: per-parameter (is_mutate, scalar type) — populated for user
+    /// functions/methods. A `Some(ty)` entry marks a scalar `mutate` param that
+    /// is passed by pointer (the caller passes an address, the callee loads/stores
+    /// through it); `None` means the param is not a by-pointer scalar mutate.
+    /// Empty for extern/stdlib (no scalar mutate write-back).
+    scalar_mutate_params: Vec<Option<MirType>>,
 }
 
 /// Loop context for break/continue
@@ -497,6 +524,12 @@ pub(crate) struct LocalMeta {
     /// flow back through the param's pointer (mem.borrowing/M-rules), so
     /// `p = expr` lowers to a Store(*p, ...) instead of Assign(p, ...).
     pub is_mutate_param: bool,
+    /// #270: a scalar (Copy) `mutate` param passed by pointer. The local holds an
+    /// address; reads of the bare name load through it, writes store through it,
+    /// using this recorded scalar type for the access size. `None` for normal
+    /// locals and aggregate mutate params (which are already pointers used via
+    /// field access, not bare loads).
+    pub scalar_mutate_ptr: Option<MirType>,
 }
 
 pub struct MirLowerer<'a> {
@@ -745,7 +778,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         let thunk_fn = thunk_builder.finish();
-        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void });
+        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new() });
         self.synthesized_functions.push(thunk_fn);
 
         let captures = caps
@@ -857,7 +890,10 @@ impl<'a> MirLowerer<'a> {
                         .as_deref()
                         .map(|s| ctx.resolve_type_str(s))
                         .unwrap_or(MirType::Void);
-                    func_sigs.insert(f.name.clone(), FuncSig { ret_ty: sig_ret });
+                    func_sigs.insert(f.name.clone(), FuncSig {
+                        ret_ty: sig_ret,
+                        scalar_mutate_params: scalar_mutate_params(&f.params, ctx),
+                    });
                 }
                 DeclKind::Extern(ext) => {
                     let sig_ret = ext
@@ -865,7 +901,7 @@ impl<'a> MirLowerer<'a> {
                         .as_deref()
                         .map(|s| ctx.resolve_type_str(s))
                         .unwrap_or(MirType::Void);
-                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret });
+                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new() });
                 }
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
@@ -875,7 +911,10 @@ impl<'a> MirLowerer<'a> {
                             .as_deref()
                             .map(|s| ctx.resolve_type_str(s))
                             .unwrap_or(MirType::Void);
-                        func_sigs.insert(qualified, FuncSig { ret_ty: sig_ret });
+                        func_sigs.insert(qualified, FuncSig {
+                            ret_ty: sig_ret,
+                            scalar_mutate_params: scalar_mutate_params(&m.params, ctx),
+                        });
                     }
                 }
                 _ => {}
@@ -887,6 +926,7 @@ impl<'a> MirLowerer<'a> {
         for meta in rask_stdlib::mir_metadata::method_metas() {
             func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
                 ret_ty: ret_category_to_mir_type(&meta.ret_category),
+                scalar_mutate_params: Vec::new(),
             });
         }
 
@@ -958,8 +998,14 @@ impl<'a> MirLowerer<'a> {
             // handle passed by value — so strip the `&` and lower the pointee.
             let param_ty_str = param_ty_str.trim_start_matches('&');
             let param_ty = ctx.resolve_type_str(param_ty_str);
-            let local_id = lowerer.builder.add_param(param.name.clone(), param_ty.clone());
-            lowerer.locals.insert(param.name.clone(), (local_id, param_ty.clone()));
+            // #270: a scalar `mutate` param is passed by pointer so the callee can
+            // write back through it. Register the param local as a pointer; reads
+            // load and writes store through it, keyed by the recorded scalar type.
+            let scalar_mutate = param.is_mutate
+                && !crate::lower::stmt::mutate_param_by_pointer(&param_ty);
+            let local_ty = if scalar_mutate { MirType::Ptr } else { param_ty.clone() };
+            let local_id = lowerer.builder.add_param(param.name.clone(), local_ty.clone());
+            lowerer.locals.insert(param.name.clone(), (local_id, local_ty));
             // Set type prefix for parameters so method calls qualify correctly.
             // mir_type_name handles Struct/Enum/String/primitives; type_prefix_from_str
             // catches Ptr types like Vec<T>, Map<K,V> from the annotation string.
@@ -969,6 +1015,9 @@ impl<'a> MirLowerer<'a> {
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
                 if param.is_mutate {
                     meta.is_mutate_param = true;
+                }
+                if scalar_mutate {
+                    meta.scalar_mutate_ptr = Some(param_ty.clone());
                 }
                 if let Some(p) = prefix {
                     meta.type_prefix = Some(p);
@@ -1000,7 +1049,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     MirType::Void
                 };
-                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty });
+                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new() });
             }
         }
 

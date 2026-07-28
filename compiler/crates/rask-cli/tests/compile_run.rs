@@ -490,6 +490,14 @@ fn optional_widen_assign_native_eq_interp() {
     assert_native_eq_interp("optional_widen_assign.rk", "1042");
 }
 
+// #270: scalar `mutate` params write back through field/index projections
+// (`swap_fields(mutate p.x, mutate p.y)`, `boost(mutate p.x)`), while a whole
+// Copy variable stays unchanged (`modify_int(z)`). Native == interp.
+#[test]
+fn scalar_mutate_writeback_native_eq_interp() {
+    assert_native_eq_interp("scalar_mutate_writeback.rk", "211242");
+}
+
 // mem.pools/PL2 (#435): a bounded `with_capacity` pool works like a normal pool
 // for inserts within the bound, on both backends.
 #[test]

@@ -61,7 +61,7 @@ impl<'a> MirLowerer<'a> {
     /// copy is what dropped `ln.a.x = v` on native (#411). Returns `None` for
     /// anything not rooted at an aggregate local (pool index, Vec element,
     /// function result), which the caller lowers separately.
-    fn lower_place_chain(&self, expr: &Expr) -> Option<(crate::LocalId, u32, MirType)> {
+    pub(crate) fn lower_place_chain(&self, expr: &Expr) -> Option<(crate::LocalId, u32, MirType)> {
         match &expr.kind {
             ExprKind::Ident(name) => {
                 let (id, ty) = self.locals.get(name).cloned()?;
@@ -261,13 +261,18 @@ impl<'a> MirLowerer<'a> {
                         let is_mutate_param = self.meta(name)
                             .map(|m| m.is_mutate_param)
                             .unwrap_or(false);
+                        // #270: a scalar `mutate` param's local is a pointer — the
+                        // store must use the *scalar* size, not the pointer's, or it
+                        // clobbers the adjacent field (e.g. `swap_fields(p.x, p.y)`).
+                        let scalar_mutate = self.meta(name).and_then(|m| m.scalar_mutate_ptr.clone());
                         let store_through_ptr = is_mutate_param
-                            && mutate_param_by_pointer(&dst_ty);
+                            && (scalar_mutate.is_some() || mutate_param_by_pointer(&dst_ty));
                         if store_through_ptr {
-                            let store_size = match &dst_ty {
-                                MirType::Struct(layout) => Some(layout.byte_size),
-                                MirType::Enum(layout) => Some(layout.byte_size),
-                                _ => Some(dst_ty.size()),
+                            let store_size = match (&scalar_mutate, &dst_ty) {
+                                (Some(sty), _) => Some(sty.size()),
+                                (None, MirType::Struct(layout)) => Some(layout.byte_size),
+                                (None, MirType::Enum(layout)) => Some(layout.byte_size),
+                                (None, _) => Some(dst_ty.size()),
                             };
                             let _ = val_ty;
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -970,7 +975,7 @@ impl<'a> MirLowerer<'a> {
             if let Some(rask_types::Type::Fn { ret, .. }) = self.ctx.node_types.get(&init.id) {
                 self.closure_locals.insert(name.to_string());
                 let ret_mir = self.ctx.type_to_mir(ret);
-                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir });
+                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new() });
             }
         }
 
@@ -2001,7 +2006,7 @@ impl<'a> MirLowerer<'a> {
 /// enums, tuples, and other by-reference layouts). Reassigning such a param
 /// stores bytes through the caller's pointer so the change is visible. Scalar
 /// Copy types are passed by value — reassignment stays local (no writeback).
-fn mutate_param_by_pointer(ty: &MirType) -> bool {
+pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
     !matches!(
         ty,
         MirType::Void
