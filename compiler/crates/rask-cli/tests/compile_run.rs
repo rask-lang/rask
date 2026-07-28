@@ -258,6 +258,49 @@ fn compile_closures() {
     assert_eq!(stdout, "42\n");
 }
 
+// ─── Field defaults (FD1-FD5) ───────────────────────────────
+// Omitted fields fill from declared defaults. Both backends construct
+// structs by name, so filling defaults at desugar time covers both.
+
+const FIELD_DEFAULTS_EXPECTED: &str =
+    "localhost 8080 false\nexample.com 3000 true\n640 480 untitled\n800 480 copy\n";
+
+#[test]
+fn compile_field_defaults() {
+    let (stdout, code) = compile_and_run("field_defaults.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, FIELD_DEFAULTS_EXPECTED);
+}
+
+#[test]
+fn native_field_defaults() {
+    let (stdout, code) = run_native("field_defaults.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, FIELD_DEFAULTS_EXPECTED);
+}
+
+#[test]
+fn interp_field_defaults() {
+    let (stdout, code) = run_interp("field_defaults.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, FIELD_DEFAULTS_EXPECTED);
+}
+
+// Field annotations (@rename/@skip/@default) surface through reflect. Reflect-driven
+// `comptime for` runs only under the interpreter, so this path is interp-only.
+#[test]
+fn interp_field_annotations() {
+    let (stdout, code) = run_interp("field_annotations.rk");
+    assert_eq!(code, 0);
+    assert_eq!(
+        stdout,
+        "name user_name false false\n\
+         cache_key cache_key true false\n\
+         login_count login_count false true\n\
+         role role false true\n",
+    );
+}
+
 // #370 (field-position error type accepted) + #364 (Result field sized to match
 // codegen so `tag` isn't clobbered).
 #[test]

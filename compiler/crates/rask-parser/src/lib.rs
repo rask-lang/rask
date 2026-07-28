@@ -1459,6 +1459,44 @@ mod tests {
         assert_eq!(stmts.len(), 2);
     }
 
+    // FD1: struct field declared defaults parse into Field.default.
+    #[test]
+    fn struct_field_defaults() {
+        let result = parse("struct Config { public host: string\npublic port: i32 = 8080\nverbose: bool = false }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Struct(ref s) => {
+                assert!(s.fields[0].default.is_none(), "host has no default");
+                match s.fields[1].default.as_ref().map(|e| &e.kind) {
+                    Some(ExprKind::Int(8080, _)) => {}
+                    other => panic!("expected port default 8080, got {other:?}"),
+                }
+                match s.fields[2].default.as_ref().map(|e| &e.kind) {
+                    Some(ExprKind::Bool(false)) => {}
+                    other => panic!("expected verbose default false, got {other:?}"),
+                }
+            }
+            _ => panic!("expected struct"),
+        }
+    }
+
+    // E18-E20: field annotations parse into Field.attrs, verbatim.
+    #[test]
+    fn struct_field_annotations() {
+        let result = parse(
+            "struct ApiUser {\n@rename(\"user_name\")\npublic name: string\n@skip\npublic cache_key: string\n@default(0)\npublic login_count: i32 }",
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Struct(ref s) => {
+                assert_eq!(s.fields[0].attrs, vec!["rename(\"user_name\")".to_string()]);
+                assert_eq!(s.fields[1].attrs, vec!["skip".to_string()]);
+                assert_eq!(s.fields[2].attrs, vec!["default(0)".to_string()]);
+            }
+            _ => panic!("expected struct"),
+        }
+    }
+
     // CC2: `extend Ring<T> with Show where T: Show` captures the condition.
     #[test]
     fn extend_conditional_conformance() {

@@ -66,12 +66,23 @@ impl Interpreter {
                     "is_public".to_string(),
                     Value::Bool(f.visibility.is_pub()),
                 );
+                // E18: @rename("...") overrides the serialized key name.
+                let serial_name = rename_of(&f.attrs).unwrap_or_else(|| f.name.clone());
                 fields.insert(
                     "serial_name".to_string(),
-                    Value::String(Arc::new(Mutex::new(f.name.clone()))),
+                    Value::String(Arc::new(Mutex::new(serial_name))),
                 );
-                fields.insert("is_skipped".to_string(), Value::Bool(false));
-                fields.insert("has_default".to_string(), Value::Bool(false));
+                // E19: @skip excludes a field from serialization.
+                fields.insert(
+                    "is_skipped".to_string(),
+                    Value::Bool(has_attr(&f.attrs, "skip")),
+                );
+                // E20/FD6: a declared default (`x: T = v`) or a decode-only
+                // @default(expr) makes the field optional during decode.
+                fields.insert(
+                    "has_default".to_string(),
+                    Value::Bool(f.default.is_some() || has_attr(&f.attrs, "default")),
+                );
                 Value::Struct(Arc::new(Mutex::new(StructData {
                     name: "FieldInfo".to_string(),
                     fields,
@@ -82,4 +93,19 @@ impl Interpreter {
 
         Ok(Value::Vec(Arc::new(Mutex::new(field_infos))))
     }
+}
+
+/// True if an attribute with the given base name is present.
+/// Matches both bare (`skip`) and call-form (`default(0)`) attributes.
+fn has_attr(attrs: &[String], name: &str) -> bool {
+    attrs.iter().any(|a| a == name || a.starts_with(&format!("{name}(")))
+}
+
+/// Extract the string argument of `@rename("...")`, if present.
+fn rename_of(attrs: &[String]) -> Option<String> {
+    let raw = attrs.iter().find(|a| a.starts_with("rename("))?;
+    // Stored as `rename("user_name")` — pull out the quoted contents.
+    let inner = raw.strip_prefix("rename(")?.strip_suffix(')')?;
+    let inner = inner.trim();
+    inner.strip_prefix('"')?.strip_suffix('"').map(|s| s.to_string())
 }

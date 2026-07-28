@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// FD1-FD5: struct field defaults, filled at construction when omitted.
+
+struct Config {
+    public host: string
+    public port: i32 = 8080
+    public verbose: bool = false
+}
+
+struct Settings {
+    public width: i32 = 640
+    public height: i32 = 480
+    public title: string = "untitled"
+}
+
+func main() {
+    // FD2: omitted defaulted fields fill in
+    const c = Config { host: "localhost" }
+    println("{c.host} {c.port} {c.verbose}")
+
+    // Explicit values override defaults
+    const d = Config { host: "example.com", port: 3000, verbose: true }
+    println("{d.host} {d.port} {d.verbose}")
+
+    // FD3: every field defaulted -> {} constructs all defaults
+    const a = Settings {}
+    println("{a.width} {a.height} {a.title}")
+
+    // FD5: spread covers unlisted fields; explicit wins over spread
+    const b = Settings { width: 800 }
+    const e = Settings { title: "copy", ..b }
+    println("{e.width} {e.height} {e.title}")
+}

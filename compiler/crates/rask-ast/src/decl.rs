@@ -193,6 +193,12 @@ pub struct Field {
     pub name_span: Span,
     pub ty: String,
     pub visibility: FieldVisibility,
+    /// Field annotations: `@rename("...")`, `@skip`, `@default(expr)`.
+    /// Stored verbatim (e.g. `rename("user_name")`), same shape as decl attrs.
+    pub attrs: Vec<String>,
+    /// Declared default (`port: i32 = 8080`). Compile-time constant only (FD1).
+    /// Filled in at construction when the field is omitted.
+    pub default: Option<Expr>,
 }
 
 /// An enum declaration.
