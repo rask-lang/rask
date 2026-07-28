@@ -2,8 +2,18 @@
 <!-- status: proposed -->
 <!-- summary: Wide[T] data-parallel algebra — stage a plan, submit to run, await results; device is a resource, CPU is the baseline -->
 <!-- depends: memory/boxes.md, memory/linear.md, types/simd.md, concurrency/async.md -->
+<!-- implemented-by: compiler/crates/rask-interp/src/builtins/wide.rs (interpreter), compiler/crates/rask-codegen/src/dispatch.rs + compiler/runtime/vec.c (native, closure-free) -->
 
 # Wide Data Parallelism
+
+> **Prototype status.** A CPU implementation exists. The **interpreter** runs
+> the full algebra below (`wide`, `map`, `zip_with`, `sum`, `reduce`, `min`,
+> `max`, `read`). **Native** runs the closure-free ops (`wide`, `sum`, `read`)
+> and matches the interpreter (the W3 oracle); the closure ops (`map`,
+> `zip_with`) are interpreter-only until the native closure-callback path is
+> fixed (`rask-lang/rask#441`). Prototype simplifications: `read`/`sum` are the
+> run points rather than a single `submit`/`await`; `read` returns a value
+> directly (no `T or GpuError` yet). See `NOTES_native_wide.md`.
 
 A `Wide[T]` is a value spread across lanes. You **stage** operations on it — `map`, `sum`, `filter` — which build a plan and run nothing. You **submit** the plan, which starts it running on wherever its data lives, and **await** the handle to get results back. A device is a resource you acquire; the CPU is the baseline that can always run any plan. Same source, one algebra — because the algebra is pinned to the GPU-expressible subset and the CPU is a superset of it, every plan runs everywhere.
 
