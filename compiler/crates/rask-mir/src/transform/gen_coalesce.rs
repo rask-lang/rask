@@ -44,15 +44,29 @@ fn coalesce_function(func: &mut MirFunction) {
         return;
     }
 
+    // Aggregate-element pool accesses must NOT coalesce. A checked access returns
+    // a pointer into the pool slot; reuse is expressed as `Assign Use(prev)`,
+    // which codegen value-copies for struct/enum/tuple locals (the same rule that
+    // makes `p = q` copy bytes). That copy detaches the reused local from the
+    // arena, so a later `pool[h].f = v` writes into the copy and is lost (#402).
+    // Scalar-element accesses copy the pointer fine, so they still coalesce.
+    // Keeping the real check for aggregates is a small cost; a proper
+    // pointer-alias reuse can re-enable it later.
+    let aggregate_results: HashSet<LocalId> = func.locals.iter()
+        .filter(|l| matches!(l.ty,
+            crate::MirType::Struct(_) | crate::MirType::Enum(_) | crate::MirType::Tuple(_)))
+        .map(|l| l.id)
+        .collect();
+
     // Phase 1: Per-block coalescing (original algorithm)
     for block in &mut func.blocks {
-        coalesce_block(&mut block.statements, &pool_locals);
+        coalesce_block(&mut block.statements, &pool_locals, &aggregate_results);
     }
 
     // Phase 2: Cross-block propagation (CF2 expansion).
     // Propagate validated (pool, handle) pairs from dominating blocks
     // into successors along Goto edges (linear chains and if-else merges).
-    cross_block_coalesce(func, &pool_locals);
+    cross_block_coalesce(func, &pool_locals, &aggregate_results);
 }
 
 /// Propagate validated checks across block boundaries.
@@ -62,7 +76,11 @@ fn coalesce_function(func: &mut MirFunction) {
 /// - Single predecessor via Goto: inherit exit state
 /// - Multiple predecessors: intersect exit states (only pairs valid in ALL predecessors)
 /// - Loop back-edges (target ≤ source in RPO): ignored (CF3: fresh check per iteration)
-fn cross_block_coalesce(func: &mut MirFunction, pool_locals: &HashSet<LocalId>) {
+fn cross_block_coalesce(
+    func: &mut MirFunction,
+    pool_locals: &HashSet<LocalId>,
+    aggregate_results: &HashSet<LocalId>,
+) {
     if func.blocks.len() <= 1 {
         return;
     }
@@ -77,7 +95,7 @@ fn cross_block_coalesce(func: &mut MirFunction, pool_locals: &HashSet<LocalId>) 
     // Compute exit state for each block (simulate without modifying)
     let mut exit_states: HashMap<BlockId, CheckedMap> = HashMap::new();
     for block in func.blocks.iter() {
-        let exit = compute_block_exit_state(&block.statements, pool_locals);
+        let exit = compute_block_exit_state(&block.statements, pool_locals, aggregate_results);
         exit_states.insert(block.id, exit);
     }
 
@@ -97,7 +115,7 @@ fn cross_block_coalesce(func: &mut MirFunction, pool_locals: &HashSet<LocalId>) 
 
         // Apply incoming state to this block's statements
         let stmts = &mut func.blocks[block_idx].statements;
-        apply_incoming_checks(stmts, &incoming, pool_locals);
+        apply_incoming_checks(stmts, &incoming, pool_locals, aggregate_results);
     }
 }
 
@@ -105,6 +123,7 @@ fn cross_block_coalesce(func: &mut MirFunction, pool_locals: &HashSet<LocalId>) 
 fn compute_block_exit_state(
     stmts: &[MirStmt],
     pool_locals: &HashSet<LocalId>,
+    aggregate_results: &HashSet<LocalId>,
 ) -> CheckedMap {
     let mut checked: CheckedMap = HashMap::new();
 
@@ -112,6 +131,10 @@ fn compute_block_exit_state(
         process_invalidations(stmt, &mut checked, pool_locals);
 
         if let MirStmtKind::PoolCheckedAccess { dst, pool, handle } = &stmt.kind {
+            // Aggregate results are never offered for cross-block reuse (#402).
+            if aggregate_results.contains(dst) {
+                continue;
+            }
             checked.entry((*pool, *handle)).or_insert(*dst);
         }
         // Coalesced accesses (Assign from a checked local) also carry forward
@@ -146,6 +169,7 @@ fn apply_incoming_checks(
     stmts: &mut [MirStmt],
     incoming: &CheckedMap,
     pool_locals: &HashSet<LocalId>,
+    aggregate_results: &HashSet<LocalId>,
 ) {
     let mut live = incoming.clone();
 
@@ -156,6 +180,10 @@ fn apply_incoming_checks(
         if let MirStmtKind::PoolCheckedAccess { dst, pool, handle } = &stmt.kind {
             let key = (*pool, *handle);
             let dst = *dst;
+            // Aggregate results can't be reused via a value-copying Assign (#402).
+            if aggregate_results.contains(&dst) {
+                continue;
+            }
             if let Some(&prev_dst) = live.get(&key) {
                 // Already validated by predecessor — reuse
                 let span = stmt.span;
@@ -207,7 +235,11 @@ fn process_invalidations(
 }
 
 
-fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
+fn coalesce_block(
+    stmts: &mut [MirStmt],
+    pool_locals: &HashSet<LocalId>,
+    aggregate_results: &HashSet<LocalId>,
+) {
     // Map (pool, handle) → dst local from the first PoolCheckedAccess
     let mut checked: HashMap<CheckKey, LocalId> = HashMap::new();
 
@@ -220,6 +252,10 @@ fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
         if let MirStmtKind::PoolCheckedAccess { dst, pool, handle } = &stmt.kind {
             let key = (*pool, *handle);
             let dst = *dst;
+            // Aggregate results can't be reused via a value-copying Assign (#402).
+            if aggregate_results.contains(&dst) {
+                continue;
+            }
             if let Some(&prev_dst) = checked.get(&key) {
                 // Redundant check — reuse previous result
                 let span = stmt.span;

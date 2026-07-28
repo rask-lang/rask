@@ -463,6 +463,13 @@ fn nested_field_store_native_eq_interp() {
     assert_native_eq_interp("nested_field_store.rk", "50604");
 }
 
+// #402: compound assignment through a pool handle (`pool[h].f -= n`) persists on
+// native — aggregate pool accesses no longer coalesce into a value copy.
+#[test]
+fn pool_compound_assign_native_eq_interp() {
+    assert_native_eq_interp("pool_compound_assign.rk", "65");
+}
+
 // comp.hidden-params/CALL2: a pool held in `self.players` resolves as a hidden
 // context arg (lowered as a field access) for a free callee.
 #[test]

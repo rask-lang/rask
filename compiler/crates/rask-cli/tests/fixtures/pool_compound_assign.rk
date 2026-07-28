@@ -1,0 +1,13 @@
+// #402: a compound assignment through a pool handle (`pool[h].hp -= 30`) must
+// persist on native. The repeated access was being coalesced into a value-copy
+// of the struct, so the write landed in the copy, not the pool slot. Native
+// must match the interpreter.
+struct Ent { hp: i32 }
+
+func main() {
+    mut p = Pool.new()
+    const h = p.insert(Ent { hp: 100 })
+    p[h].hp -= 30
+    p[h].hp -= 5
+    print(p[h].hp)
+}
