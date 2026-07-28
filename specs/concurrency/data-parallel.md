@@ -76,6 +76,40 @@ dispatch(buf.len()) |lane| { out[lane] = square(in[lane]) }
 
 **This is the thing to react to.** If Rask ships GPU support as a region checked against effect metadata rather than a color on function types, it solves the exact problem that makes CUDA and SYCL codebases bifurcate. The effect-tracking machinery that principle #5 already committed to is what makes it possible. That's not a lucky accident — it's the same bet paying off twice (async was the first time).
 
+## Killing the color has a cost — pay it honestly
+
+Coloring had one real virtue: you could never miss the boundary, because it infected the type. Drop the color and you have to earn that visibility another way, or GPU code becomes invisible inside code that looks identical to a host loop. Two separate questions:
+
+### Seeing that you're on the device
+
+The `dispatch(N) |lane| { … }` block **is** the marker — the same role `comptime { }` and `unsafe { }` play. Reading stays honest on one invariant:
+
+| Rule | Description |
+|------|-------------|
+| **V1: No implicit dispatch** | Device execution is entered *only* through a written `dispatch`. No operator, method, or conversion may launch a kernel. The door is always visible in the source. |
+| **V2: No nested dispatch** | A `dispatch` may not contain another `dispatch`. Kernels stay flat — one visible region, not a tree of hidden ones. |
+| **V3: Context is shown, not typed** | A helper called inside a kernel runs on the device, but its *signature* says nothing — exactly like a function called inside `comptime`. Tooling surfaces "runs on device here" (an IDE ghost); the type does not carry it. |
+
+V3 is the honest concession. Coloring makes the boundary impossible to *miss* by poisoning every caller's type. Rask instead makes it impossible to *enter implicitly* (V1) and pushes the rest to tooling (principle #5). The price: to answer "does `square` ever run on a GPU?" you look at its call sites or ask the IDE, not its signature. That's the same deal `comptime` already makes, and Rask already accepted it there.
+
+### Knowing whether work is even dispatchable
+
+"When can I use `dispatch`?" splits into what the compiler *enforces* and what tooling *advises* — the enforcement/information split of principle #5:
+
+| Tier | Rule | Description |
+|------|------|-------------|
+| Enforced | **E1: Per-lane independence** | A lane may not read another lane's output. `out[lane] = out[lane-1] + x` is rejected — the error explains that all lanes run at once, so the dependency is undefined. Cross-lane reductions need a dedicated primitive, not raw `dispatch`. |
+| Enforced | **E2: No host effects** | I/O, host allocation, locks, `ensure` — rejected at the offending line inside the region, with the fix. This is the region/effect check from above. |
+| Advised | **A1: Worth-it cost** | Whether the transfer pays off is a size judgment the compiler can't make. A lint/ghost flags it — "moves 40 B/lane, does one multiply; transfer dominates, a CPU `Vec` loop is likely faster" — without blocking. |
+
+So the rule a programmer actually applies:
+
+**Reach for `dispatch` when** the work is a map over a large buffer, each element independent, arithmetic-heavy, and the data is worth moving (or already on device from a prior dispatch).
+
+**Don't when** `N` is small (launch + transfer dominate), lanes depend on each other (E1 — use a reduction primitive), the body is branch-heavy (divergence), or you'd move more bytes than you compute (A1).
+
+The compiler guarantees the independence half (E1, E2). Tooling nags about the transfer half (A1). Neither is a color.
+
 ## How the pieces reuse what exists
 
 | Piece | Reuses | New? |
