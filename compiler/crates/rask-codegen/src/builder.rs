@@ -618,197 +618,9 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
         match &stmt.kind {
-            MirStmtKind::Assign { dst, rvalue } => {
-                let dst_local = ctx.locals.iter().find(|l| l.id == *dst)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature("Destination variable not found".to_string()))?;
-                let dst_ty = mir_to_cranelift_type(&dst_local.ty)?;
+            MirStmtKind::Assign { dst, rvalue } => Self::lower_assign(builder, dst, rvalue, ctx)?,
 
-                let mut val = Self::lower_rvalue(builder, rvalue, Some(dst_ty), ctx)?;
-
-                let val_ty = builder.func.dfg.value_type(val);
-                if val_ty != dst_ty {
-                    val = Self::convert_value(builder, val, val_ty, dst_ty);
-                }
-
-                // When dest is Option(T) and the source is already Option-typed,
-                // copy the struct. When the source is a scalar, wrap as Some.
-                let src_option_ty = if let MirType::Option(_) = &dst_local.ty {
-                    if let MirRValue::Use(MirOperand::Local(src_id)) = rvalue {
-                        ctx.locals.iter().find(|l| l.id == *src_id)
-                            .map(|l| matches!(l.ty, MirType::Option(_)))
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                // Aggregate assignment: when the destination has a stack slot and
-                // the rvalue produces a pointer to aggregate data, copy the data
-                // into the destination's stack slot rather than aliasing pointers.
-                // This covers String (always 16 bytes) and Field extractions from
-                // Struct/Tuple/Result/Option that return aggregate sub-fields.
-                //
-                // Whole-aggregate assignment (`p = q` where both are Struct/Tuple/etc.)
-                // also needs a memcpy: aliasing the pointers means a subsequent
-                // `mutate p` write would land in `q`'s storage. mem.borrowing/M-rules
-                // require `mutate` writes to flow back to the caller, which only
-                // works if `p = ...` copies bytes into `*p`'s slot.
-                let needs_copy = match (&dst_local.ty, rvalue) {
-                    (MirType::String, _) => true,
-                    // Field on aggregate base returns pointer for aggregate elements
-                    (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
-                     MirType::Result { .. } | MirType::Option(_), MirRValue::Field { .. }) => true,
-                    // Whole-aggregate copy: rvalue produces a pointer to the source
-                    // aggregate, dst has its own storage (either a stack slot or an
-                    // external pointer for mutate-params).
-                    (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
-                     MirRValue::Use(MirOperand::Local(_))) => true,
-                    // Result/Option whole-aggregate copy: only when src and dst
-                    // have the same general shape. Avoid clobbering layout when
-                    // src is Result and dst is Option (different payload offsets).
-                    (MirType::Result { .. }, MirRValue::Use(MirOperand::Local(src_id))) => {
-                        ctx.locals.iter().find(|l| l.id == *src_id)
-                            .map_or(false, |l| matches!(l.ty, MirType::Result { .. }))
-                    }
-                    (MirType::Option(_), MirRValue::Use(MirOperand::Local(src_id))) => {
-                        ctx.locals.iter().find(|l| l.id == *src_id)
-                            .map_or(false, |l| matches!(l.ty, MirType::Option(_)))
-                    }
-                    // `try convert`/`try float to int` builds an Option slot and
-                    // returns its pointer — copy the 16-byte struct into dst.
-                    (MirType::Option(_), MirRValue::Convert { kind, .. }) => kind.is_optional(),
-                    // Option(T) assigned from an Option-typed local: copy the 16-byte struct
-                    (MirType::Option(_), _) if src_option_ty => true,
-                    _ => false,
-                };
-
-                // Option(T) assigned from a non-Option source: wrap as Some
-                // in the stack slot. Scalars need this so `const x: i32? = 42`
-                // doesn't overwrite x's slot-address with the scalar 42 (later
-                // tag loads would dereference 42 as a pointer and SIGSEGV).
-                // Aggregates (Struct/Enum/Tuple/String) need it so the bytes
-                // land at PAYLOAD_OFFSET of the Option slot, not just the
-                // pointer in the first 8 bytes — otherwise field reads
-                // through the Option's payload return garbage.
-                let wrap_as_some = matches!(&dst_local.ty, MirType::Option(_))
-                    && !needs_copy
-                    && ctx.stack_slot_map.contains_key(dst);
-                // If the source is an aggregate and dst is Option<aggregate>,
-                // we need full-aggregate wrap (tag + memcpy payload), not the
-                // scalar wrap.
-                let wrap_as_some_aggregate = wrap_as_some
-                    && matches!(rvalue, MirRValue::Use(MirOperand::Local(_)))
-                    && if let MirType::Option(inner) = &dst_local.ty {
-                        matches!(inner.as_ref(),
-                            MirType::Struct(_) | MirType::Enum(_) |
-                            MirType::Tuple(_) | MirType::String)
-                    } else { false };
-
-                if needs_copy {
-                    if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst) {
-                        Self::copy_aggregate(builder, val, *dst_ss, *dst_size);
-                    } else if matches!(&dst_local.ty,
-                        MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
-                    {
-                        // Dst variable holds an external pointer (mutate-param) —
-                        // copy bytes through it instead of overwriting the pointer.
-                        let size = Self::resolve_type_alloc_size(
-                            &dst_local.ty, ctx.struct_layouts, ctx.enum_layouts,
-                        ).unwrap_or(0);
-                        if size > 0 {
-                            let var = ctx.var_map.get(dst)
-                                .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
-                            let dst_ptr = builder.use_var(*var);
-                            Self::copy_aggregate_to_ptr(builder, val, dst_ptr, size);
-                        } else {
-                            let var = ctx.var_map.get(dst)
-                                .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
-                            builder.def_var(*var, val);
-                        }
-                    } else {
-                        let var = ctx.var_map.get(dst)
-                            .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
-                        builder.def_var(*var, val);
-                    }
-                } else if wrap_as_some_aggregate {
-                    // Some(aggregate): tag + payload bytes copied at PAYLOAD_OFFSET.
-                    let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
-                    let inner_size = if let MirType::Option(inner) = &dst_local.ty {
-                        Self::resolve_type_alloc_size(
-                            inner.as_ref(), ctx.struct_layouts, ctx.enum_layouts,
-                        ).unwrap_or(inner.size())
-                    } else { 0 };
-                    Self::build_wrapped_aggregate(builder, *dst_ss, false, 0, val, inner_size);
-                } else if wrap_as_some {
-                    let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
-                    Self::build_some(builder, *dst_ss, val);
-                } else {
-                    let var = ctx.var_map.get(dst)
-                        .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
-                    builder.def_var(*var, val);
-                }
-            }
-
-            MirStmtKind::Store { addr, offset, value, store_size } => {
-                let addr_val = builder.use_var(*ctx.var_map.get(addr)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
-
-                // If the value is a stack-allocated aggregate (struct/enum), copy its
-                // data instead of storing the pointer. This handles Ok(struct_val) where
-                // the struct data must be embedded in the Result's payload area.
-                // Use the variable's current value (not the stack_slot address) because
-                // the variable may alias another slot (e.g., p = struct_literal result).
-                let is_aggregate = if let MirOperand::Local(src_id) = value {
-                    if let Some((_src_slot, src_size)) = ctx.stack_slot_map.get(src_id) {
-                        // Use store_size when available to avoid overflowing the
-                        // destination.
-                        let effective_size = store_size
-                            .map(|ss| ss.min(*src_size))
-                            .unwrap_or(*src_size);
-                        // If the field is pointer-sized, just store the pointer
-                        // value instead of deep-copying the source slot.
-                        if effective_size <= 8 {
-                            false
-                        } else {
-                        let src_var = ctx.var_map.get(src_id)
-                            .ok_or_else(|| CodegenError::UnsupportedFeature("Aggregate source not found".to_string()))?;
-                        let src_addr = builder.use_var(*src_var);
-                        Self::copy_bytes(builder, src_addr, 0, addr_val, *offset as i32, effective_size);
-                        true
-                        } // end else (effective_size > 8)
-                    } else { false }
-                } else { false };
-
-                if !is_aggregate {
-                    let val = Self::lower_operand(builder, value, ctx)?;
-
-                    // store_size > 8: the lowered value is a pointer to aggregate data
-                    // (e.g., string constant → 16-byte SSO). Copy word-by-word from
-                    // the source pointer instead of storing the pointer itself.
-                    if store_size.map_or(false, |s| s > 8) {
-                        let size = store_size.unwrap();
-                        Self::copy_bytes(builder, val, 0, addr_val, *offset as i32, size);
-                    } else {
-                        let val_ty = builder.func.dfg.value_type(val);
-
-                        // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
-                        // values to fill the full slot — otherwise a 4-byte f32 store
-                        // leaves stale upper bytes that corrupt the f64 read-back.
-                        let val = if val_ty == types::F32 {
-                            builder.ins().fpromote(types::F64, val)
-                        } else if val_ty.is_int() && val_ty.bits() < 64 {
-                            Self::convert_value(builder, val, val_ty, types::I64)
-                        } else {
-                            val
-                        };
-
-                        let flags = MemFlags::new();
-                        builder.ins().store(flags, val, addr_val, *offset as i32);
-                    }
-                }
-            }
+            MirStmtKind::Store { addr, offset, value, store_size } => Self::lower_store(builder, addr, offset, value, store_size, ctx)?,
 
             // Array element store: base_ptr[index * elem_size] = value
             MirStmtKind::ArrayStore { base, index, elem_size, value } => {
@@ -915,220 +727,13 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // ── Pool checked access ────────────────────────────────────
-            MirStmtKind::PoolCheckedAccess { dst, pool, handle } => {
-                let pool_val = builder.use_var(*ctx.var_map.get(pool)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "Pool variable not found".to_string()
-                    ))?);
-                let handle_val = builder.use_var(*ctx.var_map.get(handle)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "Handle variable not found".to_string()
-                    ))?);
-
-                // Determine result type before emitting IR
-                let is_struct = ctx.locals.iter()
-                    .find(|l| l.id == *dst)
-                    .map(|l| matches!(&l.ty, MirType::Struct(_)))
-                    .unwrap_or(false);
-                let load_ty = ctx.locals.iter()
-                    .find(|l| l.id == *dst)
-                    .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
-                    .unwrap_or(types::I64);
-
-                if ctx.build_mode == BuildMode::Release {
-                    // ── Inline pool access (release mode) ──────────────
-                    // Emits bounds check + generation check + data load directly
-                    // as Cranelift IR, avoiding the C function call overhead.
-                    //
-                    // Pool layout (verified by _Static_assert in pool.c):
-                    //   offset 16: slot_stride (i64)
-                    //   offset 24: cap (i64)
-                    //   offset 40: slots (ptr)
-                    // Slot layout (stride varies by elem_size):
-                    //   offset 0: generation (u32)
-                    //   offset 8: data (elem_size bytes)
-                    use crate::layouts::*;
-
-                    // 1. Extract index and generation from packed i64 handle
-                    //    handle = index:32 | generation:32
-                    let index = builder.ins().band_imm(handle_val, 0xFFFF_FFFF_i64);
-                    let gen_i64 = builder.ins().ushr_imm(handle_val, 32);
-                    let gen = builder.ins().ireduce(types::I32, gen_i64);
-
-                    // 2. Bounds check: index < cap
-                    let cap = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_CAP_OFFSET);
-                    let oob = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, index, cap);
-
-                    let panic_block = builder.create_block();
-                    let bounds_ok = builder.create_block();
-                    builder.ins().brif(oob, panic_block, &[], bounds_ok, &[]);
-
-                    Self::emit_panic_block(builder, panic_block, "pool access with invalid handle", ctx);
-
-                    // bounds_ok: load slots pointer and stride, compute slot address
-                    builder.switch_to_block(bounds_ok);
-                    builder.seal_block(bounds_ok);
-                    let slots = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_SLOTS_OFFSET);
-                    let stride = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_STRIDE_OFFSET);
-                    let slot_offset = builder.ins().imul(index, stride);
-                    let slot_addr = builder.ins().iadd(slots, slot_offset);
-
-                    // 3. Generation check
-                    let slot_gen = builder.ins().load(types::I32, MemFlags::new(), slot_addr, SLOT_GEN_OFFSET);
-                    let gen_mismatch = builder.ins().icmp(IntCC::NotEqual, gen, slot_gen);
-
-                    let gen_panic_block = builder.create_block();
-                    let ok_block = builder.create_block();
-                    builder.ins().brif(gen_mismatch, gen_panic_block, &[], ok_block, &[]);
-
-                    Self::emit_panic_block(builder, gen_panic_block, "pool access with invalid handle", ctx);
-
-                    // ok_block: load data (single predecessor, seal immediately)
-                    builder.switch_to_block(ok_block);
-                    builder.seal_block(ok_block);
-                    let var = ctx.var_map.get(dst)
-                        .ok_or_else(|| CodegenError::UnsupportedFeature(
-                            "Pool access destination not found".to_string()
-                        ))?;
-                    // Always return pointer to slot data — pool[h] is used
-                    // for mutation, so callers need the address.
-                    let data_ptr = builder.ins().iadd_imm(slot_addr, SLOT_DATA_OFFSET as i64);
-                    builder.def_var(*var, data_ptr);
-                } else {
-                    // ── Debug mode: call C function ──────────────────────
-                    let call_inst = if let Some(file_str) = ctx.source_file {
-                        if let (Some(func_ref), Some(gv)) = (
-                            ctx.func_refs.get("pool_get_checked"),
-                            ctx.string_globals.get(file_str),
-                        ) {
-                            let file_ptr = builder.ins().global_value(types::I64, *gv);
-                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                            builder.ins().call(*func_ref, &[pool_val, handle_val, file_ptr, line_val, col_val])
-                        } else {
-                            let func_ref = ctx.func_refs.get("Pool_checked_access")
-                                .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
-                            builder.ins().call(*func_ref, &[pool_val, handle_val])
-                        }
-                    } else {
-                        let func_ref = ctx.func_refs.get("Pool_checked_access")
-                            .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
-                        builder.ins().call(*func_ref, &[pool_val, handle_val])
-                    };
-
-                    let results = builder.inst_results(call_inst);
-                    if !results.is_empty() {
-                        let ptr = results[0];
-                        let var = ctx.var_map.get(dst)
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                                "Pool access destination not found".to_string()
-                            ))?;
-                        // Always return raw pointer — pool[h] is used for
-                        // mutation (pool[h].field = val), so callers need
-                        // the address, not the loaded value.
-                        builder.def_var(*var, ptr);
-                    }
-                }
-            }
+            MirStmtKind::PoolCheckedAccess { dst, pool, handle } => Self::lower_pool_checked_access(builder, dst, pool, handle, ctx)?,
 
             // ── Closure support ──────────────────────────────────────────
 
-            MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => {
-                // Build environment layout from captures, using real aggregate
-                // sizes from codegen layouts instead of MIR fallbacks.
-                // MirType::Struct.size() returns 8 (pointer), but actual structs
-                // may be 16+ bytes. Escaping closures must deep-copy aggregate
-                // data so it survives after the parent's stack is reused.
-                let mut env_layout = crate::closures::ClosureEnvLayout::new();
-                for c in captures {
-                    let local = ctx.locals.iter().find(|l| l.id == c.local_id);
-                    let (real_size, is_aggregate) = if let Some(l) = local {
-                        if let Some(alloc_size) = Self::resolve_type_alloc_size(
-                            &l.ty, ctx.struct_layouts, ctx.enum_layouts,
-                        ) {
-                            (alloc_size, true)
-                        } else {
-                            (c.size, false)
-                        }
-                    } else {
-                        (c.size, false)
-                    };
-                    env_layout.add_capture(c.local_id, real_size, is_aggregate);
-                }
+            MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => Self::lower_closure_create(builder, dst, func_name, captures, heap, ctx)?,
 
-                // Get function pointer for the closure function
-                let func_ref = ctx.func_refs.get(func_name)
-                    .ok_or_else(|| CodegenError::FunctionNotFound(func_name.clone()))?;
-                let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
-
-                let closure_ptr = if *heap {
-                    // Escaping closure: heap-allocate via rask_alloc
-                    let alloc_ref = ctx.func_refs.get("rask_alloc")
-                        .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
-                    crate::closures::allocate_closure_heap(
-                        builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref,
-                    )?
-                } else {
-                    // Non-escaping closure: stack-allocate
-                    crate::closures::allocate_closure_stack(
-                        builder, func_ptr, &env_layout, ctx.var_map,
-                    )?
-                };
-
-                let var = ctx.var_map.get(dst)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "ClosureCreate destination not found".to_string()
-                    ))?;
-                builder.def_var(*var, closure_ptr);
-            }
-
-            MirStmtKind::ClosureCall { dst, closure, args } => {
-                let closure_val = builder.use_var(*ctx.var_map.get(closure)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "Closure variable not found".to_string()
-                    ))?);
-
-                // Lower arg values
-                let mut arg_vals = Vec::new();
-                for a in args {
-                    let val = Self::lower_operand(builder, a, ctx)?;
-                    arg_vals.push(val);
-                }
-
-                // Build signature: (args...) -> ret
-                // call_closure will prepend env_ptr automatically
-                let mut sig = builder.func.signature.clone();
-                sig.params.clear();
-                sig.returns.clear();
-
-                for val in &arg_vals {
-                    let ty = builder.func.dfg.value_type(*val);
-                    sig.params.push(AbiParam::new(ty));
-                }
-
-                if let Some(dst_id) = dst {
-                    let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
-                    if let Some(local) = dst_local {
-                        let cl_ret_ty = mir_to_cranelift_type(&local.ty)?;
-                        sig.returns.push(AbiParam::new(cl_ret_ty));
-                    }
-                }
-
-                let call_inst = crate::closures::call_closure(
-                    builder, closure_val, sig, &arg_vals,
-                );
-
-                if let Some(dst_id) = dst {
-                    let results = builder.inst_results(call_inst);
-                    if !results.is_empty() {
-                        let var = ctx.var_map.get(dst_id)
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                                "ClosureCall destination not found".to_string()
-                            ))?;
-                        builder.def_var(*var, results[0]);
-                    }
-                }
-            }
+            MirStmtKind::ClosureCall { dst, closure, args } => Self::lower_closure_call(builder, dst, closure, args, ctx)?,
 
             MirStmtKind::LoadCapture { dst, env_ptr, offset, by_ref } => {
                 let env_val = builder.use_var(*ctx.var_map.get(env_ptr)
@@ -1192,127 +797,9 @@ impl<'a> FunctionBuilder<'a> {
 
             // ── Trait object support ──────────────────────────────────
 
-            MirStmtKind::TraitBox { dst, value, vtable_name, concrete_size, .. } => {
-                let alloc_ref = ctx.func_refs.get("rask_alloc")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+            MirStmtKind::TraitBox { dst, value, vtable_name, concrete_size, .. } => Self::lower_trait_box(builder, dst, value, vtable_name, concrete_size, ctx)?,
 
-                // Allocate heap memory for the concrete value (min 8 to avoid null from zero-size alloc)
-                let alloc_size = std::cmp::max(*concrete_size, 8) as i64;
-                let size_val = builder.ins().iconst(types::I64, alloc_size);
-                let call_inst = builder.ins().call(*alloc_ref, &[size_val]);
-                let data_ptr = builder.inst_results(call_inst)[0];
-
-                // Copy concrete value to heap
-                if let MirOperand::Local(src_id) = value {
-                    if ctx.stack_slot_map.contains_key(src_id) {
-                        // Aggregate: memcpy from the source pointer the var holds —
-                        // not the local's own slot, which may be uninitialized when
-                        // the var aliases another slot (e.g. `_1 = _0`).
-                        let src_var = ctx.var_map.get(src_id)
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                                "TraitBox: source variable not found".to_string()
-                            ))?;
-                        let src_ptr = builder.use_var(*src_var);
-                        let sz = *concrete_size;
-                        let mut off = 0i32;
-                        while (off as u32) + 8 <= sz {
-                            let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
-                            builder.ins().store(MemFlags::new(), word, data_ptr, off);
-                            off += 8;
-                        }
-                        if (off as u32) < sz {
-                            let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
-                            builder.ins().store(MemFlags::new(), word, data_ptr, off);
-                        }
-                    } else {
-                        // Scalar: load from variable, store to heap
-                        let src_val = builder.use_var(*ctx.var_map.get(src_id)
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                                "TraitBox: source variable not found".to_string()
-                            ))?);
-                        builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
-                    }
-                } else {
-                    // Constant: lower and store
-                    let src_val = Self::lower_operand(builder, value, ctx)?;
-                    builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
-                }
-
-                // Get vtable address
-                let gv = ctx.vtable_globals.get(vtable_name.as_str())
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        format!("TraitBox: vtable '{}' not found", vtable_name)
-                    ))?;
-                let vtable_ptr = builder.ins().global_value(types::I64, *gv);
-
-                // Store fat pointer into destination stack slot: [data_ptr, vtable_ptr]
-                let (ss, _) = ctx.stack_slot_map.get(dst)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "TraitBox destination stack slot not found".to_string()
-                    ))?;
-                let dst_addr = builder.ins().stack_addr(types::I64, *ss, 0);
-                builder.ins().store(MemFlags::new(), data_ptr, dst_addr, crate::layouts::FAT_PTR_DATA_OFFSET);
-                builder.ins().store(MemFlags::new(), vtable_ptr, dst_addr, crate::layouts::FAT_PTR_VTABLE_OFFSET);
-
-                // Set the variable to point to the stack slot
-                let var = ctx.var_map.get(dst)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "TraitBox destination variable not found".to_string()
-                    ))?;
-                builder.def_var(*var, dst_addr);
-            }
-
-            MirStmtKind::TraitCall { dst, trait_object, method_name, vtable_offset, args } => {
-                // Load fat pointer components from trait object stack slot
-                let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "TraitCall: trait object variable not found".to_string()
-                    ))?);
-                let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
-                let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_VTABLE_OFFSET);
-
-                // Load function pointer from vtable
-                let func_ptr = builder.ins().load(
-                    types::I64, MemFlags::new(), vtable_ptr, *vtable_offset as i32,
-                );
-
-                // Build signature: (data_ptr, args...) -> ret
-                let mut sig = Signature::new(isa::CallConv::SystemV);
-                sig.params.push(AbiParam::new(types::I64)); // data_ptr (self)
-                for _ in args.iter() {
-                    sig.params.push(AbiParam::new(types::I64));
-                }
-                sig.returns.push(AbiParam::new(types::I64));
-
-                // Build argument values
-                let mut call_args = Vec::with_capacity(1 + args.len());
-                call_args.push(data_ptr);
-                for arg in args.iter() {
-                    let val = Self::lower_operand(builder, arg, ctx)?;
-                    call_args.push(val);
-                }
-
-                let sig_ref = builder.import_signature(sig);
-                let call_inst = builder.ins().call_indirect(sig_ref, func_ptr, &call_args);
-
-                if let Some(dst_id) = dst {
-                    let result = builder.inst_results(call_inst)[0];
-                    let var = ctx.var_map.get(dst_id)
-                        .ok_or_else(|| CodegenError::UnsupportedFeature(
-                            format!("TraitCall destination for '{}' not found", method_name)
-                        ))?;
-                    // Aggregate-returning methods (string, struct, ...) hand back a
-                    // pointer to data in the callee frame. Copy into the dst's
-                    // stack slot before that frame goes away.
-                    if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst_id) {
-                        Self::copy_aggregate(builder, result, *dst_ss, *dst_size);
-                        let addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
-                        builder.def_var(*var, addr);
-                    } else {
-                        builder.def_var(*var, result);
-                    }
-                }
-            }
+            MirStmtKind::TraitCall { dst, trait_object, method_name, vtable_offset, args } => Self::lower_trait_call(builder, dst, trait_object, method_name, vtable_offset, args, ctx)?,
 
             MirStmtKind::TraitDrop { trait_object } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
@@ -2865,6 +2352,586 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(builder.ins().load(load_ty, flags, addr, 0))
             }
         }
+    }
+
+    fn lower_assign(
+        builder: &mut ClifFunctionBuilder,
+        dst: &LocalId,
+        rvalue: &MirRValue,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let dst_local = ctx.locals.iter().find(|l| l.id == *dst)
+            .ok_or_else(|| CodegenError::UnsupportedFeature("Destination variable not found".to_string()))?;
+        let dst_ty = mir_to_cranelift_type(&dst_local.ty)?;
+
+        let mut val = Self::lower_rvalue(builder, rvalue, Some(dst_ty), ctx)?;
+
+        let val_ty = builder.func.dfg.value_type(val);
+        if val_ty != dst_ty {
+            val = Self::convert_value(builder, val, val_ty, dst_ty);
+        }
+
+        // When dest is Option(T) and the source is already Option-typed,
+        // copy the struct. When the source is a scalar, wrap as Some.
+        let src_option_ty = if let MirType::Option(_) = &dst_local.ty {
+            if let MirRValue::Use(MirOperand::Local(src_id)) = rvalue {
+                ctx.locals.iter().find(|l| l.id == *src_id)
+                    .map(|l| matches!(l.ty, MirType::Option(_)))
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // Aggregate assignment: when the destination has a stack slot and
+        // the rvalue produces a pointer to aggregate data, copy the data
+        // into the destination's stack slot rather than aliasing pointers.
+        // This covers String (always 16 bytes) and Field extractions from
+        // Struct/Tuple/Result/Option that return aggregate sub-fields.
+        //
+        // Whole-aggregate assignment (`p = q` where both are Struct/Tuple/etc.)
+        // also needs a memcpy: aliasing the pointers means a subsequent
+        // `mutate p` write would land in `q`'s storage. mem.borrowing/M-rules
+        // require `mutate` writes to flow back to the caller, which only
+        // works if `p = ...` copies bytes into `*p`'s slot.
+        let needs_copy = match (&dst_local.ty, rvalue) {
+            (MirType::String, _) => true,
+            // Field on aggregate base returns pointer for aggregate elements
+            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
+             MirType::Result { .. } | MirType::Option(_), MirRValue::Field { .. }) => true,
+            // Whole-aggregate copy: rvalue produces a pointer to the source
+            // aggregate, dst has its own storage (either a stack slot or an
+            // external pointer for mutate-params).
+            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
+             MirRValue::Use(MirOperand::Local(_))) => true,
+            // Result/Option whole-aggregate copy: only when src and dst
+            // have the same general shape. Avoid clobbering layout when
+            // src is Result and dst is Option (different payload offsets).
+            (MirType::Result { .. }, MirRValue::Use(MirOperand::Local(src_id))) => {
+                ctx.locals.iter().find(|l| l.id == *src_id)
+                    .map_or(false, |l| matches!(l.ty, MirType::Result { .. }))
+            }
+            (MirType::Option(_), MirRValue::Use(MirOperand::Local(src_id))) => {
+                ctx.locals.iter().find(|l| l.id == *src_id)
+                    .map_or(false, |l| matches!(l.ty, MirType::Option(_)))
+            }
+            // `try convert`/`try float to int` builds an Option slot and
+            // returns its pointer — copy the 16-byte struct into dst.
+            (MirType::Option(_), MirRValue::Convert { kind, .. }) => kind.is_optional(),
+            // Option(T) assigned from an Option-typed local: copy the 16-byte struct
+            (MirType::Option(_), _) if src_option_ty => true,
+            _ => false,
+        };
+
+        // Option(T) assigned from a non-Option source: wrap as Some
+        // in the stack slot. Scalars need this so `const x: i32? = 42`
+        // doesn't overwrite x's slot-address with the scalar 42 (later
+        // tag loads would dereference 42 as a pointer and SIGSEGV).
+        // Aggregates (Struct/Enum/Tuple/String) need it so the bytes
+        // land at PAYLOAD_OFFSET of the Option slot, not just the
+        // pointer in the first 8 bytes — otherwise field reads
+        // through the Option's payload return garbage.
+        let wrap_as_some = matches!(&dst_local.ty, MirType::Option(_))
+            && !needs_copy
+            && ctx.stack_slot_map.contains_key(dst);
+        // If the source is an aggregate and dst is Option<aggregate>,
+        // we need full-aggregate wrap (tag + memcpy payload), not the
+        // scalar wrap.
+        let wrap_as_some_aggregate = wrap_as_some
+            && matches!(rvalue, MirRValue::Use(MirOperand::Local(_)))
+            && if let MirType::Option(inner) = &dst_local.ty {
+                matches!(inner.as_ref(),
+                    MirType::Struct(_) | MirType::Enum(_) |
+                    MirType::Tuple(_) | MirType::String)
+            } else { false };
+
+        if needs_copy {
+            if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst) {
+                Self::copy_aggregate(builder, val, *dst_ss, *dst_size);
+            } else if matches!(&dst_local.ty,
+                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
+            {
+                // Dst variable holds an external pointer (mutate-param) —
+                // copy bytes through it instead of overwriting the pointer.
+                let size = Self::resolve_type_alloc_size(
+                    &dst_local.ty, ctx.struct_layouts, ctx.enum_layouts,
+                ).unwrap_or(0);
+                if size > 0 {
+                    let var = ctx.var_map.get(dst)
+                        .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
+                    let dst_ptr = builder.use_var(*var);
+                    Self::copy_aggregate_to_ptr(builder, val, dst_ptr, size);
+                } else {
+                    let var = ctx.var_map.get(dst)
+                        .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
+                    builder.def_var(*var, val);
+                }
+            } else {
+                let var = ctx.var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
+                builder.def_var(*var, val);
+            }
+        } else if wrap_as_some_aggregate {
+            // Some(aggregate): tag + payload bytes copied at PAYLOAD_OFFSET.
+            let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
+            let inner_size = if let MirType::Option(inner) = &dst_local.ty {
+                Self::resolve_type_alloc_size(
+                    inner.as_ref(), ctx.struct_layouts, ctx.enum_layouts,
+                ).unwrap_or(inner.size())
+            } else { 0 };
+            Self::build_wrapped_aggregate(builder, *dst_ss, false, 0, val, inner_size);
+        } else if wrap_as_some {
+            let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
+            Self::build_some(builder, *dst_ss, val);
+        } else {
+            let var = ctx.var_map.get(dst)
+                .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
+            builder.def_var(*var, val);
+        }
+        Ok(())
+    }
+
+    fn lower_store(
+        builder: &mut ClifFunctionBuilder,
+        addr: &LocalId,
+        offset: &u32,
+        value: &MirOperand,
+        store_size: &Option<u32>,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let addr_val = builder.use_var(*ctx.var_map.get(addr)
+            .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
+
+        // If the value is a stack-allocated aggregate (struct/enum), copy its
+        // data instead of storing the pointer. This handles Ok(struct_val) where
+        // the struct data must be embedded in the Result's payload area.
+        // Use the variable's current value (not the stack_slot address) because
+        // the variable may alias another slot (e.g., p = struct_literal result).
+        let is_aggregate = if let MirOperand::Local(src_id) = value {
+            if let Some((_src_slot, src_size)) = ctx.stack_slot_map.get(src_id) {
+                // Use store_size when available to avoid overflowing the
+                // destination.
+                let effective_size = store_size
+                    .map(|ss| ss.min(*src_size))
+                    .unwrap_or(*src_size);
+                // If the field is pointer-sized, just store the pointer
+                // value instead of deep-copying the source slot.
+                if effective_size <= 8 {
+                    false
+                } else {
+                let src_var = ctx.var_map.get(src_id)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature("Aggregate source not found".to_string()))?;
+                let src_addr = builder.use_var(*src_var);
+                Self::copy_bytes(builder, src_addr, 0, addr_val, *offset as i32, effective_size);
+                true
+                } // end else (effective_size > 8)
+            } else { false }
+        } else { false };
+
+        if !is_aggregate {
+            let val = Self::lower_operand(builder, value, ctx)?;
+
+            // store_size > 8: the lowered value is a pointer to aggregate data
+            // (e.g., string constant → 16-byte SSO). Copy word-by-word from
+            // the source pointer instead of storing the pointer itself.
+            if store_size.map_or(false, |s| s > 8) {
+                let size = store_size.unwrap();
+                Self::copy_bytes(builder, val, 0, addr_val, *offset as i32, size);
+            } else {
+                let val_ty = builder.func.dfg.value_type(val);
+
+                // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
+                // values to fill the full slot — otherwise a 4-byte f32 store
+                // leaves stale upper bytes that corrupt the f64 read-back.
+                let val = if val_ty == types::F32 {
+                    builder.ins().fpromote(types::F64, val)
+                } else if val_ty.is_int() && val_ty.bits() < 64 {
+                    Self::convert_value(builder, val, val_ty, types::I64)
+                } else {
+                    val
+                };
+
+                let flags = MemFlags::new();
+                builder.ins().store(flags, val, addr_val, *offset as i32);
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_pool_checked_access(
+        builder: &mut ClifFunctionBuilder,
+        dst: &LocalId,
+        pool: &LocalId,
+        handle: &LocalId,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let pool_val = builder.use_var(*ctx.var_map.get(pool)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                "Pool variable not found".to_string()
+            ))?);
+        let handle_val = builder.use_var(*ctx.var_map.get(handle)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                "Handle variable not found".to_string()
+            ))?);
+
+        // Determine result type before emitting IR
+        let is_struct = ctx.locals.iter()
+            .find(|l| l.id == *dst)
+            .map(|l| matches!(&l.ty, MirType::Struct(_)))
+            .unwrap_or(false);
+        let load_ty = ctx.locals.iter()
+            .find(|l| l.id == *dst)
+            .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
+            .unwrap_or(types::I64);
+
+        if ctx.build_mode == BuildMode::Release {
+            // ── Inline pool access (release mode) ──────────────
+            // Emits bounds check + generation check + data load directly
+            // as Cranelift IR, avoiding the C function call overhead.
+            //
+            // Pool layout (verified by _Static_assert in pool.c):
+            //   offset 16: slot_stride (i64)
+            //   offset 24: cap (i64)
+            //   offset 40: slots (ptr)
+            // Slot layout (stride varies by elem_size):
+            //   offset 0: generation (u32)
+            //   offset 8: data (elem_size bytes)
+            use crate::layouts::*;
+
+            // 1. Extract index and generation from packed i64 handle
+            //    handle = index:32 | generation:32
+            let index = builder.ins().band_imm(handle_val, 0xFFFF_FFFF_i64);
+            let gen_i64 = builder.ins().ushr_imm(handle_val, 32);
+            let gen = builder.ins().ireduce(types::I32, gen_i64);
+
+            // 2. Bounds check: index < cap
+            let cap = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_CAP_OFFSET);
+            let oob = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, index, cap);
+
+            let panic_block = builder.create_block();
+            let bounds_ok = builder.create_block();
+            builder.ins().brif(oob, panic_block, &[], bounds_ok, &[]);
+
+            Self::emit_panic_block(builder, panic_block, "pool access with invalid handle", ctx);
+
+            // bounds_ok: load slots pointer and stride, compute slot address
+            builder.switch_to_block(bounds_ok);
+            builder.seal_block(bounds_ok);
+            let slots = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_SLOTS_OFFSET);
+            let stride = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_STRIDE_OFFSET);
+            let slot_offset = builder.ins().imul(index, stride);
+            let slot_addr = builder.ins().iadd(slots, slot_offset);
+
+            // 3. Generation check
+            let slot_gen = builder.ins().load(types::I32, MemFlags::new(), slot_addr, SLOT_GEN_OFFSET);
+            let gen_mismatch = builder.ins().icmp(IntCC::NotEqual, gen, slot_gen);
+
+            let gen_panic_block = builder.create_block();
+            let ok_block = builder.create_block();
+            builder.ins().brif(gen_mismatch, gen_panic_block, &[], ok_block, &[]);
+
+            Self::emit_panic_block(builder, gen_panic_block, "pool access with invalid handle", ctx);
+
+            // ok_block: load data (single predecessor, seal immediately)
+            builder.switch_to_block(ok_block);
+            builder.seal_block(ok_block);
+            let var = ctx.var_map.get(dst)
+                .ok_or_else(|| CodegenError::UnsupportedFeature(
+                    "Pool access destination not found".to_string()
+                ))?;
+            // Always return pointer to slot data — pool[h] is used
+            // for mutation, so callers need the address.
+            let data_ptr = builder.ins().iadd_imm(slot_addr, SLOT_DATA_OFFSET as i64);
+            builder.def_var(*var, data_ptr);
+        } else {
+            // ── Debug mode: call C function ──────────────────────
+            let call_inst = if let Some(file_str) = ctx.source_file {
+                if let (Some(func_ref), Some(gv)) = (
+                    ctx.func_refs.get("pool_get_checked"),
+                    ctx.string_globals.get(file_str),
+                ) {
+                    let file_ptr = builder.ins().global_value(types::I64, *gv);
+                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                    builder.ins().call(*func_ref, &[pool_val, handle_val, file_ptr, line_val, col_val])
+                } else {
+                    let func_ref = ctx.func_refs.get("Pool_checked_access")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
+                    builder.ins().call(*func_ref, &[pool_val, handle_val])
+                }
+            } else {
+                let func_ref = ctx.func_refs.get("Pool_checked_access")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
+                builder.ins().call(*func_ref, &[pool_val, handle_val])
+            };
+
+            let results = builder.inst_results(call_inst);
+            if !results.is_empty() {
+                let ptr = results[0];
+                let var = ctx.var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "Pool access destination not found".to_string()
+                    ))?;
+                // Always return raw pointer — pool[h] is used for
+                // mutation (pool[h].field = val), so callers need
+                // the address, not the loaded value.
+                builder.def_var(*var, ptr);
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_closure_create(
+        builder: &mut ClifFunctionBuilder,
+        dst: &LocalId,
+        func_name: &String,
+        captures: &[rask_mir::ClosureCapture],
+        heap: &bool,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        // Build environment layout from captures, using real aggregate
+        // sizes from codegen layouts instead of MIR fallbacks.
+        // MirType::Struct.size() returns 8 (pointer), but actual structs
+        // may be 16+ bytes. Escaping closures must deep-copy aggregate
+        // data so it survives after the parent's stack is reused.
+        let mut env_layout = crate::closures::ClosureEnvLayout::new();
+        for c in captures {
+            let local = ctx.locals.iter().find(|l| l.id == c.local_id);
+            let (real_size, is_aggregate) = if let Some(l) = local {
+                if let Some(alloc_size) = Self::resolve_type_alloc_size(
+                    &l.ty, ctx.struct_layouts, ctx.enum_layouts,
+                ) {
+                    (alloc_size, true)
+                } else {
+                    (c.size, false)
+                }
+            } else {
+                (c.size, false)
+            };
+            env_layout.add_capture(c.local_id, real_size, is_aggregate);
+        }
+
+        // Get function pointer for the closure function
+        let func_ref = ctx.func_refs.get(func_name)
+            .ok_or_else(|| CodegenError::FunctionNotFound(func_name.clone()))?;
+        let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
+
+        let closure_ptr = if *heap {
+            // Escaping closure: heap-allocate via rask_alloc
+            let alloc_ref = ctx.func_refs.get("rask_alloc")
+                .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+            crate::closures::allocate_closure_heap(
+                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref,
+            )?
+        } else {
+            // Non-escaping closure: stack-allocate
+            crate::closures::allocate_closure_stack(
+                builder, func_ptr, &env_layout, ctx.var_map,
+            )?
+        };
+
+        let var = ctx.var_map.get(dst)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                "ClosureCreate destination not found".to_string()
+            ))?;
+        builder.def_var(*var, closure_ptr);
+        Ok(())
+    }
+
+    fn lower_closure_call(
+        builder: &mut ClifFunctionBuilder,
+        dst: &Option<LocalId>,
+        closure: &LocalId,
+        args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let closure_val = builder.use_var(*ctx.var_map.get(closure)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                "Closure variable not found".to_string()
+            ))?);
+
+        // Lower arg values
+        let mut arg_vals = Vec::new();
+        for a in args {
+            let val = Self::lower_operand(builder, a, ctx)?;
+            arg_vals.push(val);
+        }
+
+        // Build signature: (args...) -> ret
+        // call_closure will prepend env_ptr automatically
+        let mut sig = builder.func.signature.clone();
+        sig.params.clear();
+        sig.returns.clear();
+
+        for val in &arg_vals {
+            let ty = builder.func.dfg.value_type(*val);
+            sig.params.push(AbiParam::new(ty));
+        }
+
+        if let Some(dst_id) = dst {
+            let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
+            if let Some(local) = dst_local {
+                let cl_ret_ty = mir_to_cranelift_type(&local.ty)?;
+                sig.returns.push(AbiParam::new(cl_ret_ty));
+            }
+        }
+
+        let call_inst = crate::closures::call_closure(
+            builder, closure_val, sig, &arg_vals,
+        );
+
+        if let Some(dst_id) = dst {
+            let results = builder.inst_results(call_inst);
+            if !results.is_empty() {
+                let var = ctx.var_map.get(dst_id)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "ClosureCall destination not found".to_string()
+                    ))?;
+                builder.def_var(*var, results[0]);
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_trait_box(
+        builder: &mut ClifFunctionBuilder,
+        dst: &LocalId,
+        value: &MirOperand,
+        vtable_name: &String,
+        concrete_size: &u32,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let alloc_ref = ctx.func_refs.get("rask_alloc")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+
+        // Allocate heap memory for the concrete value (min 8 to avoid null from zero-size alloc)
+        let alloc_size = std::cmp::max(*concrete_size, 8) as i64;
+        let size_val = builder.ins().iconst(types::I64, alloc_size);
+        let call_inst = builder.ins().call(*alloc_ref, &[size_val]);
+        let data_ptr = builder.inst_results(call_inst)[0];
+
+        // Copy concrete value to heap
+        if let MirOperand::Local(src_id) = value {
+            if ctx.stack_slot_map.contains_key(src_id) {
+                // Aggregate: memcpy from the source pointer the var holds —
+                // not the local's own slot, which may be uninitialized when
+                // the var aliases another slot (e.g. `_1 = _0`).
+                let src_var = ctx.var_map.get(src_id)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "TraitBox: source variable not found".to_string()
+                    ))?;
+                let src_ptr = builder.use_var(*src_var);
+                let sz = *concrete_size;
+                let mut off = 0i32;
+                while (off as u32) + 8 <= sz {
+                    let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
+                    builder.ins().store(MemFlags::new(), word, data_ptr, off);
+                    off += 8;
+                }
+                if (off as u32) < sz {
+                    let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
+                    builder.ins().store(MemFlags::new(), word, data_ptr, off);
+                }
+            } else {
+                // Scalar: load from variable, store to heap
+                let src_val = builder.use_var(*ctx.var_map.get(src_id)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "TraitBox: source variable not found".to_string()
+                    ))?);
+                builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
+            }
+        } else {
+            // Constant: lower and store
+            let src_val = Self::lower_operand(builder, value, ctx)?;
+            builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
+        }
+
+        // Get vtable address
+        let gv = ctx.vtable_globals.get(vtable_name.as_str())
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                format!("TraitBox: vtable '{}' not found", vtable_name)
+            ))?;
+        let vtable_ptr = builder.ins().global_value(types::I64, *gv);
+
+        // Store fat pointer into destination stack slot: [data_ptr, vtable_ptr]
+        let (ss, _) = ctx.stack_slot_map.get(dst)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                "TraitBox destination stack slot not found".to_string()
+            ))?;
+        let dst_addr = builder.ins().stack_addr(types::I64, *ss, 0);
+        builder.ins().store(MemFlags::new(), data_ptr, dst_addr, crate::layouts::FAT_PTR_DATA_OFFSET);
+        builder.ins().store(MemFlags::new(), vtable_ptr, dst_addr, crate::layouts::FAT_PTR_VTABLE_OFFSET);
+
+        // Set the variable to point to the stack slot
+        let var = ctx.var_map.get(dst)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                "TraitBox destination variable not found".to_string()
+            ))?;
+        builder.def_var(*var, dst_addr);
+        Ok(())
+    }
+
+    fn lower_trait_call(
+        builder: &mut ClifFunctionBuilder,
+        dst: &Option<LocalId>,
+        trait_object: &LocalId,
+        method_name: &String,
+        vtable_offset: &u32,
+        args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        // Load fat pointer components from trait object stack slot
+        let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                "TraitCall: trait object variable not found".to_string()
+            ))?);
+        let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
+        let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_VTABLE_OFFSET);
+
+        // Load function pointer from vtable
+        let func_ptr = builder.ins().load(
+            types::I64, MemFlags::new(), vtable_ptr, *vtable_offset as i32,
+        );
+
+        // Build signature: (data_ptr, args...) -> ret
+        let mut sig = Signature::new(isa::CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64)); // data_ptr (self)
+        for _ in args.iter() {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+
+        // Build argument values
+        let mut call_args = Vec::with_capacity(1 + args.len());
+        call_args.push(data_ptr);
+        for arg in args.iter() {
+            let val = Self::lower_operand(builder, arg, ctx)?;
+            call_args.push(val);
+        }
+
+        let sig_ref = builder.import_signature(sig);
+        let call_inst = builder.ins().call_indirect(sig_ref, func_ptr, &call_args);
+
+        if let Some(dst_id) = dst {
+            let result = builder.inst_results(call_inst)[0];
+            let var = ctx.var_map.get(dst_id)
+                .ok_or_else(|| CodegenError::UnsupportedFeature(
+                    format!("TraitCall destination for '{}' not found", method_name)
+                ))?;
+            // Aggregate-returning methods (string, struct, ...) hand back a
+            // pointer to data in the callee frame. Copy into the dst's
+            // stack slot before that frame goes away.
+            if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst_id) {
+                Self::copy_aggregate(builder, result, *dst_ss, *dst_size);
+                let addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
+                builder.def_var(*var, addr);
+            } else {
+                builder.def_var(*var, result);
+            }
+        }
+        Ok(())
     }
 
     fn lower_terminator(
