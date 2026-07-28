@@ -100,13 +100,13 @@ struct BackendInfo {
 
 struct Capabilities {
     resident_results: bool      // can keep outputs on-device between submits (skip host round-trip)
-    concurrent_submits: bool    // multiple submissions truly in flight at once, vs serialized on one queue
+    multi_queue: bool           // offers many task-owned queues (overlap); false = one serialized queue
     timing: bool                // cost() returns measured/modeled time, not just memory
     // Additive: new fields default false. Adding one leaves existing backends valid.
 }
 ```
 
-Capabilities are data, not a zoo of optional traits, precisely so the set can grow without breaking existing backends (N1). The core reads flags and opportunistically uses what's there. (`concurrent_submits` is a placeholder — the real queue/concurrency shape is the hardest open question; see `conc.heterogeneous` O1.)
+Capabilities are data, not a zoo of optional traits, precisely so the set can grow without breaking existing backends (N1). The core reads flags and opportunistically uses what's there. `multi_queue` is the queue decision (`conc.heterogeneous` D10): a v1 backend reports `false` (one serialized queue — simple, correct, no overlap); a growth-path backend reports `true` (many queues, each owned by one task, buffer bound to its queue). The core assumes one serialized queue unless `multi_queue` is set.
 
 ## Kernel format — a slot, not a commitment
 
@@ -210,12 +210,12 @@ Naming it honestly, since the whole arc has been about not hiding costs:
 
 - **The core trusts the backend.** Because the core never sees device memory (N3), it can't do cross-backend memory optimization or verify a backend's `cost()` numbers. That's the right layering — but a buggy backend can misreport, and the core will believe it.
 - **Capability matrix testing.** Every optional capability doubles a test axis. N2 keeps the set small on purpose; if optional caps proliferate, the "which backend for this plan" logic and its tests get expensive. Resist adding capabilities.
-- **The queue/concurrency model is unsettled.** N5 makes the contract async, but *how many queues a device exposes, whether a buffer is bound to a queue, and how concurrent submissions avoid the externally-synchronized-queue race* is the hardest open question (`conc.heterogeneous` O1). Until it's settled, `concurrent_submits` is a placeholder and the safe assumption is one serialized queue per device.
+- **The queue model — decided in shape (D10), details deferred.** v1: one serialized queue per device (`multi_queue: false`) — simple, correct, no overlap. Growth path: many queues, each owned by one task (so the driver's externally-synchronized-queue race is prevented by ordinary Rask ownership), buffer bound to its queue, cross-queue sharing an explicit transfer, no auto-sync. Still to pin down for that growth work: opening a second queue, the cross-queue transfer op, and queue-granularity in the location tracker (`conc.heterogeneous` O1).
 
 ### TODO
 
 1. **`PrimitiveSet` representation.** How a backend advertises which primitives it supports, in a way that stays additive as the algebra grows.
-2. **The queue model (O1).** One queue or many per device? Is a buffer bound to a queue? How do concurrent submissions from different tasks avoid the driver-level external-sync race? This shapes `submit`, `Submission`, and `concurrent_submits` — the hardest thing left.
+2. **Path-2 queue details (O1 — direction set by D10).** v1 is one serialized queue; the growth work is many task-owned queues. Still to spec: how a task opens a second queue, the explicit cross-queue transfer op, and how the location tracker tracks *which queue* a buffer belongs to (not just which device).
 3. **Backend registration.** How a library registers a backend with the core (link-time? a registry call?) and how `Device.fastest()` discovers registered backends.
 4. **Reference backend.** The host-pool backend doubles as the executable reference semantics (`conc.data-parallel/W3`); pin down that it defines "correct" for every primitive.
 
