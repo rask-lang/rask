@@ -610,6 +610,19 @@ fn error_const_reassign() {
 }
 
 #[test]
+fn error_context_ambiguous_cc8() {
+    // mem.context/CC8: two Pool<Player> in scope where a callee needs the
+    // context is a real diagnostic, not the old unresolved-variable failure.
+    let (failed, out) = compile_error_output("context_ambiguous_min.rk");
+    assert!(failed, "ambiguous context must be rejected: {}", out);
+    assert!(out.contains("CC8"), "should carry the CC8 code: {}", out);
+    assert!(
+        out.contains("ambiguous context"),
+        "should name the ambiguity, not a var lookup failure: {}", out,
+    );
+}
+
+#[test]
 fn error_nonexhaustive_match() {
     assert!(compile_error("nonexhaustive_match.rk"), "should reject non-exhaustive match");
 }

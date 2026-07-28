@@ -172,7 +172,8 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                     let mut dep_decls_desugared = dep_decls;
                     rask_desugar::desugar(&mut dep_decls_desugared);
                     all_decls.extend(dep_decls_desugared);
-                    rask_mir::hidden_params::desugar_hidden_params_with_types(&mut all_decls, Some(&typed));
+                    let hp_diags = rask_mir::hidden_params::desugar_hidden_params_with_types(&mut all_decls, Some(&typed));
+                    super::codegen::exit_on_context_errors(&hp_diags, &source_files);
 
                     // Extract tests (replaces main, adds test body functions)
                     let tests = super::compile::extract_tests(&mut all_decls, filter.as_deref());
@@ -350,7 +351,8 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
         Err(_) => return false,
     };
 
-    rask_mir::hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed));
+    let hp_diags = rask_mir::hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed));
+    super::codegen::exit_on_context_errors(&hp_diags, &result.source_files);
     let tests = super::compile::extract_tests(&mut result.decls, filter);
 
     if tests.is_empty() {
@@ -1013,7 +1015,8 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         }
     };
 
-    rask_mir::hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed));
+    let hp_diags = rask_mir::hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed));
+    super::codegen::exit_on_context_errors(&hp_diags, &result.source_files);
     let benchmarks = super::compile::extract_benchmarks(&mut result.decls, filter);
     if benchmarks.is_empty() {
         return Vec::new();

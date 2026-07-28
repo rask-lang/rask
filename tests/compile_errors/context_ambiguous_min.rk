@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR [mem.context/CC8]: two Pool<Player> in scope at the call site — the
+// compiler can't pick which one satisfies damage's context.
+//
+// Minimal repro using explicit `players[h]` indexing in the callee, so the only
+// error is the ambiguity itself (not the still-unimplemented `h.field`
+// auto-deref that the fuller context_ambiguous.rk exercises).
+
+struct Player { health: i32 }
+
+func damage(h: Handle<Player>) using players: Pool<Player> {
+    print(players[h].health)
+}
+
+func main() {
+    mut team_a = Pool<Player>.new()
+    mut team_b = Pool<Player>.new()
+    const h = team_a.insert(Player { health: 100 })
+    damage(h)    // ERROR: which pool — team_a or team_b?
+}

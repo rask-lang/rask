@@ -406,7 +406,7 @@ fn insert_hidden_args(
             continue;
         }
 
-        let kind = resolve_arg_kind(pass, caller, req);
+        let kind = resolve_arg_kind(pass, caller, req, span);
         args.push(CallArg {
             name: None,
             mode: ArgMode::Default,
@@ -429,6 +429,7 @@ fn resolve_arg_kind(
     pass: &mut HiddenParamPass,
     caller: &str,
     req: &super::ContextReq,
+    call_span: Span,
 ) -> ExprKind {
     if caller.is_empty() {
         return ExprKind::Ident(req.param_name.clone());
@@ -456,10 +457,40 @@ fn resolve_arg_kind(
             }
             _ => ExprKind::Ident(pool.var_name),
         },
-        // CC8 (ambiguous) and NotFound both fall back to the hidden param name;
-        // ambiguity is reported as a diagnostic before this pass runs.
-        ResolveResult::Ambiguous(_) | ResolveResult::NotFound => {
+        // CC8: two-plus pools of the same type at the same priority — the
+        // compiler can't pick one. Report it here (this pass owns context
+        // resolution) instead of letting the fallback ident fail later as an
+        // unresolved-variable error in MIR lowering.
+        ResolveResult::Ambiguous(candidates) => {
+            let diag = cc8_ambiguous(pass, &req.clause_type, &candidates, call_span);
+            pass.diagnostics.push(diag);
             ExprKind::Ident(req.param_name.clone())
         }
+        ResolveResult::NotFound => ExprKind::Ident(req.param_name.clone()),
     }
+}
+
+/// Build the CC8 "ambiguous context" diagnostic: the call needs a pool the
+/// caller has more than one of at the same priority.
+fn cc8_ambiguous(
+    pass: &HiddenParamPass,
+    clause_type: &super::Type,
+    candidates: &[super::ScopePool],
+    call_span: Span,
+) -> rask_diagnostics::Diagnostic {
+    use rask_diagnostics::Diagnostic;
+    let pool = pass.type_to_source(clause_type);
+    let names: Vec<String> = candidates.iter().map(|c| c.var_name.clone()).collect();
+    Diagnostic::error(format!("ambiguous context — multiple {pool} in scope"))
+        .with_code("mem.context/CC8")
+        .with_primary(call_span, format!("which pool satisfies {pool}?"))
+        .with_why(format!(
+            "{} are both in scope and either could satisfy the {pool} context.",
+            names.join(" and ")
+        ))
+        .with_fix(format!(
+            "Pass the pool explicitly as a regular parameter, or index it \
+             directly (e.g. `{}[h]`) instead of relying on auto-resolution.",
+            names.first().map(String::as_str).unwrap_or("pool")
+        ))
 }
