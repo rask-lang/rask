@@ -2391,26 +2391,9 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         let method = method.to_string();
         let method = &method;
-                // C namespace call: c.func_name(args...) → extern "C" call
-                if self.ctx.extern_funcs.contains(method) {
-                    if let ExprKind::Ident(ns) = &object.kind {
-                        if !self.locals.contains_key(ns) {
-                            let mut arg_operands = Vec::new();
-                            for arg in args {
-                                let (op, _) = self.lower_expr(&arg.expr)?;
-                                arg_operands.push(op);
-                            }
-                            let ret_ty = self.lookup_expr_type(expr).unwrap_or(MirType::I64);
-                            let result_local = self.builder.alloc_temp(ret_ty.clone());
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: crate::FunctionRef::extern_c(method.clone()),
-                                args: arg_operands,
-                            }));
-                            return Ok((MirOperand::Local(result_local), ret_ty));
-                        }
-                    }
-                }
+        if let Some(r) = self.try_lower_c_namespace_call(expr, object, method, args)? {
+            return Ok(r);
+        }
 
                 // Iterator terminal methods: .collect(), .fold(), .any(), .all(), etc.
                 // Try to recognize an iterator chain on the receiver and fuse it inline.
@@ -2418,66 +2401,17 @@ impl<'a> MirLowerer<'a> {
                     return Ok(result);
                 }
 
-                // ER16: .origin() on Result — read origin fields and format as string
-                if method == "origin" && args.is_empty() {
-                    let (obj_op, obj_ty) = self.lower_expr(object)?;
-                    if matches!(obj_ty, MirType::Result { .. }) {
-                        let result_local = self.builder.alloc_temp(MirType::String);
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: Some(result_local),
-                            func: crate::FunctionRef::internal("rask_result_origin".to_string()),
-                            args: vec![obj_op],
-                        }));
-                        return Ok((MirOperand::Local(result_local), MirType::String));
-                    }
-                    // Non-Result: return "<no origin>"
-                    return Ok((
-                        MirOperand::Constant(crate::operand::MirConst::String("<no origin>".to_string())),
-                        MirType::String,
-                    ));
-                }
+        if let Some(r) = self.try_lower_origin(object, method, args)? {
+            return Ok(r);
+        }
 
-                // E9: .discriminant() on enum values — extract tag via EnumTag
-                if method == "discriminant" && args.is_empty() {
-                    let (obj_op, obj_ty) = self.lower_expr(object)?;
-                    if matches!(obj_ty, MirType::Enum(_)) {
-                        let result_local = self.builder.alloc_temp(MirType::U16);
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: result_local,
-                            rvalue: MirRValue::EnumTag { value: obj_op },
-                        }));
-                        return Ok((MirOperand::Local(result_local), MirType::U16));
-                    }
-                }
+        if let Some(r) = self.try_lower_discriminant(object, method, args)? {
+            return Ok(r);
+        }
 
-                // Module.Type.method() pattern: time.Instant.now() → Instant_now
-                // Detect field access on a module name and flatten to a qualified call.
-                if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
-                    if let ExprKind::Ident(module_name) = &inner_obj.kind {
-                        if !self.locals.contains_key(module_name)
-                            && is_type_constructor_name(module_name)
-                        {
-                            let func_name = format!("{}_{}", type_name, method);
-                            let mut arg_operands = Vec::new();
-                            for arg in args {
-                                let (op, _) = self.lower_expr(&arg.expr)?;
-                                arg_operands.push(op);
-                            }
-                            let ret_ty = self
-                                .func_sigs
-                                .get(&func_name)
-                                .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
-                            let result_local = self.builder.alloc_temp(ret_ty.clone());
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: FunctionRef::internal(func_name),
-                                args: arg_operands,
-                            }));
-                            return Ok((MirOperand::Local(result_local), ret_ty));
-                        }
-                    }
-                }
+        if let Some(r) = self.try_lower_module_type_method(object, method, args)? {
+            return Ok(r);
+        }
 
                 if let Some(r) = self.try_lower_type_name_call(expr, object, method, args, type_args)? {
                     return Ok(r);
@@ -3612,6 +3546,125 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 Ok((MirOperand::Local(result_local), ret_ty))
+    }
+
+    /// `c.func(args)` where `c` is the C namespace → extern "C" call.
+    fn try_lower_c_namespace_call(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        method: &String,
+        args: &[CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+                // C namespace call: c.func_name(args...) → extern "C" call
+                if self.ctx.extern_funcs.contains(method) {
+                    if let ExprKind::Ident(ns) = &object.kind {
+                        if !self.locals.contains_key(ns) {
+                            let mut arg_operands = Vec::new();
+                            for arg in args {
+                                let (op, _) = self.lower_expr(&arg.expr)?;
+                                arg_operands.push(op);
+                            }
+                            let ret_ty = self.lookup_expr_type(expr).unwrap_or(MirType::I64);
+                            let result_local = self.builder.alloc_temp(ret_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: Some(result_local),
+                                func: crate::FunctionRef::extern_c(method.clone()),
+                                args: arg_operands,
+                            }));
+                            return Ok(Some((MirOperand::Local(result_local), ret_ty)));
+                        }
+                    }
+                }
+        Ok(None)
+    }
+
+    /// `.origin()` on a Result → formatted origin string.
+    fn try_lower_origin(
+        &mut self,
+        object: &Expr,
+        method: &String,
+        args: &[CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+                // ER16: .origin() on Result — read origin fields and format as string
+                if method == "origin" && args.is_empty() {
+                    let (obj_op, obj_ty) = self.lower_expr(object)?;
+                    if matches!(obj_ty, MirType::Result { .. }) {
+                        let result_local = self.builder.alloc_temp(MirType::String);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(result_local),
+                            func: crate::FunctionRef::internal("rask_result_origin".to_string()),
+                            args: vec![obj_op],
+                        }));
+                        return Ok(Some((MirOperand::Local(result_local), MirType::String)));
+                    }
+                    // Non-Result: return "<no origin>"
+                    return Ok(Some((
+                        MirOperand::Constant(crate::operand::MirConst::String("<no origin>".to_string())),
+                        MirType::String,
+                    )));
+                }
+        Ok(None)
+    }
+
+    /// `.discriminant()` on an enum value → tag via EnumTag.
+    fn try_lower_discriminant(
+        &mut self,
+        object: &Expr,
+        method: &String,
+        args: &[CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+                // E9: .discriminant() on enum values — extract tag via EnumTag
+                if method == "discriminant" && args.is_empty() {
+                    let (obj_op, obj_ty) = self.lower_expr(object)?;
+                    if matches!(obj_ty, MirType::Enum(_)) {
+                        let result_local = self.builder.alloc_temp(MirType::U16);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: result_local,
+                            rvalue: MirRValue::EnumTag { value: obj_op },
+                        }));
+                        return Ok(Some((MirOperand::Local(result_local), MirType::U16)));
+                    }
+                }
+        Ok(None)
+    }
+
+    /// `module.Type.method()` → flattened `Type_method` qualified call.
+    fn try_lower_module_type_method(
+        &mut self,
+        object: &Expr,
+        method: &String,
+        args: &[CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+                // Module.Type.method() pattern: time.Instant.now() → Instant_now
+                // Detect field access on a module name and flatten to a qualified call.
+                if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
+                    if let ExprKind::Ident(module_name) = &inner_obj.kind {
+                        if !self.locals.contains_key(module_name)
+                            && is_type_constructor_name(module_name)
+                        {
+                            let func_name = format!("{}_{}", type_name, method);
+                            let mut arg_operands = Vec::new();
+                            for arg in args {
+                                let (op, _) = self.lower_expr(&arg.expr)?;
+                                arg_operands.push(op);
+                            }
+                            let ret_ty = self
+                                .func_sigs
+                                .get(&func_name)
+                                .map(|s| s.ret_ty.clone())
+                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                            let result_local = self.builder.alloc_temp(ret_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef::internal(func_name),
+                                args: arg_operands,
+                            }));
+                            return Ok(Some((MirOperand::Local(result_local), ret_ty)));
+                        }
+                    }
+                }
+        Ok(None)
     }
 
     fn lower_if(
