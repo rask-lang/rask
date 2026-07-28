@@ -25,14 +25,14 @@ The one idea holding it together: **the core owns the portable middle (algebra, 
 
 ## The device model, in one example
 
-The current shape (this supersedes the "`using Gpu` context" and the single blocking `commit` in `conc.data-parallel`):
+The current shape (now folded into `conc.data-parallel` and `conc.wide-backend`):
 
 <!-- test: skip -->
 ```rask
 with Device.gpu(0) as dev {           // device is a RESOURCE — many allowed, non-exclusive
     const xs   = img.to(dev)          // explicit upload → resident buffer on dev
     const plan = xs.map(shade).sum()  // stage — host-side description, nothing runs yet
-    const h    = plan.submit(dev)     // enqueue on dev's queue — async, returns a must-use handle
+    const h    = plan.submit()        // enqueue on dev's queue (target = where data lives) — async handle
     const out  = try h.await()        // fence-wait + copy home — this is the blocking point
 }                                     // block exit: queue drained, device freed (drain-on-exit)
 ```
@@ -76,9 +76,9 @@ Hardest and most design-shaping first:
 
 ## Status of the sibling specs
 
-- **`conc.data-parallel`** — the `Wide` algebra, primitives, coloring-on-data, observability, and core/library split are current. **Superseded:** the "Width" section's `using Simd/ThreadPool/Gpu` contexts (→ device is a resource, D1/D2) and the single blocking `commit` (→ `submit`/`await`, D3).
-- **`conc.wide-backend`** — the capability-negotiation shape (N1–N4), host-in/host-out memory, kernel-format slot, and the "what stays out" boundary (X1–X4) are current. **Superseded:** the additive-versioning rule (N5) and compat-policy TODO — premature pre-v1 (D9). The contract also needs the async-executor revision (submit/await, queues, completion-bound lifetime) folded in — currently it reads as synchronous.
+Both siblings have now been reconciled with the decisions here — the fold-in is done:
 
-### Next writing pass (not done here)
+- **`conc.data-parallel`** — device-as-resource (D1/D2), `submit`/`await` (D3), explicit flow-tracked placement (D5), and completion-bound lifetime references are in. The `Wide` algebra, primitives, coloring, observability, and core/library split were already current.
+- **`conc.wide-backend`** — the async-executor model (D3/D4) is folded in: `submit` returns a must-use `Submission`, `await`/`detach` consume it, `release` drains, and N5 is now "completion is the lifetime boundary." Versioning (old N5, compat TODO) is demoted per D9.
 
-Fold D1–D5 into `conc.data-parallel` (retire widths-as-contexts and blocking commit) and the async-executor model into `conc.wide-backend` (queues, completion handles, deferred free). Left for a deliberate revision rather than rushed in — the lesson of this whole exploration is that a confident rewrite hiding loose ends is worse than an honest record of where things actually stand.
+What's left is not a writing pass but a *design* pass: the open questions below, chiefly O1. This file stays the map; the siblings carry the detail.
