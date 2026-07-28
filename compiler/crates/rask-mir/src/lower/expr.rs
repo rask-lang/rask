@@ -1080,16 +1080,18 @@ impl<'a> MirLowerer<'a> {
                                     arg_operands.push(size_op);
                                 }
                             }
-                            // Pool.new(): inject elem_size so pool allocates
-                            // correctly-sized slots for struct elements.
-                            if base_name == "Pool" && method == "new" {
+                            // Pool.new() / Pool.with_capacity(n): inject elem_size
+                            // so the pool allocates correctly-sized slots for struct
+                            // elements. with_capacity keeps its `n` after elem_size.
+                            if base_name == "Pool" && (method == "new" || method == "with_capacity") {
                                 let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);
                             }
 
-                            // Vec.new(): inject elem_size so runtime allocates correct slots.
-                            if base_name == "Vec" && method == "new" {
+                            // Vec.new() / Vec.with_capacity(n): inject elem_size so
+                            // the runtime allocates correct slots.
+                            if base_name == "Vec" && (method == "new" || method == "with_capacity") {
                                 let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);

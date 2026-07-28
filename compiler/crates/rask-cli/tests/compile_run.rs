@@ -490,6 +490,34 @@ fn optional_widen_assign_native_eq_interp() {
     assert_native_eq_interp("optional_widen_assign.rk", "1042");
 }
 
+// mem.pools/PL2 (#435): a bounded `with_capacity` pool works like a normal pool
+// for inserts within the bound, on both backends.
+#[test]
+fn bounded_pool_with_capacity_native_eq_interp() {
+    assert_native_eq_interp("bounded_pool_with_capacity.rk", "230");
+}
+
+// mem.pools/PL8 (#435): `insert` into a full bounded pool panics (exit 101) on
+// both backends — nothing after the failing insert runs.
+#[test]
+fn bounded_pool_insert_full_panics() {
+    let (nout, ncode) = run_native("bounded_pool_insert_full.rk");
+    let (iout, icode) = run_interp("bounded_pool_insert_full.rk");
+    assert_eq!(ncode, 101, "native should panic on full insert: {}", nout);
+    assert_eq!(icode, 101, "interp should panic on full insert: {}", iout);
+    assert!(!nout.contains("99"), "native must not reach past the panic: {}", nout);
+    assert!(!iout.contains("99"), "interp must not reach past the panic: {}", iout);
+}
+
+// mem.pools/PL8 (#435): `try_insert` returns Some until the bounded pool is full,
+// then none. Interpreter is the reference (native try_insert is tracked in #438).
+#[test]
+fn bounded_pool_try_insert_interp() {
+    let (out, code) = run_interp("bounded_pool_try_insert.rk");
+    assert_eq!(code, 0, "try_insert program must run: {}", out);
+    assert_eq!(out, "110", "unexpected try_insert output: {:?}", out);
+}
+
 // #382 + #380: a Handle is Copy, so `pool[a].next = b` links without consuming
 // `b`, and the widen reads back as Some. Interp is the reference (native pool
 // niche-Option<Handle> reads are tracked in #438), and it must type-check
