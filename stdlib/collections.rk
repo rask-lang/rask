@@ -124,6 +124,9 @@ extend Vec<T> {
     /// Transform each element.
     public func map(self, f: func(T) -> U) -> Vec<U> { }
 
+    /// Stage this data as a Wide plan for data-parallel execution.
+    public func wide(self) -> Wide<T> { }
+
     /// Map then flatten results.
     public func flat_map(self, f: func(T) -> Vec<U>) -> Vec<U> { }
 
@@ -254,4 +257,24 @@ extend Map<K, V> {
 
     /// Freeze into a compile-time map.
     public comptime func freeze(self) -> Map<K, V> { }
+}
+
+/// A staged data-parallel plan over lanes of `T` (conc.data-parallel).
+///
+/// Built from `some_vec.wide()`. `map`/`zip_with` stage lazily; `read`/`sum`
+/// run the plan on the current backend (the CPU baseline for now).
+public struct Wide<T> { }
+
+extend Wide<T> {
+    /// Transform each lane. Lazy — records the op, runs nothing.
+    public func map(self, f: func(T) -> U) -> Wide<U> { }
+
+    /// Combine two plans lane-by-lane. Lazy. Lengths must match at run time.
+    public func zip_with(self, other: Wide<U>, f: func(T, U) -> V) -> Wide<V> { }
+
+    /// Run the plan and materialize the lanes back to a Vec.
+    public func read(self) -> Vec<T> { }
+
+    /// Run the plan, reducing the lanes with `+`.
+    public func sum(self) -> T { }
 }

@@ -159,6 +159,17 @@ fn run_capture(mode: &str, fixture_name: &str) -> (String, String, i32) {
     )
 }
 
+// ─── Wide<T> data-parallel tests ─────────────────────────────
+
+const WIDE_EXPECTED: &str = "10\n20\n300\n2, 4, 6, 8\n";
+
+#[test]
+fn wide_basic_interp() {
+    let (stdout, code) = run_interp("wide_basic.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, WIDE_EXPECTED);
+}
+
 // ─── rask compile tests ──────────────────────────────────────
 
 #[test]

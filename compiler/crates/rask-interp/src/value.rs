@@ -507,6 +507,10 @@ pub enum Value {
     Rng(Arc<Mutex<RngState>>),
     /// Lazy iterator (wraps a source and optional adapters)
     Iterator(Arc<Mutex<IteratorState>>),
+    /// Wide<T> — a staged data-parallel plan (conc.data-parallel). Lazy: it
+    /// records ops and runs nothing until a terminal (`read`/`sum`). The plan
+    /// tree is immutable, so it's shared by Arc.
+    Wide(Arc<WidePlan>),
     /// Nominal type wrapper: `type UserId = u64` — wraps the underlying value
     Nominal {
         type_name: String,
@@ -654,6 +658,20 @@ impl fmt::Debug for IteratorState {
     }
 }
 
+/// A staged `Wide<T>` plan. Built by `.wide()` + adapters, executed by a
+/// terminal. Element-wise nodes (`Source`, `Map`, `ZipWith`) produce a lane
+/// vector; the CPU executor walks this tree (rask-interp `wide.rs`). Immutable
+/// once built — laziness with no hidden execution (conc.data-parallel C1).
+#[derive(Debug, Clone)]
+pub enum WidePlan {
+    /// Lanes materialized from a Vec (`data.wide()`).
+    Source(Arc<Mutex<std::vec::Vec<Value>>>),
+    /// Apply a closure to each lane.
+    Map { source: Arc<WidePlan>, mapper: Value },
+    /// Combine two plans lane-by-lane with a closure. Lengths must match.
+    ZipWith { a: Arc<WidePlan>, b: Arc<WidePlan>, combiner: Value },
+}
+
 impl Value {
     /// Integer of unknown source width (lengths, indices, internal results).
     /// Unchecked for overflow — use `Value::Int(n, kind)` when the width is
@@ -695,6 +713,7 @@ impl Value {
             Value::Builtin(_) => "builtin",
             Value::Range { .. } => "range",
             Value::Vec(_) => "Vec",
+            Value::Wide(_) => "Wide",
             Value::TypeConstructor { .. } => "type",
             Value::EnumConstructor { .. } => "enum constructor",
             Value::Module(_) => "module",
@@ -956,6 +975,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::Wide(_) => write!(f, "<Wide plan>"),
             Value::TypeConstructor { kind, type_param } => {
                 let base_name = match kind {
                     TypeConstructorKind::Vec => "Vec",
