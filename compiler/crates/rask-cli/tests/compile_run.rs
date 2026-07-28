@@ -448,6 +448,63 @@ fn using_pool_propagate_native_eq_interp() {
     assert_native_eq_interp("using_pool_propagate.rk", "42");
 }
 
+// comp.hidden-params/CALL6: instance-method `using` context threads through
+// method dispatch on both the top-level `l.settle(a)` and the inner
+// `self.post(h)`. Native must match the interpreter.
+#[test]
+fn using_pool_method_native_eq_interp() {
+    assert_native_eq_interp("using_pool_method.rk", "5");
+}
+
+// #411: nested struct-field assignment (`ln.a.x = v`) persists on native — the
+// projected place stores into the base local instead of a value copy.
+#[test]
+fn nested_field_store_native_eq_interp() {
+    assert_native_eq_interp("nested_field_store.rk", "50604");
+}
+
+// #402: compound assignment through a pool handle (`pool[h].f -= n`) persists on
+// native — aggregate pool accesses no longer coalesce into a value copy.
+#[test]
+fn pool_compound_assign_native_eq_interp() {
+    assert_native_eq_interp("pool_compound_assign.rk", "65");
+}
+
+// #402: `with pool[h] as e { e.f = v }` writes through to the pool on native —
+// the binding aliases the slot instead of copying the element.
+#[test]
+fn with_pool_writeback_native_eq_interp() {
+    assert_native_eq_interp("with_pool_writeback.rk", "78");
+}
+
+// #411: field store into a Vec element (`v[i].hp = v`, `+=`) persists on native
+// via read-modify-writeback.
+#[test]
+fn vec_elem_field_store_native_eq_interp() {
+    assert_native_eq_interp("vec_elem_field_store.rk", "9925");
+}
+
+// comp.hidden-params/CALL2: a pool held in `self.players` resolves as a hidden
+// context arg (lowered as a field access) for a free callee.
+#[test]
+fn using_pool_self_field_native_eq_interp() {
+    assert_native_eq_interp("using_pool_self_field.rk", "7");
+}
+
+// mem.context/CC9: an inline closure passed as an argument inherits the
+// enclosing function's pool context.
+#[test]
+fn using_closure_immediate_native_eq_interp() {
+    assert_native_eq_interp("using_closure_immediate.rk", "100");
+}
+
+// mem.context/CC10: a storable closure can still take the pool as an explicit
+// param — that resolves the callee's context without inheritance.
+#[test]
+fn using_closure_storable_ok_native_eq_interp() {
+    assert_native_eq_interp("using_closure_storable_ok.rk", "100");
+}
+
 #[test]
 fn dispatch_map_native_eq_interp() {
     assert_native_eq_interp("dispatch_map.rk", "3\ntrue\n2\nfalse\n2\n");
@@ -592,6 +649,28 @@ fn error_wrong_arg_count() {
 #[test]
 fn error_const_reassign() {
     assert!(compile_error("const_reassign.rk"), "should reject const reassignment");
+}
+
+#[test]
+fn error_context_ambiguous_cc8() {
+    // mem.context/CC8: two Pool<Player> in scope where a callee needs the
+    // context is a real diagnostic, not the old unresolved-variable failure.
+    let (failed, out) = compile_error_output("context_ambiguous_min.rk");
+    assert!(failed, "ambiguous context must be rejected: {}", out);
+    assert!(out.contains("CC8"), "should carry the CC8 code: {}", out);
+    assert!(
+        out.contains("ambiguous context"),
+        "should name the ambiguity, not a var lookup failure: {}", out,
+    );
+}
+
+#[test]
+fn error_context_closure_storable_cc10() {
+    // mem.context/CC10: a storable closure needing a pool context it doesn't
+    // take as a parameter is rejected — it can't inherit ambient contexts.
+    let (failed, out) = compile_error_output("context_closure_storable.rk");
+    assert!(failed, "storable closure needing context must be rejected: {}", out);
+    assert!(out.contains("CC10"), "should carry the CC10 code: {}", out);
 }
 
 #[test]

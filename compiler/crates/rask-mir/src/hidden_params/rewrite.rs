@@ -124,7 +124,14 @@ fn rewrite_stmt(pass: &mut HiddenParamPass, caller: &str, stmt: &mut Stmt) {
     match &mut stmt.kind {
         StmtKind::Expr(e) => rewrite_expr(pass, caller, e),
         StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
-            rewrite_expr(pass, caller, init);
+            // CC10: a closure bound to a name is storable — it can escape the
+            // enclosing pool scope. Rewrite its body under the storable rule so
+            // contexts resolve from the closure's own params, not ambient ones.
+            if matches!(&init.kind, ExprKind::Closure { .. }) {
+                rewrite_storable_closure(pass, caller, init);
+            } else {
+                rewrite_expr(pass, caller, init);
+            }
         }
         StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
             rewrite_expr(pass, caller, init);
@@ -171,50 +178,32 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
     match &mut expr.kind {
         // Phase 5 (CALL1-CALL6): Insert hidden args at call sites
         ExprKind::Call { func, args } => {
+            let span = expr.span;
+            let key = pass.callee_key(expr.id).or_else(|| extract_callee_name(func));
             rewrite_expr(pass, caller, func);
             for arg in args.iter_mut() {
                 rewrite_expr(pass, caller, &mut arg.expr);
             }
-
-            // Check if callee needs hidden params
-            if let Some(callee_name) = extract_callee_name(func) {
-                if let Some(reqs) = pass.func_contexts.get(&callee_name).cloned() {
-                    for req in &reqs {
-                        // Don't add duplicate hidden args
-                        let already_has = args.iter().any(|a| {
-                            matches!(&a.expr.kind, ExprKind::Ident(name) if name == &req.param_name)
-                        });
-                        if already_has {
-                            continue;
-                        }
-
-                        // CC4: Resolve from scope, not just hidden param name
-                        let resolved_name = resolve_arg_name(pass, caller, req);
-
-                        args.push(CallArg {
-                            name: None,
-                            mode: ArgMode::Default,
-                            expr: Expr {
-                                id: pass.fresh_id(),
-                                kind: ExprKind::Ident(resolved_name),
-                                span: expr.span,
-                            },
-                        });
-                    }
-                }
+            // CALL6: key the callee by the recorded dispatch target, so the
+            // hidden args match the callee's rewritten signature.
+            if let Some(key) = key {
+                insert_hidden_args(pass, caller, &key, args, span);
             }
         }
 
-        ExprKind::MethodCall {
-            object, args, ..
-        } => {
+        ExprKind::MethodCall { object, args, .. } => {
+            // CALL6: a method callee (`recv.m()` / `self.m()` / `T.m()`) keys by
+            // the recorded `Type.method` dispatch target — same as its declaration
+            // — so its context requirement threads in exactly like a free call's.
+            let span = expr.span;
+            let key = pass.callee_key(expr.id);
             rewrite_expr(pass, caller, object);
             for arg in args.iter_mut() {
                 rewrite_expr(pass, caller, &mut arg.expr);
             }
-            // Method call context resolution requires type info for the
-            // receiver. Deferred — method dispatch doesn't commonly carry
-            // context in Phase A patterns.
+            if let Some(key) = key {
+                insert_hidden_args(pass, caller, &key, args, span);
+            }
         }
 
         // Phase 6 (BLK1-BLK4): Desugar `using` blocks
@@ -401,34 +390,170 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
     }
 }
 
-/// CC4: Resolve the argument name for a context requirement.
-/// Uses scope resolution when possible, falls back to hidden param name.
-fn resolve_arg_name(
-    pass: &HiddenParamPass,
+/// CC10: rewrite a storable closure's body. Contexts inside resolve only from
+/// the closure's own pool-typed parameters — it may outlive the enclosing pool
+/// scope, so it can't capture ambient contexts. A needed context with no
+/// matching param is a CC10 error (raised in `resolve_arg_kind`).
+fn rewrite_storable_closure(pass: &mut HiddenParamPass, caller: &str, init: &mut Expr) {
+    let params: Vec<(String, super::Type)> = match &init.kind {
+        ExprKind::Closure { params, .. } => params
+            .iter()
+            .filter_map(|p| Some((p.name.clone(), pass.parse_ty(p.ty.as_ref()?)?)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    // Save/restore so nested closures don't clobber the outer state.
+    let prev = pass.storable_closure.replace(params);
+    if let ExprKind::Closure { body, .. } = &mut init.kind {
+        rewrite_expr(pass, caller, body);
+    }
+    pass.storable_closure = prev;
+}
+
+/// CALL3: append the hidden context arguments a callee requires to `args`,
+/// resolving each from the caller's scope (CC4). Shared by free calls and
+/// method calls — both identify their callee by the recorded dispatch target.
+fn insert_hidden_args(
+    pass: &mut HiddenParamPass,
+    caller: &str,
+    callee_key: &str,
+    args: &mut Vec<CallArg>,
+    span: Span,
+) {
+    let reqs = match pass.func_contexts.get(callee_key).cloned() {
+        Some(r) => r,
+        None => return,
+    };
+    for req in &reqs {
+        // HP4: don't re-append a hidden arg that's already present.
+        let already_has = args
+            .iter()
+            .any(|a| matches!(&a.expr.kind, ExprKind::Ident(name) if name == &req.param_name));
+        if already_has {
+            continue;
+        }
+
+        let kind = resolve_arg_kind(pass, caller, req, span);
+        args.push(CallArg {
+            name: None,
+            mode: ArgMode::Default,
+            expr: Expr {
+                id: pass.fresh_id(),
+                kind,
+                span,
+            },
+        });
+    }
+}
+
+/// CC4: Build the argument expression for a context requirement, resolving from
+/// the caller's scope. A `self.field` pool becomes a real field-access
+/// expression (`self.players`), not an ident whose name happens to contain a
+/// dot — MIR can't resolve the latter. Locals/params/hidden-params are plain
+/// idents. Falls back to the hidden param name when scope resolution finds
+/// nothing (propagation should have added it to the signature).
+fn resolve_arg_kind(
+    pass: &mut HiddenParamPass,
     caller: &str,
     req: &super::ContextReq,
-) -> String {
+    call_span: Span,
+) -> ExprKind {
+    // CC10: a storable closure resolves contexts only from its own params; it
+    // cannot inherit the enclosing function's ambient pools.
+    if let Some(params) = pass.storable_closure.clone() {
+        if let Some((name, _)) = params.iter().find(|(_, ty)| ty == &req.clause_type) {
+            return ExprKind::Ident(name.clone());
+        }
+        let diag = cc10_needs_explicit(pass, &req.clause_type, call_span);
+        pass.diagnostics.push(diag);
+        return ExprKind::Ident(req.param_name.clone());
+    }
+
     if caller.is_empty() {
-        return req.param_name.clone();
+        return ExprKind::Ident(req.param_name.clone());
     }
 
     match resolve_context_in_scope(pass, caller, &req.clause_type) {
-        ResolveResult::Resolved(pool) => {
-            match pool.source {
-                PoolSource::UsingClause => pool.var_name,
-                // For locals/params/self.fields, use the actual variable name
-                _ => pool.var_name,
+        ResolveResult::Resolved(pool) => match pool.source {
+            PoolSource::SelfField => {
+                // var_name is "self.<field>"; rebuild as a Field access so the
+                // backend sees a struct field read, not an unknown variable.
+                let field = pool
+                    .var_name
+                    .strip_prefix("self.")
+                    .unwrap_or(&pool.var_name)
+                    .to_string();
+                let object = Expr {
+                    id: pass.fresh_id(),
+                    kind: ExprKind::Ident("self".to_string()),
+                    span: Span::new(0, 0),
+                };
+                ExprKind::Field {
+                    object: Box::new(object),
+                    field,
+                }
             }
+            _ => ExprKind::Ident(pool.var_name),
+        },
+        // CC8: two-plus pools of the same type at the same priority — the
+        // compiler can't pick one. Report it here (this pass owns context
+        // resolution) instead of letting the fallback ident fail later as an
+        // unresolved-variable error in MIR lowering.
+        ResolveResult::Ambiguous(candidates) => {
+            let diag = cc8_ambiguous(pass, &req.clause_type, &candidates, call_span);
+            pass.diagnostics.push(diag);
+            ExprKind::Ident(req.param_name.clone())
         }
-        ResolveResult::Ambiguous(_pools) => {
-            // CC8: Ambiguous — for now, fall back to hidden param name.
-            // The type checker should have already reported this error.
-            req.param_name.clone()
-        }
-        ResolveResult::NotFound => {
-            // No local resolution — use the hidden param name
-            // (propagation should have added it to the signature)
-            req.param_name.clone()
-        }
+        ResolveResult::NotFound => ExprKind::Ident(req.param_name.clone()),
     }
+}
+
+/// Build the CC8 "ambiguous context" diagnostic: the call needs a pool the
+/// caller has more than one of at the same priority.
+fn cc8_ambiguous(
+    pass: &HiddenParamPass,
+    clause_type: &super::Type,
+    candidates: &[super::ScopePool],
+    call_span: Span,
+) -> rask_diagnostics::Diagnostic {
+    use rask_diagnostics::Diagnostic;
+    let pool = pass.type_to_source(clause_type);
+    let names: Vec<String> = candidates.iter().map(|c| c.var_name.clone()).collect();
+    Diagnostic::error(format!("ambiguous context — multiple {pool} in scope"))
+        .with_code("mem.context/CC8")
+        .with_primary(call_span, format!("which pool satisfies {pool}?"))
+        .with_why(format!(
+            "{} are both in scope and either could satisfy the {pool} context.",
+            names.join(" and ")
+        ))
+        .with_fix(format!(
+            "Pass the pool explicitly as a regular parameter, or index it \
+             directly (e.g. `{}[h]`) instead of relying on auto-resolution.",
+            names.first().map(String::as_str).unwrap_or("pool")
+        ))
+}
+
+/// Build the CC10 "storable closure can't auto-resolve" diagnostic: a named
+/// closure needs a pool context it doesn't take as a parameter.
+fn cc10_needs_explicit(
+    pass: &HiddenParamPass,
+    clause_type: &super::Type,
+    call_span: Span,
+) -> rask_diagnostics::Diagnostic {
+    use rask_diagnostics::Diagnostic;
+    let pool = pass.type_to_source(clause_type);
+    Diagnostic::error(format!(
+        "storable closure cannot auto-resolve {pool} context"
+    ))
+    .with_code("mem.context/CC10")
+    .with_primary(call_span, format!("needs {pool}, but the closure can't inherit it"))
+    .with_why(
+        "A closure bound to a name can outlive the scope that owns the pool, so \
+         it can't capture an ambient context the way an inline callback does."
+            .to_string(),
+    )
+    .with_fix(format!(
+        "Take the pool as an explicit closure parameter, e.g. \
+         `|pool: {pool}, h| ...`, and pass it in at each call."
+    ))
 }

@@ -22,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 use rask_ast::decl::{ContextClause, Decl, DeclKind};
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::NodeId;
+use rask_diagnostics::Diagnostic;
 use rask_types::Type;
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -84,10 +85,13 @@ pub(crate) struct FuncInfo {
 /// - Call sites to those functions gain hidden arguments
 /// - `using Multitasking { }` blocks become context construction + teardown
 ///
+/// Returns any diagnostics the pass raised (e.g. CC8 ambiguity). A non-empty
+/// error list means the caller must stop before monomorphization.
+///
 /// Without a TypedProgram, falls back to name-based call-graph keying (still
 /// correct for free functions; method callees can't be keyed consistently).
-pub fn desugar_hidden_params(decls: &mut [Decl]) {
-    desugar_hidden_params_with_types(decls, None);
+pub fn desugar_hidden_params(decls: &mut [Decl]) -> Vec<Diagnostic> {
+    desugar_hidden_params_with_types(decls, None)
 }
 
 /// Run the hidden parameter pass with the typed program.
@@ -95,12 +99,15 @@ pub fn desugar_hidden_params(decls: &mut [Decl]) {
 /// The typed program supplies the recorded call targets (CALL6): each call
 /// resolves to a structured id, so method callees key by `Type.method` exactly
 /// as their declarations do — no reconstruction from a bare method name.
+///
+/// Returns diagnostics raised during the pass (CC8 ambiguity today).
 pub fn desugar_hidden_params_with_types(
     decls: &mut [Decl],
     typed: Option<&rask_types::TypedProgram>,
-) {
+) -> Vec<Diagnostic> {
     let mut pass = HiddenParamPass::new(typed);
     pass.run(decls);
+    pass.diagnostics
 }
 
 // ── Pass Implementation ─────────────────────────────────────────────────
@@ -119,6 +126,12 @@ pub(crate) struct HiddenParamPass<'a> {
     /// The type checker's output — recorded call targets, symbols, and type
     /// table. The single source of truth for which function a call resolves to.
     pub typed: Option<&'a rask_types::TypedProgram>,
+    /// Diagnostics raised during the pass (CC8 ambiguity, CC10 closures).
+    pub diagnostics: Vec<Diagnostic>,
+    /// CC10: when rewriting a storable closure's body, its own pool-typed
+    /// parameters. `Some` means contexts must resolve from these — the closure
+    /// can outlive the enclosing pool scope, so it can't inherit ambient ones.
+    pub storable_closure: Option<Vec<(String, Type)>>,
     /// Fresh NodeId counter (high range to avoid parser collisions).
     pub next_id: u32,
 }
@@ -132,6 +145,8 @@ impl<'a> HiddenParamPass<'a> {
             public_funcs: HashSet::new(),
             struct_fields: HashMap::new(),
             typed,
+            diagnostics: Vec::new(),
+            storable_closure: None,
             next_id: 2_000_000,
         }
     }
@@ -230,6 +245,10 @@ impl<'a> HiddenParamPass<'a> {
                     .typed
                     .map(|t| t.types.type_name(*base))
                     .unwrap_or_else(|| format!("{}", ty));
+                // The registered base name carries its param placeholder
+                // (`Pool<T>`); drop it before appending the concrete args so we
+                // render `Pool<Player>`, not `Pool<T><Player>`.
+                let head = head.split('<').next().unwrap_or(&head);
                 format!("{}<{}>", head, render_args(args))
             }
             _ => format!("{}", ty),

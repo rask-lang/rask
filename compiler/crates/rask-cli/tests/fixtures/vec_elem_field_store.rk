@@ -1,0 +1,14 @@
+// #411: writing a field of a Vec element (`v[i].hp = ...`, including compound
+// `+=`) must persist on native. Reading `v[i]` copies the element, so the store
+// is done as read-modify-writeback (`Vec_set`). Native must match the interp.
+struct Ent { hp: i32 }
+
+func main() {
+    mut v = Vec.new()
+    v.push(Ent { hp: 10 })
+    v.push(Ent { hp: 20 })
+    v[0].hp = 99
+    v[1].hp += 5
+    print(v[0].hp)
+    print(v[1].hp)
+}

@@ -1,0 +1,15 @@
+// #402: `with pool[h] as e { e.f = v }` must write through to the pool on
+// native. The binding now aliases the pool slot pointer instead of copying the
+// element, so mutations persist. Native must match the interpreter.
+struct Ent { hp: i32, mp: i32 }
+
+func main() {
+    mut p = Pool.new()
+    const h = p.insert(Ent { hp: 100, mp: 50 })
+    with p[h] as e {
+        e.hp = 7
+        e.mp = e.hp + 1
+    }
+    print(p[h].hp)
+    print(p[h].mp)
+}

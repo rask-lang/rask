@@ -74,6 +74,22 @@ pub(crate) fn exit_on_comptime_errors(
     process::exit(1);
 }
 
+/// Show hidden-param pass diagnostics (CC8 ambiguity) and exit if any. The pass
+/// runs before monomorphization, so a context error stops the build here.
+pub(crate) fn exit_on_context_errors(
+    diags: &[rask_diagnostics::Diagnostic],
+    source_files: &[(std::path::PathBuf, String)],
+) {
+    if diags.is_empty() {
+        return;
+    }
+    for d in diags {
+        crate::show_diagnostic_multi(d, source_files);
+    }
+    eprintln!("{}", output::banner_fail("Context", diags.len()));
+    process::exit(1);
+}
+
 /// Dump monomorphization output for a single file.
 pub fn cmd_mono(path: &str, format: Format) {
     let (mono, _typed, _decls, _comptime_globals, _source, _package_names) = run_pipeline(path, format);

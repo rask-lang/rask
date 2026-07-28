@@ -3,8 +3,8 @@
 //! CC7: Private function context inference from handle field access.
 //! CC8: Ambiguity detection (multiple pools of same type in scope).
 //!
-//! CC9 (immediate closure context inheritance) and CC10 (storable closure
-//! exclusion) are not implemented — see #420.
+//! CC9 (inline closures inherit the enclosing context) and CC10 (storable
+//! closures resolve only from their own params, else error) live in `rewrite`.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind};

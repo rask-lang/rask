@@ -504,10 +504,16 @@ fn finalize_compile(
     };
 
     // --- Hidden parameter desugaring ---
-    rask_mir::hidden_params::desugar_hidden_params_with_types(
+    // CC8 ambiguity surfaces here as a pipeline diagnostic; a hard error stops
+    // the build before monomorphization, like any other pass.
+    let hp_diags = rask_mir::hidden_params::desugar_hidden_params_with_types(
         &mut check.decls,
         Some(&check.typed),
     );
+    if !hp_diags.is_empty() {
+        diags.extend(hp_diags);
+        return PipelineOutput::fail_with_sources(diags, pkg_source_files);
+    }
 
     // --- Derive synthetic method bodies (compare, etc.) ---
     derive::generate_derived_methods(&mut check.decls, &check.typed);
