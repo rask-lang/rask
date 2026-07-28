@@ -126,8 +126,12 @@ pub(crate) struct HiddenParamPass<'a> {
     /// The type checker's output — recorded call targets, symbols, and type
     /// table. The single source of truth for which function a call resolves to.
     pub typed: Option<&'a rask_types::TypedProgram>,
-    /// Diagnostics raised during the pass (CC8 ambiguity).
+    /// Diagnostics raised during the pass (CC8 ambiguity, CC10 closures).
     pub diagnostics: Vec<Diagnostic>,
+    /// CC10: when rewriting a storable closure's body, its own pool-typed
+    /// parameters. `Some` means contexts must resolve from these — the closure
+    /// can outlive the enclosing pool scope, so it can't inherit ambient ones.
+    pub storable_closure: Option<Vec<(String, Type)>>,
     /// Fresh NodeId counter (high range to avoid parser collisions).
     pub next_id: u32,
 }
@@ -142,6 +146,7 @@ impl<'a> HiddenParamPass<'a> {
             struct_fields: HashMap::new(),
             typed,
             diagnostics: Vec::new(),
+            storable_closure: None,
             next_id: 2_000_000,
         }
     }

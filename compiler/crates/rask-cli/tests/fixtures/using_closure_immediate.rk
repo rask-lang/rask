@@ -1,0 +1,23 @@
+// mem.context/CC9: an inline (immediate) closure passed straight as an argument
+// inherits the enclosing function's Pool<Player> context. `run` has the context;
+// the callback `|hh| { damage(hh) }` captures it and `damage` reads the pool.
+// Native must match the interpreter.
+struct Player { health: i32 }
+
+func damage(h: Handle<Player>) using players: Pool<Player> {
+    print(players[h].health)
+}
+
+func apply(h: Handle<Player>, f: |Handle<Player>|) {
+    f(h)
+}
+
+func run(h: Handle<Player>) using players: Pool<Player> {
+    apply(h, |hh| { damage(hh) })
+}
+
+func main() {
+    mut players = Pool<Player>.new()
+    const h = players.insert(Player { health: 100 })
+    run(h)
+}

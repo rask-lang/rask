@@ -124,7 +124,14 @@ fn rewrite_stmt(pass: &mut HiddenParamPass, caller: &str, stmt: &mut Stmt) {
     match &mut stmt.kind {
         StmtKind::Expr(e) => rewrite_expr(pass, caller, e),
         StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
-            rewrite_expr(pass, caller, init);
+            // CC10: a closure bound to a name is storable — it can escape the
+            // enclosing pool scope. Rewrite its body under the storable rule so
+            // contexts resolve from the closure's own params, not ambient ones.
+            if matches!(&init.kind, ExprKind::Closure { .. }) {
+                rewrite_storable_closure(pass, caller, init);
+            } else {
+                rewrite_expr(pass, caller, init);
+            }
         }
         StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
             rewrite_expr(pass, caller, init);
@@ -383,6 +390,26 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
     }
 }
 
+/// CC10: rewrite a storable closure's body. Contexts inside resolve only from
+/// the closure's own pool-typed parameters — it may outlive the enclosing pool
+/// scope, so it can't capture ambient contexts. A needed context with no
+/// matching param is a CC10 error (raised in `resolve_arg_kind`).
+fn rewrite_storable_closure(pass: &mut HiddenParamPass, caller: &str, init: &mut Expr) {
+    let params: Vec<(String, super::Type)> = match &init.kind {
+        ExprKind::Closure { params, .. } => params
+            .iter()
+            .filter_map(|p| Some((p.name.clone(), pass.parse_ty(p.ty.as_ref()?)?)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    // Save/restore so nested closures don't clobber the outer state.
+    let prev = pass.storable_closure.replace(params);
+    if let ExprKind::Closure { body, .. } = &mut init.kind {
+        rewrite_expr(pass, caller, body);
+    }
+    pass.storable_closure = prev;
+}
+
 /// CALL3: append the hidden context arguments a callee requires to `args`,
 /// resolving each from the caller's scope (CC4). Shared by free calls and
 /// method calls — both identify their callee by the recorded dispatch target.
@@ -431,6 +458,17 @@ fn resolve_arg_kind(
     req: &super::ContextReq,
     call_span: Span,
 ) -> ExprKind {
+    // CC10: a storable closure resolves contexts only from its own params; it
+    // cannot inherit the enclosing function's ambient pools.
+    if let Some(params) = pass.storable_closure.clone() {
+        if let Some((name, _)) = params.iter().find(|(_, ty)| ty == &req.clause_type) {
+            return ExprKind::Ident(name.clone());
+        }
+        let diag = cc10_needs_explicit(pass, &req.clause_type, call_span);
+        pass.diagnostics.push(diag);
+        return ExprKind::Ident(req.param_name.clone());
+    }
+
     if caller.is_empty() {
         return ExprKind::Ident(req.param_name.clone());
     }
@@ -493,4 +531,29 @@ fn cc8_ambiguous(
              directly (e.g. `{}[h]`) instead of relying on auto-resolution.",
             names.first().map(String::as_str).unwrap_or("pool")
         ))
+}
+
+/// Build the CC10 "storable closure can't auto-resolve" diagnostic: a named
+/// closure needs a pool context it doesn't take as a parameter.
+fn cc10_needs_explicit(
+    pass: &HiddenParamPass,
+    clause_type: &super::Type,
+    call_span: Span,
+) -> rask_diagnostics::Diagnostic {
+    use rask_diagnostics::Diagnostic;
+    let pool = pass.type_to_source(clause_type);
+    Diagnostic::error(format!(
+        "storable closure cannot auto-resolve {pool} context"
+    ))
+    .with_code("mem.context/CC10")
+    .with_primary(call_span, format!("needs {pool}, but the closure can't inherit it"))
+    .with_why(
+        "A closure bound to a name can outlive the scope that owns the pool, so \
+         it can't capture an ambient context the way an inline callback does."
+            .to_string(),
+    )
+    .with_fix(format!(
+        "Take the pool as an explicit closure parameter, e.g. \
+         `|pool: {pool}, h| ...`, and pass it in at each call."
+    ))
 }

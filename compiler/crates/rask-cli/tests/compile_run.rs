@@ -463,6 +463,20 @@ fn using_pool_self_field_native_eq_interp() {
     assert_native_eq_interp("using_pool_self_field.rk", "7");
 }
 
+// mem.context/CC9: an inline closure passed as an argument inherits the
+// enclosing function's pool context.
+#[test]
+fn using_closure_immediate_native_eq_interp() {
+    assert_native_eq_interp("using_closure_immediate.rk", "100");
+}
+
+// mem.context/CC10: a storable closure can still take the pool as an explicit
+// param — that resolves the callee's context without inheritance.
+#[test]
+fn using_closure_storable_ok_native_eq_interp() {
+    assert_native_eq_interp("using_closure_storable_ok.rk", "100");
+}
+
 #[test]
 fn dispatch_map_native_eq_interp() {
     assert_native_eq_interp("dispatch_map.rk", "3\ntrue\n2\nfalse\n2\n");
@@ -620,6 +634,15 @@ fn error_context_ambiguous_cc8() {
         out.contains("ambiguous context"),
         "should name the ambiguity, not a var lookup failure: {}", out,
     );
+}
+
+#[test]
+fn error_context_closure_storable_cc10() {
+    // mem.context/CC10: a storable closure needing a pool context it doesn't
+    // take as a parameter is rejected — it can't inherit ambient contexts.
+    let (failed, out) = compile_error_output("context_closure_storable.rk");
+    assert!(failed, "storable closure needing context must be rejected: {}", out);
+    assert!(out.contains("CC10"), "should carry the CC10 code: {}", out);
 }
 
 #[test]

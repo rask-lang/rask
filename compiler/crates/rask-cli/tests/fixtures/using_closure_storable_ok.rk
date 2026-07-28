@@ -1,0 +1,16 @@
+// mem.context/CC10: a storable closure (bound to `cb`) can't inherit ambient
+// contexts, but it may take the pool as an explicit parameter. Here `damage`'s
+// Pool<Player> context resolves to the closure's own `pool` param, so it
+// compiles and runs on both backends.
+struct Player { health: i32 }
+
+func damage(h: Handle<Player>) using players: Pool<Player> {
+    print(players[h].health)
+}
+
+func main() {
+    mut players = Pool<Player>.new()
+    const h = players.insert(Player { health: 100 })
+    const cb = |pool: Pool<Player>, hh: Handle<Player>| { damage(hh) }
+    cb(players, h)
+}
