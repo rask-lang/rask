@@ -477,6 +477,13 @@ fn with_pool_writeback_native_eq_interp() {
     assert_native_eq_interp("with_pool_writeback.rk", "78");
 }
 
+// #411: field store into a Vec element (`v[i].hp = v`, `+=`) persists on native
+// via read-modify-writeback.
+#[test]
+fn vec_elem_field_store_native_eq_interp() {
+    assert_native_eq_interp("vec_elem_field_store.rk", "9925");
+}
+
 // comp.hidden-params/CALL2: a pool held in `self.players` resolves as a hidden
 // context arg (lowered as a field access) for a free callee.
 #[test]
