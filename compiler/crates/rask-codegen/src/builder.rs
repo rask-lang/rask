@@ -1875,176 +1875,7 @@ impl<'a> FunctionBuilder<'a> {
                 Self::lower_operand_typed(builder, op, expected_ty, ctx)
             }
 
-            MirRValue::BinaryOp { op, left, right } => {
-                let is_comparison = matches!(op,
-                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
-                );
-
-                let operand_ty = if is_comparison { None } else { expected_ty };
-                let lhs_val = Self::lower_operand_typed(builder, left, operand_ty, ctx)?;
-                let lhs_ty = builder.func.dfg.value_type(lhs_val);
-                let rhs_val = Self::lower_operand_typed(builder, right, Some(lhs_ty), ctx)?;
-                let rhs_ty = builder.func.dfg.value_type(rhs_val);
-
-                let is_float = lhs_ty.is_float() || rhs_ty.is_float();
-
-                // Check if the left operand has an unsigned MIR type
-                let is_unsigned = Self::operand_mir_type(left, ctx.locals)
-                    .map(|t| t.is_unsigned())
-                    .unwrap_or(false);
-
-                // Reconcile operand types
-                let (lhs_val, rhs_val) = if lhs_ty == rhs_ty {
-                    (lhs_val, rhs_val)
-                } else if lhs_ty.is_int() && rhs_ty.is_int() {
-                    // Widen narrower integer
-                    if lhs_ty.bits() < rhs_ty.bits() {
-                        (Self::convert_value(builder, lhs_val, lhs_ty, rhs_ty), rhs_val)
-                    } else {
-                        (lhs_val, Self::convert_value(builder, rhs_val, rhs_ty, lhs_ty))
-                    }
-                } else if lhs_ty.is_float() && rhs_ty.is_float() {
-                    // Promote narrower float
-                    if lhs_ty.bits() < rhs_ty.bits() {
-                        (builder.ins().fpromote(rhs_ty, lhs_val), rhs_val)
-                    } else {
-                        (lhs_val, builder.ins().fpromote(lhs_ty, rhs_val))
-                    }
-                } else if lhs_ty.is_int() && rhs_ty.is_float() {
-                    // Convert int to float to match rhs
-                    (builder.ins().fcvt_from_sint(rhs_ty, lhs_val), rhs_val)
-                } else if lhs_ty.is_float() && rhs_ty.is_int() {
-                    // Convert int to float to match lhs
-                    (lhs_val, builder.ins().fcvt_from_sint(lhs_ty, rhs_val))
-                } else {
-                    (lhs_val, rhs_val)
-                };
-
-                let result = if is_float {
-                    match op {
-                        BinOp::Add => builder.ins().fadd(lhs_val, rhs_val),
-                        BinOp::Sub => builder.ins().fsub(lhs_val, rhs_val),
-                        BinOp::Mul => builder.ins().fmul(lhs_val, rhs_val),
-                        BinOp::Div => builder.ins().fdiv(lhs_val, rhs_val),
-                        BinOp::Mod => {
-                            // fmod: a - trunc(a/b) * b
-                            let div = builder.ins().fdiv(lhs_val, rhs_val);
-                            let trunc = builder.ins().trunc(div);
-                            let prod = builder.ins().fmul(trunc, rhs_val);
-                            builder.ins().fsub(lhs_val, prod)
-                        }
-                        BinOp::Eq => builder.ins().fcmp(FloatCC::Equal, lhs_val, rhs_val),
-                        BinOp::Ne => builder.ins().fcmp(FloatCC::NotEqual, lhs_val, rhs_val),
-                        BinOp::Lt => builder.ins().fcmp(FloatCC::LessThan, lhs_val, rhs_val),
-                        BinOp::Le => builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_val, rhs_val),
-                        BinOp::Gt => builder.ins().fcmp(FloatCC::GreaterThan, lhs_val, rhs_val),
-                        BinOp::Ge => builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lhs_val, rhs_val),
-                        BinOp::And => builder.ins().band(lhs_val, rhs_val),
-                        BinOp::Or => builder.ins().bor(lhs_val, rhs_val),
-                        _ => return Err(CodegenError::UnsupportedFeature(format!("Bitwise op {:?} not valid on floats", op))),
-                    }
-                } else {
-                    // Checked integer arithmetic (type.overflow OV1–OV4, SH1).
-                    // The *_overflow instructions give a result + overflow flag;
-                    // div/shift guards branch to a panic block. Type is the
-                    // reconciled operand type, so checks are width-correct.
-                    let int_ty = builder.func.dfg.value_type(lhs_val);
-                    match op {
-                        BinOp::Add => {
-                            let (res, of) = if is_unsigned {
-                                builder.ins().uadd_overflow(lhs_val, rhs_val)
-                            } else {
-                                builder.ins().sadd_overflow(lhs_val, rhs_val)
-                            };
-                            Self::guard_overflow(builder, ctx, of, OV_ADD);
-                            res
-                        }
-                        BinOp::Sub => {
-                            let (res, of) = if is_unsigned {
-                                builder.ins().usub_overflow(lhs_val, rhs_val)
-                            } else {
-                                builder.ins().ssub_overflow(lhs_val, rhs_val)
-                            };
-                            Self::guard_overflow(builder, ctx, of, OV_SUB);
-                            res
-                        }
-                        BinOp::Mul => {
-                            let (res, of) = if is_unsigned {
-                                builder.ins().umul_overflow(lhs_val, rhs_val)
-                            } else {
-                                builder.ins().smul_overflow(lhs_val, rhs_val)
-                            };
-                            Self::guard_overflow(builder, ctx, of, OV_MUL);
-                            res
-                        }
-                        BinOp::Div if is_unsigned => {
-                            if let Some(k) = Self::const_power_of_two(right) {
-                                builder.ins().ushr_imm(lhs_val, k as i64)
-                            } else {
-                                Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
-                                builder.ins().udiv(lhs_val, rhs_val)
-                            }
-                        }
-                        BinOp::Div => {
-                            if let Some(k) = Self::const_power_of_two(right) {
-                                // Signed div by 2^k: (value + ((value >> 63) >>> (64-k))) >> k
-                                let bits = builder.func.dfg.value_type(lhs_val).bits() as i64;
-                                let sign = builder.ins().sshr_imm(lhs_val, bits - 1);
-                                let correction = builder.ins().ushr_imm(sign, bits - k as i64);
-                                let adjusted = builder.ins().iadd(lhs_val, correction);
-                                builder.ins().sshr_imm(adjusted, k as i64)
-                            } else {
-                                Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
-                                Self::guard_div_overflow(builder, ctx, lhs_val, rhs_val, int_ty);
-                                builder.ins().sdiv(lhs_val, rhs_val)
-                            }
-                        }
-                        BinOp::Mod if is_unsigned => {
-                            if let Some(k) = Self::const_power_of_two(right) {
-                                let ty = builder.func.dfg.value_type(lhs_val);
-                                let mask = builder.ins().iconst(ty, (1i64 << k) - 1);
-                                builder.ins().band(lhs_val, mask)
-                            } else {
-                                Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
-                                builder.ins().urem(lhs_val, rhs_val)
-                            }
-                        }
-                        BinOp::Mod => {
-                            Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
-                            Self::guard_div_overflow(builder, ctx, lhs_val, rhs_val, int_ty);
-                            builder.ins().srem(lhs_val, rhs_val)
-                        }
-                        BinOp::BitAnd => builder.ins().band(lhs_val, rhs_val),
-                        BinOp::BitOr => builder.ins().bor(lhs_val, rhs_val),
-                        BinOp::BitXor => builder.ins().bxor(lhs_val, rhs_val),
-                        BinOp::Shl => {
-                            Self::guard_shift(builder, ctx, rhs_val, int_ty);
-                            builder.ins().ishl(lhs_val, rhs_val)
-                        }
-                        BinOp::Shr if is_unsigned => {
-                            Self::guard_shift(builder, ctx, rhs_val, int_ty);
-                            builder.ins().ushr(lhs_val, rhs_val)
-                        }
-                        BinOp::Shr => {
-                            Self::guard_shift(builder, ctx, rhs_val, int_ty);
-                            builder.ins().sshr(lhs_val, rhs_val)
-                        }
-                        BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val),
-                        BinOp::Ne => builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val),
-                        BinOp::Lt if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThan, lhs_val, rhs_val),
-                        BinOp::Lt => builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val),
-                        BinOp::Le if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, lhs_val, rhs_val),
-                        BinOp::Le => builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val),
-                        BinOp::Gt if is_unsigned => builder.ins().icmp(IntCC::UnsignedGreaterThan, lhs_val, rhs_val),
-                        BinOp::Gt => builder.ins().icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val),
-                        BinOp::Ge if is_unsigned => builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, lhs_val, rhs_val),
-                        BinOp::Ge => builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val),
-                        BinOp::And => builder.ins().band(lhs_val, rhs_val),
-                        BinOp::Or => builder.ins().bor(lhs_val, rhs_val),
-                    }
-                };
-                Ok(result)
-            }
+            MirRValue::BinaryOp { op, left, right } => Self::lower_binary_op(builder, op, left, right, expected_ty, ctx),
 
             MirRValue::UnaryOp { op, operand } => {
                 let val = Self::lower_operand_typed(builder, operand, expected_ty, ctx)?;
@@ -2140,137 +1971,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Struct/enum field access: load from base pointer + field offset
-            MirRValue::Field { base, field_index, byte_offset, field_size } => {
-                let base_val = Self::lower_operand(builder, base, ctx)?;
-                let base_ty = Self::operand_mir_type(base, ctx.locals);
-                let mut load_ty = expected_ty.unwrap_or(types::I64);
-                let offset = match &base_ty {
-                    Some(MirType::Struct(id)) => {
-                        if let Some(layout) = ctx.struct_layouts.get(id.id as usize) {
-                            if let Some(field) = layout.fields.get(*field_index as usize) {
-                                // Aggregate field: return pointer into parent struct.
-                                // Covers both >8-byte structs and ≤8-byte enums/structs
-                                // that use stack-slot representation in codegen.
-                                if field.size > 8 || Self::is_aggregate_field_type(&field.ty) {
-                                    let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
-                                    return Ok(addr);
-                                }
-                                // Scalar field. Layout uses 8-byte slots; load at storage
-                                // width to avoid reading wrong bytes (e.g. lower f64 half).
-                                load_ty = match &field.ty {
-                                    RaskType::F64 | RaskType::F32 => types::F64,
-                                    _ => types::I64,
-                                };
-                                field.offset as i32
-                            } else {
-                                0
-                            }
-                        } else {
-                            0
-                        }
-                    }
-                    Some(MirType::Enum(id)) => {
-                        // Prefer the exact payload offset match_lower computed for this
-                        // arm's variant. Guessing "first variant with enough fields"
-                        // picks the wrong payload shape when variants differ at the same
-                        // field index (e.g. Pos(Pt) vs Scalar(i32)). An aggregate payload
-                        // returns a pointer via the field_size > 8 check below (#347).
-                        if let Some(off) = byte_offset {
-                            *off as i32
-                        } else if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
-                            let variant = layout.variants.iter()
-                                .find(|v| v.fields.len() > *field_index as usize);
-                            match variant {
-                                Some(v) => (v.payload_offset + v.fields[*field_index as usize].offset) as i32,
-                                None => layout.variants.first()
-                                    .map(|v| v.payload_offset as i32)
-                                    .unwrap_or(0),
-                            }
-                        } else {
-                            0
-                        }
-                    }
-                    // Tuple: compute offset from element types, using actual
-                    // struct/enum layout sizes instead of MirType::size() fallbacks.
-                    Some(MirType::Tuple(fields)) => {
-                        let mut off = 0u32;
-                        for (i, f) in fields.iter().enumerate() {
-                            let (elem_size, elem_align) = Self::real_type_size_align(f, ctx);
-                            off = (off + elem_align - 1) & !(elem_align - 1);
-                            if i == *field_index as usize {
-                                // Aggregate element: return pointer, don't load scalar
-                                if elem_size > 8 || matches!(f, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)) {
-                                    let addr = builder.ins().iadd_imm(base_val, off as i64);
-                                    return Ok(addr);
-                                }
-                                break;
-                            }
-                            off += elem_size;
-                        }
-                        off as i32
-                    }
-                    // Option/Result: payload starts after tag.
-                    // MIR uses EnumTag for the tag; Field indices are payload-relative.
-                    Some(MirType::Option(inner)) => {
-                        // Aggregate payload (struct/enum/tuple/string): return address, not load
-                        if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String) {
-                            let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::PAYLOAD_OFFSET as i64);
-                            return Ok(payload_addr);
-                        }
-                        crate::layouts::PAYLOAD_OFFSET + (*field_index * 8) as i32
-                    }
-                    Some(MirType::Result { ok, err }) => {
-                        // Use explicit byte_offset when provided (e.g., origin field reads)
-                        if let Some(off) = byte_offset {
-                            *off as i32
-                        } else {
-                            // Aggregate payload (Ok or Err): return address, not load.
-                            // MIR uses field_index 0 for both Ok and Err payloads — check both.
-                            let is_aggregate = |t: &MirType| matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String);
-                            if *field_index == 0 && (is_aggregate(ok.as_ref()) || is_aggregate(err.as_ref())) {
-                                let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::RESULT_PAYLOAD_OFFSET as i64);
-                                // If the caller expects a scalar (non-I64), this is a scalar
-                                // payload extraction (e.g., Ok value from Result<I32, SomeEnum>).
-                                // Load from the payload address instead of returning the address.
-                                // Without this, convert_value would truncate the address to I32.
-                                if let Some(exp) = expected_ty {
-                                    if exp != types::I64 {
-                                        let loaded = builder.ins().load(exp, MemFlags::new(), payload_addr, 0);
-                                        return Ok(loaded);
-                                    }
-                                }
-                                return Ok(payload_addr);
-                            }
-                            crate::layouts::RESULT_PAYLOAD_OFFSET + (*field_index * 8) as i32
-                        }
-                    }
-                    // Fallback: use pre-computed byte offset from MIR when available
-                    _ => byte_offset.map(|o| o as i32).unwrap_or((*field_index * 8) as i32)
-                };
-
-                // Aggregate field (embedded struct, size > 8): return pointer, don't load
-                if field_size.map_or(false, |s| s > 8) {
-                    let addr = builder.ins().iadd_imm(base_val, offset as i64);
-                    return Ok(addr);
-                }
-
-                let flags = MemFlags::new();
-                let loaded = builder.ins().load(load_ty, flags, base_val, offset);
-
-                // Narrow from storage type to declared type when needed.
-                // E.g., f32 field stored as f64 in 8-byte slot → fdemote.
-                let result = if let Some(exp) = expected_ty {
-                    let loaded_ty = builder.func.dfg.value_type(loaded);
-                    if loaded_ty != exp {
-                        Self::convert_value(builder, loaded, loaded_ty, exp)
-                    } else {
-                        loaded
-                    }
-                } else {
-                    loaded
-                };
-                Ok(result)
-            }
+            MirRValue::Field { base, field_index, byte_offset, field_size } => Self::field_address_and_load(builder, base, field_index, byte_offset, field_size, expected_ty, ctx),
 
             // Enum discriminant extraction: load tag byte from base pointer
             MirRValue::EnumTag { value } => {
@@ -2932,6 +2633,324 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
         Ok(())
+    }
+
+    fn lower_binary_op(
+        builder: &mut ClifFunctionBuilder,
+        op: &BinOp,
+        left: &MirOperand,
+        right: &MirOperand,
+        expected_ty: Option<Type>,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Value> {
+        let is_comparison = matches!(op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        );
+
+        let operand_ty = if is_comparison { None } else { expected_ty };
+        let lhs_val = Self::lower_operand_typed(builder, left, operand_ty, ctx)?;
+        let lhs_ty = builder.func.dfg.value_type(lhs_val);
+        let rhs_val = Self::lower_operand_typed(builder, right, Some(lhs_ty), ctx)?;
+        let rhs_ty = builder.func.dfg.value_type(rhs_val);
+
+        let is_float = lhs_ty.is_float() || rhs_ty.is_float();
+
+        // Check if the left operand has an unsigned MIR type
+        let is_unsigned = Self::operand_mir_type(left, ctx.locals)
+            .map(|t| t.is_unsigned())
+            .unwrap_or(false);
+
+        // Reconcile operand types
+        let (lhs_val, rhs_val) = if lhs_ty == rhs_ty {
+            (lhs_val, rhs_val)
+        } else if lhs_ty.is_int() && rhs_ty.is_int() {
+            // Widen narrower integer
+            if lhs_ty.bits() < rhs_ty.bits() {
+                (Self::convert_value(builder, lhs_val, lhs_ty, rhs_ty), rhs_val)
+            } else {
+                (lhs_val, Self::convert_value(builder, rhs_val, rhs_ty, lhs_ty))
+            }
+        } else if lhs_ty.is_float() && rhs_ty.is_float() {
+            // Promote narrower float
+            if lhs_ty.bits() < rhs_ty.bits() {
+                (builder.ins().fpromote(rhs_ty, lhs_val), rhs_val)
+            } else {
+                (lhs_val, builder.ins().fpromote(lhs_ty, rhs_val))
+            }
+        } else if lhs_ty.is_int() && rhs_ty.is_float() {
+            // Convert int to float to match rhs
+            (builder.ins().fcvt_from_sint(rhs_ty, lhs_val), rhs_val)
+        } else if lhs_ty.is_float() && rhs_ty.is_int() {
+            // Convert int to float to match lhs
+            (lhs_val, builder.ins().fcvt_from_sint(lhs_ty, rhs_val))
+        } else {
+            (lhs_val, rhs_val)
+        };
+
+        let result = if is_float {
+            match op {
+                BinOp::Add => builder.ins().fadd(lhs_val, rhs_val),
+                BinOp::Sub => builder.ins().fsub(lhs_val, rhs_val),
+                BinOp::Mul => builder.ins().fmul(lhs_val, rhs_val),
+                BinOp::Div => builder.ins().fdiv(lhs_val, rhs_val),
+                BinOp::Mod => {
+                    // fmod: a - trunc(a/b) * b
+                    let div = builder.ins().fdiv(lhs_val, rhs_val);
+                    let trunc = builder.ins().trunc(div);
+                    let prod = builder.ins().fmul(trunc, rhs_val);
+                    builder.ins().fsub(lhs_val, prod)
+                }
+                BinOp::Eq => builder.ins().fcmp(FloatCC::Equal, lhs_val, rhs_val),
+                BinOp::Ne => builder.ins().fcmp(FloatCC::NotEqual, lhs_val, rhs_val),
+                BinOp::Lt => builder.ins().fcmp(FloatCC::LessThan, lhs_val, rhs_val),
+                BinOp::Le => builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_val, rhs_val),
+                BinOp::Gt => builder.ins().fcmp(FloatCC::GreaterThan, lhs_val, rhs_val),
+                BinOp::Ge => builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lhs_val, rhs_val),
+                BinOp::And => builder.ins().band(lhs_val, rhs_val),
+                BinOp::Or => builder.ins().bor(lhs_val, rhs_val),
+                _ => return Err(CodegenError::UnsupportedFeature(format!("Bitwise op {:?} not valid on floats", op))),
+            }
+        } else {
+            // Checked integer arithmetic (type.overflow OV1–OV4, SH1).
+            // The *_overflow instructions give a result + overflow flag;
+            // div/shift guards branch to a panic block. Type is the
+            // reconciled operand type, so checks are width-correct.
+            let int_ty = builder.func.dfg.value_type(lhs_val);
+            match op {
+                BinOp::Add => {
+                    let (res, of) = if is_unsigned {
+                        builder.ins().uadd_overflow(lhs_val, rhs_val)
+                    } else {
+                        builder.ins().sadd_overflow(lhs_val, rhs_val)
+                    };
+                    Self::guard_overflow(builder, ctx, of, OV_ADD);
+                    res
+                }
+                BinOp::Sub => {
+                    let (res, of) = if is_unsigned {
+                        builder.ins().usub_overflow(lhs_val, rhs_val)
+                    } else {
+                        builder.ins().ssub_overflow(lhs_val, rhs_val)
+                    };
+                    Self::guard_overflow(builder, ctx, of, OV_SUB);
+                    res
+                }
+                BinOp::Mul => {
+                    let (res, of) = if is_unsigned {
+                        builder.ins().umul_overflow(lhs_val, rhs_val)
+                    } else {
+                        builder.ins().smul_overflow(lhs_val, rhs_val)
+                    };
+                    Self::guard_overflow(builder, ctx, of, OV_MUL);
+                    res
+                }
+                BinOp::Div if is_unsigned => {
+                    if let Some(k) = Self::const_power_of_two(right) {
+                        builder.ins().ushr_imm(lhs_val, k as i64)
+                    } else {
+                        Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
+                        builder.ins().udiv(lhs_val, rhs_val)
+                    }
+                }
+                BinOp::Div => {
+                    if let Some(k) = Self::const_power_of_two(right) {
+                        // Signed div by 2^k: (value + ((value >> 63) >>> (64-k))) >> k
+                        let bits = builder.func.dfg.value_type(lhs_val).bits() as i64;
+                        let sign = builder.ins().sshr_imm(lhs_val, bits - 1);
+                        let correction = builder.ins().ushr_imm(sign, bits - k as i64);
+                        let adjusted = builder.ins().iadd(lhs_val, correction);
+                        builder.ins().sshr_imm(adjusted, k as i64)
+                    } else {
+                        Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
+                        Self::guard_div_overflow(builder, ctx, lhs_val, rhs_val, int_ty);
+                        builder.ins().sdiv(lhs_val, rhs_val)
+                    }
+                }
+                BinOp::Mod if is_unsigned => {
+                    if let Some(k) = Self::const_power_of_two(right) {
+                        let ty = builder.func.dfg.value_type(lhs_val);
+                        let mask = builder.ins().iconst(ty, (1i64 << k) - 1);
+                        builder.ins().band(lhs_val, mask)
+                    } else {
+                        Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
+                        builder.ins().urem(lhs_val, rhs_val)
+                    }
+                }
+                BinOp::Mod => {
+                    Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
+                    Self::guard_div_overflow(builder, ctx, lhs_val, rhs_val, int_ty);
+                    builder.ins().srem(lhs_val, rhs_val)
+                }
+                BinOp::BitAnd => builder.ins().band(lhs_val, rhs_val),
+                BinOp::BitOr => builder.ins().bor(lhs_val, rhs_val),
+                BinOp::BitXor => builder.ins().bxor(lhs_val, rhs_val),
+                BinOp::Shl => {
+                    Self::guard_shift(builder, ctx, rhs_val, int_ty);
+                    builder.ins().ishl(lhs_val, rhs_val)
+                }
+                BinOp::Shr if is_unsigned => {
+                    Self::guard_shift(builder, ctx, rhs_val, int_ty);
+                    builder.ins().ushr(lhs_val, rhs_val)
+                }
+                BinOp::Shr => {
+                    Self::guard_shift(builder, ctx, rhs_val, int_ty);
+                    builder.ins().sshr(lhs_val, rhs_val)
+                }
+                BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val),
+                BinOp::Ne => builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val),
+                BinOp::Lt if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThan, lhs_val, rhs_val),
+                BinOp::Lt => builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val),
+                BinOp::Le if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, lhs_val, rhs_val),
+                BinOp::Le => builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val),
+                BinOp::Gt if is_unsigned => builder.ins().icmp(IntCC::UnsignedGreaterThan, lhs_val, rhs_val),
+                BinOp::Gt => builder.ins().icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val),
+                BinOp::Ge if is_unsigned => builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, lhs_val, rhs_val),
+                BinOp::Ge => builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val),
+                BinOp::And => builder.ins().band(lhs_val, rhs_val),
+                BinOp::Or => builder.ins().bor(lhs_val, rhs_val),
+            }
+        };
+        Ok(result)
+    }
+
+    fn field_address_and_load(
+        builder: &mut ClifFunctionBuilder,
+        base: &MirOperand,
+        field_index: &u32,
+        byte_offset: &Option<u32>,
+        field_size: &Option<u32>,
+        expected_ty: Option<Type>,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Value> {
+        let base_val = Self::lower_operand(builder, base, ctx)?;
+        let base_ty = Self::operand_mir_type(base, ctx.locals);
+        let mut load_ty = expected_ty.unwrap_or(types::I64);
+        let offset = match &base_ty {
+            Some(MirType::Struct(id)) => {
+                if let Some(layout) = ctx.struct_layouts.get(id.id as usize) {
+                    if let Some(field) = layout.fields.get(*field_index as usize) {
+                        // Aggregate field: return pointer into parent struct.
+                        // Covers both >8-byte structs and ≤8-byte enums/structs
+                        // that use stack-slot representation in codegen.
+                        if field.size > 8 || Self::is_aggregate_field_type(&field.ty) {
+                            let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
+                            return Ok(addr);
+                        }
+                        // Scalar field. Layout uses 8-byte slots; load at storage
+                        // width to avoid reading wrong bytes (e.g. lower f64 half).
+                        load_ty = match &field.ty {
+                            RaskType::F64 | RaskType::F32 => types::F64,
+                            _ => types::I64,
+                        };
+                        field.offset as i32
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+            Some(MirType::Enum(id)) => {
+                // Prefer the exact payload offset match_lower computed for this
+                // arm's variant. Guessing "first variant with enough fields"
+                // picks the wrong payload shape when variants differ at the same
+                // field index (e.g. Pos(Pt) vs Scalar(i32)). An aggregate payload
+                // returns a pointer via the field_size > 8 check below (#347).
+                if let Some(off) = byte_offset {
+                    *off as i32
+                } else if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
+                    let variant = layout.variants.iter()
+                        .find(|v| v.fields.len() > *field_index as usize);
+                    match variant {
+                        Some(v) => (v.payload_offset + v.fields[*field_index as usize].offset) as i32,
+                        None => layout.variants.first()
+                            .map(|v| v.payload_offset as i32)
+                            .unwrap_or(0),
+                    }
+                } else {
+                    0
+                }
+            }
+            // Tuple: compute offset from element types, using actual
+            // struct/enum layout sizes instead of MirType::size() fallbacks.
+            Some(MirType::Tuple(fields)) => {
+                let mut off = 0u32;
+                for (i, f) in fields.iter().enumerate() {
+                    let (elem_size, elem_align) = Self::real_type_size_align(f, ctx);
+                    off = (off + elem_align - 1) & !(elem_align - 1);
+                    if i == *field_index as usize {
+                        // Aggregate element: return pointer, don't load scalar
+                        if elem_size > 8 || matches!(f, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)) {
+                            let addr = builder.ins().iadd_imm(base_val, off as i64);
+                            return Ok(addr);
+                        }
+                        break;
+                    }
+                    off += elem_size;
+                }
+                off as i32
+            }
+            // Option/Result: payload starts after tag.
+            // MIR uses EnumTag for the tag; Field indices are payload-relative.
+            Some(MirType::Option(inner)) => {
+                // Aggregate payload (struct/enum/tuple/string): return address, not load
+                if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String) {
+                    let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::PAYLOAD_OFFSET as i64);
+                    return Ok(payload_addr);
+                }
+                crate::layouts::PAYLOAD_OFFSET + (*field_index * 8) as i32
+            }
+            Some(MirType::Result { ok, err }) => {
+                // Use explicit byte_offset when provided (e.g., origin field reads)
+                if let Some(off) = byte_offset {
+                    *off as i32
+                } else {
+                    // Aggregate payload (Ok or Err): return address, not load.
+                    // MIR uses field_index 0 for both Ok and Err payloads — check both.
+                    let is_aggregate = |t: &MirType| matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String);
+                    if *field_index == 0 && (is_aggregate(ok.as_ref()) || is_aggregate(err.as_ref())) {
+                        let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::RESULT_PAYLOAD_OFFSET as i64);
+                        // If the caller expects a scalar (non-I64), this is a scalar
+                        // payload extraction (e.g., Ok value from Result<I32, SomeEnum>).
+                        // Load from the payload address instead of returning the address.
+                        // Without this, convert_value would truncate the address to I32.
+                        if let Some(exp) = expected_ty {
+                            if exp != types::I64 {
+                                let loaded = builder.ins().load(exp, MemFlags::new(), payload_addr, 0);
+                                return Ok(loaded);
+                            }
+                        }
+                        return Ok(payload_addr);
+                    }
+                    crate::layouts::RESULT_PAYLOAD_OFFSET + (*field_index * 8) as i32
+                }
+            }
+            // Fallback: use pre-computed byte offset from MIR when available
+            _ => byte_offset.map(|o| o as i32).unwrap_or((*field_index * 8) as i32)
+        };
+
+        // Aggregate field (embedded struct, size > 8): return pointer, don't load
+        if field_size.map_or(false, |s| s > 8) {
+            let addr = builder.ins().iadd_imm(base_val, offset as i64);
+            return Ok(addr);
+        }
+
+        let flags = MemFlags::new();
+        let loaded = builder.ins().load(load_ty, flags, base_val, offset);
+
+        // Narrow from storage type to declared type when needed.
+        // E.g., f32 field stored as f64 in 8-byte slot → fdemote.
+        let result = if let Some(exp) = expected_ty {
+            let loaded_ty = builder.func.dfg.value_type(loaded);
+            if loaded_ty != exp {
+                Self::convert_value(builder, loaded, loaded_ty, exp)
+            } else {
+                loaded
+            }
+        } else {
+            loaded
+        };
+        Ok(result)
     }
 
     fn lower_terminator(
