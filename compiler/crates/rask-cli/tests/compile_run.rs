@@ -435,6 +435,19 @@ fn dispatch_vec_native_eq_interp() {
     assert_native_eq_interp("dispatch_vec.rk", "3\nfalse\n20\n30\n2\n");
 }
 
+// comp.hidden-params (#422): named `using Pool<T>` contexts must lower on
+// native — the SIG2 rewrite (hidden param + named alias + call-site arg) —
+// and read the pool element the same as the interpreter.
+#[test]
+fn using_pool_read_native_eq_interp() {
+    assert_native_eq_interp("using_pool_read.rk", "100");
+}
+
+#[test]
+fn using_pool_propagate_native_eq_interp() {
+    assert_native_eq_interp("using_pool_propagate.rk", "42");
+}
+
 #[test]
 fn dispatch_map_native_eq_interp() {
     assert_native_eq_interp("dispatch_map.rk", "3\ntrue\n2\nfalse\n2\n");

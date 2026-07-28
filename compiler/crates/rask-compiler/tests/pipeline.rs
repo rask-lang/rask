@@ -75,6 +75,37 @@ fn check_returns_typed_program_on_success() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn call_targets_records_free_and_method_dispatch() {
+    // CALL6 keystone (#425): the checker records the resolved target of every
+    // call once, keyed by the call node — a SymbolId for free functions and a
+    // (TypeId, method) pair for methods. Never a reconstructed name string.
+    use rask_types::Callee;
+    let path = tmp_rk(r#"
+        struct Counter { n: i32 }
+        extend Counter {
+            func bump(mutate self) { self.n = self.n + 1 }
+        }
+        func helper() -> i32 { return 7 }
+        func main() {
+            mut c = Counter { n: 0 }
+            c.bump()
+            const x = helper()
+        }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    let result = output.result.expect("expected success");
+    let targets = &result.typed.call_targets;
+
+    let has_free = targets.values().any(|c| matches!(c, Callee::Free(_)));
+    let has_method = targets
+        .values()
+        .any(|c| matches!(c, Callee::Method { method, .. } if method == "bump"));
+    assert!(has_free, "free call `helper()` should record a Callee::Free");
+    assert!(has_method, "method call `c.bump()` should record a Callee::Method{{..}}");
+    let _ = std::fs::remove_file(&path);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Error accumulation — the main novel contract
 // ═══════════════════════════════════════════════════════════════════════

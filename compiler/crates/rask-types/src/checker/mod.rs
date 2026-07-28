@@ -26,7 +26,7 @@ mod generics;
 mod resolve;
 mod validate;
 
-pub use type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram};
+pub use type_defs::{Callee, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, InvalidCastClass, IndexErrorKind};
@@ -96,6 +96,10 @@ pub struct TypeChecker {
     /// Pending generic call sites: (call NodeId, fresh type vars for type params).
     /// Resolved after constraint solving to populate TypedProgram.call_type_args.
     pub(super) pending_call_type_args: Vec<(NodeId, Vec<Type>)>,
+    /// CALL6: the function each call resolves to, keyed by the call's NodeId.
+    /// Free calls record here immediately; method calls record when their
+    /// `HasMethod` constraint resolves.
+    pub(super) call_targets: HashMap<NodeId, type_defs::Callee>,
     /// SymbolId → type param names for generic functions.
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
@@ -169,6 +173,7 @@ impl TypeChecker {
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
+            call_targets: HashMap::new(),
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
             pending_bound_checks: Vec::new(),
@@ -295,6 +300,7 @@ impl TypeChecker {
             types: self.types,
             node_types,
             call_type_args,
+            call_targets: self.call_targets,
             trait_coercions,
             unsafe_ops,
             span_types,

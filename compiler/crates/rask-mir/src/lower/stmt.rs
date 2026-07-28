@@ -754,6 +754,27 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Aliasing a variable (`const players = __ctx_players`) carries its type
+        // metadata forward, so pool/collection indexing on the alias still
+        // resolves. Used by the hidden-param pass's SIG2 named-context alias,
+        // and correct for any `const b = a` where `a` is a tracked container.
+        if let ExprKind::Ident(src) = &init.kind {
+            let carried = self.meta(src).map(|m| {
+                (m.type_prefix.clone(), m.full_type.clone(), m.elem_type.clone())
+            });
+            if let Some((prefix, full, elem)) = carried {
+                if let Some(p) = prefix {
+                    self.meta_mut(name).type_prefix = Some(p);
+                }
+                if let Some(f) = full {
+                    self.meta_mut(name).full_type = Some(f);
+                }
+                if let Some(e) = elem {
+                    self.meta_mut(name).elem_type = Some(e);
+                }
+            }
+        }
+
         // Fallback: derive prefix from the MIR type (catches String, Struct, Enum)
         // or from the type annotation string (catches Ptr types like Vec<T>, Map<K,V>)
         if self.meta(name).and_then(|m| m.type_prefix.as_ref()).is_none() {

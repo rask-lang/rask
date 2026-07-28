@@ -121,9 +121,10 @@ impl TypeChecker {
                 args,
                 ret,
                 span,
+                call_node,
             } => {
                 if matches!(self.ctx.apply(&ty), Type::Error) { return Ok(false); }
-                self.resolve_method(ty, method, args, ret, span)
+                self.resolve_method(ty, method, args, ret, span, call_node)
             }
             TypeConstraint::ReturnValue {
                 ret_ty,

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rask_ast::Span;
+use rask_ast::{NodeId, Span};
 
 use crate::types::{GenericArg, Type, TypeVarId};
 
@@ -28,6 +28,10 @@ pub enum TypeConstraint {
         args: Vec<Type>,
         ret: Type,
         span: Span,
+        /// CALL6: the MethodCall expression's NodeId, so the resolved target
+        /// can be recorded once dispatch settles. `None` for synthetic
+        /// constraints with no originating call node (e.g. union sub-checks).
+        call_node: Option<NodeId>,
     },
     /// Return value must match function return type, with auto-wrap into a
     /// sum type (T or E or T or none) when applicable. Defers wrapping
