@@ -31,6 +31,7 @@ fn dummy_value(type_name: &str) -> Value {
             free_list: vec![],
             len: 0,
             type_param: None,
+            capacity: None,
         }))),
         "Handle" => Value::Handle {
             pool_id: 0,
