@@ -1,0 +1,14 @@
+// #411: writing to a nested struct-field place (`ln.a.x = 50`) must persist on
+// native, not be dropped by materializing the intermediate field as a value
+// copy. Native must match the interpreter.
+struct Point { x: i32, y: i32 }
+struct Line { a: Point, b: Point }
+
+func main() {
+    mut ln = Line { a: Point { x: 3, y: 4 }, b: Point { x: 5, y: 6 } }
+    ln.a.x = 50
+    ln.b.y = 60
+    print(ln.a.x)
+    print(ln.b.y)
+    print(ln.a.y)
+}

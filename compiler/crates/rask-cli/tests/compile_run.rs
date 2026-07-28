@@ -456,6 +456,13 @@ fn using_pool_method_native_eq_interp() {
     assert_native_eq_interp("using_pool_method.rk", "5");
 }
 
+// #411: nested struct-field assignment (`ln.a.x = v`) persists on native — the
+// projected place stores into the base local instead of a value copy.
+#[test]
+fn nested_field_store_native_eq_interp() {
+    assert_native_eq_interp("nested_field_store.rk", "50604");
+}
+
 // comp.hidden-params/CALL2: a pool held in `self.players` resolves as a hidden
 // context arg (lowered as a field access) for a free callee.
 #[test]

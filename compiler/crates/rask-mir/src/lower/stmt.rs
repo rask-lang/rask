@@ -15,6 +15,43 @@ use rask_ast::{
 };
 
 impl<'a> MirLowerer<'a> {
+    /// Project a nested place (`base.f.g`, tuples included) to a base local plus
+    /// a byte offset, so an assignment stores straight into the base's storage
+    /// rather than materializing an intermediate field as a value copy — the
+    /// copy is what dropped `ln.a.x = v` on native (#411). Returns `None` for
+    /// anything not rooted at an aggregate local (pool index, Vec element,
+    /// function result), which the caller lowers separately.
+    fn lower_place_chain(&self, expr: &Expr) -> Option<(crate::LocalId, u32, MirType)> {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                let (id, ty) = self.locals.get(name).cloned()?;
+                match ty {
+                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty)),
+                    _ => None,
+                }
+            }
+            ExprKind::Field { object, field } => {
+                let (base, off, oty) = self.lower_place_chain(object)?;
+                let (foff, fty) = self.field_offset_ty(&oty, field)?;
+                Some((base, off + foff, fty))
+            }
+            _ => None,
+        }
+    }
+
+    /// Byte offset + MIR type of `field` within an aggregate MIR type.
+    fn field_offset_ty(&self, oty: &MirType, field: &str) -> Option<(u32, MirType)> {
+        if let MirType::Struct(StructLayoutId { id, .. }) = oty {
+            let layout = self.ctx.struct_layouts.get(*id as usize)?;
+            let fl = layout.fields.iter().find(|f| f.name == *field)?;
+            return Some((fl.offset, self.ctx.resolve_type_str(&format!("{}", fl.ty))));
+        }
+        if let Some((_, ety, Some(off), _)) = Self::resolve_tuple_field(oty, field) {
+            return Some((off, ety));
+        }
+        None
+    }
+
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
         self.builder.set_span(stmt.span);
         match &stmt.kind {
@@ -180,6 +217,19 @@ impl<'a> MirLowerer<'a> {
                     }
                     // Field assignment: obj.field = value → Store at field offset
                     ExprKind::Field { object, field } => {
+                        // #411: a place rooted at an aggregate local (`p.x`,
+                        // `ln.a.x`, tuple fields) projects straight to base+offset
+                        // as one store. This avoids loading an intermediate field
+                        // as a value copy and losing the write on native.
+                        if let Some((base, offset, _)) = self.lower_place_chain(target) {
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                addr: base,
+                                offset,
+                                value: val_op,
+                                store_size: None,
+                            }));
+                            return Ok(());
+                        }
                         let (obj_op, obj_ty) = self.lower_expr(object)?;
                         let offset = if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                             if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
