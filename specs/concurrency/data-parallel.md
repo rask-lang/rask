@@ -18,7 +18,7 @@ The whole design rests on one split: building the plan is free, running it is th
 | **C1: Staging is lazy** | Every `Wide[T]` operation returns a new `Wide[T]` (or a pending scalar) that records the operation. Nothing executes. No allocation on the device, no transfer, no compute. |
 | **C2: Commit runs it** | `.commit()` executes the entire staged plan on the context's backend, blocks until the device finishes, and returns the result to the host. This is the *only* place work happens. |
 | **C3: Staging is total, commit is fallible** | Staging cannot fail — it builds a graph. `commit` can (device out of memory, device lost, transfer error), so it returns `T or GpuError`. Errors surface at the commit line, never mid-staging. |
-| **C4: Fusion between commits** | The scheduler sees the whole plan at commit, so chained ops fuse into as few kernels as possible — intermediates never touch device memory. `xs.map(f).map(g).sum()` is one kernel, not three plus two temp buffers. |
+| **C4: Fusion is visible, not magic** | Chained ops fuse into as few kernels as possible — `xs.map(f).map(g).sum()` is one kernel, not three plus two temp buffers. But fusion is *inspectable* (via `explain`) and *steerable* (an explicit barrier forces a materialization point). It is never a hidden decision you can only discover from a profiler. See the Observability section. |
 | **C5: Commit is the transfer** | Upload (`.wide()`), compute, and download all happen inside the one `commit`. `.wide()` marks data to cross the bus (visible in source); the crossing executes at commit with everything else. |
 
 <!-- test: skip -->
@@ -45,17 +45,25 @@ The GPU can express *less* than the CPU — pure lane work, no recursion, no dyn
 
 | Rule | Description |
 |------|-------------|
-| **W1: Widths** | `using Simd` = one core's vector unit. `using ThreadPool` = cores. `using Gpu` = the device. `using Accelerated` = the widest available (GPU if present, else cores). |
-| **W2: Context picks the width, visibly** | The width is the `using` block at the top of the region — explicit, never inferred. `using Accelerated` is the one adaptive choice, and it too is named in the source, so degradation is never a silent surprise. |
-| **W3: One subset, checked once** | A plan type-checks against the GPU subset regardless of width. There is no per-backend capability matrix — a plan that is legal is legal on *all* widths. You never get "runs on cores but not GPU." Need more than the subset? Drop out of `Wide` into ordinary host Rask. |
-| **W4: CPU is baseline, not fallback** | Switching `using Gpu` → `using ThreadPool` is a one-line, always-valid change, *guaranteed* by the subset relation — not a degraded emergency path. |
-| **W5: CPU run is the reference semantics** | What a plan *means* is defined by its CPU execution. The GPU backend is correct iff it matches, modulo documented float reassociation in reductions (`type.simd/R2`). This gives a test oracle: run any plan on both widths and diff. |
+| **W1: Named widths pick a specific device** | `using Simd` = one core's vector unit. `using ThreadPool` = cores. `using Gpu` = the device. These name *where* the work runs — a guarantee, not a preference. |
+| **W2: `Accelerated` is a speed promise, not a device promise** | `using Accelerated` means "as fast as possible for this plan and size," *not* "run on the GPU." It may pick the GPU, cores, or even single-core SIMD for tiny inputs where launch overhead loses. You opt into not knowing the device in exchange for best-effort speed — and tooling reports which width it chose. |
+| **W3: The width is always named in source** | Whether you pick a specific device (W1) or the speed policy (W2), it's the `using` block at the top of the region — explicit, never inferred. |
+| **W4: One subset, checked once** | A plan type-checks against the GPU subset regardless of width. No per-backend capability matrix — legal is legal on *all* widths. You never get "runs on cores but not GPU." Need more than the subset? Drop out of `Wide` into ordinary host Rask. |
+| **W5: CPU is baseline, not fallback** | Switching `using Gpu` → `using ThreadPool` is a one-line, always-valid change, *guaranteed* by the subset relation — not a degraded emergency path. |
+| **W6: CPU run is the reference semantics** | What a plan *means* is defined by its CPU execution. The GPU backend is correct iff it matches, modulo documented float reassociation in reductions (`type.simd/R2`). This gives a test oracle: run any plan on both widths and diff. |
+
+**Runtime device control.** Device selection, memory budget, and stream count are *runtime* config on the context — exactly like `using Multitasking(workers: 4)` in `conc.async`. The kernels are compiled ahead of time; only the launch configuration is runtime:
+
+<!-- test: skip -->
+```rask
+using Gpu(device: 1, mem_limit: 4.GB) { … }   // pick GPU #1, cap device memory
+```
 
 The payoff is twofold. First, `using Simd` **is** today's `type.simd`, re-expressed — the narrowest width of one model, not a bolt-on; `Vec[T, N]` is the fixed-width, one-core corner of `Wide[T]`. Second, portability is *structural*, not hoped-for: because the subset is fixed by what the GPU can do, the question was never *can* the CPU run a plan (a superset always can) — only whether it runs it *fast*.
 
 ## The primitive algebra
 
-You express parallelism *only* through these primitives. Each has a known dependency structure, so the compiler never has to prove independence (see W3 in the old note — that was undecidable; here it's encoded in the operator).
+You express parallelism *only* through these primitives. Each has a known dependency structure, so the compiler never has to prove independence — proving it for arbitrary index code was the undecidable trap that sank v1; here the dependency structure is encoded in the operator instead.
 
 | Primitive | Shape | Cost class |
 |-----------|-------|-----------|
@@ -102,6 +110,36 @@ Two lanes writing the same index is the one place the algebra can't stay purely 
 
 This is the honest version of "no coloring." GPU *is* a colored domain — D1 admits it, on the data where it's true. What Rask avoids is *viral function coloring*: D2 keeps pure code uncolored and shareable. D4 is the cost — the constructs CUDA/SYCL would force you to annotate, Rask instead forbids inside a plan. That's a real restriction, stated out loud, not a claim that the fork doesn't exist.
 
+## Observability — see what it will do
+
+The Python accelerator experience — JAX, `torch.compile`, CuPy — is miserable for one reason: **the plan is hidden.** You can't see where things run, when they run, what fused, or how much memory a step needs, so when it's slow or out of memory you poke buttons and pray. Laziness gets the blame, but laziness isn't the culprit — *invisibility* is. SQL is lazy and heavily optimized and people debug enormous queries fine, because `EXPLAIN` makes the plan a first-class object. JAX is lazy and optimized and undebuggable, because the plan lives inside a JIT you can't open. Same laziness, opposite experience.
+
+Rask's plan is the SQL kind. Two structural facts make that possible:
+
+- **The plan is your data structure**, held before `commit`. It can be printed, measured, and diffed.
+- **Compilation is ahead-of-time** (D3). Kernels are built once, at build, into the binary — there is no runtime tracing and no shape-triggered recompilation. JAX's worst "why is it slow now" cause structurally cannot happen.
+
+| Rule | Description |
+|------|-------------|
+| **O1: `explain` a plan** | `plan.explain()` prints the plan without running it: the kernels it fuses into, where transfers happen, and the peak device-memory footprint as a formula over the input sizes (`peak = 3·N·4 B + …`). SQL's `EXPLAIN`, for kernels. |
+| **O2: Memory is accounted before launch** | `commit` computes the peak footprint from the plan and checks it against the budget *before* running anything. OOM is reported at the commit line, attributed to the stage that peaks — not surfaced from deep inside a fused kernel after partial work. |
+| **O3: Fusion is steerable** | Fusion boundaries are reported by `explain`. An explicit barrier forces a materialization point when you want to bound or inspect an intermediate. Contrast the profiler-trace archaeology of `fusion_1723`. |
+| **O4: Deterministic by construction** | No racing scatter (P8 requires a combining op) and stable kernel selection mean a plan's result and structure don't drift run-to-run. Fewer invisible variables when chasing "why is it different now." |
+
+```
+> pixels.map(shade).map(tonemap).reduce(max, 0.0).explain()
+
+plan (using Gpu, device 0)
+  upload   pixels          16.0 MB  ──┐
+  kernel#1 map shade          fused   │  one kernel, no intermediate buffer
+           map tonemap        fused   │
+           reduce max      ──────────┘  → scalar
+  download scalar             4 B
+  peak device memory: 32.0 MB   (input + one working buffer)
+```
+
+**The honest boundary.** This makes the *structure* transparent — where, when, what fused, how much memory, why an OOM. It does **not** make wall-clock time predictable; that's cache behavior, occupancy, and bandwidth — hardware physics no plan inspector can foretell. So performance *tuning* stays partly empirical. What dies is the structural mystery: you will never again be unable to answer "what is this doing, and how much is it using." That's the bounded, honest claim — not "no more profiling," but "no more flying blind."
+
 ## Escape hatch: explicit kernels
 
 The algebra covers the ~80% that decomposes into primitives. Hand-tuned kernels — custom shared-memory tiling, exotic access patterns — are the other 20%.
@@ -112,6 +150,20 @@ The algebra covers the ~80% that decomposes into primitives. Hand-tuned kernels 
 | **K2: You own the proof** | Inside a `kernel`, writing `out[lane]` from data other lanes also write is a data race the compiler will not catch. The block is where "I promise this is independent" lives, spelled out, like raw pointers. |
 
 The safe algebra is the main road; `kernel` is the labelled off-ramp. An undecidable independence check doesn't belong in the checked language — it belongs behind the same "I promise" boundary as `unsafe`.
+
+## What belongs in the language, and what doesn't
+
+No language does GPUs, remote acceleration, or HPC *natively* — not CUDA-C++, not Rust. In C++ and Rust the entire story is libraries: Thrust and Kokkos are the array algebra as libraries; `cust`/`wgpu`/`rust-gpu` are the backends as crates; MPI/NCCL/SLURM are the cluster layer as libraries. The lesson: keep the core to what only the compiler can do, and put *reaching a device* behind a stable interface libraries implement.
+
+| Rule | Description |
+|------|-------------|
+| **L1: Core owns the algebra and the IR** | The `Wide[T]` type, the primitive set, the subset check (W4), staging/`commit`, `explain`, and — the part only the compiler can do — lowering pure functions reachable from a plan to **one portable kernel IR, SPIR-V** (D3). This cannot be a library; it needs the type system and a codegen target. |
+| **L2: Core ships two backends** | `Simd` and `ThreadPool` are built in, because they *are* the existing SIMD path and thread pool — they come for free and give the baseline (W5) with no external dependency. |
+| **L3: Core links no vendor SDK** | The compiler emits SPIR-V and nothing else device-specific. With no GPU backend installed, `Wide` code still compiles and runs on CPU. A GPU is opt-in — add a backend library, exactly like adding a crate. No CUDA/Vulkan in the core. |
+| **L4: A backend is a small interface** | A backend is anything that can (a) run a plan / consume its SPIR-V and (b) report memory and timing to `explain`. That interface is the whole extension surface. |
+| **L5: Everything device-specific is a library** | The GPU driver backend (Vulkan/CUDA/Metal), multi-GPU orchestration, device-selection policies, autotuning, and **all remote / distributed / HPC / multi-node** work are libraries implementing L4. A remote or clustered device is just a backend whose "device" is across a wire — the algebra doesn't change a line. |
+
+The line in one sentence: **the language owns the algebra, the subset guarantee, the portable IR, and the plan you can inspect; a library owns every question of which physical device and how to reach it.** That is what keeps the core vendor-neutral and lets an HPC or remote-GPU library exist without the compiler ever hearing about clusters.
 
 ## Errors
 
@@ -126,7 +178,7 @@ FIX: monomorphize the call, or move it out of the plan (run it on the host befor
 ```
 
 ```
-ERROR [conc.data-parallel/W2]: no active width context
+ERROR [conc.data-parallel/W3]: no active width context
    |
 7  |     data.wide()
    |     ^^^^^^ `.wide()` needs a width block: `using Simd`, `using ThreadPool`, `using Gpu`, or `using Accelerated`
@@ -142,9 +194,9 @@ RUNTIME (returned, not panicked) [conc.data-parallel/C3]: GpuError.OutOfMemory
 
 | Case | Rule | Handling |
 |------|------|----------|
-| `.wide()` outside any width context | W2 | Compile error |
+| `.wide()` outside any width context | W3 | Compile error |
 | Staged plan never committed | C1 | Warning — the plan is dead code, nothing ran (like an unused `Result`) |
-| `commit` under `using Gpu` with no device present | C3, W4 | Returns `GpuError.NoDevice` — or use `using Accelerated` to run the same plan on cores automatically |
+| `commit` under `using Gpu` with no device present | C3, W5 | Returns `GpuError.NoDevice` — or use `using Accelerated`, which picks the fastest available width (here, cores) |
 | Device out of memory at commit | C3 | Returns `GpuError.OutOfMemory`, not a panic |
 | Two lanes scatter to the same index | P8 | Combined by the required `op`; no plain racing scatter exists |
 | Dynamic dispatch inside a staged op | D4 | Compile error |
@@ -164,9 +216,13 @@ RUNTIME (returned, not panicked) [conc.data-parallel/C3]: GpuError.OutOfMemory
 
 **P4–P8 (primitives, not raw lanes):** You can't prove arbitrary index code is race-free — it's undecidable. So the language only lets you spell parallelism through operators whose dependency structure is known. Reductions and scans come for free because they're primitives, not hand-rolled barrier code.
 
+**W2 (`Accelerated` = speed, not device):** Naming a specific width (`Gpu`, `ThreadPool`) is a guarantee about *where*. `Accelerated` deliberately drops that guarantee for a promise about *speed* — "fastest available for this plan and size." It's the one context where you don't statically know the device, opted into by name. The transparent path is always a specific width; `Accelerated` is the convenience, and even it reports what it chose.
+
+**Observability as the point, not a feature:** The reason to trust `Wide` over a Python framework is that the plan is inspectable (`explain`), memory is accounted before launch, and there's no runtime retracing (AOT). Those aren't extras — they're what separates "a nicer JAX" from "the thing you trust at 3am when the kernel is OOMing." If they slip, the design loses its reason to exist.
+
 ### The one tension left
 
-Laziness genuinely fights "costs visible in code" — that's why `commit` has to stay a loud, explicit, mandatory verb, and why staging must never sneak in a hidden execution. If a future convenience makes some op auto-commit, this transparency breaks. Hold the line: nothing runs until `commit`.
+Laziness genuinely fights "costs visible in code" — that's why `commit` has to stay a loud, explicit, mandatory verb, why staging must never sneak in a hidden execution, and why fusion is inspectable rather than magic (O1–O3). If a future convenience makes some op auto-commit, this transparency breaks. Hold the line: nothing runs until `commit`, and the plan is always openable before it does.
 
 ### What v1 got wrong
 
@@ -178,7 +234,7 @@ The `dispatch |lane|` sketch failed six ways, and this design is the point-by-po
 | No device concurrency/sync model | C1–C5 — staged plan is the handle, `commit` is the join |
 | Per-lane independence check undecidable | P1–P9 — primitives encode dependency; raw lanes only behind `kernel` (K1) |
 | Map-only skipped the cross-lane 80% | P4, P5, P8 — reduce/scan/scatter are first-class |
-| "No fallback" was coloring at the block level | W3/W4 — the algebra *is* the GPU subset, so CPU (a superset) always runs it; portability is structural, not a fallback |
+| "No fallback" was coloring at the block level | W4/W5 — the algebra *is* the GPU subset, so CPU (a superset) always runs it; portability is structural, not a fallback |
 | Divergence invisible | P6–P8 — irregular ops are named operators, visible in source |
 
 ### TODO — what v2 still must settle
@@ -188,7 +244,10 @@ The `dispatch |lane|` sketch failed six ways, and this design is the point-by-po
 3. **Mixed-width plans.** Can one plan span `using Gpu` and `using ThreadPool` (offload part, keep part on cores)? Probably no for v1; confirm.
 4. **The `GpuError` set (C3).** Enumerate: `OutOfMemory`, `DeviceLost`, `NoDevice`, `Unsupported`, transfer failures. Mirror the care `conc.async` gave `JoinError`. (Note: under `using Accelerated`, `NoDevice` can't occur — it degrades to cores instead.)
 5. **Tooling for divergence (P1).** The lint that flags a branchy `map` lambda — spec what it detects and how it reads.
-6. **Scope decision.** Whether accelerators are in Rask's stated target at all — a `CORE_DESIGN` call, not this file's.
+6. **The backend interface (L4).** Its exact shape — how a library backend consumes the plan/SPIR-V, reports memory and timing to `explain`, and advertises the device. This is the whole extension surface; it needs its own spec once the model settles.
+7. **The `Accelerated` policy (W2).** How it decides (input size thresholds, measured vs. modeled cost), and whether the policy is a fixed stdlib default or itself pluggable. Must never become a hidden autotuner.
+8. **`explain` memory formulas (O1).** How exact the footprint can be when `Wide` lengths are runtime values — symbolic in `N` at compile time, concrete at commit. Pin down what's guaranteed.
+9. **Scope decision.** Whether accelerators are in Rask's stated target at all — a `CORE_DESIGN` call, not this file's.
 
 ### See also
 
