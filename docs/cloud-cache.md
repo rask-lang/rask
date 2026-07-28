@@ -13,22 +13,54 @@ changed — seconds instead of minutes.
 ## Setup
 
 In your cloud environment settings (web UI, or `/remote-env` in the terminal),
-set the **Setup script** to:
+set the **Setup script** to the block below. It's self-contained on purpose —
+the setup script may run before the repo is checked out at a fixed path, so it
+can't just call a committed script by path. It finds the checkout wherever it
+is, builds if present, and logs what it saw either way:
 
 ```bash
 #!/bin/bash
-/home/user/rask/scripts/warm-cache.sh
+set -uo pipefail
+log() { echo "[warm-cache] $*"; }
+log "user=$(whoami) cwd=$(pwd)"
+
+# Find the repo the platform cloned. Neither the path nor the working
+# directory is guaranteed, so probe the likely spots then fall back to a scan.
+REPO=""
+for c in "$PWD" /home/user/rask /workspace/rask /root/rask; do
+  if [ -f "$c/compiler/Cargo.lock" ]; then REPO="$c"; break; fi
+done
+if [ -z "$REPO" ]; then
+  hit="$(find /home /root /workspace -maxdepth 5 -name Cargo.lock -path '*/compiler/*' 2>/dev/null | head -1)"
+  [ -n "$hit" ] && REPO="${hit%/compiler/Cargo.lock}"
+fi
+
+if [ -z "$REPO" ]; then
+  log "repo not checked out at setup time — nothing to warm; skipping"
+  exit 0
+fi
+log "repo=$REPO"
+
+cd "$REPO/compiler"
+cargo fetch
+cargo build --release -p rask-cli
+make -C runtime
+log "done"
 ```
 
-Use the absolute path: the setup script doesn't start in the repo root, so a
-relative `./scripts/...` fails with exit 127. The script itself finds the repo
-from its own location, so it works from any working directory.
+The build fits under the ~5-minute setup-script budget, `crates.io` is on the
+default Trusted network allowlist, and the snapshot rebuilds itself when you
+change the script or after ~7 days.
 
-That's it. The build fits under the ~5-minute setup-script budget, `crates.io`
-is on the default Trusted network allowlist, and the snapshot rebuilds itself
-when you change the script or after ~7 days.
+`scripts/warm-cache.sh` in the repo runs the same build for local or manual use
+(it self-locates from its own path). The setup script above is inline rather
+than a call to it because the file may not exist yet when setup runs.
 
-This lives in environment settings, not the repo — it can't be committed, so
-each person configures it once for their environment. A `SessionStart` hook is
-*not* a substitute: it isn't snapshotted, so it re-runs the full build on every
-session instead of caching once.
+If the log prints `repo not checked out at setup time`, the platform clones the
+repo *after* the setup snapshot, and pre-building the whole compiler in setup
+isn't possible — the fallback is a `SessionStart` hook that builds per session
+(no snapshot, so it re-runs each time). Check the setup log before assuming the
+snapshot route works.
+
+This lives in environment settings, not the repo — each person configures it
+once for their environment.
