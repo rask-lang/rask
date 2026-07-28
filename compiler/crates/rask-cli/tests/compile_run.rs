@@ -477,6 +477,12 @@ fn handle_autoderef_inferred_native_eq_interp() {
     assert_native_eq_interp("handle_autoderef_inferred.rk", "42");
 }
 
+// mem.pools/PF5: reads through a handle in a frozen context work on both backends.
+#[test]
+fn frozen_pool_read_native_eq_interp() {
+    assert_native_eq_interp("frozen_pool_read.rk", "50");
+}
+
 // #411: nested struct-field assignment (`ln.a.x = v`) persists on native — the
 // projected place stores into the base local instead of a value copy.
 #[test]
@@ -645,6 +651,17 @@ fn error_stdlib_renames() {
             "old name `{}` should be rejected as unknown method: {}", old, out,
         );
     }
+}
+
+// mem.pools/PF5: writing through a handle in a `using frozen Pool<T>` context is
+// rejected (E0325); reads in the same file are fine.
+#[test]
+fn error_frozen_pool_write() {
+    let (failed, out) = compile_error_output("frozen_pool_write.rk");
+    assert!(failed, "frozen-context handle writes must be rejected: {}", out);
+    assert!(out.contains("E0325"), "should be a frozen-context write error (E0325): {}", out);
+    // Both the plain store and the compound assign are rejected; the read is not.
+    assert_eq!(out.matches("error[E0325]").count(), 2, "exactly the two writes rejected: {}", out);
 }
 
 #[test]

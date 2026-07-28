@@ -122,14 +122,28 @@ impl TypeChecker {
                     // mutates pool storage, not the handle binding, so a read-only
                     // handle is fine. Only a bare rebind (`h = other`) is a real
                     // binding mutation.
-                    let through_handle = matches!(
+                    let handle_elem = if matches!(
                         &target.kind,
                         ExprKind::Field { .. } | ExprKind::Index { .. }
-                    ) && self
-                        .lookup_local(&root)
-                        .map(|t| self.resolve_named(&t))
-                        .and_then(|t| self.handle_element_type(&t))
-                        .is_some();
+                    ) {
+                        self.lookup_local(&root)
+                            .map(|t| self.resolve_named(&t))
+                            .and_then(|t| self.handle_element_type(&t))
+                    } else {
+                        None
+                    };
+                    let through_handle = handle_elem.is_some();
+                    // mem.pools/PF5: a write through a handle whose element type is
+                    // backed by a frozen context is rejected.
+                    if let Some(elem) = &handle_elem {
+                        if self.frozen_context_elems.iter().any(|e| e == elem) {
+                            self.errors.push(TypeError::FrozenContextWrite {
+                                op: "write".to_string(),
+                                elem: self.fmt_ty(elem),
+                                span: stmt.span,
+                            });
+                        }
+                    }
                     if !through_handle {
                         match self.lookup_binding_kind(&root) {
                             Some(super::BindingKind::Const) => {

@@ -436,6 +436,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("parameters are read-only by default — add `mutate` to indicate the function modifies this value")
             }
 
+            FrozenContextWrite { op, elem, span } => {
+                Diagnostic::error(format!("cannot {} in a frozen `Pool<{}>` context", op, elem))
+                    .with_code("E0325")
+                    .with_primary(*span, format!("this {} needs a mutable pool context", op))
+                    .with_help(format!("drop `frozen` from the `using Pool<{}>` clause", elem))
+                    .with_fix(format!("using Pool<{}>", elem))
+                    .with_why("a `using frozen Pool<T>` context is read-only (mem.pools/PF5) — it allows reads through handles but no writes, inserts, removes, or clears")
+            }
+
             MutateConst { name, span } => {
                 Diagnostic::error(format!("cannot mutate `{}` — declared `const`", name))
                     .with_code("E0322")

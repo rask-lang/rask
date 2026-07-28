@@ -30,6 +30,22 @@ impl TypeChecker {
         }
     }
 
+    /// The element type `T` of a `Pool<T>`, or `None` for anything else.
+    pub(super) fn pool_element_type(&self, ty: &Type) -> Option<Type> {
+        let (name, args) = match ty {
+            Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
+            _ => return None,
+        };
+        if name != "Pool" {
+            return None;
+        }
+        match args.first() {
+            Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
+            _ => None,
+        }
+    }
+
     pub(super) fn resolve_field(
         &mut self,
         ty: Type,
