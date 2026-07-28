@@ -186,6 +186,10 @@ The goal was to find a sweet spot: safer than C, more ergonomic than Rust, more 
 
 For rejected features from other languages (async/await, algebraic effects, lifetimes, supervision, scope functions), see [rejected-features.md](rejected-features.md).
 
+### Why Not Chase the Frontier?
+
+Higher-kinded types, dependent types, algebraic effects — the features that read as "advanced" are 1990s research, and each raises the read-time cost Rask exists to lower. The way to build for the future isn't to collect the era's buzzwords; it's to bet on who reads the code (increasingly: a machine writes, a human reviews) and hold a coherent thesis. Full argument in [design-horizon.md](design-horizon.md).
+
 ---
 
 ## Core Mechanisms
