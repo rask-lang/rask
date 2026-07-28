@@ -456,6 +456,27 @@ fn using_pool_method_native_eq_interp() {
     assert_native_eq_interp("using_pool_method.rk", "5");
 }
 
+// mem.context/CC1 (#434): `h.field` reads auto-resolve through a named
+// `using Pool<T>` context — the spec's headline pattern.
+#[test]
+fn handle_autoderef_read_native_eq_interp() {
+    assert_native_eq_interp("handle_autoderef_read.rk", "100");
+}
+
+// mem.context/CC1 (#434): `h.field` writes (plain + compound) through named and
+// unnamed contexts mutate the pool element on both backends.
+#[test]
+fn handle_autoderef_write_native_eq_interp() {
+    assert_native_eq_interp("handle_autoderef_write.rk", "705");
+}
+
+// mem.context/CC7 (#434): a private function infers its unnamed Pool<T> context
+// from `h.field` access, so auto-deref works with no `using` clause.
+#[test]
+fn handle_autoderef_inferred_native_eq_interp() {
+    assert_native_eq_interp("handle_autoderef_inferred.rk", "42");
+}
+
 // #411: nested struct-field assignment (`ln.a.x = v`) persists on native — the
 // projected place stores into the base local instead of a value copy.
 #[test]

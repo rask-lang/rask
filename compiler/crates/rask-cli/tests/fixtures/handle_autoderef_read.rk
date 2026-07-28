@@ -1,0 +1,13 @@
+// mem.context/CC1 (#434): `h.field` on a Handle<Player> auto-resolves through
+// the named `using players: Pool<Player>` context — no explicit `players[h]`.
+struct Player { health: i32 }
+
+func report(h: Handle<Player>) using players: Pool<Player> {
+    print(h.health)
+}
+
+func main() {
+    mut players = Pool.new()
+    const p = players.insert(Player { health: 100 })
+    report(p)
+}

@@ -11,6 +11,7 @@ use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_types::{GenericArg, Type};
 
+use super::callgraph::can_resolve_locally;
 use super::{ContextReq, HiddenParamPass, PoolSource, ScopePool};
 
 // ── CC4: Scope Resolution ───────────────────────────────────────────────
@@ -201,6 +202,14 @@ fn maybe_infer_context(
     let pool_type = pass.canonical_type(&pool_of(elem));
     let elem_name = pass.type_head_name(elem)?;
 
+    // CC4/CC7: if the pool is already reachable from the function's own scope
+    // (a param, local, or `self` field), auto-deref resolves from there — no
+    // hidden param needed. Inferring one would force callers to supply a context
+    // they don't have (e.g. a method whose `self.players` backs the handle).
+    if can_resolve_locally(pass, qname, &pool_type) {
+        return None;
+    }
+
     Some(ContextReq {
         param_name: format!("__ctx_pool_{}", elem_name),
         param_type: format!("&{}", pass.type_to_source(&pool_type)),
@@ -210,15 +219,10 @@ fn maybe_infer_context(
 }
 
 /// The element type of a `Handle<T>` parameter (given its source string), or
-/// `None` if the parameter isn't a handle.
+/// `None` if the parameter isn't a handle. Parses through the type table, so it
+/// matches the canonical `Generic` form as well as the unresolved one.
 fn handle_elem(pass: &HiddenParamPass, ty_str: &str) -> Option<Type> {
-    match pass.parse_ty(ty_str)? {
-        Type::UnresolvedGeneric { name, args } if name == "Handle" => match args.into_iter().next() {
-            Some(GenericArg::Type(t)) => Some(*t),
-            _ => None,
-        },
-        _ => None,
-    }
+    pass.handle_elem_of_type(&pass.parse_ty(ty_str)?)
 }
 
 /// Build `Pool<T>` from an element type `T`.

@@ -13,6 +13,23 @@ use super::TypeChecker;
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
 impl TypeChecker {
+    /// The element type `T` of a `Handle<T>`, or `None` for anything else.
+    /// `WeakHandle` is excluded — it must be `upgrade()`d before field access.
+    pub(super) fn handle_element_type(&self, ty: &Type) -> Option<Type> {
+        let (name, args) = match ty {
+            Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
+            _ => return None,
+        };
+        if name != "Handle" {
+            return None;
+        }
+        match args.first() {
+            Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
+            _ => None,
+        }
+    }
+
     pub(super) fn resolve_field(
         &mut self,
         ty: Type,
@@ -22,6 +39,15 @@ impl TypeChecker {
         self_type: Option<Type>,
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
+
+        // mem.context/CC1: `h.field` on a `Handle<T>` auto-resolves through the
+        // active `Pool<T>` context — type the access as the element `T`'s field.
+        // Lowering (native hidden-param pass) and the interpreter rewrite it into
+        // `pool[h].field`. Only strong handles auto-deref; a `WeakHandle` must be
+        // `upgrade()`d first.
+        if let Some(elem) = self.handle_element_type(&ty) {
+            return self.resolve_field(elem, field, expected, span, self_type);
+        }
 
         match &ty {
             // Source error already reported — suppress cascading field errors

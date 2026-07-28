@@ -244,7 +244,16 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
             rewrite_expr(pass, caller, right);
         }
         ExprKind::Unary { operand, .. } => rewrite_expr(pass, caller, operand),
-        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
+        ExprKind::Field { object, .. } => {
+            // mem.context/CC1: `h.field` on a `Handle<T>` lowers to `pool[h].field`,
+            // resolving the Pool<T> from scope (CC4) exactly like a hidden argument.
+            let elem = pass.node_handle_elem(object.id);
+            rewrite_expr(pass, caller, object);
+            if let Some(elem) = elem {
+                wrap_handle_deref(pass, caller, object, &elem, expr.span);
+            }
+        }
+        ExprKind::OptionalField { object, .. } => {
             rewrite_expr(pass, caller, object);
         }
         ExprKind::DynamicField { object, field_expr } => {
@@ -408,6 +417,53 @@ fn rewrite_storable_closure(pass: &mut HiddenParamPass, caller: &str, init: &mut
         rewrite_expr(pass, caller, body);
     }
     pass.storable_closure = prev;
+}
+
+/// mem.context/CC1: rewrite the handle `object` of an `h.field` access into
+/// `pool[h]`, resolving the backing `Pool<T>` from the caller's scope (CC4).
+/// Reuses `resolve_arg_kind` so the pool expression, ambiguity (CC8) and
+/// storable-closure (CC10) handling match hidden-argument resolution exactly.
+fn wrap_handle_deref(
+    pass: &mut HiddenParamPass,
+    caller: &str,
+    object: &mut Box<Expr>,
+    elem: &super::Type,
+    span: Span,
+) {
+    let elem_name = match pass.type_head_name(elem) {
+        Some(n) => n,
+        None => return,
+    };
+    let pool_ty = pass.canonical_type(&super::Type::UnresolvedGeneric {
+        name: "Pool".to_string(),
+        args: vec![rask_types::GenericArg::Type(Box::new(elem.clone()))],
+    });
+    let req = super::ContextReq {
+        param_name: format!("__ctx_pool_{}", elem_name),
+        param_type: format!("&{}", pass.type_to_source(&pool_ty)),
+        clause_type: pool_ty,
+        alias: None,
+    };
+    let pool_kind = resolve_arg_kind(pass, caller, &req, span);
+    let pool_expr = Expr {
+        id: pass.fresh_id(),
+        kind: pool_kind,
+        span,
+    };
+    let placeholder = Expr {
+        id: pass.fresh_id(),
+        kind: ExprKind::Null,
+        span,
+    };
+    let handle = std::mem::replace(object, Box::new(placeholder));
+    *object = Box::new(Expr {
+        id: pass.fresh_id(),
+        kind: ExprKind::Index {
+            object: Box::new(pool_expr),
+            index: handle,
+        },
+        span,
+    });
 }
 
 /// CALL3: append the hidden context arguments a callee requires to `args`,

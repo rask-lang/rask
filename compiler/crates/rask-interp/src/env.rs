@@ -86,6 +86,21 @@ impl Environment {
         self.scopes.len()
     }
 
+    /// Apply `f` to each in-scope value (innermost scope first), returning the
+    /// first `Some`. Used for handle auto-deref, where the pool is located by the
+    /// handle's pool id rather than by name — the closure may recurse into
+    /// struct fields to reach a pool held in `self`.
+    pub fn find_map<T, F: Fn(&Value) -> Option<T>>(&self, f: F) -> Option<T> {
+        for scope in self.scopes.iter().rev() {
+            for value in scope.bindings.values() {
+                if let Some(found) = f(value) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
     /// Capture all visible variables (for closures).
     pub fn capture(&self) -> HashMap<String, Value> {
         let mut captured = HashMap::new();

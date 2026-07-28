@@ -1,0 +1,23 @@
+// mem.context/CC1 (#434): writing through `h.field` — plain store, compound
+// assign, and a named vs unnamed context — mutates the pool element, not the
+// (read-only) handle binding.
+struct Player { health: i32, score: i32 }
+
+// named context, compound assign
+func damage(h: Handle<Player>, amount: i32) using players: Pool<Player> {
+    h.health -= amount
+}
+
+// unnamed context — only reachable via auto-deref
+func award(h: Handle<Player>, amount: i32) using Pool<Player> {
+    h.score = h.score + amount
+}
+
+func main() {
+    mut players = Pool.new()
+    const p = players.insert(Player { health: 100, score: 0 })
+    damage(p, 30)
+    award(p, 5)
+    print(players[p].health)   // 70
+    print(players[p].score)    // 5
+}

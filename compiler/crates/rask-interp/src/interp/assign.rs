@@ -244,7 +244,19 @@ impl Interpreter {
                     ExprKind::Ident(var_name) => {
                         if let Some(obj) = self.env.get(var_name) {
                             let obj = obj.clone();
-                            Self::assign_nested_field(&obj, &field_chain, value)
+                            // mem.context/CC1: `h.field = v` auto-resolves through
+                            // the active Pool<T> — write to the element's field.
+                            if let Value::Handle { pool_id, .. } = &obj {
+                                let pool = self.pool_for_handle(*pool_id).ok_or_else(|| {
+                                    RuntimeError::Panic(format!(
+                                        "no Pool in scope to resolve handle field `.{}`",
+                                        field_chain.first().cloned().unwrap_or_default()
+                                    ))
+                                })?;
+                                Self::assign_index_field(&Value::Pool(pool), &obj, &field_chain, value)
+                            } else {
+                                Self::assign_nested_field(&obj, &field_chain, value)
+                            }
                         } else {
                             Err(RuntimeError::UndefinedVariable(var_name.clone()))
                         }

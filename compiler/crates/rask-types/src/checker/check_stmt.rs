@@ -118,20 +118,34 @@ impl TypeChecker {
                 // parameters (default params). `const` is deep: rebinding,
                 // index/field assign, and mutating method calls all forbidden.
                 if let Some(root) = Self::root_ident_name(target) {
-                    match self.lookup_binding_kind(&root) {
-                        Some(super::BindingKind::Const) => {
-                            self.errors.push(TypeError::MutateConst {
-                                name: root.clone(),
-                                span: stmt.span,
-                            });
+                    // mem.context/CC1: writing `h.field = v` through a `Handle<T>`
+                    // mutates pool storage, not the handle binding, so a read-only
+                    // handle is fine. Only a bare rebind (`h = other`) is a real
+                    // binding mutation.
+                    let through_handle = matches!(
+                        &target.kind,
+                        ExprKind::Field { .. } | ExprKind::Index { .. }
+                    ) && self
+                        .lookup_local(&root)
+                        .map(|t| self.resolve_named(&t))
+                        .and_then(|t| self.handle_element_type(&t))
+                        .is_some();
+                    if !through_handle {
+                        match self.lookup_binding_kind(&root) {
+                            Some(super::BindingKind::Const) => {
+                                self.errors.push(TypeError::MutateConst {
+                                    name: root.clone(),
+                                    span: stmt.span,
+                                });
+                            }
+                            Some(super::BindingKind::Param) => {
+                                self.errors.push(TypeError::MutateReadOnlyParam {
+                                    name: root.clone(),
+                                    span: stmt.span,
+                                });
+                            }
+                            _ => {}
                         }
-                        Some(super::BindingKind::Param) => {
-                            self.errors.push(TypeError::MutateReadOnlyParam {
-                                name: root.clone(),
-                                span: stmt.span,
-                            });
-                        }
-                        _ => {}
                     }
                     // ESAD Phase 2: Reject mutation of persistently borrowed sources
                     if let Some(borrow) = self.check_persistent_borrow_conflict(&root) {
