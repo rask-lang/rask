@@ -571,6 +571,15 @@ pub struct MirLowerer<'a> {
     /// resource_id local. Used for consumption cancellation (C1/C2):
     /// if the receiver was consumed before scope exit, skip the ensure.
     ensure_receivers: HashMap<BlockId, (String, LocalId)>,
+    /// Module-level consts with a non-literal initializer, by name, waiting to
+    /// be materialized on first reference in this function.
+    ///
+    /// They used to be emitted eagerly at the top of every function. That put
+    /// `const config = Shared.new(Config.from_env())` inside `Config.from_env`
+    /// itself, which then called itself forever — the binary died on a stack
+    /// overflow before reaching main's first line (#463). Materializing at the
+    /// use site keeps them out of functions that never mention them.
+    pending_module_consts: HashMap<String, (Expr, Option<String>)>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -584,6 +593,50 @@ impl<'a> MirLowerer<'a> {
     /// Get the metadata entry for a variable (read-only).
     pub(crate) fn meta(&self, name: &str) -> Option<&LocalMeta> {
         self.local_meta.get(name)
+    }
+
+    /// Record a module-level const's box type from its initializer, e.g.
+    /// `Shared.new(Metrics { … })` → prefix `Shared`, full type `Shared<Metrics>`.
+    ///
+    /// A cross-module const reference gets left an inference var by the checker,
+    /// so guard access can't read the inner type off the use site — the
+    /// initializer is the only place it's concrete.
+    pub(crate) fn record_module_const_meta(&mut self, name: &str, init: &Expr) {
+        let ExprKind::MethodCall { object, args, .. } = &init.kind else { return };
+        let ExprKind::Ident(type_name) = &object.kind else { return };
+        let Some(prefix) = MirContext::type_prefix_str(type_name) else { return };
+        if let Some(inner) = args.first().and_then(|a| {
+            self.ctx.lookup_raw_type(a.expr.id)
+                .and_then(|t| MirContext::type_prefix(t, self.ctx.type_names))
+        }) {
+            self.meta_mut(name).full_type = Some(format!("{}<{}>", prefix, inner));
+        }
+        self.meta_mut(name).type_prefix = Some(prefix);
+    }
+
+    /// Materialize a deferred module-level const the first time it's named in
+    /// this function. Returns the local, or `None` if `name` isn't one.
+    ///
+    /// Idempotent: once emitted the const lives in `locals` like any other
+    /// binding, so later references in the same function reuse it.
+    pub(crate) fn materialize_module_const(
+        &mut self,
+        name: &str,
+    ) -> Result<Option<(LocalId, MirType)>, LoweringError> {
+        if let Some((local_id, ty)) = self.locals.get(name) {
+            return Ok(Some((*local_id, ty.clone())));
+        }
+        let Some((init, _decl_ty)) = self.pending_module_consts.remove(name) else {
+            return Ok(None);
+        };
+        let (op, ty) = self.lower_expr(&init)?;
+        let local_id = self.builder.alloc_local(name.to_string(), ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: local_id,
+            rvalue: MirRValue::Use(op),
+        }));
+        self.locals.insert(name.to_string(), (local_id, ty.clone()));
+        Ok(Some((local_id, ty)))
     }
 
     /// Method-dispatch prefix for a Struct/Enum MIR type — its layout name.
@@ -994,6 +1047,7 @@ impl<'a> MirLowerer<'a> {
             ensure_stack: Vec::new(),
             take_self_methods,
             ensure_receivers: HashMap::new(),
+            pending_module_consts: HashMap::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -1087,34 +1141,18 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
-                } else if let Ok((op, ty)) = lowerer.lower_expr(&c.init) {
-                    // Non-literal init (e.g. Shared<T>.new(...)): lower as expression
-                    let local_id = lowerer.builder.alloc_local(c.name.clone(), ty.clone());
-                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: local_id,
-                        rvalue: MirRValue::Use(op),
-                    }));
-                    lowerer.locals.insert(c.name.clone(), (local_id, ty));
-                    // Extract type prefix from init (e.g. Shared<Metrics>.new() → "Shared")
-                    if let ExprKind::MethodCall { object, args, .. } = &c.init.kind {
-                        if let ExprKind::Ident(type_name) = &object.kind {
-                            if let Some(prefix) = MirContext::type_prefix_str(type_name) {
-                                // Also record the wrapped type (Mutex<Store>) from the
-                                // constructor's argument. A cross-module const reference
-                                // gets left an inference var by the checker, so guard
-                                // access can't read the inner type off the use site — the
-                                // initializer here is the only place it's concrete.
-                                if let Some(inner) = args.first().and_then(|a| {
-                                    lowerer.ctx.lookup_raw_type(a.expr.id)
-                                        .and_then(|ty| MirContext::type_prefix(ty, lowerer.ctx.type_names))
-                                }) {
-                                    lowerer.meta_mut(&c.name).full_type =
-                                        Some(format!("{}<{}>", prefix, inner));
-                                }
-                                lowerer.meta_mut(&c.name).type_prefix = Some(prefix);
-                            }
-                        }
-                    }
+                } else {
+                    // Non-literal init (e.g. Shared<T>.new(...)): defer the code to
+                    // the first reference, so it only lands in functions that use
+                    // it. The type metadata is recorded here regardless — it costs
+                    // nothing, emits no code, and method dispatch reads it for the
+                    // const's box type (`Mutex<Store>`) from more places than just
+                    // the reference site.
+                    lowerer.record_module_const_meta(&c.name, &c.init);
+                    lowerer.pending_module_consts.insert(
+                        c.name.clone(),
+                        (c.init.clone(), c.ty.clone()),
+                    );
                 }
             }
         }
@@ -2007,6 +2045,14 @@ fn collect_pattern_names(
 // =================================================================
 // Operator mappings
 // =================================================================
+
+/// Is `name` one of the integer primitives (as spelled in source)?
+pub(crate) fn is_integer_type_name(name: &str) -> bool {
+    matches!(name,
+        "i8" | "i16" | "i32" | "i64" | "isize"
+        | "u8" | "u16" | "u32" | "u64" | "usize"
+    )
+}
 
 /// Recognize operator method names produced by desugar (e.g. "add", "sub", "eq")
 fn operator_method_to_binop(method: &str) -> Option<crate::operand::BinOp> {

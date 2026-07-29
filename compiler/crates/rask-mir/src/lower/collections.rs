@@ -26,6 +26,16 @@ impl<'a> MirLowerer<'a> {
             }
             lowered.push(op);
         }
+        // A Vec keeps scalars in 8-byte slots — `Vec.new()` declares elem_size 8
+        // and readers load a whole word per element. An untyped integer literal
+        // lowers as i32, so building the array at its natural 4-byte stride left
+        // storage and readers disagreeing: `Vec.from([1, 2, 3])` summed to
+        // 21474836486 because each 8-byte load straddled two elements (#461).
+        // Widen narrow scalars to the slot width; genuinely wide elements
+        // (string, trait object, aggregates) keep their real size.
+        if elem_ty.size() < 8 && !matches!(elem_ty, MirType::Struct(_) | MirType::Enum(_)) {
+            elem_ty = MirType::I64;
+        }
         let elem_size = elem_ty.size();
         let array_ty = MirType::Array {
             elem: Box::new(elem_ty.clone()),

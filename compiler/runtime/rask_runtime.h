@@ -471,6 +471,10 @@ void        rask_args_init(int argc, char **argv);
 int64_t     rask_args_count(void);
 const char *rask_args_get(int64_t index);
 
+// Environment variables
+const RaskStr *rask_os_env(const RaskStr *name);
+void           rask_os_env_or(RaskStr *out, const RaskStr *name, const RaskStr *def);
+
 // ─── Panic ─────────────────────────────────────────────────
 // Structured panic: aborts in main thread, catchable in spawned tasks.
 // Spawned tasks use setjmp/longjmp to convert panics into JoinError.

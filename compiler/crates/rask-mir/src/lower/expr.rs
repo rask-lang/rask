@@ -334,6 +334,10 @@ impl<'a> MirLowerer<'a> {
 
             // Variable reference (or bare enum variant like None)
             ExprKind::Ident(name) => {
+                // A module-level const with a non-literal initializer is emitted
+                // on first use, not at every function's entry — everything below
+                // then finds it in `locals` like any other binding.
+                self.materialize_module_const(name)?;
                 // #270: a scalar `mutate` param is a pointer — a bare read loads
                 // the scalar through it (writes store through it; see stmt.rs).
                 if let Some(sty) = self.meta(name).and_then(|m| m.scalar_mutate_ptr.clone()) {
@@ -3152,6 +3156,35 @@ impl<'a> MirLowerer<'a> {
                 })
                 .unwrap_or(MirType::I64);
             Some(MirType::Option(Box::new(elem_ty)))
+        } else if qualified_name == "Receiver_receive_struct" {
+            // Renamed from Receiver_receive above for struct elements. Only the
+            // original name is in the stub metadata, so the fallback typed the
+            // result a bare i64 — then `r?` read a tag off a local that never got
+            // a Result slot and every receive looked like a failure (#463).
+            self.ctx.lookup_node_type(expr.id)
+                .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
+                .or_else(|| self.func_sigs.get("Receiver_receive").map(|s| s.ret_ty.clone()))
+                .or_else(|| Some(super::stdlib_return_mir_type("Receiver_receive")))
+        } else if let Some(target) = qualified_name.strip_prefix("string_parse_")
+            .filter(|t| super::is_integer_type_name(t))
+        {
+            // `parse<T>` yields `T or ParseError`, but the type argument is
+            // mangled into the call name, so there's no `string_parse_<T>` entry
+            // in the stub metadata and the fallback below lands on plain i64.
+            // The local then gets no Result slot, while the caller still reads a
+            // tag and payload off it — garbage, and a segfault on the `??`.
+            // Prefer the checker's type; rebuild it from the mangled type
+            // argument when node types aren't available (instantiated bodies).
+            //
+            // Integer targets only: the float parse returns a raw f64 from the
+            // runtime, which the Result-wrapping store path can't box, so
+            // `parse<f64>` keeps its scalar return.
+            Some(self.ctx.lookup_node_type(expr.id)
+                .filter(|t| matches!(t, MirType::Result { .. }))
+                .unwrap_or_else(|| MirType::Result {
+                    ok: Box::new(self.ctx.resolve_type_str(target)),
+                    err: Box::new(self.ctx.resolve_type_str("ParseError")),
+                }))
         } else {
             None
         }.unwrap_or_else(|| self
@@ -3169,13 +3202,26 @@ impl<'a> MirLowerer<'a> {
                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
                     let result_local = self.builder.alloc_temp(obj_ty.clone());
                     let src = all_args[0].clone();
-                    for field in &layout.fields {
+                    for (idx, field) in layout.fields.iter().enumerate() {
+                        // `field_index` is an index — codegen resolves the offset
+                        // from the layout. Passing the byte offset here indexed past
+                        // the end of the field list for every field but the first,
+                        // and the out-of-range fallback read offset 0, so a
+                        // `port: u16` at offset 16 cloned as whatever the first
+                        // field's bytes happened to say (11824 for a host string).
+                        //
+                        // A field wider than a word comes back as a pointer into the
+                        // source struct. Its clone needs a destination of the field's
+                        // real type so `string_clone` has the 16-byte slot it copies
+                        // into, and the store has to write all of it — as an i64 temp
+                        // a `string` field was truncated to its first 8 bytes (#463).
+                        let wide = field.size > 8;
                         let field_val = self.builder.alloc_temp(MirType::I64);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: field_val,
                             rvalue: MirRValue::Field {
                                 base: src.clone(),
-                                field_index: field.offset,
+                                field_index: idx as u32,
                                 byte_offset: None,
                                 field_size: None,
                             },
@@ -3183,7 +3229,12 @@ impl<'a> MirLowerer<'a> {
                         // Deep clone heap types
                         let clone_fn = Self::clone_fn_for_type(&field.ty);
                         let store_val = if let Some(cfn) = clone_fn {
-                            let cloned = self.builder.alloc_temp(MirType::I64);
+                            let cloned_ty = if wide {
+                                self.ctx.type_to_mir(&field.ty)
+                            } else {
+                                MirType::I64
+                            };
+                            let cloned = self.builder.alloc_temp(cloned_ty);
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(cloned),
                                 func: FunctionRef::internal(cfn.to_string()),
@@ -3197,7 +3248,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result_local,
                             offset: field.offset,
                             value: store_val,
-                            store_size: None,
+                            store_size: if wide { Some(field.size) } else { None },
                         }));
                     }
                     return Ok((MirOperand::Local(result_local), obj_ty));

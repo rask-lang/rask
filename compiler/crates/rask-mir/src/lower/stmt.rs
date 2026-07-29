@@ -1087,30 +1087,35 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
-            // Fallback: detect Channel<T>.buffered/unbuffered pattern directly.
-            // Returns (Sender<T>, Receiver<T>) — set prefixes by position.
-            if !found_prefix {
-                if let ExprKind::MethodCall { object, method, .. } = &init.kind {
-                    if let ExprKind::Ident(type_name) = &object.kind {
-                        let base = type_name.split('<').next().unwrap_or(type_name);
-                        if base == "Channel" && (method == "buffered" || method == "unbuffered") {
+            // Channel<T>.buffered/unbuffered returns (Sender<T>, Receiver<T>).
+            // The element size has to be recorded whether or not the checker
+            // resolved the prefixes: `rx.receive()` picks the struct-aware recv
+            // off it, and without it a 24-byte element was received into an
+            // 8-byte buffer and smashed the stack (#463).
+            if let ExprKind::MethodCall { object, method, .. } = &init.kind {
+                if let ExprKind::Ident(type_name) = &object.kind {
+                    let base = type_name.split('<').next().unwrap_or(type_name);
+                    if base == "Channel" && (method == "buffered" || method == "unbuffered") {
+                        // Same source the constructor uses for its elem_size arg,
+                        // falling back to the annotation's inner type name.
+                        let mut elem_size = self.generic_arg_slot_size(init.id, 0);
+                        if elem_size <= 8 {
+                            if let Some(tn) = type_name.split('<').nth(1)
+                                .and_then(|s| s.strip_suffix('>'))
+                            {
+                                if let Some((_, l)) = self.ctx.find_struct(tn) {
+                                    elem_size = l.size as i64;
+                                }
+                            }
+                        }
+                        self.meta_mut(name).channel_elem_size = Some(elem_size);
+                        if !found_prefix {
                             let prefix = match i {
                                 0 => "Sender",
                                 1 => "Receiver",
                                 _ => continue,
                             };
                             self.meta_mut(name).type_prefix = Some(prefix.to_string());
-                            // Track channel element size for struct-aware recv
-                            let inner = type_name.split('<').nth(1)
-                                .and_then(|s| s.strip_suffix('>'));
-                            let elem_size = if let Some(tn) = inner {
-                                self.ctx.find_struct(tn)
-                                    .map(|(_, l)| l.size as i64)
-                                    .unwrap_or(8)
-                            } else {
-                                8
-                            };
-                            self.meta_mut(name).channel_elem_size = Some(elem_size);
                         }
                     }
                 }
