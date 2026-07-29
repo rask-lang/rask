@@ -70,6 +70,10 @@ pub enum RetAdapt {
     /// C FFI convention: a negative scalar return means Err, otherwise Ok.
     /// Codegen wraps the return into the destination `T or E` Result slot.
     NegErr,
+    /// Same convention for an Option: a negative scalar return means `none`,
+    /// otherwise `some(value)`. Distinct from NegErr because Option and Result
+    /// put their payloads at different offsets.
+    NegNone,
 }
 
 /// A stdlib function entry: MIR name → C runtime function + adaptation.
@@ -111,6 +115,18 @@ impl StdlibEntry {
         can_panic: bool,
     ) -> Self {
         Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::NegErr }
+    }
+
+    /// For a `T?`-returning C function that signals "absent" with a negative
+    /// index (`find`, `rfind`).
+    const fn neg_none(
+        mir_name: &'static str,
+        c_name: &'static str,
+        params: &'static [Type],
+        ret_ty: Option<Type>,
+        can_panic: bool,
+    ) -> Self {
+        Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::NegNone }
     }
 }
 
@@ -291,9 +307,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_as_ptr", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_as_c_str", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_is_empty", "rask_string_is_empty", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_index_of", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
+        // find/rfind return `usize?` and the runtime signals "not found" with -1.
+        // Wrapped as a plain value it came back as `some(-1)`, so `?? ...` never
+        // fired and a slice taken at that index was empty (#463).
+        StdlibEntry::neg_none("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("string_index_of", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_starts_with", "rask_string_starts_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_ends_with", "rask_string_ends_with", &[types::I64, types::I64], Some(types::I64), false),

@@ -94,6 +94,11 @@ struct FuncSig {
     /// through it); `None` means the param is not a by-pointer scalar mutate.
     /// Empty for extern/stdlib (no scalar mutate write-back).
     scalar_mutate_params: Vec<Option<MirType>>,
+    /// Element type when the function returns `Vec<T>`. `ret_ty` collapses a Vec
+    /// to an opaque pointer, so `for x in f()` has nothing to type its binding
+    /// from once the checker's node types are out of reach (a closure body, an
+    /// instantiated copy) — the declared return type is the remaining record.
+    ret_vec_elem: Option<MirType>,
 }
 
 /// Loop context for break/continue
@@ -850,7 +855,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         let thunk_fn = thunk_builder.finish();
-        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new() });
+        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), ret_vec_elem: None });
         self.synthesized_functions.push(thunk_fn);
 
         let captures = caps
@@ -965,6 +970,7 @@ impl<'a> MirLowerer<'a> {
                     func_sigs.insert(f.name.clone(), FuncSig {
                         ret_ty: sig_ret,
                         scalar_mutate_params: scalar_mutate_params(&f.params, ctx),
+                        ret_vec_elem: vec_elem_of_type_str(f.ret_ty.as_deref(), ctx),
                     });
                 }
                 DeclKind::Extern(ext) => {
@@ -973,7 +979,7 @@ impl<'a> MirLowerer<'a> {
                         .as_deref()
                         .map(|s| ctx.resolve_type_str(s))
                         .unwrap_or(MirType::Void);
-                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new() });
+                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new(), ret_vec_elem: None });
                 }
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
@@ -986,6 +992,7 @@ impl<'a> MirLowerer<'a> {
                         func_sigs.insert(qualified, FuncSig {
                             ret_ty: sig_ret,
                             scalar_mutate_params: scalar_mutate_params(&m.params, ctx),
+                            ret_vec_elem: vec_elem_of_type_str(m.ret_ty.as_deref(), ctx),
                         });
                     }
                 }
@@ -999,6 +1006,7 @@ impl<'a> MirLowerer<'a> {
             func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
                 ret_ty: ret_category_to_mir_type(&meta.ret_category),
                 scalar_mutate_params: Vec::new(),
+                ret_vec_elem: None,
             });
         }
 
@@ -1122,7 +1130,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     MirType::Void
                 };
-                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new() });
+                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new(), ret_vec_elem: None });
             }
         }
 
@@ -1339,6 +1347,27 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::Ident(name) = &expr.kind {
             if let Some(elem_ty) = self.meta(name).and_then(|m| m.elem_type.as_ref()) {
                 return Some(elem_ty.clone());
+            }
+        }
+
+        // Iterating the result of a call: take the element type off the callee's
+        // declared `Vec<T>`. Needed wherever the checker's node types are out of
+        // reach — inside a closure body, `for spec in seed_specs()` typed its
+        // binding i64 and sent the wrong bytes down a channel (#463).
+        let callee = match &expr.kind {
+            ExprKind::Call { func, .. } => match &func.kind {
+                ExprKind::Ident(name) => Some(name.clone()),
+                _ => None,
+            },
+            ExprKind::MethodCall { object, method, .. } => match &object.kind {
+                ExprKind::Ident(recv) => Some(format!("{}_{}", recv, method)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(name) = callee {
+            if let Some(elem) = self.func_sigs.get(&name).and_then(|s| s.ret_vec_elem.clone()) {
+                return Some(elem);
             }
         }
 
@@ -2045,6 +2074,17 @@ fn collect_pattern_names(
 // =================================================================
 // Operator mappings
 // =================================================================
+
+/// Element type of a declared `Vec<T>` return type, e.g. `"Vec<SeedSpec>"` →
+/// `Struct(SeedSpec)`. `None` for anything that isn't a Vec.
+fn vec_elem_of_type_str(ret_ty: Option<&str>, ctx: &MirContext) -> Option<MirType> {
+    let inner = ret_ty?
+        .trim()
+        .strip_prefix("Vec<")?
+        .strip_suffix('>')?
+        .trim();
+    Some(ctx.resolve_type_str(inner))
+}
 
 /// Is `name` one of the integer primitives (as spelled in source)?
 pub(crate) fn is_integer_type_name(name: &str) -> bool {

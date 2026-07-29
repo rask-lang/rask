@@ -520,11 +520,26 @@ impl<'a> MirLowerer<'a> {
                     }
                     _ => Vec::new(),
                 };
+                // A closure handed to `spawn` outlives the frame that built it:
+                // the task runs later, on another worker, and the runtime frees
+                // the environment when it finishes. A scope-limited closure puts
+                // that environment on the stack, so spawning one had the task
+                // reading a dead frame and freeing a stack address — glibc aborted
+                // with "free(): invalid pointer" right after the task ran (#463).
+                let spawns_closure = matches!(&func.kind, ExprKind::Ident(n) if n == "spawn");
                 let mut arg_operands = Vec::new();
                 let mut arg_mir_types = Vec::new();
                 for (i, a) in args.iter().enumerate() {
                     let smut = callee_smut.get(i).and_then(|o| o.as_ref());
-                    let (op, mir_ty) = self.lower_call_arg(&a.expr, smut)?;
+                    let (op, mir_ty) = if spawns_closure {
+                        if let ExprKind::Closure { params, ret_ty, body, .. } = &a.expr.kind {
+                            self.lower_closure(params, ret_ty.as_deref(), body, true)?
+                        } else {
+                            self.lower_call_arg(&a.expr, smut)?
+                        }
+                    } else {
+                        self.lower_call_arg(&a.expr, smut)?
+                    };
                     // TR5: implicit trait coercion — emit TraitBox if type checker flagged this arg
                     if smut.is_none() {
                         if let Some(trait_name) = self.ctx.trait_coercions.get(&a.expr.id) {

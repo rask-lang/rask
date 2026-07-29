@@ -29,25 +29,25 @@ extend Method {
     // the desugar pass, so string == does pointer comparison (not content).
     public func from_string(s: string) -> Method? {
         const len = s.len()
-        if len == 3 && s.byte_at(0) == 71 && s.byte_at(1) == 69 && s.byte_at(2) == 84 {
+        if len == 3 && (s.byte_at(0) ?? 0) == 71 && (s.byte_at(1) ?? 0) == 69 && (s.byte_at(2) ?? 0) == 84 {
             return Method.Get    // GET
         }
-        if len == 4 && s.byte_at(0) == 72 && s.byte_at(1) == 69 && s.byte_at(2) == 65 && s.byte_at(3) == 68 {
+        if len == 4 && (s.byte_at(0) ?? 0) == 72 && (s.byte_at(1) ?? 0) == 69 && (s.byte_at(2) ?? 0) == 65 && (s.byte_at(3) ?? 0) == 68 {
             return Method.Head   // HEAD
         }
-        if len == 4 && s.byte_at(0) == 80 && s.byte_at(1) == 79 && s.byte_at(2) == 83 && s.byte_at(3) == 84 {
+        if len == 4 && (s.byte_at(0) ?? 0) == 80 && (s.byte_at(1) ?? 0) == 79 && (s.byte_at(2) ?? 0) == 83 && (s.byte_at(3) ?? 0) == 84 {
             return Method.Post   // POST
         }
-        if len == 3 && s.byte_at(0) == 80 && s.byte_at(1) == 85 && s.byte_at(2) == 84 {
+        if len == 3 && (s.byte_at(0) ?? 0) == 80 && (s.byte_at(1) ?? 0) == 85 && (s.byte_at(2) ?? 0) == 84 {
             return Method.Put    // PUT
         }
-        if len == 6 && s.byte_at(0) == 68 && s.byte_at(1) == 69 && s.byte_at(2) == 76 {
+        if len == 6 && (s.byte_at(0) ?? 0) == 68 && (s.byte_at(1) ?? 0) == 69 && (s.byte_at(2) ?? 0) == 76 {
             return Method.Delete // DELETE (check first 3 bytes)
         }
-        if len == 5 && s.byte_at(0) == 80 && s.byte_at(1) == 65 && s.byte_at(2) == 84 {
+        if len == 5 && (s.byte_at(0) ?? 0) == 80 && (s.byte_at(1) ?? 0) == 65 && (s.byte_at(2) ?? 0) == 84 {
             return Method.Patch  // PATCH (check first 3 bytes)
         }
-        if len == 7 && s.byte_at(0) == 79 && s.byte_at(1) == 80 && s.byte_at(2) == 84 {
+        if len == 7 && (s.byte_at(0) ?? 0) == 79 && (s.byte_at(1) ?? 0) == 80 && (s.byte_at(2) ?? 0) == 84 {
             return Method.Options // OPTIONS (check first 3 bytes)
         }
         return none
@@ -136,11 +136,8 @@ extend Request {
 
     // URL path before '?'.
     public func path(self) -> string {
-        const qpos = self.url.find("?")
-        if qpos? as pos {
-            return self.url[0..pos]
-        }
-        return self.url
+        const qpos = self.url.find("?") ?? return self.url
+        return self.url[0..qpos].to_string()
     }
 
     // Single query parameter by name.
@@ -301,7 +298,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
     // Find end of request line (first \r\n)
     mut line_end: usize = 0
     while line_end + 1 < len {
-        if raw.byte_at(line_end) == 13 && raw.byte_at(line_end + 1) == 10 {
+        if (raw.byte_at(line_end) ?? 0) == 13 && (raw.byte_at(line_end + 1) ?? 0) == 10 {
             break
         }
         line_end += 1
@@ -310,16 +307,20 @@ func parse_http_request(raw: string) -> Request or HttpError {
 
     // Parse request line: "METHOD PATH HTTP/1.1"
     mut first_sp: usize = 0
-    while first_sp < line_end && raw.byte_at(first_sp) != 32 {
+    while first_sp < line_end && (raw.byte_at(first_sp) ?? 0) != 32 {
         first_sp += 1
     }
     mut second_sp = first_sp + 1
-    while second_sp < line_end && raw.byte_at(second_sp) != 32 {
+    while second_sp < line_end && (raw.byte_at(second_sp) ?? 0) != 32 {
         second_sp += 1
     }
 
-    const method_str = raw[0..first_sp]
-    const path = raw[first_sp + 1..second_sp]
+    // Slices are temporary views into `raw`, which goes away when this function
+    // returns — anything kept in the Request has to be copied out (the checker
+    // rejects storing a slice; stdlib code slipped past it and every request
+    // arrived with an empty path and body).
+    const method_str = raw[0..first_sp].to_string()
+    const path = raw[first_sp + 1..second_sp].to_string()
 
     const method = if Method.from_string(method_str)? as m { m } else {
         return HttpError.InvalidResponse("unknown HTTP method")
@@ -331,7 +332,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
     mut header_end = pos
 
     while pos + 1 < len {
-        if raw.byte_at(pos) == 13 && raw.byte_at(pos + 1) == 10 {
+        if (raw.byte_at(pos) ?? 0) == 13 && (raw.byte_at(pos + 1) ?? 0) == 10 {
             header_end = pos
             pos += 2
             break
@@ -339,7 +340,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
 
         mut hline_end = pos
         while hline_end + 1 < len {
-            if raw.byte_at(hline_end) == 13 && raw.byte_at(hline_end + 1) == 10 {
+            if (raw.byte_at(hline_end) ?? 0) == 13 && (raw.byte_at(hline_end + 1) ?? 0) == 10 {
                 break
             }
             hline_end += 1
@@ -347,15 +348,15 @@ func parse_http_request(raw: string) -> Request or HttpError {
 
         mut colon = pos
         while colon < hline_end {
-            if raw.byte_at(colon) == 58 && colon + 1 < hline_end && raw.byte_at(colon + 1) == 32 {
+            if (raw.byte_at(colon) ?? 0) == 58 && colon + 1 < hline_end && (raw.byte_at(colon + 1) ?? 0) == 32 {
                 break
             }
             colon += 1
         }
 
         if colon < hline_end {
-            const hname = raw[pos..colon]
-            const hvalue = raw[colon + 2..hline_end]
+            const hname = raw[pos..colon].to_string()
+            const hvalue = raw[colon + 2..hline_end].to_string()
             headers.set(hname, hvalue)
         }
 
@@ -363,7 +364,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
     }
 
     const body = if pos < len {
-        raw[pos..]
+        raw[pos..].to_string()
     } else {
         string.new()
     }
@@ -429,17 +430,20 @@ func format_http_response(resp: Response) -> string {
 // ─── Socket I/O (C runtime) ─────────────────────────────────────
 
 extern "C" {
-    func rask_io_read_string(fd: i64, max: i64) -> i64
+    // Both readers fill a string out-param, so they're declared returning
+    // `string`. Declared `-> i64` the result stayed an integer and `as string`
+    // didn't reinterpret it, so every request body read back as the pointer's
+    // decimal value and request parsing failed.
+    func rask_io_read_string(fd: i64, max: i64) -> string
     func rask_io_write_string(fd: i64, s: i64) -> i64
-    func rask_io_read_until_close(fd: i64, max: i64) -> i64
+    func rask_io_read_until_close(fd: i64, max: i64) -> string
     func rask_net_tcp_connect(addr: i64) -> i64
     func rask_io_close_fd(fd: i64) -> void
 }
 
 // Read raw bytes from a TCP connection (up to max_bytes).
 func read_raw(conn_fd: i64, max_bytes: i64) -> string {
-    const ptr = unsafe { rask_io_read_string(conn_fd, max_bytes) }
-    return ptr as string
+    return unsafe { rask_io_read_string(conn_fd, max_bytes) }
 }
 
 // Write a string to a TCP connection.
@@ -534,7 +538,7 @@ func parse_http_response(raw: string) -> Response or HttpError {
     // Find end of status line
     mut line_end: usize = 0
     while line_end + 1 < len {
-        if raw.byte_at(line_end) == 13 && raw.byte_at(line_end + 1) == 10 {
+        if (raw.byte_at(line_end) ?? 0) == 13 && (raw.byte_at(line_end + 1) ?? 0) == 10 {
             break
         }
         line_end += 1
@@ -543,11 +547,11 @@ func parse_http_response(raw: string) -> Response or HttpError {
     // Parse status line: "HTTP/1.1 200 OK"
     const status_line = raw[0..line_end]
     mut first_sp: usize = 0
-    while first_sp < line_end && raw.byte_at(first_sp) != 32 {
+    while first_sp < line_end && (raw.byte_at(first_sp) ?? 0) != 32 {
         first_sp += 1
     }
     mut second_sp = first_sp + 1
-    while second_sp < line_end && raw.byte_at(second_sp) != 32 {
+    while second_sp < line_end && (raw.byte_at(second_sp) ?? 0) != 32 {
         second_sp += 1
     }
 
@@ -561,14 +565,14 @@ func parse_http_response(raw: string) -> Response or HttpError {
     mut headers = Headers.new()
     mut pos = line_end + 2
     while pos + 1 < len {
-        if raw.byte_at(pos) == 13 && raw.byte_at(pos + 1) == 10 {
+        if (raw.byte_at(pos) ?? 0) == 13 && (raw.byte_at(pos + 1) ?? 0) == 10 {
             pos += 2
             break
         }
 
         mut hline_end = pos
         while hline_end + 1 < len {
-            if raw.byte_at(hline_end) == 13 && raw.byte_at(hline_end + 1) == 10 {
+            if (raw.byte_at(hline_end) ?? 0) == 13 && (raw.byte_at(hline_end + 1) ?? 0) == 10 {
                 break
             }
             hline_end += 1
@@ -576,15 +580,15 @@ func parse_http_response(raw: string) -> Response or HttpError {
 
         mut colon = pos
         while colon < hline_end {
-            if raw.byte_at(colon) == 58 && colon + 1 < hline_end && raw.byte_at(colon + 1) == 32 {
+            if (raw.byte_at(colon) ?? 0) == 58 && colon + 1 < hline_end && (raw.byte_at(colon + 1) ?? 0) == 32 {
                 break
             }
             colon += 1
         }
 
         if colon < hline_end {
-            const hname = raw[pos..colon]
-            const hvalue = raw[colon + 2..hline_end]
+            const hname = raw[pos..colon].to_string()
+            const hvalue = raw[colon + 2..hline_end].to_string()
             headers.set(hname, hvalue)
         }
 
@@ -629,8 +633,7 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
     write_raw(conn_fd, raw_req)
 
     // Read response (reads until server closes connection)
-    const raw_resp_ptr = unsafe { rask_io_read_until_close(conn_fd, 1048576) }
-    const raw_resp = raw_resp_ptr as string
+    const raw_resp = unsafe { rask_io_read_until_close(conn_fd, 1048576) }
 
     // Close connection
     unsafe { rask_io_close_fd(conn_fd) }

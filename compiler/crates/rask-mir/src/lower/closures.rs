@@ -112,6 +112,7 @@ impl<'a> MirLowerer<'a> {
         self.func_sigs.insert(closure_name.clone(), super::FuncSig {
             ret_ty: closure_ret,
             scalar_mutate_params: Vec::new(),
+            ret_vec_elem: None,
         });
 
         self.synthesized_functions.push(closure_fn);
@@ -208,6 +209,7 @@ impl<'a> MirLowerer<'a> {
             self.func_sigs.insert(poll_name.clone(), super::FuncSig {
                 ret_ty: MirType::I32,
                 scalar_mutate_params: Vec::new(),
+                ret_vec_elem: None,
             });
             self.synthesized_functions.push(sm_result.poll_fn);
 
@@ -261,6 +263,7 @@ impl<'a> MirLowerer<'a> {
             self.func_sigs.insert(spawn_name.clone(), super::FuncSig {
                 ret_ty: MirType::Void,
                 scalar_mutate_params: Vec::new(),
+                ret_vec_elem: None,
             });
             self.synthesized_functions.push(spawn_fn);
 
