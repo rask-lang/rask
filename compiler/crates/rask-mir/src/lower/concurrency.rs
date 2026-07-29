@@ -131,6 +131,7 @@ impl<'a> MirLowerer<'a> {
             ret_ty: MirType::I64,
             scalar_mutate_params: Vec::new(),
             ret_vec_elem: None,
+            param_ty_strs: Vec::new(),
         });
         self.synthesized_functions.push(closure_fn);
 
@@ -244,6 +245,7 @@ impl<'a> MirLowerer<'a> {
             ret_ty: MirType::I64,
             scalar_mutate_params: Vec::new(),
             ret_vec_elem: None,
+            param_ty_strs: Vec::new(),
         });
         self.synthesized_functions.push(closure_fn);
 

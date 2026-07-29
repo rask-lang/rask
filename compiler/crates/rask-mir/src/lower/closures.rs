@@ -25,6 +25,22 @@ impl<'a> MirLowerer<'a> {
         body: &Expr,
         is_own: bool,
     ) -> Result<TypedOperand, LoweringError> {
+        self.lower_closure_expecting(params, ret_ty, body, is_own, &[])
+    }
+
+    /// As `lower_closure`, with the parameter types the callee declares for this
+    /// argument position. An unannotated closure parameter takes its type from
+    /// there — otherwise it defaults to i64 and field access and method dispatch
+    /// inside the body run against the wrong type (`|req| req.method` on a
+    /// `func(Request) -> Response` parameter read a pointer instead of the tag).
+    pub(super) fn lower_closure_expecting(
+        &mut self,
+        params: &[rask_ast::expr::ClosureParam],
+        ret_ty: Option<&str>,
+        body: &Expr,
+        is_own: bool,
+        expected_param_tys: &[String],
+    ) -> Result<TypedOperand, LoweringError> {
         // 1. Collect free variables (captures from enclosing scope)
         let free_vars = self.collect_free_vars(body, params);
 
@@ -57,16 +73,20 @@ impl<'a> MirLowerer<'a> {
         let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
 
         let mut closure_locals = std::collections::HashMap::new();
-        for param in params {
-            let param_ty = param.ty.as_deref()
+        for (i, param) in params.iter().enumerate() {
+            // Written annotation first, then the type the callee declares for
+            // this position.
+            let ty_str = param.ty.clone()
+                .or_else(|| expected_param_tys.get(i).cloned());
+            let param_ty = ty_str.as_deref()
                 .map(|s| self.ctx.resolve_type_str(s))
                 .unwrap_or(MirType::I64);
             let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
             closure_locals.insert(param.name.clone(), (param_id, param_ty.clone()));
             if let Some(prefix) = self.mir_type_name(&param_ty) {
                 self.meta_mut(&param.name).type_prefix = Some(prefix);
-            } else if let Some(ty_str) = param.ty.as_deref() {
-                if let Some(prefix) = super::type_prefix_from_str(ty_str) {
+            } else if let Some(s) = ty_str.as_deref() {
+                if let Some(prefix) = super::type_prefix_from_str(s) {
                     self.meta_mut(&param.name).type_prefix = Some(prefix);
                 }
             }
@@ -113,6 +133,7 @@ impl<'a> MirLowerer<'a> {
             ret_ty: closure_ret,
             scalar_mutate_params: Vec::new(),
             ret_vec_elem: None,
+            param_ty_strs: Vec::new(),
         });
 
         self.synthesized_functions.push(closure_fn);
@@ -210,6 +231,7 @@ impl<'a> MirLowerer<'a> {
                 ret_ty: MirType::I32,
                 scalar_mutate_params: Vec::new(),
                 ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
             });
             self.synthesized_functions.push(sm_result.poll_fn);
 
@@ -264,6 +286,7 @@ impl<'a> MirLowerer<'a> {
                 ret_ty: MirType::Void,
                 scalar_mutate_params: Vec::new(),
                 ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
             });
             self.synthesized_functions.push(spawn_fn);
 

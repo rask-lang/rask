@@ -161,6 +161,20 @@ impl<'a> MirLowerer<'a> {
         (MirOperand::Local(result_local), trait_obj_ty)
     }
 
+    /// Parameter types a closure argument at position `i` should take, read off
+    /// the callee's declared `func(...)` parameter. Empty when the callee is
+    /// unknown or that parameter isn't a function type.
+    fn expected_closure_param_tys(
+        callee_params: &[Option<String>],
+        i: usize,
+    ) -> Vec<String> {
+        callee_params
+            .get(i)
+            .and_then(|p| p.as_deref())
+            .and_then(super::fn_type_param_strs)
+            .unwrap_or_default()
+    }
+
     /// Derive a tracking key for Vec element type inference.
     /// Returns `"v"` for `v.push(x)` and `"self.field"` for `self.field.push(x)`.
     fn vec_tracking_key(object: &Expr) -> Option<String> {
@@ -527,16 +541,26 @@ impl<'a> MirLowerer<'a> {
                 // reading a dead frame and freeing a stack address — glibc aborted
                 // with "free(): invalid pointer" right after the task ran (#463).
                 let spawns_closure = matches!(&func.kind, ExprKind::Ident(n) if n == "spawn");
+                let callee_params: Vec<Option<String>> = match &func.kind {
+                    ExprKind::Ident(name) => {
+                        let key = self.ctx.call_rewrites.get(&expr.id).cloned()
+                            .unwrap_or_else(|| name.clone());
+                        self.func_sigs.get(&key)
+                            .map(|s| s.param_ty_strs.clone())
+                            .unwrap_or_default()
+                    }
+                    _ => Vec::new(),
+                };
                 let mut arg_operands = Vec::new();
                 let mut arg_mir_types = Vec::new();
                 for (i, a) in args.iter().enumerate() {
                     let smut = callee_smut.get(i).and_then(|o| o.as_ref());
-                    let (op, mir_ty) = if spawns_closure {
-                        if let ExprKind::Closure { params, ret_ty, body, .. } = &a.expr.kind {
-                            self.lower_closure(params, ret_ty.as_deref(), body, true)?
-                        } else {
-                            self.lower_call_arg(&a.expr, smut)?
-                        }
+                    let (op, mir_ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &a.expr.kind {
+                        let expected = Self::expected_closure_param_tys(&callee_params, i);
+                        self.lower_closure_expecting(
+                            params, ret_ty.as_deref(), body,
+                            *is_own || spawns_closure, &expected,
+                        )?
                     } else {
                         self.lower_call_arg(&a.expr, smut)?
                     };
@@ -2817,9 +2841,25 @@ impl<'a> MirLowerer<'a> {
                             // Strip generic parameters: "Channel<i64>" → "Channel"
                             let base_name = name.split('<').next().unwrap_or(name);
                             let func_name = format!("{}_{}", base_name, method);
+                            let callee_params: Vec<Option<String>> = self
+                                .func_sigs
+                                .get(&func_name)
+                                .map(|s| s.param_ty_strs.clone())
+                                .unwrap_or_default();
                             let mut arg_operands = Vec::new();
-                            for arg in args {
-                                let (op, _) = self.lower_expr(&arg.expr)?;
+                            for (i, arg) in args.iter().enumerate() {
+                                // An unannotated closure parameter takes its type
+                                // from the callee's declared `func(...)` parameter;
+                                // `|req| req.method` on a `func(Request) -> Response`
+                                // otherwise defaulted to i64 (#463).
+                                let (op, _) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
+                                    let expected = Self::expected_closure_param_tys(&callee_params, i);
+                                    self.lower_closure_expecting(
+                                        params, ret_ty.as_deref(), body, *is_own, &expected,
+                                    )?
+                                } else {
+                                    self.lower_expr(&arg.expr)?
+                                };
                                 arg_operands.push(op);
                             }
 
@@ -2963,8 +3003,25 @@ impl<'a> MirLowerer<'a> {
         // must reuse it rather than re-lower `object` — see #349).
         let mut all_args = vec![obj_op.clone()];
         let mut arg_types = Vec::new();
-        for arg in args {
-            let (op, ty) = self.lower_expr(&arg.expr)?;
+        // The qualified name isn't resolved until after the arguments are
+        // lowered, but a closure argument needs its parameter types up front.
+        // A module-style receiver (`http.listen_and_serve(…)`) mangles
+        // predictably, so try that key for the callee's signature.
+        let tentative_params: Vec<Option<String>> = match &object.kind {
+            ExprKind::Ident(recv) => self
+                .func_sigs
+                .get(&format!("{}_{}", recv, method))
+                .map(|s| s.param_ty_strs.clone())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        for (i, arg) in args.iter().enumerate() {
+            let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
+                let expected = Self::expected_closure_param_tys(&tentative_params, i);
+                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected)?
+            } else {
+                self.lower_expr(&arg.expr)?
+            };
             all_args.push(op);
             arg_types.push(ty);
         }

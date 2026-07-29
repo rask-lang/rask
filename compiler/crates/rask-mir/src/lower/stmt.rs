@@ -975,7 +975,7 @@ impl<'a> MirLowerer<'a> {
             if let Some(rask_types::Type::Fn { ret, .. }) = self.ctx.node_types.get(&init.id) {
                 self.closure_locals.insert(name.to_string());
                 let ret_mir = self.ctx.type_to_mir(ret);
-                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new(), ret_vec_elem: None });
+                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
             }
         }
 

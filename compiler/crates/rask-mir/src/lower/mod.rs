@@ -99,6 +99,12 @@ struct FuncSig {
     /// from once the checker's node types are out of reach (a closure body, an
     /// instantiated copy) — the declared return type is the remaining record.
     ret_vec_elem: Option<MirType>,
+    /// Declared parameter type strings, positionally. Used to type an
+    /// unannotated closure argument's parameters: `|req| { … }` passed to a
+    /// `func(Request) -> Response` parameter has nothing else to go on, and
+    /// defaulting them to i64 made field access and method dispatch inside the
+    /// closure body operate on the wrong type.
+    param_ty_strs: Vec<Option<String>>,
 }
 
 /// Loop context for break/continue
@@ -855,7 +861,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         let thunk_fn = thunk_builder.finish();
-        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), ret_vec_elem: None });
+        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
         self.synthesized_functions.push(thunk_fn);
 
         let captures = caps
@@ -971,6 +977,7 @@ impl<'a> MirLowerer<'a> {
                         ret_ty: sig_ret,
                         scalar_mutate_params: scalar_mutate_params(&f.params, ctx),
                         ret_vec_elem: vec_elem_of_type_str(f.ret_ty.as_deref(), ctx),
+                        param_ty_strs: f.params.iter().map(|p| Some(p.ty.clone())).collect(),
                     });
                 }
                 DeclKind::Extern(ext) => {
@@ -979,7 +986,7 @@ impl<'a> MirLowerer<'a> {
                         .as_deref()
                         .map(|s| ctx.resolve_type_str(s))
                         .unwrap_or(MirType::Void);
-                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new(), ret_vec_elem: None });
+                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
                 }
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
@@ -993,6 +1000,7 @@ impl<'a> MirLowerer<'a> {
                             ret_ty: sig_ret,
                             scalar_mutate_params: scalar_mutate_params(&m.params, ctx),
                             ret_vec_elem: vec_elem_of_type_str(m.ret_ty.as_deref(), ctx),
+                            param_ty_strs: m.params.iter().map(|p| Some(p.ty.clone())).collect(),
                         });
                     }
                 }
@@ -1007,6 +1015,7 @@ impl<'a> MirLowerer<'a> {
                 ret_ty: ret_category_to_mir_type(&meta.ret_category),
                 scalar_mutate_params: Vec::new(),
                 ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
             });
         }
 
@@ -1130,7 +1139,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     MirType::Void
                 };
-                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new(), ret_vec_elem: None });
+                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
             }
         }
 
@@ -2074,6 +2083,39 @@ fn collect_pattern_names(
 // =================================================================
 // Operator mappings
 // =================================================================
+
+/// Parameter type strings of a function-type annotation, e.g.
+/// `"func(Request) -> Response"` → `["Request"]`. The parser normalizes
+/// `|T| -> R` to the `func(...)` form, so only that spelling needs handling.
+pub(crate) fn fn_type_param_strs(ty: &str) -> Option<Vec<String>> {
+    let inner = ty.trim().strip_prefix("func(")?;
+    // Cut at the paren that closes the parameter list, not at a nested one.
+    let mut depth = 1usize;
+    let mut end = None;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let params = &inner[..end?];
+    if params.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    Some(
+        split_top_level_parens(params, ',')
+            .iter()
+            .map(|p| p.trim().to_string())
+            .collect(),
+    )
+}
 
 /// Element type of a declared `Vec<T>` return type, e.g. `"Vec<SeedSpec>"` →
 /// `Struct(SeedSpec)`. `None` for anything that isn't a Vec.
