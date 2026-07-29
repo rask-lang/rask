@@ -299,6 +299,18 @@ RaskVec *rask_vec_collect(const RaskVec *src) {
     return rask_vec_clone(src);
 }
 
+// wide_sum(plan) — reduce int64 lanes with +. A Wide<T> is a RaskVec* at
+// runtime (conc.data-parallel). Integer lanes only; float lanes need the
+// element-type-aware path that native map/zip still lack.
+int64_t rask_wide_sum(const RaskVec *v) {
+    if (!v) return 0;
+    int64_t acc = 0;
+    for (int64_t i = 0; i < v->len; i++) {
+        acc += *(int64_t *)(v->data + i * v->elem_size);
+    }
+    return acc;
+}
+
 // filter(vec, fn_ptr) — keep elements where fn returns non-zero.
 RaskVec *rask_vec_filter(const RaskVec *src, int64_t fn_ptr) {
     typedef int64_t (*FilterFn)(int64_t);

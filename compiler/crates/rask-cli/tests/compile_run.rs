@@ -159,6 +159,30 @@ fn run_capture(mode: &str, fixture_name: &str) -> (String, String, i32) {
     )
 }
 
+// ─── Wide<T> data-parallel tests ─────────────────────────────
+
+const WIDE_EXPECTED: &str = "10\n20\n300\n2, 4, 6, 8\n1\n4\n24\n";
+
+#[test]
+fn wide_basic_interp() {
+    let (stdout, code) = run_interp("wide_basic.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, WIDE_EXPECTED);
+}
+
+// Closure-free Wide path runs natively; the CPU result is the reference
+// semantics a device backend must match (conc.data-parallel/W3). Assert
+// native and interp agree, and both are correct.
+#[test]
+fn wide_native_sum_matches_interp() {
+    let (interp_out, interp_code) = run_interp("wide_native_sum.rk");
+    let (native_out, native_code) = run_native("wide_native_sum.rk");
+    assert_eq!(interp_code, 0, "interp failed");
+    assert_eq!(native_code, 0, "native failed");
+    assert_eq!(interp_out, "sum=10\n");
+    assert_eq!(native_out, interp_out, "native != interp (W3 oracle)");
+}
+
 // ─── rask compile tests ──────────────────────────────────────
 
 #[test]

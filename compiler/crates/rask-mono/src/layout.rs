@@ -113,6 +113,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::UnresolvedGeneric { name, .. } if name == "Handle" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Vec" => (8, 8), // Opaque pointer (runtime uses RaskVec*)
+        Type::UnresolvedGeneric { name, .. } if name == "Wide" => (8, 8), // Opaque pointer (runtime uses RaskVec* — conc.data-parallel)
         Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
         Type::UnresolvedGeneric { name, .. } if name == "Random" => (8, 8),  // Pointer to rng state
         Type::UnresolvedGeneric { name, .. } if name == "Channel" => (8, 8),

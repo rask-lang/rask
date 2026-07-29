@@ -95,6 +95,7 @@ int64_t  rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem);
 int64_t  rask_vec_remove_at(RaskVec *v, int64_t index, void *out);
 RaskVec *rask_iter_skip(const RaskVec *src, int64_t n);
 RaskVec *rask_vec_clone(const RaskVec *v);
+int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
 void     rask_vec_reverse(RaskVec *v);
