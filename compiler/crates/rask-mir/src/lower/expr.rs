@@ -853,6 +853,21 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
+                // `box.lock()/.read()/.write().field` — read a field of the
+                // locked value: acquire → field access → release.
+                if let Some((box_obj, acquire, release)) = self.sync_guard(object) {
+                    let field = field.clone();
+                    let ret_hint = self.ctx.lookup_raw_type(expr.id).map(|t| self.ctx.type_to_mir(t));
+                    return self.lower_sync_guard_access(box_obj, acquire, release, ret_hint, move |g| Expr {
+                        id: rask_ast::NodeId::DUMMY,
+                        span: rask_ast::Span::new(0, 0),
+                        kind: ExprKind::Field {
+                            object: Box::new(g),
+                            field,
+                        },
+                    });
+                }
+
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
 
                 // Resolve field index, type, and byte offset from struct layout.
@@ -2423,16 +2438,24 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        // `mutex.lock().method(args)` — the lock result is a scoped guard, so
-        // run the trailing call inside the lock closure (lock → call → unlock)
-        // instead of lowering `.lock()` to a bare 1-arg call the runtime can't
-        // service. Only when the receiver is a no-arg `.lock()` on a Mutex.
-        if let ExprKind::MethodCall {
-            object: lock_obj, method: lock_method, args: lock_args, ..
-        } = &object.kind {
-            if lock_method == "lock" && lock_args.is_empty() && self.is_mutex_expr(lock_obj) {
-                return self.lower_mutex_lock_method_call(expr, lock_obj, method, args);
-            }
+        // `box.lock()/.read()/.write().method(args)` — the guard result is a
+        // scoped lock, so run the trailing call between acquire and release
+        // (lock → call → unlock) instead of lowering the guard to a bare 1-arg
+        // call the closure-based runtime can't service directly.
+        if let Some((box_obj, acquire, release)) = self.sync_guard(object) {
+            let method = method.to_string();
+            let args = args.to_vec();
+            let ret_hint = self.ctx.lookup_raw_type(expr.id).map(|t| self.ctx.type_to_mir(t));
+            return self.lower_sync_guard_access(box_obj, acquire, release, ret_hint, move |g| Expr {
+                id: rask_ast::NodeId::DUMMY,
+                span: rask_ast::Span::new(0, 0),
+                kind: ExprKind::MethodCall {
+                    object: Box::new(g),
+                    method,
+                    type_args: None,
+                    args,
+                },
+            });
         }
 
         let (obj_op, obj_ty) = self.lower_expr(object)?;

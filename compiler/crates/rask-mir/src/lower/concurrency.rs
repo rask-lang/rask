@@ -11,10 +11,17 @@ use rask_ast::expr::{CallArg, Expr, ExprKind};
 use rask_ast::{NodeId, Span};
 
 impl<'a> MirLowerer<'a> {
-    /// Extract the inner type name from a Shared variable expression.
+    /// Extract the inner type name from a Shared/Mutex expression — the `T` in
+    /// `Shared<T>`/`Mutex<T>`, whether the checker left it a resolved `Generic`
+    /// or an `UnresolvedGeneric`.
     pub(super) fn resolve_shared_inner_type_name(&self, object: &Expr) -> Option<String> {
         if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
-            if let rask_types::Type::UnresolvedGeneric { args, .. } = raw_ty {
+            let args = match raw_ty {
+                rask_types::Type::UnresolvedGeneric { args, .. }
+                | rask_types::Type::Generic { args, .. } => Some(args),
+                _ => None,
+            };
+            if let Some(args) = args {
                 if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
                     if let rask_types::Type::UnresolvedNamed(name) = inner.as_ref() {
                         return Some(name.clone());
@@ -256,20 +263,19 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), MirType::I64))
     }
 
-    /// True when `object` has a Mutex type — either from the checker's type
-    /// info or from a tracked `type_prefix` on a local/const.
-    pub(super) fn is_mutex_expr(&self, object: &Expr) -> bool {
+    /// True when `object` has type `{box_name}<T>` (e.g. "Mutex", "Shared").
+    /// Resolves the prefix from the checker's type (resolved `Generic` or
+    /// `UnresolvedGeneric`, generics stripped) so it covers a field receiver
+    /// like `self.store`; falls back to a tracked `type_prefix` on a local.
+    pub(super) fn is_sync_box_expr(&self, object: &Expr, box_name: &str) -> bool {
         let from_type = self.ctx.lookup_raw_type(object.id)
-            .map(|ty| matches!(ty,
-                rask_types::Type::UnresolvedGeneric { name, .. }
-                | rask_types::Type::UnresolvedNamed(name)
-                if name == "Mutex"
-            ))
+            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            .map(|p| p.split('<').next().unwrap_or(&p).trim() == box_name)
             .unwrap_or(false);
         let from_prefix = if let ExprKind::Ident(var_name) = &object.kind {
             self.meta(var_name)
                 .and_then(|m| m.type_prefix.as_deref())
-                .map(|p| p == "Mutex")
+                .map(|p| p == box_name)
                 .unwrap_or(false)
         } else {
             false
@@ -277,48 +283,103 @@ impl<'a> MirLowerer<'a> {
         from_type || from_prefix
     }
 
-    /// Lower `mutex.lock().method(args)` — a scoped lock used as a method
-    /// receiver. The runtime lock hands the closure a pointer to the inner
-    /// data, runs it, and unlocks. Run the trailing call inside that closure
-    /// so the lock is held for exactly the call. Reuses the `with mutex as g
-    /// { g.method(args) }` machinery by synthesizing that body.
-    pub(super) fn lower_mutex_lock_method_call(
+    /// If `object` is a no-arg guard access on a sync box —
+    /// `mutex.lock()`, `shared.read()`, `shared.write()` — return the box
+    /// expression and the acquire/release runtime functions for it. The caller
+    /// runs the trailing method or field access on the guard between them.
+    pub(super) fn sync_guard<'e>(
+        &self,
+        object: &'e Expr,
+    ) -> Option<(&'e Expr, &'static str, &'static str)> {
+        let ExprKind::MethodCall { object: box_obj, method, args, .. } = &object.kind else {
+            return None;
+        };
+        if !args.is_empty() {
+            return None;
+        }
+        match method.as_str() {
+            "lock" if self.is_sync_box_expr(box_obj, "Mutex") => {
+                Some((box_obj, "Mutex_acquire", "Mutex_release"))
+            }
+            "read" if self.is_sync_box_expr(box_obj, "Shared") => {
+                Some((box_obj, "Shared_read_acquire", "Shared_release"))
+            }
+            "write" if self.is_sync_box_expr(box_obj, "Shared") => {
+                Some((box_obj, "Shared_write_acquire", "Shared_release"))
+            }
+            _ => None,
+        }
+    }
+
+    /// Lower a guard access on a sync box: `box.lock()/.read()/.write()`
+    /// followed by a method call or field access. Acquire the lock and take a
+    /// pointer to the inner value, run the trailing operation on that pointer
+    /// in this frame, then release. Running in-frame (rather than in a closure,
+    /// as the `with` form does) lets the operation return an aggregate — a
+    /// `T or E` result — through the normal ABI. A `mutate self` method writes
+    /// through to the real value; the lock is held for exactly the operation.
+    ///
+    /// `make_op` builds the trailing operation given the guard as an ident:
+    /// `|g| g.method(args)` or `|g| g.field`.
+    pub(super) fn lower_sync_guard_access(
         &mut self,
-        expr: &Expr,
-        mutex_obj: &Expr,
-        method: &str,
-        args: &[CallArg],
+        box_obj: &Expr,
+        acquire: &str,
+        release: &str,
+        ret_hint: Option<MirType>,
+        make_op: impl FnOnce(Expr) -> Expr,
     ) -> Result<TypedOperand, LoweringError> {
+        let (box_op, _) = self.lower_expr(box_obj)?;
+
+        // The guard aliases the box's inner value — the acquire call returns a
+        // pointer to it. Type the local as the inner struct so method dispatch
+        // and field offsets resolve, exactly like a `with pool[h] as e`
+        // binding. Codegen special-cases the acquire functions to bind the
+        // returned pointer directly (a struct pointer-alias), so it isn't
+        // copied into a fresh slot — a `mutate self` method then writes through
+        // to the real value.
+        let inner_name = self.resolve_shared_inner_type_name(box_obj);
+        let guard_ty = inner_name.as_ref()
+            .and_then(|n| self.ctx.find_struct(n))
+            .map(|(idx, sl)| MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)))
+            .unwrap_or(MirType::Ptr);
         let guard_name = format!("__lock_guard_{}", self.closure_counter);
+        self.closure_counter += 1;
+        let guard_local = self.builder.alloc_local(guard_name.clone(), guard_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(guard_local),
+            func: FunctionRef::internal(acquire.to_string()),
+            args: vec![box_op.clone()],
+        }));
+        self.locals.insert(guard_name.clone(), (guard_local, guard_ty));
+        if let Some(n) = &inner_name {
+            self.meta_mut(&guard_name).type_prefix = Some(n.clone());
+        }
+
+        // Lower the trailing operation on the guard through the normal path.
         let guard_ident = Expr {
             id: NodeId::DUMMY,
             span: Span::new(0, 0),
             kind: ExprKind::Ident(guard_name.clone()),
         };
-        let call_expr = Expr {
-            id: NodeId::DUMMY,
-            span: Span::new(0, 0),
-            kind: ExprKind::MethodCall {
-                object: Box::new(guard_ident),
-                method: method.to_string(),
-                type_args: None,
-                args: args.to_vec(),
-            },
-        };
-        let body = vec![rask_ast::stmt::Stmt {
-            id: NodeId::DUMMY,
-            span: Span::new(0, 0),
-            kind: rask_ast::stmt::StmtKind::Expr(call_expr),
-        }];
+        let (result, inner_ret_ty) = self.lower_expr(&make_op(guard_ident))?;
 
-        let (op, _) = self.lower_mutex_with_block(mutex_obj, &guard_name, &body)?;
+        // Release. The operation's value is a copy (or lives in a caller slot),
+        // so it stays valid after the lock is released.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal(release.to_string()),
+            args: vec![box_op],
+        }));
 
-        // The scoped call yields the method's value; size the result with the
-        // checker's type for the whole `.lock().method()` expression.
-        let ret_ty = self.ctx.lookup_raw_type(expr.id)
-            .map(|t| self.ctx.type_to_mir(t))
-            .unwrap_or(MirType::I64);
-        Ok((op, ret_ty))
+        // The synthesized inner op has no checker node, so its return type can
+        // fall back to a bare pointer when the method isn't found under the
+        // looked-up name. The whole `box.op()` expression IS typed by the
+        // checker — prefer that.
+        let ret_ty = ret_hint
+            .filter(|t| !matches!(t, MirType::Void))
+            .unwrap_or(inner_ret_ty);
+        Ok((result, ret_ty))
     }
 
 }

@@ -2811,6 +2811,23 @@ impl<'a> FunctionBuilder<'a> {
                     "Call destination variable not found".to_string()
                 ))?;
 
+            // Lock-acquire calls return a pointer to the box's inner value.
+            // Bind the aggregate dst straight to that pointer — a struct
+            // pointer-alias, exactly like a pool access — so the following
+            // method/field access hits the real value, not a copied slot.
+            if matches!(func.name.as_str(),
+                "Mutex_acquire" | "Shared_read_acquire" | "Shared_write_acquire")
+            {
+                let results = builder.inst_results(call_inst);
+                let ptr = if !results.is_empty() {
+                    results[0]
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                };
+                builder.def_var(*var, ptr);
+                return Ok(());
+            }
+
             // Post-call result handling
             let mut slot_already_written = false;
             let val = match adapt {
