@@ -248,30 +248,30 @@ extend JsonParser {
                 }
                 const esc = self.advance()
                 if esc == 34 {
-                    b.append_char('"')
+                    b.push_char('"')
                 } else if esc == 92 {
-                    b.append_char('\\')
+                    b.push_char('\\')
                 } else if esc == 47 {
-                    b.append_char('/')
+                    b.push_char('/')
                 } else if esc == 110 {
-                    b.append_char('\n')
+                    b.push_char('\n')
                 } else if esc == 114 {
-                    b.append_char('\r')
+                    b.push_char('\r')
                 } else if esc == 116 {
-                    b.append_char('\t')
+                    b.push_char('\t')
                 } else if esc == 98 {
-                    b.append_char('\u{8}')
+                    b.push_char('\u{8}')
                 } else if esc == 102 {
-                    b.append_char('\u{c}')
+                    b.push_char('\u{c}')
                 } else if esc == 117 {
                     const cp = try self.parse_unicode_escape()
-                    b.append_char(cp)
+                    b.push_char(cp)
                 } else {
                     return JsonError.ParseError("invalid escape character")
                 }
                 continue
             }
-            b.append_char(char.from_u32(byte as u32) ?? '\u{0}')
+            b.push_char(char.from_u32(byte as u32) ?? '\u{0}')
         }
 
         return JsonError.ParseError("unterminated string")
@@ -468,66 +468,66 @@ func stringify_value(value: JsonValue) -> string {
 
 func stringify_array(arr: Vec<JsonValue>) -> string {
     mut b = StringBuilder.new()
-    b.append("[")
+    b.push("[")
     mut first = true
     for item in arr {
         if !first {
-            b.append(",")
+            b.push(",")
         }
-        b.append(stringify_value(item))
+        b.push(stringify_value(item))
         first = false
     }
-    b.append("]")
+    b.push("]")
     return b.build()
 }
 
 func stringify_object(map: Map<string, JsonValue>) -> string {
     mut b = StringBuilder.new()
-    b.append("{")
+    b.push("{")
     mut first = true
     for (key, value) in map {
         if !first {
-            b.append(",")
+            b.push(",")
         }
-        b.append(escape_string(key))
-        b.append(":")
-        b.append(stringify_value(value))
+        b.push(escape_string(key))
+        b.push(":")
+        b.push(stringify_value(value))
         first = false
     }
-    b.append("}")
+    b.push("}")
     return b.build()
 }
 
 func escape_string(s: string) -> string {
     mut b = StringBuilder.new()
-    b.append_char('"')
+    b.push_char('"')
     mut i: usize = 0
     while i < s.len() {
         const byte = s.byte_at(i)
         if byte == 34 {
-            b.append("\\\"")
+            b.push("\\\"")
         } else if byte == 92 {
-            b.append("\\\\")
+            b.push("\\\\")
         } else if byte == 10 {
-            b.append("\\n")
+            b.push("\\n")
         } else if byte == 13 {
-            b.append("\\r")
+            b.push("\\r")
         } else if byte == 9 {
-            b.append("\\t")
+            b.push("\\t")
         } else if byte == 8 {
-            b.append("\\b")
+            b.push("\\b")
         } else if byte == 12 {
-            b.append("\\f")
+            b.push("\\f")
         } else if byte < 32 {
-            b.append("\\u00")
-            b.append_char(hex_char(byte / 16))
-            b.append_char(hex_char(byte % 16))
+            b.push("\\u00")
+            b.push_char(hex_char(byte / 16))
+            b.push_char(hex_char(byte % 16))
         } else {
-            b.append_char(char.from_u32(byte as u32) ?? '\u{0}')
+            b.push_char(char.from_u32(byte as u32) ?? '\u{0}')
         }
         i = i + 1
     }
-    b.append_char('"')
+    b.push_char('"')
     return b.build()
 }
 
@@ -550,53 +550,53 @@ func format_number(n: f64) -> string {
 
 func stringify_pretty_inner(value: JsonValue, mutate out: StringBuilder, indent: usize) {
     match value {
-        JsonValue.Null => out.append("null")
+        JsonValue.Null => out.push("null")
         JsonValue.Bool(b) => if b {
-            out.append("true")
+            out.push("true")
         } else {
-            out.append("false")
+            out.push("false")
         }
-        JsonValue.Number(n) => out.append(format_number(n))
-        JsonValue.String(s) => out.append(escape_string(s))
+        JsonValue.Number(n) => out.push(format_number(n))
+        JsonValue.String(s) => out.push(escape_string(s))
         JsonValue.Array(arr) => {
             if arr.is_empty() {
-                out.append("[]")
+                out.push("[]")
                 return
             }
-            out.append("[\n")
+            out.push("[\n")
             mut first = true
             for item in arr {
                 if !first {
-                    out.append(",\n")
+                    out.push(",\n")
                 }
                 write_indent(mutate out, indent + 1)
                 stringify_pretty_inner(item, mutate out, indent + 1)
                 first = false
             }
-            out.append_char('\n')
+            out.push_char('\n')
             write_indent(mutate out, indent)
-            out.append_char(']')
+            out.push_char(']')
         }
         JsonValue.Object(map) => {
             if map.is_empty() {
-                out.append("{}")
+                out.push("{}")
                 return
             }
-            out.append("{\n")
+            out.push("{\n")
             mut first = true
             for (key, val) in map {
                 if !first {
-                    out.append(",\n")
+                    out.push(",\n")
                 }
                 write_indent(mutate out, indent + 1)
-                out.append(escape_string(key))
-                out.append(": ")
+                out.push(escape_string(key))
+                out.push(": ")
                 stringify_pretty_inner(val, mutate out, indent + 1)
                 first = false
             }
-            out.append_char('\n')
+            out.push_char('\n')
             write_indent(mutate out, indent)
-            out.append_char('}')
+            out.push_char('}')
         }
     }
 }
@@ -604,7 +604,7 @@ func stringify_pretty_inner(value: JsonValue, mutate out: StringBuilder, indent:
 func write_indent(mutate out: StringBuilder, level: usize) {
     mut i: usize = 0
     while i < level {
-        out.append("  ")
+        out.push("  ")
         i = i + 1
     }
 }

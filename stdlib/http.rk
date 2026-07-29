@@ -721,6 +721,21 @@ extend Responder {
 struct http { }
 
 extend http {
+    /// Bind a TCP listener and return an `HttpServer` for a manual accept loop.
+    /// Parallel to `net.tcp_listen`. The server is a linear resource — close it
+    /// with `ensure server.close()`. Each accepted request yields a linear
+    /// `Responder` that must send exactly one response.
+    public func listen(addr: string) -> HttpServer or HttpError {
+        return HttpServer.listen(addr)
+    }
+
+    /// One-line HTTP server. Spawns a green task per request.
+    /// Requires an active `using Multitasking { ... }` scope in the process
+    /// (transitively reaches `spawn`).
+    public func serve(addr: string, handler: func(Request) -> Response) -> void or HttpError {
+        return http.listen_and_serve(addr, handler)
+    }
+
     /// One-line HTTP server. Spawns a green task per request.
     /// Requires an active `using Multitasking { ... }` scope in the process
     /// (transitively reaches `spawn`).

@@ -128,7 +128,7 @@ func interrupt_handler(
     mut sequence: i64 = 0
 
     while sequence < sample_rate_hz * 2 {
-        const now_ns = time.Instant.now().duration_since(start_time).as_nanos() as i64
+        const now_ns = time.Instant.now().duration_since(start_time).as_nanos() saturate to i64
 
         for sensor_id in 0..3 {
             const value = read_hardware_sensor(sensor_id, sequence)
@@ -274,7 +274,7 @@ func main() {
 
     mut cycle: i64 = 0
 
-    while (time.Instant.now().duration_since(start_time).as_seconds() as i64) < DURATION_SECS {
+    while (time.Instant.now().duration_since(start_time).as_seconds() saturate to i64) < DURATION_SECS {
         const cycle_start = time.Instant.now()
 
         // Drain available samples without blocking — try_receive returns once
@@ -289,7 +289,7 @@ func main() {
         }
 
         // Measure cycle time
-        const cycle_ns = cycle_start.elapsed().as_nanos() as i64
+        const cycle_ns = cycle_start.elapsed().as_nanos() saturate to i64
         timing.record(cycle_ns, deadline_ns)
 
         cycle += 1
