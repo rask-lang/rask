@@ -103,6 +103,27 @@ impl TypeTable {
             is_transitive_resource: false,
         });
         self.result_type_id = Some(result_id);
+
+        // Comparison result (ORD1) plus atomic memory orderings share one enum,
+        // matching the resolver and interpreter registrations. Without a real
+        // TypeDef entry, a user-written `Ordering` annotation is rejected as an
+        // unknown type even though the name resolves.
+        self.register_type(TypeDef::Enum {
+            name: "Ordering".to_string(),
+            type_params: vec![],
+            variants: vec![
+                ("Less".to_string(), vec![]),
+                ("Equal".to_string(), vec![]),
+                ("Greater".to_string(), vec![]),
+                ("Relaxed".to_string(), vec![]),
+                ("Acquire".to_string(), vec![]),
+                ("Release".to_string(), vec![]),
+                ("AcqRel".to_string(), vec![]),
+                ("SeqCst".to_string(), vec![]),
+            ],
+            methods: vec![],
+            is_transitive_resource: false,
+        });
     }
 
     /// Register a user-defined type.
