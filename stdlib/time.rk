@@ -34,16 +34,16 @@ extend Duration {
     public func from_nanos(n: i64) -> Duration { }
 
     /// Whole seconds in this duration.
-    public func as_seconds(self) -> i64 { }
+    public func as_seconds(self) -> u64 { }
 
     /// Whole milliseconds in this duration.
-    public func as_millis(self) -> i64 { }
+    public func as_millis(self) -> u64 { }
 
     /// Whole microseconds in this duration.
-    public func as_micros(self) -> i64 { }
+    public func as_micros(self) -> u64 { }
 
     /// Nanoseconds in this duration.
-    public func as_nanos(self) -> i64 { }
+    public func as_nanos(self) -> u64 { }
 
     /// Duration as f32 seconds.
     public func as_seconds_f32(self) -> f64 { }
@@ -64,6 +64,52 @@ extend Instant {
 
     /// Duration elapsed since this instant was captured.
     public func elapsed(self) -> Duration { }
+}
+
+/// A point in wall-clock time, relative to the UNIX epoch.
+/// Subject to NTP adjustments — can go backward. Serializable, unlike Instant.
+public struct SystemTime { }
+
+extend SystemTime {
+    /// Capture the current wall-clock time.
+    public func now() -> SystemTime { }
+
+    /// The UNIX epoch: 1970-01-01 00:00:00 UTC.
+    public func unix_epoch() -> SystemTime { }
+
+    /// Reconstruct from a stored seconds-since-epoch timestamp.
+    public func from_unix_seconds(seconds: i64) -> SystemTime { }
+
+    /// Reconstruct from a stored millis-since-epoch timestamp.
+    public func from_unix_millis(millis: i64) -> SystemTime { }
+
+    /// Whole seconds since the UNIX epoch (negative before 1970).
+    public func unix_seconds(self) -> i64 { }
+
+    /// Whole milliseconds since the UNIX epoch.
+    public func unix_millis(self) -> i64 { }
+
+    /// Nanoseconds since the UNIX epoch.
+    public func unix_nanos(self) -> i128 { }
+
+    /// Duration since an earlier point. Fails if the clock went backward.
+    public func duration_since(self, earlier: SystemTime) -> Duration or TimeError { }
+
+    /// Duration since this time was captured. Fails if the clock went backward.
+    public func elapsed(self) -> Duration or TimeError { }
+}
+
+/// A wall-clock read failed because the clock went backward (NTP adjustment).
+public enum TimeError {
+    Backwards
+}
+
+extend TimeError {
+    public func message(self) -> string {
+        match self {
+            TimeError.Backwards => return "clock went backward",
+        }
+    }
 }
 
 /// Timer for delayed and periodic events.
