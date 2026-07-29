@@ -183,11 +183,11 @@ extend StringBuilder {
     /// Create a builder with pre-allocated capacity.
     public func with_capacity(n: usize) -> StringBuilder { }
 
-    /// Append a string.
-    public func append(mutate self, s: string) { }
+    /// Add a string at the end.
+    public func push(mutate self, s: string) { }
 
-    /// Append a single character.
-    public func append_char(mutate self, c: char) { }
+    /// Add a single character at the end.
+    public func push_char(mutate self, c: char) { }
 
     /// Consume the builder, return the built string. Zero-copy.
     public func build(take self) -> string { }

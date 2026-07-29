@@ -145,6 +145,23 @@ impl Resolver {
             let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
         }
 
+        // Prelude stdlib structs — always in scope, no import needed.
+        // StringBuilder is the recommended idiom for building strings in loops
+        // (canonical-patterns), so it can't hide behind an import. Registered as
+        // a plain struct; the type checker learns its real fields/methods from
+        // the stub decls. If stdlib decls are collected (run/build), they replace
+        // this binding with the full definition.
+        for name in ["StringBuilder"] {
+            let sym_id = self.symbols.insert(
+                name.to_string(),
+                SymbolKind::Struct { fields: vec![] },
+                None,
+                Span::new(0, 0),
+                true,
+            );
+            let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
+        }
+
         self.register_builtin_enum("Option", &["Some", "None"]);
         self.register_builtin_enum("Result", &["Ok", "Err"]);
         self.register_builtin_enum("Ordering", &[
