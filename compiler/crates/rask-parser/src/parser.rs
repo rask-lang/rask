@@ -3856,9 +3856,11 @@ impl Parser {
                         self.current_kind(),
                         self.current().span,
                     ).with_hint("Generic type arguments must be followed by ()"))
-                } else if self.check(&TokenKind::LBrace) {
+                } else if self.allow_brace_expr && self.check(&TokenKind::LBrace) {
                     // Struct variant constructor: Enum.Variant { field: value }
-                    // Only when base is a type name (uppercase) to avoid ambiguity with blocks
+                    // Only when base is a type name (uppercase) to avoid ambiguity with blocks.
+                    // In condition position (`if x == Enum.Unit { .. }`) braces start the
+                    // block, not a struct literal (#342) — mirror the plain-ident path.
                     if let ExprKind::Ident(base) = &lhs.kind {
                         if base.starts_with(|c: char| c.is_uppercase()) && field.starts_with(|c: char| c.is_uppercase()) {
                             let full_name = format!("{}.{}", base, field);

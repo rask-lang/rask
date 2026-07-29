@@ -760,6 +760,43 @@ mod tests {
         }
     }
 
+    // #342: in condition position, `Enum.Variant { .. }` braces start the block,
+    // not a struct-variant constructor. `if x == State.Idle { }` must parse.
+    #[test]
+    fn enum_variant_in_if_condition() {
+        let stmts = parse_body("const s = State.Idle\nif s == State.Idle {\n    print(1)\n}");
+        assert_eq!(stmts.len(), 2);
+        assert!(
+            matches!(stmts[1].kind, StmtKind::Expr(ref e) if matches!(e.kind, ExprKind::If { .. })),
+            "expected if statement, got {:?}", stmts[1].kind
+        );
+    }
+
+    #[test]
+    fn enum_variant_in_while_condition() {
+        let stmts = parse_body("while s == State.Running {\n    print(1)\n}");
+        assert_eq!(stmts.len(), 1);
+        assert!(
+            matches!(stmts[0].kind, StmtKind::While { .. }),
+            "expected while statement, got {:?}", stmts[0].kind
+        );
+    }
+
+    // A struct-variant constructor with fields still parses outside condition position.
+    #[test]
+    fn enum_variant_struct_literal_outside_condition() {
+        let stmts = parse_body("const e = Shape.Rect { w: 1, h: 2 }");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(
+                matches!(init.kind, ExprKind::StructLit { ref name, .. } if name == "Shape.Rect"),
+                "expected struct literal, got {:?}", init.kind
+            );
+        } else {
+            panic!("expected const");
+        }
+    }
+
     #[test]
     fn generic_static_method() {
         let stmts = parse_body("Vec<i32>.new()");
