@@ -657,8 +657,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── StringBuilder ───────────────────────────────────────────
         StdlibEntry::simple("StringBuilder_new", "rask_string_builder_new", &[], Some(types::I64), false),
         StdlibEntry::simple("StringBuilder_with_capacity", "rask_string_builder_with_capacity", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("StringBuilder_append", "rask_string_builder_append", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("StringBuilder_append_char", "rask_string_builder_append_char", &[types::I64, types::I64], None, false),
+        // push/push_char are the names stdlib/string.rk declares (and `Vec.push`
+        // reads the same way); the C entry points kept their older spelling.
+        StdlibEntry::simple("StringBuilder_push", "rask_string_builder_append", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("StringBuilder_push_char", "rask_string_builder_append_char", &[types::I64, types::I64], None, false),
         StdlibEntry {
             mir_name: "StringBuilder_build", c_name: "rask_string_builder_build",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,

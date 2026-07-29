@@ -158,6 +158,7 @@ impl Interpreter {
             "Path" => self.call_path_type_method(method, args),
             "f32x8" => self.call_simd_type_method(method, args),
             "Random" => self.call_rng_type_method(method, args),
+            "StringBuilder" => self.call_string_builder_type_method(method, args),
             "Thread" => {
                 if method == "spawn" {
                     self.spawn_os_thread(args)
