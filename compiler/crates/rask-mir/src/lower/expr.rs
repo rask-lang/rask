@@ -419,6 +419,8 @@ impl<'a> MirLowerer<'a> {
                             args: vec![
                                 MirOperand::Local(global_local),
                                 MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
+                                // Comptime array globals hold i64 elements.
+                                MirOperand::Constant(MirConst::Int(8)),
                             ],
                         }));
                         self.meta_mut(&name).type_prefix = Some("Vec".to_string());
@@ -2563,7 +2565,7 @@ impl<'a> MirLowerer<'a> {
                                 name: name.clone(),
                             }));
 
-                            // Wrap raw data into a Vec: rask_vec_from_static(ptr, count)
+                            // Wrap raw data into a Vec: rask_vec_from_static(ptr, count, elem_size)
                             let vec_local = self.builder.alloc_temp(MirType::I64);
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(vec_local),
@@ -2571,6 +2573,8 @@ impl<'a> MirLowerer<'a> {
                                 args: vec![
                                     MirOperand::Local(global_local),
                                     MirOperand::Constant(MirConst::Int(elem_count as i64)),
+                                    // Comptime array globals hold i64 elements.
+                                    MirOperand::Constant(MirConst::Int(8)),
                                 ],
                             }));
 
@@ -3543,8 +3547,19 @@ impl<'a> MirLowerer<'a> {
         // method to the real `{Type}_{method}` instead. This is driven by the
         // MIR type, not the checker's node type, so it also covers receivers
         // the checker left untyped (e.g. a synthesized lock guard).
+        //
+        // Only when the type actually declares that operator, though. Without an
+        // overload there is nothing to call, and `==`/`!=` on an aggregate is
+        // meant to reach codegen's structural comparison (tag then payload for
+        // enums, field by field for structs) as a BinaryOp. Routing every
+        // aggregate operator to `{Type}_{method}` sent derived comparisons to a
+        // function that was never emitted — `Status_eq` not found (#399/#463).
         let aggregate_receiver = matches!(obj_ty, MirType::Struct(_) | MirType::Enum(_));
-        let skip_binop = skip_binop || aggregate_receiver;
+        let has_operator_overload = aggregate_receiver
+            && self.mir_type_name(obj_ty)
+                .map(|ty_name| format!("{}_{}", ty_name, method))
+                .is_some_and(|qualified| self.func_sigs.contains_key(&qualified));
+        let skip_binop = skip_binop || has_operator_overload;
 
         // Detect binary operator methods (desugared from a + b → a.add(b))
         // Skip for SIMD types and raw pointers — they use method dispatch.
@@ -4101,7 +4116,7 @@ impl<'a> MirLowerer<'a> {
         else_name: Option<String>,
     ) -> Result<TypedOperand, LoweringError> {
         let is_niche = self.is_niche_option_expr(inner);
-        let (val, _) = self.lower_expr(inner)?;
+        let (val, scrutinee_ty) = self.lower_expr(inner)?;
         let tag = self.emit_option_tag(&val, is_niche);
 
         // Branch on tag: 0 = present (Some/Ok), nonzero = absent (None/Err).
@@ -4127,7 +4142,9 @@ impl<'a> MirLowerer<'a> {
 
         // Then: bind the present payload as the narrow name, lower body.
         self.builder.switch_to_block(then_block);
-        let payload_ty = self.extract_payload_type(inner).unwrap_or(MirType::I64);
+        let payload_ty = self.extract_payload_type(inner)
+            .or_else(|| Self::payload_of_mir(&scrutinee_ty))
+            .unwrap_or(MirType::I64);
         if let Some(name) = then_name.as_ref() {
             let local = self.builder.alloc_local(name.clone(), payload_ty.clone());
             let rvalue = if is_niche {
@@ -4165,7 +4182,12 @@ impl<'a> MirLowerer<'a> {
         // Else: for Result, bind the err payload (field 0) as the else name.
         // For Option, None has no payload so skip the bind.
         self.builder.switch_to_block(else_block);
-        if let (Some(name), Some(err_ty)) = (else_name.as_ref(), self.extract_err_type(inner)) {
+        let else_err_ty = self.extract_err_type(inner)
+            .or_else(|| match &scrutinee_ty {
+                MirType::Result { err, .. } => Some((**err).clone()),
+                _ => None,
+            });
+        if let (Some(name), Some(err_ty)) = (else_name.as_ref(), else_err_ty) {
             let local = self.builder.alloc_local(name.clone(), err_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: local,

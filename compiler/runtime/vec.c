@@ -38,8 +38,10 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap) {
     return v;
 }
 
-RaskVec *rask_vec_from_static(const char *data, int64_t count) {
-    int64_t elem_size = 8; // all comptime values are i64
+// elem_size comes from the caller: a static array of fat pointers (trait
+// objects, slices) has 16-byte elements, not 8.
+RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size) {
+    if (elem_size <= 0) elem_size = 8;
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
     v->len = count;
     v->cap = count;

@@ -1231,6 +1231,21 @@ impl<'a> MirLowerer<'a> {
         self.ctx.lookup_node_type(expr.id)
     }
 
+    /// Element type of a `Vec<T>`, in either the pre-resolve
+    /// (`UnresolvedGeneric`) or resolved (`Generic`) spelling.
+    fn vec_elem_raw_type<'t>(&self, ty: &'t Type) -> Option<&'t Type> {
+        let args = match ty {
+            Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
+            Type::Generic { base, args }
+                if self.ctx.type_names.get(base).is_some_and(|n| n == "Vec") => args,
+            _ => return None,
+        };
+        match args.first()? {
+            rask_types::GenericArg::Type(t) => Some(t),
+            rask_types::GenericArg::ConstUsize(_) => None,
+        }
+    }
+
     /// Extract the element type from an iterator type using raw type info.
     /// For Range<i32>, returns I32. Falls back to AST heuristics after mono.
     fn extract_iterator_elem_type(&self, expr: &Expr) -> Option<MirType> {
@@ -1251,7 +1266,16 @@ impl<'a> MirLowerer<'a> {
                 // Pool iteration yields handles (packed i64)
                 Type::UnresolvedNamed(n) if n == "Pool" => return Some(MirType::I64),
                 Type::UnresolvedGeneric { name, .. } if name == "Pool" => return Some(MirType::I64),
-                _ => {}
+                // Vec<any Trait> yields fat-pointer elements. Only the trait-object
+                // case is taken from the checker here: concrete element types are
+                // already covered by the tracked elem_type below, but a trait object
+                // carries a vtable half that nothing downstream can recover once the
+                // binding has been typed as a plain scalar.
+                _ => {
+                    if let Some(Type::TraitObject { trait_name }) = self.vec_elem_raw_type(ty) {
+                        return Some(MirType::TraitObject { trait_name: trait_name.clone() });
+                    }
+                }
             }
         }
 
@@ -1300,6 +1324,22 @@ impl<'a> MirLowerer<'a> {
             }
         } else {
             None
+        }
+    }
+
+    /// Ok/Some payload of an already-lowered MIR type.
+    ///
+    /// The backstop for `extract_payload_type`: stdlib bodies and post-mono
+    /// copies carry synthesized node IDs the checker never typed, so the only
+    /// record of the payload type is the scrutinee's own MIR type, built from
+    /// the callee's declared return type. Without this an if-let over a stdlib
+    /// `T or E` binds its payload as a bare i64 and method dispatch on the
+    /// binding has no type to work from.
+    fn payload_of_mir(ty: &MirType) -> Option<MirType> {
+        match ty {
+            MirType::Result { ok, .. } => Some((**ok).clone()),
+            MirType::Option(inner) => Some((**inner).clone()),
+            _ => None,
         }
     }
 

@@ -48,6 +48,7 @@ impl<'a> MirLowerer<'a> {
             args: vec![
                 MirOperand::Local(arr_local),
                 MirOperand::Constant(MirConst::Int(elems.len() as i64)),
+                MirOperand::Constant(MirConst::Int(elem_size as i64)),
             ],
         }));
         Ok((MirOperand::Local(vec_local), MirType::I64))

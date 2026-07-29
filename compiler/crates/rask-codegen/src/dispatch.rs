@@ -131,7 +131,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         // Vec.with_capacity(n): (elem_size, cap) — elem_size injected at lowering.
         StdlibEntry::simple("Vec_with_capacity", "rask_vec_with_capacity", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_vec_from_static", "rask_vec_from_static", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_vec_from_static", "rask_vec_from_static", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
         StdlibEntry {

@@ -77,7 +77,7 @@ typedef struct RaskVec RaskVec;
 
 RaskVec *rask_vec_new(int64_t elem_size);
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap);
-RaskVec *rask_vec_from_static(const char *data, int64_t count);
+RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size);
 void     rask_vec_free(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);

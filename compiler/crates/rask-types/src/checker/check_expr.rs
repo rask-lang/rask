@@ -2863,7 +2863,7 @@ impl TypeChecker {
 
     /// Name of a builtin generic container, matching by TypeId (resolved) or by
     /// spelling (unresolved).
-    fn generic_base_name(&self, ty: &Type) -> Option<&'static str> {
+    pub(super) fn generic_base_name(&self, ty: &Type) -> Option<&'static str> {
         const NAMES: [&str; 4] = ["Vec", "Map", "Pool", "Handle"];
         match ty {
             Type::UnresolvedGeneric { name, .. } => {

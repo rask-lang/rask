@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Entry point. Opens the Multitasking runtime, seeds the store through a
+// spawn/channel pipeline, then serves with the convenience server.
+//
+// The spec's manual accept loop (http.listen + linear Responder + ensure)
+// isn't in the checker/stub yet — only listen_and_serve resolves — so the
+// linear-Responder demo lives in FINDINGS rather than here.
+
+import http
+
+struct SeedSpec {
+    title: string
+    priority: Priority
+}
+
+func main() -> void or Error {
+    using Multitasking {
+        const cfg = config.read().clone()
+        println("tracker starting — {cfg}")
+
+        seed_store()
+
+        println("listening on {cfg.addr()}")
+        try http.listen_and_serve(cfg.addr(), |req| { route(req) })
+    }
+}
+
+// Bootstrap data. A producer task streams seed specs over a channel; the
+// main task receives them and inserts. Exercises spawn / channel send /
+// receive / join within the runtime block.
+func seed_store() {
+    const owner = store.lock().create_user("alice", EmailAddress { raw: "alice@example.com" })!
+    const proj = store.lock().create_project("bootstrap", owner)!
+
+    mut (tx, rx) = Channel<SeedSpec>.buffered(8)
+    const total = seed_specs().len()
+
+    const producer = spawn(own || {
+        for spec in seed_specs() {
+            const sent = tx.send(spec.clone())
+            if sent? { continue }
+        }
+    })
+
+    mut count = 0
+    while count < total {
+        const r = rx.receive()
+        if r? as spec {
+            store.lock().create_task(spec.title, proj, spec.priority)!
+            count += 1
+        } else {
+            break
+        }
+    }
+
+    producer.join()!
+}
+
+func seed_specs() -> Vec<SeedSpec> {
+    return Vec.from([
+        SeedSpec { title: "write the spec", priority: Priority.High },
+        SeedSpec { title: "review the diff", priority: Priority.Medium },
+        SeedSpec { title: "ship it", priority: Priority.Urgent },
+    ])
+}
