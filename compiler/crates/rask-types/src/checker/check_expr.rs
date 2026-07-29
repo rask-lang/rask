@@ -1186,6 +1186,12 @@ impl TypeChecker {
                 self.push_scope();
                 for binding in bindings {
                     let raw_ty = self.infer_expr(&binding.source);
+                    // Deciding whether to unwrap needs the source's concrete type.
+                    // A module-level const initialized with `Mutex.new(...)` is still
+                    // an unsolved type var here (module consts are solved only at the
+                    // end), so resolve pending constraints before inspecting it —
+                    // otherwise the wrapper isn't recognized and `v` stays a `Mutex`.
+                    self.solve_constraints();
                     let source_ty = self.ctx.apply(&raw_ty);
                     // conc.sync/MX1: `with mutex as v { ... }` — bind `v` to the
                     // inner T, not the Mutex wrapper. The lock is held for the
