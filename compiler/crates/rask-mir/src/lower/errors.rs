@@ -11,6 +11,26 @@ use crate::{
 use rask_ast::expr::{CallArg, Expr, ExprKind, TryElse};
 
 impl<'a> MirLowerer<'a> {
+    /// The error type of a `try` target's Result, from whichever source
+    /// resolved it. The checker's type for the whole `try` expression and the
+    /// lowered MIR type of the inner can each be an unresolved `Ptr` (a
+    /// cross-module lock chain leaves the checker type a var; a plain call can
+    /// leave the MIR type bare), so take whichever landed a concrete type. A
+    /// wrong type here sizes the error slot wrong and blocks method dispatch on
+    /// the `else |e|` binding.
+    fn resolved_err_type(&self, inner: &Expr, result_ty: &MirType) -> MirType {
+        let err_from_result = match result_ty {
+            MirType::Result { err, .. } => Some(err.as_ref().clone()),
+            _ => None,
+        };
+        let candidates = [self.extract_err_type(inner), err_from_result];
+        candidates.iter().flatten()
+            .find(|t| !matches!(t, MirType::Ptr))
+            .or_else(|| candidates.iter().flatten().next())
+            .cloned()
+            .unwrap_or(MirType::I64)
+    }
+
     /// Try expression lowering (spec L3).
     pub(super) fn lower_try(&mut self, inner: &Expr) -> Result<TypedOperand, LoweringError> {
         let (result, result_ty) = self.lower_expr(inner)?;
@@ -35,12 +55,7 @@ impl<'a> MirLowerer<'a> {
 
         // Err path — construct Result.Err with origin and return
         self.builder.switch_to_block(err_block);
-        let err_ty = self.extract_err_type(inner)
-            .or_else(|| match &result_ty {
-                MirType::Result { err, .. } => Some(err.as_ref().clone()),
-                _ => None,
-            })
-            .unwrap_or(MirType::I64);
+        let err_ty = self.resolved_err_type(inner, &result_ty);
         let err_store_size = if err_ty.size() > 8 { Some(err_ty.size()) } else { None };
         let err_val = self.builder.alloc_temp(err_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -236,14 +251,11 @@ impl<'a> MirLowerer<'a> {
             else_block: ok_block,
         }));
 
-        // Err path — bind error to param, evaluate else body, return transformed error
+        // Err path — bind error to param, evaluate else body, return transformed error.
         self.builder.switch_to_block(err_block);
-        let err_ty = self.extract_err_type(inner)
-            .or_else(|| match &result_ty {
-                MirType::Result { err, .. } => Some(err.as_ref().clone()),
-                _ => None,
-            })
-            .unwrap_or(MirType::I64);
+        // The error binding's type must be concrete so a method on it (the
+        // common `else |e| e.to_api()`) can dispatch.
+        let err_ty = self.resolved_err_type(inner, &result_ty);
         let err_val = self.builder.alloc_temp(err_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: err_val,
