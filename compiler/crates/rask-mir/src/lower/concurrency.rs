@@ -372,13 +372,18 @@ impl<'a> MirLowerer<'a> {
             args: vec![box_op],
         }));
 
-        // The synthesized inner op has no checker node, so its return type can
-        // fall back to a bare pointer when the method isn't found under the
-        // looked-up name. The whole `box.op()` expression IS typed by the
-        // checker — prefer that.
-        let ret_ty = ret_hint
-            .filter(|t| !matches!(t, MirType::Void))
-            .unwrap_or(inner_ret_ty);
+        // Pick the return type. The inner op's type (from the method's own
+        // signature) is authoritative — it carries a resolved `T or E` result,
+        // which the outer expression's checker type often doesn't (a lock chain
+        // is frequently left an inference var, collapsing to Ptr). Fall back to
+        // the checker hint only when the inner type is an unresolved bare Ptr.
+        let ret_ty = if matches!(inner_ret_ty, MirType::Ptr) {
+            ret_hint
+                .filter(|t| !matches!(t, MirType::Void | MirType::Ptr))
+                .unwrap_or(inner_ret_ty)
+        } else {
+            inner_ret_ty
+        };
         Ok((result, ret_ty))
     }
 

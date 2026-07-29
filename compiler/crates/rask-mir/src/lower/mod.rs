@@ -1096,9 +1096,21 @@ impl<'a> MirLowerer<'a> {
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
                     // Extract type prefix from init (e.g. Shared<Metrics>.new() → "Shared")
-                    if let ExprKind::MethodCall { object, .. } = &c.init.kind {
+                    if let ExprKind::MethodCall { object, args, .. } = &c.init.kind {
                         if let ExprKind::Ident(type_name) = &object.kind {
                             if let Some(prefix) = MirContext::type_prefix_str(type_name) {
+                                // Also record the wrapped type (Mutex<Store>) from the
+                                // constructor's argument. A cross-module const reference
+                                // gets left an inference var by the checker, so guard
+                                // access can't read the inner type off the use site — the
+                                // initializer here is the only place it's concrete.
+                                if let Some(inner) = args.first().and_then(|a| {
+                                    lowerer.ctx.lookup_raw_type(a.expr.id)
+                                        .and_then(|ty| MirContext::type_prefix(ty, lowerer.ctx.type_names))
+                                }) {
+                                    lowerer.meta_mut(&c.name).full_type =
+                                        Some(format!("{}<{}>", prefix, inner));
+                                }
                                 lowerer.meta_mut(&c.name).type_prefix = Some(prefix);
                             }
                         }
