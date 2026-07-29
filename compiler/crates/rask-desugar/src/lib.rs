@@ -23,6 +23,7 @@ use rask_ast::{NodeId, Span};
 /// Desugar all operators in a list of declarations.
 pub fn desugar(decls: &mut [Decl]) {
     let mut desugarer = Desugarer::new(1_000_000);
+    desugarer.scan_error_message_types(decls);
     for decl in decls {
         desugarer.desugar_decl(decl);
     }
@@ -31,6 +32,7 @@ pub fn desugar(decls: &mut [Decl]) {
 /// Desugar with a custom starting NodeId to avoid collisions.
 pub fn desugar_with_start_id(decls: &mut [Decl], start_id: u32) {
     let mut desugarer = Desugarer::new(start_id);
+    desugarer.scan_error_message_types(decls);
     for decl in decls {
         desugarer.desugar_decl(decl);
     }
@@ -46,6 +48,7 @@ pub struct DesugarError {
 /// Desugar all operators, returning any ER26 coverage errors.
 pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
     let mut desugarer = Desugarer::new(1_000_000);
+    desugarer.scan_error_message_types(decls);
     for decl in decls {
         desugarer.desugar_decl(decl);
     }
@@ -56,11 +59,46 @@ pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
 struct Desugarer {
     next_id: u32,
     errors: Vec<DesugarError>,
+    /// Type names known to implement `ErrorMessage` (ER37): `@message` enums and
+    /// any type with a manual `message()` method. A single-payload `@message`
+    /// variant whose payload is in this set auto-delegates to `inner.message()`.
+    error_message_types: std::collections::HashSet<String>,
 }
 
 impl Desugarer {
     fn new(start_id: u32) -> Self {
-        Self { next_id: start_id, errors: Vec::new() }
+        Self {
+            next_id: start_id,
+            errors: Vec::new(),
+            error_message_types: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Collect the type names that implement `ErrorMessage` so single-payload
+    /// `@message` variants can decide whether to delegate. Purely syntactic:
+    /// a `@message` enum, or any struct/enum/impl that defines `message()`.
+    fn scan_error_message_types(&mut self, decls: &[Decl]) {
+        let has_message = |methods: &[FnDecl]| methods.iter().any(|m| m.name == "message");
+        for decl in decls {
+            match &decl.kind {
+                DeclKind::Enum(e) => {
+                    if e.attrs.iter().any(|a| a == "message") || has_message(&e.methods) {
+                        self.error_message_types.insert(e.name.clone());
+                    }
+                }
+                DeclKind::Struct(s) => {
+                    if has_message(&s.methods) {
+                        self.error_message_types.insert(s.name.clone());
+                    }
+                }
+                DeclKind::Impl(i) => {
+                    if has_message(&i.methods) {
+                        self.error_message_types.insert(i.target_ty.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn fresh_id(&mut self) -> NodeId {
@@ -128,20 +166,7 @@ impl Desugarer {
         let mut arms = Vec::new();
 
         for variant in &e.variants {
-            let template = match self.extract_message_template(variant) {
-                Some(t) => t,
-                None => {
-                    // ER26: missing coverage — record error, use variant name as fallback
-                    self.errors.push(DesugarError {
-                        message: format!(
-                            "@message variant `{}` on `{}` has no message template and cannot auto-delegate",
-                            variant.name, e.name
-                        ),
-                        span: sp,
-                    });
-                    MessageTemplate::Format(variant.name.clone())
-                }
-            };
+            let template = self.extract_message_template(variant);
 
             // Build pattern bindings for this variant
             let field_patterns: Vec<Pattern> = if variant.fields.is_empty() {
@@ -236,28 +261,29 @@ impl Desugarer {
         })
     }
 
-    /// Extract the message template for a variant.
-    ///
-    /// ER24: explicit @message("template") on the variant.
-    /// ER25: single-field variant with Error-typed payload auto-delegates to inner.message().
-    /// ER26: variants without coverage return None (caller must handle).
-    fn extract_message_template(&self, variant: &rask_ast::decl::Variant) -> Option<MessageTemplate> {
-        // Check for @message("template") on the variant
+    /// Resolve a variant to its message template. Precedence (type.errors ER36/37/6):
+    ///   1. explicit `@message("template")` on the variant,
+    ///   2. single payload implementing `ErrorMessage` → delegate to `inner.message()`,
+    ///   3. ER6 fallback: humanized variant name, with payloads interpolated.
+    /// Every variant resolves — there is no uncovered case.
+    fn extract_message_template(&self, variant: &rask_ast::decl::Variant) -> MessageTemplate {
+        // ER36: explicit @message("template") on the variant wins.
         for attr in &variant.attrs {
             if let Some(tmpl) = extract_message_attr_template(attr) {
-                return Some(MessageTemplate::Format(tmpl));
+                return MessageTemplate::Format(translate_positional_refs(&tmpl));
             }
         }
-        // No-payload variants use the variant name as a reasonable default
-        if variant.fields.is_empty() {
-            return Some(MessageTemplate::Format(variant.name.clone()));
+        // ER37: single payload that implements ErrorMessage delegates to it. The
+        // `ends_with("Error")` check keeps cross-module error types working when
+        // their declaration isn't in this compilation unit's decl set.
+        if variant.fields.len() == 1 {
+            let payload_ty = &variant.fields[0].ty;
+            if self.error_message_types.contains(payload_ty) || is_error_type_name(payload_ty) {
+                return MessageTemplate::Delegate(variant.fields[0].name.clone());
+            }
         }
-        // ER25: auto-delegate for single-field variants with Error-typed payload
-        if variant.fields.len() == 1 && is_error_type_name(&variant.fields[0].ty) {
-            return Some(MessageTemplate::Delegate(variant.fields[0].name.clone()));
-        }
-        // ER26: missing coverage — caller should report error
-        None
+        // ER6: humanized variant name, interpolating any payload fields.
+        MessageTemplate::Format(humanize_variant(&variant.name, &variant.fields))
     }
 
     fn desugar_trait(&mut self, t: &mut TraitDecl) {
@@ -743,6 +769,58 @@ enum MessageTemplate {
 /// Matches names ending in "Error" (e.g., IoError, ManifestError).
 fn is_error_type_name(ty: &str) -> bool {
     ty.ends_with("Error")
+}
+
+/// ER6 fallback message: humanize the variant name (`NotFound` → "not found")
+/// and interpolate any payload fields. `UnexpectedEnd(ctx)` → "unexpected end: {ctx}";
+/// a positional payload interpolates as `{_0}`.
+fn humanize_variant(name: &str, fields: &[rask_ast::decl::Field]) -> String {
+    let mut base = String::new();
+    for (i, c) in name.char_indices() {
+        if c.is_ascii_uppercase() && i > 0 {
+            base.push(' ');
+        }
+        base.push(c.to_ascii_lowercase());
+    }
+    if fields.is_empty() {
+        return base;
+    }
+    let parts: Vec<String> = fields.iter().map(|f| format!("{{{}}}", f.name)).collect();
+    format!("{}: {}", base, parts.join(", "))
+}
+
+/// ER36: positional payload refs `{0}`/`{1}` name the auto-generated tuple
+/// fields, which the parser binds as `_0`/`_1`. Rewrite `{N}` → `{_N}` so the
+/// string-interpolation pass resolves them to those bindings instead of the
+/// integer literal `N`. Named refs (`{ctx}`) and escaped braces pass through.
+fn translate_positional_refs(tmpl: &str) -> String {
+    let mut out = String::with_capacity(tmpl.len());
+    let mut chars = tmpl.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            // Collect the run of digits directly inside the braces.
+            let mut digits = String::new();
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_digit() {
+                    digits.push(d);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if !digits.is_empty() && chars.peek() == Some(&'}') {
+                out.push('{');
+                out.push('_');
+                out.push_str(&digits);
+            } else {
+                out.push('{');
+                out.push_str(&digits);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Extract the template from a `message("template")` attribute string.
