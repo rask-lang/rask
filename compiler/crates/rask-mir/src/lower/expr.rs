@@ -2417,6 +2417,18 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
+        // `mutex.lock().method(args)` — the lock result is a scoped guard, so
+        // run the trailing call inside the lock closure (lock → call → unlock)
+        // instead of lowering `.lock()` to a bare 1-arg call the runtime can't
+        // service. Only when the receiver is a no-arg `.lock()` on a Mutex.
+        if let ExprKind::MethodCall {
+            object: lock_obj, method: lock_method, args: lock_args, ..
+        } = &object.kind {
+            if lock_method == "lock" && lock_args.is_empty() && self.is_mutex_expr(lock_obj) {
+                return self.lower_mutex_lock_method_call(expr, lock_obj, method, args);
+            }
+        }
+
         let (obj_op, obj_ty) = self.lower_expr(object)?;
 
         if let Some(r) = self.try_lower_raw_ptr_method(object, method, args, &obj_op, &obj_ty)? {
@@ -3490,21 +3502,15 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
-        // User struct/enum operator overload: `a + b` desugars to
-        // `a.add(b)`. When the receiver is a user aggregate with a real
-        // operator method, dispatch to it instead of emitting a native
-        // BinaryOp — the latter would `sadd` the two struct pointers as
-        // integers and hand back garbage (#386).
-        let user_operator_method = matches!(obj_ty, MirType::Struct(_) | MirType::Enum(_))
-            && self.ctx.lookup_raw_type(object.id)
-                .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
-                .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-                .map(|prefix| {
-                    let base = prefix.split('<').next().unwrap_or(&prefix).trim();
-                    self.func_sigs.contains_key(&format!("{}_{}", base, method))
-                })
-                .unwrap_or(false);
-        let skip_binop = skip_binop || user_operator_method;
+        // Operator overload: `a + b` desugars to `a.add(b)`. A native
+        // BinaryOp only makes sense for primitive operands — on a Struct/Enum
+        // receiver it would `sadd` two aggregate pointers as integers and hand
+        // back garbage (#386). So dispatch any aggregate-receiver operator
+        // method to the real `{Type}_{method}` instead. This is driven by the
+        // MIR type, not the checker's node type, so it also covers receivers
+        // the checker left untyped (e.g. a synthesized lock guard).
+        let aggregate_receiver = matches!(obj_ty, MirType::Struct(_) | MirType::Enum(_));
+        let skip_binop = skip_binop || aggregate_receiver;
 
         // Detect binary operator methods (desugared from a + b → a.add(b))
         // Skip for SIMD types and raw pointers — they use method dispatch.

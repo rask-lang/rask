@@ -7,7 +7,8 @@ use crate::{
     stmt::ClosureCapture, types::StructLayoutId, BlockBuilder, FunctionRef,
     MirOperand, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
-use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::expr::{CallArg, Expr, ExprKind};
+use rask_ast::{NodeId, Span};
 
 impl<'a> MirLowerer<'a> {
     /// Extract the inner type name from a Shared variable expression.
@@ -253,6 +254,71 @@ impl<'a> MirLowerer<'a> {
         }));
 
         Ok((MirOperand::Local(result_local), MirType::I64))
+    }
+
+    /// True when `object` has a Mutex type — either from the checker's type
+    /// info or from a tracked `type_prefix` on a local/const.
+    pub(super) fn is_mutex_expr(&self, object: &Expr) -> bool {
+        let from_type = self.ctx.lookup_raw_type(object.id)
+            .map(|ty| matches!(ty,
+                rask_types::Type::UnresolvedGeneric { name, .. }
+                | rask_types::Type::UnresolvedNamed(name)
+                if name == "Mutex"
+            ))
+            .unwrap_or(false);
+        let from_prefix = if let ExprKind::Ident(var_name) = &object.kind {
+            self.meta(var_name)
+                .and_then(|m| m.type_prefix.as_deref())
+                .map(|p| p == "Mutex")
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        from_type || from_prefix
+    }
+
+    /// Lower `mutex.lock().method(args)` — a scoped lock used as a method
+    /// receiver. The runtime lock hands the closure a pointer to the inner
+    /// data, runs it, and unlocks. Run the trailing call inside that closure
+    /// so the lock is held for exactly the call. Reuses the `with mutex as g
+    /// { g.method(args) }` machinery by synthesizing that body.
+    pub(super) fn lower_mutex_lock_method_call(
+        &mut self,
+        expr: &Expr,
+        mutex_obj: &Expr,
+        method: &str,
+        args: &[CallArg],
+    ) -> Result<TypedOperand, LoweringError> {
+        let guard_name = format!("__lock_guard_{}", self.closure_counter);
+        let guard_ident = Expr {
+            id: NodeId::DUMMY,
+            span: Span::new(0, 0),
+            kind: ExprKind::Ident(guard_name.clone()),
+        };
+        let call_expr = Expr {
+            id: NodeId::DUMMY,
+            span: Span::new(0, 0),
+            kind: ExprKind::MethodCall {
+                object: Box::new(guard_ident),
+                method: method.to_string(),
+                type_args: None,
+                args: args.to_vec(),
+            },
+        };
+        let body = vec![rask_ast::stmt::Stmt {
+            id: NodeId::DUMMY,
+            span: Span::new(0, 0),
+            kind: rask_ast::stmt::StmtKind::Expr(call_expr),
+        }];
+
+        let (op, _) = self.lower_mutex_with_block(mutex_obj, &guard_name, &body)?;
+
+        // The scoped call yields the method's value; size the result with the
+        // checker's type for the whole `.lock().method()` expression.
+        let ret_ty = self.ctx.lookup_raw_type(expr.id)
+            .map(|t| self.ctx.type_to_mir(t))
+            .unwrap_or(MirType::I64);
+        Ok((op, ret_ty))
     }
 
 }
