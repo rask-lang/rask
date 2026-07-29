@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #462: a fold closure whose body ends in an explicit `return` must accumulate,
+// not reset to the init value each iteration. Native must match the interpreter.
+// Also covers the tail-expression form (no `return`) on the same path.
+
+func main() {
+    const nums = [1, 2, 3, 4, 5]
+    const sum = nums.iter().fold(0, |acc, x| { return acc + x })
+    print(sum)          // 15
+    print(" ")
+    const product = nums.iter().fold(1, |acc, x| acc * x)
+    print(product)      // 120
+}

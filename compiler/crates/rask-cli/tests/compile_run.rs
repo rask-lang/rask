@@ -265,6 +265,12 @@ fn copy_loop_index_rebind_native_eq_interp() {
     assert_native_eq_interp("copy_loop_index_rebind.rk", "012344");
 }
 
+// #462: a fold closure ending in `return` must accumulate, not reset to init.
+#[test]
+fn iter_fold_return_body_native_eq_interp() {
+    assert_native_eq_interp("iter_fold_return_body.rk", "15 120");
+}
+
 // ─── Native codegen: structs, enums, closures, strings ──────
 
 #[test]

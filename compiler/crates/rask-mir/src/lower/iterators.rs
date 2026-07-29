@@ -459,18 +459,28 @@ impl<'a> MirLowerer<'a> {
 
                 let after_body = self.builder.create_block();
 
+                // A `return` inside the fold closure writes the new accumulator
+                // and jumps to the join block. Point the inline-return target
+                // there so both body shapes converge on `after_body`.
                 let saved_return_target = self.inline_return_target.take();
-                self.inline_return_target = Some((acc, setup.inc_block));
+                self.inline_return_target = Some((acc, after_body));
 
                 let (result_op, _) = self.lower_expr(body)?;
 
                 self.inline_return_target = saved_return_target;
 
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: acc,
-                    rvalue: MirRValue::Use(result_op),
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: after_body }));
+                // Tail-expression body (`|acc, x| acc + x`): the block is still
+                // open, so its value is the new accumulator. A body ending in
+                // `return` (`|acc, x| { return acc + x }`) already wrote `acc`
+                // and terminated — writing it again here would clobber it with a
+                // stale operand (#462: fold returned the init value on native).
+                if self.builder.current_block_unterminated() {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: acc,
+                        rvalue: MirRValue::Use(result_op),
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: after_body }));
+                }
 
                 self.builder.switch_to_block(after_body);
 
