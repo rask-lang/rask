@@ -502,6 +502,18 @@ fn dispatch_vec_native_eq_interp() {
     assert_native_eq_interp("dispatch_vec.rk", "3\nfalse\n20\n30\n2\n");
 }
 
+// #399: `==`/`!=` on enums and structs compares contents on native, not the
+// address of the operands' stack slots. Covers unit-variant enums, an enum with
+// a payload, a struct with a string field, inequality, and an `if x == Variant`
+// branch — all must match the interpreter.
+#[test]
+fn struct_enum_eq_native_eq_interp() {
+    assert_native_eq_interp(
+        "struct_enum_eq.rk",
+        "true\nfalse\ntrue\ntrue\nfalse\nfalse\ntrue\ntrue\nfalse\nfalse\ntrue\nbranch-green\n",
+    );
+}
+
 // comp.hidden-params (#422): named `using Pool<T>` contexts must lower on
 // native — the SIG2 rewrite (hidden param + named alias + call-site arg) —
 // and read the pool element the same as the interpreter.

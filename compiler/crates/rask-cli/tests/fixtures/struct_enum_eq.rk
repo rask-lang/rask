@@ -1,0 +1,36 @@
+// #399: native `==`/`!=` on enums and structs must compare contents, not the
+// address of the operands' stack slots. Every line here must print the same on
+// the native and interpreter backends.
+
+enum Color { Red, Green, Blue }
+enum Msg { Move(i32), Stop }
+struct User { name: string, id: i32 }
+
+func main() {
+    // Unit-variant enums: compare by tag.
+    const c = Color.Green
+    println((c == Color.Green).to_string())   // true
+    println((c == Color.Red).to_string())     // false
+    println((c != Color.Red).to_string())     // true
+
+    // Enum carrying a payload: tag then payload fields.
+    const m = Msg.Move(5)
+    println((m == Msg.Move(5)).to_string())   // true
+    println((m == Msg.Move(6)).to_string())   // false
+    println((m == Msg.Stop).to_string())      // false
+    println((m != Msg.Move(6)).to_string())   // true
+
+    // Struct with a string field: string compares by content.
+    const u = User { name: "ada", id: 1 }
+    println((u == User { name: "ada", id: 1 }).to_string())   // true
+    println((u == User { name: "bob", id: 1 }).to_string())   // false
+    println((u == User { name: "ada", id: 2 }).to_string())   // false
+    println((u != User { name: "bob", id: 1 }).to_string())   // true
+
+    // `if x == Enum.Variant { .. }` takes the right branch natively.
+    if (c == Color.Green) {
+        println("branch-green")
+    } else {
+        println("branch-other")
+    }
+}
