@@ -264,6 +264,9 @@ impl Default for ErrorCodeRegistry {
                 "E0821" => ("ensure receiver maybe-consumed", Ownership,
                     "A resource with a pending `ensure` was consumed on some paths but not all, and the paths merge before scope exit (C4). Which cleanup runs must be statically definite — never decided by hidden runtime state (C3). Exit inside the consuming branch, or consume on every path.",
                     "const tx = try db.begin()\nensure tx.rollback()\nif fast { tx.commit() }  // error: paths merge with tx maybe-consumed\nlog(\"done\")"),
+                "E0822" => ("missing struct field", Type,
+                    "A struct literal left out a field that has no default value. Construction never zero-initializes — a defaultless field must be given a value, or declared with a default (`field: T = value`). A spread (`..base`) supplies every unlisted field.",
+                    "struct Config { host: string, port: i32 = 8080 }\nconst c = Config {}  // error: missing field `host`"),
             },
         }
     }

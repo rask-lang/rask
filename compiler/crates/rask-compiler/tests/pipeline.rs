@@ -419,3 +419,51 @@ fn er42_struct_with_linear_field_is_transitively_linear() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// FD4 — missing struct field is a compile error (never silently zeroed)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fd4_missing_field_errors() {
+    let path = tmp_rk(r#"
+        struct Config {
+            public host: string
+            public port: i32 = 8080
+        }
+        func main() {
+            const c = Config {}
+            println(c.host)
+        }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(!output.succeeded(), "FD4: omitting defaultless `host` must error");
+    assert!(
+        output.diagnostics.iter().any(|d|
+            d.code.as_ref().map_or(false, |c| c.0 == "E0822") && d.message.contains("host")),
+        "expected E0822 naming `host`, got: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn fd4_defaults_and_spread_satisfy_construction() {
+    // Omitting a defaulted field is fine (desugar fills it); a spread supplies
+    // every unlisted field, so neither triggers FD4.
+    let path = tmp_rk(r#"
+        struct Config {
+            public host: string
+            public port: i32 = 8080
+        }
+        func main() {
+            const a = Config { host: "x" }
+            const b = Config { port: 1, ..a }
+            println("{a.port} {b.host}")
+        }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(output.succeeded(), "defaulted omit + spread must type-check, got: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
+    let _ = std::fs::remove_file(&path);
+}
