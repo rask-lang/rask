@@ -132,6 +132,11 @@ pub(crate) struct HiddenParamPass<'a> {
     /// parameters. `Some` means contexts must resolve from these — the closure
     /// can outlive the enclosing pool scope, so it can't inherit ambient ones.
     pub storable_closure: Option<Vec<(String, Type)>>,
+    /// In-scope `for` loop variables → their element type. The checker leaves a
+    /// loop variable's type an inference var, so uses of it inside the body have
+    /// no recorded type; this recovers it structurally from the iterable so the
+    /// `h.field` handle-deref rewrite can fire on a loop variable.
+    pub loop_var_types: HashMap<String, Type>,
     /// Fresh NodeId counter (high range to avoid parser collisions).
     pub next_id: u32,
 }
@@ -147,8 +152,45 @@ impl<'a> HiddenParamPass<'a> {
             typed,
             diagnostics: Vec::new(),
             storable_closure: None,
+            loop_var_types: HashMap::new(),
             next_id: 2_000_000,
         }
+    }
+
+    /// Element type of an iterable expression: `Vec<T>`/`Slice<T>` → `T`,
+    /// fixed arrays → their element. Used to type `for` loop variables the
+    /// checker left as inference vars.
+    pub fn iterable_elem_type(&self, iter: &Expr) -> Option<Type> {
+        use rask_types::GenericArg;
+        let first_type_arg = |args: &[GenericArg]| match args.first()? {
+            GenericArg::Type(t) => Some((**t).clone()),
+            _ => None,
+        };
+        match self.node_ty(iter.id)? {
+            Type::Generic { base, args } => {
+                let name = self.typed?.types.type_name(base);
+                match name.as_str() {
+                    "Vec" | "Slice" => first_type_arg(&args),
+                    _ => None,
+                }
+            }
+            Type::UnresolvedGeneric { name, args } if name == "Vec" || name == "Slice" => {
+                first_type_arg(&args)
+            }
+            Type::Slice(e) => Some(*e),
+            Type::Array { elem, .. } => Some(*elem),
+            _ => None,
+        }
+    }
+
+    /// Handle element type for an identifier, first via its node type, then via
+    /// a tracked `for` loop variable (the checker leaves loop vars untyped).
+    pub fn ident_handle_elem(&self, name: &str, id: NodeId) -> Option<Type> {
+        self.node_handle_elem(id).or_else(|| {
+            self.loop_var_types
+                .get(name)
+                .and_then(|t| self.handle_elem_of_type(t))
+        })
     }
 
     /// Parse a source type string, resolving names through the type table so the

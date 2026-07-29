@@ -155,9 +155,28 @@ fn rewrite_stmt(pass: &mut HiddenParamPass, caller: &str, stmt: &mut Stmt) {
             rewrite_stmts(pass, caller, body);
         }
         StmtKind::Loop { body, .. } => rewrite_stmts(pass, caller, body),
-        StmtKind::For { iter, body, .. } => {
+        StmtKind::For { iter, body, binding, .. } => {
             rewrite_expr(pass, caller, iter);
+            // Record the loop variable's element type so the handle-deref
+            // rewrite fires on it inside the body (the checker leaves it an
+            // inference var). Save/restore to respect shadowing across loops.
+            let saved = match binding {
+                rask_ast::stmt::ForBinding::Single(name) => {
+                    let prev = pass.loop_var_types.remove(name);
+                    if let Some(elem) = pass.iterable_elem_type(iter) {
+                        pass.loop_var_types.insert(name.clone(), elem);
+                    }
+                    Some((name.clone(), prev))
+                }
+                _ => None,
+            };
             rewrite_stmts(pass, caller, body);
+            if let Some((name, prev)) = saved {
+                match prev {
+                    Some(t) => { pass.loop_var_types.insert(name, t); }
+                    None => { pass.loop_var_types.remove(&name); }
+                }
+            }
         }
         StmtKind::Ensure {
             body,
@@ -247,7 +266,12 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
         ExprKind::Field { object, .. } => {
             // mem.context/CC1: `h.field` on a `Handle<T>` lowers to `pool[h].field`,
             // resolving the Pool<T> from scope (CC4) exactly like a hidden argument.
-            let elem = pass.node_handle_elem(object.id);
+            // A loop variable's type isn't recorded on its node, so fall back to
+            // the tracked for-loop element type when the object is a bare ident.
+            let elem = match &object.kind {
+                ExprKind::Ident(name) => pass.ident_handle_elem(name, object.id),
+                _ => pass.node_handle_elem(object.id),
+            };
             rewrite_expr(pass, caller, object);
             if let Some(elem) = elem {
                 wrap_handle_deref(pass, caller, object, &elem, expr.span);

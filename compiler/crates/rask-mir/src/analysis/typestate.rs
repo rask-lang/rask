@@ -630,7 +630,14 @@ pub fn check_errors(
         .collect();
 
     for block in &func.blocks {
-        let mut state = results.entry[&block.id].clone();
+        // The dataflow only computes states for blocks reachable in RPO. A
+        // block that's unreachable from entry (e.g. the dead merge block left
+        // after a match whose every arm returns) has no entry state and can't
+        // hold a live handle access — skip it rather than index-panic.
+        let Some(entry_state) = results.entry.get(&block.id) else {
+            continue;
+        };
+        let mut state = entry_state.clone();
 
         for stmt in &block.statements {
             // Check before applying this statement's effect

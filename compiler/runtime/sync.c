@@ -199,6 +199,21 @@ int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure) {
     return result;
 }
 
+// Acquire/release pair for the direct `mutex.lock().method(args)` form. Unlike
+// the closure wrapper above, the method call happens in the caller's frame, so
+// it returns aggregates (a `T or E` result) through the normal ABI. Acquire
+// locks and hands back the data pointer; release unlocks.
+int64_t rask_mutex_acquire(int64_t mutex) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    pthread_mutex_lock(&m->lock);
+    return (int64_t)(intptr_t)m->data;
+}
+
+void rask_mutex_release(int64_t mutex) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    pthread_mutex_unlock(&m->lock);
+}
+
 int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     if (pthread_mutex_trylock(&m->lock) == 0) {
@@ -252,6 +267,26 @@ int64_t rask_shared_write_ptr(int64_t shared, int64_t closure) {
     int64_t result = fn(env, (int64_t)(intptr_t)s->data);
     pthread_rwlock_unlock(&s->lock);
     return result;
+}
+
+// Acquire/release for the direct `shared.read()/.write()` guard form, mirroring
+// the Mutex pair. The following method or field access runs in the caller's
+// frame so it can return aggregates. Read takes a shared lock, write exclusive.
+int64_t rask_shared_read_acquire(int64_t shared) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    pthread_rwlock_rdlock(&s->lock);
+    return (int64_t)(intptr_t)s->data;
+}
+
+int64_t rask_shared_write_acquire(int64_t shared) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    pthread_rwlock_wrlock(&s->lock);
+    return (int64_t)(intptr_t)s->data;
+}
+
+void rask_shared_release(int64_t shared) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    pthread_rwlock_unlock(&s->lock);
 }
 
 // Non-blocking read: returns 1+result on success, 0 if contended (R3)

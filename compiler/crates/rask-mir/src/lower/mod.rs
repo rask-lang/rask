@@ -586,6 +586,25 @@ impl<'a> MirLowerer<'a> {
         self.local_meta.get(name)
     }
 
+    /// Method-dispatch prefix for a Struct/Enum MIR type — its layout name.
+    /// Lets dispatch mangle `{Type}_{method}` from the concrete MIR type when
+    /// the checker left the receiver untyped.
+    pub(crate) fn mir_aggregate_prefix(&self, ty: &MirType) -> Option<String> {
+        match ty {
+            MirType::Struct(StructLayoutId { id, .. }) => self
+                .ctx
+                .struct_layouts
+                .get(*id as usize)
+                .map(|l| l.name.clone()),
+            MirType::Enum(EnumLayoutId { id, .. }) => self
+                .ctx
+                .enum_layouts
+                .get(*id as usize)
+                .map(|l| l.name.clone()),
+            _ => None,
+        }
+    }
+
     /// Current cleanup chain in LIFO order (last-registered ensure runs first).
     fn cleanup_chain(&self) -> Vec<BlockId> {
         self.ensure_stack.iter().rev().copied().collect()
@@ -1077,9 +1096,21 @@ impl<'a> MirLowerer<'a> {
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
                     // Extract type prefix from init (e.g. Shared<Metrics>.new() → "Shared")
-                    if let ExprKind::MethodCall { object, .. } = &c.init.kind {
+                    if let ExprKind::MethodCall { object, args, .. } = &c.init.kind {
                         if let ExprKind::Ident(type_name) = &object.kind {
                             if let Some(prefix) = MirContext::type_prefix_str(type_name) {
+                                // Also record the wrapped type (Mutex<Store>) from the
+                                // constructor's argument. A cross-module const reference
+                                // gets left an inference var by the checker, so guard
+                                // access can't read the inner type off the use site — the
+                                // initializer here is the only place it's concrete.
+                                if let Some(inner) = args.first().and_then(|a| {
+                                    lowerer.ctx.lookup_raw_type(a.expr.id)
+                                        .and_then(|ty| MirContext::type_prefix(ty, lowerer.ctx.type_names))
+                                }) {
+                                    lowerer.meta_mut(&c.name).full_type =
+                                        Some(format!("{}<{}>", prefix, inner));
+                                }
                                 lowerer.meta_mut(&c.name).type_prefix = Some(prefix);
                             }
                         }
