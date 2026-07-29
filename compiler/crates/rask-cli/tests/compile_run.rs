@@ -259,6 +259,12 @@ fn run_native_copy_rebind() {
     assert_eq!(stdout, "42 42\n");
 }
 
+// #404: copying a Copy loop index into a mut var must not move the index.
+#[test]
+fn copy_loop_index_rebind_native_eq_interp() {
+    assert_native_eq_interp("copy_loop_index_rebind.rk", "012344");
+}
+
 // ─── Native codegen: structs, enums, closures, strings ──────
 
 #[test]

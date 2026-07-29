@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #404: assigning a Copy loop index into a mut variable copies, it does not
+// move — the index stays usable afterward. The loop index shares a type var
+// with the `0` literal; the literal default (i32) must reach that shared root
+// so ownership sees a Copy type instead of an unresolved var.
+
+func main() {
+    mut last = 0
+    for i in 0..5 {
+        last = i
+        print(i)
+    }
+    print(last)
+}

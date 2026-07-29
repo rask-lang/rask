@@ -133,16 +133,27 @@ impl InferenceContext {
     }
 
     /// Apply defaults for unresolved literal type vars.
+    ///
+    /// A literal var may have been unified into a plain (non-literal) var — the
+    /// substitution then points literal-var → plain-var, and the plain var is
+    /// the union-find root. Defaulting the literal var alone would miss the
+    /// root, leaving the root an unresolved `Var` for every downstream pass
+    /// (e.g. ownership reads `i32` off a loop index as a non-Copy type var and
+    /// treats a copy as a move — #404). So resolve each literal var to its root
+    /// and default the root instead.
     pub fn apply_literal_defaults(&mut self) {
-        for (&var_id, &kind) in self.literal_vars.iter() {
-            // Only default if not yet resolved
-            if !self.substitutions.contains_key(&var_id) {
+        let entries: Vec<(TypeVarId, LiteralKind)> =
+            self.literal_vars.iter().map(|(&id, &kind)| (id, kind)).collect();
+        for (var_id, kind) in entries {
+            // Follow the chain to whatever this literal currently resolves to.
+            if let Type::Var(root) = self.apply(&Type::Var(var_id)) {
                 let default = match kind {
                     LiteralKind::Integer => Type::I32,
                     LiteralKind::Float => Type::F64,
                 };
-                self.substitutions.insert(var_id, default);
+                self.substitutions.insert(root, default);
             }
+            // else: already resolved to a concrete type — nothing to default.
         }
     }
 
