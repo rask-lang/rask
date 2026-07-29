@@ -246,6 +246,14 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// FD4: struct literal omits a field that has no default value
+    #[error("missing field(s) in `{ty}` initializer")]
+    MissingFields {
+        ty: String,
+        fields: Vec<String>,
+        span: Span,
+    },
+
     /// GC5: public function missing type annotation
     #[error("public function `{function_name}` requires explicit type annotations")]
     PublicMissingAnnotation {

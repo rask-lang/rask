@@ -464,6 +464,11 @@ impl<'a> Printer<'a> {
                 if i > 0 {
                     self.emit(", ");
                 }
+                for attr in &field.attrs {
+                    self.emit("@");
+                    self.emit(attr);
+                    self.emit(" ");
+                }
                 match field.visibility {
                     FieldVisibility::Private => self.emit("private "),
                     FieldVisibility::Public => self.emit("public "),
@@ -473,6 +478,10 @@ impl<'a> Printer<'a> {
                 self.emit(": ");
                 let ty = self.format_type(&field.ty);
                 self.emit(&ty);
+                if let Some(default) = &field.default {
+                    self.emit(" = ");
+                    self.format_expr(default);
+                }
             }
             self.emit(" }");
         } else {
@@ -482,6 +491,12 @@ impl<'a> Printer<'a> {
 
             self.indent += 1;
             for field in &s.fields {
+                for attr in &field.attrs {
+                    self.emit_indent();
+                    self.emit("@");
+                    self.emit(attr);
+                    self.emit_newline();
+                }
                 self.emit_indent();
                 match field.visibility {
                     FieldVisibility::Private => self.emit("private "),
@@ -492,6 +507,10 @@ impl<'a> Printer<'a> {
                 self.emit(": ");
                 let ty = self.format_type(&field.ty);
                 self.emit(&ty);
+                if let Some(default) = &field.default {
+                    self.emit(" = ");
+                    self.format_expr(default);
+                }
                 self.emit_newline();
             }
             if !s.methods.is_empty() {

@@ -7,9 +7,14 @@
 
 use std::collections::HashMap;
 use rask_ast::decl::{Decl, DeclKind, FnDecl, Param};
-use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
+use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, FieldInit};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::NodeId;
+
+/// Strip a generic suffix from a type name: `Pair<i32>` -> `Pair`.
+fn base_type_name(name: &str) -> &str {
+    name.split('<').next().unwrap_or(name)
+}
 
 /// Desugar default arguments and named arguments across all declarations.
 ///
@@ -76,6 +81,9 @@ struct FunctionLookup {
     methods: HashMap<(String, String), Vec<Param>>,
     /// Methods indexed by name only (for instance method fallback)
     methods_by_name: HashMap<String, Vec<Vec<Param>>>,
+    /// Struct field defaults (FD1): base type name -> [(field name, default expr)].
+    /// Only structs with at least one defaulted field are recorded.
+    struct_defaults: HashMap<String, Vec<(String, Expr)>>,
 }
 
 impl FunctionLookup {
@@ -83,6 +91,7 @@ impl FunctionLookup {
         let mut functions = HashMap::new();
         let mut methods: HashMap<(String, String), Vec<Param>> = HashMap::new();
         let mut methods_by_name: HashMap<String, Vec<Vec<Param>>> = HashMap::new();
+        let mut struct_defaults: HashMap<String, Vec<(String, Expr)>> = HashMap::new();
 
         for decl in decls {
             match &decl.kind {
@@ -92,6 +101,12 @@ impl FunctionLookup {
                     }
                 }
                 DeclKind::Struct(s) => {
+                    let defaults: Vec<(String, Expr)> = s.fields.iter()
+                        .filter_map(|f| f.default.as_ref().map(|d| (f.name.clone(), d.clone())))
+                        .collect();
+                    if !defaults.is_empty() {
+                        struct_defaults.insert(base_type_name(&s.name).to_string(), defaults);
+                    }
                     for m in &s.methods {
                         Self::register_method(
                             &s.name, m, &mut methods, &mut methods_by_name,
@@ -116,7 +131,7 @@ impl FunctionLookup {
             }
         }
 
-        Self { functions, methods, methods_by_name }
+        Self { functions, methods, methods_by_name, struct_defaults }
     }
 
     fn register_method(
@@ -473,9 +488,15 @@ impl DefaultDesugarer {
                 if let Some(s) = start { self.desugar_expr(s); }
                 if let Some(e) = end { self.desugar_expr(e); }
             }
-            ExprKind::StructLit { fields, spread, .. } => {
-                for f in fields { self.desugar_expr(&mut f.value); }
+            ExprKind::StructLit { name, fields, spread } => {
+                for f in fields.iter_mut() { self.desugar_expr(&mut f.value); }
                 if let Some(s) = spread { self.desugar_expr(s); }
+                // FD2/FD5: fill omitted fields from declared defaults. A spread
+                // (`..base`) already covers every unlisted field, so defaults
+                // only fire when there is no spread.
+                if spread.is_none() {
+                    self.fill_struct_defaults(name, fields);
+                }
             }
             ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
                 for e in elems { self.desugar_expr(e); }
@@ -523,6 +544,30 @@ impl DefaultDesugarer {
 
         // After recursing, try to resolve defaults at this call site
         self.try_resolve_call(expr);
+    }
+
+    /// FD2: fill in defaults for struct-literal fields the caller omitted.
+    fn fill_struct_defaults(&mut self, name: &str, fields: &mut Vec<FieldInit>) {
+        let Some(defaults) = self.lookup.struct_defaults.get(base_type_name(name)) else {
+            return;
+        };
+        // Clone out so we don't hold a borrow on self.lookup while mutating.
+        let defaults = defaults.clone();
+        let next_id = &mut self.next_id;
+        let mut id_gen = || {
+            let id = NodeId(*next_id);
+            *next_id += 1;
+            id
+        };
+        for (field_name, default_expr) in &defaults {
+            if fields.iter().any(|f| &f.name == field_name) {
+                continue;
+            }
+            fields.push(FieldInit {
+                name: field_name.clone(),
+                value: clone_expr_with_fresh_ids(default_expr, &mut id_gen),
+            });
+        }
     }
 
     fn try_resolve_call(&mut self, expr: &mut Expr) {
@@ -724,6 +769,118 @@ mod tests {
             },
             span: sp(),
         }));
+    }
+
+    #[test]
+    fn struct_default_fills_omitted_field() {
+        use rask_ast::decl::{Decl, Field, FieldVisibility, StructDecl};
+        use rask_ast::stmt::Stmt;
+        use rask_ast::expr::FieldInit;
+
+        fn field(name: &str, ty: &str, default: Option<Expr>) -> Field {
+            Field {
+                name: name.to_string(), name_span: sp(), ty: ty.to_string(),
+                visibility: FieldVisibility::Public, attrs: vec![], default,
+            }
+        }
+
+        // struct Config { host: string, port: i32 = 8080 }
+        let struct_decl = Decl {
+            id: NodeId(0),
+            kind: DeclKind::Struct(StructDecl {
+                name: "Config".to_string(),
+                type_params: vec![],
+                fields: vec![
+                    field("host", "string", None),
+                    field("port", "i32", Some(int_expr(8080))),
+                ],
+                methods: vec![], is_pub: false, attrs: vec![], doc: None,
+            }),
+            span: sp(),
+        };
+
+        // const c = Config { host: "x" }
+        let lit = Expr {
+            id: NodeId(0),
+            kind: ExprKind::StructLit {
+                name: "Config".to_string(),
+                fields: vec![FieldInit { name: "host".to_string(), value: str_expr("x") }],
+                spread: None,
+            },
+            span: sp(),
+        };
+        let main = Decl {
+            id: NodeId(0),
+            kind: DeclKind::Fn(FnDecl {
+                name: "main".to_string(), type_params: vec![], params: vec![],
+                ret_ty: None, context_clauses: vec![],
+                body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
+                is_pub: false, is_private: false, is_comptime: false, is_unsafe: false,
+                abi: None, attrs: vec![], doc: None, span: sp(),
+            }),
+            span: sp(),
+        };
+
+        let mut decls = vec![struct_decl, main];
+        desugar_default_args(&mut decls);
+
+        let DeclKind::Fn(f) = &decls[1].kind else { panic!("expected fn") };
+        let StmtKind::Expr(e) = &f.body[0].kind else { panic!("expected expr stmt") };
+        let ExprKind::StructLit { fields, .. } = &e.kind else { panic!("expected struct lit") };
+        assert_eq!(fields.len(), 2, "port default should be filled in");
+        let port = fields.iter().find(|fi| fi.name == "port").expect("port field");
+        match &port.value.kind {
+            ExprKind::Int(8080, _) => {}
+            other => panic!("expected filled default 8080, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_default_not_filled_with_spread() {
+        use rask_ast::decl::{Decl, Field, FieldVisibility, StructDecl};
+        use rask_ast::stmt::Stmt;
+        use rask_ast::expr::FieldInit;
+
+        // struct Config { port: i32 = 8080 }, literal `Config { ..base }`.
+        let struct_decl = Decl {
+            id: NodeId(0),
+            kind: DeclKind::Struct(StructDecl {
+                name: "Config".to_string(), type_params: vec![],
+                fields: vec![Field {
+                    name: "port".to_string(), name_span: sp(), ty: "i32".to_string(),
+                    visibility: FieldVisibility::Public, attrs: vec![], default: Some(int_expr(8080)),
+                }],
+                methods: vec![], is_pub: false, attrs: vec![], doc: None,
+            }),
+            span: sp(),
+        };
+        let lit = Expr {
+            id: NodeId(0),
+            kind: ExprKind::StructLit {
+                name: "Config".to_string(),
+                fields: vec![],
+                spread: Some(Box::new(Expr { id: NodeId(0), kind: ExprKind::Ident("base".to_string()), span: sp() })),
+            },
+            span: sp(),
+        };
+        let main = Decl {
+            id: NodeId(0),
+            kind: DeclKind::Fn(FnDecl {
+                name: "main".to_string(), type_params: vec![], params: vec![], ret_ty: None,
+                context_clauses: vec![], body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
+                is_pub: false, is_private: false, is_comptime: false, is_unsafe: false,
+                abi: None, attrs: vec![], doc: None, span: sp(),
+            }),
+            span: sp(),
+        };
+
+        let mut decls = vec![struct_decl, main];
+        desugar_default_args(&mut decls);
+
+        let DeclKind::Fn(f) = &decls[1].kind else { panic!("expected fn") };
+        let StmtKind::Expr(e) = &f.body[0].kind else { panic!("expected expr stmt") };
+        let ExprKind::StructLit { fields, .. } = &e.kind else { panic!("expected struct lit") };
+        assert!(fields.is_empty(), "spread covers all fields; defaults must not be filled");
     }
 
     #[test]

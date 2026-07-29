@@ -112,6 +112,8 @@ impl Interpreter {
                 name_span: field.name_span,
                 ty: new_ty,
                 visibility: field.visibility,
+                attrs: field.attrs.clone(),
+                default: field.default.clone(),
             });
         }
 

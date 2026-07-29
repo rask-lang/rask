@@ -1400,11 +1400,19 @@ impl Parser {
             }
 
             let method_doc = self.take_doc();
+
+            // Field annotations: @rename("..."), @skip, @default(expr).
+            let mut field_attrs = Vec::new();
+            while self.check(&TokenKind::At) {
+                field_attrs.push(self.parse_attribute()?);
+                self.skip_newlines();
+            }
+
             let field_private = self.match_token(&TokenKind::Private);
             let field_pub = if !field_private { self.match_token(&TokenKind::Public) } else { false };
 
             if self.check(&TokenKind::Func) {
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, field_private, false, false, vec![], method_doc)? {
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, field_private, false, false, field_attrs, method_doc)? {
                     methods.push(fn_decl);
                 }
             } else {
@@ -1419,7 +1427,14 @@ impl Parser {
                 let field_name = self.expect_ident_or_keyword()?;
                 self.expect(&TokenKind::Colon)?;
                 let ty = self.parse_type_name()?;
-                fields.push(Field { name: field_name, name_span, ty, visibility });
+                // FD1: declared default — `port: i32 = 8080`.
+                // Comptime-const validation happens in desugar (same as param defaults).
+                let default = if self.match_token(&TokenKind::Eq) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                fields.push(Field { name: field_name, name_span, ty, visibility, attrs: field_attrs, default });
             }
 
             self.match_token(&TokenKind::Comma);
@@ -1472,7 +1487,7 @@ impl Parser {
             let field_name = self.expect_ident_or_keyword()?;
             self.expect(&TokenKind::Colon)?;
             let ty = self.parse_type_name()?;
-            fields.push(Field { name: field_name, name_span, ty, visibility });
+            fields.push(Field { name: field_name, name_span, ty, visibility, attrs: vec![], default: None });
 
             self.match_token(&TokenKind::Comma);
             self.skip_newlines();
@@ -1554,7 +1569,7 @@ impl Parser {
                             (format!("_{}", idx), type_span, ty)
                         };
 
-                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package });
+                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None });
                         idx += 1;
 
                         if !self.match_token(&TokenKind::Comma) { break; }
@@ -1569,7 +1584,7 @@ impl Parser {
                         let field_name = self.expect_ident()?;
                         self.expect(&TokenKind::Colon)?;
                         let ty = self.parse_type_name()?;
-                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package });
+                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None });
                         if !self.match_token(&TokenKind::Comma) {
                             self.skip_newlines();
                             if !self.check(&TokenKind::RBrace) { continue; }

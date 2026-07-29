@@ -576,6 +576,8 @@ mod tests {
                         name_span: dummy_span(),
                         ty: ty.to_string(),
                         visibility: FieldVisibility::Package,
+                        attrs: vec![],
+                        default: None,
                     })
                     .collect(),
                 methods: vec![],
@@ -605,6 +607,8 @@ mod tests {
                                 name_span: dummy_span(),
                                 ty: ty.to_string(),
                                 visibility: FieldVisibility::Package,
+                                attrs: vec![],
+                                default: None,
                             })
                             .collect(),
                         attrs: vec![],
@@ -918,6 +922,8 @@ mod tests {
                         name_span: dummy_span(),
                         ty: ty.to_string(),
                         visibility: FieldVisibility::Package,
+                        attrs: vec![],
+                        default: None,
                     })
                     .collect(),
                 methods: vec![],

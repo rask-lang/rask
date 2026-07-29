@@ -508,7 +508,7 @@ impl TypeChecker {
                 result
             }
 
-            ExprKind::StructLit { name, fields, .. } => {
+            ExprKind::StructLit { name, fields, spread } => {
                 // A struct-lit name may carry explicit generic args:
                 // `Ring<i64> { ... }`. Look up the base, remember the args.
                 let base_name = name.split('<').next().unwrap_or(name);
@@ -541,6 +541,24 @@ impl TypeChecker {
                                         span: field_init.value.span,
                                     });
                                 }
+                            }
+                        }
+
+                        // FD4: every declared field must be provided. Desugar already
+                        // filled in fields with declared defaults, so anything still
+                        // missing is a defaultless field. A spread (`..base`) supplies
+                        // all unlisted fields, so it satisfies the rest.
+                        if spread.is_none() {
+                            let missing: Vec<String> = struct_fields.iter()
+                                .filter(|(n, _)| !fields.iter().any(|fi| &fi.name == n))
+                                .map(|(n, _)| n.clone())
+                                .collect();
+                            if !missing.is_empty() {
+                                self.errors.push(TypeError::MissingFields {
+                                    ty: base_name.to_string(),
+                                    fields: missing,
+                                    span: expr.span,
+                                });
                             }
                         }
 

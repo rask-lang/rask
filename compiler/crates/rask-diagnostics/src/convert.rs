@@ -676,6 +676,21 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("private fields restrict access to the type's own extend blocks (V5)")
             }
 
+            MissingFields { ty, fields, span } => {
+                let (label, list) = if fields.len() == 1 {
+                    ("missing field".to_string(), format!("`{}`", fields[0]))
+                } else {
+                    let quoted: Vec<String> = fields.iter().map(|f| format!("`{f}`")).collect();
+                    ("missing fields".to_string(), quoted.join(", "))
+                };
+                Diagnostic::error(format!("{label} in `{ty}` initializer: {list}"))
+                    .with_code("E0822")
+                    .with_primary(*span, format!("{label}: {list}"))
+                    .with_help(format!("provide a value for {list}, or give the field a default with `= <value>`"))
+                    .with_fix("give every field a value — construction never zero-initializes")
+                    .with_why("a field with no default must be provided; the compiler names it rather than silently zeroing (FD4)")
+            }
+
             PublicMissingAnnotation { function_name, params, missing_return, span } => {
                 let mut msg = format!("public function `{}` requires explicit type annotations", function_name);
                 if !params.is_empty() {
