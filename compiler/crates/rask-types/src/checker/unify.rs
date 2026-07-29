@@ -499,8 +499,12 @@ impl TypeChecker {
 
             // Union types: exact match element-wise, or subset widening for try propagation (ER31).
             (Type::Union(types1), Type::Union(types2)) => {
-                // ER31: smaller union is compatible with a larger union that contains all its members
-                if t1.is_subset_of(&t2) {
+                // ER31: smaller union is compatible with a larger union that contains all its members.
+                // Resolve names first — a propagated `UnresolvedNamed("X")` and a declared
+                // `Named(id)` for the same type would otherwise miss on a raw `==`.
+                let resolved1: Vec<Type> = types1.iter().map(|t| self.resolve_named(t)).collect();
+                let resolved2: Vec<Type> = types2.iter().map(|t| self.resolve_named(t)).collect();
+                if resolved1.iter().all(|t| resolved2.contains(t)) {
                     return Ok(false);
                 }
                 if types1.len() != types2.len() {
@@ -519,10 +523,17 @@ impl TypeChecker {
                 Ok(progress)
             }
 
-            // Single type is a subset of a union containing it (for try propagation)
+            // Single type is a subset of a union containing it (for try propagation).
+            // Resolve names first so a propagated `UnresolvedNamed("X")` matches a
+            // declared `Named(id)` member. If the name still can't be resolved this
+            // pass, defer instead of rejecting (same as the general UnresolvedNamed arm).
             (single, Type::Union(types)) if !matches!(single, Type::Union(_)) => {
-                if types.iter().any(|t| t == single) {
-                    Ok(false) // compatible
+                let single_r = self.resolve_named(single);
+                if types.iter().any(|t| self.resolve_named(t) == single_r) {
+                    Ok(false) // member of the union — compatible
+                } else if matches!(single_r, Type::UnresolvedNamed(_)) {
+                    self.ctx.add_constraint(TypeConstraint::Equal(t1, t2, span));
+                    Ok(false)
                 } else {
                     Err(TypeError::Mismatch {
                         expected: t2,

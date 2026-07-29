@@ -287,7 +287,9 @@ impl TypeChecker {
                 if let Some(node) = call_node {
                     let is_method = matches!(
                         self.types.get(*type_id),
-                        Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. })
+                        Some(TypeDef::Struct { methods, .. })
+                            | Some(TypeDef::Enum { methods, .. })
+                            | Some(TypeDef::NominalAlias { methods, .. })
                             if methods.iter().any(|m| m.name == method)
                     );
                     if is_method {
@@ -304,6 +306,7 @@ impl TypeChecker {
                     Some(TypeDef::Enum { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
                     }
+                    Some(TypeDef::NominalAlias { methods, .. }) => (methods.clone(), Vec::new()),
                     _ => {
                         return Err(TypeError::NoSuchMethod {
                             ty,

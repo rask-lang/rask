@@ -1021,16 +1021,30 @@ impl<'a> OwnershipChecker<'a> {
                     // Non-`own` closures borrow their captures. Any closure with
                     // non-resource captures is scope-limited to its creation block —
                     // returning or storing it past that scope would dangle the borrow.
+                    // A Copy capture is copied into the closure env (MIR captures
+                    // by value), so it can't dangle — only a non-Copy borrow can
+                    // outlive its scope. This mirrors the `own`-closure path above,
+                    // which already leaves Copy captures in place. Without this a
+                    // closure capturing an f64/i64 local was wrongly scope-limited,
+                    // so `v.iter().filter(|x| x >= budget).count()` failed SL2 even
+                    // though the closure never escapes the expression.
                     let mut scope_limit: Option<u32> = None;
-                    let has_non_resource_captures = captures.iter()
-                        .any(|name| !resource_captures.contains(name) && self.bindings.contains_key(name));
-                    if has_non_resource_captures {
+                    let has_escaping_captures = captures.iter().any(|name| {
+                        !resource_captures.contains(name)
+                            && self.bindings.contains_key(name)
+                            && !self.capture_is_copy(name)
+                    });
+                    if has_escaping_captures {
                         scope_limit = Some(self.current_block);
                     }
                     // Tighten further if any capture is itself scope-limited (borrow binding
                     // or persistent borrow): the closure inherits the inner constraint.
+                    // Copy captures are skipped — a shared param like `budget: f64` is
+                    // modeled as a persistent borrow, but it's copied into the closure,
+                    // so it never dangles and must not scope-limit the closure.
                     for name in &captures {
                         if resource_captures.contains(name) { continue; }
+                        if self.capture_is_copy(name) { continue; }
                         if let Some(&block_id) = self.borrow_bindings.get(name) {
                             scope_limit = Some(match scope_limit {
                                 None => block_id,
@@ -1690,6 +1704,46 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Check if a type is Copy (implicit copy on assignment).
+    /// Copy-ness of a captured name. Locals carry a resolved `Type`; a bare
+    /// parameter only has its type-annotation string, so fall back to that.
+    fn capture_is_copy(&self, name: &str) -> bool {
+        if let Some(t) = self.binding_types.get(name) {
+            return self.is_copy(t);
+        }
+        if let Some(tn) = self.param_type_strings.get(name) {
+            if let Some(t) = self.type_from_name(tn) {
+                return self.is_copy(&t);
+            }
+        }
+        false
+    }
+
+    /// Resolve a simple type-annotation string to a `Type`. Handles primitives
+    /// and plain named types; generics/compound spellings return None (treated
+    /// as non-Copy, the safe default).
+    fn type_from_name(&self, name: &str) -> Option<Type> {
+        Some(match name {
+            "bool" => Type::Bool,
+            "char" => Type::Char,
+            "string" => Type::String,
+            "i8" => Type::I8,
+            "i16" => Type::I16,
+            "i32" => Type::I32,
+            "i64" => Type::I64,
+            "i128" => Type::I128,
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "u64" => Type::U64,
+            "u128" => Type::U128,
+            "f32" => Type::F32,
+            "f64" => Type::F64,
+            "int" | "isize" => Type::I64,
+            "uint" | "usize" => Type::U64,
+            _ => return self.program.types.get_type_id(name).map(Type::Named),
+        })
+    }
+
     fn is_copy(&self, ty: &Type) -> bool {
         match ty {
             // Primitives are always Copy

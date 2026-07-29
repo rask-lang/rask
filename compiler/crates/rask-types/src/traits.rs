@@ -4,7 +4,7 @@
 //! Implements structural trait satisfaction: a type satisfies a trait if it has
 //! all required methods with matching signatures.
 
-use crate::types::Type;
+use crate::types::{Type, TypeId};
 use crate::checker::{TypeTable, TypeDef, MethodSig, SelfParam, ParamMode};
 use rask_ast::Span;
 use std::collections::HashMap;
@@ -164,6 +164,23 @@ impl<'a> TraitChecker<'a> {
         trait_name: &str,
         span: Span,
     ) -> Result<(), TraitError> {
+        // Encode/Decode are structural markers (std.encoding E12–E17): a type
+        // satisfies them by shape, not by a declared `extend`. A base type, a
+        // container of encodable elements, or a struct/enum whose fields all
+        // encode qualifies. These aren't registered as traits, so short-circuit
+        // before the method-based logic (which would fail with UnknownTrait).
+        let base_trait = trait_name.split('<').next().unwrap_or(trait_name);
+        if matches!(base_trait, "Encode" | "Decode") {
+            if self.type_is_encodable(ty, &mut Vec::new()) {
+                return Ok(());
+            }
+            return Err(TraitError::NotSatisfied {
+                ty: self.type_name(ty),
+                trait_name: trait_name.to_string(),
+                span,
+            });
+        }
+
         // G1 nominal gate: a user struct/enum satisfies a user-declared trait
         // only through a declared `extend T with Trait` (or auto-derive). A
         // matching shape without the declaration is rejected — the flip.
@@ -219,6 +236,178 @@ impl<'a> TraitChecker<'a> {
         }
 
         Ok(())
+    }
+
+    /// std.encoding E12–E17: does `ty` encode structurally? Base types, optionals,
+    /// tuples/arrays, the `Vec`/`Map`/`Set` containers, and structs/enums whose
+    /// public fields (variant payloads) all encode. `visited` breaks cycles in
+    /// recursive types — a self-referential field is treated coinductively.
+    fn type_is_encodable(&self, ty: &Type, visited: &mut Vec<TypeId>) -> bool {
+        use crate::types::GenericArg;
+        match ty {
+            // E14: base types
+            Type::Bool
+            | Type::Char
+            | Type::String
+            | Type::Unit
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::I128
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::U128
+            | Type::F32
+            | Type::F64 => true,
+            // E15: `T?` (Result with an absent err) encodes when its payload does
+            Type::Result { ok, err } if matches!(**err, Type::None) => {
+                self.type_is_encodable(ok, visited)
+            }
+            Type::Array { elem, .. } | Type::Slice(elem) => self.type_is_encodable(elem, visited),
+            Type::Tuple(elems) => elems.iter().all(|e| self.type_is_encodable(e, visited)),
+            Type::Named(id) => self.named_is_encodable(*id, &[], visited),
+            Type::UnresolvedNamed(name) => match self.types.get_type_id(name) {
+                Some(id) => self.named_is_encodable(id, &[], visited),
+                None => false,
+            },
+            Type::Generic { base, args } => {
+                let targs: Vec<Type> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let name = self.types.get(*base).map(Self::type_def_name);
+                self.container_or_named_encodable(name.as_deref(), Some(*base), &targs, visited)
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                let targs: Vec<Type> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let id = self.types.get_type_id(name);
+                self.container_or_named_encodable(Some(name), id, &targs, visited)
+            }
+            _ => false,
+        }
+    }
+
+    /// A container spelling (`Vec`/`Map`/`Set`) encodes when its element types do;
+    /// any other generic is a user struct/enum instantiation, checked field-wise.
+    fn container_or_named_encodable(
+        &self,
+        name: Option<&str>,
+        id: Option<TypeId>,
+        targs: &[Type],
+        visited: &mut Vec<TypeId>,
+    ) -> bool {
+        if matches!(name, Some("Vec" | "Map" | "Set")) {
+            return targs.iter().all(|t| self.type_is_encodable(t, visited));
+        }
+        match id {
+            Some(id) => self.named_is_encodable(id, targs, visited),
+            None => false,
+        }
+    }
+
+    fn type_def_name(def: &TypeDef) -> &str {
+        match def {
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::Trait { name, .. }
+            | TypeDef::Union { name, .. }
+            | TypeDef::NominalAlias { name, .. } => name,
+        }
+    }
+
+    /// Encodability of a named struct/enum, with `targs` bound to its type params.
+    fn named_is_encodable(&self, id: TypeId, targs: &[Type], visited: &mut Vec<TypeId>) -> bool {
+        if visited.contains(&id) {
+            return true; // recursive type — assume ok, the non-cyclic fields decide
+        }
+        visited.push(id);
+        let result = match self.types.get(id) {
+            Some(TypeDef::Struct { fields, type_params, private_fields, .. }) => {
+                let subst = Self::build_subst(type_params, targs);
+                // E12: only public fields participate
+                fields.iter().all(|(fname, fty)| {
+                    private_fields.contains(fname)
+                        || self.type_is_encodable(&Self::apply_subst(fty, &subst), visited)
+                })
+            }
+            Some(TypeDef::Enum { variants, type_params, .. }) => {
+                let subst = Self::build_subst(type_params, targs);
+                variants.iter().all(|(_, payloads)| {
+                    payloads
+                        .iter()
+                        .all(|pty| self.type_is_encodable(&Self::apply_subst(pty, &subst), visited))
+                })
+            }
+            Some(TypeDef::NominalAlias { underlying, .. }) => {
+                self.type_is_encodable(&underlying.clone(), visited)
+            }
+            _ => false,
+        };
+        visited.pop();
+        result
+    }
+
+    fn build_subst(type_params: &[String], targs: &[Type]) -> HashMap<String, Type> {
+        type_params
+            .iter()
+            .cloned()
+            .zip(targs.iter().cloned())
+            .collect()
+    }
+
+    /// Replace bare type-parameter references in `ty` with their bound arguments.
+    /// Only substitutes at the positions that matter for encodability (the field's
+    /// own type and container element args); anything else passes through.
+    fn apply_subst(ty: &Type, subst: &HashMap<String, Type>) -> Type {
+        use crate::types::GenericArg;
+        match ty {
+            Type::UnresolvedNamed(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args
+                    .iter()
+                    .map(|a| match a {
+                        GenericArg::Type(t) => GenericArg::Type(Box::new(Self::apply_subst(t, subst))),
+                        other => other.clone(),
+                    })
+                    .collect(),
+            },
+            Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|a| match a {
+                        GenericArg::Type(t) => GenericArg::Type(Box::new(Self::apply_subst(t, subst))),
+                        other => other.clone(),
+                    })
+                    .collect(),
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(Self::apply_subst(ok, subst)),
+                err: Box::new(Self::apply_subst(err, subst)),
+            },
+            Type::Array { elem, len } => Type::Array {
+                elem: Box::new(Self::apply_subst(elem, subst)),
+                len: *len,
+            },
+            Type::Slice(elem) => Type::Slice(Box::new(Self::apply_subst(elem, subst))),
+            Type::Tuple(elems) => {
+                Type::Tuple(elems.iter().map(|e| Self::apply_subst(e, subst)).collect())
+            }
+            other => other.clone(),
+        }
     }
 
     /// CC1: verify a conditional conformance's `where` clause against the
