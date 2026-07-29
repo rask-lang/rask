@@ -2032,6 +2032,29 @@ impl<'a> FunctionBuilder<'a> {
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
         );
 
+        // Enums, structs, tuples and unions are held in stack slots and passed
+        // around by pointer. A plain `icmp` on the two operands would compare
+        // the slot addresses — always unequal for distinct values — so `==`
+        // and `!=` must walk the contents instead (#399). This matches the
+        // interpreter's `value_eq`: tags then payloads for enums, every field
+        // for structs/tuples, and content (not pointer) equality for strings.
+        if matches!(op, BinOp::Eq | BinOp::Ne) {
+            let agg_ty = Self::operand_mir_type(left, ctx.locals)
+                .filter(|t| Self::is_structural_eq_type(t))
+                .or_else(|| Self::operand_mir_type(right, ctx.locals)
+                    .filter(|t| Self::is_structural_eq_type(t)));
+            if let Some(ty) = agg_ty {
+                let lhs_ptr = Self::lower_operand(builder, left, ctx)?;
+                let rhs_ptr = Self::lower_operand(builder, right, ctx)?;
+                let eq = Self::emit_aggregate_eq(builder, ctx, lhs_ptr, rhs_ptr, &ty)?;
+                return Ok(if matches!(op, BinOp::Ne) {
+                    builder.ins().bxor_imm(eq, 1)
+                } else {
+                    eq
+                });
+            }
+        }
+
         let operand_ty = if is_comparison { None } else { expected_ty };
         let lhs_val = Self::lower_operand_typed(builder, left, operand_ty, ctx)?;
         let lhs_ty = builder.func.dfg.value_type(lhs_val);
@@ -2196,6 +2219,294 @@ impl<'a> FunctionBuilder<'a> {
             }
         };
         Ok(result)
+    }
+
+    // ─── Structural equality for aggregates (#399) ──────────────────────
+    // `==`/`!=` on an aggregate compares contents, not the slot address.
+    // Every comparison returns an i8 (0/1). Scalars load at their storage
+    // width and `icmp`/`fcmp`; strings and other heap values go through the
+    // runtime content comparison; nested aggregates recurse.
+
+    /// Aggregate types whose `==`/`!=` needs a structural (not pointer)
+    /// comparison. Strings are already broken into `string_eq` calls during
+    /// MIR lowering, so they never reach here as a top-level operand.
+    fn is_structural_eq_type(ty: &MirType) -> bool {
+        matches!(ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+            | MirType::Union(_) | MirType::Array { .. })
+    }
+
+    /// Compare two aggregates (pointed to by `lhs`/`rhs`) for structural
+    /// equality. Returns an i8 (1 = equal).
+    fn emit_aggregate_eq(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        ty: &MirType,
+    ) -> CodegenResult<Value> {
+        match ty {
+            MirType::Struct(id) => Self::emit_struct_eq(builder, ctx, lhs, rhs, id.id as usize),
+            MirType::Enum(id) => Self::emit_enum_eq(builder, ctx, lhs, rhs, id.id as usize),
+            MirType::Tuple(elems) => {
+                // Tuple elements are packed at their natural offsets (see the
+                // tuple-literal lowering); mirror that packing here.
+                let elems = elems.clone();
+                let mut acc = builder.ins().iconst(types::I8, 1);
+                let mut offset = 0u32;
+                for e in &elems {
+                    let align = e.align().max(1);
+                    offset = (offset + align - 1) & !(align - 1);
+                    let l = builder.ins().iadd_imm(lhs, offset as i64);
+                    let r = builder.ins().iadd_imm(rhs, offset as i64);
+                    let eeq = Self::emit_field_eq_mir(builder, ctx, l, r, e)?;
+                    acc = builder.ins().band(acc, eeq);
+                    offset += e.size();
+                }
+                Ok(acc)
+            }
+            MirType::Array { elem, len } => {
+                let stride = elem.size();
+                let mut acc = builder.ins().iconst(types::I8, 1);
+                for i in 0..*len {
+                    let off = (i * stride) as i64;
+                    let l = builder.ins().iadd_imm(lhs, off);
+                    let r = builder.ins().iadd_imm(rhs, off);
+                    let eeq = Self::emit_field_eq_mir(builder, ctx, l, r, elem)?;
+                    acc = builder.ins().band(acc, eeq);
+                }
+                Ok(acc)
+            }
+            // Unions carry no active-variant tag, so the only defined
+            // comparison is over the raw bytes of the widest variant.
+            MirType::Union(variants) => {
+                let size = variants.iter().map(|v| v.size()).max().unwrap_or(0);
+                Ok(Self::emit_bytes_eq(builder, lhs, rhs, size))
+            }
+            _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, ty.size())),
+        }
+    }
+
+    /// Compare every field of the struct at layout index `idx`.
+    fn emit_struct_eq(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        idx: usize,
+    ) -> CodegenResult<Value> {
+        // Snapshot field descriptors so no borrow of `ctx` is held across the
+        // recursive field comparisons (which also read `ctx`).
+        let fields: Vec<(u32, RaskType, u32)> = {
+            let layout = ctx.struct_layouts.get(idx).ok_or_else(|| {
+                CodegenError::UnsupportedFeature("struct layout missing for equality".into())
+            })?;
+            layout.fields.iter().map(|f| (f.offset, f.ty.clone(), f.size)).collect()
+        };
+        let mut acc = builder.ins().iconst(types::I8, 1);
+        for (off, fty, sz) in fields {
+            let l = builder.ins().iadd_imm(lhs, off as i64);
+            let r = builder.ins().iadd_imm(rhs, off as i64);
+            let feq = Self::emit_field_eq_rask(builder, ctx, l, r, &fty, sz)?;
+            acc = builder.ins().band(acc, feq);
+        }
+        Ok(acc)
+    }
+
+    /// Compare two enums: tags first, then the payload of the shared variant.
+    /// Different tags short-circuit to "not equal".
+    fn emit_enum_eq(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        idx: usize,
+    ) -> CodegenResult<Value> {
+        // (tag value, payload offset, [(field offset, field type, field size)])
+        let (tag_off, variants): (i32, Vec<(u64, u32, Vec<(u32, RaskType, u32)>)>) = {
+            let layout = ctx.enum_layouts.get(idx).ok_or_else(|| {
+                CodegenError::UnsupportedFeature("enum layout missing for equality".into())
+            })?;
+            let vs = layout.variants.iter().map(|v| {
+                let fields = v.fields.iter()
+                    .map(|f| (f.offset, f.ty.clone(), f.size))
+                    .collect::<Vec<_>>();
+                (v.tag, v.payload_offset, fields)
+            }).collect();
+            (layout.tag_offset as i32, vs)
+        };
+
+        let tag_l = builder.ins().load(types::I64, MemFlags::new(), lhs, tag_off);
+        let tag_r = builder.ins().load(types::I64, MemFlags::new(), rhs, tag_off);
+        let tags_eq = builder.ins().icmp(IntCC::Equal, tag_l, tag_r);
+
+        // Fieldless enum (plain tag union): equality is just tag equality.
+        if variants.iter().all(|(_, _, f)| f.is_empty()) {
+            return Ok(tags_eq);
+        }
+
+        // result = tags_eq && payload matches for the (now shared) variant.
+        let merge = builder.create_block();
+        builder.append_block_param(merge, types::I8);
+        let cmp_payload = builder.create_block();
+        let false_v = builder.ins().iconst(types::I8, 0);
+        builder.ins().brif(tags_eq, cmp_payload, &[], merge, &[false_v]);
+
+        builder.switch_to_block(cmp_payload);
+        builder.seal_block(cmp_payload);
+        // `equal_v` dominates the whole chain below (all reached only through
+        // cmp_payload), so it is valid to reuse in the trailing jump.
+        let equal_v = builder.ins().iconst(types::I8, 1);
+        let mut chain_blocks = Vec::new();
+        for (tag_val, poff, fields) in variants.iter().filter(|(_, _, f)| !f.is_empty()) {
+            let var_block = builder.create_block();
+            let next_block = builder.create_block();
+            let tv = builder.ins().iconst(types::I64, *tag_val as i64);
+            let is_this = builder.ins().icmp(IntCC::Equal, tag_l, tv);
+            builder.ins().brif(is_this, var_block, &[], next_block, &[]);
+
+            builder.switch_to_block(var_block);
+            builder.seal_block(var_block);
+            let mut acc = builder.ins().iconst(types::I8, 1);
+            for (foff, fty, sz) in fields {
+                let field_off = (*poff + *foff) as i64;
+                let l = builder.ins().iadd_imm(lhs, field_off);
+                let r = builder.ins().iadd_imm(rhs, field_off);
+                let feq = Self::emit_field_eq_rask(builder, ctx, l, r, fty, *sz)?;
+                acc = builder.ins().band(acc, feq);
+            }
+            builder.ins().jump(merge, &[acc]);
+
+            builder.switch_to_block(next_block);
+            chain_blocks.push(next_block);
+        }
+        // Tags matched but the variant carries no payload → equal.
+        builder.ins().jump(merge, &[equal_v]);
+        for b in chain_blocks {
+            builder.seal_block(b);
+        }
+
+        builder.switch_to_block(merge);
+        builder.seal_block(merge);
+        Ok(builder.block_params(merge)[0])
+    }
+
+    /// Compare a value of MIR type `ty` held at `lhs`/`rhs`.
+    fn emit_field_eq_mir(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        ty: &MirType,
+    ) -> CodegenResult<Value> {
+        match ty {
+            MirType::F32 | MirType::F64 => {
+                let lty = mir_to_cranelift_type(ty)?;
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                Ok(builder.ins().fcmp(FloatCC::Equal, a, b))
+            }
+            MirType::String => Self::emit_string_eq(builder, ctx, lhs, rhs),
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+            | MirType::Union(_) | MirType::Array { .. } => {
+                Self::emit_aggregate_eq(builder, ctx, lhs, rhs, ty)
+            }
+            MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+            | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+            | MirType::Char | MirType::Handle | MirType::Ptr => {
+                let lty = mir_to_cranelift_type(ty)?;
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                Ok(builder.ins().icmp(IntCC::Equal, a, b))
+            }
+            // Option/Result/Slice and friends as a nested element: compare the
+            // raw slot bytes. Correct for POD payloads; heap payloads nested
+            // this deep aren't content-compared yet.
+            _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, ty.size())),
+        }
+    }
+
+    /// Compare a struct/enum field of Rask type `ty` held at `lhs`/`rhs`.
+    /// Struct and enum-payload fields sit in 8-byte slots, so scalars load as
+    /// i64/f64 (see `lower_store`). `size` is the field's slot size, used for
+    /// the byte-compare fallback.
+    fn emit_field_eq_rask(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        ty: &RaskType,
+        size: u32,
+    ) -> CodegenResult<Value> {
+        match ty {
+            RaskType::F32 | RaskType::F64 => {
+                // Stored promoted to f64 in the 8-byte slot.
+                let a = builder.ins().load(types::F64, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(types::F64, MemFlags::new(), rhs, 0);
+                Ok(builder.ins().fcmp(FloatCC::Equal, a, b))
+            }
+            RaskType::Bool
+            | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64
+            | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64
+            | RaskType::Char => {
+                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                Ok(builder.ins().icmp(IntCC::Equal, a, b))
+            }
+            RaskType::String => Self::emit_string_eq(builder, ctx, lhs, rhs),
+            // Nested struct or enum — look it up by name and recurse.
+            RaskType::UnresolvedNamed(name) => {
+                if let Some(sidx) = ctx.struct_layouts.iter().position(|l| l.name == *name) {
+                    Self::emit_struct_eq(builder, ctx, lhs, rhs, sidx)
+                } else if let Some(eidx) = ctx.enum_layouts.iter().position(|l| l.name == *name) {
+                    Self::emit_enum_eq(builder, ctx, lhs, rhs, eidx)
+                } else {
+                    // Opaque named type (runtime pointer) — compare the slot.
+                    Ok(Self::emit_bytes_eq(builder, lhs, rhs, size))
+                }
+            }
+            // Tuples/arrays/options/opaque pointers: the field occupies exactly
+            // `size` bytes and equal values produce identical bytes, so a byte
+            // compare is a safe default. Heap contents nested here aren't
+            // content-compared yet.
+            _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, size)),
+        }
+    }
+
+    /// Content equality of two strings via the runtime. Returns i8 (1 = equal).
+    fn emit_string_eq(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+    ) -> CodegenResult<Value> {
+        let fr = ctx.func_refs.get("string_eq")
+            .ok_or_else(|| CodegenError::FunctionNotFound("string_eq".into()))?;
+        let call = builder.ins().call(*fr, &[lhs, rhs]);
+        let res = builder.inst_results(call)[0];
+        Ok(builder.ins().icmp_imm(IntCC::NotEqual, res, 0))
+    }
+
+    /// Byte-wise equality of `size` bytes at `lhs`/`rhs`. Returns i8 (1 = equal).
+    fn emit_bytes_eq(
+        builder: &mut ClifFunctionBuilder,
+        lhs: Value,
+        rhs: Value,
+        size: u32,
+    ) -> Value {
+        let mut acc = builder.ins().iconst(types::I8, 1);
+        let size = size as i32;
+        let mut off = 0i32;
+        for (chunk, ty) in [(8, types::I64), (4, types::I32), (2, types::I16), (1, types::I8)] {
+            while size - off >= chunk {
+                let a = builder.ins().load(ty, MemFlags::new(), lhs, off);
+                let b = builder.ins().load(ty, MemFlags::new(), rhs, off);
+                let e = builder.ins().icmp(IntCC::Equal, a, b);
+                acc = builder.ins().band(acc, e);
+                off += chunk;
+            }
+        }
+        acc
     }
 
     fn field_address_and_load(
