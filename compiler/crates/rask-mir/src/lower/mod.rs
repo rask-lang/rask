@@ -1476,6 +1476,23 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Byte offset for extracting a scalar payload from a tagged Result/Option.
+    /// Scalars get the explicit `RESULT_PAYLOAD_OFFSET` so codegen loads the
+    /// value; aggregates get `None` so codegen returns the payload address.
+    /// (The Option codegen path ignores this offset and uses its own, so a
+    /// single Result-shaped offset is correct for both.)
+    fn payload_byte_offset(&self, payload_ty: &MirType) -> Option<u32> {
+        let is_aggregate = matches!(
+            payload_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+        );
+        if is_aggregate {
+            None
+        } else {
+            Some(crate::types::RESULT_PAYLOAD_OFFSET)
+        }
+    }
+
     /// Extract payload from an option value into a new local.
     /// Niche: the handle value IS the payload. Tagged: load field 0.
     fn emit_option_payload(

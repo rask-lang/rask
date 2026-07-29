@@ -11,7 +11,7 @@
 
 # --- native codegen bugs (interp correct) ---
 t10_generics.rk            # generic method returning string = garbage — #272 (native)
-t19_result_operators.rk    # union try-else / if r? as v mishandled — #389 (native)
+t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (A|B) codegen — #375, rask#211 (native)
 t13_map.rk                 # Map<_,string> in a test block = 0 tests — #390 (native)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
@@ -27,4 +27,4 @@ t25_iterator_adapters.rk   # fold accumulator type never resolves — #327 (both
 t_conditional_conformance.rk # stray [mir] debug print on native — #258 (native)
 
 # --- new regression witnesses (this session) ---
-t43_widening_regressions.rk # optional widening interp lag (#393) + result T-bind native (#389)
+t43_widening_regressions.rk # optional widening interp lag — #393 (interp; result T-bind native part fixed in #389)

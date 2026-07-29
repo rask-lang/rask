@@ -286,8 +286,14 @@ impl<'a> MirLowerer<'a> {
 
         // Only emit return if body didn't already terminate (e.g. bare `return` in body)
         if self.builder.current_block_unterminated() {
-            // Construct full Result.Err with origin (ER15)
-            let ret_result = self.builder.alloc_temp(result_ty.clone());
+            // Construct full Result.Err with origin (ER15). The transformed error
+            // is returned from the enclosing function, so the built Result carries
+            // the *function's* return type, not the inner expression's. When the
+            // two differ (e.g. `parse -> i32 or ParseError` transformed into
+            // `i32 or ContextError`), using the inner type made codegen see a
+            // type mismatch on return and re-wrap the whole Result as Ok — the
+            // caller then read tag 0 and took the ok branch (#389).
+            let ret_result = self.builder.alloc_temp(self.builder.ret_ty().clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: ret_result,
                 offset: crate::types::RESULT_TAG_OFFSET,
