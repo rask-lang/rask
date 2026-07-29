@@ -2611,7 +2611,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     self.extract_payload_type(expr).unwrap_or(MirType::I64)
                 };
-                self.bind_pattern_payload_niche(pattern, val, bind_ty, is_niche);
+                self.bind_pattern_payload_niche(pattern, val, bind_ty, is_niche, &val_ty);
                 let (then_val, then_ty) = self.lower_expr(then_branch)?;
                 let result_local = self.builder.alloc_temp(then_ty.clone());
                 if self.builder.current_block_unterminated() {
@@ -2691,7 +2691,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(ok_block);
                 let payload_ty = self.extract_payload_type(expr)
                     .unwrap_or(MirType::I64);
-                self.bind_pattern_payload_niche(pattern, val.clone(), payload_ty.clone(), is_niche);
+                self.bind_pattern_payload_niche(pattern, val.clone(), payload_ty.clone(), is_niche, &val_ty);
                 // Extract the payload value for the result
                 let payload = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
@@ -3769,7 +3769,7 @@ impl<'a> MirLowerer<'a> {
         let payload_ty = self
             .extract_payload_type(scrutinee)
             .unwrap_or(MirType::I64);
-        self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche);
+        self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche, &val_ty);
         let (right_op, _) = self.lower_expr(right)?;
         if self.builder.current_block_unterminated() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

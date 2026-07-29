@@ -1476,6 +1476,27 @@ impl<'a> MirLowerer<'a> {
         result
     }
 
+    /// Look up a user enum variant's field types, keyed by variant name.
+    /// Returns (mir type, absolute byte offset within the enum, field size)
+    /// per field, in declaration order. `None` when `scrutinee_ty` isn't a
+    /// user enum or the variant/layout can't be found (Option/Result, whose
+    /// payload comes from `extract_payload_type` instead).
+    fn variant_field_types(
+        &self,
+        scrutinee_ty: &MirType,
+        variant_name: &str,
+    ) -> Option<Vec<(MirType, u32, u32)>> {
+        let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = scrutinee_ty else {
+            return None;
+        };
+        let layout = self.ctx.enum_layouts.get(*idx as usize)?;
+        let bare_name = variant_name.rsplit('.').next().unwrap_or(variant_name);
+        let variant = layout.variants.iter().find(|v| v.name == bare_name)?;
+        Some(variant.fields.iter().map(|f| {
+            (self.ctx.type_to_mir(&f.ty), variant.payload_offset + f.offset, f.size)
+        }).collect())
+    }
+
     /// Bind pattern payload variables into the current scope.
     ///
     /// After confirming a tag match, extracts payload fields from the
@@ -1485,8 +1506,9 @@ impl<'a> MirLowerer<'a> {
         pattern: &rask_ast::expr::Pattern,
         value: MirOperand,
         payload_ty: MirType,
+        scrutinee_ty: &MirType,
     ) {
-        self.bind_pattern_payload_niche(pattern, value, payload_ty, false);
+        self.bind_pattern_payload_niche(pattern, value, payload_ty, false, scrutinee_ty);
     }
 
     /// Bind pattern payload — with niche awareness.
@@ -1496,13 +1518,26 @@ impl<'a> MirLowerer<'a> {
         value: MirOperand,
         payload_ty: MirType,
         is_niche: bool,
+        scrutinee_ty: &MirType,
     ) {
         use rask_ast::expr::Pattern;
         match pattern {
-            Pattern::Constructor { fields, .. } => {
+            Pattern::Constructor { name, fields } => {
+                // User enums carry a distinct type per field (e.g. `Circle(f64)`
+                // vs `Rectangle(f64, f64)`); `payload_ty` is only a single type
+                // (from extract_payload_type, which only understands Option/Result),
+                // so look up each field's real type from the enum layout when one
+                // exists. Falls back to `payload_ty` for niche Option/Result values.
+                let variant_fields = self.variant_field_types(scrutinee_ty, name);
                 for (i, field_pat) in fields.iter().enumerate() {
                     if let Pattern::Ident(name) = field_pat {
-                        let field_ty = payload_ty.clone();
+                        let (field_ty, field_loc) = if let Some(ref vf) = variant_fields {
+                            vf.get(i)
+                                .map(|(ty, off, sz)| (ty.clone(), Some((*off, *sz))))
+                                .unwrap_or((payload_ty.clone(), None))
+                        } else {
+                            (payload_ty.clone(), None)
+                        };
                         let local = self.builder.alloc_local(name.clone(), field_ty.clone());
                         self.locals.insert(name.clone(), (local, field_ty.clone()));
                         let rvalue = if is_niche {
@@ -1512,8 +1547,8 @@ impl<'a> MirLowerer<'a> {
                             MirRValue::Field {
                                 base: value.clone(),
                                 field_index: i as u32,
-                                byte_offset: None,
-                                field_size: None,
+                                byte_offset: field_loc.map(|(off, _)| off),
+                                field_size: field_loc.map(|(_, sz)| sz),
                             }
                         };
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

@@ -495,7 +495,7 @@ impl<'a> MirLowerer<'a> {
                 // Bind payload variables from the pattern
                 let payload_ty = self.extract_payload_type(expr)
                     .unwrap_or(MirType::I64);
-                self.bind_pattern_payload(pattern, val, payload_ty);
+                self.bind_pattern_payload(pattern, val, payload_ty, &val_ty);
                 let ensure_depth = self.ensure_stack.len();
                 self.loop_stack.push(LoopContext {
                     label: None,
