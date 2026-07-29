@@ -11,10 +11,10 @@
 //     checker and native backend handle it. Spec: type.optionals/OPT6.
 //     Issue: #INTERP_OPT_WIDEN
 //
-//   KNOWN-FAIL (native): binding the success value of a `T or E` with
-//     `if r? as v` reads the wrong slot on native codegen (yields a stack
-//     address, not the value). Interp is correct. Spec: type.errors/ER19-ER20.
-//     Issue: #NATIVE_RESULT_TBIND
+//   FIXED (native, #389): binding the success value of a `T or E` with
+//     `if r? as v` used to read the wrong slot on native codegen (a stack
+//     address, not the value) when the err side was an aggregate. Now passes
+//     on both backends; kept as a regression witness. Spec: type.errors/ER19-ER20.
 
 func main() {}
 

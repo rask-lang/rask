@@ -4093,10 +4093,14 @@ impl<'a> MirLowerer<'a> {
             let rvalue = if is_niche {
                 MirRValue::Use(val.clone())
             } else {
+                // Scalar payloads need the explicit offset so codegen loads the
+                // value at RESULT_PAYLOAD_OFFSET. Without it, a `T or E` whose
+                // err side is an aggregate makes codegen guess "aggregate" and
+                // return the slot address instead of the ok scalar (#389).
                 MirRValue::Field {
                     base: val.clone(),
                     field_index: 0,
-                    byte_offset: None,
+                    byte_offset: self.payload_byte_offset(&payload_ty),
                     field_size: None,
                 }
             };
@@ -4128,7 +4132,7 @@ impl<'a> MirLowerer<'a> {
                 rvalue: MirRValue::Field {
                     base: val.clone(),
                     field_index: 0,
-                    byte_offset: None,
+                    byte_offset: self.payload_byte_offset(&err_ty),
                     field_size: None,
                 },
             }));

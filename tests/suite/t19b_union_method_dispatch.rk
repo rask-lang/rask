@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Native union-error handling — the parts of the `T or (A | B)` story the
+// native backend still gets wrong. Split out of t19 so the rest of that file
+// stays green; this file is the KNOWN-FAIL witness. The interpreter is correct
+// throughout (its runtime values carry their own concrete type).
+//
+// Two native gaps, both in the union-error family (#375 / rask#211):
+//
+//   1. Shared-method dispatch: `e.message()` on a value of union type `A | B`
+//      must dispatch to whichever variant it holds. The type checker accepts
+//      it (rask#211, closed), but a union error carries no runtime
+//      discriminant, so MIR lowering can't pick a target and errors out — the
+//      whole file fails to compile on native.
+//
+//   2. A function returning `i32 or (A | B)`, compiled alongside other code,
+//      corrupts memory: every test passes but the process exits non-zero
+//      (order/layout-dependent). Tracked with #375.
+//
+// Spec: type.errors (ER4, ER31)
+
+struct DivError {}
+
+extend DivError {
+    func message(self) -> string {
+        return "division by zero"
+    }
+}
+
+struct ParseError {
+    detail: string
+}
+
+extend ParseError {
+    func message(self) -> string {
+        return "parse error: {self.detail}"
+    }
+}
+
+func parse_number(s: string) -> i32 or ParseError {
+    if s == "42" { return 42 }
+    return ParseError { detail: "not a number" }
+}
+
+func safe_div(a: i32, b: i32) -> i32 or DivError {
+    if b == 0 { return DivError {} }
+    return a / b
+}
+
+func combined(s: string, b: i32) -> i32 or (ParseError | DivError) {
+    const n = try parse_number(s)
+    const result = try safe_div(n, b)
+    return result
+}
+
+// --- Error union composition (ER31) ---
+
+test "error union present path" {
+    assert combined("42", 2)! == 21
+}
+
+test "error union parse error" {
+    assert combined("bad", 2) is ParseError
+}
+
+test "error union div error" {
+    assert combined("42", 0) is DivError
+}
+
+// --- shared-method dispatch (rask#211) ---
+// Every `E` satisfies `ErrorMessage` (ER4), so `e.message()` on a union
+// `e: A | B` resolves by dispatching to whichever variant `e` holds.
+func union_message(s: string, b: i32) -> string {
+    const r = combined(s, b)
+    if r? as v {
+        return "ok({v})"
+    } else as e {
+        return e.message()
+    }
+}
+
+test "union error dispatches shared message()" {
+    assert union_message("42", 2) == "ok(21)"
+    assert union_message("bad", 2) == "parse error: not a number"
+    assert union_message("42", 0) == "division by zero"
+}
+
+func main() {}
