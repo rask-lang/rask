@@ -586,6 +586,25 @@ impl<'a> MirLowerer<'a> {
         self.local_meta.get(name)
     }
 
+    /// Method-dispatch prefix for a Struct/Enum MIR type — its layout name.
+    /// Lets dispatch mangle `{Type}_{method}` from the concrete MIR type when
+    /// the checker left the receiver untyped.
+    pub(crate) fn mir_aggregate_prefix(&self, ty: &MirType) -> Option<String> {
+        match ty {
+            MirType::Struct(StructLayoutId { id, .. }) => self
+                .ctx
+                .struct_layouts
+                .get(*id as usize)
+                .map(|l| l.name.clone()),
+            MirType::Enum(EnumLayoutId { id, .. }) => self
+                .ctx
+                .enum_layouts
+                .get(*id as usize)
+                .map(|l| l.name.clone()),
+            _ => None,
+        }
+    }
+
     /// Current cleanup chain in LIFO order (last-registered ensure runs first).
     fn cleanup_chain(&self) -> Vec<BlockId> {
         self.ensure_stack.iter().rev().copied().collect()

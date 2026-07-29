@@ -1122,15 +1122,21 @@ impl<'a> MirLowerer<'a> {
                             .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
                     });
 
-                // Pool index: emit PoolCheckedAccess for generation checking
-                if type_prefix.as_deref() == Some("Pool") {
+                // Pool index: emit PoolCheckedAccess for generation checking.
+                // The prefix carries generics ("Pool<T>"); compare on the base.
+                let prefix_base = type_prefix.as_deref()
+                    .map(|p| p.split('<').next().unwrap_or(p).trim());
+                if prefix_base == Some("Pool") {
                     // If result_ty is I64 (default), try to extract the element type
                     // from the pool's generic parameter (Pool<Entity> → Entity)
                     let result_ty = if matches!(result_ty, MirType::I64) {
-                        // Extract element type from Pool<T> generic parameter
+                        // Extract element type from the Pool<T> generic argument,
+                        // whether the checker left it resolved (Generic) or not
+                        // (UnresolvedGeneric).
                         self.ctx.lookup_raw_type(object.id)
                             .and_then(|ty| match ty {
-                                rask_types::Type::UnresolvedGeneric { args, .. } => {
+                                rask_types::Type::Generic { args, .. }
+                                | rask_types::Type::UnresolvedGeneric { args, .. } => {
                                     args.first().and_then(|a| match a {
                                         rask_types::GenericArg::Type(t) => Some(t.as_ref()),
                                         _ => None,
@@ -3003,6 +3009,11 @@ impl<'a> MirLowerer<'a> {
             // the MIR type (catches F64, String, etc.).
             .or_else(type_prefix_of_receiver)
             .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
+            // A Struct/Enum MIR type carries a layout whose name is the type —
+            // resolve it directly. Catches receivers the checker left untyped
+            // but MIR typed concretely: a pool-element `with` binding, a Handle
+            // deref, a `self`-typed receiver.
+            .or_else(|| self.mir_aggregate_prefix(&obj_ty))
             // parse<T> always belongs to string (structural, not type-prefix related)
             .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
             .map(|prefix| {
