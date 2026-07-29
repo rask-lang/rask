@@ -91,7 +91,7 @@ fn typecheck_single(path: &str, format: Format, multi: bool) {
                     }
                     println!("  }}");
                 }
-                rask_types::TypeDef::NominalAlias { name, underlying, with_traits } => {
+                rask_types::TypeDef::NominalAlias { name, underlying, with_traits, .. } => {
                     if with_traits.is_empty() {
                         println!("  type {} = {:?}", name, underlying);
                     } else {

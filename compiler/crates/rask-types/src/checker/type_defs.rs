@@ -75,6 +75,9 @@ pub enum TypeDef {
         name: String,
         underlying: Type,
         with_traits: Vec<String>,
+        /// Methods from `extend` blocks. A nominal newtype has its own identity,
+        /// so it carries its own methods like structs and enums.
+        methods: Vec<MethodSig>,
     },
 }
 

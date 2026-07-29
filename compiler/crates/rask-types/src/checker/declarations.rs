@@ -191,7 +191,9 @@ impl TypeChecker {
         let new_methods: Vec<_> = i.methods.iter().map(|m| self.method_signature(m)).collect();
         if let Some(def) = self.types.get_mut(type_id) {
             match def {
-                TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } => {
+                TypeDef::Struct { methods, .. }
+                | TypeDef::Enum { methods, .. }
+                | TypeDef::NominalAlias { methods, .. } => {
                     methods.extend(new_methods);
                 }
                 _ => {}
@@ -404,6 +406,7 @@ impl TypeChecker {
                 name: a.name.clone(),
                 underlying,
                 with_traits: a.with_traits.clone(),
+                methods: Vec::new(),
             });
         }
     }

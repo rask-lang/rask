@@ -322,9 +322,9 @@ fn implements_error_message(ty: &Type, checker: &TypeChecker) -> bool {
     };
 
     let methods: &[MethodSig] = match def {
-        TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } => methods,
-        // Nominal aliases store methods separately through impl registration;
-        // if a method list ever lives on NominalAlias, handle it here.
+        TypeDef::Struct { methods, .. }
+        | TypeDef::Enum { methods, .. }
+        | TypeDef::NominalAlias { methods, .. } => methods,
         _ => return false,
     };
 
