@@ -250,6 +250,8 @@ pub struct TraitDecl {
     pub is_unsafe: bool,
     /// `duck trait` — shape-matched (structural) instead of nominal (G1).
     pub is_duck: bool,
+    /// Attributes (`@allow(...)`, …)
+    pub attrs: Vec<String>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }

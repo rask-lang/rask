@@ -157,9 +157,11 @@ Two clarifications that came out of reviewing this seam, worth putting in the sp
 
 Prototype-to-production for traits is: delete one word, accept the quick-fixes. Cheap to move things around while coding; explicit exactly when it becomes API.
 
+**Post-fold amendment (issue #490):** the "Published" row above is now partly enforced. `public duck trait` is a compile error — shape-matching may not cross a package boundary (`type.generics/DT1`). Package-internal duck traits stay legal in a published package and are reported by lint and at publish instead (DT2/DT3): DT1 already means no consumer can see them, so there's nothing a release gate would protect. This section's "harden it eventually" framing is now a rule where it protects someone else and a nudge where it doesn't.
+
 ### Renaming the `structural` keyword — decided: `duck trait`
 
-`structural` is type-theory jargon. The replacement is `duck trait` — the established name for exactly this semantics (duck typing), pre-taught to the Python-first audience. The register is deliberate: the keyword *reading as unserious is the signal*. A `duck trait` in a diff announces "this contract is loose by design" — prototype-mode made visible in source, and lintable (`rask lint` warns on duck traits outside prototype contexts).
+`structural` is type-theory jargon. The replacement is `duck trait` — the established name for exactly this semantics (duck typing), pre-taught to the Python-first audience. The register is deliberate: the keyword *reading as unserious is the signal*. A `duck trait` in a diff announces "this contract is loose by design" — prototype-mode made visible in source, and lintable (`rask lint` warns on every duck trait declaration, `tool.lint/I3`).
 
 **Consequence (ruled): the stdlib ships zero duck traits.** `Reader`, `Writer`, and `ErrorMessage` go nominal; `duck` is purely the prototyping dial. The structural carve-out for them entered in commit 27c65f4 as implementation detail of the #283 migration, never as its own decision, and its stated rationale (ER6: "a conformance line on every error enum would tax the most common trait") is arithmetically wrong — `message()` is hand-written in an extend block regardless, so conformance is a header edit (`extend ConfigError with ErrorMessage { ... }`), zero marginal lines. Multi-trait types stay flat via CD1/CD2 (one block, header lists the claims). Retroactive conformance for third-party types is one line, priced by #312. Fold-in rewrites ER4/ER6 and the G1 rationale accordingly.
 

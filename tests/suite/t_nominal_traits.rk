@@ -7,7 +7,9 @@ trait Greeter {
     func greet(self) -> string
 }
 
-// duck trait — satisfied by shape, no declaration needed.
+// duck trait — satisfied by shape, no declaration needed. Package-internal by
+// rule (DT1); the lint nudge is what this test is deliberately exercising.
+@allow(idiom/duck-trait)
 duck trait Frobber {
     func frob(self) -> i64
 }

@@ -209,7 +209,7 @@ Rule: `or E` attaches to an explicit return type. `func foo() or Error` is a par
 **`return` without a value:** Valid only when the function's return type is `void`. Otherwise write `return expr`.
 
 **Private functions — types optional (gradual constraints):**
-It is possible to gradually introduce type constrains in private functions. This makes it easier to write prototype code, but is discouraged in production code. Public functions must declare types.
+Private functions can leave types out and let the compiler infer them from the body. That's for code you're still sketching — written-out signatures are where a finished module lands, and `rask lint` says so in a package that looks publishable. Public functions must declare types.
 
 ```rask
 func double(x) {
@@ -421,7 +421,7 @@ extend Point with Displayable {
 
 If the type already has the methods, an empty declaration suffices: `extend Point with Displayable {}`.
 
-**Duck traits (prototyping):** a trait marked `duck` matches by shape — any type with the right methods satisfies it, no declaration. Prototype mode: sketch with it, then delete the keyword to harden (the compiler generates the missing conformance declarations). The stdlib ships none.
+**Duck traits (scratchpad only):** a trait marked `duck` matches by shape — any type with the right methods satisfies it, no declaration. Sketch with it, then delete the keyword to harden (the compiler generates the missing conformance declarations). It can't leave the package: `public duck trait` is an error (`type.generics/DT1`). Inside the package it's allowed but nudged — lint and `rask publish` report it, neither blocks. The stdlib ships none.
 
 **Several conformances, one block:** the `with` list is a header on a normal extend block — methods for any listed trait plus plain methods, together:
 

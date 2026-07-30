@@ -564,6 +564,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("casting to a trait object requires the concrete type to implement all trait methods")
             }
 
+            PublicDuckTrait { name, span } => {
+                Diagnostic::error(format!("`duck trait {}` cannot be public", name))
+                    .with_code("E0824")
+                    .with_primary(*span, "shape-matching can't cross a package boundary")
+                    .with_fix(format!("drop `duck` to harden it — `public trait {}`, then declare conformance with `extend Type with {} {{}}` on each matching type. Or drop `public` to keep it a package-internal sketch", name, name))
+                    .with_why("a duck trait matches by shape, so an external type could start or stop satisfying it without either author changing a line they'd notice — a break semver can't describe. Duck traits stay package-internal (DT1)")
+            }
+
             StringAddForbidden { span } => {
                 Diagnostic::error("the `+` operator cannot be used on strings")
                     .with_code("E0335")

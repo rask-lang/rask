@@ -4,6 +4,7 @@
 //! - unwrap-production: Flag .unwrap() outside test blocks
 //! - missing-ensure: Flag @resource creation without ensure
 //! - ensure-ordering: Flag ensure registration order that doesn't match acquisition order
+//! - duck-trait: Flag `duck trait` declarations — sketching tool, nudge to harden
 
 use rask_ast::decl::*;
 use rask_ast::expr::{Expr, ExprKind};
@@ -559,4 +560,45 @@ fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mu
         }
         _ => {}
     }
+}
+
+/// idiom/duck-trait: Flag `duck trait` declarations (DT3).
+///
+/// Shape-matching is for code you're still sketching: nothing states the
+/// contract, so a type can start or stop matching silently. A warning, not a
+/// gate — DT1 already keeps duck traits out of the public API.
+pub fn check_duck_trait(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+    let mut diags = Vec::new();
+
+    for decl in decls {
+        let DeclKind::Trait(t) = &decl.kind else { continue };
+        if !t.is_duck {
+            continue;
+        }
+        // SU1: an intentionally-kept sketch can opt out
+        if t.attrs.iter().any(|a| a == "allow(idiom/duck-trait)") {
+            continue;
+        }
+        let (line, col) = util::line_col(source, decl.span.start);
+        let source_line = util::get_source_line(source, line);
+        diags.push(LintDiagnostic {
+            rule: "idiom/duck-trait".to_string(),
+            severity: Severity::Warning,
+            message: format!(
+                "`{}` is a duck trait — matched by shape, with no conformance declared anywhere",
+                t.name
+            ),
+            location: LintLocation {
+                line,
+                column: col,
+                source_line,
+            },
+            fix: format!(
+                "delete `duck` and declare conformance (`extend Type with {} {{}}`) on each matching type, or `@allow(idiom/duck-trait)` to keep the sketch",
+                t.name
+            ),
+        });
+    }
+
+    diags
 }
