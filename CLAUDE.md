@@ -66,6 +66,14 @@ Releases: https://github.com/rask-lang/rask/releases
 
 **Debugging codegen:** If a compiled binary segfaults, use `--dump-mir` to inspect the MIR and `RASK_RUNTIME_CHECKS=1 ./binary` to turn null-deref segfaults into panics with messages. Compile the C runtime with `-DRASK_DEBUG` for unconditional checks.
 
+SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match on an out-of-range tag. `gdb -batch -ex run -ex 'bt 25' ./binary` gets the frame.
+
+**Three things that will waste your time:**
+
+- `stdlib/*.rk` is `include_str!`'d into the compiler (`rask-stdlib/src/stubs.rs`), and the C runtime is a static lib. Editing either does nothing until you rebuild — `cargo build --release -p rask-cli`, plus `cd compiler/runtime && make` first if you touched `runtime/*.c`.
+- `rask build <pkg>` caches. A stale `build/` dir silently serves the old binary, so a fix looks like it didn't work. `rm -rf <pkg>/build` when a result surprises you.
+- `println` is fully buffered to a pipe, so output before a crash is lost. Always `stdbuf -o0 -e0 ./binary > log 2>&1`, or you'll place the crash earlier than it is.
+
 Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after editing `specs/*.md`.
 
 # Rask Writing Style Guide
@@ -126,7 +134,7 @@ Dont be TOO consistent.
 
 **Claude: Use Rask syntax, not Rust.** Full reference: [specs/SYNTAX.md](specs/SYNTAX.md)
 
-Key differences from Rust: `const`/`let` (not `let`/`let mut`), `func` (not `fn`), `extend` (not `impl`), `public` (not `pub`), `string` (lowercase), `Token.Plus` (not `::`), `try expr` (not `?`), `T or E` (not `Result<T,E>`), explicit `return` in functions, newlines as terminators.
+Key differences from Rust: `const`/`mut` (not `let`/`let mut` — `let` is not a keyword), `func` (not `fn`), `extend` (not `impl`), `public` (not `pub`), `string` (lowercase), `Token.Plus` (not `::`), `try expr` (not `?`), `T or E` (not `Result<T,E>`), explicit `return` in functions, newlines as terminators.
 
 
 ## Compiler
