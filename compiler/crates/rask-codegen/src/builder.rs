@@ -81,6 +81,10 @@ enum CallAdapt {
     /// buffer it returns (and panicked if the channel was closed), so the result
     /// is always Ok. Copy `elem_size` bytes out of it into dst's payload.
     RecvStructOk(u32),
+    /// parse: the call returned 0/1; the value was written into the given slot.
+    /// Build a `T or ParseError` — status==0 → Ok(value), else Err.
+    /// Carries (slot, type the runtime wrote, type the destination wants).
+    ParseResult(StackSlot, Type, Type),
 }
 
 pub struct FunctionBuilder<'a> {
@@ -3316,6 +3320,50 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     builder.ins().iconst(types::I64, 0)
                 }
+                CallAdapt::ParseResult(value_ss, writer_ty, ok_ty) => {
+                    // parse status → `T or ParseError`. 0 → Ok(value read from
+                    // the out-param slot), 1 → Err. The old entry points
+                    // returned the value itself with no way to fail, so garbage
+                    // input came back as Ok(0) (#472).
+                    let results = builder.inst_results(call_inst);
+                    let status = if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, 1)
+                    };
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id).copied() {
+                        slot_already_written = true;
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        let raw = builder.ins().stack_load(writer_ty, value_ss, 0);
+                        let value = if writer_ty == ok_ty {
+                            raw
+                        } else {
+                            Self::convert_value(builder, raw, writer_ty, ok_ty)
+                        };
+                        Self::build_ok(builder, dst_ss, value);
+                        builder.ins().jump(merge_block, &[]);
+
+                        // Err carries no payload — ParseError is fieldless.
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let one = builder.ins().iconst(types::I64, 1);
+                        builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        Self::zero_result_origin(builder, dst_ss);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                    }
+                    builder.ins().iconst(types::I64, 0)
+                }
                 _ => {
                     let results = builder.inst_results(call_inst);
                     if !results.is_empty() {
@@ -4260,6 +4308,36 @@ impl<'a> FunctionBuilder<'a> {
                 ));
                 args.push(builder.ins().stack_addr(types::I64, ss, 0));
                 CallAdapt::PopOutParam(ss)
+            }
+
+            ArgAdapt::ParseOutParam => {
+                // The value comes back through an out-param so the return value
+                // can carry the 0/1 status.
+                //
+                // Load it with the type the runtime actually wrote — the float
+                // entry points store a double, the integer ones an i64 — then
+                // convert to what the destination wants. Loading with the
+                // destination type instead read a double's bits as an integer,
+                // so "42".parse() came out as 4631107791820423168.
+                let writer_ty = if matches!(func_name,
+                    "string_parse_float" | "string_parse_f32" | "string_parse_f64")
+                {
+                    types::F64
+                } else {
+                    types::I64
+                };
+                let ok_ty = dst
+                    .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                    .and_then(|l| match &l.ty {
+                        MirType::Result { ok, .. } => mir_to_cranelift_type(ok).ok(),
+                        other => mir_to_cranelift_type(other).ok(),
+                    })
+                    .unwrap_or(writer_ty);
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                ));
+                args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                CallAdapt::ParseResult(ss, writer_ty, ok_ty)
             }
 
             ArgAdapt::Custom => {
