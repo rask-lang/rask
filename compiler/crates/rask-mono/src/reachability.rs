@@ -16,14 +16,26 @@ use rask_ast::{
     expr::{Expr, ExprKind},
     stmt::{Stmt, StmtKind},
 };
-use rask_ast::NodeId;
-use rask_types::Type;
+use rask_ast::{NodeId, Span};
+use rask_types::{Callee, Type, TypeId, TypedProgram};
 use std::collections::{HashMap, VecDeque};
 
 /// Monomorphization work item
 struct WorkItem {
     name: String,
     type_args: Vec<Type>,
+}
+
+/// A call whose method body can't be reached through its mangled name.
+///
+/// Functions are keyed by `Type_method` from here through codegen, so two types
+/// with the same name produce one symbol for two bodies. The type that owns the
+/// name gets it; a call on the other one has nowhere to go.
+#[derive(Debug, Clone)]
+pub struct AmbiguousMethod {
+    pub type_name: String,
+    pub method: String,
+    pub span: Span,
 }
 
 /// Generate a mangled name for a generic function instantiation.
@@ -48,6 +60,16 @@ pub struct Monomorphizer<'a> {
     method_by_bare_name: HashMap<String, Vec<String>>,
     /// Resolved type args per call site (from typechecker)
     call_type_args: &'a HashMap<NodeId, Vec<Type>>,
+    /// Type checker output, when monomorphizing a real program. The standalone
+    /// reachability tests build a Monomorphizer without it and keep the
+    /// conservative bare-name behaviour.
+    typed: Option<&'a TypedProgram>,
+    /// Mangled symbol → every type declaring it. Two entries mean the name
+    /// alone no longer identifies a body.
+    symbol_owners: HashMap<String, Vec<TypeId>>,
+    /// Calls that need a body the mangled name can't address (see
+    /// `AmbiguousMethod`). Collected here and reported by `monomorphize`.
+    pub ambiguous_methods: Vec<AmbiguousMethod>,
     /// External package module names — `pkg.func()` enqueues `func`, not `pkg_func`
     package_modules: std::collections::HashSet<String>,
     /// Already processed (name, type_args) pairs
@@ -70,6 +92,16 @@ pub struct Monomorphizer<'a> {
     /// All declarations, for roots that don't come from a function body
     /// (module-level `const` initializers).
     decls: &'a [Decl],
+}
+
+/// Methods declared directly by a type declaration or an `extend` block.
+fn methods_of(decl: &Decl) -> &[FnDecl] {
+    match &decl.kind {
+        DeclKind::Struct(s) => &s.methods,
+        DeclKind::Enum(e) => &e.methods,
+        DeclKind::Impl(i) => &i.methods,
+        _ => &[],
+    }
 }
 
 /// Wrap a method FnDecl as a top-level Decl and register it under its
@@ -182,6 +214,9 @@ impl<'a> Monomorphizer<'a> {
             method_table,
             method_by_bare_name,
             call_type_args,
+            typed: None,
+            symbol_owners: HashMap::new(),
+            ambiguous_methods: Vec::new(),
             package_modules: std::collections::HashSet::new(),
             seen: HashMap::new(),
             queue: VecDeque::new(),
@@ -191,6 +226,70 @@ impl<'a> Monomorphizer<'a> {
             trait_coercions: HashMap::new(),
             decls,
         }
+    }
+
+    /// Build a reachability pass that resolves methods through the type checker.
+    ///
+    /// `new` keys methods by `Type_method`, so when a program type shadows a
+    /// stdlib one — a user `struct JsonError` over stdlib's `enum JsonError` —
+    /// whichever declaration comes last in the flattened decl list wins the
+    /// entry, and calls on the other type reach the wrong body. The checker
+    /// already bound every method to a TypeId; this rebinds the table to match.
+    pub fn with_typed_program(decls: &'a [Decl], typed: &'a TypedProgram) -> Self {
+        let mut mono = Self::new(decls, &typed.call_type_args);
+        mono.typed = Some(typed);
+        mono.bind_methods_by_type(typed);
+        mono
+    }
+
+    /// Re-key `method_table` on type identity instead of declaration order.
+    fn bind_methods_by_type(&mut self, typed: &TypedProgram) {
+        let by_id: HashMap<NodeId, &Decl> = self.decls.iter().map(|d| (d.id, d)).collect();
+
+        let owned: Vec<(TypeId, Vec<NodeId>)> = typed
+            .types
+            .types_with_methods()
+            .map(|(id, decls)| (id, decls.to_vec()))
+            .collect();
+
+        for (type_id, decl_ids) in owned {
+            let type_name = typed.types.type_name(type_id);
+            // The type the bare name resolves to. Only that one can claim the
+            // plain `Type_method` symbol; a shadowed type has no other spelling.
+            let owns_name = typed.types.get_type_id(&type_name) == Some(type_id);
+
+            for decl_id in decl_ids {
+                let Some(decl) = by_id.get(&decl_id) else { continue };
+                for method in methods_of(decl) {
+                    let qualified = format!("{}_{}", type_name, method.name);
+                    let owners = self.symbol_owners.entry(qualified.clone()).or_default();
+                    if !owners.contains(&type_id) {
+                        owners.push(type_id);
+                    }
+                    if owns_name {
+                        self.method_table.insert(qualified, Decl {
+                            id: decl.id,
+                            kind: DeclKind::Fn(method.clone()),
+                            span: decl.span,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// The type whose body `symbol` resolves to, when more than one declares it.
+    ///
+    /// Every owner of a contested symbol shares the same type name — that's what
+    /// made them collide — so any of them gives the name to look up.
+    fn contested_owner(&self, symbol: &str) -> Option<TypeId> {
+        let typed = self.typed?;
+        let owners = self.symbol_owners.get(symbol)?;
+        if owners.len() < 2 {
+            return None;
+        }
+        let name = typed.types.type_name(*owners.first()?);
+        typed.types.get_type_id(&name)
     }
 
     /// Record implicit trait-coercion sites (TR5) from the type checker.
@@ -396,22 +495,47 @@ impl<'a> Monomorphizer<'a> {
                     .cloned()
                     .unwrap_or_default();
 
-                // Static method call: Type.method() → enqueue "Type_method"
-                // Cross-package call: pkg.func() → enqueue "func" (the function
-                // is registered under its original name from the dependency).
-                if let ExprKind::Ident(name) = &object.kind {
-                    if self.package_modules.contains(name) {
-                        self.enqueue(method.clone(), type_args.clone());
-                    } else {
-                        self.enqueue(format!("{}_{}", name, method), type_args.clone());
-                    }
-                }
+                // CALL6 already picked the receiver type. Use it rather than
+                // widening to every method sharing the bare name — that pulled
+                // in unrelated stdlib bodies and lowered them out of context.
+                let dispatched = self.typed
+                    .and_then(|typed| match typed.call_targets.get(&expr.id) {
+                        Some(Callee::Method { type_id, method }) => {
+                            Some((*type_id, typed.types.type_name(*type_id), method.clone()))
+                        }
+                        _ => None,
+                    });
 
-                // Instance method call: value.method() → enqueue all methods
-                // with this bare name (conservative; receiver type unknown here)
-                if let Some(qualified_names) = self.method_by_bare_name.get(method) {
-                    for qname in qualified_names.clone() {
-                        self.enqueue(qname, type_args.clone());
+                if let Some((type_id, type_name, method_name)) = dispatched {
+                    let qualified = format!("{}_{}", type_name, method_name);
+                    match self.contested_owner(&qualified) {
+                        Some(owner) if owner != type_id => {
+                            self.ambiguous_methods.push(AmbiguousMethod {
+                                type_name,
+                                method: method_name,
+                                span: expr.span,
+                            });
+                        }
+                        _ => self.enqueue(qualified, type_args.clone()),
+                    }
+                } else {
+                    // Static method call: Type.method() → enqueue "Type_method"
+                    // Cross-package call: pkg.func() → enqueue "func" (the function
+                    // is registered under its original name from the dependency).
+                    if let ExprKind::Ident(name) = &object.kind {
+                        if self.package_modules.contains(name) {
+                            self.enqueue(method.clone(), type_args.clone());
+                        } else {
+                            self.enqueue(format!("{}_{}", name, method), type_args.clone());
+                        }
+                    }
+
+                    // Receiver type unknown here — enqueue every method with this
+                    // bare name and let the unused ones fall out.
+                    if let Some(qualified_names) = self.method_by_bare_name.get(method) {
+                        for qname in qualified_names.clone() {
+                            self.enqueue(qname, type_args.clone());
+                        }
                     }
                 }
 

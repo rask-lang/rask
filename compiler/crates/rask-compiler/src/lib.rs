@@ -540,7 +540,7 @@ fn finalize_compile(
     let mono = match mono {
         Ok(m) => m,
         Err(e) => {
-            diags.push(Diagnostic::error(format!("monomorphization failed: {:?}", e)));
+            diags.push(mono_diagnostic(e));
             return PipelineOutput::fail_with_sources(diags, pkg_source_files);
         }
     };
@@ -634,6 +634,17 @@ fn prefix_decl(decl: &Decl, pkg_name: &str) -> Decl {
         _ => {}
     }
     d
+}
+
+fn mono_diagnostic(e: rask_mono::MonomorphizeError) -> Diagnostic {
+    use rask_mono::MonomorphizeError as ME;
+    match &e {
+        ME::AmbiguousMethod { type_name, method, span, .. } => Diagnostic::error(e.to_string())
+            .with_code("E0823")
+            .with_primary(*span, format!("no `{}.{}` to call here", type_name, method))
+            .with_help(format!("rename one of the two `{}` types", type_name)),
+        _ => Diagnostic::error(e.to_string()),
+    }
 }
 
 fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {

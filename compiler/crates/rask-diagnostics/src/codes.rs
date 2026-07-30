@@ -267,6 +267,9 @@ impl Default for ErrorCodeRegistry {
                 "E0822" => ("missing struct field", Type,
                     "A struct literal left out a field that has no default value. Construction never zero-initializes — a defaultless field must be given a value, or declared with a default (`field: T = value`). A spread (`..base`) supplies every unlisted field.",
                     "struct Config { host: string, port: i32 = 8080 }\nconst c = Config {}  // error: missing field `host`"),
+                "E0823" => ("method name shared by two types", Type,
+                    "Two different types have the same name — usually a program type and a stdlib one — and both define this method. Compiled functions are identified by `Type_method`, so the two methods want the same name and only one can have it. The type the name currently refers to gets it; a call needing the other has nowhere to go. Rename one of the types.",
+                    "// stdlib already has `enum JsonError` with `message()`\nstruct JsonError { detail: string }\nextend JsonError {\n    func message(self) -> string { return self.detail }\n}\n// fix: name it something else, e.g. `ConfigJsonError`"),
             },
         }
     }
