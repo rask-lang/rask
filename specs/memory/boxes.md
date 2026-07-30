@@ -141,6 +141,16 @@ Same shape as `T or E`, `T?`, and `none` (`type.errors/ER1`, `type.optionals/OPT
 
 The real limit is narrow: you can't put your own type *into* the privileged set, so you compose with a box instead of becoming one. That costs a wrapper and one `with` block. It buys the guarantee that every type in the language copies, drops, and borrows the same way.
 
+### What if you need a sixth box?
+
+Then it becomes box six, in the compiler, and every program gets it. The set is closed, not frozen — the family was assembled from types that already existed, and it can grow the same way. That's the inversion worth noticing: the privilege isn't withheld from users, it's the *delivery mechanism* for them. A sixth discipline ships as a language feature everyone can audit, instead of as an unsafe reimplementation buried in one library.
+
+The bar is a design bar, not a popularity one. Box six needs a scoped access discipline the five don't cover — exclusive-single-task, identity, read-heavy, exclusive-lock, linear. "I want refcounting" doesn't qualify; refcounting is how `Shared` is implemented, not what it is. Nobody has named a sixth discipline yet, which is some evidence the set is close to complete.
+
+Why not just add an `unsafe` hatch and let libraries do it? Because the two hatches cost different things. Raw pointers are contained — they don't change what `const b = a` means for anyone else. A box hatch does: every reader of every dependency starts having to ask "is assignment free for this type, and does something run when it drops?" The carve-out costs you five names learned once. The hatch costs you an audit of everything you import. That's a bad trade for a language selling local reasoning.
+
+Two costs I'll own. A library whose whole pitch is "feels like a plain value, shares underneath" can't be written in Rask — that's the design working, but it is a real thing you can't have. And composing means `Shared<T>` shows up in your public signatures, pushing callers into `with` blocks. Fine for a cache; annoying for a type you wanted to feel primitive.
+
 `string` gets the same treatment for the same reason, argued separately in `std.strings` ("Why Only String?").
 
 ### Is every type with `with` access a box?
