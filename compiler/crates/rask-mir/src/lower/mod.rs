@@ -3727,6 +3727,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
+        let empty_nominal = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -3743,6 +3744,8 @@ mod tests {
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
             resource_types: &empty_resource_types,
+            nominal_underlying: &empty_nominal,
+            const_slot_types: std::cell::RefCell::new(HashMap::new()),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -3783,6 +3786,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
+        let empty_nominal = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -3799,6 +3803,8 @@ mod tests {
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
             resource_types: &empty_resource_types,
+            nominal_underlying: &empty_nominal,
+            const_slot_types: std::cell::RefCell::new(HashMap::new()),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -3845,6 +3851,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
+        let empty_nominal = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -3861,6 +3868,8 @@ mod tests {
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
             resource_types: &empty_resource_types,
+            nominal_underlying: &empty_nominal,
+            const_slot_types: std::cell::RefCell::new(HashMap::new()),
         };
 
         let decl = make_fn("f", vec![], None, vec![
