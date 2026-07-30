@@ -2507,6 +2507,20 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
+        // A bare `box.lock()` / `.read()` / `.write()` whose value is used
+        // directly, with nothing chained onto it. `sync_guard` only fires when
+        // the guard is the *object* of a trailing field or method access, so
+        // this form fell through to plain dispatch and mangled `Mutex_lock` —
+        // the closure-taking runtime entry point — with no closure to give it,
+        // which failed the Cranelift verifier on argument count (#479).
+        //
+        // Same acquire / use / release shape as the chained form, with the
+        // guard itself as the value.
+        if let Some((box_obj, acquire, release)) = self.sync_guard(expr) {
+            let ret_hint = self.ctx.lookup_raw_type(expr.id).map(|t| self.ctx.type_to_mir(t));
+            return self.lower_sync_guard_access(box_obj, acquire, release, ret_hint, |g| g);
+        }
+
         // `box.lock()/.read()/.write().method(args)` — the guard result is a
         // scoped lock, so run the trailing call between acquire and release
         // (lock → call → unlock) instead of lowering the guard to a bare 1-arg

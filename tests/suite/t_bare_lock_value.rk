@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `mutex.lock()` used directly as a value, with nothing chained onto it.
+//
+// The chained forms (`.lock().method()`, `.lock().field`) lower to an
+// acquire / use / release trio. The bare form fell through to plain method
+// dispatch and mangled the closure-taking `Mutex_lock` with no closure to give
+// it, so native failed the Cranelift verifier on argument count (#479).
+//
+// A module-const case is deliberately absent: a test block that references a
+// module-level const registers 0 tests on native (the #390 family), which would
+// make this file diverge for an unrelated reason.
+
+struct Counter { public n: i64 }
+extend Counter {
+    func new() -> Counter { return Counter { n: 7 } }
+    func get(self) -> i64 { return self.n }
+}
+
+struct Holder {
+    n: Mutex<i64>
+    v: Mutex<Vec<i64>>
+    c: Mutex<Counter>
+}
+
+extend Holder {
+    func new() -> Holder {
+        return Holder {
+            n: Mutex.new(3),
+            v: Mutex.new(Vec.new()),
+            c: Mutex.new(Counter.new()),
+        }
+    }
+
+    // Bare: the guard's value is the result.
+    func read_scalar(self) -> i64 { return self.n.lock() }
+    // Chained, for contrast — this always worked.
+    func read_chained(self) -> i64 { return self.c.lock().get() }
+    func vec_len(self) -> usize { return self.v.lock().len() }
+}
+
+test "mem.boxes — a bare lock() yields the scalar payload" {
+    const h = Holder.new()
+    assert h.read_scalar() == 3
+}
+
+test "mem.boxes — a bare lock() on a Vec payload" {
+    const h = Holder.new()
+    assert h.vec_len() == 0
+}
+
+test "mem.boxes — the chained form still works" {
+    const h = Holder.new()
+    assert h.read_chained() == 7
+}
