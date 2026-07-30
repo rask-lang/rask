@@ -1209,7 +1209,19 @@ impl<'a> FunctionBuilder<'a> {
     /// True when a struct field's declared type uses stack-slot (aggregate)
     /// representation in codegen. These fields return a pointer into the parent
     /// struct rather than a loaded scalar.
-    fn is_aggregate_field_type(ty: &RaskType) -> bool {
+    /// Byte size of a user struct/enum by name, or 0 if there's no layout for
+    /// it (a runtime-opaque handle, or a type that never got one).
+    fn named_layout_size(name: &str, ctx: &CodegenCtx) -> u32 {
+        if let Some(l) = ctx.struct_layouts.iter().find(|l| l.name == name) {
+            return l.size;
+        }
+        if let Some(l) = ctx.enum_layouts.iter().find(|l| l.name == name) {
+            return l.size;
+        }
+        0
+    }
+
+    fn is_aggregate_field_type(ty: &RaskType, ctx: &CodegenCtx) -> bool {
         match ty {
             // Primitives, opaque pointers — scalar
             RaskType::Unit | RaskType::Bool
@@ -1220,8 +1232,11 @@ impl<'a> FunctionBuilder<'a> {
             | RaskType::Fn { .. } | RaskType::Slice(_) => false,
             // Runtime-opaque pointer types (Vec, Map, Pool, Handle, Channel, ...)
             RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,
-            // Unresolved named types (TcpListener, TcpConnection, etc.) — pointer-sized scalars
-            RaskType::UnresolvedNamed(_) | RaskType::Named(_) => false,
+            // A named type is an aggregate when it's a user struct or enum —
+            // one with real bytes. Runtime-opaque handles (TcpListener, File,
+            // Instant) have empty layouts and stay pointer-sized scalars.
+            RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
+            RaskType::Named(_) => false,
             // Niche-optimized Option<Handle<T>> — scalar (sentinel value, no tag)
             ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::UnresolvedGeneric { name, .. } if name == "Handle") =>
             {
@@ -1606,17 +1621,18 @@ impl<'a> FunctionBuilder<'a> {
                 let effective_size = store_size
                     .map(|ss| ss.min(*src_size))
                     .unwrap_or(*src_size);
-                // If the field is pointer-sized, just store the pointer
-                // value instead of deep-copying the source slot.
-                if effective_size <= 8 {
-                    false
-                } else {
+                // Copy the bytes even when the aggregate fits in 8 bytes.
+                // Storing the pointer instead left the field aimed at the
+                // constructing function's frame; it read back fine until
+                // something reused that frame, which is how `Request.method`
+                // arrived at the middleware with an out-of-range tag (#474).
+                // Fields larger than 8 bytes were always copied — this makes
+                // the small ones behave the same.
                 let src_var = ctx.var_map.get(src_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Aggregate source not found".to_string()))?;
                 let src_addr = builder.use_var(*src_var);
                 Self::copy_bytes(builder, src_addr, 0, addr_val, *offset as i32, effective_size);
                 true
-                } // end else (effective_size > 8)
             } else { false }
         } else { false };
 
@@ -2532,7 +2548,7 @@ impl<'a> FunctionBuilder<'a> {
                         // Aggregate field: return pointer into parent struct.
                         // Covers both >8-byte structs and ≤8-byte enums/structs
                         // that use stack-slot representation in codegen.
-                        if field.size > 8 || Self::is_aggregate_field_type(&field.ty) {
+                        if field.size > 8 || Self::is_aggregate_field_type(&field.ty, ctx) {
                             let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
                             return Ok(addr);
                         }
