@@ -671,6 +671,13 @@ pub struct MirLowerer<'a> {
     /// target local and jumps to the continuation block instead of emitting
     /// MirTerminator::Return.  Used by fold/reduce/etc.
     inline_return_target: Option<(LocalId, BlockId)>,
+    /// The type a `return` inside the inlined body stored, when one fired.
+    ///
+    /// Doubles as "the body already stored its result and terminated". Without
+    /// it, fold assigned the body's fall-off value over the accumulator the
+    /// return had just written, resetting it every iteration (#462) — and an
+    /// inlined predicate reported the wrong type for its result local.
+    inline_return_taken: Option<MirType>,
     /// Stack of active ensure cleanup blocks (innermost last).
     /// At function exit points (return, try error, implicit return),
     /// this becomes the cleanup_chain on CleanupReturn terminators.
@@ -1538,6 +1545,7 @@ impl<'a> MirLowerer<'a> {
             local_meta: HashMap::new(),
             with_pool_bindings: HashMap::new(),
             inline_return_target: None,
+            inline_return_taken: None,
             ensure_stack: Vec::new(),
             take_self_methods,
             ensure_receivers: HashMap::new(),

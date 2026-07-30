@@ -106,6 +106,17 @@ impl BlockBuilder {
             .map(|l| l.ty.clone())
     }
 
+    /// Retype an already-allocated local.
+    ///
+    /// For inlining a closure body that returns early: the `return` needs a
+    /// destination local before the body is lowered, but the body's type isn't
+    /// known until after.
+    pub fn set_local_type(&mut self, id: LocalId, ty: MirType) {
+        if let Some(local) = self.function.locals.iter_mut().find(|l| l.id == id) {
+            local.ty = ty;
+        }
+    }
+
     /// Set the current source span. Subsequent push_stmt/terminate calls
     /// will stamp this span onto any statement/terminator with a dummy span.
     pub fn set_span(&mut self, span: Span) {

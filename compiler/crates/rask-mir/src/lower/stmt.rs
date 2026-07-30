@@ -171,8 +171,10 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Return(opt_expr) => {
+                let mut returned_ty = None;
                 let value = if let Some(e) = opt_expr {
                     let (op, op_ty) = self.lower_expr(e)?;
+                    returned_ty = Some(op_ty.clone());
                     // Auto-wrap a non-Option value into Some(...) when the
                     // function returns Option<T>. The user-level shorthand
                     // `func -> User? { return User { ... } }` relies on this;
@@ -215,6 +217,8 @@ impl<'a> MirLowerer<'a> {
                             rvalue: MirRValue::Use(val),
                         }));
                     }
+                    self.inline_return_taken =
+                        Some(returned_ty.unwrap_or(MirType::Void));
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
                 } else if self.ensure_stack.is_empty() {
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value }));
