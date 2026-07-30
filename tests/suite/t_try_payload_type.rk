@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `try expr` and `try expr else |e| …` on a struct-returning fallible call.
+//
+// Two sources know the ok payload type: the checker's type for the expression,
+// and the MIR type the inner expression lowered to. Either can come back as an
+// opaque `Ptr` when it couldn't work the type out, and the checker's answer was
+// being taken unconditionally. On a call reached through a guard the checker's
+// answer *was* `Ptr`, so the binding became an opaque pointer — a field read off
+// it gave a number and `json.encode` of it encoded that number. In
+// examples/validation that made `/tasks/1` answer with the task's id instead of
+// the task.
+//
+// The payload is checked inside the same function it's bound in: handing a string
+// back as a Result's ok payload is separately broken on native (#499).
+
+import json
+
+struct View {
+    public id: u64
+    public title: string
+}
+
+enum ApiError {
+    BadRequest(string)
+    NotFound(u64)
+}
+
+extend ApiError {
+    func message(self) -> string {
+        match self {
+            BadRequest(m) => return m,
+            NotFound(n)   => return "no view {n}",
+        }
+    }
+}
+
+enum StoreError {
+    NotFound(u64)
+}
+
+extend StoreError {
+    func message(self) -> string {
+        match self {
+            NotFound(n) => return "no view {n}",
+        }
+    }
+
+    func to_api(self) -> ApiError {
+        match self {
+            NotFound(n) => return ApiError.NotFound(n),
+        }
+    }
+}
+
+struct Store {
+    views: Vec<View>
+}
+
+extend Store {
+    func new() -> Store {
+        mut v = Vec.new()
+        v.push(View { id: 1, title: "one" })
+        v.push(View { id: 2, title: "two" })
+        return Store { views: v }
+    }
+
+    func view(self, id: u64) -> View or StoreError {
+        mut i = 0
+        while i < self.views.len() {
+            if self.views[i].id == id {
+                return self.views[i].clone()
+            }
+            i += 1
+        }
+        return StoreError.NotFound(id)
+    }
+}
+
+// `try … else` widens the error and binds the payload.
+func check_via_else(store: Store, id: u64, want: string) -> void or ApiError {
+    const v = try store.view(id) else |e| e.to_api()
+    assert v.id == id
+    assert v.title == want
+    const encoded = json.encode(v)
+    assert encoded.contains("\"title\":\"{want}\"")
+    return
+}
+
+// Plain `try` shares the same payload-type resolution.
+func check_via_try(store: Store, id: u64, want: string) -> void or StoreError {
+    const v = try store.view(id)
+    assert v.id == id
+    assert v.title == want
+    return
+}
+
+test "type.errors — the ok payload of try…else keeps its struct type" {
+    const store = Store.new()
+    check_via_else(store, 1, "one")!
+    check_via_else(store, 2, "two")!
+}
+
+test "type.errors — plain try keeps the payload's struct type too" {
+    const store = Store.new()
+    check_via_try(store, 1, "one")!
+    check_via_try(store, 2, "two")!
+}
+
+test "type.errors — a miss still takes the err path" {
+    const store = Store.new()
+    const missing = store.view(99)
+    const found = missing?
+    assert !found
+
+    const hit = store.view(1)
+    const present = hit?
+    assert present
+}
