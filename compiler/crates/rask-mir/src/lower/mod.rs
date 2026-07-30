@@ -215,6 +215,13 @@ pub struct MirContext<'a> {
     pub call_rewrites: &'a HashMap<NodeId, String>,
     /// Type names marked with `@resource` — used for resource tracking ops (C1/C2).
     pub resource_types: &'a std::collections::HashSet<String>,
+    /// Nominal newtype name → the type it wraps, as a type string.
+    ///
+    /// `type Id = u64 with (…)` has no layout of its own: it *is* a u64 with a
+    /// distinct identity, so it's transparent in MIR. Without this the name
+    /// resolved to a bare `Ptr` with nothing allocated behind it, and
+    /// construction stored through an uninitialised pointer (#445).
+    pub nominal_underlying: &'a HashMap<String, String>,
     /// Module-level const name → the MIR type its global slot holds.
     ///
     /// Filled by `compute_const_slot_types` before any function is lowered.
@@ -243,6 +250,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_RESOURCE_TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
+        static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, String>> =
+            std::sync::LazyLock::new(HashMap::new);
         MirContext {
             struct_layouts: &[],
             enum_layouts: &[],
@@ -259,6 +268,7 @@ impl<'a> MirContext<'a> {
             trait_coercions: &EMPTY_COERCIONS,
             call_rewrites: &EMPTY_REWRITES,
             resource_types: &EMPTY_RESOURCE_TYPES,
+            nominal_underlying: &EMPTY_NOMINAL,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
@@ -364,6 +374,12 @@ impl<'a> MirContext<'a> {
                     || name.starts_with("Receiver<") || name.starts_with("Shared<")
                 {
                     return MirType::Ptr;
+                }
+                // A nominal newtype has no layout — it is whatever it wraps.
+                if let Some(underlying) = self.nominal_underlying.get(name) {
+                    if underlying != name {
+                        return self.resolve_type_str(underlying);
+                    }
                 }
                 if let Some((idx, sl)) = self.find_struct(name) {
                     MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
@@ -833,6 +849,37 @@ impl<'a> MirLowerer<'a> {
     /// to being re-evaluated at each reference.
     fn module_const_slot_ty(&self, name: &str) -> Option<MirType> {
         self.ctx.const_slot_types.borrow().get(name).cloned()
+    }
+
+    /// Is `name` a nominal newtype with no layout of its own?
+    pub(crate) fn is_transparent_newtype(&self, name: &str) -> bool {
+        self.ctx.nominal_underlying.contains_key(name)
+            && self.ctx.find_struct(name).is_none()
+            && self.ctx.find_enum(name).is_none()
+    }
+
+    /// Does this expression have the type of a nominal newtype?
+    pub(crate) fn expr_is_transparent_newtype(&self, expr: &Expr) -> bool {
+        self.ctx
+            .lookup_raw_type(expr.id)
+            .and_then(|ty| MirContext::type_prefix(ty, self.ctx.type_names))
+            .map(|name| self.is_transparent_newtype(&name))
+            .unwrap_or(false)
+    }
+
+    /// Lower a nominal newtype construction — `Id { value: 5 }` or `Id(5)` — to
+    /// the wrapped value itself. Returns `None` when `name` isn't one.
+    pub(crate) fn lower_newtype_wrap(
+        &mut self,
+        name: &str,
+        inner: Option<&Expr>,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if !self.is_transparent_newtype(name) {
+            return Ok(None);
+        }
+        let Some(inner) = inner else { return Ok(None) };
+        let (op, _) = self.lower_expr(inner)?;
+        Ok(Some((op, self.ctx.resolve_type_str(name))))
     }
 
     /// Method-dispatch prefix for a Struct/Enum MIR type — its layout name.

@@ -213,6 +213,7 @@ fn try_eval_comptime_mir(
         })
         .collect();
 
+    let nominal_underlying = std::collections::HashMap::new();
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -229,6 +230,7 @@ fn try_eval_comptime_mir(
         trait_coercions: &empty_coercions,
         call_rewrites: &empty_rewrites,
         resource_types: &empty_resource_types,
+        nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 

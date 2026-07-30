@@ -522,6 +522,17 @@ impl<'a> MirLowerer<'a> {
 
             // Function call — direct or through closure
             ExprKind::Call { func, args } => {
+                // `Id(5)` on a nominal newtype is the value, not a call — there
+                // is no `Id` function to dispatch to (#445).
+                if let ExprKind::Ident(name) = &func.kind {
+                    if args.len() == 1 {
+                        if let Some((op, ty)) =
+                            self.lower_newtype_wrap(name, Some(&args[0].expr))?
+                        {
+                            return Ok((op, ty));
+                        }
+                    }
+                }
                 // #270: peek the callee's scalar-`mutate` param classification so
                 // those args are passed by address (write-back visible).
                 let callee_smut: Vec<Option<MirType>> = match &func.kind {
@@ -840,6 +851,13 @@ impl<'a> MirLowerer<'a> {
                     if let Some(val) = primitive_type_constant(name, field) {
                         return Ok(val);
                     }
+                }
+
+                // Unwrapping a nominal newtype is a no-op — `id.value` IS `id`.
+                // It's transparent in MIR, so there's no aggregate to offset
+                // into and a field load would dereference the value (#445).
+                if field == "value" && self.expr_is_transparent_newtype(object) {
+                    return self.lower_expr(object);
                 }
 
                 // Cross-package type access: pkg.Type → treat field as the type name.
@@ -1321,6 +1339,12 @@ impl<'a> MirLowerer<'a> {
 
             // Struct literal
             ExprKind::StructLit { name, fields, spread } => {
+                // A nominal newtype is transparent: `Id { value: 5 }` IS 5.
+                // There's no layout to store into — treating it as an aggregate
+                // stored through an uninitialised pointer (#445).
+                if let Some((op, ty)) = self.lower_newtype_wrap(name, fields.first().map(|f| &f.value))? {
+                    return Ok((op, ty));
+                }
                 // Check for enum variant constructor: "EnumName.VariantName { ... }"
                 let (result_ty, layout, enum_variant_info) = if let Some(dot_pos) = name.find('.') {
                     let enum_name = &name[..dot_pos];

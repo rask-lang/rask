@@ -47,6 +47,23 @@ pub(super) fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask
         .collect()
 }
 
+/// Nominal newtype name → the type string it wraps.
+///
+/// `type Id = u64 with (…)` has no layout: it *is* a u64 with its own
+/// identity, so MIR treats it as transparent (#445).
+pub(super) fn build_nominal_underlying(
+    typed: &rask_types::TypedProgram,
+) -> HashMap<String, String> {
+    typed.types.iter()
+        .filter_map(|def| match def {
+            rask_types::TypeDef::NominalAlias { name, underlying, .. } => {
+                Some((name.clone(), format!("{}", underlying)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Extract trait method lists for trait object dispatch.
 pub(super) fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<String>> {
     typed.types.iter()
@@ -237,6 +254,7 @@ pub fn compile_to_object(
         std::cell::RefCell::new(interp)
     });
 
+    let nominal_underlying = build_nominal_underlying(typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -253,6 +271,7 @@ pub fn compile_to_object(
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 
@@ -490,6 +509,7 @@ pub fn compile_tests_to_object(
     });
 
     let empty_packages = std::collections::HashSet::new();
+    let nominal_underlying = build_nominal_underlying(typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -506,6 +526,7 @@ pub fn compile_tests_to_object(
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 
@@ -683,6 +704,7 @@ pub fn compile_benchmarks_to_object(
     });
 
     let empty_packages = std::collections::HashSet::new();
+    let nominal_underlying = build_nominal_underlying(typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -699,6 +721,7 @@ pub fn compile_benchmarks_to_object(
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 

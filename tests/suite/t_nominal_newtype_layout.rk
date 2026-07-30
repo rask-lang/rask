@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A nominal newtype is transparent in MIR: `type Id = u64` IS a u64 with its
+// own identity. It has no layout of its own, so it used to resolve to a bare
+// pointer with nothing allocated behind it, and construction stored through an
+// uninitialised pointer (#445).
+//
+// Spec: type.aliases T7 (construction), T8 (`.value`), T13 (`extend` works).
+
+type Id = u64 with (Equal, Hashable, Comparable, Debug)
+type Meters = f64 with (Equal, Comparable)
+type Name = string with (Equal, Hashable)
+
+extend Id {
+    func doubled(self) -> u64 { return self.value * 2 }
+    func bumped(self) -> Id { return Id(self.value + 1) }
+}
+
+// A struct field typed by a newtype needs the wrapped type's size. `Name` is a
+// string (16 bytes), and sizing it at 8 made the next field overlap it.
+struct Row {
+    public id: Id
+    public label: Name
+    public tail: u64
+}
+
+func takes_id(x: Id) -> u64 { return x.value }
+
+test "type.aliases/T7 — both construction forms work" {
+    const a = Id { value: 5 }
+    const b = Id(7)
+    assert a.value == 5
+    assert b.value == 7
+}
+
+test "type.aliases/T13 — extend methods run on a newtype" {
+    const a = Id { value: 5 }
+    assert a.doubled() == 10
+    assert a.bumped().value == 6
+}
+
+test "type.aliases — a newtype crosses a function boundary" {
+    assert takes_id(Id(7)) == 7
+}
+
+test "type.aliases — newtypes over other primitives" {
+    assert Meters(2.5).value == 2.5
+    assert Name("bo").value == "bo"
+}
+
+test "type.aliases — a struct field typed by a newtype keeps its size" {
+    const r = Row { id: Id(7), label: Name("bo"), tail: 99 }
+    assert r.id.value == 7
+    assert r.label.value == "bo"
+    assert r.tail == 99
+}
