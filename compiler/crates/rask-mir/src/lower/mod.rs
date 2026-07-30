@@ -873,6 +873,44 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Element type of an expression that evaluates to a `Vec<T>`, or None when
+    /// it isn't one (or the type can't be recovered).
+    ///
+    /// The checker's type first, then the same fallbacks a binding uses: a
+    /// variable's tracked element type, and the callee's declared return type.
+    /// A `Vec.new()` filled by `push` leaves the checker with an inference
+    /// variable, and a call returning `Vec<T>` doesn't always carry a type on the
+    /// argument node.
+    pub(crate) fn vec_elem_of_expr(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            if let Some(elem) = self.vec_elem_of_checker_type(ty) {
+                return Some(elem);
+            }
+        }
+        match &expr.kind {
+            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.elem_type.clone()),
+            ExprKind::Call { func, .. } => match &func.kind {
+                ExprKind::Ident(callee) => {
+                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
+                        .unwrap_or_else(|| callee.clone());
+                    self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
+                }
+                _ => None,
+            },
+            ExprKind::MethodCall { object, method, .. } => {
+                let prefix = match &object.kind {
+                    ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
+                    _ => None,
+                }?;
+                let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                self.func_sigs
+                    .get(&format!("{}_{}", base, method))
+                    .and_then(|s| s.ret_vec_elem.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// Is `name` a nominal newtype with no layout of its own?
     pub(crate) fn is_transparent_newtype(&self, name: &str) -> bool {
         self.ctx.nominal_underlying.contains_key(name)

@@ -2802,10 +2802,15 @@ impl<'a> MirLowerer<'a> {
                             // Vec<T>: generate loop that encodes each element.
                             // Detection: check type checker first, fall back to local_meta type_prefix.
                             let raw_ty = self.ctx.lookup_raw_type(args[0].expr.id);
+                            // A resolved `Type::Generic { base }` counts too: a
+                            // call returning `Vec<T>` comes back that way, and
+                            // missing it sent `json.encode(views())` through
+                            // json_encode_i64 — the binding held a pointer.
                             let is_vec_from_type = raw_ty.map_or(false, |ty| {
                                 matches!(ty,
                                     rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec"
                                 ) || matches!(ty, rask_types::Type::UnresolvedNamed(n) if n == "Vec")
+                                    || self.vec_elem_of_checker_type(ty).is_some()
                             });
                             let is_vec_from_prefix = if !is_vec_from_type {
                                 if let ExprKind::Ident(var_name) = &args[0].expr.kind {
@@ -2819,10 +2824,20 @@ impl<'a> MirLowerer<'a> {
                             } else {
                                 false
                             };
-                            if is_vec_from_type || is_vec_from_prefix {
+                            // Last resort: the callee's declared return type. A
+                            // call returning `Vec<T>` doesn't always carry a type
+                            // on the argument node, and missing it sent
+                            // `json.encode(views())` through json_encode_i64.
+                            let elem_from_sig = if is_vec_from_type || is_vec_from_prefix {
+                                None
+                            } else {
+                                self.vec_elem_of_expr(&args[0].expr)
+                            };
+                            if is_vec_from_type || is_vec_from_prefix || elem_from_sig.is_some() {
                                 // Extract element type from generic args when available
                                 let elem_ty = raw_ty.and_then(|ty| match ty {
-                                    rask_types::Type::UnresolvedGeneric { args: ga, .. } => {
+                                    rask_types::Type::UnresolvedGeneric { args: ga, .. }
+                                    | rask_types::Type::Generic { args: ga, .. } => {
                                         ga.first().and_then(|a| match a {
                                             rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
                                             _ => None,
@@ -2830,7 +2845,15 @@ impl<'a> MirLowerer<'a> {
                                     }
                                     _ => None,
                                 });
-                                return self.lower_json_encode_vec(arg_op, elem_ty).map(Some);
+                                // The checker leaves a `Vec.new()` filled by
+                                // `push` with an inference variable, so fall back
+                                // to the element type lowering tracked itself.
+                                let elem_mir = elem_ty
+                                    .as_ref()
+                                    .map(|t| self.ctx.type_to_mir(t))
+                                    .or(elem_from_sig)
+                                    .or_else(|| self.vec_elem_of_expr(&args[0].expr));
+                                return self.lower_json_encode_vec(arg_op, elem_ty, elem_mir).map(Some);
                             }
 
                             // Non-struct: string or integer
