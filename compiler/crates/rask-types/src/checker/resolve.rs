@@ -2756,6 +2756,18 @@ impl TypeChecker {
                 self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
             }
             "to_float" if args.is_empty() => self.unify(ret, &Type::F64, span),
+            // std.bits B1 — bit inspection and permutation. All of these answer
+            // in the receiver's own type: a count can't exceed the width, so
+            // there's no reason to widen it to a separate counter type.
+            "count_ones" | "count_zeros"
+            | "leading_zeros" | "trailing_zeros"
+            | "leading_ones" | "trailing_ones"
+            | "reverse_bits" | "swap_bytes"
+                if args.is_empty() => self.unify(ret, ty, span),
+            "rotate_left" | "rotate_right" if args.len() == 1 => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, ty, span)
+            }
             _ => Err(TypeError::NoSuchMethod {
                 ty: ty.clone(),
                 method: method.to_string(),

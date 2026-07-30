@@ -3826,6 +3826,19 @@ impl<'a> MirLowerer<'a> {
                 .is_some_and(|qualified| self.func_sigs.contains_key(&qualified));
         let skip_binop = skip_binop || has_operator_overload;
 
+        // std.bits B1 on an integer receiver. These aren't operator methods —
+        // they're named calls — but they lower the same way, to a single
+        // machine instruction on the receiver's own width, so they belong here
+        // rather than in the `{Type}_{method}` dispatch chain (which had no
+        // `i64_count_ones` to find, #397).
+        if matches!(obj_ty, MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                          | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64)
+        {
+            if let Some(handled) = self.lower_int_bit_method(method, args, &obj_op, obj_ty)? {
+                return Ok(Some(handled));
+            }
+        }
+
         // Detect binary operator methods (desugared from a + b → a.add(b))
         // Skip for SIMD types and raw pointers — they use method dispatch.
         if !skip_binop {
@@ -3862,6 +3875,73 @@ impl<'a> MirLowerer<'a> {
         }
         } // end if !skip_binop
         Ok(None)
+    }
+
+    /// std.bits B1 bit methods on an integer receiver.
+    ///
+    /// The "ones" counts are the "zeros" counts of the complement, and
+    /// `count_zeros` is `count_ones` of the complement, so those three compose
+    /// from a BitNot rather than carrying MIR ops of their own. Every result
+    /// keeps the receiver's type, matching what the checker unified.
+    fn lower_int_bit_method(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Result<Option<super::TypedOperand>, LoweringError> {
+        use crate::operand::UnaryOp as MirUnaryOp;
+
+        // Rotations take an amount; the rest are nullary.
+        if let Some(rot) = match method {
+            "rotate_left" => Some(crate::operand::BinOp::RotateLeft),
+            "rotate_right" => Some(crate::operand::BinOp::RotateRight),
+            _ => None,
+        } {
+            if args.len() != 1 {
+                return Ok(None);
+            }
+            let (amount, _) = self.lower_expr(&args[0].expr)?;
+            let out = self.builder.alloc_temp(obj_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: out,
+                rvalue: MirRValue::BinaryOp { op: rot, left: obj_op.clone(), right: amount },
+            }));
+            return Ok(Some((MirOperand::Local(out), obj_ty.clone())));
+        }
+
+        if !args.is_empty() {
+            return Ok(None);
+        }
+        let (op, complement) = match method {
+            "count_ones" => (MirUnaryOp::CountOnes, false),
+            "count_zeros" => (MirUnaryOp::CountOnes, true),
+            "leading_zeros" => (MirUnaryOp::LeadingZeros, false),
+            "leading_ones" => (MirUnaryOp::LeadingZeros, true),
+            "trailing_zeros" => (MirUnaryOp::TrailingZeros, false),
+            "trailing_ones" => (MirUnaryOp::TrailingZeros, true),
+            "reverse_bits" => (MirUnaryOp::ReverseBits, false),
+            "swap_bytes" => (MirUnaryOp::SwapBytes, false),
+            _ => return Ok(None),
+        };
+
+        let input = if complement {
+            let flipped = self.builder.alloc_temp(obj_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: flipped,
+                rvalue: MirRValue::UnaryOp { op: MirUnaryOp::BitNot, operand: obj_op.clone() },
+            }));
+            MirOperand::Local(flipped)
+        } else {
+            obj_op.clone()
+        };
+
+        let out = self.builder.alloc_temp(obj_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: out,
+            rvalue: MirRValue::UnaryOp { op, operand: input },
+        }));
+        Ok(Some((MirOperand::Local(out), obj_ty.clone())))
     }
 
     /// String comparison operators → `string_lt`, `string_ge`, etc.

@@ -71,6 +71,14 @@ pub fn eval_unaryop(op: UnaryOp, operand: &MiriValue) -> Result<MiriValue, MiriE
         (UnaryOp::BitNot, MiriValue::U32(v)) => Ok(MiriValue::U32(!v)),
         (UnaryOp::BitNot, MiriValue::U64(v)) => Ok(MiriValue::U64(!v)),
 
+        // std.bits B1 at comptime. Results keep the operand's type, so a count
+        // comes back as the same width it counted over.
+        (UnaryOp::CountOnes, v) => bit_op(v, |x, _| u64::from(x.count_ones())),
+        (UnaryOp::LeadingZeros, v) => bit_op(v, |x, w| u64::from(x.leading_zeros() - (64 - w))),
+        (UnaryOp::TrailingZeros, v) => bit_op(v, |x, w| u64::from(x.trailing_zeros().min(w))),
+        (UnaryOp::ReverseBits, v) => bit_op(v, |x, w| x.reverse_bits() >> (64 - w)),
+        (UnaryOp::SwapBytes, v) => bit_op(v, |x, w| x.swap_bytes() >> (64 - w)),
+
         _ => Err(MiriError::UnsupportedOperation(
             format!("unary op {op:?} not supported for {operand:?}"),
         )),
@@ -202,6 +210,40 @@ fn neg_ovf(v: impl std::fmt::Display, ty: &str) -> MiriError {
     MiriError::IntegerOverflow(format!("integer overflow: negating {v} exceeds {ty} range"))
 }
 
+/// Apply a bit operation over the value's own width and rebuild its variant.
+///
+/// The operand is widened to u64 with the bits above its width cleared, so a
+/// count answers over the declared type — `(0i32).count_zeros()` is 32, not 64.
+fn bit_op(
+    value: &MiriValue,
+    f: impl Fn(u64, u32) -> u64,
+) -> Result<MiriValue, MiriError> {
+    let (raw, width) = match value {
+        MiriValue::I8(v) => (*v as u8 as u64, 8),
+        MiriValue::I16(v) => (*v as u16 as u64, 16),
+        MiriValue::I32(v) => (*v as u32 as u64, 32),
+        MiriValue::I64(v) => (*v as u64, 64),
+        MiriValue::U8(v) => (u64::from(*v), 8),
+        MiriValue::U16(v) => (u64::from(*v), 16),
+        MiriValue::U32(v) => (u64::from(*v), 32),
+        MiriValue::U64(v) => (*v, 64),
+        other => return Err(MiriError::UnsupportedOperation(
+            format!("bit operation not supported for {other:?}"),
+        )),
+    };
+    let out = f(raw, width);
+    Ok(match value {
+        MiriValue::I8(_) => MiriValue::I8(out as i8),
+        MiriValue::I16(_) => MiriValue::I16(out as i16),
+        MiriValue::I32(_) => MiriValue::I32(out as i32),
+        MiriValue::I64(_) => MiriValue::I64(out as i64),
+        MiriValue::U8(_) => MiriValue::U8(out as u8),
+        MiriValue::U16(_) => MiriValue::U16(out as u16),
+        MiriValue::U32(_) => MiriValue::U32(out as u32),
+        _ => MiriValue::U64(out),
+    })
+}
+
 fn cant_cast(value: &MiriValue, target: &MirType) -> MiriError {
     MiriError::UnsupportedOperation(
         format!("cannot cast {value:?} to {target:?}"),
@@ -248,6 +290,12 @@ macro_rules! impl_int_binop {
                 BinOp::Shr => a.checked_shr(b as u32).map(MiriValue::$variant).ok_or_else(||
                     MiriError::IntegerOverflow(format!(
                         "shift amount {} exceeds {} bit width", b, stringify!($ty)))),
+                // Rotation wraps rather than dropping bits, so unlike the
+                // shifts there's no amount that can overflow.
+                BinOp::RotateLeft => Ok(MiriValue::$variant(a.rotate_left(
+                    (b as u32) % <$ty>::BITS))),
+                BinOp::RotateRight => Ok(MiriValue::$variant(a.rotate_right(
+                    (b as u32) % <$ty>::BITS))),
             }
         }
     };

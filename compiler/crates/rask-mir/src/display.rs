@@ -96,6 +96,8 @@ impl fmt::Display for BinOp {
             BinOp::BitXor => "^",
             BinOp::Shl => "<<",
             BinOp::Shr => ">>",
+            BinOp::RotateLeft => "rotl",
+            BinOp::RotateRight => "rotr",
         };
         write!(f, "{}", sym)
     }
@@ -107,6 +109,11 @@ impl fmt::Display for UnaryOp {
             UnaryOp::Neg => "-",
             UnaryOp::Not => "!",
             UnaryOp::BitNot => "~",
+            UnaryOp::CountOnes => "popcnt ",
+            UnaryOp::LeadingZeros => "clz ",
+            UnaryOp::TrailingZeros => "ctz ",
+            UnaryOp::ReverseBits => "bitrev ",
+            UnaryOp::SwapBytes => "bswap ",
         };
         write!(f, "{}", sym)
     }

@@ -1336,6 +1336,14 @@ impl<'a> FunctionBuilder<'a> {
                         builder.ins().bxor(val, one)
                     }
                     UnaryOp::BitNot => builder.ins().bnot(val),
+                    // Counts come back as the operand's own type, so a
+                    // `count_ones()` on an i32 answers in i32 — matching the
+                    // checker, which gives these the receiver's type.
+                    UnaryOp::CountOnes => builder.ins().popcnt(val),
+                    UnaryOp::LeadingZeros => builder.ins().clz(val),
+                    UnaryOp::TrailingZeros => builder.ins().ctz(val),
+                    UnaryOp::ReverseBits => builder.ins().bitrev(val),
+                    UnaryOp::SwapBytes => builder.ins().bswap(val),
                 };
                 Ok(result)
             }
@@ -2353,6 +2361,10 @@ impl<'a> FunctionBuilder<'a> {
                     Self::guard_shift(builder, ctx, rhs_val, int_ty);
                     builder.ins().sshr(lhs_val, rhs_val)
                 }
+                // Rotation wraps within the width, so it needs no shift guard:
+                // any amount is well-defined.
+                BinOp::RotateLeft => builder.ins().rotl(lhs_val, rhs_val),
+                BinOp::RotateRight => builder.ins().rotr(lhs_val, rhs_val),
                 BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val),
                 BinOp::Ne => builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val),
                 BinOp::Lt if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThan, lhs_val, rhs_val),
