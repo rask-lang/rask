@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Nested optionals (#488, type.optionals/OPT28–OPT31).
+//
+// `T?` where `T` is itself optional keeps both layers. The outer layer answers
+// "did the container have anything?", the inner one "was that slot filled?".
+// Any generic returning `T?` produces this as soon as T is optional.
+
+test "bare none binds the outer layer" {
+    const outer: i64?? = none
+    assert outer == none
+}
+
+test "an inner optional widens into the outer present branch" {
+    const empty_slot: i64? = none
+    const inner: i64?? = empty_slot
+    assert inner?
+    assert inner_present(inner) == false
+}
+
+test "a bare value widens through both layers" {
+    const both: i64?? = 7
+    assert both?
+    assert inner_present(both)
+    assert inner_value(both) == 7
+}
+
+test "empty container and empty slot stay distinguishable" {
+    mut empty: Vec<i64?> = Vec.new()
+    assert head(empty) == none
+
+    mut hole: Vec<i64?> = Vec.new()
+    hole.push(none)
+    const h = head(hole)
+    assert h?
+    assert inner_present(h) == false
+}
+
+test "layers are not the same type" {
+    const one: i64? = 3
+    const two: i64?? = one
+    assert depth_one(one) == "one"
+    assert depth_two(two) == "two"
+}
+
+// --- helpers ---
+
+// Generic accessor: instantiating it at T = i64? is what produces i64??.
+func head<T>(v: Vec<T>) -> T? {
+    return v.first()
+}
+
+func inner_present(x: i64??) -> bool {
+    if x? as inner {
+        return inner?
+    }
+    return false
+}
+
+func inner_value(x: i64??) -> i64 {
+    if x? as inner {
+        if inner? as v { return v }
+    }
+    return -1
+}
+
+func depth_one(x: i64?) -> string {
+    return "one"
+}
+
+func depth_two(x: i64??) -> string {
+    return "two"
+}

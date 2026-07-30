@@ -1570,6 +1570,14 @@ impl TypeChecker {
             let subst: std::collections::HashMap<&str, Type> = pairs.iter()
                 .map(|(k, v)| (k.as_str(), v.clone()))
                 .collect();
+            // ER3a: the callee's `T or E` nodes are disjointness obligations on
+            // this call's type args. Read them off before substituting, while
+            // the params are still spelled by name.
+            let callee_name = match &func.kind {
+                ExprKind::Ident(name) => name.clone(),
+                _ => String::from("this function"),
+            };
+            self.note_disjointness_obligations(&callee_name, &func_ty, &subst, span);
             Self::substitute_type_params(&func_ty, &subst)
         } else {
             func_ty

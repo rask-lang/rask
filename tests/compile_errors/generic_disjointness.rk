@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: generic instantiation collapses `T or E` into `E or E` (#488)
+// Expected: typecheck error E0358 at each call — `T` may not be `CacheError`
+//
+// The definition is fine: inside `cached`, T and CacheError are different
+// types. It only breaks at the call that picks T = CacheError, and that is
+// where the error is reported (type.errors/ER3a).
+
+enum CacheError {
+    Miss,
+}
+
+func cached<T>(v: T) -> T or CacheError {
+    return v
+}
+
+// Forwards its own T, so the obligation reaches this function's callers too.
+func wrap<T>(v: T) -> T or CacheError {
+    return cached(v)
+}
+
+func main() {
+    const fine = cached(42)                 // T = i32: no error here
+
+    const direct = cached(CacheError.Miss)  // E0358: T = CacheError
+    const forwarded = wrap(CacheError.Miss) // E0358: T = CacheError
+}

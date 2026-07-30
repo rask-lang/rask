@@ -730,6 +730,15 @@ impl TypeTable {
                 ty: self.resolve_type_names(&ty),
                 span,
             },
+            TypeError::ResultNotDisjointAtInstantiation { callee, param, arg, other, span } => {
+                TypeError::ResultNotDisjointAtInstantiation {
+                    callee,
+                    param,
+                    arg: self.resolve_type_names(&arg),
+                    other: self.resolve_type_names(&other),
+                    span,
+                }
+            }
             TypeError::ErrorMessageMissing { ty, span } => TypeError::ErrorMessageMissing {
                 ty: self.resolve_type_names(&ty),
                 span,

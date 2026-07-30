@@ -352,6 +352,18 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// ER3a: a generic's `T or E` collapsed to `E or E` at this call site.
+    /// `param` is the type parameter, `arg` what it was bound to, `other` the
+    /// spelling of the branch it collided with.
+    #[error("`{param}` may not be `{arg}` here — it would collide with the `{other}` branch of `{callee}`")]
+    ResultNotDisjointAtInstantiation {
+        callee: String,
+        param: String,
+        arg: Type,
+        other: Type,
+        span: Span,
+    },
+
     /// ER4: error type must implement `ErrorMessage` (structural: `message(self) -> string`)
     #[error("error type `{ty}` must implement `ErrorMessage` — needs `func message(self) -> string`")]
     ErrorMessageMissing {

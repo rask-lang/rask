@@ -110,6 +110,9 @@ pub struct TypeChecker {
     /// Call-site bound obligations: (type-arg var, bound trait names, span).
     /// Verified after constraint solving resolves the var to a concrete type.
     pub(super) pending_bound_checks: Vec<(Type, Vec<String>, rask_ast::Span)>,
+    /// ER3a: call-site disjointness obligations read off the callee's signature.
+    /// Verified after constraint solving resolves the type-arg vars.
+    pub(super) pending_disjointness: Vec<validate::DisjointObligation>,
     /// Whether we're inside an `unsafe {}` block (for validating pointer ops and extern calls).
     pub(super) in_unsafe: bool,
     /// Collected unsafe operations with their locations (for tooling/auditing).
@@ -183,6 +186,7 @@ impl TypeChecker {
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
             pending_bound_checks: Vec::new(),
+            pending_disjointness: Vec::new(),
             in_unsafe: false,
             unsafe_ops: Vec::new(),
             inferred_fn_types: HashMap::new(),
@@ -237,6 +241,10 @@ impl TypeChecker {
 
         // #314: verify generic call type args satisfy their declared bounds.
         self.validate_pending_bound_checks();
+
+        // ER3a: verify no `T or E` in a callee's signature collapsed to `E or E`
+        // once the type args are known.
+        self.validate_pending_disjointness();
 
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();

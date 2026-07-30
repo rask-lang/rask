@@ -279,6 +279,9 @@ The bound is enforced at type formation: `T or E` where `E` doesn't implement `E
 **Anonymous expressions don't narrow.** The narrowing rule applies to const bindings. `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `const v = compute()` first, then `if v? { use(v) }`, or use `if compute()? as v { use(v) }` to bind at the check site.
 
 **Nesting is shape-specific.** `T??` and `(T or E) or E` are forbidden (same-shape nesting is ambiguous). All cross-shape nesting is fine:
+
+> Superseded in part (2026-07-30, issue #488): `T??` is now legal, with the layers kept distinct (`type.optionals/OPT28`). `(T or E) or E` stays forbidden.
+
 - `(T?) or E` — a Result whose success is an Option. Distinct compiler-generated type.
 - `T or (U?)` — Result with Option error side.
 - `(T or E)?` — Option holding a Result.
