@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A Map whose values are structs.
+//
+// `Map.get` returns `V?`, and the payload type sizes the result slot — codegen's
+// DerefOption adapter copies `slot_size - tag` bytes out of the map's own
+// storage. The lowered type was a bare `i64?` no matter what the map held, so
+// only the value's first word was copied and reading a field off it dereferenced
+// that word. In examples/validation that made `/users/1` segfault:
+// `self.users.get(id)` handed back eight bytes of a `User`.
+
+struct Id { public value: u64 }
+
+struct User {
+    public id: Id
+    public name: string
+    public email: string
+    public active: bool
+}
+
+struct Store {
+    users: Map<Id, User>
+}
+
+extend Store {
+    func new() -> Store {
+        mut m = Map.new()
+        m.insert(Id { value: 1 }, User { id: Id { value: 1 }, name: "alice", email: "a@x.io", active: true })
+        m.insert(Id { value: 2 }, User { id: Id { value: 2 }, name: "bo", email: "b@x.io", active: false })
+        return Store { users: m }
+    }
+
+    func name_of(self, id: Id) -> string {
+        const u = self.users.get(id) ?? return "MISSING"
+        return u.name
+    }
+
+    func active_of(self, id: Id) -> bool {
+        const u = self.users.get(id) ?? return false
+        return u.active
+    }
+
+    func id_of(self, id: Id) -> u64 {
+        const u = self.users.get(id) ?? return 0
+        return u.id.value
+    }
+}
+
+test "stdlib.collections — every field of a struct map value survives get" {
+    const store = Store.new()
+    assert store.name_of(Id { value: 1 }) == "alice"
+    assert store.name_of(Id { value: 2 }) == "bo"
+    assert store.id_of(Id { value: 1 }) == 1
+    assert store.id_of(Id { value: 2 }) == 2
+    assert store.active_of(Id { value: 1 })
+    assert !store.active_of(Id { value: 2 })
+}
+
+test "stdlib.collections — a missing key still takes the none path" {
+    const store = Store.new()
+    assert store.name_of(Id { value: 99 }) == "MISSING"
+    assert store.id_of(Id { value: 99 }) == 0
+}
+
+// Directly, without going through a struct field holding the map.
+test "stdlib.collections — a local Map of structs reads back whole" {
+    mut m = Map.new()
+    m.insert(7, User { id: Id { value: 7 }, name: "cy", email: "c@x.io", active: true })
+    const found = m.get(7) ?? User { id: Id { value: 0 }, name: "none", email: "", active: false }
+    assert found.name == "cy"
+    assert found.email == "c@x.io"
+    assert found.id.value == 7
+    assert found.active
+}

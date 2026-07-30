@@ -3298,6 +3298,15 @@ impl<'a> MirLowerer<'a> {
                 .or(tracked_elem)
                 .unwrap_or(MirType::I64);
             Some(MirType::Option(Box::new(elem)))
+        } else if qualified_name == "Map_get" {
+            // Same reasoning as Vec_get: `Map.get` returns `V?`, and the payload
+            // type sizes the result slot. The DerefOption adapter copies
+            // `slot_size - tag` bytes out of the map's storage, so a bare
+            // `i64?` copied only the value's first word — `self.users.get(id)`
+            // handed back eight bytes of a `User` and reading a field off it
+            // dereferenced the id.
+            let payload = self.extract_payload_type(expr).unwrap_or(MirType::I64);
+            Some(MirType::Option(Box::new(payload)))
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
             tracked_elem

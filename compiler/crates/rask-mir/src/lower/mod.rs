@@ -2064,11 +2064,17 @@ impl<'a> MirLowerer<'a> {
     /// value; aggregates get `None` so codegen returns the payload address.
     /// (The Option codegen path ignores this offset and uses its own, so a
     /// single Result-shaped offset is correct for both.)
-    fn payload_byte_offset(&self, payload_ty: &MirType) -> Option<u32> {
-        let is_aggregate = matches!(
-            payload_ty,
+    /// True when a tagged payload of this type lives inline and is reached by
+    /// address rather than loaded as a value.
+    fn mir_payload_is_aggregate(ty: &MirType) -> bool {
+        matches!(
+            ty,
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
-        );
+        )
+    }
+
+    fn payload_byte_offset(&self, payload_ty: &MirType) -> Option<u32> {
+        let is_aggregate = Self::mir_payload_is_aggregate(payload_ty);
         if is_aggregate {
             None
         } else {
@@ -2092,10 +2098,25 @@ impl<'a> MirLowerer<'a> {
             // explicit byte_offset so codegen loads the value at
             // RESULT_PAYLOAD_OFFSET instead of falling into the aggregate
             // fast-path that returns the slot address.
-            let is_aggregate = matches!(
-                payload_ty,
-                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
-            );
+            // The container has the last word on how the payload is *stored*.
+            // `Map.get` returns `i64?` — a pointer to the map's own value — while
+            // the checker calls the payload a `User`. Addressing the container
+            // instead of loading that pointer handed back the address of the tag,
+            // so `self.users.get(id) ?? …` read a User out of the option's own
+            // first bytes and `/users/1` segfaulted.
+            let stored_scalar = match &value {
+                MirOperand::Local(id) => self.builder.local_type(*id),
+                _ => None,
+            }
+            .and_then(|t| match t {
+                MirType::Option(inner) => Some((*inner).clone()),
+                _ => None,
+            })
+            .map(|stored| !Self::mir_payload_is_aggregate(&stored))
+            .unwrap_or(false);
+
+            let is_aggregate =
+                Self::mir_payload_is_aggregate(&payload_ty) && !stored_scalar;
             let byte_offset = if is_aggregate {
                 None
             } else {
