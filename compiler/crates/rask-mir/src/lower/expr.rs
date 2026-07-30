@@ -3804,7 +3804,14 @@ impl<'a> MirLowerer<'a> {
                 })
                 .unwrap_or(false);
 
-            if !has_own_to_string {
+            // A struct or enum receiver has a layout name to dispatch on, so
+            // its own `to_string` wins — including a user `Displayable` impl,
+            // which the stdlib stub check above can't see. Without this the
+            // catch-all below reached `i64_to_string` and printed the
+            // receiver's address as a decimal number (#471).
+            let is_user_aggregate = self.mir_aggregate_prefix(obj_ty).is_some();
+
+            if !has_own_to_string && !is_user_aggregate {
                 let func_name = match obj_ty {
                     MirType::String => {
                         return Ok(Some((obj_op.clone(), MirType::String)));
