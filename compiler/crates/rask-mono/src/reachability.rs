@@ -17,7 +17,7 @@ use rask_ast::{
     stmt::{Stmt, StmtKind},
 };
 use rask_ast::NodeId;
-use rask_types::Type;
+use rask_types::{Callee, Type, TypedProgram};
 use std::collections::{HashMap, VecDeque};
 
 /// Monomorphization work item
@@ -48,6 +48,9 @@ pub struct Monomorphizer<'a> {
     method_by_bare_name: HashMap<String, Vec<String>>,
     /// Resolved type args per call site (from typechecker)
     call_type_args: &'a HashMap<NodeId, Vec<Type>>,
+    /// CALL6 dispatch targets and type names from the type checker. Absent in
+    /// standalone reachability tests, which retain the conservative fallback.
+    typed: Option<&'a TypedProgram>,
     /// External package module names — `pkg.func()` enqueues `func`, not `pkg_func`
     package_modules: std::collections::HashSet<String>,
     /// Already processed (name, type_args) pairs
@@ -179,6 +182,7 @@ impl<'a> Monomorphizer<'a> {
             method_table,
             method_by_bare_name,
             call_type_args,
+            typed: None,
             package_modules: std::collections::HashSet::new(),
             seen: HashMap::new(),
             queue: VecDeque::new(),
@@ -187,6 +191,13 @@ impl<'a> Monomorphizer<'a> {
             trait_methods,
             trait_coercions: HashMap::new(),
         }
+    }
+
+    /// Build a reachability pass with the type checker's canonical call targets.
+    pub fn with_typed_program(decls: &'a [Decl], typed: &'a TypedProgram) -> Self {
+        let mut mono = Self::new(decls, &typed.call_type_args);
+        mono.typed = Some(typed);
+        mono
     }
 
     /// Record implicit trait-coercion sites (TR5) from the type checker.
@@ -376,22 +387,34 @@ impl<'a> Monomorphizer<'a> {
                     .cloned()
                     .unwrap_or_default();
 
-                // Static method call: Type.method() → enqueue "Type_method"
-                // Cross-package call: pkg.func() → enqueue "func" (the function
-                // is registered under its original name from the dependency).
-                if let ExprKind::Ident(name) = &object.kind {
-                    if self.package_modules.contains(name) {
-                        self.enqueue(method.clone(), type_args.clone());
-                    } else {
-                        self.enqueue(format!("{}_{}", name, method), type_args.clone());
-                    }
-                }
+                let resolved_target = self.typed
+                    .and_then(|typed| typed.call_targets.get(&expr.id).map(|target| (typed, target)))
+                    .and_then(|(typed, target)| match target {
+                        Callee::Method { type_id, method } => {
+                            Some(format!("{}_{}", typed.types.type_name(*type_id), method))
+                        }
+                        Callee::Free(_) => None,
+                    });
 
-                // Instance method call: value.method() → enqueue all methods
-                // with this bare name (conservative; receiver type unknown here)
-                if let Some(qualified_names) = self.method_by_bare_name.get(method) {
-                    for qname in qualified_names.clone() {
-                        self.enqueue(qname, type_args.clone());
+                if let Some(target) = resolved_target {
+                    self.enqueue(target, type_args.clone());
+                } else {
+                    // Static method call: Type.method() → enqueue "Type_method"
+                    // Cross-package call: pkg.func() → enqueue "func" (the function
+                    // is registered under its original name from the dependency).
+                    if let ExprKind::Ident(name) = &object.kind {
+                        if self.package_modules.contains(name) {
+                            self.enqueue(method.clone(), type_args.clone());
+                        } else {
+                            self.enqueue(format!("{}_{}", name, method), type_args.clone());
+                        }
+                    }
+
+                    // Untyped fallback: enqueue every method with this bare name.
+                    if let Some(qualified_names) = self.method_by_bare_name.get(method) {
+                        for qname in qualified_names.clone() {
+                            self.enqueue(qname, type_args.clone());
+                        }
                     }
                 }
 

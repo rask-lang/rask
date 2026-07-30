@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rask_compiler::{check_file, CompilerConfig, CfgConfig};
+use rask_compiler::{check_file, compile_file, CompilerConfig, CfgConfig};
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -103,6 +103,41 @@ fn call_targets_records_free_and_method_dispatch() {
         .any(|c| matches!(c, Callee::Method { method, .. } if method == "bump"));
     assert!(has_free, "free call `helper()` should record a Callee::Free");
     assert!(has_method, "method call `c.bump()` should record a Callee::Method{{..}}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn monomorphization_uses_the_resolved_method_target() {
+    let path = tmp_rk(r#"
+        struct AlphaError {}
+        extend AlphaError {
+            func message(self) -> string { return "alpha" }
+        }
+
+        struct BetaError {}
+        extend BetaError {
+            func message(self) -> string { return "beta" }
+        }
+
+        func main() {
+            const error = AlphaError {}
+            println(error.message())
+        }
+    "#);
+    let output = compile_file(path.to_str().unwrap(), Vec::new(), &default_config());
+    let result = output.result.expect("expected success");
+    let names: Vec<&str> = result
+        .mono
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect();
+
+    assert!(names.contains(&"AlphaError_message"));
+    assert!(
+        !names.contains(&"BetaError_message"),
+        "resolved AlphaError.message() must not make every bare `message` method reachable: {names:?}"
+    );
     let _ = std::fs::remove_file(&path);
 }
 
