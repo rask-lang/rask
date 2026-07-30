@@ -21,7 +21,6 @@ p05_operator_overload.rk   # type.operators user/derived operators native codege
 p06_select.rk              # conc.select no native MIR lowering — #405
 t41_os.rk                  # os.pid/env_vars have no native C symbols — Track 4
 t50_boxes.rk               # Cell unlinked (Cell_new) + Mutex with garbage — #402/#268
-t53_math.rk                # entire math module unlinked in codegen — #396
 
 # --- spec-heavy pending features ---
 p07_owned.rk               # mem.owned Owned<T> / `own` linear heap pointer — unimplemented
