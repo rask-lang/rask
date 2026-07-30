@@ -74,6 +74,9 @@ fn lower_to_mir(
     let mut errors = Vec::new();
     let mut mir_functions = Vec::new();
 
+    // Measure the module-level const slots before anything references them.
+    rask_mir::lower::MirLowerer::compute_const_slot_types(all_mono_decls, mir_ctx);
+
     for mono_fn in &mono.functions {
         if skip_main && mono_fn.name == "main" {
             continue;
@@ -180,6 +183,8 @@ fn setup_codegen(
         .map_err(|e| vec![e.to_string()])?;
     codegen.register_comptime_globals(comptime_globals)
         .map_err(|e| vec![e.to_string()])?;
+    codegen.register_const_slots(mir_functions)
+        .map_err(|e| vec![e.to_string()])?;
 
     Ok(codegen)
 }
@@ -248,6 +253,7 @@ pub fn compile_to_object(
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
@@ -500,6 +506,7 @@ pub fn compile_tests_to_object(
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
@@ -692,6 +699,7 @@ pub fn compile_benchmarks_to_object(
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 
     let (mut mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;

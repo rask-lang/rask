@@ -87,6 +87,9 @@ pub trait Backend {
         globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
     ) -> CodegenResult<()>;
 
+    /// Register writable slots for module-level consts.
+    fn register_const_slots(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()>;
+
     /// Register vtable data for trait objects.
     fn register_vtables(&mut self, vtables: &[vtable::VTableInfo]) -> CodegenResult<()>;
 

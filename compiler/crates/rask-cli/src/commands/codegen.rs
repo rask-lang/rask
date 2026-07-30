@@ -282,7 +282,10 @@ pub fn cmd_mir(path: &str, format: Format) {
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
+
+    rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
 
     let mut mir_errors = 0;
     for mono_fn in &mono.functions {
@@ -353,9 +356,11 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);
+    rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
     for mono_fn in &mono.functions {
         if let rask_ast::decl::DeclKind::Fn(f) = &mono_fn.body.kind {
             if f.body.is_empty()

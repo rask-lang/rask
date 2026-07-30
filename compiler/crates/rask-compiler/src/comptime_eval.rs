@@ -229,6 +229,7 @@ fn try_eval_comptime_mir(
         trait_coercions: &empty_coercions,
         call_rewrites: &empty_rewrites,
         resource_types: &empty_resource_types,
+        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 
     let mir_fn = rask_mir::lower::MirLowerer::lower_function(&synth_decl, decls, &mir_ctx)
