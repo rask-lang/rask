@@ -57,13 +57,16 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(err_block);
         let err_ty = self.resolved_err_type(inner, &result_ty);
         let err_store_size = if err_ty.size() > 8 { Some(err_ty.size()) } else { None };
+        let err_byte_offset = self.payload_byte_offset(&err_ty);
         let err_val = self.builder.alloc_temp(err_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: err_val,
             rvalue: MirRValue::Field {
                 base: result.clone(),
                 field_index: 0,
-                byte_offset: None,
+                // Explicit offset so a scalar err payload loads its value even when
+                // the ok side is an aggregate (same ambiguity as #389's ok-path fix).
+                byte_offset: err_byte_offset,
                 field_size: None,
             },
         }));
@@ -217,7 +220,10 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Field {
                 base: result,
                 field_index: 0,
-                byte_offset: None,
+                // Explicit offset so codegen loads the value at RESULT_PAYLOAD_OFFSET
+                // instead of guessing "aggregate" from the err side's type and handing
+                // back the slot address (#389).
+                byte_offset: self.payload_byte_offset(&ok_ty),
                 field_size: None,
             },
         }));
@@ -262,7 +268,9 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Field {
                 base: result.clone(),
                 field_index: 0,
-                byte_offset: None,
+                // Explicit offset so a scalar err payload loads its value even when
+                // the ok side is an aggregate (same ambiguity as #389's ok-path fix).
+                byte_offset: self.payload_byte_offset(&err_ty),
                 field_size: None,
             },
         }));
@@ -371,7 +379,11 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Field {
                 base: result,
                 field_index: 0,
-                byte_offset: None,
+                // Explicit offset so codegen loads the value at RESULT_PAYLOAD_OFFSET
+                // instead of guessing "aggregate" from the err side's type and handing
+                // back the slot address — the ok path of `try ... else` was still
+                // returning the slot address here after #467's partial fix (#389).
+                byte_offset: self.payload_byte_offset(&ok_ty),
                 field_size: None,
             },
         }));
