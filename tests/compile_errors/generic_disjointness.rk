@@ -19,9 +19,23 @@ func wrap<T>(v: T) -> T or CacheError {
     return cached(v)
 }
 
+// Methods carry the same obligation, on the receiver's type argument.
+struct Cache<T> {
+    hit: bool,
+}
+
+extend Cache<T> {
+    func get(self, v: T) -> T or CacheError {
+        return v
+    }
+}
+
 func main() {
     const fine = cached(42)                 // T = i32: no error here
 
     const direct = cached(CacheError.Miss)  // E0358: T = CacheError
     const forwarded = wrap(CacheError.Miss) // E0358: T = CacheError
+
+    const c = Cache<CacheError> { hit: true }
+    const method = c.get(CacheError.Miss)   // E0358: T = CacheError
 }

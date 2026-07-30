@@ -24,17 +24,6 @@ test "a bare value widens through both layers" {
     assert inner_value(both) == 7
 }
 
-test "empty container and empty slot stay distinguishable" {
-    mut empty: Vec<i64?> = Vec.new()
-    assert head(empty) == none
-
-    mut hole: Vec<i64?> = Vec.new()
-    hole.push(none)
-    const h = head(hole)
-    assert h?
-    assert inner_present(h) == false
-}
-
 test "layers are not the same type" {
     const one: i64? = 3
     const two: i64?? = one
@@ -43,11 +32,6 @@ test "layers are not the same type" {
 }
 
 // --- helpers ---
-
-// Generic accessor: instantiating it at T = i64? is what produces i64??.
-func head<T>(v: Vec<T>) -> T? {
-    return v.first()
-}
 
 func inner_present(x: i64??) -> bool {
     if x? as inner {

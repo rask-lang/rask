@@ -335,6 +335,13 @@ impl TypeChecker {
                         .map(|p| (p.as_str(), self.ctx.fresh_var()))
                         .collect();
 
+                    // ER3a: a `T or E` in the method's signature is a
+                    // disjointness obligation on the receiver's type args.
+                    self.note_disjointness_obligations(&method, &method_sig.ret, &subst, span);
+                    for (param_ty, _mode) in &method_sig.params {
+                        self.note_disjointness_obligations(&method, param_ty, &subst, span);
+                    }
+
                     let mut progress = false;
                     for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
                         let substituted = Self::substitute_type_params(param_ty, &subst);
@@ -603,6 +610,12 @@ impl TypeChecker {
                             found: args.len(),
                             span,
                         });
+                    }
+
+                    // ER3a: same obligation on the explicitly-spelled type args.
+                    self.note_disjointness_obligations(&method, &method_sig.ret, &subst, span);
+                    for (param_ty, _mode) in &method_sig.params {
+                        self.note_disjointness_obligations(&method, param_ty, &subst, span);
                     }
 
                     let mut progress = false;

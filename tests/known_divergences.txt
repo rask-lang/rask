@@ -28,4 +28,4 @@ t_conditional_conformance.rk # stray [mir] debug print on native — #258 (nativ
 
 # --- new regression witnesses (this session) ---
 t43_widening_regressions.rk # optional widening interp lag — #393 (interp; result T-bind native part fixed in #389)
-t60_nested_optionals.rk    # native optional widening adds only one layer, so T?? loses the outer — #493 (native)
+t61_nested_optionals_vec.rk # native Vec.first() panics on an empty Vec — #412 (native; the nesting itself is green in t60)
