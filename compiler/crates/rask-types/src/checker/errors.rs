@@ -184,6 +184,13 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.generics/DT1: `duck trait` is scratchpad-only — it can't be public.
+    #[error("`duck trait {name}` cannot be public")]
+    PublicDuckTrait {
+        name: String,
+        span: Span,
+    },
+
     /// type.aliases/T9: nominal type used where underlying expected, or vice versa
     #[error("nominal type mismatch: expected `{expected}`, found `{found}`")]
     NominalMismatch {

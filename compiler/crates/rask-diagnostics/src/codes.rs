@@ -270,6 +270,9 @@ impl Default for ErrorCodeRegistry {
                 "E0823" => ("method name shared by two types", Type,
                     "Two different types have the same name — usually a program type and a stdlib one — and both define this method. Compiled functions are identified by `Type_method`, so the two methods want the same name and only one can have it. The type the name currently refers to gets it; a call needing the other has nowhere to go. Rename one of the types.",
                     "// stdlib already has `enum JsonError` with `message()`\nstruct JsonError { detail: string }\nextend JsonError {\n    func message(self) -> string { return self.detail }\n}\n// fix: name it something else, e.g. `ConfigJsonError`"),
+                "E0824" => ("public duck trait", Type,
+                    "A `duck trait` was declared `public`. Duck traits match by shape instead of by declaration, which makes them a versioning trap across a package boundary: an external type could start or stop satisfying the trait because its author added or removed a method, with nothing in either diff to notice. So duck traits stay package-internal (type.generics/DT1) — they're for code you're still sketching. Drop `duck` to harden the trait (the compiler generates the conformance declarations for types that already match), or drop `public`.",
+                    "public duck trait Frobber {\n    func frobnicate(self)\n}\n// fix: `public trait Frobber` (nominal), or `duck trait Frobber` (package-internal)"),
             },
         }
     }

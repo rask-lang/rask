@@ -6,13 +6,13 @@
 
 # Generics and Traits
 
-Trait conformance is declared — `extend Type with Trait` says the type satisfies the trait, and the compiler checks the signatures against the declaration. `duck trait` opts individual traits into shape-matching — the prototyping mode; delete the keyword to harden. Operators like `a + b` expand to method calls. The compiler generates specialized code for each concrete type you use (this is called *monomorphization*). For mixed-type collections, opt into runtime dispatch with `any Trait`.
+Trait conformance is declared — `extend Type with Trait` says the type satisfies the trait, and the compiler checks the signatures against the declaration. `duck trait` opts individual traits into shape-matching, but only in code you're still sketching: a duck trait can never be `public` and never ships in a published package (DT1–DT4). Operators like `a + b` expand to method calls. The compiler generates specialized code for each concrete type you use (this is called *monomorphization*). For mixed-type collections, opt into runtime dispatch with `any Trait`.
 
 ## Core Principles
 
 | Rule | Description |
 |------|-------------|
-| **G1: Declared conformance** | A type satisfies a trait through a declared `extend Type with Trait` block, checked against the trait's signatures. `duck trait` opts a trait into shape-matching (no declaration needed). The four core traits (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `ErrorMessage` (enums, `type.errors/ER6`) are also auto-derived |
+| **G1: Declared conformance** | A type satisfies a trait through a declared `extend Type with Trait` block, checked against the trait's signatures. `duck trait` opts a trait into shape-matching (no declaration needed) inside a package you haven't published — see DT1–DT4. The four core traits (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `ErrorMessage` (enums, `type.errors/ER6`) are also auto-derived |
 | **G2: Checked at use site** | The compiler verifies trait matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before trait checking |
@@ -31,7 +31,7 @@ Trait conformance is declared — `extend Type with Trait` says the type satisfi
 | Trait Form | Meaning |
 |------------|---------|
 | `trait Comparable` | Nominal (default) — types conform via `extend Type with Comparable` |
-| `duck trait Frobber` | Shape-matched — any type with the right methods satisfies it, no declaration. Prototyping mode |
+| `duck trait Frobber` | Shape-matched — any type with the right methods satisfies it, no declaration. Scratchpad only: never `public`, never in a published package (DT1, DT2) |
 | `trait Hashable: Equal` | Composition (requires all methods from Equal plus Hashable's own) |
 
 ```rask
@@ -48,7 +48,42 @@ trait Name {
 
 Nominal is the default because conformance is a semantic claim, not just a shape: `compare()` existing doesn't make it a total order. The declaration states intent, gives the compiler a place to check signatures, and gives readers and tools a place to look.
 
-`duck trait` is the prototyping dial, not a production feature — the stdlib ships zero duck traits. Declare a trait duck while sketching: no conformance declarations, methods move freely between types. To harden, delete the `duck` keyword — the compiler lists every type currently matching by shape and a quick-fix inserts the `extend Type with Trait {}` declarations. `rask lint` warns on duck traits outside prototype contexts. Declaring conformance to a duck trait is legal and harmless: documentation plus a signature check at the declaration instead of the use site.
+## Duck Traits Are Scratchpad-Only
+
+`duck trait` is a sketching tool, and the compiler treats it as one. It is not a lighter-weight way to write a trait — it's a placeholder for a contract you haven't decided on yet, and it can't leave the package it was sketched in.
+
+| Rule | Description |
+|------|-------------|
+| **DT1: Never public** | `public duck trait` is a compile error. A duck trait also may not appear in any public signature — not as a bound, not as `any Trait`, not in a public type alias, and not in a `public extend ... with` header (TV2 already caps that). A duck trait's methods may still be `public` on the types that match it; the *trait* is what stays package-internal |
+| **DT2: Never published** | `rask publish` rejects a package that declares a `duck trait` anywhere, public or not (`struct.build/PB8`). Publishing something means promising to maintain it; a duck trait is by definition a contract you haven't finished writing |
+| **DT3: Flagged before publish** | `rask lint` warns on every `duck trait` declaration and names the harden step (`tool.lint/I3`), so DT2 is never the first time you hear about it |
+| **DT4: Hardening is mechanical** | Deleting the `duck` keyword turns it nominal. The compiler already knows every type matching by shape, so it lists them and a quick-fix inserts the `extend Type with Trait {}` declarations. Nothing else about the trait changes |
+
+Declare a trait duck while sketching: no conformance declarations, methods move freely between types, nothing to keep in sync. Declaring conformance to a duck trait anyway is legal and harmless — documentation plus a signature check at the declaration instead of the use site. The stdlib ships zero duck traits.
+
+DT1 and DT2 exist because structural conformance across a package boundary is a versioning trap. Adding a public method to your type could silently make it satisfy a duck trait in a package you've never read; removing one could break code you've never seen. Neither shows up in your diff, and neither is something semver can describe. Keeping duck traits package-internal means every type that matches one is a type the same author owns, so a shape change and its consequences land in the same review.
+
+DT2 goes further than DT1 strictly needs to: a private duck trait inside a published package wouldn't break strangers. It's banned anyway, because "prototypes get hardened eventually" is a hope, and a publish check is a fact. If you're publishing the package, the sketching phase is over.
+
+```
+ERROR [type.generics/DT1]: `duck trait` cannot be public
+   |
+4  |  public duck trait Frobber {
+   |  ^^^^^^ ^^^^
+   |
+WHY: shape-matching across a package boundary is a versioning trap — a
+     stranger's type could start or stop satisfying `Frobber` without either
+     author changing a line they'd notice.
+
+FIX: drop `duck` to make it a real trait (the compiler will list the types
+     that already match and generate the conformance declarations):
+
+  public trait Frobber {
+
+     ...or drop `public` to keep it a package-internal sketch.
+```
+
+The publish-time message (DT2) is in [build.md](../structure/build.md#publishing) under `struct.build/PB8`.
 
 ## Generic Functions
 
@@ -391,7 +426,7 @@ func increment<T: Numeric>(val: T) -> T {
 
 ### Rationale
 
-**G1 (declared conformance):** This flipped. The original design matched by shape by default, with `explicit trait` as the opt-out — chosen to avoid global impl tracking. Two things overturned it: accidental conformance is silent-wrong (a `compare()` that isn't a total order satisfies `Comparable` structurally and misbehaves instead of erroring), and the declaration's cost dropped — one line that states intent is cheap, especially when most code is machine-written and human-reviewed. Checking stays local: a declaration is checked where it's written, and bounds are still checked at the use site — no whole-program analysis either way. `duck trait` keeps shape-matching available for prototyping.
+**G1 (declared conformance):** This flipped. The original design matched by shape by default, with `explicit trait` as the opt-out — chosen to avoid global impl tracking. Two things overturned it: accidental conformance is silent-wrong (a `compare()` that isn't a total order satisfies `Comparable` structurally and misbehaves instead of erroring), and the declaration's cost dropped — one line that states intent is cheap, especially when most code is machine-written and human-reviewed. Checking stays local: a declaration is checked where it's written, and bounds are still checked at the use site — no whole-program analysis either way. `duck trait` keeps shape-matching available for sketching, gated by DT1–DT2.
 
 **MN1–MN5 (single namespace):** Under shape-matching, one method satisfied every matching trait by construction; nominal conformance created the "which trait owns this method" question. Single namespace matches how people think ("Dog has a greet method") and keeps `dog.greet()` working when `greet` was defined inside a conformance block. The collision case is rare, and `scoped` puts the ceremony exactly on the declaration that collides — no Rust-style qualified-call syntax tax on everyone.
 
@@ -407,7 +442,13 @@ func increment<T: Numeric>(val: T) -> T {
 
 **G6 (code specialization):** Keeps costs transparent and compilation fast. Each usage generates specialized code — no hidden function-pointer overhead.
 
-**`duck trait`:** The opt-in that replaced `explicit trait` when the default flipped, renamed from `structural` (jargon). The register is deliberate — the keyword reading as unserious *is* the signal that the contract is loose by design. Prototype with it, delete the keyword to harden (the compiler generates the missing declarations). The stdlib ships zero duck traits; docs note the concept is known elsewhere as structural typing.
+**`duck trait`:** The opt-in that replaced `explicit trait` when the default flipped, renamed from `structural` (jargon). The register is deliberate — the keyword reading as unserious *is* the signal that the contract is loose by design. Sketch with it, delete the keyword to harden (the compiler generates the missing declarations). The stdlib ships zero duck traits; docs note the concept is known elsewhere as structural typing.
+
+**DT1–DT2 (the gate):** The first cut said "prototype with it, harden later" and left later up to the author. That's fine advice and a bad guarantee — it stops being advice the moment a duck trait crosses a package boundary, where the shape-matching turns into a versioning hazard nobody can see from either side. So the constraint moved from advice into two mechanical checks, at the two places it can be checked locally: `public` at the declaration, and "is in this tarball" at publish time.
+
+The split is deliberate. DT1 is the type system's job and fires instantly while you're typing. DT2 is a packaging question — whether a *package* is a scratchpad isn't something a type checker can know — so it lives in `rask publish`'s pre-checks next to the other release gates. Making DT1 alone do the work would have meant inventing a notion of "package intended for publication" inside the type checker; making DT2 alone do the work would have meant discovering the problem at release time. Both, and DT3 keeps the second one from being a surprise.
+
+The cost is real: a package you publish can't use shape-matching internally, so glue you were happy with as a duck trait needs conformance lines before release. DT4 makes that mechanical rather than a rewrite, and the alternative — trusting that prototypes get cleaned up — is exactly the assumption that produced the semver trap.
 
 ### Patterns & Guidance
 
@@ -443,7 +484,8 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 ### Integration Notes
 
 - **Memory model**: Generic ownership rules same as non-generic; move/copy determined per concrete type
-- **Type system**: Conformance declared and checked locally at the `extend` block; bounds checked at use site — no global tracking. `duck trait` checks shape at use site
+- **Type system**: Conformance declared and checked locally at the `extend` block; bounds checked at use site — no global tracking. `duck trait` checks shape at use site, and DT1 is a declaration-local visibility check
+- **Build system**: `rask publish` scans the package for `duck trait` declarations (DT2, `struct.build/PB8`) — a syntactic check over the package's own sources, no dependency analysis
 - **Concurrency**: Generic tasks can send owned generic values; traits verified per concrete type
 - **Compiler**: Specialization happens per compilation unit; no cross-unit analysis
 - **C interop**: Generic functions cannot be exported to C (no stable ABI); specialized wrappers required

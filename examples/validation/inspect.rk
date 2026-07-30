@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // PROTOTYPE — the one duck trait in the program.
 //
-// Duck traits are the prototyping dial (type.generics/G1): shape-matched, no
-// conformance declarations, "harden by deleting `duck`". The stdlib ships
-// zero. In production-shaped code there is no honest place for one — the real
+// Duck traits are scratchpad-only (type.generics/DT1–DT4): shape-matched, no
+// conformance declarations, "harden by deleting `duck`". Never public, and
+// `rask publish` rejects a package that declares one. The stdlib ships zero.
+// In production-shaped code there is no honest place for one — the real
 // heterogeneous dispatch (middleware) uses a nominal `any Middleware`.
 //
 // This dev-only /debug/inspect endpoint is genuinely throwaway, so it's the
@@ -14,6 +15,8 @@
 
 import http
 
+// The lint nudge (DT3) is right, and staying a sketch is the point here.
+@allow(idiom/duck-trait)
 duck trait Inspectable {
     func describe(self) -> string
 }

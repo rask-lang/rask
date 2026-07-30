@@ -50,7 +50,7 @@ Quick navigation by task or concept:
 |---------------|-----|
 | Define custom types | [types/structs.md](types/structs.md), [types/enums.md](types/enums.md) |
 | Write generic functions | [types/generics.md](types/generics.md) |
-| Omit types in private functions | [types/gradual-constraints.md](types/gradual-constraints.md) |
+| Omit types in private functions (while sketching) | [types/gradual-constraints.md](types/gradual-constraints.md) |
 | Define interfaces/contracts | [types/traits.md](types/traits.md) |
 | Create a type alias | [types/type-aliases.md](types/type-aliases.md) |
 | Work with tuples | [types/tuples.md](types/tuples.md) |
@@ -81,7 +81,7 @@ Quick navigation by task or concept:
 | Persistent view | [memory/borrowing.md](memory/borrowing.md) — View held until block ends (fixed sources) |
 | ensure | [control/ensure.md](control/ensure.md) — Deferred cleanup at scope exit |
 | comptime | [control/comptime.md](control/comptime.md) — Compile-time execution |
-| Gradual constraints | [types/gradual-constraints.md](types/gradual-constraints.md) — Omitting types/bounds in non-public functions |
+| Gradual constraints | [types/gradual-constraints.md](types/gradual-constraints.md) — Omitting types/bounds in non-public functions; a prototyping ergonomic, explicit is the steady state |
 
 ---
 
@@ -96,7 +96,7 @@ Quick navigation by task or concept:
 | [optionals.md](types/optionals.md) | `T?` (sugar for `T or none`), `?`-family operators |
 | [error-types.md](types/error-types.md) | `T or E`, `ErrorMessage` trait, union composition |
 | [generics.md](types/generics.md) | Parametric polymorphism, constraints |
-| [gradual-constraints.md](types/gradual-constraints.md) | Type/bound inference for private functions |
+| [gradual-constraints.md](types/gradual-constraints.md) | Type/bound inference for private functions — sketching only |
 | [traits.md](types/traits.md) | Trait objects, dynamic dispatch |
 | [sequence-protocol.md](types/sequence-protocol.md) | Sequence<T> type, adapters, terminals |
 | [integer-overflow.md](types/integer-overflow.md) | Overflow semantics |

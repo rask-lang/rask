@@ -32,6 +32,13 @@ impl TypeChecker {
                 }
                 DeclKind::Trait(t) => {
                     self.check_declared_type_name(&t.name, "trait", decl.span);
+                    // DT1: shape-matching stops at the package boundary
+                    if t.is_pub && t.is_duck {
+                        self.errors.push(TypeError::PublicDuckTrait {
+                            name: t.name.clone(),
+                            span: decl.span,
+                        });
+                    }
                     self.register_trait(t);
                 }
                 DeclKind::Union(u) => {

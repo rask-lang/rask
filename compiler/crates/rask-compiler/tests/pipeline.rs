@@ -538,3 +538,83 @@ fn fd4_defaults_and_spread_satisfy_construction() {
         output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
     let _ = std::fs::remove_file(&path);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// DT1 — a `duck trait` is scratchpad-only, so it can never be public
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn dt1_public_duck_trait_errors() {
+    let path = tmp_rk(r#"
+        public duck trait Frobber {
+            func frobnicate(self) -> i32
+        }
+        func main() {
+            println("hi")
+        }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(!output.succeeded(), "DT1: `public duck trait` must error");
+    assert!(
+        output.diagnostics.iter().any(|d|
+            d.code.as_ref().map_or(false, |c| c.0 == "E0824") && d.message.contains("Frobber")),
+        "expected E0824 naming `Frobber`, got: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn dt1_package_internal_duck_trait_is_fine() {
+    // Without `public` the trait stays in the package, which is where duck
+    // traits live — shape matching still satisfies the bound with no
+    // conformance declaration.
+    let path = tmp_rk(r#"
+        duck trait Frobber {
+            func frobnicate(self) -> i32
+        }
+        struct Widget {
+            id: i32
+        }
+        extend Widget {
+            func frobnicate(self) -> i32 {
+                return self.id
+            }
+        }
+        func main() {
+            const w = Widget { id: 7 }
+            println("{w.frobnicate()}")
+        }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(output.succeeded(), "package-internal duck trait must type-check, got: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn dt1_public_nominal_trait_is_fine() {
+    // Dropping `duck` is the fix DT1 points at — the same trait as `public
+    // trait` is legal, with conformance declared.
+    let path = tmp_rk(r#"
+        public trait Frobber {
+            func frobnicate(self) -> i32
+        }
+        struct Widget {
+            id: i32
+        }
+        extend Widget with Frobber {
+            func frobnicate(self) -> i32 {
+                return self.id
+            }
+        }
+        func main() {
+            const w = Widget { id: 7 }
+            println("{w.frobnicate()}")
+        }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(output.succeeded(), "hardened public trait must type-check, got: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
+    let _ = std::fs::remove_file(&path);
+}

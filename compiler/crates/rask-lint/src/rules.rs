@@ -29,6 +29,7 @@ fn all_rules() -> Vec<Rule> {
         Rule { id: "idiom/missing-ensure", check: idiom::check_missing_ensure },
         Rule { id: "idiom/ensure-ordering", check: idiom::check_ensure_ordering },
         Rule { id: "idiom/large-unsafe-block", check: idiom::check_large_unsafe_blocks },
+        Rule { id: "idiom/duck-trait", check: idiom::check_duck_trait },
         // Style
         Rule { id: "style/snake-case-func", check: style::check_snake_case_func },
         Rule { id: "style/pascal-case-type", check: style::check_pascal_case_type },

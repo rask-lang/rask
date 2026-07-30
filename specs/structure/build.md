@@ -543,6 +543,40 @@ These are deferred — rules defined for future implementation.
 | **PB5: No path deps** | Publish fails if package has path dependencies (struct.packages/RG3) |
 | **PB6: Reproducible tarball** | Deterministic file ordering, no timestamps in archive |
 | **PB7: Size limit** | 10 MB max package size. Error with breakdown if exceeded |
+| **PB8: No duck traits** | Publish fails if the package declares a `duck trait` anywhere, public or not (`type.generics/DT2`). Shape-matching is a sketching tool; a published package isn't a sketch. The error lists each declaration and the types that already match, so hardening is mechanical |
+| **PB9: Inferred signatures reported** | Publish reports non-public functions with omitted types or bounds (`type.gradual/GC11`) as a warning with a count, not an error. They can't break external callers, so they don't block a release — but shipping a package whose internals are still sketched is worth seeing once |
+
+```
+ERROR [struct.build/PB8]: cannot publish a package containing duck traits
+   |
+src/shapes.rk:12  duck trait Frobber {
+                  ^^^^
+   |
+WHY: a duck trait is an unfinished contract — matched by shape, with nothing
+     written down. Published packages get maintained by people who didn't
+     sketch them.
+
+FIX: delete `duck`. 3 types already match by shape; the "harden duck trait"
+     quick action (type.generics/DT4) inserts their conformance declarations:
+
+  extend Widget with Frobber {}
+  extend Gadget with Frobber {}
+  extend Doohickey with Frobber {}
+```
+
+```
+WARNING [struct.build/PB9]: 7 non-public functions have inferred signatures
+   |
+src/parse.rk:34   func scan(input, pos) {
+src/parse.rk:61   func fold(items) -> Node or _ {
+   ... 5 more (rask lint --rule idiom/inferred-signature for the full list)
+   |
+WHY: inference is for code you're still sketching. These are fine — they're
+     fully type-checked and invisible outside the package — but a body edit
+     can shift the inferred signature and break callers inside the package.
+
+FIX: "Make signature explicit" (per function), or ignore — this is not a gate.
+```
 
 ### Signing
 

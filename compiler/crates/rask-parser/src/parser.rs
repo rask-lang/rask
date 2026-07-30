@@ -667,7 +667,7 @@ impl Parser {
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
-            TokenKind::Trait => self.parse_trait_decl(is_pub, is_unsafe, is_duck, doc)?,
+            TokenKind::Trait => self.parse_trait_decl(is_pub, is_unsafe, is_duck, attrs, doc)?,
             TokenKind::Extend => self.parse_impl_decl(is_unsafe, is_scoped, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
@@ -734,7 +734,13 @@ impl Parser {
                         TokenKind::Ident(s) => attr.push_str(s),
                         TokenKind::Int(n, _) => attr.push_str(&n.to_string()),
                         TokenKind::Comma => attr.push_str(", "),
-                        _ => attr.push_str(&format!("{:?}", self.current_kind())),
+                        // Keywords, operators, and delimiters keep their source
+                        // text. Debug output here would mangle anything with
+                        // punctuation — a lint rule id like
+                        // `@allow(idiom/duck-trait)` came out as
+                        // `allow(idiomSlashduck-Trait)` and matched nothing,
+                        // breaking per-rule suppression (tool.lint/SU1).
+                        k => attr.push_str(k.display_name().trim_matches('\'')),
                     }
                 }
                 self.advance();
@@ -1633,7 +1639,7 @@ impl Parser {
         }))
     }
 
-    fn parse_trait_decl(&mut self, is_pub: bool, is_unsafe: bool, is_duck: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_trait_decl(&mut self, is_pub: bool, is_unsafe: bool, is_duck: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Trait)?;
         let name = self.expect_ident()?;
 
@@ -1676,7 +1682,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, is_unsafe, is_duck, doc }))
+        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, is_unsafe, is_duck, attrs, doc }))
     }
 
     fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
