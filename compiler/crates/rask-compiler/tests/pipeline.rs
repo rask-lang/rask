@@ -78,8 +78,14 @@ fn check_returns_typed_program_on_success() {
 #[test]
 fn call_targets_records_free_and_method_dispatch() {
     // CALL6 keystone (#425): the checker records the resolved target of every
-    // call once, keyed by the call node — a SymbolId for free functions and a
-    // (TypeId, method) pair for methods. Never a reconstructed name string.
+    // call once, keyed by the call node — a SymbolId for free functions, the
+    // resolved receiver type plus the name for methods. Never a reconstructed
+    // name string.
+    //
+    // The receiver is what downstream can't rebuild: `node_types` holds the type
+    // of the receiver *expression*, which is routinely an unresolved variable.
+    // Stdlib and primitive receivers are recorded too, not just user types —
+    // those were exactly the ones lowering guessed wrong.
     use rask_types::Callee;
     let path = tmp_rk(r#"
         struct Counter { n: i32 }
@@ -91,6 +97,8 @@ fn call_targets_records_free_and_method_dispatch() {
             mut c = Counter { n: 0 }
             c.bump()
             const x = helper()
+            const v = Vec.from([1, 2, 3])
+            const n = v.len()
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
@@ -98,11 +106,25 @@ fn call_targets_records_free_and_method_dispatch() {
     let targets = &result.typed.call_targets;
 
     let has_free = targets.values().any(|c| matches!(c, Callee::Free(_)));
-    let has_method = targets
+    let user_method = targets
         .values()
-        .any(|c| matches!(c, Callee::Method { method, .. } if method == "bump"));
+        .find(|c| matches!(c, Callee::Method { method, .. } if method == "bump"));
+    let stdlib_method = targets
+        .values()
+        .any(|c| matches!(c, Callee::Method { method, .. } if method == "len"));
+
     assert!(has_free, "free call `helper()` should record a Callee::Free");
-    assert!(has_method, "method call `c.bump()` should record a Callee::Method{{..}}");
+    let user_method = user_method
+        .expect("method call `c.bump()` should record a Callee::Method{..}");
+    assert!(
+        user_method.recv_type_id().is_some(),
+        "a user-defined receiver should resolve to a TypeId, got {user_method:?}",
+    );
+    assert!(
+        stdlib_method,
+        "a stdlib receiver should record a target too — those are the calls \
+         lowering used to mis-qualify",
+    );
     let _ = std::fs::remove_file(&path);
 }
 
