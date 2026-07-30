@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Server configuration, shared read-heavy across all request tasks.
+
+import os
+
+// Field defaults (`port: u16 = 8080`, FD1) are the spec mechanism here and
+// would let `Config {}` be the default value — but the parser doesn't accept
+// them yet (#311). Until it does, an explicit `new()` carries the defaults.
+
+struct Config {
+    public host: string
+    public port: u16
+    public store_capacity: usize
+    public rate_limit_per_min: u64
+    public request_log: bool
+}
+
+extend Config {
+    func new() -> Config {
+        return Config {
+            host: "0.0.0.0",
+            port: 8080,
+            store_capacity: 10000,
+            rate_limit_per_min: 120,
+            request_log: true,
+        }
+    }
+
+    func from_env() -> Config {
+        mut c = Config.new()
+        c.host = os.env_or("TRACKER_HOST", c.host)
+        c.port = parse_port(os.env("TRACKER_PORT")) ?? c.port
+        return c
+    }
+
+    func addr(self) -> string {
+        return "{self.host}:{self.port}"
+    }
+}
+
+// Public conformance — the config's Displayable rendering is part of the
+// service's observable API (it lands in startup logs).
+public extend Config with Displayable {
+    func to_string(self) -> string {
+        return "Config(addr={self.addr()}, cap={self.store_capacity}, rate={self.rate_limit_per_min}/min)"
+    }
+}
+
+func parse_port(raw: string?) -> u16? {
+    const s = raw ?? return none
+    const n = s.parse<u16>() ?? return none
+    return n
+}
+
+// Read-heavy shared state (conc.sync SY1): many request tasks read it,
+// writes are rare (reload). Module-level const — Shared owns the interior.
+const config = Shared.new(Config.from_env())

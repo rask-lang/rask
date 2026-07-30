@@ -248,6 +248,8 @@ impl Interpreter {
         self.env
             .define("Random".to_string(), Value::Type("Random".to_string()));
         self.env
+            .define("StringBuilder".to_string(), Value::Type("StringBuilder".to_string()));
+        self.env
             .define("File".to_string(), Value::Type("File".to_string()));
         self.env
             .define("f32x8".to_string(), Value::Type("f32x8".to_string()));

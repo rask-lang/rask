@@ -77,6 +77,10 @@ enum CallAdapt {
     /// written into the given slot. Build a `T or E` Result in dst —
     /// status==OK → Ok(payload of `elem_size` bytes), else → Err.
     TryRecvResult(StackSlot, u32),
+    /// Receiver.receive on a struct element: the call wrote the value into the
+    /// buffer it returns (and panicked if the channel was closed), so the result
+    /// is always Ok. Copy `elem_size` bytes out of it into dst's payload.
+    RecvStructOk(u32),
 }
 
 pub struct FunctionBuilder<'a> {
@@ -3222,6 +3226,24 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     ptr
                 }
+                CallAdapt::RecvStructOk(elem_size) => {
+                    // The value is in the buffer the call returns; wrap it as Ok.
+                    // Storing the pointer instead left the payload holding an
+                    // address, so the received struct read as garbage (#463).
+                    let results = builder.inst_results(call_inst);
+                    let ptr = if !results.is_empty() { results[0] } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    if let Some((ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                        let is_result = ctx.locals.iter()
+                            .find(|l| l.id == *dst_id)
+                            .map(|l| matches!(l.ty, MirType::Result { .. }))
+                            .unwrap_or(false);
+                        Self::build_wrapped_aggregate(builder, *ss, is_result, 0, ptr, elem_size);
+                        slot_already_written = true;
+                    }
+                    ptr
+                }
                 CallAdapt::TryRecvResult(payload_ss, elem_size) => {
                     // Channel status → `T or E` Result. status==OK(0) →
                     // Ok(payload); anything else (EMPTY/CLOSED) → Err.
@@ -3303,6 +3325,12 @@ impl<'a> FunctionBuilder<'a> {
                     // C function uses negative return = error convention
                     // (declared as RetAdapt::NegErr on the dispatch entry).
                     Self::wrap_result_into_slot(builder, final_val, *ss);
+                } else if ctx.adapt_table.get(&func.name)
+                    .map(|(_, r)| *r == RetAdapt::NegNone)
+                    .unwrap_or(false)
+                {
+                    // Negative return = `none` (find/rfind's -1).
+                    Self::wrap_option_into_slot(builder, final_val, *ss);
                 } else {
                     // C stdlib function returns a plain value (not a pointer to an aggregate).
                     // Wrap as Some/Ok depending on destination type.
@@ -3556,8 +3584,19 @@ impl<'a> FunctionBuilder<'a> {
                                 val
                             };
                             builder.ins().jump(shared_block, &[final_val]);
-                        } else {
+                        } else if matches!(ctx.ret_ty, MirType::Void) {
                             builder.ins().jump(shared_block, &[]);
+                        } else {
+                            // A bare `return` in a value-returning function, e.g.
+                            // the success exit of a `void or E`. The shared cleanup
+                            // block takes the return value as a block parameter, so
+                            // this jump has to supply one too — several
+                            // cleanup_returns share one block and the ones carrying
+                            // an error do pass it. Jumping with no argument left the
+                            // block signature unsatisfied and Cranelift's verifier
+                            // rejected the function (#463).
+                            let placeholder = Self::empty_return_value(builder, ctx)?;
+                            builder.ins().jump(shared_block, &[placeholder]);
                         }
                     } else {
                         // Fallback: inline (shouldn't happen with the setup above)
@@ -3661,6 +3700,38 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Emit a return instruction.
+    /// The value a bare `return` yields in a function that returns something.
+    ///
+    /// For `T or E` / `T?` that's a wrapped ok/some with a zero payload — the
+    /// shape the plain `Return` path builds — handed back as the address of the
+    /// result slot. Anything else gets a zero of the return type.
+    fn empty_return_value(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Value> {
+        if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
+            let slot_size = Self::resolve_type_alloc_size(
+                ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts,
+            ).unwrap_or(16);
+            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot, slot_size, 0,
+            ));
+            let zero = builder.ins().iconst(types::I64, 0);
+            if matches!(ctx.ret_ty, MirType::Option(_)) {
+                Self::build_some(builder, ss, zero);
+            } else {
+                Self::build_ok(builder, ss, zero);
+            }
+            return Ok(builder.ins().stack_addr(types::I64, ss, 0));
+        }
+        let ret_cl_ty = mir_to_cranelift_type(ctx.ret_ty)?;
+        Ok(if ret_cl_ty.is_float() {
+            builder.ins().f64const(0.0)
+        } else {
+            builder.ins().iconst(ret_cl_ty, 0)
+        })
+    }
+
     fn emit_return(
         builder: &mut ClifFunctionBuilder,
         value: Option<&MirOperand>,
@@ -3883,6 +3954,16 @@ impl<'a> FunctionBuilder<'a> {
     /// C functions that use "negative return = error" convention.
     /// If value < 0: tag=1 (Err), payload=value. Otherwise: tag=0 (Ok), payload=value.
     /// Note: fs_open/fs_create return NULL (0) for errors, not -1 — handled separately.
+    /// Negative scalar → `none`, otherwise `some(value)`. The Option twin of
+    /// `wrap_result_into_slot`; Option's payload sits at its own offset.
+    fn wrap_option_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
+        let zero = builder.ins().iconst(types::I64, 0);
+        let is_none = builder.ins().icmp(IntCC::SignedLessThan, value, zero);
+        let tag = builder.ins().uextend(types::I64, is_none);
+        builder.ins().stack_store(tag, dst_slot, crate::layouts::TAG_OFFSET);
+        builder.ins().stack_store(value, dst_slot, crate::layouts::PAYLOAD_OFFSET);
+    }
+
     fn wrap_result_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
         let zero = builder.ins().iconst(types::I64, 0);
         let is_err = builder.ins().icmp(IntCC::SignedLessThan, value, zero);
@@ -4159,7 +4240,7 @@ impl<'a> FunctionBuilder<'a> {
             RetAdapt::FromArgAdapt => call_adapt,
             // Negative-return=Err wrapping happens in the result-store path,
             // keyed off the entry's RetAdapt::NegErr — arg handling is untouched.
-            RetAdapt::NegErr => call_adapt,
+            RetAdapt::NegErr | RetAdapt::NegNone => call_adapt,
         }
     }
 
@@ -4220,7 +4301,7 @@ impl<'a> FunctionBuilder<'a> {
                 ));
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
-                CallAdapt::None
+                CallAdapt::RecvStructOk(elem_size)
             }
 
             // Receiver_try_receive: recv into a buffer of the element's real size;

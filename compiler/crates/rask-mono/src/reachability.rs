@@ -67,6 +67,9 @@ pub struct Monomorphizer<'a> {
     /// Expression NodeId → trait name, for implicit TR5 coercion sites (a value
     /// passed where `any Trait` is expected, with no written-out cast).
     trait_coercions: HashMap<NodeId, String>,
+    /// All declarations, for roots that don't come from a function body
+    /// (module-level `const` initializers).
+    decls: &'a [Decl],
 }
 
 /// Wrap a method FnDecl as a top-level Decl and register it under its
@@ -186,6 +189,7 @@ impl<'a> Monomorphizer<'a> {
             call_rewrites: HashMap::new(),
             trait_methods,
             trait_coercions: HashMap::new(),
+            decls,
         }
     }
 
@@ -213,6 +217,22 @@ impl<'a> Monomorphizer<'a> {
     /// Set the external package module names for cross-package call discovery.
     pub fn set_package_modules(&mut self, modules: std::collections::HashSet<String>) {
         self.package_modules = modules;
+    }
+
+    /// Seed the work queue from module-level `const` initializers.
+    ///
+    /// MIR lowering injects these initializers into every function that can
+    /// reference the const, so whatever they call is genuinely reachable even
+    /// though no function body mentions it. Without this a const like
+    /// `const config = Shared.new(Config.from_env())` leaves `Config_from_env`
+    /// undeclared and codegen fails on the injected call.
+    pub fn add_module_const_roots(&mut self) {
+        for decl in self.decls {
+            if let DeclKind::Const(c) = &decl.kind {
+                let init = c.init.clone();
+                self.visit_expr(&init);
+            }
+        }
     }
 
     /// Seed the work queue with main()

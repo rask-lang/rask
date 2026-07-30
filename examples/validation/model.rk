@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Domain entities and the Validate trait.
+//
+// Tasks form a dependency DAG: `deps` holds Handle<Task> into the store's
+// pool, not pointers or ids-to-look-up. That's the pool-shaped design from
+// canonical-patterns "Graph-shaped data is Pool-shaped".
+
+const MAX_TITLE_LEN: usize = 200
+const MAX_NAME_LEN: usize = 80
+
+// ─── Validate ────────────────────────────────────────────────────────
+// Nominal: a DTO is only validatable if it declares `extend T with Validate`.
+// A stray validate() method matching by shape is not enough (G1), and the
+// compiler now enforces this at the `extend` site.
+
+trait Validate {
+    func validate(self) -> void or ValidationError
+}
+
+// Shared helper so every conformer checks lengths the same way.
+func check_len(field: string, value: string, max: usize) -> void or ValidationError {
+    if value.is_empty() { return ValidationError.Empty(field) }
+    if value.len() > max { return ValidationError.TooLong(field, max) }
+    return
+}
+
+// ─── Task ────────────────────────────────────────────────────────────
+// Fields that would carry declared defaults (status Open, empty deps/tags —
+// FD1) are set explicitly at construction until #311 lands.
+
+struct Task {
+    public id: TaskId
+    public title: string
+    public project: ProjectId
+    public priority: Priority
+    public status: Status
+    public assignee: UserId?
+    public deps: Vec<Handle<Task>>
+    public tags: Vec<string>
+    public created_at: i64
+}
+
+extend Task {
+    func has_tag(self, tag: string) -> bool {
+        for t in self.tags {
+            if t == tag { return true }
+        }
+        return false
+    }
+}
+
+// ─── User ────────────────────────────────────────────────────────────
+
+struct User {
+    public id: UserId
+    public name: string
+    public email: EmailAddress
+    public active: bool
+}
+
+// ─── Project ─────────────────────────────────────────────────────────
+
+struct Project {
+    public id: ProjectId
+    public name: string
+    public owner: UserId
+    public archived: bool
+}

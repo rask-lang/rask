@@ -20,9 +20,25 @@ use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern,
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 
+/// First NodeId handed out for synthesized nodes.
+///
+/// NodeIds are partitioned into 1M-wide bands so ids stay unique across a whole
+/// compilation: user code counts up from 0, and `rask-stdlib` parses its stub
+/// sources into the 1M, 2M and 3M bands. Desugaring invents new nodes, so it
+/// needs a band of its own — it sat at 1M and overlapped the stdlib's, which
+/// made `node_types` lookups return another node's type. A stdlib `match self`
+/// then read as a match on a `string` and its arm bindings were dropped, so
+/// `IoError.message` failed to lower with an unresolved `msg` (#463).
+pub const DESUGAR_ID_BASE: u32 = 10_000_000;
+
+/// First NodeId handed out by default/named-argument desugaring, which runs
+/// after operator desugaring and needs a band distinct from both it and the
+/// stdlib's. See [`DESUGAR_ID_BASE`].
+pub const DEFAULT_ARGS_ID_BASE: u32 = 20_000_000;
+
 /// Desugar all operators in a list of declarations.
 pub fn desugar(decls: &mut [Decl]) {
-    let mut desugarer = Desugarer::new(1_000_000);
+    let mut desugarer = Desugarer::new(DESUGAR_ID_BASE);
     desugarer.scan_error_message_types(decls);
     for decl in decls {
         desugarer.desugar_decl(decl);
@@ -47,7 +63,7 @@ pub struct DesugarError {
 
 /// Desugar all operators, returning any ER26 coverage errors.
 pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
-    let mut desugarer = Desugarer::new(1_000_000);
+    let mut desugarer = Desugarer::new(DESUGAR_ID_BASE);
     desugarer.scan_error_message_types(decls);
     for decl in decls {
         desugarer.desugar_decl(decl);
