@@ -4,7 +4,7 @@
 //! - unwrap-production: Flag .unwrap() outside test blocks
 //! - missing-ensure: Flag @resource creation without ensure
 //! - ensure-ordering: Flag ensure registration order that doesn't match acquisition order
-//! - duck-trait: Flag `duck trait` declarations — scratchpad-only, rejected at publish
+//! - duck-trait: Flag `duck trait` declarations — sketching tool, nudge to harden
 
 use rask_ast::decl::*;
 use rask_ast::expr::{Expr, ExprKind};
@@ -564,9 +564,9 @@ fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mu
 
 /// idiom/duck-trait: Flag `duck trait` declarations (DT3).
 ///
-/// Shape-matching is for code you're still sketching. `rask publish` refuses a
-/// package that declares one (struct.build/PB8), so warn while it's still cheap
-/// to harden.
+/// Shape-matching is for code you're still sketching: nothing states the
+/// contract, so a type can start or stop matching silently. A warning, not a
+/// gate — DT1 already keeps duck traits out of the public API.
 pub fn check_duck_trait(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
 
@@ -594,7 +594,7 @@ pub fn check_duck_trait(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
                 source_line,
             },
             fix: format!(
-                "delete `duck` and declare conformance (`extend Type with {} {{}}`) on each matching type — `rask publish` rejects a package that declares a duck trait",
+                "delete `duck` and declare conformance (`extend Type with {} {{}}`) on each matching type, or `@allow(idiom/duck-trait)` to keep the sketch",
                 t.name
             ),
         });

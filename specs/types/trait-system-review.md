@@ -157,7 +157,7 @@ Two clarifications that came out of reviewing this seam, worth putting in the sp
 
 Prototype-to-production for traits is: delete one word, accept the quick-fixes. Cheap to move things around while coding; explicit exactly when it becomes API.
 
-**Post-fold amendment (issue #490):** the "Published" row above is now enforced, not recommended. `public duck trait` is a compile error and `rask publish` refuses a package that declares a duck trait at all — see `type.generics/DT1–DT4`. This section's framing assumed prototypes get hardened; the gate makes it mechanical.
+**Post-fold amendment (issue #490):** the "Published" row above is now partly enforced. `public duck trait` is a compile error — shape-matching may not cross a package boundary (`type.generics/DT1`). Package-internal duck traits stay legal in a published package and are reported by lint and at publish instead (DT2/DT3): DT1 already means no consumer can see them, so there's nothing a release gate would protect. This section's "harden it eventually" framing is now a rule where it protects someone else and a nudge where it doesn't.
 
 ### Renaming the `structural` keyword — decided: `duck trait`
 

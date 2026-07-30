@@ -421,7 +421,7 @@ extend Point with Displayable {
 
 If the type already has the methods, an empty declaration suffices: `extend Point with Displayable {}`.
 
-**Duck traits (scratchpad only):** a trait marked `duck` matches by shape — any type with the right methods satisfies it, no declaration. Sketch with it, then delete the keyword to harden (the compiler generates the missing conformance declarations). It can't leave the package: `public duck trait` is an error and `rask publish` refuses a package that declares one (`type.generics/DT1–DT2`). The stdlib ships none.
+**Duck traits (scratchpad only):** a trait marked `duck` matches by shape — any type with the right methods satisfies it, no declaration. Sketch with it, then delete the keyword to harden (the compiler generates the missing conformance declarations). It can't leave the package: `public duck trait` is an error (`type.generics/DT1`). Inside the package it's allowed but nudged — lint and `rask publish` report it, neither blocks. The stdlib ships none.
 
 **Several conformances, one block:** the `with` list is a header on a normal extend block — methods for any listed trait plus plain methods, together:
 

@@ -50,12 +50,12 @@ Common mistakes the canonical patterns address.
 |------|-------|----------|
 | **I1: force-unwrap-production** | `x!` force unwrap outside `test` blocks | warning |
 | **I2: missing-ensure** | `@resource` type created without matching `ensure` in same scope | warning |
-| **I3: duck-trait** | Any `duck trait` declaration (`type.generics/DT3`) — names the harden step and notes that `rask publish` rejects it outright | warning |
+| **I3: duck-trait** | Any `duck trait` declaration (`type.generics/DT3`) — names the harden step and the types that already match | warning |
 | **I4: inferred-signature** | Non-public function omitting a parameter type, return type, or bound, in a package that declares publish metadata (`type.gradual/GC11`) | warning |
 
-I3 and I4 both say "this was a sketch — is it still?" Neither is about correctness: the code type-checks fine either way. They fire on the two constructs whose whole point is being temporary, so that "we'll harden it later" has something reminding you.
+I3 and I4 both say "this was a sketch — is it still?" Neither is about correctness: the code type-checks fine either way, and neither blocks anything. They fire on the two constructs whose whole point is being temporary, so that "we'll harden it later" has something reminding you. Both are suppressible per SU1 when the sketch is deliberate.
 
-I4 is scoped to packages carrying `description` and `license` — the metadata `struct.build/PB2` requires for publishing — so a throwaway directory stays quiet. I3 has no such scope: a duck trait is worth a nudge anywhere, since `rask publish` will refuse it (`struct.build/PB8`).
+I4 is scoped to packages carrying `description` and `license` — the metadata `struct.build/PB2` requires for publishing — so a throwaway directory stays quiet. I3 has no such scope: the `duck` keyword is itself the declaration that this contract is loose, so it's worth a nudge anywhere.
 
 ## Purity
 
@@ -182,11 +182,12 @@ WARNING [tool.lint/I3]: `Frobber` is a duck trait
 12 |  duck trait Frobber {
    |  ^^^^ matched by shape — no conformance declarations anywhere
    |
-WHY: duck traits are for sketching. `rask publish` refuses a package that
-     declares one (struct.build/PB8).
+WHY: duck traits are for sketching — nothing states this contract, so a
+     type can start or stop matching it silently.
 
 FIX: delete `duck`. 3 types already match by shape; the "harden duck trait"
-     quick action generates their conformance declarations.
+     quick action generates their conformance declarations. Or keep the
+     sketch — `@allow(idiom/duck-trait)` silences this.
 ```
 
 ## JSON Output

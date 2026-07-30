@@ -543,25 +543,30 @@ These are deferred — rules defined for future implementation.
 | **PB5: No path deps** | Publish fails if package has path dependencies (struct.packages/RG3) |
 | **PB6: Reproducible tarball** | Deterministic file ordering, no timestamps in archive |
 | **PB7: Size limit** | 10 MB max package size. Error with breakdown if exceeded |
-| **PB8: No duck traits** | Publish fails if the package declares a `duck trait` anywhere, public or not (`type.generics/DT2`). Shape-matching is a sketching tool; a published package isn't a sketch. The error lists each declaration and the types that already match, so hardening is mechanical |
-| **PB9: Inferred signatures reported** | Publish reports non-public functions with omitted types or bounds (`type.gradual/GC11`) as a warning with a count, not an error. They can't break external callers, so they don't block a release — but shipping a package whose internals are still sketched is worth seeing once |
+| **PB8: Duck traits reported** | Publish reports the `duck trait` declarations the package carries (`type.generics/DT2`) as a warning with a count, not an error. `type.generics/DT1` already keeps them out of the public API, so they can't affect a consumer — this is a reminder that a sketch shipped, not a gate |
+| **PB9: Inferred signatures reported** | Publish reports non-public functions with omitted types or bounds (`type.gradual/GC11`), same treatment as PB8 and for the same reason: they can't break external callers |
+
+Both are warnings on purpose. A release check earns an error by protecting someone; these two can only affect the package's own author, so they inform and get out of the way. The gates that do block a release are PB2, PB5, PB7, and the explicit-signature rules the type checker enforces before publish is even reached (`type.gradual/GC5`, `type.generics/DT1`).
 
 ```
-ERROR [struct.build/PB8]: cannot publish a package containing duck traits
+WARNING [struct.build/PB8]: publishing 2 duck traits
    |
 src/shapes.rk:12  duck trait Frobber {
-                  ^^^^
+src/render.rk:8   duck trait Drawable {
    |
-WHY: a duck trait is an unfinished contract — matched by shape, with nothing
-     written down. Published packages get maintained by people who didn't
-     sketch them.
+WHY: a duck trait is a contract that was never written down — matched by
+     shape. It can't reach consumers (DT1 keeps it package-internal), but
+     inside the package accidental matches are still silent.
 
-FIX: delete `duck`. 3 types already match by shape; the "harden duck trait"
-     quick action (type.generics/DT4) inserts their conformance declarations:
+FIX: delete `duck`. For `Frobber`, 3 types already match by shape; the
+     "harden duck trait" quick action (type.generics/DT4) inserts their
+     conformance declarations:
 
   extend Widget with Frobber {}
   extend Gadget with Frobber {}
   extend Doohickey with Frobber {}
+
+     Or keep the sketch — `@allow(idiom/duck-trait)` silences the nudge.
 ```
 
 ```
