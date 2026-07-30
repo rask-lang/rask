@@ -765,15 +765,13 @@ int64_t rask_http_write_response(int64_t conn_fd, int64_t response_ptr) {
             if (!key) continue;
             RaskStr *val = (RaskStr *)rask_map_get(headers, key);
             if (!val) continue;
-            RaskStr tmp;
-            rask_string_append_cstr(&tmp, &out, rask_string_ptr(key));
-            rask_string_free(&out);
-            rask_string_append_cstr(&out, &tmp, ": ");
-            rask_string_free(&tmp);
-            rask_string_append_cstr(&tmp, &out, rask_string_ptr(val));
-            rask_string_free(&out);
-            rask_string_append_cstr(&out, &tmp, "\r\n");
-            rask_string_free(&tmp);
+            // Append in place. Routing through a temp and freeing the
+            // accumulator frees the buffer the temp just took ownership of —
+            // the append primitive reuses a sole-owned buffer (#414).
+            rask_string_append_cstr(&out, &out, rask_string_ptr(key));
+            rask_string_append_cstr(&out, &out, ": ");
+            rask_string_append_cstr(&out, &out, rask_string_ptr(val));
+            rask_string_append_cstr(&out, &out, "\r\n");
         }
         rask_vec_free(keys);
     }
@@ -781,10 +779,7 @@ int64_t rask_http_write_response(int64_t conn_fd, int64_t response_ptr) {
     // Content-Length header
     snprintf(line_buf, sizeof(line_buf),
              "Content-Length: %lld\r\n\r\n", (long long)body_len);
-    RaskStr tmp;
-    rask_string_append_cstr(&tmp, &out, line_buf);
-    rask_string_free(&out);
-    out = tmp;
+    rask_string_append_cstr(&out, &out, line_buf);
 
     // Write header + body
     rask_io_write_string(conn_fd, (int64_t)(uintptr_t)&out);
@@ -1125,17 +1120,9 @@ int64_t rask_http_send_request(int64_t method_ptr, int64_t url_ptr,
     rask_string_append_cstr(&req, &req, line);
     if (body_len > 0) {
         snprintf(line, sizeof(line), "Content-Length: %lld\r\n", (long long)body_len);
-        RaskStr tmp;
-        rask_string_append_cstr(&tmp, &req, line);
-        rask_string_free(&req);
-        req = tmp;
+        rask_string_append_cstr(&req, &req, line);
     }
-    {
-        RaskStr tmp;
-        rask_string_append_cstr(&tmp, &req, "\r\n");
-        rask_string_free(&req);
-        req = tmp;
-    }
+    rask_string_append_cstr(&req, &req, "\r\n");
 
     rask_io_write_string(fd, (int64_t)(uintptr_t)&req);
     if (body_len > 0) {

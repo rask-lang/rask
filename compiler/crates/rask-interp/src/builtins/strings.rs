@@ -302,4 +302,72 @@ impl Interpreter {
             }),
         }
     }
+
+    /// `StringBuilder.new()` / `.with_capacity(n)`.
+    pub(crate) fn call_string_builder_type_method(
+        &self,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "new" => Ok(Value::StringBuilder(Arc::new(Mutex::new(String::new())))),
+            "with_capacity" => {
+                let n = match args.first() {
+                    Some(v) => v.as_int().map_err(RuntimeError::TypeError)?,
+                    None => return Err(RuntimeError::ArityMismatch { expected: 1, got: 0 }),
+                };
+                let cap = if n > 0 { n as usize } else { 0 };
+                Ok(Value::StringBuilder(Arc::new(Mutex::new(String::with_capacity(cap)))))
+            }
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "StringBuilder".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
+    /// StringBuilder instance methods. `build` takes self, so the buffer is
+    /// drained rather than copied — the builder is not usable afterwards.
+    pub(crate) fn call_string_builder_method(
+        &self,
+        buf: &Arc<Mutex<String>>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "push" => {
+                let s = match args.first() {
+                    Some(Value::String(s)) => s.lock().unwrap().clone(),
+                    Some(v) => v.to_string(),
+                    None => return Err(RuntimeError::ArityMismatch { expected: 1, got: 0 }),
+                };
+                buf.lock().unwrap().push_str(&s);
+                Ok(Value::Unit)
+            }
+            "push_char" => {
+                let c = match args.first() {
+                    Some(Value::Char(c)) => *c,
+                    Some(v) => {
+                        let cp = v.as_int().map_err(RuntimeError::TypeError)?;
+                        char::from_u32(cp as u32).ok_or_else(|| {
+                            RuntimeError::TypeError(format!("{} is not a Unicode scalar", cp))
+                        })?
+                    }
+                    None => return Err(RuntimeError::ArityMismatch { expected: 1, got: 0 }),
+                };
+                buf.lock().unwrap().push(c);
+                Ok(Value::Unit)
+            }
+            "build" => {
+                let built = std::mem::take(&mut *buf.lock().unwrap());
+                Ok(Value::String(Arc::new(Mutex::new(built))))
+            }
+            "len" => Ok(Value::int(buf.lock().unwrap().len() as i64)),
+            "is_empty" => Ok(Value::Bool(buf.lock().unwrap().is_empty())),
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "StringBuilder".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
 }

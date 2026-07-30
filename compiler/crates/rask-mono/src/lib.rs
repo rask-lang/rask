@@ -188,6 +188,7 @@ pub fn monomorphize_with_packages(
     if !mono.add_entry("main") {
         return Err(MonomorphizeError::NoEntryPoint);
     }
+    mono.add_module_const_roots();
 
     mono.run();
 

@@ -515,6 +515,9 @@ pub enum Value {
     SimdF32x8([f32; 8]),
     /// Random number generator (xoshiro256++ state)
     Rng(Arc<Mutex<RngState>>),
+    /// StringBuilder's growable buffer. Shared so a `mutate self` push is
+    /// visible through the caller's binding, matching the native handle.
+    StringBuilder(Arc<Mutex<String>>),
     /// Lazy iterator (wraps a source and optional adapters)
     Iterator(Arc<Mutex<IteratorState>>),
     /// Wide<T> — a staged data-parallel plan (conc.data-parallel). Lazy: it
@@ -754,6 +757,7 @@ impl Value {
             Value::TcpConnection(_) => "TcpConnection",
             Value::SimdF32x8(_) => "f32x8",
             Value::Rng(_) => "Random",
+            Value::StringBuilder(_) => "StringBuilder",
             Value::Iterator(_) => "Iterator",
             Value::Nominal { .. } => "nominal",
             Value::NominalConstructor { .. } => "nominal constructor",
@@ -1133,6 +1137,7 @@ impl fmt::Display for Value {
                 write!(f, ")")
             }
             Value::Rng(_) => write!(f, "<Random>"),
+            Value::StringBuilder(_) => write!(f, "<StringBuilder>"),
             Value::Iterator(_) => write!(f, "<Iterator>"),
             Value::Nominal { type_name, inner } => write!(f, "{}({})", type_name, inner),
             Value::NominalConstructor { type_name } => write!(f, "<type {}>", type_name),

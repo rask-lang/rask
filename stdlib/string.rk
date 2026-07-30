@@ -169,8 +169,8 @@ extend string {
 // Growable mutable buffer for string construction. Sole owner —
 // mutation is always O(1) amortized. Move on assignment (not Copy).
 //
-// UTF-8 validity is maintained by construction: append() takes string,
-// append_char() takes char. No raw byte entry point.
+// UTF-8 validity is maintained by construction: push() takes string,
+// push_char() takes char. No raw byte entry point.
 
 public struct StringBuilder {
     buf: Vec<u8>

@@ -25,7 +25,9 @@ pub fn desugar_default_args(decls: &mut [Decl]) {
     let lookup = FunctionLookup::build(decls);
     let mut ctx = DefaultDesugarer {
         lookup,
-        next_id: 2_000_000,
+        // Own band, clear of the stdlib's parsed ids and of operator
+        // desugaring's. See DESUGAR_ID_BASE for why the bands must not overlap.
+        next_id: crate::DEFAULT_ARGS_ID_BASE,
     };
     for decl in decls {
         ctx.desugar_decl(decl);

@@ -94,6 +94,17 @@ struct FuncSig {
     /// through it); `None` means the param is not a by-pointer scalar mutate.
     /// Empty for extern/stdlib (no scalar mutate write-back).
     scalar_mutate_params: Vec<Option<MirType>>,
+    /// Element type when the function returns `Vec<T>`. `ret_ty` collapses a Vec
+    /// to an opaque pointer, so `for x in f()` has nothing to type its binding
+    /// from once the checker's node types are out of reach (a closure body, an
+    /// instantiated copy) — the declared return type is the remaining record.
+    ret_vec_elem: Option<MirType>,
+    /// Declared parameter type strings, positionally. Used to type an
+    /// unannotated closure argument's parameters: `|req| { … }` passed to a
+    /// `func(Request) -> Response` parameter has nothing else to go on, and
+    /// defaulting them to i64 made field access and method dispatch inside the
+    /// closure body operate on the wrong type.
+    param_ty_strs: Vec<Option<String>>,
 }
 
 /// Loop context for break/continue
@@ -571,6 +582,15 @@ pub struct MirLowerer<'a> {
     /// resource_id local. Used for consumption cancellation (C1/C2):
     /// if the receiver was consumed before scope exit, skip the ensure.
     ensure_receivers: HashMap<BlockId, (String, LocalId)>,
+    /// Module-level consts with a non-literal initializer, by name, waiting to
+    /// be materialized on first reference in this function.
+    ///
+    /// They used to be emitted eagerly at the top of every function. That put
+    /// `const config = Shared.new(Config.from_env())` inside `Config.from_env`
+    /// itself, which then called itself forever — the binary died on a stack
+    /// overflow before reaching main's first line (#463). Materializing at the
+    /// use site keeps them out of functions that never mention them.
+    pending_module_consts: HashMap<String, (Expr, Option<String>)>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -584,6 +604,50 @@ impl<'a> MirLowerer<'a> {
     /// Get the metadata entry for a variable (read-only).
     pub(crate) fn meta(&self, name: &str) -> Option<&LocalMeta> {
         self.local_meta.get(name)
+    }
+
+    /// Record a module-level const's box type from its initializer, e.g.
+    /// `Shared.new(Metrics { … })` → prefix `Shared`, full type `Shared<Metrics>`.
+    ///
+    /// A cross-module const reference gets left an inference var by the checker,
+    /// so guard access can't read the inner type off the use site — the
+    /// initializer is the only place it's concrete.
+    pub(crate) fn record_module_const_meta(&mut self, name: &str, init: &Expr) {
+        let ExprKind::MethodCall { object, args, .. } = &init.kind else { return };
+        let ExprKind::Ident(type_name) = &object.kind else { return };
+        let Some(prefix) = MirContext::type_prefix_str(type_name) else { return };
+        if let Some(inner) = args.first().and_then(|a| {
+            self.ctx.lookup_raw_type(a.expr.id)
+                .and_then(|t| MirContext::type_prefix(t, self.ctx.type_names))
+        }) {
+            self.meta_mut(name).full_type = Some(format!("{}<{}>", prefix, inner));
+        }
+        self.meta_mut(name).type_prefix = Some(prefix);
+    }
+
+    /// Materialize a deferred module-level const the first time it's named in
+    /// this function. Returns the local, or `None` if `name` isn't one.
+    ///
+    /// Idempotent: once emitted the const lives in `locals` like any other
+    /// binding, so later references in the same function reuse it.
+    pub(crate) fn materialize_module_const(
+        &mut self,
+        name: &str,
+    ) -> Result<Option<(LocalId, MirType)>, LoweringError> {
+        if let Some((local_id, ty)) = self.locals.get(name) {
+            return Ok(Some((*local_id, ty.clone())));
+        }
+        let Some((init, _decl_ty)) = self.pending_module_consts.remove(name) else {
+            return Ok(None);
+        };
+        let (op, ty) = self.lower_expr(&init)?;
+        let local_id = self.builder.alloc_local(name.to_string(), ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: local_id,
+            rvalue: MirRValue::Use(op),
+        }));
+        self.locals.insert(name.to_string(), (local_id, ty.clone()));
+        Ok(Some((local_id, ty)))
     }
 
     /// Method-dispatch prefix for a Struct/Enum MIR type — its layout name.
@@ -797,7 +861,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         let thunk_fn = thunk_builder.finish();
-        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new() });
+        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
         self.synthesized_functions.push(thunk_fn);
 
         let captures = caps
@@ -912,6 +976,8 @@ impl<'a> MirLowerer<'a> {
                     func_sigs.insert(f.name.clone(), FuncSig {
                         ret_ty: sig_ret,
                         scalar_mutate_params: scalar_mutate_params(&f.params, ctx),
+                        ret_vec_elem: vec_elem_of_type_str(f.ret_ty.as_deref(), ctx),
+                        param_ty_strs: f.params.iter().map(|p| Some(p.ty.clone())).collect(),
                     });
                 }
                 DeclKind::Extern(ext) => {
@@ -920,7 +986,7 @@ impl<'a> MirLowerer<'a> {
                         .as_deref()
                         .map(|s| ctx.resolve_type_str(s))
                         .unwrap_or(MirType::Void);
-                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new() });
+                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
                 }
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
@@ -933,6 +999,8 @@ impl<'a> MirLowerer<'a> {
                         func_sigs.insert(qualified, FuncSig {
                             ret_ty: sig_ret,
                             scalar_mutate_params: scalar_mutate_params(&m.params, ctx),
+                            ret_vec_elem: vec_elem_of_type_str(m.ret_ty.as_deref(), ctx),
+                            param_ty_strs: m.params.iter().map(|p| Some(p.ty.clone())).collect(),
                         });
                     }
                 }
@@ -946,6 +1014,8 @@ impl<'a> MirLowerer<'a> {
             func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
                 ret_ty: ret_category_to_mir_type(&meta.ret_category),
                 scalar_mutate_params: Vec::new(),
+                ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
             });
         }
 
@@ -994,6 +1064,7 @@ impl<'a> MirLowerer<'a> {
             ensure_stack: Vec::new(),
             take_self_methods,
             ensure_receivers: HashMap::new(),
+            pending_module_consts: HashMap::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -1068,7 +1139,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     MirType::Void
                 };
-                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new() });
+                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
             }
         }
 
@@ -1087,34 +1158,18 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
-                } else if let Ok((op, ty)) = lowerer.lower_expr(&c.init) {
-                    // Non-literal init (e.g. Shared<T>.new(...)): lower as expression
-                    let local_id = lowerer.builder.alloc_local(c.name.clone(), ty.clone());
-                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: local_id,
-                        rvalue: MirRValue::Use(op),
-                    }));
-                    lowerer.locals.insert(c.name.clone(), (local_id, ty));
-                    // Extract type prefix from init (e.g. Shared<Metrics>.new() → "Shared")
-                    if let ExprKind::MethodCall { object, args, .. } = &c.init.kind {
-                        if let ExprKind::Ident(type_name) = &object.kind {
-                            if let Some(prefix) = MirContext::type_prefix_str(type_name) {
-                                // Also record the wrapped type (Mutex<Store>) from the
-                                // constructor's argument. A cross-module const reference
-                                // gets left an inference var by the checker, so guard
-                                // access can't read the inner type off the use site — the
-                                // initializer here is the only place it's concrete.
-                                if let Some(inner) = args.first().and_then(|a| {
-                                    lowerer.ctx.lookup_raw_type(a.expr.id)
-                                        .and_then(|ty| MirContext::type_prefix(ty, lowerer.ctx.type_names))
-                                }) {
-                                    lowerer.meta_mut(&c.name).full_type =
-                                        Some(format!("{}<{}>", prefix, inner));
-                                }
-                                lowerer.meta_mut(&c.name).type_prefix = Some(prefix);
-                            }
-                        }
-                    }
+                } else {
+                    // Non-literal init (e.g. Shared<T>.new(...)): defer the code to
+                    // the first reference, so it only lands in functions that use
+                    // it. The type metadata is recorded here regardless — it costs
+                    // nothing, emits no code, and method dispatch reads it for the
+                    // const's box type (`Mutex<Store>`) from more places than just
+                    // the reference site.
+                    lowerer.record_module_const_meta(&c.name, &c.init);
+                    lowerer.pending_module_consts.insert(
+                        c.name.clone(),
+                        (c.init.clone(), c.ty.clone()),
+                    );
                 }
             }
         }
@@ -1231,6 +1286,21 @@ impl<'a> MirLowerer<'a> {
         self.ctx.lookup_node_type(expr.id)
     }
 
+    /// Element type of a `Vec<T>`, in either the pre-resolve
+    /// (`UnresolvedGeneric`) or resolved (`Generic`) spelling.
+    fn vec_elem_raw_type<'t>(&self, ty: &'t Type) -> Option<&'t Type> {
+        let args = match ty {
+            Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
+            Type::Generic { base, args }
+                if self.ctx.type_names.get(base).is_some_and(|n| n == "Vec") => args,
+            _ => return None,
+        };
+        match args.first()? {
+            rask_types::GenericArg::Type(t) => Some(t),
+            rask_types::GenericArg::ConstUsize(_) => None,
+        }
+    }
+
     /// Extract the element type from an iterator type using raw type info.
     /// For Range<i32>, returns I32. Falls back to AST heuristics after mono.
     fn extract_iterator_elem_type(&self, expr: &Expr) -> Option<MirType> {
@@ -1251,7 +1321,16 @@ impl<'a> MirLowerer<'a> {
                 // Pool iteration yields handles (packed i64)
                 Type::UnresolvedNamed(n) if n == "Pool" => return Some(MirType::I64),
                 Type::UnresolvedGeneric { name, .. } if name == "Pool" => return Some(MirType::I64),
-                _ => {}
+                // Vec<any Trait> yields fat-pointer elements. Only the trait-object
+                // case is taken from the checker here: concrete element types are
+                // already covered by the tracked elem_type below, but a trait object
+                // carries a vtable half that nothing downstream can recover once the
+                // binding has been typed as a plain scalar.
+                _ => {
+                    if let Some(Type::TraitObject { trait_name }) = self.vec_elem_raw_type(ty) {
+                        return Some(MirType::TraitObject { trait_name: trait_name.clone() });
+                    }
+                }
             }
         }
 
@@ -1280,6 +1359,27 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Iterating the result of a call: take the element type off the callee's
+        // declared `Vec<T>`. Needed wherever the checker's node types are out of
+        // reach — inside a closure body, `for spec in seed_specs()` typed its
+        // binding i64 and sent the wrong bytes down a channel (#463).
+        let callee = match &expr.kind {
+            ExprKind::Call { func, .. } => match &func.kind {
+                ExprKind::Ident(name) => Some(name.clone()),
+                _ => None,
+            },
+            ExprKind::MethodCall { object, method, .. } => match &object.kind {
+                ExprKind::Ident(recv) => Some(format!("{}_{}", recv, method)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(name) = callee {
+            if let Some(elem) = self.func_sigs.get(&name).and_then(|s| s.ret_vec_elem.clone()) {
+                return Some(elem);
+            }
+        }
+
         None
     }
 
@@ -1300,6 +1400,22 @@ impl<'a> MirLowerer<'a> {
             }
         } else {
             None
+        }
+    }
+
+    /// Ok/Some payload of an already-lowered MIR type.
+    ///
+    /// The backstop for `extract_payload_type`: stdlib bodies and post-mono
+    /// copies carry synthesized node IDs the checker never typed, so the only
+    /// record of the payload type is the scrutinee's own MIR type, built from
+    /// the callee's declared return type. Without this an if-let over a stdlib
+    /// `T or E` binds its payload as a bare i64 and method dispatch on the
+    /// binding has no type to work from.
+    fn payload_of_mir(ty: &MirType) -> Option<MirType> {
+        match ty {
+            MirType::Result { ok, .. } => Some((**ok).clone()),
+            MirType::Option(inner) => Some((**inner).clone()),
+            _ => None,
         }
     }
 
@@ -1967,6 +2083,58 @@ fn collect_pattern_names(
 // =================================================================
 // Operator mappings
 // =================================================================
+
+/// Parameter type strings of a function-type annotation, e.g.
+/// `"func(Request) -> Response"` → `["Request"]`. The parser normalizes
+/// `|T| -> R` to the `func(...)` form, so only that spelling needs handling.
+pub(crate) fn fn_type_param_strs(ty: &str) -> Option<Vec<String>> {
+    let inner = ty.trim().strip_prefix("func(")?;
+    // Cut at the paren that closes the parameter list, not at a nested one.
+    let mut depth = 1usize;
+    let mut end = None;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let params = &inner[..end?];
+    if params.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    Some(
+        split_top_level_parens(params, ',')
+            .iter()
+            .map(|p| p.trim().to_string())
+            .collect(),
+    )
+}
+
+/// Element type of a declared `Vec<T>` return type, e.g. `"Vec<SeedSpec>"` →
+/// `Struct(SeedSpec)`. `None` for anything that isn't a Vec.
+fn vec_elem_of_type_str(ret_ty: Option<&str>, ctx: &MirContext) -> Option<MirType> {
+    let inner = ret_ty?
+        .trim()
+        .strip_prefix("Vec<")?
+        .strip_suffix('>')?
+        .trim();
+    Some(ctx.resolve_type_str(inner))
+}
+
+/// Is `name` one of the integer primitives (as spelled in source)?
+pub(crate) fn is_integer_type_name(name: &str) -> bool {
+    matches!(name,
+        "i8" | "i16" | "i32" | "i64" | "isize"
+        | "u8" | "u16" | "u32" | "u64" | "usize"
+    )
+}
 
 /// Recognize operator method names produced by desugar (e.g. "add", "sub", "eq")
 fn operator_method_to_binop(method: &str) -> Option<crate::operand::BinOp> {

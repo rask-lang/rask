@@ -75,6 +75,9 @@ impl Interpreter {
             Value::Shared(s) => return self.call_shared_method(&Arc::clone(s), method, args),
             Value::RaskMutex(m) => return self.call_mutex_method(&Arc::clone(m), method, args),
             Value::Rng(rng) => return self.call_rng_instance_method(&Arc::clone(rng), method, args),
+            Value::StringBuilder(buf) => {
+                return self.call_string_builder_method(&Arc::clone(buf), method, args)
+            }
             Value::Iterator(iter) => return self.call_iterator_method(&Arc::clone(iter), method, args),
             #[cfg(not(target_arch = "wasm32"))]
             Value::TcpListener(l) => return self.call_tcp_listener_method(&Arc::clone(l), method, args),

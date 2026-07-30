@@ -70,6 +70,10 @@ pub enum RetAdapt {
     /// C FFI convention: a negative scalar return means Err, otherwise Ok.
     /// Codegen wraps the return into the destination `T or E` Result slot.
     NegErr,
+    /// Same convention for an Option: a negative scalar return means `none`,
+    /// otherwise `some(value)`. Distinct from NegErr because Option and Result
+    /// put their payloads at different offsets.
+    NegNone,
 }
 
 /// A stdlib function entry: MIR name → C runtime function + adaptation.
@@ -112,6 +116,18 @@ impl StdlibEntry {
     ) -> Self {
         Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::NegErr }
     }
+
+    /// For a `T?`-returning C function that signals "absent" with a negative
+    /// index (`find`, `rfind`).
+    const fn neg_none(
+        mir_name: &'static str,
+        c_name: &'static str,
+        params: &'static [Type],
+        ret_ty: Option<Type>,
+        can_panic: bool,
+    ) -> Self {
+        Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::NegNone }
+    }
 }
 
 /// Leak a String to get a &'static str. Used for dynamically generated
@@ -131,7 +147,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         // Vec.with_capacity(n): (elem_size, cap) — elem_size injected at lowering.
         StdlibEntry::simple("Vec_with_capacity", "rask_vec_with_capacity", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_vec_from_static", "rask_vec_from_static", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_vec_from_static", "rask_vec_from_static", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
         StdlibEntry {
@@ -291,9 +307,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_as_ptr", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_as_c_str", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_is_empty", "rask_string_is_empty", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_index_of", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
+        // find/rfind return `usize?` and the runtime signals "not found" with -1.
+        // Wrapped as a plain value it came back as `some(-1)`, so `?? ...` never
+        // fired and a slice taken at that index was empty (#463).
+        StdlibEntry::neg_none("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("string_index_of", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_starts_with", "rask_string_starts_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_ends_with", "rask_string_ends_with", &[types::I64, types::I64], Some(types::I64), false),
@@ -302,8 +321,21 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_parse", "rask_string_parse_float", &[types::I64], Some(types::F64), false),
         StdlibEntry::simple("string_parse_int", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_parse_float", "rask_string_parse_float", &[types::I64], Some(types::F64), false),
+        // parse<T> mangles the type argument into the name, so every width needs
+        // an entry or the call has nothing to dispatch to. All integer widths
+        // share the one runtime parse; it returns i64 and the caller's Result
+        // slot narrows it.
+        StdlibEntry::simple("string_parse_i8", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_parse_i16", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_parse_i32", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_parse_i64", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_parse_isize", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_parse_u8", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_parse_u16", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_parse_u32", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_parse_u64", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_parse_usize", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_parse_f32", "rask_string_parse_float", &[types::I64], Some(types::F64), false),
         StdlibEntry::simple("string_parse_f64", "rask_string_parse_float", &[types::I64], Some(types::F64), false),
 
         // String-producing operations (out-param)
@@ -654,11 +686,28 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── HTTP server close (linear resource cleanup) ─────────────
         StdlibEntry::simple("HttpServer_close", "rask_http_server_close", &[types::I64], None, false),
 
+        // ── os module: environment ──────────────────────────────────
+        // env returns `string?` — the runtime hands back NULL when unset and
+        // DerefOption turns that into `none`, copying the 16-byte string out of
+        // the pointer for the `some` side.
+        StdlibEntry {
+            mir_name: "os_env", c_name: "rask_os_env",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
+        StdlibEntry {
+            mir_name: "os_env_or", c_name: "rask_os_env_or",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+
         // ── StringBuilder ───────────────────────────────────────────
         StdlibEntry::simple("StringBuilder_new", "rask_string_builder_new", &[], Some(types::I64), false),
         StdlibEntry::simple("StringBuilder_with_capacity", "rask_string_builder_with_capacity", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("StringBuilder_append", "rask_string_builder_append", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("StringBuilder_append_char", "rask_string_builder_append_char", &[types::I64, types::I64], None, false),
+        // push/push_char are the names stdlib/string.rk declares (and `Vec.push`
+        // reads the same way); the C entry points kept their older spelling.
+        StdlibEntry::simple("StringBuilder_push", "rask_string_builder_append", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("StringBuilder_push_char", "rask_string_builder_append_char", &[types::I64, types::I64], None, false),
         StdlibEntry {
             mir_name: "StringBuilder_build", c_name: "rask_string_builder_build",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,

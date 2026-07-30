@@ -12,6 +12,31 @@ use super::TypeChecker;
 use crate::types::Type;
 
 impl TypeChecker {
+    /// Type a `for` binding takes when iterating `iter_ty`.
+    ///
+    /// A fresh var is the fallback for iterables whose element type can't be
+    /// read off the type here (ranges, user iterators) — inference pins those
+    /// from the body. `Vec<T>` is spelled out because leaving it a free var
+    /// loses the element's identity: a `Vec<any Trait>` binding then has no
+    /// trait to dispatch against.
+    fn iter_elem_type(&mut self, iter_ty: &Type) -> Type {
+        let resolved = self.ctx.apply(iter_ty);
+        match &resolved {
+            Type::Array { elem, .. } | Type::Slice(elem) => return (**elem).clone(),
+            _ => {}
+        }
+        if self.generic_base_name(&resolved) == Some("Vec") {
+            let args = match &resolved {
+                Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => Some(args),
+                _ => None,
+            };
+            if let Some(crate::types::GenericArg::Type(elem)) = args.and_then(|a| a.first()) {
+                return (**elem).clone();
+            }
+        }
+        self.ctx.fresh_var()
+    }
+
     // ------------------------------------------------------------------------
     // Statement Checking
     // ------------------------------------------------------------------------
@@ -229,10 +254,7 @@ impl TypeChecker {
             StmtKind::For { binding, iter, body, .. } => {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
-                let elem_ty = match &iter_ty {
-                    Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
-                    _ => self.ctx.fresh_var(),
-                };
+                let elem_ty = self.iter_elem_type(&iter_ty);
                 match binding {
                     ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {

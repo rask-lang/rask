@@ -38,8 +38,10 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap) {
     return v;
 }
 
-RaskVec *rask_vec_from_static(const char *data, int64_t count) {
-    int64_t elem_size = 8; // all comptime values are i64
+// elem_size comes from the caller: a static array of fat pointers (trait
+// objects, slices) has 16-byte elements, not 8.
+RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size) {
+    if (elem_size <= 0) elem_size = 8;
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
     v->len = count;
     v->cap = count;
@@ -206,6 +208,14 @@ RaskVec *rask_vec_clone(const RaskVec *src) {
     return dst;
 }
 
+// rask_string_append is the builder primitive: when the accumulator is the sole
+// owner of its buffer it appends in place and hands the SAME buffer back, so the
+// result aliases the accumulator. Freeing the accumulator after appending
+// therefore frees the buffer the result now owns — the join wrote into freed
+// memory and produced garbage or tripped the allocator (#414/#461). The other
+// paths (SSO promote, shared detach) either allocate fresh or drop the old
+// reference themselves, so there is nothing for the caller to free either way.
+
 // join(vec_of_strings, separator) — concatenate strings with separator.
 void rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
     rask_string_new(out);
@@ -214,13 +224,11 @@ void rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
         if (i > 0 && sep) {
             RaskStr tmp;
             rask_string_append(&tmp, out, sep);
-            rask_string_free(out);
             *out = tmp;
         }
         const RaskStr *elem = (const RaskStr *)(src->data + i * src->elem_size);
         RaskStr tmp;
         rask_string_append(&tmp, out, elem);
-        rask_string_free(out);
         *out = tmp;
     }
 }
@@ -233,7 +241,6 @@ void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
         if (i > 0 && sep) {
             RaskStr tmp;
             rask_string_append(&tmp, out, sep);
-            rask_string_free(out);
             *out = tmp;
         }
         int64_t val = *(int64_t *)(src->data + i * src->elem_size);
@@ -241,7 +248,6 @@ void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
         rask_i64_to_string(&s, val);
         RaskStr tmp;
         rask_string_append(&tmp, out, &s);
-        rask_string_free(out);
         rask_string_free(&s);
         *out = tmp;
     }

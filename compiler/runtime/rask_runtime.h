@@ -77,7 +77,7 @@ typedef struct RaskVec RaskVec;
 
 RaskVec *rask_vec_new(int64_t elem_size);
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap);
-RaskVec *rask_vec_from_static(const char *data, int64_t count);
+RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size);
 void     rask_vec_free(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
@@ -470,6 +470,10 @@ int64_t      rask_json_decode(const RaskStr *s);
 void        rask_args_init(int argc, char **argv);
 int64_t     rask_args_count(void);
 const char *rask_args_get(int64_t index);
+
+// Environment variables
+const RaskStr *rask_os_env(const RaskStr *name);
+void           rask_os_env_or(RaskStr *out, const RaskStr *name, const RaskStr *def);
 
 // ─── Panic ─────────────────────────────────────────────────
 // Structured panic: aborts in main thread, catchable in spawned tasks.
