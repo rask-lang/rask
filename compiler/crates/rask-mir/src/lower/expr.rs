@@ -1332,6 +1332,12 @@ impl<'a> MirLowerer<'a> {
                         addr: result_local,
                         offset: i as u32 * elem_size,
                         value: elem_op,
+                        // Deliberately unsized: an array of strings holds
+                        // *pointers* to 16-byte values, not inline ones, and the
+                        // whole read path expects that. Passing elem_size here
+                        // makes codegen copy the value inline instead, which
+                        // reads correctly right up until something indexes the
+                        // array — see #414 for why the two disagree.
                         store_size: None,
                     }));
                 }
