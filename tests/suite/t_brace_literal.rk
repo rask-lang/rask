@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Braces in string literals. The interpolation scanner re-emitted a closing
+// brace whether or not it had consumed one, so the one-character string `"{"`
+// evaluated to `"{}"` on the interpreter while native kept it at one character
+// (#481). That made a JSON string compare unequal to its own opening brace.
+
+test "type.strings — a lone brace is one character" {
+    const open = "{"
+    const close = "}"
+    assert open.len() == 1
+    assert close.len() == 1
+    assert (open.byte_at(0) ?? 0) == 123
+    assert (close.byte_at(0) ?? 0) == 125
+}
+
+// A brace-prefixed string built at runtime — a JSON object spelled as a
+// literal would be read as interpolation, so it has to be assembled.
+test "type.strings — a lone brace is a usable prefix" {
+    const open = "{"
+    const obj = open.concat("\"a\":1")
+    assert obj.len() == 6
+    assert obj.starts_with(open)
+    assert !obj.starts_with("}")
+}
+
+// `{}` is an empty placeholder and stays two characters; interpolation of a
+// real expression still has to work alongside it.
+test "type.strings — empty placeholder and interpolation coexist" {
+    const placeholder = "{}"
+    assert placeholder.len() == 2
+    const n = 7
+    const rendered = "n={n}"
+    assert rendered == "n=7"
+}

@@ -125,7 +125,10 @@ impl<'a> MirLowerer<'a> {
         }));
 
         for (idx, field) in layout.fields.iter().enumerate() {
-            let field_val = self.builder.alloc_temp(MirType::I64);
+            // Hold the field in a local of its own type. An I64 temp made the
+            // f64 load convert *numerically* on the way in, so 0.25 encoded as
+            // 0 and 8.0 as 8 (#478).
+            let field_val = self.builder.alloc_temp(self.ctx.type_to_mir(&field.ty));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: field_val,
                 rvalue: MirRValue::Field {
@@ -177,14 +180,17 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
-        let result = self.builder.alloc_temp(MirType::I64);
+        // The StringOutParam adapter writes a 16-byte RaskStr and hands back its
+        // address, so this is a string — typing it I64 made `const j =
+        // json.encode(v)` print a pointer (#478).
+        let result = self.builder.alloc_temp(MirType::String);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result),
             func: FunctionRef::internal("json_buf_finish".to_string()),
             args: vec![MirOperand::Local(buf)],
         }));
 
-        Ok((MirOperand::Local(result), MirType::I64))
+        Ok((MirOperand::Local(result), MirType::String))
     }
 
     /// Expand `json.encode(vec)` into a loop that encodes each element.
@@ -298,14 +304,17 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.builder.switch_to_block(exit_block);
-        let result = self.builder.alloc_temp(MirType::I64);
+        // The StringOutParam adapter writes a 16-byte RaskStr and hands back its
+        // address, so this is a string — typing it I64 made `const j =
+        // json.encode(v)` print a pointer (#478).
+        let result = self.builder.alloc_temp(MirType::String);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result),
             func: FunctionRef::internal("json_buf_finish_array".to_string()),
             args: vec![MirOperand::Local(arr_buf)],
         }));
 
-        Ok((MirOperand::Local(result), MirType::I64))
+        Ok((MirOperand::Local(result), MirType::String))
     }
 
     /// Expand `json.decode<T>(str)` into json_parse + field extraction.

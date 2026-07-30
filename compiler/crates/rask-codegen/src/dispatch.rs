@@ -801,7 +801,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("json_buf_new", "rask_json_buf_new", &[], Some(types::I64), false),
         StdlibEntry::simple("json_buf_add_string", "rask_json_buf_add_string", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("json_buf_add_i64", "rask_json_buf_add_i64", &[types::I64, types::I64, types::I64], None, false),
-        StdlibEntry::simple("json_buf_add_f64", "rask_json_buf_add_f64", &[types::I64, types::I64, types::I64], None, false),
+        // The value param is a `double` in the runtime. Declaring it I64 put the
+        // f64 in an integer register, so every float in an encoded object came
+        // out as a denormal (#478). The array variant below had it right.
+        StdlibEntry::simple("json_buf_add_f64", "rask_json_buf_add_f64", &[types::I64, types::I64, types::F64], None, false),
         StdlibEntry::simple("json_buf_add_bool", "rask_json_buf_add_bool", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("json_buf_add_raw", "rask_json_buf_add_raw", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry {
