@@ -3143,9 +3143,18 @@ impl<'a> FunctionBuilder<'a> {
                 ))?;
 
             // Lock-acquire calls return a pointer to the box's inner value.
-            // Bind the aggregate dst straight to that pointer — a struct
+            // For a struct payload, bind the dst straight to that pointer — a
             // pointer-alias, exactly like a pool access — so the following
-            // method/field access hits the real value, not a copied slot.
+            // method/field access hits the real value and a `mutate` lands in
+            // the box rather than a copied slot.
+            //
+            // Any other payload is stored indirectly: Mutex_new/Shared_new take
+            // an address to memcpy from, so a non-struct value gets spilled to a
+            // slot first and the box ends up holding the value itself. Binding
+            // the pointer there handed `self.counters.lock()` a pointer to the
+            // map pointer, and rask_map_get crashed on it (#477) — that payload
+            // needs one load. The struct test mirrors the one Mutex_new uses, so
+            // the two sides agree on which payloads are indirect.
             if matches!(func.name.as_str(),
                 "Mutex_acquire" | "Shared_read_acquire" | "Shared_write_acquire")
             {
@@ -3155,7 +3164,17 @@ impl<'a> FunctionBuilder<'a> {
                 } else {
                     builder.ins().iconst(types::I64, 0)
                 };
-                builder.def_var(*var, ptr);
+                let payload_is_struct =
+                    matches!(dst_local.map(|l| &l.ty), Some(MirType::Struct(_)));
+                let bound = if payload_is_struct {
+                    ptr
+                } else {
+                    let load_ty = dst_local
+                        .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
+                        .unwrap_or(types::I64);
+                    builder.ins().load(load_ty, MemFlags::new(), ptr, 0)
+                };
+                builder.def_var(*var, bound);
                 return Ok(());
             }
 
