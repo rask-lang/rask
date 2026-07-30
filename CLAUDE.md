@@ -37,10 +37,31 @@ If something genuinely seems wrong, flag it once with a concrete reason — then
 - Don’t add yourself as a co-author to git commits.
 - When creating a PR, tag the issues it resolves in the body with closing keywords (`Closes #N` / `Fixes #N`) so GitHub auto-closes them on merge. Issues it only relates to get a plain `#N` reference.
 
+## Keep going
+
+**Don't hand back unless there's a decision only I can make.**
+
+Bug crunching has no decisions in it — work the whole list. A judgment call with a
+defensible answer isn't a decision for me: pick it, say which way you went, carry
+on. When the two backends disagree, the interpreter is the reference — read it
+instead of asking. "I've been at this a while" is not a reason to stop.
+
+Do stop for: a change that would make the flagship example worse, a spec question
+with no answer in `specs/`, or anything needing credentials or an outward-facing
+action.
+
+Messy is fine. A branch with eight fixes and two written-up dead ends beats three
+fixes and a status report. If a fix trades one failure for a worse one, revert it
+and file what you learned — that's a finished piece of work, not a blocker.
+
 ## Debugging discipline
 
 - Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
 - Fix causes, not symptoms.
+- **When a reduction won't reproduce, stop writing reductions.** Guessing at what's
+  essential can cost hours and still miss. Copy the real program, instrument it —
+  print each field, each hop — and let it tell you which one is wrong. Two of this
+  round's bugs were found in one pass that way after several failed guesses.
 - **Pre-existing errors that surface during unrelated work get filed, not ignored.** If a test fails, the compiler panics, or a spec breaks for reasons unrelated to your current change, search `rask-lang/rask` issues first; if it's not tracked, open one with a minimal repro before moving on. Don't paper over it, don't only mention it in chat, don't bundle it into the current commit silently.
 
 **Tool usage:**
@@ -66,6 +87,15 @@ Binary: `compiler/target/release/rask` (build: `cd compiler && cargo build --rel
 Releases: https://github.com/rask-lang/rask/releases
 
 **Debugging codegen:** If a compiled binary segfaults, use `--dump-mir` to inspect the MIR and `RASK_RUNTIME_CHECKS=1 ./binary` to turn null-deref segfaults into panics with messages. Compile the C runtime with `-DRASK_DEBUG` for unconditional checks.
+
+SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match on an out-of-range tag. `gdb -batch -ex run -ex 'bt 25' ./binary` gets the frame.
+
+**Three things that will waste your time:**
+
+- `stdlib/*.rk` is `include_str!`'d into the compiler (`rask-stdlib/src/stubs.rs`), and the C runtime is a static lib. Editing either does nothing until you rebuild — `cargo build --release -p rask-cli`, plus `cd compiler/runtime && make` first if you touched `runtime/*.c`.
+- A **failed** `rask build` exits 1 and leaves the previous binary in `build/debug/`. Run it without checking and you're testing old code — which reads exactly like "my fix didn't work". Don't pipe the build through `tail`; check the exit code.
+- `rask build` caches object files in `build/.cache/*.o`. The key covers source, profile, target **and the compiler binary** (path + size + mtime), so rebuilding `rask` invalidates it on its own — no `rm -rf build/.cache` needed. Two compilers keep separate entries rather than evicting each other, so alternating between builds still hits. `rask build --verbose` prints the compiler fingerprint on a cache hit; `--force` or `--no-cache` bypasses. (`rask run` / `rask compile` on a single file don't cache at all.)
+- `println` is fully buffered to a pipe, so output before a crash is lost. Always `stdbuf -o0 -e0 ./binary > log 2>&1`, or you'll place the crash earlier than it is.
 
 Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after editing `specs/*.md`.
 
@@ -127,7 +157,7 @@ Dont be TOO consistent.
 
 **Claude: Use Rask syntax, not Rust.** Full reference: [specs/SYNTAX.md](specs/SYNTAX.md)
 
-Key differences from Rust: `const`/`let` (not `let`/`let mut`), `func` (not `fn`), `extend` (not `impl`), `public` (not `pub`), `string` (lowercase), `Token.Plus` (not `::`), `try expr` (not `?`), `T or E` (not `Result<T,E>`), explicit `return` in functions, newlines as terminators.
+Key differences from Rust: `const`/`mut` (not `let`/`let mut` — `let` is not a keyword), `func` (not `fn`), `extend` (not `impl`), `public` (not `pub`), `string` (lowercase), `Token.Plus` (not `::`), `try expr` (not `?`), `T or E` (not `Result<T,E>`), explicit `return` in functions, newlines as terminators.
 
 
 ## Compiler

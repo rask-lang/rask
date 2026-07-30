@@ -19,6 +19,19 @@ fn strip_generics(name: &str) -> &str {
     }
 }
 
+/// Free functions from `stdlib/async.rk` that are callable unqualified.
+/// `spawn { … }` is its own expression form; `spawn(closure)` arrives here as an
+/// ordinary call, so the name has to resolve to something callable.
+pub(super) fn prelude_builtin(name: &str) -> Option<BuiltinKind> {
+    match name {
+        "spawn" => Some(BuiltinKind::AsyncSpawn),
+        "join_all" => Some(BuiltinKind::JoinAll),
+        "select_first" => Some(BuiltinKind::SelectFirst),
+        "cancelled" => Some(BuiltinKind::Cancelled),
+        _ => None,
+    }
+}
+
 impl Interpreter {
     /// Register a selective import (e.g., `import thread.Thread`).
     fn register_selective_import(&mut self, module: ModuleKind, member: &str, alias: &str) {

@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Struct and enum parameters are passed by pointer on native. Storing one into
+// a struct field stored the pointer itself, so `create(priority: Priority)`
+// wrote the caller's stack address where the variant tag belongs and every
+// later read of that field saw an out-of-range tag.
+//
+// The same field read through the auto-derived `.clone()` had it backwards:
+// a one-word enum field comes back as an address, and cloning it as an i64
+// temp copied the address instead of the value.
+
+enum Priority {
+    Low
+    Medium
+    High
+    Urgent
+}
+
+extend Priority {
+    func label(self) -> string {
+        match self {
+            Low => return "low",
+            Medium => return "medium",
+            High => return "high",
+            Urgent => return "urgent",
+        }
+    }
+
+    func rank(self) -> i64 {
+        match self {
+            Low => return 0,
+            Medium => return 1,
+            High => return 2,
+            Urgent => return 3,
+        }
+    }
+}
+
+struct Id { public value: u64 }
+
+struct Task {
+    public id: Id
+    public title: string
+    public priority: Priority
+    public done: bool
+}
+
+func make(id: Id, title: string, priority: Priority) -> Task {
+    return Task { id: id, title: title, priority: priority, done: false }
+}
+
+test "codegen — an enum parameter stored into a field keeps its value" {
+    const t = make(Id { value: 7 }, "write it", Priority.High)
+    assert t.id.value == 7
+    assert t.title == "write it"
+    assert t.priority.label() == "high"
+    assert !t.done
+}
+
+test "codegen — every variant survives the round trip" {
+    const a = make(Id { value: 1 }, "a", Priority.Low)
+    const b = make(Id { value: 2 }, "b", Priority.Medium)
+    const c = make(Id { value: 3 }, "c", Priority.High)
+    const d = make(Id { value: 4 }, "d", Priority.Urgent)
+    assert a.priority.label() == "low"
+    assert b.priority.label() == "medium"
+    assert c.priority.label() == "high"
+    assert d.priority.label() == "urgent"
+}
+
+struct Spec {
+    public title: string
+    public priority: Priority
+}
+
+test "codegen — cloning a struct copies an enum field by value" {
+    const original = Spec { title: "seed", priority: Priority.Urgent }
+    const copy = original.clone()
+    assert copy.title == "seed"
+    assert copy.priority.label() == "urgent"
+
+    // Through a Vec, which is how the real failure surfaced: the clone went
+    // over a channel and the tag it carried was a stack address. Compared by
+    // rank rather than label — a string `==` after a loop over a Vec of structs
+    // is separately broken on native (#495).
+    mut specs = Vec.new()
+    specs.push(Spec { title: "one", priority: Priority.High })
+    specs.push(Spec { title: "two", priority: Priority.Low })
+    mut ranks = Vec.new()
+    for s in specs {
+        const dup = s.clone()
+        ranks.push(dup.priority.rank())
+    }
+    assert ranks.len() == 2
+    assert ranks[0] == 2
+    assert ranks[1] == 0
+}

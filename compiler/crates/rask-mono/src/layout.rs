@@ -117,6 +117,13 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
         Type::UnresolvedGeneric { name, .. } if name == "Random" => (8, 8),  // Pointer to rng state
         Type::UnresolvedGeneric { name, .. } if name == "Channel" => (8, 8),
+        // Box family — all opaque runtime pointers, same as the collections
+        // above. Without these a `Mutex<T>` field warned about an unresolved
+        // generic on every build even though (8, 8) is the right answer.
+        Type::UnresolvedGeneric { name, .. }
+            if matches!(name.as_str(),
+                "Mutex" | "Shared" | "Cell" | "Owned" | "Atomic"
+                | "Sender" | "Receiver" | "TaskHandle") => (8, 8),
         Type::UnresolvedGeneric { name, args } => {
             eprintln!(
                 "warning: unresolved generic type in layout: {}<{} arg(s)>, defaulting to (8, 8)",

@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `sort_by` with a closure comparator. Three things were broken at once on
+// native: the runtime called the closure block's own address as if it were a
+// function pointer (it is the code address at offset 0, plus an env argument);
+// the closure parameters had no element type, so a field read picked its index
+// from an unrelated struct; and `.compare()` on a primitive fell through to
+// `string_compare`, which read the two numbers as string pointers.
+
+struct Row {
+    public rank: i64
+    public name: string
+}
+
+enum Grade {
+    Low
+    Mid
+    High
+}
+
+struct Scored {
+    public grade: Grade
+    public id: u64
+}
+
+test "stdlib.collections — sort_by orders by a struct field" {
+    mut rows = Vec.new()
+    rows.push(Row { rank: 2, name: "b" })
+    rows.push(Row { rank: 1, name: "a" })
+    rows.push(Row { rank: 3, name: "c" })
+
+    rows.sort_by(|x, y| {
+        return x.rank.compare(y.rank)
+    })
+
+    assert rows.len() == 3
+    assert rows[0].rank == 1
+    assert rows[1].rank == 2
+    assert rows[2].rank == 3
+    assert rows[0].name == "a"
+    assert rows[2].name == "c"
+}
+
+// Declaration order is the ordering, so a fieldless enum compares by variant.
+test "stdlib.collections — sort_by orders by an enum field, descending" {
+    mut items = Vec.new()
+    items.push(Scored { grade: Grade.Mid, id: 1 })
+    items.push(Scored { grade: Grade.High, id: 2 })
+    items.push(Scored { grade: Grade.Low, id: 3 })
+
+    items.sort_by(|a, b| {
+        return b.grade.compare(a.grade)
+    })
+
+    assert items[0].id == 2
+    assert items[1].id == 1
+    assert items[2].id == 3
+}
+
+// `compare` is only checked through sort_by here: the interpreter returns an
+// `Ordering` and native an i64, so comparing the result against 0 passes on one
+// backend and fails on the other (#496). Both orderings agree, which is what
+// sort_by needs.
+test "stdlib.collections — sort_by on a plain Vec of numbers" {
+    mut ns = Vec.new()
+    ns.push(30)
+    ns.push(10)
+    ns.push(20)
+    ns.sort_by(|a, b| { return a.compare(b) })
+    assert ns[0] == 10
+    assert ns[1] == 20
+    assert ns[2] == 30
+}

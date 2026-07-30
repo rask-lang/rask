@@ -85,6 +85,12 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
                 name_to_idx.insert(u.name.clone(), i);
                 type_indices.push(i);
             }
+            // Nominal newtypes take part in the ordering: a struct with a field
+            // typed by one needs the alias's size known first (#445).
+            DeclKind::TypeAlias(a) if !a.is_transparent && a.type_params.is_empty() => {
+                name_to_idx.insert(a.name.clone(), i);
+                type_indices.push(i);
+            }
             _ => {}
         }
     }
@@ -101,6 +107,7 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
                 .flat_map(|v| v.fields.iter().map(|f| f.ty.as_str()))
                 .collect(),
             DeclKind::Union(u) => u.fields.iter().map(|f| f.ty.as_str()).collect(),
+            DeclKind::TypeAlias(a) => vec![a.target.as_str()],
             _ => vec![],
         };
 
@@ -223,6 +230,18 @@ pub fn monomorphize_with_packages(
                 let layout = compute_union_layout(decl, &layout_cache);
                 layout_cache.insert(u.name.clone(), (layout.size, layout.align));
                 struct_layouts.push(layout);
+            }
+            // A nominal newtype has the same layout as what it wraps — it's
+            // transparent, so it needs no layout of its own, just an entry so
+            // fields typed by it get the right size. Without this a
+            // `type Name = string` field was sized 8 instead of 16 and the
+            // struct's later fields overlapped it (#445).
+            DeclKind::TypeAlias(a) if !a.is_transparent && a.type_params.is_empty() => {
+                let (size, align) = type_size_align(
+                    &Type::UnresolvedNamed(a.target.clone()),
+                    &layout_cache,
+                );
+                layout_cache.insert(a.name.clone(), (size, align));
             }
             _ => {}
         }

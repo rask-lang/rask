@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `match (verb, path)` — the routing shape.
+//
+// Only literal elements of a tuple pattern were tested. An element naming an
+// enum variant was treated as a binding and silently ignored, so
+// `(Verb.Get, "/tasks")` checked the path and nothing else: a POST to /tasks took
+// the GET arm. In examples/validation that made POST /tasks answer with the task
+// list.
+
+enum Verb {
+    Get
+    Post
+    Patch
+}
+
+func route(v: Verb, path: string) -> string {
+    match (v, path) {
+        (Verb.Get, "/tasks")   => return "list",
+        (Verb.Post, "/tasks")  => return "create",
+        (Verb.Get, "/health")  => return "health",
+        (Verb.Post, p) if p.ends_with("/deps") => return "deps",
+        (Verb.Get, p) if p.starts_with("/tasks/") => return "one",
+        _ => return "404",
+    }
+}
+
+test "control.match — the enum element of a tuple pattern is tested" {
+    assert route(Verb.Get, "/tasks") == "list"
+    assert route(Verb.Post, "/tasks") == "create"
+    assert route(Verb.Patch, "/tasks") == "404"
+    assert route(Verb.Get, "/health") == "health"
+    assert route(Verb.Post, "/health") == "404"
+}
+
+test "control.match — a guarded arm still sees its binding" {
+    assert route(Verb.Get, "/tasks/1") == "one"
+    assert route(Verb.Post, "/x/deps") == "deps"
+    assert route(Verb.Get, "/x/deps") == "404"
+    assert route(Verb.Patch, "/anything") == "404"
+}
+
+// Bare variant names, not just the qualified form.
+func classify(v: Verb, n: i64) -> string {
+    match (v, n) {
+        (Get, 0)  => return "get zero",
+        (Post, 0) => return "post zero",
+        (Get, _)  => return "get other",
+        _ => return "rest",
+    }
+}
+
+test "control.match — a bare variant name in a tuple pattern is tested too" {
+    assert classify(Verb.Get, 0) == "get zero"
+    assert classify(Verb.Post, 0) == "post zero"
+    assert classify(Verb.Get, 5) == "get other"
+    assert classify(Verb.Post, 5) == "rest"
+    assert classify(Verb.Patch, 0) == "rest"
+}

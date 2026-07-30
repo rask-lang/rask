@@ -31,6 +31,24 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or(MirType::I64)
     }
 
+    /// The ok payload type, from whichever source resolved it — same reasoning as
+    /// `resolved_err_type`, for the other side.
+    ///
+    /// `Ptr` is what both sources produce when they couldn't work the type out,
+    /// and the checker's answer is not automatically the better one: a lock chain
+    /// like `store.lock().view_task(id)` left the checker with a `Ptr` ok type
+    /// while the lowered result type knew it was a `TaskView`. Taking the
+    /// checker's `Ptr` typed the binding as an opaque pointer, so
+    /// `json.encode(view)` fell through to `json_encode_i64` and `/tasks/1`
+    /// answered with the task's id instead of the task.
+    fn better_payload_ty(from_checker: Option<MirType>, from_result: Option<MirType>) -> Option<MirType> {
+        let candidates = [from_checker, from_result];
+        candidates.iter().flatten()
+            .find(|t| !matches!(t, MirType::Ptr))
+            .or_else(|| candidates.iter().flatten().next())
+            .cloned()
+    }
+
     /// Try expression lowering (spec L3).
     pub(super) fn lower_try(&mut self, inner: &Expr) -> Result<TypedOperand, LoweringError> {
         let (result, result_ty) = self.lower_expr(inner)?;
@@ -163,11 +181,13 @@ impl<'a> MirLowerer<'a> {
 
         // Ok path
         self.builder.switch_to_block(ok_block);
-        let ok_ty = self.extract_payload_type(inner)
-            .or_else(|| match &result_ty {
+        let ok_ty = Self::better_payload_ty(
+            self.extract_payload_type(inner),
+            match &result_ty {
                 MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
                 _ => None,
-            })
+            },
+        )
             .or_else(|| {
                 // Walk through method chains to find the base function call
                 let mut expr = inner;
@@ -367,12 +387,13 @@ impl<'a> MirLowerer<'a> {
 
         // Ok path — extract payload
         self.builder.switch_to_block(ok_block);
-        let ok_ty = self.extract_payload_type(inner)
-            .or_else(|| match &result_ty {
+        let ok_ty = Self::better_payload_ty(
+            self.extract_payload_type(inner),
+            match &result_ty {
                 MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
                 _ => None,
-            })
-            .unwrap_or(MirType::I64);
+            },
+        ).unwrap_or(MirType::I64);
         let ok_val = self.builder.alloc_temp(ok_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: ok_val,

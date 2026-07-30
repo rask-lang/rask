@@ -35,6 +35,10 @@ pub(crate) const OVERFLOW_MESSAGES: &[&str] = &[
 struct CodegenCtx<'a> {
     var_map: &'a HashMap<LocalId, Variable>,
     locals: &'a [rask_mir::MirLocal],
+    /// Parameters live in their own list, so `locals` alone never resolves one.
+    params: &'a [rask_mir::MirLocal],
+    /// Declared param types of every Rask function, by MIR name
+    fn_param_types: &'a HashMap<String, Vec<MirType>>,
     func_refs: &'a HashMap<String, FuncRef>,
     struct_layouts: &'a [StructLayout],
     enum_layouts: &'a [EnumLayout],
@@ -81,6 +85,10 @@ enum CallAdapt {
     /// buffer it returns (and panicked if the channel was closed), so the result
     /// is always Ok. Copy `elem_size` bytes out of it into dst's payload.
     RecvStructOk(u32),
+    /// parse: the call returned 0/1; the value was written into the given slot.
+    /// Build a `T or ParseError` — status==0 → Ok(value), else Err.
+    /// Carries (slot, type the runtime wrote, type the destination wants).
+    ParseResult(StackSlot, Type, Type),
 }
 
 pub struct FunctionBuilder<'a> {
@@ -103,6 +111,8 @@ pub struct FunctionBuilder<'a> {
     panicking_fns: &'a HashSet<String>,
     /// Names of functions compiled as Rask code (vs C stdlib)
     internal_fns: &'a HashSet<String>,
+    /// Declared param types of every Rask function, by MIR name
+    fn_param_types: &'a HashMap<String, Vec<MirType>>,
     /// Debug vs Release — controls whether pool access is inlined
     build_mode: BuildMode,
 
@@ -139,6 +149,7 @@ impl<'a> FunctionBuilder<'a> {
         vtable_globals: &'a HashMap<String, GlobalValue>,
         panicking_fns: &'a HashSet<String>,
         internal_fns: &'a HashSet<String>,
+        fn_param_types: &'a HashMap<String, Vec<MirType>>,
         build_mode: BuildMode,
     ) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
@@ -153,6 +164,7 @@ impl<'a> FunctionBuilder<'a> {
             vtable_globals,
             panicking_fns,
             internal_fns,
+            fn_param_types,
             build_mode,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
@@ -317,6 +329,8 @@ impl<'a> FunctionBuilder<'a> {
         let mut ctx = CodegenCtx {
             var_map: &self.var_map,
             locals: &self.mir_fn.locals,
+            params: &self.mir_fn.params,
+            fn_param_types: self.fn_param_types,
             func_refs: self.func_refs,
             struct_layouts: self.struct_layouts,
             enum_layouts: self.enum_layouts,
@@ -1209,7 +1223,19 @@ impl<'a> FunctionBuilder<'a> {
     /// True when a struct field's declared type uses stack-slot (aggregate)
     /// representation in codegen. These fields return a pointer into the parent
     /// struct rather than a loaded scalar.
-    fn is_aggregate_field_type(ty: &RaskType) -> bool {
+    /// Byte size of a user struct/enum by name, or 0 if there's no layout for
+    /// it (a runtime-opaque handle, or a type that never got one).
+    fn named_layout_size(name: &str, ctx: &CodegenCtx) -> u32 {
+        if let Some(l) = ctx.struct_layouts.iter().find(|l| l.name == name) {
+            return l.size;
+        }
+        if let Some(l) = ctx.enum_layouts.iter().find(|l| l.name == name) {
+            return l.size;
+        }
+        0
+    }
+
+    fn is_aggregate_field_type(ty: &RaskType, ctx: &CodegenCtx) -> bool {
         match ty {
             // Primitives, opaque pointers — scalar
             RaskType::Unit | RaskType::Bool
@@ -1220,8 +1246,11 @@ impl<'a> FunctionBuilder<'a> {
             | RaskType::Fn { .. } | RaskType::Slice(_) => false,
             // Runtime-opaque pointer types (Vec, Map, Pool, Handle, Channel, ...)
             RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,
-            // Unresolved named types (TcpListener, TcpConnection, etc.) — pointer-sized scalars
-            RaskType::UnresolvedNamed(_) | RaskType::Named(_) => false,
+            // A named type is an aggregate when it's a user struct or enum —
+            // one with real bytes. Runtime-opaque handles (TcpListener, File,
+            // Instant) have empty layouts and stay pointer-sized scalars.
+            RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
+            RaskType::Named(_) => false,
             // Niche-optimized Option<Handle<T>> — scalar (sentinel value, no tag)
             ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::UnresolvedGeneric { name, .. } if name == "Handle") =>
             {
@@ -1606,19 +1635,30 @@ impl<'a> FunctionBuilder<'a> {
                 let effective_size = store_size
                     .map(|ss| ss.min(*src_size))
                     .unwrap_or(*src_size);
-                // If the field is pointer-sized, just store the pointer
-                // value instead of deep-copying the source slot.
-                if effective_size <= 8 {
-                    false
-                } else {
+                // Copy the bytes even when the aggregate fits in 8 bytes.
+                // Storing the pointer instead left the field aimed at the
+                // constructing function's frame; it read back fine until
+                // something reused that frame, which is how `Request.method`
+                // arrived at the middleware with an out-of-range tag (#474).
+                // Fields larger than 8 bytes were always copied — this makes
+                // the small ones behave the same.
                 let src_var = ctx.var_map.get(src_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Aggregate source not found".to_string()))?;
                 let src_addr = builder.use_var(*src_var);
                 Self::copy_bytes(builder, src_addr, 0, addr_val, *offset as i32, effective_size);
                 true
-                } // end else (effective_size > 8)
             } else { false }
         } else { false };
+
+        // An aggregate-typed *parameter* is a pointer to the caller's data.
+        // Params get no stack slot of their own, so they miss the copy above and
+        // the pointer itself would land in the field — `create_task(priority:
+        // Priority)` stored the caller's stack address where the enum tag
+        // belongs, and reading it back trapped on an out-of-range tag. Copy the
+        // pointee, same as a slot-backed aggregate.
+        let is_aggregate = is_aggregate || Self::copy_from_aggregate_param(
+            builder, addr_val, *offset, value, store_size, ctx,
+        );
 
         if !is_aggregate {
             let val = Self::lower_operand(builder, value, ctx)?;
@@ -1648,6 +1688,111 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Aggregate params are passed by pointer. Where the callee declares a
+    /// struct/enum/tuple but the caller's own local is a scalar, spill the value
+    /// into a stack slot and pass its address, so the callee's "this is a
+    /// pointer" assumption always holds.
+    ///
+    /// MIR sometimes types an 8-byte struct as a bare `i64` — a payload
+    /// extraction that had no checker type to read falls back to it — and then a
+    /// value reaches a by-pointer param. Fixing every such fallback is the real
+    /// cure; this makes the boundary safe either way.
+    fn spill_scalars_for_aggregate_params(
+        builder: &mut ClifFunctionBuilder,
+        callee: &str,
+        arg_vals: &mut [Value],
+        mir_args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) {
+        let Some(param_tys) = ctx.fn_param_types.get(callee) else { return };
+        for (i, param_ty) in param_tys.iter().enumerate() {
+            if i >= arg_vals.len() {
+                break;
+            }
+            if !matches!(
+                param_ty,
+                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
+            ) {
+                continue;
+            }
+            // The operand's own type decides. Aggregate-typed operands already
+            // hold a pointer; a scalar-typed one holds the value itself.
+            let arg_is_aggregate = Self::operand_arg_type(&mir_args[i], ctx).is_none_or(|ty| {
+                matches!(
+                    ty,
+                    MirType::Struct(_)
+                        | MirType::Enum(_)
+                        | MirType::Tuple(_)
+                        | MirType::Array { .. }
+                        | MirType::Ptr
+                        | MirType::Handle
+                )
+            });
+            if arg_is_aggregate {
+                continue;
+            }
+            let (size, _) = Self::real_type_size_align(param_ty, ctx);
+            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size.max(8),
+                0,
+            ));
+            builder.ins().stack_store(arg_vals[i], ss, 0);
+            arg_vals[i] = builder.ins().stack_addr(types::I64, ss, 0);
+        }
+    }
+
+    /// MIR type of a call argument, looking in both locals and params.
+    fn operand_arg_type(operand: &MirOperand, ctx: &CodegenCtx) -> Option<MirType> {
+        match operand {
+            MirOperand::Local(id) => ctx
+                .locals
+                .iter()
+                .chain(ctx.params.iter())
+                .find(|l| l.id == *id)
+                .map(|l| l.ty.clone()),
+            MirOperand::Constant(_) => None,
+        }
+    }
+
+    /// Copy a struct/enum/tuple parameter's bytes into a field. Returns false
+    /// when `value` isn't such a parameter and the caller should store a scalar.
+    ///
+    /// Only parameters qualify: every other aggregate local is slot-backed, and
+    /// one that isn't means the MIR type doesn't match the representation —
+    /// dereferencing it would turn a wrong value into a crash.
+    fn copy_from_aggregate_param(
+        builder: &mut ClifFunctionBuilder,
+        addr_val: Value,
+        offset: u32,
+        value: &MirOperand,
+        store_size: &Option<u32>,
+        ctx: &CodegenCtx,
+    ) -> bool {
+        let MirOperand::Local(src_id) = value else { return false };
+        if ctx.stack_slot_map.contains_key(src_id) {
+            return false;
+        }
+        let Some(local) = ctx.params.iter().find(|l| l.id == *src_id) else { return false };
+        if !matches!(
+            local.ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
+        ) {
+            return false;
+        }
+        let (real_size, _) = Self::real_type_size_align(&local.ty, ctx);
+        // Layout gives fields 8-byte slots, so store_size can exceed the type's
+        // real size. Copy only what the value actually has.
+        let size = store_size.map_or(real_size, |ss| ss.min(real_size));
+        if size == 0 {
+            return false;
+        }
+        let Some(src_var) = ctx.var_map.get(src_id) else { return false };
+        let src_addr = builder.use_var(*src_var);
+        Self::copy_bytes(builder, src_addr, 0, addr_val, offset as i32, size);
+        true
     }
 
     fn lower_pool_checked_access(
@@ -2532,7 +2677,7 @@ impl<'a> FunctionBuilder<'a> {
                         // Aggregate field: return pointer into parent struct.
                         // Covers both >8-byte structs and ≤8-byte enums/structs
                         // that use stack-slot representation in codegen.
-                        if field.size > 8 || Self::is_aggregate_field_type(&field.ty) {
+                        if field.size > 8 || Self::is_aggregate_field_type(&field.ty, ctx) {
                             let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
                             return Ok(addr);
                         }
@@ -3080,6 +3225,8 @@ impl<'a> FunctionBuilder<'a> {
             arg_vals.push(converted);
         }
 
+        Self::spill_scalars_for_aggregate_params(builder, &func.name, &mut arg_vals, args, ctx);
+
         // Adapt args for typed runtime API
         let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, dst, ctx, ctx.adapt_table);
 
@@ -3127,9 +3274,18 @@ impl<'a> FunctionBuilder<'a> {
                 ))?;
 
             // Lock-acquire calls return a pointer to the box's inner value.
-            // Bind the aggregate dst straight to that pointer — a struct
+            // For a struct payload, bind the dst straight to that pointer — a
             // pointer-alias, exactly like a pool access — so the following
-            // method/field access hits the real value, not a copied slot.
+            // method/field access hits the real value and a `mutate` lands in
+            // the box rather than a copied slot.
+            //
+            // Any other payload is stored indirectly: Mutex_new/Shared_new take
+            // an address to memcpy from, so a non-struct value gets spilled to a
+            // slot first and the box ends up holding the value itself. Binding
+            // the pointer there handed `self.counters.lock()` a pointer to the
+            // map pointer, and rask_map_get crashed on it (#477) — that payload
+            // needs one load. The struct test mirrors the one Mutex_new uses, so
+            // the two sides agree on which payloads are indirect.
             if matches!(func.name.as_str(),
                 "Mutex_acquire" | "Shared_read_acquire" | "Shared_write_acquire")
             {
@@ -3139,7 +3295,17 @@ impl<'a> FunctionBuilder<'a> {
                 } else {
                     builder.ins().iconst(types::I64, 0)
                 };
-                builder.def_var(*var, ptr);
+                let payload_is_struct =
+                    matches!(dst_local.map(|l| &l.ty), Some(MirType::Struct(_)));
+                let bound = if payload_is_struct {
+                    ptr
+                } else {
+                    let load_ty = dst_local
+                        .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
+                        .unwrap_or(types::I64);
+                    builder.ins().load(load_ty, MemFlags::new(), ptr, 0)
+                };
+                builder.def_var(*var, bound);
                 return Ok(());
             }
 
@@ -3274,6 +3440,50 @@ impl<'a> FunctionBuilder<'a> {
                         builder.seal_block(err_block);
                         let one = builder.ins().iconst(types::I64, 1);
                         builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                    }
+                    builder.ins().iconst(types::I64, 0)
+                }
+                CallAdapt::ParseResult(value_ss, writer_ty, ok_ty) => {
+                    // parse status → `T or ParseError`. 0 → Ok(value read from
+                    // the out-param slot), 1 → Err. The old entry points
+                    // returned the value itself with no way to fail, so garbage
+                    // input came back as Ok(0) (#472).
+                    let results = builder.inst_results(call_inst);
+                    let status = if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, 1)
+                    };
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id).copied() {
+                        slot_already_written = true;
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        let raw = builder.ins().stack_load(writer_ty, value_ss, 0);
+                        let value = if writer_ty == ok_ty {
+                            raw
+                        } else {
+                            Self::convert_value(builder, raw, writer_ty, ok_ty)
+                        };
+                        Self::build_ok(builder, dst_ss, value);
+                        builder.ins().jump(merge_block, &[]);
+
+                        // Err carries no payload — ParseError is fieldless.
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let one = builder.ins().iconst(types::I64, 1);
+                        builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        Self::zero_result_origin(builder, dst_ss);
                         builder.ins().jump(merge_block, &[]);
 
                         builder.switch_to_block(merge_block);
@@ -4225,6 +4435,36 @@ impl<'a> FunctionBuilder<'a> {
                 ));
                 args.push(builder.ins().stack_addr(types::I64, ss, 0));
                 CallAdapt::PopOutParam(ss)
+            }
+
+            ArgAdapt::ParseOutParam => {
+                // The value comes back through an out-param so the return value
+                // can carry the 0/1 status.
+                //
+                // Load it with the type the runtime actually wrote — the float
+                // entry points store a double, the integer ones an i64 — then
+                // convert to what the destination wants. Loading with the
+                // destination type instead read a double's bits as an integer,
+                // so "42".parse() came out as 4631107791820423168.
+                let writer_ty = if matches!(func_name,
+                    "string_parse_float" | "string_parse_f32" | "string_parse_f64")
+                {
+                    types::F64
+                } else {
+                    types::I64
+                };
+                let ok_ty = dst
+                    .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                    .and_then(|l| match &l.ty {
+                        MirType::Result { ok, .. } => mir_to_cranelift_type(ok).ok(),
+                        other => mir_to_cranelift_type(other).ok(),
+                    })
+                    .unwrap_or(writer_ty);
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                ));
+                args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                CallAdapt::ParseResult(ss, writer_ty, ok_ty)
             }
 
             ArgAdapt::Custom => {

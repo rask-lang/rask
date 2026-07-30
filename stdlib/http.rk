@@ -752,7 +752,11 @@ extend http {
             const result = server.accept()
             if result? as r {
                 const (req, responder) = r
-                spawn(|| {
+                // `own` moves req/responder into the task. Borrowing them
+                // leaves the task reading this iteration's frame, which the
+                // next accept() reuses while the task is still running — the
+                // request's method came out as garbage (#474).
+                spawn(own || {
                     responder.respond(handler(req))
                 }).detach()
             }

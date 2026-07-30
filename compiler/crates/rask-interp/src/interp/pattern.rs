@@ -2,6 +2,7 @@
 //! Pattern matching and value comparison.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 
@@ -246,6 +247,26 @@ impl Interpreter {
             (Value::Handle { pool_id: p1, index: i1, generation: g1 },
              Value::Handle { pool_id: p2, index: i2, generation: g2 }) => {
                 p1 == p2 && i1 == i2 && g1 == g2
+            }
+            // Field-wise, the same shape `value_hash` already uses. Without this
+            // two structurally equal structs never compared equal, so a Map keyed
+            // by a struct could be inserted into but never read: `m.insert(Id {
+            // value: 1 }, …)` then `m.get(Id { value: 1 })` missed every time.
+            //
+            // This is the auto-derived equality. A type with its own `extend T
+            // with Equal` isn't consulted — there's no interpreter to dispatch
+            // through here — which is the same limitation the enum arm has.
+            (Value::Struct(s1), Value::Struct(s2)) => {
+                if Arc::ptr_eq(s1, s2) {
+                    return true;
+                }
+                let a = s1.lock().unwrap();
+                let b = s2.lock().unwrap();
+                a.name == b.name
+                    && a.fields.len() == b.fields.len()
+                    && a.fields.iter().all(|(name, av)| {
+                        b.fields.get(name).is_some_and(|bv| Self::value_eq(av, bv))
+                    })
             }
             _ => false,
         }

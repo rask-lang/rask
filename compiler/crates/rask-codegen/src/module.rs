@@ -31,6 +31,9 @@ pub struct CodeGenerator {
     panicking_fns: HashSet<String>,
     /// Names of functions compiled as Rask code (not C stdlib)
     internal_fns: HashSet<String>,
+    /// Declared param types per Rask function. Call sites need these to pass
+    /// aggregates by pointer even when the caller's own local is a scalar.
+    fn_param_types: HashMap<String, Vec<rask_mir::MirType>>,
     /// Debug or Release — controls inlining of pool checks
     build_mode: BuildMode,
     /// VTable data sections for trait objects (vtable_name → DataId)
@@ -72,6 +75,7 @@ impl CodeGenerator {
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
+            fn_param_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
             debug_srclocs: Vec::new(),
@@ -118,6 +122,7 @@ impl CodeGenerator {
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
+            fn_param_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
             debug_srclocs: Vec::new(),
@@ -667,6 +672,10 @@ impl CodeGenerator {
             // Store under the MIR name so internal calls resolve correctly
             self.func_ids.insert(mir_fn.name.clone(), func_id);
             self.internal_fns.insert(mir_fn.name.clone());
+            self.fn_param_types.insert(
+                mir_fn.name.clone(),
+                mir_fn.params.iter().map(|p| p.ty.clone()).collect(),
+            );
         }
         Ok(())
     }
@@ -848,6 +857,45 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Register a writable slot for each module-level const, found by scanning
+    /// MIR for the slot names lowering emitted. Each holds 8 bytes: the value
+    /// for scalars, a heap pointer for aggregates. An init thunk fills it once
+    /// before main; every reference loads from it (#470).
+    pub fn register_const_slots(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+        let mut names: Vec<&str> = mir_functions
+            .iter()
+            .flat_map(|f| f.blocks.iter())
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|s| match &s.kind {
+                rask_mir::MirStmtKind::GlobalRef { name, .. }
+                    if name.starts_with(rask_mir::lower::CONST_SLOT_PREFIX) =>
+                {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+
+        for name in names {
+            if self.comptime_data.contains_key(name) {
+                continue;
+            }
+            let data_id = self
+                .module
+                .declare_data(name, Linkage::Local, true, false)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            let mut desc = DataDescription::new();
+            desc.define_zeroinit(8);
+            self.module
+                .define_data(data_id, &desc)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.comptime_data.insert(name.to_string(), data_id);
+        }
+        Ok(())
+    }
+
     /// Register vtable data sections for trait objects.
     ///
     /// Each vtable is a static data section: [size, align, drop_fn, method_0, method_1, ...]
@@ -998,6 +1046,7 @@ impl CodeGenerator {
             &vtable_globals,
             &self.panicking_fns,
             &self.internal_fns,
+            &self.fn_param_types,
             self.build_mode,
         )?;
         if let Some(lm) = &self.line_map {
@@ -1357,6 +1406,10 @@ impl crate::Backend for CodeGenerator {
         globals: &std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta>,
     ) -> CodegenResult<()> {
         self.register_comptime_globals(globals)
+    }
+
+    fn register_const_slots(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+        self.register_const_slots(mir_functions)
     }
 
     fn register_vtables(&mut self, vtables: &[crate::vtable::VTableInfo]) -> CodegenResult<()> {

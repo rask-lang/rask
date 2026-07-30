@@ -553,19 +553,58 @@ impl<'a> MirLowerer<'a> {
             let body_block = self.builder.create_block();
             let _current_pass = body_block;
 
+            // A tuple element naming an enum variant is a *test*, not a binding.
+            // Only literals were collected here, so `(Method.Get, "/tasks")`
+            // checked the path and ignored the method: a POST to /tasks matched
+            // the GET arm and answered with the task list.
+            let mut variant_checks: Vec<(usize, u64)> = Vec::new();
             let mut checks: Vec<(usize, Pattern)> = Vec::new();
             for (j, pat) in sub_patterns.iter().enumerate() {
                 match pat {
                     Pattern::Literal(_) => checks.push((j, pat.clone())),
-                    Pattern::Ident(_) | Pattern::Wildcard => {}
+                    Pattern::Ident(name) => {
+                        let elem_ty = tuple_elems.get(j).map(|(_, t)| t);
+                        if let Some(tag) = self.tuple_variant_tag(name, elem_ty) {
+                            variant_checks.push((j, tag));
+                        }
+                    }
+                    Pattern::Wildcard => {}
                     _ => {}
                 }
             }
 
+            // Emit the tag tests before anything else in the arm.
+            for (j, want_tag) in &variant_checks {
+                let (ref elem_op, _) = tuple_elems[*j];
+                let tag_local = self.builder.alloc_temp(MirType::U16);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: tag_local,
+                    rvalue: MirRValue::EnumTag { value: elem_op.clone() },
+                }));
+                let cmp_local = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: cmp_local,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::BinOp::Eq,
+                        left: MirOperand::Local(tag_local),
+                        right: MirOperand::Constant(crate::operand::MirConst::Int(*want_tag as i64)),
+                    },
+                }));
+                let pass_block = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(cmp_local),
+                    then_block: pass_block,
+                    else_block: next_arm,
+                }));
+                self.builder.switch_to_block(pass_block);
+            }
+            let variant_tested: std::collections::HashSet<usize> =
+                variant_checks.iter().map(|(j, _)| *j).collect();
+
             if checks.is_empty() && !matches!(&arm.pattern, Pattern::Wildcard) {
                 for (j, pat) in sub_patterns.iter().enumerate() {
                     if let Pattern::Ident(name) = pat {
-                        if j < tuple_elems.len() {
+                        if j < tuple_elems.len() && !variant_tested.contains(&j) {
                             let (ref elem_op, ref elem_ty) = tuple_elems[j];
                             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -623,7 +662,7 @@ impl<'a> MirLowerer<'a> {
 
                 for (j, pat) in sub_patterns.iter().enumerate() {
                     if let Pattern::Ident(name) = pat {
-                        if j < tuple_elems.len() {
+                        if j < tuple_elems.len() && !variant_tested.contains(&j) {
                             let (ref elem_op, ref elem_ty) = tuple_elems[j];
                             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -849,6 +888,24 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Resolve enum variant name to its tag value from the layout.
+    /// Tag for a tuple-element pattern that names an enum variant, or None when
+    /// it's an ordinary binding.
+    ///
+    /// Accepts both the qualified form (`Method.Get`) and a bare variant name,
+    /// resolved against the element's own enum layout — which is also what proves
+    /// the name is a variant and not a variable.
+    fn tuple_variant_tag(&self, name: &str, elem_ty: Option<&MirType>) -> Option<u64> {
+        if let Some(tag) = self.resolve_pattern_tag(name) {
+            return Some(tag);
+        }
+        let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = elem_ty? else {
+            return None;
+        };
+        let layout = self.ctx.enum_layouts.get(*id as usize)?;
+        let bare = name.rsplit('.').next().unwrap_or(name);
+        layout.variants.iter().find(|v| v.name == bare).map(|v| v.tag)
+    }
+
     pub(super) fn resolve_pattern_tag(&self, name: &str) -> Option<u64> {
         let parts: Vec<&str> = name.splitn(2, '.').collect();
         let (enum_name, variant_name) = if parts.len() == 2 {

@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `parse` has to report failure. The native runtime used atoll, which can't
+// tell "0" from "not a number", so every parse came back Ok and `??`/`try`
+// never fired (#472).
+//
+// Policy, matching what the interpreter already did: trim surrounding
+// whitespace, then the whole remaining string must be a number. Leading
+// garbage, trailing garbage, an empty string and out-of-i64-range all fail.
+// Neither backend range-checks against a narrower target width.
+
+test "type.primitives — parse accepts a plain integer" {
+    assert ("42".parse() ?? -1) == 42
+    assert ("0".parse() ?? -1) == 0
+    assert ("-5".parse() ?? -1) == -5
+}
+
+test "type.primitives — parse trims surrounding whitespace" {
+    assert ("  7  ".parse() ?? -1) == 7
+}
+
+test "type.primitives — parse rejects non-numbers" {
+    assert ("notanumber".parse() ?? -1) == -1
+    assert ("".parse() ?? -1) == -1
+}
+
+// "0" and garbage both used to come back as Ok(0), so this is the case that
+// made the bug invisible: a failure that happens to look like a valid value.
+test "type.primitives — a rejected parse is not Ok(0)" {
+    const bad = "notanumber".parse() ?? -1
+    assert bad != 0
+    assert bad == -1
+}
+
+test "type.primitives — parse rejects partial numbers" {
+    assert ("12abc".parse() ?? -1) == -1
+    assert ("abc12".parse() ?? -1) == -1
+}
+
+test "type.primitives — parse rejects out-of-range" {
+    assert ("99999999999999999999999".parse() ?? -1) == -1
+}
+
+test "type.primitives — parse at an explicit width" {
+    assert ("42".parse<i32>() ?? -1) == 42
+    assert ("nope".parse<i32>() ?? -1) == -1
+    assert ("7".parse<u16>() ?? -1) == 7
+}

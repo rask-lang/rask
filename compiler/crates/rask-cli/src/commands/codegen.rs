@@ -266,6 +266,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     mir_interp.inject_cfg(&cfg);
     mir_interp.register_functions(&decls);
     let empty_packages = std::collections::HashSet::new();
+    let nominal_underlying = super::compile::build_nominal_underlying(&typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -282,7 +283,11 @@ pub fn cmd_mir(path: &str, format: Format) {
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        nominal_underlying: &nominal_underlying,
+        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
+
+    rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
 
     let mut mir_errors = 0;
     for mono_fn in &mono.functions {
@@ -337,6 +342,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
 
+    let nominal_underlying = super::compile::build_nominal_underlying(&typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -353,9 +359,12 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         resource_types: &empty_resource_types,
+        nominal_underlying: &nominal_underlying,
+        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);
+    rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
     for mono_fn in &mono.functions {
         if let rask_ast::decl::DeclKind::Fn(f) = &mono_fn.body.kind {
             if f.body.is_empty()

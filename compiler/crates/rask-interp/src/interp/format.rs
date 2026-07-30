@@ -276,12 +276,22 @@ impl Interpreter {
                     continue;
                 }
                 let mut expr_str = String::new();
+                let mut closed = false;
                 while let Some(&next) = chars.peek() {
                     if next == '}' {
                         chars.next();
+                        closed = true;
                         break;
                     }
                     expr_str.push(chars.next().unwrap());
+                }
+                // No closing brace — pass the text through as-is. Re-emitting a
+                // `}` here turned the one-character string `"{"` into `"{}"`,
+                // so it compared unequal to the same literal on native.
+                if !closed {
+                    result.push('{');
+                    result.push_str(&expr_str);
+                    continue;
                 }
                 if expr_str.is_empty() || expr_str.starts_with(':') {
                     result.push('{');

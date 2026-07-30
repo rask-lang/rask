@@ -175,6 +175,34 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or_default()
     }
 
+    /// How many element-typed parameters a collection method hands its closure.
+    /// `sort_by(|a, b| …)` gets two elements, `any(|x| …)` one. `fold` isn't here
+    /// — its first parameter is the accumulator, not an element.
+    fn elem_closure_arity(method: &str) -> Option<usize> {
+        Some(match method {
+            "sort_by" | "min_by" | "max_by" => 2,
+            "sort_by_key" | "min_by_key" | "max_by_key" | "any" | "all" | "find"
+            | "position" | "retain" | "for_each" | "each" | "count_by" => 1,
+            _ => return None,
+        })
+    }
+
+    /// Parameter types for a closure whose arguments are collection elements.
+    /// Without them the parameters default to `i64`, so a field read inside the
+    /// body picks its index from whatever struct happens to declare that field
+    /// name — `|a, b| a.priority.compare(b.priority)` on a `Vec<Ranked>`
+    /// compiled to field 2 of an unrelated struct and a string comparison.
+    fn elem_closure_param_tys(&self, object: &Expr, method: &str) -> Vec<String> {
+        let Some(arity) = Self::elem_closure_arity(method) else { return Vec::new() };
+        let Some(key) = Self::vec_tracking_key(object) else { return Vec::new() };
+        let elem = self
+            .meta(&key)
+            .and_then(|m| m.elem_type.clone())
+            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned());
+        let Some(name) = elem.and_then(|ty| self.mir_type_name(&ty)) else { return Vec::new() };
+        vec![name; arity]
+    }
+
     /// Derive a tracking key for Vec element type inference.
     /// Returns `"v"` for `v.push(x)` and `"self.field"` for `self.field.push(x)`.
     fn vec_tracking_key(object: &Expr) -> Option<String> {
@@ -522,6 +550,17 @@ impl<'a> MirLowerer<'a> {
 
             // Function call — direct or through closure
             ExprKind::Call { func, args } => {
+                // `Id(5)` on a nominal newtype is the value, not a call — there
+                // is no `Id` function to dispatch to (#445).
+                if let ExprKind::Ident(name) = &func.kind {
+                    if args.len() == 1 {
+                        if let Some((op, ty)) =
+                            self.lower_newtype_wrap(name, Some(&args[0].expr))?
+                        {
+                            return Ok((op, ty));
+                        }
+                    }
+                }
                 // #270: peek the callee's scalar-`mutate` param classification so
                 // those args are passed by address (write-back visible).
                 let callee_smut: Vec<Option<MirType>> = match &func.kind {
@@ -840,6 +879,13 @@ impl<'a> MirLowerer<'a> {
                     if let Some(val) = primitive_type_constant(name, field) {
                         return Ok(val);
                     }
+                }
+
+                // Unwrapping a nominal newtype is a no-op — `id.value` IS `id`.
+                // It's transparent in MIR, so there's no aggregate to offset
+                // into and a field load would dereference the value (#445).
+                if field == "value" && self.expr_is_transparent_newtype(object) {
+                    return self.lower_expr(object);
                 }
 
                 // Cross-package type access: pkg.Type → treat field as the type name.
@@ -1321,6 +1367,12 @@ impl<'a> MirLowerer<'a> {
 
             // Struct literal
             ExprKind::StructLit { name, fields, spread } => {
+                // A nominal newtype is transparent: `Id { value: 5 }` IS 5.
+                // There's no layout to store into — treating it as an aggregate
+                // stored through an uninitialised pointer (#445).
+                if let Some((op, ty)) = self.lower_newtype_wrap(name, fields.first().map(|f| &f.value))? {
+                    return Ok((op, ty));
+                }
                 // Check for enum variant constructor: "EnumName.VariantName { ... }"
                 let (result_ty, layout, enum_variant_info) = if let Some(dot_pos) = name.find('.') {
                     let enum_name = &name[..dot_pos];
@@ -1368,7 +1420,16 @@ impl<'a> MirLowerer<'a> {
                     }
                 } else {
                 for field in fields.iter() {
-                    let (val_op, _) = self.lower_expr(&field.value)?;
+                    // The field's declared type is the only place a `Map.new()`
+                    // initializer can learn its key/value sizes when the checker
+                    // never typed this node (every stdlib body).
+                    let saved_hint = self.field_type_hint.take();
+                    self.field_type_hint = layout
+                        .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name))
+                        .map(|f| format!("{}", f.ty));
+                    let lowered = self.lower_expr(&field.value);
+                    self.field_type_hint = saved_hint;
+                    let (val_op, _) = lowered?;
                     // Look up field offset and size from layout
                     let field_layout = layout
                         .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name));
@@ -2483,6 +2544,20 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
+        // A bare `box.lock()` / `.read()` / `.write()` whose value is used
+        // directly, with nothing chained onto it. `sync_guard` only fires when
+        // the guard is the *object* of a trailing field or method access, so
+        // this form fell through to plain dispatch and mangled `Mutex_lock` —
+        // the closure-taking runtime entry point — with no closure to give it,
+        // which failed the Cranelift verifier on argument count (#479).
+        //
+        // Same acquire / use / release shape as the chained form, with the
+        // guard itself as the value.
+        if let Some((box_obj, acquire, release)) = self.sync_guard(expr) {
+            let ret_hint = self.ctx.lookup_raw_type(expr.id).map(|t| self.ctx.type_to_mir(t));
+            return self.lower_sync_guard_access(box_obj, acquire, release, ret_hint, |g| g);
+        }
+
         // `box.lock()/.read()/.write().method(args)` — the guard result is a
         // scoped lock, so run the trailing call between acquire and release
         // (lock → call → unlock) instead of lowering the guard to a bare 1-arg
@@ -2514,6 +2589,10 @@ impl<'a> MirLowerer<'a> {
         }
 
         if let Some(r) = self.try_lower_operator_method(object, method, args, &obj_op, &obj_ty)? {
+            return Ok(r);
+        }
+
+        if let Some(r) = self.try_lower_primitive_compare(method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
 
@@ -2732,10 +2811,15 @@ impl<'a> MirLowerer<'a> {
                             // Vec<T>: generate loop that encodes each element.
                             // Detection: check type checker first, fall back to local_meta type_prefix.
                             let raw_ty = self.ctx.lookup_raw_type(args[0].expr.id);
+                            // A resolved `Type::Generic { base }` counts too: a
+                            // call returning `Vec<T>` comes back that way, and
+                            // missing it sent `json.encode(views())` through
+                            // json_encode_i64 — the binding held a pointer.
                             let is_vec_from_type = raw_ty.map_or(false, |ty| {
                                 matches!(ty,
                                     rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec"
                                 ) || matches!(ty, rask_types::Type::UnresolvedNamed(n) if n == "Vec")
+                                    || self.vec_elem_of_checker_type(ty).is_some()
                             });
                             let is_vec_from_prefix = if !is_vec_from_type {
                                 if let ExprKind::Ident(var_name) = &args[0].expr.kind {
@@ -2749,10 +2833,20 @@ impl<'a> MirLowerer<'a> {
                             } else {
                                 false
                             };
-                            if is_vec_from_type || is_vec_from_prefix {
+                            // Last resort: the callee's declared return type. A
+                            // call returning `Vec<T>` doesn't always carry a type
+                            // on the argument node, and missing it sent
+                            // `json.encode(views())` through json_encode_i64.
+                            let elem_from_sig = if is_vec_from_type || is_vec_from_prefix {
+                                None
+                            } else {
+                                self.vec_elem_of_expr(&args[0].expr)
+                            };
+                            if is_vec_from_type || is_vec_from_prefix || elem_from_sig.is_some() {
                                 // Extract element type from generic args when available
                                 let elem_ty = raw_ty.and_then(|ty| match ty {
-                                    rask_types::Type::UnresolvedGeneric { args: ga, .. } => {
+                                    rask_types::Type::UnresolvedGeneric { args: ga, .. }
+                                    | rask_types::Type::Generic { args: ga, .. } => {
                                         ga.first().and_then(|a| match a {
                                             rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
                                             _ => None,
@@ -2760,7 +2854,15 @@ impl<'a> MirLowerer<'a> {
                                     }
                                     _ => None,
                                 });
-                                return self.lower_json_encode_vec(arg_op, elem_ty).map(Some);
+                                // The checker leaves a `Vec.new()` filled by
+                                // `push` with an inference variable, so fall back
+                                // to the element type lowering tracked itself.
+                                let elem_mir = elem_ty
+                                    .as_ref()
+                                    .map(|t| self.ctx.type_to_mir(t))
+                                    .or(elem_from_sig)
+                                    .or_else(|| self.vec_elem_of_expr(&args[0].expr));
+                                return self.lower_json_encode_vec(arg_op, elem_ty, elem_mir).map(Some);
                             }
 
                             // Non-struct: string or integer
@@ -3015,9 +3117,13 @@ impl<'a> MirLowerer<'a> {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
+        let elem_params = self.elem_closure_param_tys(object, &method);
         for (i, arg) in args.iter().enumerate() {
             let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
-                let expected = Self::expected_closure_param_tys(&tentative_params, i);
+                let mut expected = Self::expected_closure_param_tys(&tentative_params, i);
+                if expected.is_empty() {
+                    expected = elem_params.clone();
+                }
                 self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected)?
             } else {
                 self.lower_expr(&arg.expr)?
@@ -3201,6 +3307,17 @@ impl<'a> MirLowerer<'a> {
                 .or(tracked_elem)
                 .unwrap_or(MirType::I64);
             Some(MirType::Option(Box::new(elem)))
+        } else if qualified_name == "Map_get" {
+            // Same reasoning as Vec_get: `Map.get` returns `V?`, and the payload
+            // type sizes the result slot. The DerefOption adapter copies
+            // `slot_size - tag` bytes out of the map's storage, so a bare
+            // `i64?` copied only the value's first word — `self.users.get(id)`
+            // handed back eight bytes of a `User` and reading a field off it
+            // dereferenced the id.
+            let payload = self.extract_payload_type(expr)
+                .or_else(|| self.map_value_mir(object))
+                .unwrap_or(MirType::I64);
+            Some(MirType::Option(Box::new(payload)))
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
             tracked_elem
@@ -3287,8 +3404,19 @@ impl<'a> MirLowerer<'a> {
                         // real type so `string_clone` has the 16-byte slot it copies
                         // into, and the store has to write all of it — as an i64 temp
                         // a `string` field was truncated to its first 8 bytes (#463).
-                        let wide = field.size > 8;
-                        let field_val = self.builder.alloc_temp(MirType::I64);
+                        // A struct/enum field also comes back as a pointer, even
+                        // when it fits in a word — reading one gives the address
+                        // of the field inside the source. Typed as an i64 temp
+                        // that address got stored where the value belongs, so a
+                        // `priority: Priority` field cloned to a stack address
+                        // and every later read of it saw an out-of-range tag.
+                        let field_mir_ty = self.ctx.type_to_mir(&field.ty);
+                        let wide = field.size > 8 || super::mir_ty_is_aggregate(&field_mir_ty);
+                        let field_val = self.builder.alloc_temp(if wide {
+                            field_mir_ty.clone()
+                        } else {
+                            MirType::I64
+                        });
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: field_val,
                             rvalue: MirRValue::Field {
@@ -3723,6 +3851,131 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// String comparison operators → `string_lt`, `string_ge`, etc.
+    /// Read an enum's variant tag into a fresh local.
+    fn emit_enum_tag(&mut self, value: MirOperand) -> crate::LocalId {
+        let tag = self.builder.alloc_temp(MirType::U16);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value },
+        }));
+        tag
+    }
+
+    /// `a.compare(b)` on a number, char, bool, or fieldless enum → inline
+    /// three-way compare (-1 / 0 / 1), the same shape the auto-derived struct
+    /// `compare` emits.
+    ///
+    /// Neither has a `compare` anywhere: primitives have no runtime one, and the
+    /// derive pass only writes bodies for structs. The fallback for an
+    /// unqualified `compare` is `string_compare`, so comparing two integers read
+    /// their values as string pointers and dereferenced them. For an enum,
+    /// declaration order is the ordering (`type.enums`/CO1), so comparing tags is
+    /// the whole operation.
+    fn try_lower_primitive_compare(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if method != "compare" || args.len() != 1 {
+            return Ok(None);
+        }
+        let scalar = matches!(
+            obj_ty,
+            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+                | MirType::F32 | MirType::F64
+                | MirType::Char | MirType::Bool
+        );
+        // Only fieldless enums: a payload-carrying variant needs the payloads
+        // compared too, which is the derive pass's job, not a tag compare.
+        let fieldless_enum = match obj_ty {
+            MirType::Enum(EnumLayoutId { id, .. }) => self
+                .ctx
+                .enum_layouts
+                .get(*id as usize)
+                .is_some_and(|l| l.variants.iter().all(|v| v.fields.is_empty())),
+            _ => false,
+        };
+        if !scalar && !fieldless_enum {
+            return Ok(None);
+        }
+        let (rhs, _) = self.lower_expr(&args[0].expr)?;
+        let (obj_op, rhs) = if fieldless_enum {
+            (
+                MirOperand::Local(self.emit_enum_tag(obj_op.clone())),
+                MirOperand::Local(self.emit_enum_tag(rhs)),
+            )
+        } else {
+            (obj_op.clone(), rhs)
+        };
+        let obj_op = &obj_op;
+        let result = self.builder.alloc_temp(MirType::I64);
+
+        let lt_cond = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: lt_cond,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: obj_op.clone(),
+                right: rhs.clone(),
+            },
+        }));
+
+        let less_block = self.builder.create_block();
+        let not_less_block = self.builder.create_block();
+        let greater_block = self.builder.create_block();
+        let equal_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(lt_cond),
+            then_block: less_block,
+            else_block: not_less_block,
+        }));
+
+        self.builder.switch_to_block(less_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(-1))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+
+        self.builder.switch_to_block(not_less_block);
+        let gt_cond = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: gt_cond,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Gt,
+                left: obj_op.clone(),
+                right: rhs,
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(gt_cond),
+            then_block: greater_block,
+            else_block: equal_block,
+        }));
+
+        self.builder.switch_to_block(greater_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+
+        self.builder.switch_to_block(equal_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+
+        self.builder.switch_to_block(done_block);
+        Ok(Some((MirOperand::Local(result), MirType::I64)))
+    }
+
     fn try_lower_string_compare(
         &mut self,
         object: &Expr,
@@ -3804,7 +4057,14 @@ impl<'a> MirLowerer<'a> {
                 })
                 .unwrap_or(false);
 
-            if !has_own_to_string {
+            // A struct or enum receiver has a layout name to dispatch on, so
+            // its own `to_string` wins — including a user `Displayable` impl,
+            // which the stdlib stub check above can't see. Without this the
+            // catch-all below reached `i64_to_string` and printed the
+            // receiver's address as a decimal number (#471).
+            let is_user_aggregate = self.mir_aggregate_prefix(obj_ty).is_some();
+
+            if !has_own_to_string && !is_user_aggregate {
                 let func_name = match obj_ty {
                     MirType::String => {
                         return Ok(Some((obj_op.clone(), MirType::String)));

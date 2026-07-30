@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A Map whose values are structs.
+//
+// `Map.get` returns `V?`, and the payload type sizes the result slot — codegen's
+// DerefOption adapter copies `slot_size - tag` bytes out of the map's own
+// storage. The lowered type was a bare `i64?` no matter what the map held, so
+// only the value's first word was copied and reading a field off it dereferenced
+// that word. In examples/validation that made `/users/1` segfault:
+// `self.users.get(id)` handed back eight bytes of a `User`.
+
+struct Id { public value: u64 }
+
+struct User {
+    public id: Id
+    public name: string
+    public email: string
+    public active: bool
+}
+
+struct Store {
+    users: Map<Id, User>
+}
+
+extend Store {
+    func new() -> Store {
+        mut m = Map.new()
+        m.insert(Id { value: 1 }, User { id: Id { value: 1 }, name: "alice", email: "a@x.io", active: true })
+        m.insert(Id { value: 2 }, User { id: Id { value: 2 }, name: "bo", email: "b@x.io", active: false })
+        return Store { users: m }
+    }
+
+    func name_of(self, id: Id) -> string {
+        const u = self.users.get(id) ?? return "MISSING"
+        return u.name
+    }
+
+    func active_of(self, id: Id) -> bool {
+        const u = self.users.get(id) ?? return false
+        return u.active
+    }
+
+    func id_of(self, id: Id) -> u64 {
+        const u = self.users.get(id) ?? return 0
+        return u.id.value
+    }
+}
+
+test "stdlib.collections — every field of a struct map value survives get" {
+    const store = Store.new()
+    assert store.name_of(Id { value: 1 }) == "alice"
+    assert store.name_of(Id { value: 2 }) == "bo"
+    assert store.id_of(Id { value: 1 }) == 1
+    assert store.id_of(Id { value: 2 }) == 2
+    assert store.active_of(Id { value: 1 })
+    assert !store.active_of(Id { value: 2 })
+}
+
+test "stdlib.collections — a missing key still takes the none path" {
+    const store = Store.new()
+    assert store.name_of(Id { value: 99 }) == "MISSING"
+    assert store.id_of(Id { value: 99 }) == 0
+}
+
+// Directly, without going through a struct field holding the map.
+test "stdlib.collections — a local Map of structs reads back whole" {
+    mut m = Map.new()
+    m.insert(7, User { id: Id { value: 7 }, name: "cy", email: "c@x.io", active: true })
+    const found = m.get(7) ?? User { id: Id { value: 0 }, name: "none", email: "", active: false }
+    assert found.name == "cy"
+    assert found.email == "c@x.io"
+    assert found.id.value == 7
+    assert found.active
+}
+
+// A `Map.get` inside a method body whose nodes the checker never typed — the
+// shape every stdlib accessor has. The value type then has to come from the
+// struct layout, or the option is sized for an 8-byte payload: a `string` value
+// lost half of its 16 bytes, and returning that undersized option made the
+// caller copy eight bytes past the end of it.
+struct Headers {
+    entries: Map<string, string>
+}
+
+extend Headers {
+    func new() -> Headers { return Headers { entries: Map.new() } }
+
+    func set(mutate self, name: string, value: string) -> void {
+        self.entries.insert(name.to_lowercase(), value)
+    }
+
+    func get(self, name: string) -> string? {
+        return self.entries.get(name.to_lowercase())
+    }
+}
+
+test "stdlib.collections — a string map value survives get through an accessor" {
+    mut h = Headers.new()
+    h.set("Authorization", "Bearer dev-secret")
+    h.set("Host", "localhost")
+
+    const opt = h.get("Authorization")
+    const present = opt?
+    assert present
+
+    // Calls in between: the undersized option aliased the callee's frame, so
+    // the damage only showed once something else had used that stack.
+    const noise = "x".concat("y").concat("z")
+    assert noise == "xyz"
+
+    const header = opt ?? "MISSING"
+    assert header.len() == 17
+    assert header == "Bearer dev-secret"
+    assert (h.get("Host") ?? "MISSING") == "localhost"
+    assert (h.get("Nope") ?? "MISSING") == "MISSING"
+}
+
+// The map's key/value sizes come from `Map.new()`'s own inferred type — and the
+// checker doesn't type the nodes of a stdlib body, so a `Map.new()` initializing
+// a struct field fell back to 8-byte slots. Every 16-byte `string` value stored
+// in it lost its second half, which reads back as an SSO string of length 15:
+// the first eight bytes were right and the length was wrong.
+struct Session {
+    values: Map<string, string>
+}
+
+extend Session {
+    func new() -> Session { return Session { values: Map.new() } }
+
+    func put(mutate self, k: string, v: string) -> void {
+        self.values.insert(k, v)
+    }
+
+    func take(self, k: string) -> string? {
+        return self.values.get(k)
+    }
+}
+
+test "stdlib.collections — a Map field sized from the field's declared type" {
+    mut s = Session.new()
+    // Short enough for SSO, and long enough to need the heap.
+    s.put("short", "0123456789")
+    s.put("long", "0123456789abcdefghij")
+
+    assert (s.take("short") ?? "MISSING").len() == 10
+    assert (s.take("short") ?? "MISSING") == "0123456789"
+    assert (s.take("long") ?? "MISSING").len() == 20
+    assert (s.take("long") ?? "MISSING") == "0123456789abcdefghij"
+    assert (s.take("absent") ?? "MISSING") == "MISSING"
+}

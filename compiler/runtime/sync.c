@@ -135,9 +135,6 @@ int64_t rask_shared_try_write(RaskShared *s, RaskAccessFn f, void *ctx) {
 // Rask closure layout (see closures.rs): [func_ptr | env...]
 // Calling convention: func_ptr(env_ptr, args...) where env_ptr = closure + 8.
 
-#define CLOSURE_FUNC(cl)  (*(int64_t *)(intptr_t)(cl))
-#define CLOSURE_ENV(cl)   ((cl) + 8)
-
 typedef int64_t (*RaskClosureFn1)(int64_t env, int64_t arg);
 typedef void    (*RaskClosureVoidFn1)(int64_t env, int64_t arg);
 

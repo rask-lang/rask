@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The element type of a Vec bound without a type annotation has to be known,
+// or the loop variable is typed i64 and Vec_get's scalar deref reads the
+// element's first 8 bytes as a pointer (#478).
+//
+// Annotated bindings always worked; `const rows = build()` did not.
+
+struct Inner { public n: u64 }
+
+struct Row {
+    public inner: Inner
+    public n: u64
+}
+
+func build() -> Vec<Row> {
+    mut v = Vec.new()
+    v.push(Row { inner: Inner { n: 1 }, n: 10 })
+    v.push(Row { inner: Inner { n: 2 }, n: 20 })
+    return v
+}
+
+struct Holder { rows: Vec<Row> }
+
+extend Holder {
+    func new() -> Holder { return Holder { rows: build() } }
+    func take(self) -> Vec<Row> { return self.rows }
+}
+
+test "codegen — iterate a Vec of aggregates returned from a function" {
+    const rows = build()
+    assert rows.len() == 2
+    mut total = 0
+    for r in rows {
+        total += r.n truncate to i64
+    }
+    assert total == 30
+}
+
+test "codegen — nested aggregate field survives the same round trip" {
+    const rows = build()
+    mut ids = 0
+    for r in rows {
+        ids += r.inner.n truncate to i64
+    }
+    assert ids == 3
+}
+
+test "codegen — same through a method return" {
+    const h = Holder.new()
+    const rows = h.take()
+    assert rows.len() == 2
+    mut total = 0
+    for r in rows {
+        total += r.n truncate to i64
+    }
+    assert total == 30
+}

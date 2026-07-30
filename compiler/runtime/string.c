@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
+#include <errno.h>
 
 #define RASK_HEAP_FLAG   ((uint64_t)1 << 63)
 #define RASK_RC_SENTINEL UINT32_MAX
@@ -254,6 +255,57 @@ int64_t rask_string_parse_int(const RaskStr *s) {
 double rask_string_parse_float(const RaskStr *s) {
     if (str_len(s) == 0) return 0.0;
     return atof(str_data(s));
+}
+
+// Copy a RaskStr into a NUL-terminated buffer for strtoll/strtod, which need a
+// terminator that a length-counted string doesn't guarantee. Returns 0 when the
+// string is longer than the buffer — no real number needs 64 characters.
+static int parse_copy(const RaskStr *s, char *buf, size_t cap) {
+    int64_t len = str_len(s);
+    if (len < 0 || (size_t)len >= cap) return 0;
+    memcpy(buf, str_data(s), (size_t)len);
+    buf[len] = '\0';
+    return 1;
+}
+
+// Parsing with a failure signal. Writes the value through `out` and returns 0
+// on success, 1 on failure. atoll/atof can't report anything, so "0" and
+// "notanumber" were indistinguishable and every parse looked successful (#472).
+//
+// Matches the interpreter: surrounding whitespace is trimmed, then the whole
+// remaining string must be a number. Leading garbage, trailing garbage, an
+// empty string and out-of-range all fail. Neither backend range-checks against
+// a narrower target width — `"70000".parse()` into a u16 succeeds on both.
+int64_t rask_string_parse_int_into(const RaskStr *s, int64_t *out) {
+    char buf[64];
+    if (!parse_copy(s, buf, sizeof buf)) return 1;
+
+    errno = 0;
+    char *end = NULL;
+    long long v = strtoll(buf, &end, 10);
+    if (end == buf) return 1;              // no digits consumed
+    if (errno == ERANGE) return 1;         // outside i64
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
+    if (*end != '\0') return 1;            // trailing garbage
+
+    *out = (int64_t)v;
+    return 0;
+}
+
+int64_t rask_string_parse_float_into(const RaskStr *s, double *out) {
+    char buf[64];
+    if (!parse_copy(s, buf, sizeof buf)) return 1;
+
+    errno = 0;
+    char *end = NULL;
+    double v = strtod(buf, &end);
+    if (end == buf) return 1;
+    if (errno == ERANGE) return 1;
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
+    if (*end != '\0') return 1;
+
+    *out = v;
+    return 0;
 }
 
 // ─── String-producing operations (out-param) ────────────────

@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `json.encode` on a struct — the derived encoder walks fields by offset and
+// picks a per-type helper. Three things were wrong on native (#478):
+//
+//   - the f64 helper's value parameter was declared i64, so every float went
+//     through an integer register and came out a denormal;
+//   - the field temp was always an i64 local, so an f64 load converted
+//     *numerically* on the way in (0.25 → 0, 8.0 → 8);
+//   - the finish call was typed i64 though it produces a string, so binding
+//     the result and printing it gave a pointer.
+//
+// Field order differs between backends (the interpreter sorts keys), so these
+// assert on content rather than the whole string.
+
+import json
+
+struct Summary {
+    public total: u64
+    public errors: u64
+    public rate: f64
+    public p50: f64
+    public slow: usize
+}
+
+struct Nested {
+    public name: string
+    public inner: Summary
+    public flag: bool
+}
+
+func make() -> Summary {
+    const errors: u64 = 1
+    const total: u64 = 4
+    const rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
+    return Summary { total: total, errors: errors, rate: rate, p50: 8.5, slow: 0 }
+}
+
+test "stdlib.encoding — a float field keeps its value" {
+    const s = make()
+    const j = json.encode(s)
+    assert j.contains("\"rate\":0.25")
+    assert j.contains("\"p50\":8.5")
+}
+
+test "stdlib.encoding — integer fields alongside floats" {
+    const j = json.encode(make())
+    assert j.contains("\"total\":4")
+    assert j.contains("\"errors\":1")
+    assert j.contains("\"slow\":0")
+}
+
+// The result is a string, so it can be bound and used like one. Typed i64 it
+// printed as a pointer.
+test "stdlib.encoding — encode returns a usable string" {
+    const j = json.encode(make())
+    assert j.len() > 0
+    assert j.starts_with("{")
+    assert j.ends_with("}")
+}
+
+test "stdlib.encoding — a nested struct keeps its float too" {
+    const n = Nested { name: "n", inner: make(), flag: true }
+    const j = json.encode(n)
+    assert j.contains("\"rate\":0.25")
+    assert j.contains("\"name\":\"n\"")
+}

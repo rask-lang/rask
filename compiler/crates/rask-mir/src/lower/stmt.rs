@@ -762,8 +762,18 @@ impl<'a> MirLowerer<'a> {
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: local_id,
-            rvalue: MirRValue::Use(init_op),
+            rvalue: MirRValue::Use(init_op.clone()),
         }));
+
+        // A fused `collect()` records its element type against the local it
+        // built; carry it onto the binding so `for v in page` iterates the right
+        // stride and dispatches methods on the right type.
+        if let MirOperand::Local(src) = &init_op {
+            if let Some(elem) = self.collected_elem_types.get(src).cloned() {
+                self.collected_elem_types.insert(local_id, elem.clone());
+                self.meta_mut(name).elem_type = Some(elem);
+            }
+        }
 
         // Track collection element types for for-in iteration heuristics
         if let ExprKind::MethodCall { object, method, .. } = &init.kind {
@@ -955,6 +965,44 @@ impl<'a> MirLowerer<'a> {
                     let elem_mir = self.ctx.resolve_type_str(elem_str);
                     self.meta_mut(name).elem_type = Some(elem_mir);
                 }
+            }
+        }
+
+        // Unannotated binding from a call: take the element type from the
+        // initializer's own type, then from the callee's declared return type.
+        //
+        // Without this `const rows = build()` where `build() -> Vec<Ranked>`
+        // left the element type unknown, so `for r in rows` typed the loop
+        // variable i64 and Vec_get's scalar deref read the element's first
+        // 8 bytes as a pointer (#478).
+        if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
+            let from_init = self
+                .ctx
+                .lookup_raw_type(init.id)
+                .and_then(|t| self.vec_elem_of_checker_type(t));
+            let from_callee = || match &init.kind {
+                ExprKind::Call { func, .. } => match &func.kind {
+                    ExprKind::Ident(callee) => {
+                        let key = self.ctx.call_rewrites.get(&init.id).cloned()
+                            .unwrap_or_else(|| callee.clone());
+                        self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
+                    }
+                    _ => None,
+                },
+                ExprKind::MethodCall { object, method, .. } => {
+                    let prefix = match &object.kind {
+                        ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
+                        _ => None,
+                    }?;
+                    let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                    self.func_sigs
+                        .get(&format!("{}_{}", base, method))
+                        .and_then(|s| s.ret_vec_elem.clone())
+                }
+                _ => None,
+            };
+            if let Some(elem) = from_init.or_else(from_callee) {
+                self.meta_mut(name).elem_type = Some(elem);
             }
         }
 

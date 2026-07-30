@@ -13,11 +13,11 @@ mod stmt;
 
 use crate::{
     BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
-    MirTerminatorKind, MirType, BlockId, LocalId, operand::MirConst,
+    MirTerminatorKind, MirType, BlockId, LocalId, operand::{MirConst, FunctionRef},
 };
 use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
-    decl::{Decl, DeclKind},
+    decl::{ConstDecl, Decl, DeclKind, FnDecl},
     expr::{BinOp, Expr, ExprKind, UnaryOp},
     LineMap, NodeId, Span,
 };
@@ -131,6 +131,54 @@ pub struct ComptimeGlobalMeta {
     pub type_prefix: String,
 }
 
+/// Prefix for the writable data slot holding a module-level const's value.
+/// Codegen finds the slots by scanning `GlobalRef` names for this prefix, so
+/// the two sides can't drift apart.
+pub const CONST_SLOT_PREFIX: &str = "__rask_const_slot__";
+
+/// Data-slot name for a module-level const.
+pub fn const_slot_name(const_name: &str) -> String {
+    format!("{}{}", CONST_SLOT_PREFIX, const_name)
+}
+
+/// Name of the thunk that fills a module-level const's slot. One per const,
+/// called from the top of main in declaration order.
+pub fn const_init_fn_name(const_name: &str) -> String {
+    format!("__rask_const_init__{}", const_name)
+}
+
+/// Local in an init thunk holding the initializer's value. Named so the
+/// measuring pass can read the const's real MIR type back off the thunk.
+const CONST_SLOT_VALUE_LOCAL: &str = "__const_slot_value";
+
+/// A literal initializer folds to a constant, so a copy per function is
+/// indistinguishable from a shared one. Must agree with `try_eval_const_init`.
+fn const_init_is_literal(init: &Expr) -> bool {
+    matches!(
+        &init.kind,
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(_) | ExprKind::Bool(_)
+    )
+}
+
+/// Does a value of this type live in memory, with the local holding a pointer
+/// to it? Those go on the heap so the init thunk's frame isn't captured.
+fn mir_ty_is_aggregate(ty: &MirType) -> bool {
+    matches!(
+        ty,
+        MirType::Struct(_)
+            | MirType::Enum(_)
+            | MirType::Tuple(_)
+            | MirType::Result { .. }
+            | MirType::Option(_)
+            | MirType::Union(_)
+            | MirType::Array { .. }
+            | MirType::Slice(_)
+            | MirType::SimdVector { .. }
+            | MirType::String
+            | MirType::TraitObject { .. }
+    )
+}
+
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
 pub struct MirContext<'a> {
     pub struct_layouts: &'a [StructLayout],
@@ -167,6 +215,22 @@ pub struct MirContext<'a> {
     pub call_rewrites: &'a HashMap<NodeId, String>,
     /// Type names marked with `@resource` — used for resource tracking ops (C1/C2).
     pub resource_types: &'a std::collections::HashSet<String>,
+    /// Nominal newtype name → the type it wraps, as a type string.
+    ///
+    /// `type Id = u64 with (…)` has no layout of its own: it *is* a u64 with a
+    /// distinct identity, so it's transparent in MIR. Without this the name
+    /// resolved to a bare `Ptr` with nothing allocated behind it, and
+    /// construction stored through an uninitialised pointer (#445).
+    pub nominal_underlying: &'a HashMap<String, String>,
+    /// Module-level const name → the MIR type its global slot holds.
+    ///
+    /// Filled by `compute_const_slot_types` before any function is lowered.
+    /// It has to come from actually lowering the initializer: the checker's
+    /// type for `time.Instant.now()` is the struct `Instant`, but lowering
+    /// resolves the stdlib signature to a plain `i64`, and a reference that
+    /// guessed the struct would deref a timestamp as a pointer. Left empty,
+    /// consts keep the old re-evaluate-per-function behaviour.
+    pub const_slot_types: std::cell::RefCell<HashMap<String, MirType>>,
 }
 
 impl<'a> MirContext<'a> {
@@ -186,6 +250,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_RESOURCE_TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
+        static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, String>> =
+            std::sync::LazyLock::new(HashMap::new);
         MirContext {
             struct_layouts: &[],
             enum_layouts: &[],
@@ -202,6 +268,8 @@ impl<'a> MirContext<'a> {
             trait_coercions: &EMPTY_COERCIONS,
             call_rewrites: &EMPTY_REWRITES,
             resource_types: &EMPTY_RESOURCE_TYPES,
+            nominal_underlying: &EMPTY_NOMINAL,
+            const_slot_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -306,6 +374,12 @@ impl<'a> MirContext<'a> {
                     || name.starts_with("Receiver<") || name.starts_with("Shared<")
                 {
                     return MirType::Ptr;
+                }
+                // A nominal newtype has no layout — it is whatever it wraps.
+                if let Some(underlying) = self.nominal_underlying.get(name) {
+                    if underlying != name {
+                        return self.resolve_type_str(underlying);
+                    }
                 }
                 if let Some((idx, sl)) = self.find_struct(name) {
                     MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
@@ -591,6 +665,23 @@ pub struct MirLowerer<'a> {
     /// overflow before reaching main's first line (#463). Materializing at the
     /// use site keeps them out of functions that never mention them.
     pending_module_consts: HashMap<String, (Expr, Option<String>)>,
+    /// Module-level consts that own a global slot, and the type stored there.
+    /// A reference loads from the slot instead of re-running the initializer.
+    const_slots: HashMap<String, MirType>,
+    /// Set while lowering a const's init thunk. Inside its own thunk the const
+    /// is a definition, not a reference — that one place runs the initializer.
+    const_init_target: Option<String>,
+    /// Declared type of the struct field currently being initialised, as written.
+    /// `Map.new()` needs its key/value sizes, and the checker doesn't type the
+    /// nodes of a stdlib body — `Headers { entries: Map.new() }` had no type on
+    /// that call, so the map was built with 8-byte slots and a `string` value lost
+    /// half of its 16 bytes.
+    field_type_hint: Option<String>,
+    /// Element type of a Vec built by a fused `collect()`, keyed by the local
+    /// holding it. The fused loop is the only place that type exists — the
+    /// checker leaves `collect()`'s element an inference variable — and a binding
+    /// needs it so `for v in page` knows what it is iterating.
+    collected_elem_types: HashMap<LocalId, MirType>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -625,8 +716,12 @@ impl<'a> MirLowerer<'a> {
         self.meta_mut(name).type_prefix = Some(prefix);
     }
 
-    /// Materialize a deferred module-level const the first time it's named in
-    /// this function. Returns the local, or `None` if `name` isn't one.
+    /// Bring a module-level const into scope the first time it's named in this
+    /// function. Returns the local, or `None` if `name` isn't one.
+    ///
+    /// Consts with a global slot load the one value that the init thunk stored
+    /// before main; the rest still re-run their initializer here (see
+    /// `pending_module_consts`).
     ///
     /// Idempotent: once emitted the const lives in `locals` like any other
     /// binding, so later references in the same function reuse it.
@@ -636,6 +731,11 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<Option<(LocalId, MirType)>, LoweringError> {
         if let Some((local_id, ty)) = self.locals.get(name) {
             return Ok(Some((*local_id, ty.clone())));
+        }
+        if self.const_init_target.as_deref() != Some(name) {
+            if let Some(ty) = self.const_slots.get(name).cloned() {
+                return Ok(Some(self.load_const_slot(name, ty)));
+            }
         }
         let Some((init, _decl_ty)) = self.pending_module_consts.remove(name) else {
             return Ok(None);
@@ -648,6 +748,256 @@ impl<'a> MirLowerer<'a> {
         }));
         self.locals.insert(name.to_string(), (local_id, ty.clone()));
         Ok(Some((local_id, ty)))
+    }
+
+    /// Read a module-level const out of its global slot.
+    ///
+    /// The slot always holds 8 bytes: the value itself for scalars, a heap
+    /// pointer for aggregates. An aggregate reference copies the bytes out, so
+    /// each function gets its own immutable copy — the shared thing is the box
+    /// the pointer points at, which is the whole point of #470.
+    fn load_const_slot(&mut self, name: &str, ty: MirType) -> (LocalId, MirType) {
+        let addr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
+            dst: addr,
+            name: const_slot_name(name),
+        }));
+
+        let local_id = self.builder.alloc_local(name.to_string(), ty.clone());
+        if mir_ty_is_aggregate(&ty) {
+            let heap = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: heap,
+                rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local_id,
+                rvalue: MirRValue::Use(MirOperand::Local(heap)),
+            }));
+        } else {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local_id,
+                rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+            }));
+        }
+        self.locals.insert(name.to_string(), (local_id, ty.clone()));
+        (local_id, ty)
+    }
+
+    /// Fill a const's global slot at the end of its init thunk.
+    fn store_const_slot(&mut self, name: &str, value: MirOperand, ty: &MirType) {
+        let addr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
+            dst: addr,
+            name: const_slot_name(name),
+        }));
+
+        let stored = if mir_ty_is_aggregate(ty) {
+            // The value sits in this thunk's frame, which is gone by the time
+            // anything reads the slot. Copy it to the heap and share that.
+            let size = self.aggregate_alloc_size(ty);
+            let heap = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(heap),
+                func: FunctionRef::internal("rask_alloc".to_string()),
+                args: vec![MirOperand::Constant(MirConst::Int(size as i64))],
+            }));
+            let mut off = 0u32;
+            while off < size {
+                let word = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: word,
+                    rvalue: MirRValue::Field {
+                        base: value.clone(),
+                        field_index: 0,
+                        byte_offset: Some(off),
+                        field_size: Some(8),
+                    },
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: heap,
+                    offset: off,
+                    value: MirOperand::Local(word),
+                    store_size: Some(8),
+                }));
+                off += 8;
+            }
+            MirOperand::Local(heap)
+        } else {
+            value
+        };
+
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr,
+            offset: 0,
+            value: stored,
+            store_size: None,
+        }));
+    }
+
+    /// Byte size to copy for an aggregate const, rounded up to whole words.
+    fn aggregate_alloc_size(&self, ty: &MirType) -> u32 {
+        let raw = match ty {
+            MirType::Struct(StructLayoutId { id, .. }) => self
+                .ctx
+                .struct_layouts
+                .get(*id as usize)
+                .map(|l| l.size)
+                .unwrap_or(8),
+            MirType::Enum(EnumLayoutId { id, .. }) => self
+                .ctx
+                .enum_layouts
+                .get(*id as usize)
+                .map(|l| l.size)
+                .unwrap_or(8),
+            other => other.size(),
+        };
+        std::cmp::max(raw, 8).div_ceil(8) * 8
+    }
+
+    /// The MIR type a module-level const's slot holds, as measured by
+    /// `compute_const_slot_types`. `None` means no slot — the const falls back
+    /// to being re-evaluated at each reference.
+    fn module_const_slot_ty(&self, name: &str) -> Option<MirType> {
+        self.ctx.const_slot_types.borrow().get(name).cloned()
+    }
+
+    /// Element MIR type of a checker `Vec<T>`, in either the pre-resolve
+    /// (`UnresolvedGeneric`) or resolved (`Generic`) spelling.
+    pub(crate) fn vec_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+        let (name, args) = match ty {
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            Type::Generic { base, args } => (self.ctx.type_names.get(base)?.clone(), args),
+            _ => return None,
+        };
+        if name != "Vec" {
+            return None;
+        }
+        match args.first()? {
+            rask_types::GenericArg::Type(inner) => Some(self.ctx.type_to_mir(inner)),
+            _ => None,
+        }
+    }
+
+    /// Element type of an expression that evaluates to a `Vec<T>`, or None when
+    /// it isn't one (or the type can't be recovered).
+    ///
+    /// The checker's type first, then the same fallbacks a binding uses: a
+    /// variable's tracked element type, and the callee's declared return type.
+    /// A `Vec.new()` filled by `push` leaves the checker with an inference
+    /// variable, and a call returning `Vec<T>` doesn't always carry a type on the
+    /// argument node.
+    pub(crate) fn vec_elem_of_expr(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            if let Some(elem) = self.vec_elem_of_checker_type(ty) {
+                return Some(elem);
+            }
+        }
+        match &expr.kind {
+            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.elem_type.clone()),
+            ExprKind::Call { func, .. } => match &func.kind {
+                ExprKind::Ident(callee) => {
+                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
+                        .unwrap_or_else(|| callee.clone());
+                    self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
+                }
+                _ => None,
+            },
+            ExprKind::MethodCall { object, method, .. } => {
+                let prefix = match &object.kind {
+                    ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
+                    _ => None,
+                }?;
+                let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                self.func_sigs
+                    .get(&format!("{}_{}", base, method))
+                    .and_then(|s| s.ret_vec_elem.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Value type of a `Map<K, V>` receiver, for sizing what `get` hands back.
+    ///
+    /// The checker's type first, then the struct layout for a `self.field`
+    /// receiver, then a variable's recorded `Map<K, V>` annotation. Stdlib bodies
+    /// carry synthesized node IDs the checker never typed — `Headers.get` calling
+    /// `self.entries.get(…)` is exactly that — so the layout path is the one that
+    /// answers there.
+    pub(crate) fn map_value_mir(&self, receiver: &Expr) -> Option<MirType> {
+        fn value_of(ty: &Type, lower: &MirLowerer<'_>) -> Option<MirType> {
+            let (name, args) = match ty {
+                Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+                Type::Generic { base, args } => (lower.ctx.type_names.get(base)?.clone(), args),
+                _ => return None,
+            };
+            if name != "Map" {
+                return None;
+            }
+            match args.get(1)? {
+                rask_types::GenericArg::Type(v) => Some(lower.ctx.type_to_mir(v)),
+                _ => None,
+            }
+        }
+
+        if let Some(ty) = self.ctx.lookup_raw_type(receiver.id) {
+            if let Some(v) = value_of(ty, self) {
+                return Some(v);
+            }
+        }
+
+        match &receiver.kind {
+            ExprKind::Field { object, field } => {
+                let base_ty = match &object.kind {
+                    ExprKind::Ident(name) => self.locals.get(name).map(|(_, t)| t.clone()),
+                    _ => None,
+                }?;
+                let MirType::Struct(crate::types::StructLayoutId { id, .. }) = base_ty else {
+                    return None;
+                };
+                let layout = self.ctx.struct_layouts.get(id as usize)?;
+                let f = layout.fields.iter().find(|f| f.name == *field)?;
+                value_of(&f.ty, self)
+            }
+            ExprKind::Ident(name) => {
+                let full = self.meta(name).and_then(|m| m.full_type.clone())?;
+                let inner = full.strip_prefix("Map<")?.strip_suffix('>')?;
+                let comma = find_top_level_comma(inner)?;
+                Some(self.ctx.resolve_type_str(inner[comma + 1..].trim()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Is `name` a nominal newtype with no layout of its own?
+    pub(crate) fn is_transparent_newtype(&self, name: &str) -> bool {
+        self.ctx.nominal_underlying.contains_key(name)
+            && self.ctx.find_struct(name).is_none()
+            && self.ctx.find_enum(name).is_none()
+    }
+
+    /// Does this expression have the type of a nominal newtype?
+    pub(crate) fn expr_is_transparent_newtype(&self, expr: &Expr) -> bool {
+        self.ctx
+            .lookup_raw_type(expr.id)
+            .and_then(|ty| MirContext::type_prefix(ty, self.ctx.type_names))
+            .map(|name| self.is_transparent_newtype(&name))
+            .unwrap_or(false)
+    }
+
+    /// Lower a nominal newtype construction — `Id { value: 5 }` or `Id(5)` — to
+    /// the wrapped value itself. Returns `None` when `name` isn't one.
+    pub(crate) fn lower_newtype_wrap(
+        &mut self,
+        name: &str,
+        inner: Option<&Expr>,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if !self.is_transparent_newtype(name) {
+            return Ok(None);
+        }
+        let Some(inner) = inner else { return Ok(None) };
+        let (op, _) = self.lower_expr(inner)?;
+        Ok(Some((op, self.ctx.resolve_type_str(name))))
     }
 
     /// Method-dispatch prefix for a Struct/Enum MIR type — its layout name.
@@ -948,6 +1298,103 @@ impl<'a> MirLowerer<'a> {
         ctx: &MirContext,
         qualified_name: Option<&str>,
     ) -> Result<Vec<MirFunction>, LoweringError> {
+        Self::lower_function_inner(decl, all_decls, ctx, qualified_name, None)
+    }
+
+    /// Lower the thunk that fills one module-level const's global slot.
+    /// Reuses the normal function path so the initializer sees the same
+    /// signature tables and const metadata every other function does.
+    fn lower_const_init(
+        c: &ConstDecl,
+        all_decls: &[Decl],
+        ctx: &MirContext,
+    ) -> Result<Vec<MirFunction>, LoweringError> {
+        let name = const_init_fn_name(&c.name);
+        let decl = Decl {
+            id: NodeId(0),
+            span: Span::new(0, 0),
+            kind: DeclKind::Fn(FnDecl {
+                name: name.clone(),
+                type_params: Vec::new(),
+                params: Vec::new(),
+                ret_ty: None,
+                context_clauses: Vec::new(),
+                body: Vec::new(),
+                is_pub: false,
+                is_private: true,
+                is_comptime: false,
+                is_unsafe: false,
+                abi: None,
+                attrs: Vec::new(),
+                doc: None,
+                span: Span::new(0, 0),
+            }),
+        };
+        Self::lower_function_inner(
+            &decl,
+            all_decls,
+            ctx,
+            Some(&name),
+            Some((&c.name, &c.init)),
+        )
+    }
+
+    /// Measure what each module-level const's global slot has to hold, by
+    /// lowering its initializer once and taking the resulting MIR type.
+    ///
+    /// Must run before any function is lowered: references read the answer out
+    /// of `ctx.const_slot_types`, and a const missing from that map keeps the
+    /// old per-function behaviour. The thunks lowered here are thrown away —
+    /// only their types are wanted, and the real ones are emitted alongside
+    /// main. A const whose initializer doesn't lower in isolation simply
+    /// doesn't get a slot.
+    pub fn compute_const_slot_types(all_decls: &[Decl], ctx: &MirContext) {
+        let mut measured = HashMap::new();
+        for d in all_decls {
+            let DeclKind::Const(c) = &d.kind else { continue };
+            if const_init_is_literal(&c.init) || measured.contains_key(&c.name) {
+                continue;
+            }
+            // `const N = comptime …` is already evaluated and folded into a
+            // data section. Giving it a slot would turn the folded constant
+            // back into a runtime load, and any const computed from it would
+            // stop folding too.
+            if matches!(c.init.kind, ExprKind::Comptime { .. })
+                || ctx.comptime_globals.contains_key(&c.name)
+            {
+                continue;
+            }
+            if let Ok(Some(ty)) = Self::measure_const_init_ty(c, all_decls, ctx) {
+                measured.insert(c.name.clone(), ty);
+            }
+        }
+        *ctx.const_slot_types.borrow_mut() = measured;
+    }
+
+    /// Lower one const initializer in isolation and report its MIR type.
+    fn measure_const_init_ty(
+        c: &ConstDecl,
+        all_decls: &[Decl],
+        ctx: &MirContext,
+    ) -> Result<Option<MirType>, LoweringError> {
+        let fns = Self::lower_const_init(c, all_decls, ctx)?;
+        Ok(fns
+            .first()
+            .and_then(|f| {
+                f.locals
+                    .iter()
+                    .find(|l| l.name.as_deref() == Some(CONST_SLOT_VALUE_LOCAL))
+            })
+            .map(|l| l.ty.clone()))
+    }
+
+    fn lower_function_inner(
+        decl: &Decl,
+        all_decls: &[Decl],
+        ctx: &MirContext,
+        qualified_name: Option<&str>,
+        const_init: Option<(&str, &Expr)>,
+    ) -> Result<Vec<MirFunction>, LoweringError> {
         let fn_decl = match &decl.kind {
             DeclKind::Fn(f) => f,
             _ => {
@@ -1048,6 +1495,10 @@ impl<'a> MirLowerer<'a> {
             .map(|s| s.to_string())
             .unwrap_or_else(|| fn_decl.name.clone());
 
+        // Const slots are filled from main, so only main emits the thunk calls.
+        let is_entry_point = func_name == "main" && const_init.is_none();
+        let mut const_init_thunks: Vec<ConstDecl> = Vec::new();
+
         let mut lowerer = MirLowerer {
             builder: BlockBuilder::new(func_name.clone(), ret_ty.clone()),
             locals: HashMap::new(),
@@ -1065,6 +1516,10 @@ impl<'a> MirLowerer<'a> {
             take_self_methods,
             ensure_receivers: HashMap::new(),
             pending_module_consts: HashMap::new(),
+            const_slots: HashMap::new(),
+            const_init_target: const_init.map(|(n, _)| n.to_string()),
+            collected_elem_types: HashMap::new(),
+            field_type_hint: None,
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -1159,19 +1614,61 @@ impl<'a> MirLowerer<'a> {
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
                 } else {
-                    // Non-literal init (e.g. Shared<T>.new(...)): defer the code to
-                    // the first reference, so it only lands in functions that use
-                    // it. The type metadata is recorded here regardless — it costs
-                    // nothing, emits no code, and method dispatch reads it for the
-                    // const's box type (`Mutex<Store>`) from more places than just
-                    // the reference site.
+                    // Non-literal init (e.g. Shared<T>.new(...)). The type
+                    // metadata is recorded here regardless — it costs nothing,
+                    // emits no code, and method dispatch reads the const's box
+                    // type (`Mutex<Store>`) from more places than just the
+                    // reference site.
                     lowerer.record_module_const_meta(&c.name, &c.init);
-                    lowerer.pending_module_consts.insert(
-                        c.name.clone(),
-                        (c.init.clone(), c.ty.clone()),
-                    );
+                    match lowerer.module_const_slot_ty(&c.name) {
+                        // One value in a global slot, filled once before main.
+                        Some(ty) => {
+                            lowerer.const_slots.insert(c.name.clone(), ty);
+                        }
+                        // Type not pinned down: fall back to re-running the
+                        // initializer at the first reference in this function.
+                        None => {
+                            lowerer.pending_module_consts.insert(
+                                c.name.clone(),
+                                (c.init.clone(), c.ty.clone()),
+                            );
+                        }
+                    }
                 }
             }
+        }
+
+        // Run every const's init thunk before main's first line, in declaration
+        // order — the same order the interpreter evaluates them in.
+        if is_entry_point {
+            let mut seen = std::collections::HashSet::new();
+            for d in all_decls {
+                let DeclKind::Const(c) = &d.kind else { continue };
+                if !lowerer.const_slots.contains_key(&c.name) || !seen.insert(c.name.clone()) {
+                    continue;
+                }
+                lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal(const_init_fn_name(&c.name)),
+                    args: Vec::new(),
+                }));
+                const_init_thunks.push(c.clone());
+            }
+        }
+
+        // The init thunk's whole body is the const's initializer.
+        if let Some((const_name, init)) = const_init {
+            let (op, actual_ty) = lowerer.lower_expr(init)?;
+            // Park the value in a named local so the measuring pass can read
+            // the const's real MIR type back off this function.
+            let value = lowerer
+                .builder
+                .alloc_local(CONST_SLOT_VALUE_LOCAL.to_string(), actual_ty.clone());
+            lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: value,
+                rvalue: MirRValue::Use(op),
+            }));
+            lowerer.store_const_slot(const_name, MirOperand::Local(value), &actual_ty);
         }
 
         // Lower function body
@@ -1242,6 +1739,9 @@ impl<'a> MirLowerer<'a> {
             f.source_file = ctx.source_file.map(|s| s.to_string());
         }
         result.extend(lowerer.synthesized_functions);
+        for c in &const_init_thunks {
+            result.extend(Self::lower_const_init(c, all_decls, ctx)?);
+        }
         Ok(result)
     }
 
@@ -1411,7 +1911,7 @@ impl<'a> MirLowerer<'a> {
     /// the callee's declared return type. Without this an if-let over a stdlib
     /// `T or E` binds its payload as a bare i64 and method dispatch on the
     /// binding has no type to work from.
-    fn payload_of_mir(ty: &MirType) -> Option<MirType> {
+    pub(crate) fn payload_of_mir(ty: &MirType) -> Option<MirType> {
         match ty {
             MirType::Result { ok, .. } => Some((**ok).clone()),
             MirType::Option(inner) => Some((**inner).clone()),
@@ -1539,16 +2039,42 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Look up the tag value for a variant name.
+    ///
+    /// Accepts both the bare and the qualified spelling. A pattern written
+    /// `Kind.B` arrives here as one string, and searching the layouts for a
+    /// variant literally named "Kind.B" never matched — so every `x is
+    /// Enum.Variant` compared the tag against 0 and only ever answered true for
+    /// the first variant (#476). `match` already stripped the qualifier.
+    ///
+    /// When the qualifier is there it also pins down which enum to look in,
+    /// which matters as soon as two enums share a variant name.
     fn variant_tag(&self, name: &str) -> i64 {
         // Well-known built-in variant tags
         match name {
             "Some" | "Ok" => 0,
             "None" | "Err" => 1,
             _ => {
-                // Search enum layouts for user-defined variants
+                let (enum_name, bare) = match name.rsplit_once('.') {
+                    Some((qualifier, variant)) => (
+                        Some(qualifier.rsplit('.').next().unwrap_or(qualifier)),
+                        variant,
+                    ),
+                    None => (None, name),
+                };
+                if let Some(enum_name) = enum_name {
+                    for layout in self.ctx.enum_layouts.iter().filter(|l| l.name == enum_name) {
+                        for variant in &layout.variants {
+                            if variant.name == bare {
+                                return variant.tag as i64;
+                            }
+                        }
+                    }
+                }
+                // Unqualified, or the qualifier named no known enum: first
+                // layout that declares the variant.
                 for layout in self.ctx.enum_layouts {
                     for variant in &layout.variants {
-                        if variant.name == name {
+                        if variant.name == bare {
                             return variant.tag as i64;
                         }
                     }
@@ -1597,11 +2123,17 @@ impl<'a> MirLowerer<'a> {
     /// value; aggregates get `None` so codegen returns the payload address.
     /// (The Option codegen path ignores this offset and uses its own, so a
     /// single Result-shaped offset is correct for both.)
-    fn payload_byte_offset(&self, payload_ty: &MirType) -> Option<u32> {
-        let is_aggregate = matches!(
-            payload_ty,
+    /// True when a tagged payload of this type lives inline and is reached by
+    /// address rather than loaded as a value.
+    fn mir_payload_is_aggregate(ty: &MirType) -> bool {
+        matches!(
+            ty,
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
-        );
+        )
+    }
+
+    fn payload_byte_offset(&self, payload_ty: &MirType) -> Option<u32> {
+        let is_aggregate = Self::mir_payload_is_aggregate(payload_ty);
         if is_aggregate {
             None
         } else {
@@ -1625,10 +2157,25 @@ impl<'a> MirLowerer<'a> {
             // explicit byte_offset so codegen loads the value at
             // RESULT_PAYLOAD_OFFSET instead of falling into the aggregate
             // fast-path that returns the slot address.
-            let is_aggregate = matches!(
-                payload_ty,
-                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
-            );
+            // The container has the last word on how the payload is *stored*.
+            // `Map.get` returns `i64?` — a pointer to the map's own value — while
+            // the checker calls the payload a `User`. Addressing the container
+            // instead of loading that pointer handed back the address of the tag,
+            // so `self.users.get(id) ?? …` read a User out of the option's own
+            // first bytes and `/users/1` segfaulted.
+            let stored_scalar = match &value {
+                MirOperand::Local(id) => self.builder.local_type(*id),
+                _ => None,
+            }
+            .and_then(|t| match t {
+                MirType::Option(inner) => Some((*inner).clone()),
+                _ => None,
+            })
+            .map(|stored| !Self::mir_payload_is_aggregate(&stored))
+            .unwrap_or(false);
+
+            let is_aggregate =
+                Self::mir_payload_is_aggregate(&payload_ty) && !stored_scalar;
             let byte_offset = if is_aggregate {
                 None
             } else {
@@ -2344,6 +2891,13 @@ fn split_top_level_parens(s: &str, sep: char) -> Vec<&str> {
     }
     parts.push(&s[start..]);
     parts
+}
+
+/// Generic arguments of a type written as `Name<A, B>`, split at top level.
+pub(super) fn generic_args_of_str(s: &str) -> Option<Vec<&str>> {
+    let open = s.find('<')?;
+    let inner = s[open + 1..].strip_suffix('>')?;
+    Some(split_top_level_parens(inner, ',').into_iter().map(str::trim).collect())
 }
 
 fn find_top_level_comma(s: &str) -> Option<usize> {
@@ -3304,6 +3858,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
+        let empty_nominal = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -3320,6 +3875,8 @@ mod tests {
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
             resource_types: &empty_resource_types,
+            nominal_underlying: &empty_nominal,
+            const_slot_types: std::cell::RefCell::new(HashMap::new()),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -3360,6 +3917,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
+        let empty_nominal = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -3376,6 +3934,8 @@ mod tests {
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
             resource_types: &empty_resource_types,
+            nominal_underlying: &empty_nominal,
+            const_slot_types: std::cell::RefCell::new(HashMap::new()),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -3422,6 +3982,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
+        let empty_nominal = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -3438,6 +3999,8 @@ mod tests {
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
             resource_types: &empty_resource_types,
+            nominal_underlying: &empty_nominal,
+            const_slot_types: std::cell::RefCell::new(HashMap::new()),
         };
 
         let decl = make_fn("f", vec![], None, vec![

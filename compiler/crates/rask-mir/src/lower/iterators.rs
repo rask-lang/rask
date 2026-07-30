@@ -212,6 +212,7 @@ impl<'a> MirLowerer<'a> {
         // Process Skip/Take adapters to adjust start/end bounds
         let mut start_val: Option<MirOperand> = None;
         let mut end_op = MirOperand::Local(len_local);
+        let mut took = false;
 
         for adapter in &chain.adapters {
             match adapter {
@@ -221,6 +222,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 super::IterAdapter::Take { count } => {
                     let (take_op, _) = self.lower_expr(count)?;
+                    took = true;
                     if let Some(ref start) = start_val {
                         let adjusted = self.builder.alloc_temp(MirType::I64);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -238,6 +240,43 @@ impl<'a> MirLowerer<'a> {
                 }
                 _ => {} // Filter/Map/Enumerate handled inside the loop body
             }
+        }
+
+        // `take(n)` asks for at most n, not exactly n — clamp the end to the
+        // source length. Unclamped, `.skip(0).take(50)` over three elements ran
+        // the loop to index 50 and panicked on the first read past the end.
+        if took {
+            let end_local = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: end_local,
+                rvalue: MirRValue::Use(end_op),
+            }));
+            let over = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: over,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Gt,
+                    left: MirOperand::Local(end_local),
+                    right: MirOperand::Local(len_local),
+                },
+            }));
+            let clamp_block = self.builder.create_block();
+            let after_block = self.builder.create_block();
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(over),
+                then_block: clamp_block,
+                else_block: after_block,
+            }));
+            self.builder.switch_to_block(clamp_block);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: end_local,
+                rvalue: MirRValue::Use(MirOperand::Local(len_local)),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: after_block,
+            }));
+            self.builder.switch_to_block(after_block);
+            end_op = MirOperand::Local(end_local);
         }
 
         let idx = self.builder.alloc_temp(MirType::I64);
@@ -390,6 +429,11 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
     ) -> Result<TypedOperand, LoweringError> {
         let result_vec = self.builder.alloc_temp(MirType::I64);
+        // The element size isn't known until the adapters have been lowered —
+        // `.map(|r| r.view.clone())` collects whatever the closure returns. Note
+        // where the call lands and fill the size in below; a bare `Vec_new()`
+        // defaulted to an 8-byte stride, so collecting structs overlapped them.
+        let vec_new_pos = self.builder.next_stmt_pos();
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_vec),
             func: FunctionRef::internal("Vec_new".to_string()),
@@ -397,10 +441,20 @@ impl<'a> MirLowerer<'a> {
         }));
 
         let setup = self.setup_iter_chain_loop(chain)?;
-        let (final_op, _) = self.apply_iter_adapters(
+        let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
             setup.inc_block, setup.idx,
         )?;
+        let elem_size = Self::mir_slot_size(&final_ty);
+        if elem_size > 0 {
+            self.builder.set_call_args(
+                vec_new_pos.0,
+                vec_new_pos.1,
+                "Vec_new",
+                vec![MirOperand::Constant(MirConst::Int(elem_size))],
+            );
+            self.collected_elem_types.insert(result_vec, final_ty);
+        }
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,

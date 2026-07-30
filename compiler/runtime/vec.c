@@ -351,25 +351,44 @@ void rask_vec_sort(RaskVec *v) {
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_i64_compare);
 }
 
-// sort_by(vec, comparator_fn) — in-place sort with closure comparator.
-// The comparator is a function pointer: fn(a: i64, b: i64) -> i64
-// Returns negative for a<b, 0 for a==b, positive for a>b.
-static __thread int64_t rask_sort_comparator_fn;
+// sort_by(vec, comparator) — in-place sort with a closure comparator.
+//
+// `comparator` is a Rask closure block, not a bare function pointer: the code
+// address sits at offset 0 and the environment follows, and the call takes the
+// env as its first argument (see closures.rs). Calling the block address
+// directly jumped into the closure's own data.
+//
+// How the two elements are handed over follows codegen's own rule for
+// aggregates: anything wider than a word is a pointer to its storage, a word or
+// less is the value itself. That matches what the closure body compiles to —
+// `|a, b| a.rank.compare(b.rank)` reads fields through a pointer, while
+// `Vec<i64>` compares plain integers. Returns <0 / 0 / >0.
+typedef int64_t (*RaskCmpFn)(int64_t env, int64_t a, int64_t b);
+
+static __thread int64_t rask_sort_comparator;
+static __thread int rask_sort_by_ptr;
 
 static int rask_sort_by_adapter(const void *a, const void *b) {
-    typedef int64_t (*CmpFn)(int64_t, int64_t);
-    CmpFn fn = (CmpFn)(uintptr_t)rask_sort_comparator_fn;
-    int64_t va = *(const int64_t *)a;
-    int64_t vb = *(const int64_t *)b;
-    int64_t result = fn(va, vb);
+    RaskCmpFn fn = (RaskCmpFn)(uintptr_t)CLOSURE_FUNC(rask_sort_comparator);
+    int64_t env = CLOSURE_ENV(rask_sort_comparator);
+    int64_t va, vb;
+    if (rask_sort_by_ptr) {
+        va = (int64_t)(uintptr_t)a;
+        vb = (int64_t)(uintptr_t)b;
+    } else {
+        va = *(const int64_t *)a;
+        vb = *(const int64_t *)b;
+    }
+    int64_t result = fn(env, va, vb);
     if (result < 0) return -1;
     if (result > 0) return 1;
     return 0;
 }
 
 void rask_vec_sort_by(RaskVec *v, int64_t comparator) {
-    if (!v || v->len <= 1) return;
-    rask_sort_comparator_fn = comparator;
+    if (!v || v->len <= 1 || !comparator) return;
+    rask_sort_comparator = comparator;
+    rask_sort_by_ptr = v->elem_size > 8;
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_sort_by_adapter);
 }
 

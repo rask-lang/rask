@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A struct field whose type is another struct or enum must hold the value's
+// bytes, not a pointer to wherever the value happened to sit while the struct
+// was being built.
+//
+// Native codegen used to store the pointer whenever the field fit in 8 bytes.
+// It aimed at the constructing function's stack frame, so the field read back
+// correctly until something reused that frame — then an enum field came out
+// with an out-of-range tag and an exhaustive match trapped (#474). Fields
+// bigger than 8 bytes were copied and never had the problem.
+//
+// Each test builds the value in a callee and reads it in the caller, with
+// enough work in between to reuse the frame.
+
+enum Kind {
+    A
+    B
+    C
+}
+
+struct Msg {
+    public kind: Kind
+    public path: string
+}
+
+struct Inner {
+    public n: i64
+}
+
+struct Outer {
+    public inner: Inner
+    public tag: string
+}
+
+func label(k: Kind) -> string {
+    match k {
+        A => return "A",
+        B => return "B",
+        C => return "C",
+    }
+}
+
+func kind_from(s: string) -> Kind? {
+    if s == "b" { return Kind.B }
+    if s == "c" { return Kind.C }
+    return none
+}
+
+// The enum arrives via an optional unwrap, so it lives in this frame.
+func make_msg(s: string) -> Msg {
+    const k = if kind_from(s)? as m { m } else { return Msg { kind: Kind.A, path: "-" } }
+    return Msg { kind: k, path: "/health" }
+}
+
+func make_outer() -> Outer {
+    const i = Inner { n: 42 }
+    return Outer { inner: i, tag: "/x" }
+}
+
+// Burn a frame the same size-ish as the builder's, so a stale pointer reads
+// something other than what was written.
+func churn() -> i64 {
+    mut total = 0
+    mut i = 0
+    while i < 8 {
+        const scratch = Msg { kind: Kind.A, path: "scratch" }
+        total += scratch.path.len() truncate to i64
+        i += 1
+    }
+    return total
+}
+
+test "codegen — enum field survives the builder's frame" {
+    const m = make_msg("c")
+    const burned = churn()
+    assert burned > 0
+    assert label(m.kind) == "C"
+    assert m.path == "/health"
+}
+
+test "codegen — enum field matches through a plain call" {
+    const m = make_msg("b")
+    assert m.kind is Kind.B
+    assert label(m.kind) == "B"
+}
+
+// A qualified variant pattern has to resolve to that variant's tag, not to 0
+// (#476). Every variant is checked so a wrong-but-constant tag can't pass.
+test "codegen — `is Enum.Variant` picks the right tag" {
+    const a = Kind.A
+    const b = Kind.B
+    const c = Kind.C
+    assert a is Kind.A
+    assert !(a is Kind.B)
+    assert !(a is Kind.C)
+    assert !(b is Kind.A)
+    assert b is Kind.B
+    assert !(b is Kind.C)
+    assert !(c is Kind.A)
+    assert !(c is Kind.B)
+    assert c is Kind.C
+}
+
+test "codegen — 8-byte struct field survives the builder's frame" {
+    const o = make_outer()
+    const burned = churn()
+    assert burned > 0
+    assert o.inner.n == 42
+    assert o.tag == "/x"
+}

@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// json.encode on the shapes a real response body has.
+//
+// Three things were wrong on native. A `Vec<T>` field matched the nested-struct
+// branch, because `find_struct("Vec")` succeeds against the stdlib layout, so
+// `"items":[…]` came out as `"items":{}`. A bare `json.encode(vec)` on a Vec
+// built by `push` had no element type — the checker leaves that an inference
+// variable — and encoded a Vec of structs as `[1,2]`. And a `T?` field went
+// through json_buf_add_i64, writing the address of the option's storage where
+// `null` belongs.
+//
+// Checked with `contains` rather than whole-string equality: a `{` in a string
+// literal opens interpolation, so the expected JSON can't be written as a
+// literal, and the two backends order object keys differently (interpreter
+// alphabetically, native in declaration order).
+
+import json
+
+struct View {
+    public id: u64
+    public title: string
+}
+
+struct Page {
+    public items: Vec<View>
+    public total: usize
+    public offset: usize
+}
+
+struct WithOptional {
+    public id: u64
+    public who: u64?
+    public note: string?
+}
+
+func views() -> Vec<View> {
+    mut v = Vec.new()
+    v.push(View { id: 1, title: "one" })
+    v.push(View { id: 2, title: "two" })
+    return v
+}
+
+test "stdlib.encoding — a Vec of structs encodes as an array of objects" {
+    const encoded = json.encode(views())
+    assert encoded.starts_with("[")
+    assert encoded.ends_with("]")
+    assert encoded.contains("\"id\":1")
+    assert encoded.contains("\"title\":\"one\"")
+    assert encoded.contains("\"id\":2")
+    assert encoded.contains("\"title\":\"two\"")
+}
+
+test "stdlib.encoding — a Vec field encodes as an array, not an object" {
+    const page = Page { items: views(), total: 2, offset: 0 }
+    const encoded = json.encode(page)
+    assert encoded.contains("\"items\":[")
+    assert encoded.contains("\"title\":\"one\"")
+    assert encoded.contains("\"title\":\"two\"")
+    assert encoded.contains("\"total\":2")
+    assert encoded.contains("\"offset\":0")
+}
+
+test "stdlib.encoding — an empty Vec field encodes as an empty array" {
+    const empty = Vec.new()
+    const page = Page { items: empty, total: 0, offset: 0 }
+    const encoded = json.encode(page)
+    assert encoded.contains("\"items\":[]")
+}
+
+// Only the absent case: wrapping a value into a `T?` field miscompiles on
+// native independently of the encoder (#498).
+test "stdlib.encoding — an absent optional field encodes as null" {
+    const r = WithOptional { id: 4, who: none, note: none }
+    const encoded = json.encode(r)
+    assert encoded.contains("\"id\":4")
+    assert encoded.contains("\"who\":null")
+    assert encoded.contains("\"note\":null")
+}

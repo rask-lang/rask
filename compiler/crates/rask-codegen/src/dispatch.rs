@@ -52,6 +52,9 @@ pub enum ArgAdapt {
     AppendElemSize,
     /// Atomic compare-exchange: append an out_ok pointer (result written there).
     AtomicCas,
+    /// parse: append an out-param for the value; the call returns 0/1 status,
+    /// which becomes the `T or ParseError` tag.
+    ParseOutParam,
     /// Complex case handled by hand-written code
     Custom,
 }
@@ -318,25 +321,88 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_ends_with", "rask_string_ends_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_contains", "rask_string_contains", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_byte_at", "rask_string_byte_at", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse", "rask_string_parse_float", &[types::I64], Some(types::F64), false),
-        StdlibEntry::simple("string_parse_int", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_float", "rask_string_parse_float", &[types::I64], Some(types::F64), false),
         // parse<T> mangles the type argument into the name, so every width needs
         // an entry or the call has nothing to dispatch to. All integer widths
-        // share the one runtime parse; it returns i64 and the caller's Result
-        // slot narrows it.
-        StdlibEntry::simple("string_parse_i8", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_i16", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_i32", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_i64", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_isize", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_u8", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_u16", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_u32", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_u64", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_usize", "rask_string_parse_int", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_parse_f32", "rask_string_parse_float", &[types::I64], Some(types::F64), false),
-        StdlibEntry::simple("string_parse_f64", "rask_string_parse_float", &[types::I64], Some(types::F64), false),
+        // share the one runtime parse; the caller's Result slot narrows it.
+        //
+        // These use the *_into runtime entry points: the value comes back
+        // through an out-param and the return value is a 0/1 status, so an
+        // unparseable string becomes Err instead of Ok(0) (#472).
+        StdlibEntry {
+            mir_name: "string_parse", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_int", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_float", c_name: "rask_string_parse_float_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_i8", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_i16", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_i32", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_i64", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_isize", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_u8", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_u16", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_u32", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_u64", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_usize", c_name: "rask_string_parse_int_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_f32", c_name: "rask_string_parse_float_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_f64", c_name: "rask_string_parse_float_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
+        },
 
         // String-producing operations (out-param)
         StdlibEntry {
@@ -735,7 +801,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("json_buf_new", "rask_json_buf_new", &[], Some(types::I64), false),
         StdlibEntry::simple("json_buf_add_string", "rask_json_buf_add_string", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("json_buf_add_i64", "rask_json_buf_add_i64", &[types::I64, types::I64, types::I64], None, false),
-        StdlibEntry::simple("json_buf_add_f64", "rask_json_buf_add_f64", &[types::I64, types::I64, types::I64], None, false),
+        // The value param is a `double` in the runtime. Declaring it I64 put the
+        // f64 in an integer register, so every float in an encoded object came
+        // out as a denormal (#478). The array variant below had it right.
+        StdlibEntry::simple("json_buf_add_f64", "rask_json_buf_add_f64", &[types::I64, types::I64, types::F64], None, false),
         StdlibEntry::simple("json_buf_add_bool", "rask_json_buf_add_bool", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("json_buf_add_raw", "rask_json_buf_add_raw", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry {

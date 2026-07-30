@@ -1,20 +1,64 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Compilation cache — XC1-XC5.
 //!
-//! Caches compiled .o files keyed by a hash of source content + profile + target.
-//! Skips codegen entirely when the cache hits.
+//! Caches compiled .o files keyed by source content + profile + target + which
+//! compiler produced them. Skips codegen entirely when the cache hits.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-/// Compute a cache key from source declarations, profile, and target.
+/// Identity of the `rask` binary that is running.
+///
+/// Nothing in a package's source says which compiler compiled it, so a key made
+/// only of source served objects built by a *previous* binary: rebuild the
+/// compiler, rebuild the package, and the old codegen gets relinked. A fix could
+/// look like it did nothing, and a miscompile could survive the change that fixed
+/// it — silently, which is the dangerous part.
+///
+/// Path + size + mtime of the running executable, which cargo changes on every
+/// rebuild. That also covers the stdlib: `stdlib/*.rk` is `include_str!`'d into
+/// the binary, so editing it changes the binary. Hashing the whole executable
+/// would be stricter but costs more than the build it is protecting — a package
+/// build is ~1s and the binary is tens of megabytes.
+pub fn compiler_fingerprint() -> u64 {
+    static FINGERPRINT: OnceLock<u64> = OnceLock::new();
+    *FINGERPRINT.get_or_init(|| {
+        let mut hasher = DefaultHasher::new();
+        env!("CARGO_PKG_VERSION").hash(&mut hasher);
+        if let Ok(exe) = std::env::current_exe() {
+            exe.hash(&mut hasher);
+            if let Ok(meta) = std::fs::metadata(&exe) {
+                meta.len().hash(&mut hasher);
+                if let Ok(mtime) = meta.modified() {
+                    if let Ok(since_epoch) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                        since_epoch.as_nanos().hash(&mut hasher);
+                    }
+                }
+            }
+        }
+        hasher.finish()
+    })
+}
+
+/// Compute a cache key from source declarations, profile, target, and compiler.
 /// Not cryptographic — just needs deterministic collision resistance for local use.
-pub fn compute_cache_key(source_hash_inputs: &[u8], profile: &str, target: &str) -> String {
+///
+/// `compiler` keeps two compilers' objects apart rather than invalidating on
+/// every switch, so alternating between a release and a debug build (or a
+/// worktree) still hits its own entries.
+pub fn compute_cache_key(
+    source_hash_inputs: &[u8],
+    profile: &str,
+    target: &str,
+    compiler: u64,
+) -> String {
     let mut hasher = DefaultHasher::new();
     source_hash_inputs.hash(&mut hasher);
     profile.hash(&mut hasher);
     target.hash(&mut hasher);
+    compiler.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 
@@ -131,8 +175,12 @@ pub struct BuildScriptCache {
 }
 
 /// Hash build.rk content + content of declared dependency files.
+///
+/// The compiler's identity counts here too: a build script is compiled Rask, so
+/// a new compiler can make the same `build.rk` behave differently.
 pub fn hash_build_inputs(build_rk_content: &str, dep_paths: &[PathBuf]) -> u64 {
     let mut hasher = DefaultHasher::new();
+    compiler_fingerprint().hash(&mut hasher);
     build_rk_content.hash(&mut hasher);
     // Sort dep paths for deterministic ordering
     let mut sorted: Vec<_> = dep_paths.to_vec();
@@ -233,4 +281,55 @@ fn parse_link_state(content: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
     }
 
     (libs, search_paths, objects)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The whole point of the compiler component: the same source compiled by a
+    // different binary must not hit the same cache entry. Without it a rebuilt
+    // compiler relinked the previous binary's objects and a codegen fix looked
+    // like it did nothing.
+    #[test]
+    fn cache_key_separates_compilers() {
+        let src = b"same source";
+        let a = compute_cache_key(src, "debug", "native", 0x1111);
+        let b = compute_cache_key(src, "debug", "native", 0x2222);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn cache_key_is_stable_for_the_same_inputs() {
+        let src = b"same source";
+        let a = compute_cache_key(src, "debug", "native", 0x1111);
+        let b = compute_cache_key(src, "debug", "native", 0x1111);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn cache_key_still_separates_source_profile_and_target() {
+        let fp = 0x1111;
+        let base = compute_cache_key(b"a", "debug", "native", fp);
+        assert_ne!(base, compute_cache_key(b"b", "debug", "native", fp));
+        assert_ne!(base, compute_cache_key(b"a", "release", "native", fp));
+        assert_ne!(base, compute_cache_key(b"a", "debug", "wasm32", fp));
+    }
+
+    // Two calls in one process describe one binary, so the fingerprint has to be
+    // the same both times or every build would miss its own cache.
+    #[test]
+    fn compiler_fingerprint_is_stable_within_a_process() {
+        assert_eq!(compiler_fingerprint(), compiler_fingerprint());
+    }
+
+    #[test]
+    fn build_script_hash_includes_the_compiler() {
+        // Can't vary the fingerprint inside one process, so check the weaker
+        // property the caller depends on: the compiler is mixed in at all, so
+        // this hash isn't just the content hash.
+        let mut content_only = DefaultHasher::new();
+        "build".hash(&mut content_only);
+        assert_ne!(hash_build_inputs("build", &[]), content_only.finish());
+    }
 }

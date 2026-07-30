@@ -19,7 +19,6 @@ t13_map.rk                 # Map<_,string> in a test block = 0 tests — #390 (n
 # --- interpreter lag (native correct) ---
 t17b_result.rk             # interp T-or-E type-pattern discrimination wrong — #391 (interp)
 t27_error_narrowing.rk     # interp T-or-E discrimination + && is-pattern binding — #391, #256 (interp)
-t36_cross_task_ownership.rk # interp doesn't register spawn builtin — #267 (interp)
 
 # --- shared / both-backend bugs ---
 t20_control_expressions.rk # interp labeled break/continue + native f64 enum payload + && is-pattern — #392, #388, #256 (both)
