@@ -57,6 +57,10 @@ and file what you learned — that's a finished piece of work, not a blocker.
 
 - Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
 - Fix causes, not symptoms.
+- **When a reduction won't reproduce, stop writing reductions.** Guessing at what's
+  essential can cost hours and still miss. Copy the real program, instrument it —
+  print each field, each hop — and let it tell you which one is wrong. Two of this
+  round's bugs were found in one pass that way after several failed guesses.
 - **Pre-existing errors that surface during unrelated work get filed, not ignored.** If a test fails, the compiler panics, or a spec breaks for reasons unrelated to your current change, search `rask-lang/rask` issues first; if it's not tracked, open one with a minimal repro before moving on. Don't paper over it, don't only mention it in chat, don't bundle it into the current commit silently.
 
 **Tool usage:**
