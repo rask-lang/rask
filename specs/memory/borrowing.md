@@ -148,6 +148,8 @@ with config.write() as c {
 
 For non-Copy types, `const x = collection[key]` is a compile error. Use `.clone()` or `with` for multi-statement access.
 
+An inline sync write is at most one store: if the right-hand side panics, the lock releases with nothing written (`ctrl.panic/U4`), so a single inline assignment can't leave a multi-field invariant half-done. A method call in the chain can still panic mid-mutation — that's `ctrl.panic/LK3`, same as anywhere.
+
 ## Multi-Statement Access (`with...as`)
 
 `with` is a first-class block scope for multi-statement access to collection elements, Cell, Shared, and Mutex values. Not sugar for closures — `return`, `try`, `break`, and `continue` work naturally.
