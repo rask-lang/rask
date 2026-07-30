@@ -365,6 +365,11 @@ impl Interpreter {
                 if self.struct_decls.contains_key(base_name) {
                     return Ok(Value::Type(base_name.to_string()));
                 }
+                // Prelude free functions from stdlib/async.rk. These are usable
+                // unqualified inside `using Multitasking`, without an import.
+                if let Some(kind) = super::register::prelude_builtin(base_name) {
+                    return Ok(Value::Builtin(kind));
+                }
                 Err(RuntimeDiagnostic::new(RuntimeError::UndefinedVariable(name.clone()), expr.span))
             }
 
@@ -425,7 +430,19 @@ impl Interpreter {
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
-                let func_val = self.eval_expr(func)?;
+                // A bare name in call position is a function, not a variable —
+                // report it as one so the help points at the right thing.
+                let func_val = self.eval_expr(func).map_err(|diag| {
+                    match (&diag.error, &func.kind) {
+                        (RuntimeError::UndefinedVariable(n), ExprKind::Ident(_)) => {
+                            RuntimeDiagnostic::new(
+                                RuntimeError::UndefinedFunction(n.clone()),
+                                diag.span,
+                            )
+                        }
+                        _ => diag,
+                    }
+                })?;
                 let arg_vals: Vec<Value> = args
                     .iter()
                     .map(|a| self.eval_expr(&a.expr))

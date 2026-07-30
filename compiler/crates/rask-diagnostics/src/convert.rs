@@ -1483,7 +1483,10 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                 Diagnostic::error(format!("undefined function `{}`", name))
                     .with_code("R0004")
                     .with_primary(self.span, "not found in scope")
-                    .with_help("check the function name or ensure it's declared before use")
+                    .with_help(
+                        "check the spelling, import the module that declares it, \
+                         or — if it is a stdlib function — this backend may not implement it yet",
+                    )
             }
 
             RuntimeError::TypeError(msg) => {
