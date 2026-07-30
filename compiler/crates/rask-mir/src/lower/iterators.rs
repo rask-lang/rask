@@ -157,6 +157,26 @@ impl<'a> MirLowerer<'a> {
                     return Ok(Some(result));
                 }
             }
+            // `v.map(f)` / `v.filter(f)` standing on their own produce a Vec, so
+            // they're a chain with an implicit `.collect()`. Reaching here at
+            // all means this adapter is the outermost call — when it's part of
+            // a longer chain the terminal consumes it and this never runs.
+            //
+            // Without it these fell through to `Vec_map`, a runtime function
+            // that ignores the closure-object/env ABI and segfaulted (#441).
+            "map" | "filter" if args.len() == 1 => {
+                if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
+                    if let Some(mut chain) = self.try_parse_iter_chain(object) {
+                        chain.adapters.push(if method == "map" {
+                            super::IterAdapter::Map { closure: &args[0].expr }
+                        } else {
+                            super::IterAdapter::Filter { closure: &args[0].expr }
+                        });
+                        let result = self.lower_iter_collect(&chain)?;
+                        return Ok(Some(result));
+                    }
+                }
+            }
             "any" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {

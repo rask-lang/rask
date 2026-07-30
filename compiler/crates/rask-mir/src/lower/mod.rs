@@ -907,6 +907,12 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         match args.first()? {
+            // An unresolved inference variable is not an answer. It lowers to
+            // Ptr, which is indistinguishable from a genuine `Vec<SomeStruct>`,
+            // so accepting it here shadowed the fallbacks that *do* know —
+            // `Vec.from([1, 2, 3])` ended up with a pointer element type and
+            // `|x| { return x + 1 }` compiled to pointer arithmetic (x + 8).
+            rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
             rask_types::GenericArg::Type(inner) => Some(self.ctx.type_to_mir(inner)),
             _ => None,
         }
@@ -948,6 +954,37 @@ impl<'a> MirLowerer<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Element type of anything that can be fed to `Vec.from` — an array
+    /// literal, another Vec, a slice.
+    pub(crate) fn iterable_elem_of(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            match ty {
+                // An unresolved element is no answer — it lowers to Ptr, which
+                // reads as a real aggregate element and shadows the fallbacks
+                // below that do know.
+                Type::Array { elem, .. } | Type::Slice(elem)
+                    if !matches!(**elem, Type::Var(_)) =>
+                {
+                    return Some(self.ctx.type_to_mir(elem))
+                }
+                _ => {}
+            }
+        }
+        // The literal's own type can be unresolved while its entries are
+        // concrete: `Vec.from([1, 2, 3])` leaves the checker with `Vec<?>` but
+        // the 1 is plainly an integer.
+        if let ExprKind::Array(elements) = &expr.kind {
+            if let Some(first) = elements.first() {
+                if let Some(ty) = self.ctx.lookup_raw_type(first.id) {
+                    if !matches!(ty, Type::Var(_)) {
+                        return Some(self.ctx.type_to_mir(ty));
+                    }
+                }
+            }
+        }
+        self.vec_elem_of_expr(expr)
     }
 
     /// Value type of a `Map<K, V>` receiver, for sizing what `get` hands back.

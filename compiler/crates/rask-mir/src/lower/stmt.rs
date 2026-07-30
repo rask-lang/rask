@@ -993,7 +993,22 @@ impl<'a> MirLowerer<'a> {
                     }
                     _ => None,
                 },
-                ExprKind::MethodCall { object, method, .. } => {
+                ExprKind::MethodCall { object, method, args, .. } => {
+                    // `Vec.from([1, 2, 3])` — the receiver is the type name, not
+                    // a tracked local, so the prefix lookup below finds nothing.
+                    // Take the element type off the argument instead. Left
+                    // unknown, the loop element defaulted to a pointer and
+                    // `|x| { return x + 1 }` compiled to pointer arithmetic:
+                    // x + 8 instead of x + 1.
+                    if matches!(&object.kind, ExprKind::Ident(n) if n == "Vec")
+                        && method == "from"
+                    {
+                        if let Some(arg) = args.first() {
+                            if let Some(elem) = self.iterable_elem_of(&arg.expr) {
+                                return Some(elem);
+                            }
+                        }
+                    }
                     let prefix = match &object.kind {
                         ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
                         _ => None,
