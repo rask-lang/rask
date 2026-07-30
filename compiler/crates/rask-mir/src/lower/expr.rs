@@ -3385,9 +3385,13 @@ impl<'a> MirLowerer<'a> {
             // Prefer the checker's type; rebuild it from the mangled type
             // argument when node types aren't available (instantiated bodies).
             //
-            // Integer targets only: the float parse returns a raw f64 from the
-            // runtime, which the Result-wrapping store path can't box, so
-            // `parse<f64>` keeps its scalar return.
+            // Integer targets only. The runtime shape is the same for floats
+            // (status return, value through an out-param) and the codegen
+            // adapter already handles a float writer, so this looks liftable —
+            // it isn't. Giving `parse<f64>` a Result type makes something
+            // downstream treat the f64 payload as a pointer, and stdlib
+            // `JsonParser_parse_number` stops compiling on a Cranelift verifier
+            // error. Tried it, reverted it; see #480.
             Some(self.ctx.lookup_node_type(expr.id)
                 .filter(|t| matches!(t, MirType::Result { .. }))
                 .unwrap_or_else(|| MirType::Result {
