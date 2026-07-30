@@ -4,7 +4,7 @@
 
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
-    operand::MirConst, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
+    operand::{BinOp, MirConst}, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType,
     types::RESULT_PAYLOAD_OFFSET,
 };
@@ -622,6 +622,14 @@ impl<'a> MirLowerer<'a> {
             (true, "ok", 0) => self.lower_result_ok(expr, obj_op.clone(), obj_ty.clone()).map(Some),
             (false, "map", 1) => self.lower_option_map(expr, obj_op.clone(), obj_ty.clone(), &args[0].expr).map(Some),
             (false, "filter", 1) => self.lower_option_filter(expr, obj_op.clone(), obj_ty.clone(), &args[0].expr).map(Some),
+            // Tag predicates. Stubbed for the checker, never implemented for
+            // codegen — the call reached `Result_is_err`, which doesn't exist.
+            (true, "is_err", 0) | (false, "is_none", 0) => {
+                Ok(Some(self.lower_result_tag_test(obj_op.clone(), true)))
+            }
+            (true, "is_ok", 0) | (false, "is_some", 0) => {
+                Ok(Some(self.lower_result_tag_test(obj_op.clone(), false)))
+            }
             _ => Ok(None),
         };
         // If the inline lowering fails because the receiver's MIR type
@@ -631,6 +639,28 @@ impl<'a> MirLowerer<'a> {
             Err(LoweringError::InvalidConstruct(msg)) if msg.contains("receiver must be") => Ok(None),
             other => other,
         }
+    }
+
+    /// `is_ok`/`is_err` (and the `T?` spellings `is_some`/`is_none`) as a tag
+    /// comparison. A nonzero tag is the error/absent side, matching how every
+    /// other Result lowering here branches on it.
+    fn lower_result_tag_test(&mut self, obj_op: MirOperand, want_err: bool) -> super::TypedOperand {
+        let tag_local = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag_local,
+            rvalue: MirRValue::EnumTag { value: obj_op },
+        }));
+
+        let out = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: out,
+            rvalue: MirRValue::BinaryOp {
+                op: if want_err { BinOp::Ne } else { BinOp::Eq },
+                left: MirOperand::Local(tag_local),
+                right: MirOperand::Constant(MirConst::Int(0)),
+            },
+        }));
+        (MirOperand::Local(out), MirType::Bool)
     }
 
     /// Inline `result.map(closure)` for Result<T, E>:
