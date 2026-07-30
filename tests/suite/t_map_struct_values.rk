@@ -71,3 +71,45 @@ test "stdlib.collections — a local Map of structs reads back whole" {
     assert found.id.value == 7
     assert found.active
 }
+
+// A `Map.get` inside a method body whose nodes the checker never typed — the
+// shape every stdlib accessor has. The value type then has to come from the
+// struct layout, or the option is sized for an 8-byte payload: a `string` value
+// lost half of its 16 bytes, and returning that undersized option made the
+// caller copy eight bytes past the end of it.
+struct Headers {
+    entries: Map<string, string>
+}
+
+extend Headers {
+    func new() -> Headers { return Headers { entries: Map.new() } }
+
+    func set(mutate self, name: string, value: string) -> void {
+        self.entries.insert(name.to_lowercase(), value)
+    }
+
+    func get(self, name: string) -> string? {
+        return self.entries.get(name.to_lowercase())
+    }
+}
+
+test "stdlib.collections — a string map value survives get through an accessor" {
+    mut h = Headers.new()
+    h.set("Authorization", "Bearer dev-secret")
+    h.set("Host", "localhost")
+
+    const opt = h.get("Authorization")
+    const present = opt?
+    assert present
+
+    // Calls in between: the undersized option aliased the callee's frame, so
+    // the damage only showed once something else had used that stack.
+    const noise = "x".concat("y").concat("z")
+    assert noise == "xyz"
+
+    const header = opt ?? "MISSING"
+    assert header.len() == 17
+    assert header == "Bearer dev-secret"
+    assert (h.get("Host") ?? "MISSING") == "localhost"
+    assert (h.get("Nope") ?? "MISSING") == "MISSING"
+}

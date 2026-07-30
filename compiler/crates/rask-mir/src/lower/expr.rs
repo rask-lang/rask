@@ -3305,7 +3305,9 @@ impl<'a> MirLowerer<'a> {
             // `i64?` copied only the value's first word — `self.users.get(id)`
             // handed back eight bytes of a `User` and reading a field off it
             // dereferenced the id.
-            let payload = self.extract_payload_type(expr).unwrap_or(MirType::I64);
+            let payload = self.extract_payload_type(expr)
+                .or_else(|| self.map_value_mir(object))
+                .unwrap_or(MirType::I64);
             Some(MirType::Option(Box::new(payload)))
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.

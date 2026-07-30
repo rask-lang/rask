@@ -911,6 +911,58 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Value type of a `Map<K, V>` receiver, for sizing what `get` hands back.
+    ///
+    /// The checker's type first, then the struct layout for a `self.field`
+    /// receiver, then a variable's recorded `Map<K, V>` annotation. Stdlib bodies
+    /// carry synthesized node IDs the checker never typed — `Headers.get` calling
+    /// `self.entries.get(…)` is exactly that — so the layout path is the one that
+    /// answers there.
+    pub(crate) fn map_value_mir(&self, receiver: &Expr) -> Option<MirType> {
+        fn value_of(ty: &Type, lower: &MirLowerer<'_>) -> Option<MirType> {
+            let (name, args) = match ty {
+                Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+                Type::Generic { base, args } => (lower.ctx.type_names.get(base)?.clone(), args),
+                _ => return None,
+            };
+            if name != "Map" {
+                return None;
+            }
+            match args.get(1)? {
+                rask_types::GenericArg::Type(v) => Some(lower.ctx.type_to_mir(v)),
+                _ => None,
+            }
+        }
+
+        if let Some(ty) = self.ctx.lookup_raw_type(receiver.id) {
+            if let Some(v) = value_of(ty, self) {
+                return Some(v);
+            }
+        }
+
+        match &receiver.kind {
+            ExprKind::Field { object, field } => {
+                let base_ty = match &object.kind {
+                    ExprKind::Ident(name) => self.locals.get(name).map(|(_, t)| t.clone()),
+                    _ => None,
+                }?;
+                let MirType::Struct(crate::types::StructLayoutId { id, .. }) = base_ty else {
+                    return None;
+                };
+                let layout = self.ctx.struct_layouts.get(id as usize)?;
+                let f = layout.fields.iter().find(|f| f.name == *field)?;
+                value_of(&f.ty, self)
+            }
+            ExprKind::Ident(name) => {
+                let full = self.meta(name).and_then(|m| m.full_type.clone())?;
+                let inner = full.strip_prefix("Map<")?.strip_suffix('>')?;
+                let comma = find_top_level_comma(inner)?;
+                Some(self.ctx.resolve_type_str(inner[comma + 1..].trim()))
+            }
+            _ => None,
+        }
+    }
+
     /// Is `name` a nominal newtype with no layout of its own?
     pub(crate) fn is_transparent_newtype(&self, name: &str) -> bool {
         self.ctx.nominal_underlying.contains_key(name)
