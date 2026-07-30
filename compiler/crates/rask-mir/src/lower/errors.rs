@@ -211,16 +211,7 @@ impl<'a> MirLowerer<'a> {
                 None
             })
             .unwrap_or(MirType::I64);
-        let ok_val = self.builder.alloc_temp(ok_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: ok_val,
-            rvalue: MirRValue::Field {
-                base: result,
-                field_index: 0,
-                byte_offset: None,
-                field_size: None,
-            },
-        }));
+        let ok_val = self.emit_result_ok_payload(result, &ok_ty);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
@@ -230,6 +221,34 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Try-else expression: `try expr else |e| { transform(e) }`
+    /// Read a Result's ok payload into a fresh local.
+    ///
+    /// Scalars need the explicit RESULT_PAYLOAD_OFFSET; aggregates use the
+    /// None fast-path, where the field access yields the payload slot's
+    /// address. Passing None for a scalar handed back that address instead of
+    /// the value — field 0 with no offset returns an address whenever *either*
+    /// side of the Result is an aggregate, and the error side usually is. That
+    /// is how `try f() else |e| …` produced a stack address in place of 42
+    /// (#389), and the same shape bit `?` narrowing earlier (#350).
+    fn emit_result_ok_payload(&mut self, result: MirOperand, ok_ty: &MirType) -> crate::LocalId {
+        let ok_val = self.builder.alloc_temp(ok_ty.clone());
+        let ok_is_aggregate = matches!(
+            ok_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+        );
+        let byte_offset = if ok_is_aggregate { None } else { Some(RESULT_PAYLOAD_OFFSET) };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: ok_val,
+            rvalue: MirRValue::Field {
+                base: result,
+                field_index: 0,
+                byte_offset,
+                field_size: None,
+            },
+        }));
+        ok_val
+    }
+
     pub(super) fn lower_try_else(&mut self, inner: &Expr, try_else: &TryElse) -> Result<TypedOperand, LoweringError> {
         let (result, result_ty) = self.lower_expr(inner)?;
 
@@ -365,16 +384,7 @@ impl<'a> MirLowerer<'a> {
                 _ => None,
             })
             .unwrap_or(MirType::I64);
-        let ok_val = self.builder.alloc_temp(ok_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: ok_val,
-            rvalue: MirRValue::Field {
-                base: result,
-                field_index: 0,
-                byte_offset: None,
-                field_size: None,
-            },
-        }));
+        let ok_val = self.emit_result_ok_payload(result, &ok_ty);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
