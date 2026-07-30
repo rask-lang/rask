@@ -26,6 +26,7 @@ If something genuinely seems wrong, flag it once with a concrete reason — then
 ### Don't re-litigate
 
 - **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
+- **The box family is closed.** `Cell`, `Pool`, `Shared`, `Mutex`, `Owned`, `Atomic*`, `string` are compiler types; users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/boxes.md` (BX1–BX4). Don't propose one.
 
 # Working relationship
 
