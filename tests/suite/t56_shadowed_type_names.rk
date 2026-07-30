@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program type may reuse a stdlib type's name. Calls must reach the program's
+// method, not the stdlib type's body that happens to mangle to the same symbol.
+//
+// Regression: rask#258. `JsonError_message` named two different bodies, and
+// monomorphization kept whichever declaration came last, so `mine.message()`
+// ran the stdlib enum's `match self` against a struct and crashed.
+
+struct JsonError {
+    detail: string
+}
+
+extend JsonError {
+    func message(self) -> string {
+        return "user: {self.detail}"
+    }
+}
+
+struct IoError {
+    path: string
+}
+
+extend IoError {
+    func message(self) -> string {
+        return "io: {self.path}"
+    }
+}
+
+test "program type shadowing a stdlib enum keeps its own method" {
+    const e = JsonError { detail: "boom" }
+    assert e.message() == "user: boom"
+}
+
+test "shadowing works for more than one stdlib name at once" {
+    const failure = IoError { path: "/tmp/x" }
+    assert failure.message() == "io: /tmp/x"
+}
+
+test "shadowed type still satisfies `T or E`" {
+    const failed = match load(true) {
+        i32 as v => "ok: {v}"
+        JsonError as e => e.message()
+    }
+    assert failed == "user: no config"
+
+    assert load(false)! == 7
+}
+
+func load(fail: bool) -> i32 or JsonError {
+    if fail {
+        return JsonError { detail: "no config" }
+    }
+    return 7
+}
+
+func main() {
+    const e = JsonError { detail: "boom" }
+    println(e.message())
+}

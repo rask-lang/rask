@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use rask_ast::NodeId;
+
 use super::builtins::BuiltinModules;
 use super::type_defs::{BinaryStructInfo, TypeDef};
 use super::errors::TypeError;
@@ -28,6 +30,14 @@ pub struct TypeTable {
     pub(super) builtin_modules: BuiltinModules,
     /// B1–G4: binary struct metadata indexed by TypeId
     pub binary_structs: HashMap<TypeId, BinaryStructInfo>,
+    /// AST declarations contributing methods to each type: the `struct`/`enum`
+    /// itself plus every `extend` block bound to it.
+    ///
+    /// Two types can share a name — a program type shadows a stdlib one — and
+    /// then `type_names` only remembers the winner. Monomorphization needs the
+    /// loser's methods too, and a mangled `Type_method` string can't tell them
+    /// apart. Binding happens here, where the TypeId is still known.
+    pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
     /// G1: declared/derived trait conformances (nominal). TypeId → trait base
     /// names the type conforms to, from `extend T with Trait` and auto-derive.
     pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
@@ -48,6 +58,7 @@ impl TypeTable {
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
             binary_structs: HashMap::new(),
+            type_method_decls: HashMap::new(),
             conformances: HashMap::new(),
             conformance_conditions: HashMap::new(),
         };
@@ -172,6 +183,19 @@ impl TypeTable {
         }
         self.type_names.insert(name, id);
         id
+    }
+
+    /// Note that `decl` declares methods on `id`.
+    pub fn record_method_decl(&mut self, id: TypeId, decl: NodeId) {
+        let decls = self.type_method_decls.entry(id).or_default();
+        if !decls.contains(&decl) {
+            decls.push(decl);
+        }
+    }
+
+    /// Every type that declares methods, paired with the declarations carrying them.
+    pub fn types_with_methods(&self) -> impl Iterator<Item = (TypeId, &[NodeId])> {
+        self.type_method_decls.iter().map(|(id, decls)| (*id, decls.as_slice()))
     }
 
     /// Register a transparent type alias.

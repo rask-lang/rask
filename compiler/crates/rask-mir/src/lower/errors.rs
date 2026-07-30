@@ -57,13 +57,16 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(err_block);
         let err_ty = self.resolved_err_type(inner, &result_ty);
         let err_store_size = if err_ty.size() > 8 { Some(err_ty.size()) } else { None };
+        let err_byte_offset = self.payload_byte_offset(&err_ty);
         let err_val = self.builder.alloc_temp(err_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: err_val,
             rvalue: MirRValue::Field {
                 base: result.clone(),
                 field_index: 0,
-                byte_offset: None,
+                // Explicit offset so a scalar err payload loads its value even when
+                // the ok side is an aggregate (same ambiguity as #389's ok-path fix).
+                byte_offset: err_byte_offset,
                 field_size: None,
             },
         }));
@@ -211,7 +214,19 @@ impl<'a> MirLowerer<'a> {
                 None
             })
             .unwrap_or(MirType::I64);
-        let ok_val = self.emit_result_ok_payload(result, &ok_ty);
+        let ok_val = self.builder.alloc_temp(ok_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: ok_val,
+            rvalue: MirRValue::Field {
+                base: result,
+                field_index: 0,
+                // Explicit offset so codegen loads the value at RESULT_PAYLOAD_OFFSET
+                // instead of guessing "aggregate" from the err side's type and handing
+                // back the slot address (#389).
+                byte_offset: self.payload_byte_offset(&ok_ty),
+                field_size: None,
+            },
+        }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
@@ -221,34 +236,6 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Try-else expression: `try expr else |e| { transform(e) }`
-    /// Read a Result's ok payload into a fresh local.
-    ///
-    /// Scalars need the explicit RESULT_PAYLOAD_OFFSET; aggregates use the
-    /// None fast-path, where the field access yields the payload slot's
-    /// address. Passing None for a scalar handed back that address instead of
-    /// the value — field 0 with no offset returns an address whenever *either*
-    /// side of the Result is an aggregate, and the error side usually is. That
-    /// is how `try f() else |e| …` produced a stack address in place of 42
-    /// (#389), and the same shape bit `?` narrowing earlier (#350).
-    fn emit_result_ok_payload(&mut self, result: MirOperand, ok_ty: &MirType) -> crate::LocalId {
-        let ok_val = self.builder.alloc_temp(ok_ty.clone());
-        let ok_is_aggregate = matches!(
-            ok_ty,
-            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
-        );
-        let byte_offset = if ok_is_aggregate { None } else { Some(RESULT_PAYLOAD_OFFSET) };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: ok_val,
-            rvalue: MirRValue::Field {
-                base: result,
-                field_index: 0,
-                byte_offset,
-                field_size: None,
-            },
-        }));
-        ok_val
-    }
-
     pub(super) fn lower_try_else(&mut self, inner: &Expr, try_else: &TryElse) -> Result<TypedOperand, LoweringError> {
         let (result, result_ty) = self.lower_expr(inner)?;
 
@@ -281,7 +268,9 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Field {
                 base: result.clone(),
                 field_index: 0,
-                byte_offset: None,
+                // Explicit offset so a scalar err payload loads its value even when
+                // the ok side is an aggregate (same ambiguity as #389's ok-path fix).
+                byte_offset: self.payload_byte_offset(&err_ty),
                 field_size: None,
             },
         }));
@@ -384,7 +373,20 @@ impl<'a> MirLowerer<'a> {
                 _ => None,
             })
             .unwrap_or(MirType::I64);
-        let ok_val = self.emit_result_ok_payload(result, &ok_ty);
+        let ok_val = self.builder.alloc_temp(ok_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: ok_val,
+            rvalue: MirRValue::Field {
+                base: result,
+                field_index: 0,
+                // Explicit offset so codegen loads the value at RESULT_PAYLOAD_OFFSET
+                // instead of guessing "aggregate" from the err side's type and handing
+                // back the slot address — the ok path of `try ... else` was still
+                // returning the slot address here after #467's partial fix (#389).
+                byte_offset: self.payload_byte_offset(&ok_ty),
+                field_size: None,
+            },
+        }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));

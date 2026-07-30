@@ -22,11 +22,13 @@ impl TypeChecker {
             match &decl.kind {
                 DeclKind::Struct(s) => {
                     self.check_declared_type_name(&s.name, "struct", decl.span);
-                    self.register_struct(s);
+                    let id = self.register_struct(s);
+                    self.types.record_method_decl(id, decl.id);
                 }
                 DeclKind::Enum(e) => {
                     self.check_declared_type_name(&e.name, "enum", decl.span);
-                    self.register_enum(e, decl.span);
+                    let id = self.register_enum(e, decl.span);
+                    self.types.record_method_decl(id, decl.id);
                 }
                 DeclKind::Trait(t) => {
                     self.check_declared_type_name(&t.name, "trait", decl.span);
@@ -70,7 +72,7 @@ impl TypeChecker {
         }
         for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
-                self.register_impl_methods(i);
+                self.register_impl_methods(i, decl.id);
             }
         }
         // ER3/ER4: validate `T or E` in declared field/payload/target types now
@@ -169,12 +171,13 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn register_impl_methods(&mut self, i: &ImplDecl) {
+    pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId) {
         let base_name = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
         let type_id = match self.types.get_type_id(base_name) {
             Some(id) => id,
             None => return,
         };
+        self.types.record_method_decl(type_id, decl_id);
         // G1: record each declared conformance. `scoped` methods stay out of the
         // inherent namespace (MN4) but the conformance is still declared.
         // CC1/CC2: a `where` clause makes every listed conformance conditional
@@ -201,7 +204,7 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn register_struct(&mut self, s: &StructDecl) {
+    pub(super) fn register_struct(&mut self, s: &StructDecl) -> crate::types::TypeId {
         let field_tys: Vec<(Span, Type)> = s
             .fields
             .iter()
@@ -275,9 +278,10 @@ impl TypeChecker {
         if let Some(info) = binary_info {
             self.types.register_binary_info(type_id, info);
         }
+        type_id
     }
 
-    pub(super) fn register_enum(&mut self, e: &EnumDecl, span: Span) {
+    pub(super) fn register_enum(&mut self, e: &EnumDecl, span: Span) -> crate::types::TypeId {
         // E16: If any variant has an explicit discriminant, all must
         let has_disc = e.variants.iter().any(|v| v.discriminant.is_some());
         let all_disc = e.variants.iter().all(|v| v.discriminant.is_some());
@@ -360,7 +364,7 @@ impl TypeChecker {
             // ER42/L1: refined by `propagate_resource_linearity` once all
             // declarations are visible.
             is_transitive_resource: false,
-        });
+        })
     }
 
     pub(super) fn register_trait(&mut self, t: &TraitDecl) {
@@ -974,8 +978,14 @@ impl TypeChecker {
                     if let Some(ext_decls) = self.resolved.external_decls.get(pkg_name).cloned() {
                         for ext_decl in &ext_decls {
                             match &ext_decl.kind {
-                                DeclKind::Struct(s) => self.register_struct(s),
-                                DeclKind::Enum(e) => self.register_enum(e, ext_decl.span),
+                                DeclKind::Struct(s) => {
+                                    let id = self.register_struct(s);
+                                    self.types.record_method_decl(id, ext_decl.id);
+                                }
+                                DeclKind::Enum(e) => {
+                                    let id = self.register_enum(e, ext_decl.span);
+                                    self.types.record_method_decl(id, ext_decl.id);
+                                }
                                 DeclKind::Trait(t) => self.register_trait(t),
                                 DeclKind::TypeAlias(a) => self.register_type_alias(a, ext_decl.span),
                                 _ => {}

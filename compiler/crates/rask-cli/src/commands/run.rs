@@ -236,7 +236,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                             }
                         }
                         Err(e) => {
-                            eprintln!("monomorphization error: {:?}", e);
+                            eprintln!("monomorphization error: {}", e);
                             process::exit(1);
                         }
                     }
@@ -376,7 +376,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
     let mono = match rask_mono::monomorphize(&result.typed, &result.decls) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("{}: mono: {:?}", output::error_label(), e);
+            eprintln!("{}: mono: {}", output::error_label(), e);
             return false;
         }
     };
@@ -1036,7 +1036,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         Ok(m) => m,
         Err(e) => {
             if format == Format::Human {
-                eprintln!("    {}: mono: {:?}", output::error_label(), e);
+                eprintln!("    {}: mono: {}", output::error_label(), e);
             }
             return Vec::new();
         }
