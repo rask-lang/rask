@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rask_compiler::{check_file, CompilerConfig, CfgConfig};
+use rask_compiler::{check_file, compile_file, CompilerConfig, CfgConfig};
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -103,6 +103,77 @@ fn call_targets_records_free_and_method_dispatch() {
         .any(|c| matches!(c, Callee::Method { method, .. } if method == "bump"));
     assert!(has_free, "free call `helper()` should record a Callee::Free");
     assert!(has_method, "method call `c.bump()` should record a Callee::Method{{..}}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn shadowing_a_stdlib_type_name_keeps_the_program_body() {
+    // #258: stdlib json.rk declares `enum JsonError` with a `message()` that
+    // matches on `self`. A program struct of the same name mangles to the same
+    // `JsonError_message`, and monomorphization used to keep whichever
+    // declaration came last — the stdlib enum — so the call ran a `match` over
+    // a struct and the compiled binary died on an illegal instruction.
+    let path = tmp_rk(r#"
+        struct JsonError {
+            detail: string
+        }
+        extend JsonError {
+            func message(self) -> string { return "user: {self.detail}" }
+        }
+        func main() {
+            const e = JsonError { detail: "boom" }
+            println(e.message())
+        }
+    "#);
+    let output = compile_file(path.to_str().unwrap(), Vec::new(), &default_config());
+    let result = output.result.expect("expected success");
+
+    let body = result.mono.functions.iter()
+        .find(|f| f.name == "JsonError_message")
+        .expect("`JsonError_message` should be reachable");
+
+    // The program's body returns an interpolated field; the stdlib enum's
+    // matches on self. Checking the shape catches a swap either way.
+    let src = format!("{:?}", body.body);
+    assert!(
+        !src.contains("Match"),
+        "`JsonError_message` lowered the stdlib enum's body, not the program's",
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn resolved_dispatch_does_not_drag_in_every_same_named_method() {
+    // Instance calls used to enqueue every method sharing the bare name, so one
+    // `error.message()` made every stdlib `message()` reachable. CALL6 already
+    // recorded the receiver type — use it.
+    let path = tmp_rk(r#"
+        struct AlphaError {}
+        extend AlphaError {
+            func message(self) -> string { return "alpha" }
+        }
+
+        struct BetaError {}
+        extend BetaError {
+            func message(self) -> string { return "beta" }
+        }
+
+        func main() {
+            const error = AlphaError {}
+            println(error.message())
+        }
+    "#);
+    let output = compile_file(path.to_str().unwrap(), Vec::new(), &default_config());
+    let result = output.result.expect("expected success");
+    let names: Vec<&str> = result.mono.functions.iter()
+        .map(|f| f.name.as_str())
+        .collect();
+
+    assert!(names.contains(&"AlphaError_message"));
+    assert!(
+        !names.contains(&"BetaError_message"),
+        "`AlphaError.message()` should not make `BetaError.message` reachable: {names:?}",
+    );
     let _ = std::fs::remove_file(&path);
 }
 

@@ -181,7 +181,7 @@ pub fn monomorphize_with_packages(
     decls: &[Decl],
     package_modules: std::collections::HashSet<String>,
 ) -> Result<MonoProgram, MonomorphizeError> {
-    let mut mono = Monomorphizer::new(decls, &program.call_type_args);
+    let mut mono = Monomorphizer::with_typed_program(decls, program);
     mono.set_package_modules(package_modules);
     mono.set_trait_coercions(&program.trait_coercions);
 
@@ -191,6 +191,14 @@ pub fn monomorphize_with_packages(
     mono.add_module_const_roots();
 
     mono.run();
+
+    if let Some(ambiguous) = mono.ambiguous_methods.first() {
+        return Err(MonomorphizeError::AmbiguousMethod {
+            type_name: ambiguous.type_name.clone(),
+            method: ambiguous.method.clone(),
+            span: ambiguous.span,
+        });
+    }
 
     // Compute layouts for concrete (non-generic) struct/enum types.
     let mut layout_cache = LayoutCache::new();
@@ -270,6 +278,38 @@ pub enum MonomorphizeError {
         type_name: String,
         reason: String,
     },
+    /// Two types share a name, both need `Type_method`, and only one can have
+    /// it. Compiled functions are keyed by that string all the way through
+    /// codegen, so the call has no body to reach.
+    AmbiguousMethod {
+        type_name: String,
+        method: String,
+        span: rask_ast::Span,
+    },
+}
+
+impl std::fmt::Display for MonomorphizeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoEntryPoint => write!(f, "no `main` function to compile from"),
+            Self::UnresolvedGeneric { function_name, type_param } => write!(
+                f,
+                "`{}` needs a concrete type for `{}`, but the call site never fixed one",
+                function_name, type_param,
+            ),
+            Self::LayoutError { type_name, reason } => {
+                write!(f, "cannot lay out `{}` in memory: {}", type_name, reason)
+            }
+            Self::AmbiguousMethod { type_name, method, .. } => write!(
+                f,
+                "two different types named `{0}` both define `{1}`, and this call needs \
+                 the one that isn't in scope here. Rename one of them — the compiled \
+                 program identifies the method as `{0}_{1}`, which can only mean one of \
+                 the two",
+                type_name, method,
+            ),
+        }
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────
