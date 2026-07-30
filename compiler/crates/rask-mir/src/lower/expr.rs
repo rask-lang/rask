@@ -3147,6 +3147,18 @@ impl<'a> MirLowerer<'a> {
                 self.ctx.find_struct(base).is_some()
                     || self.ctx.find_enum(base).is_some()
             });
+
+        // CALL6: what dispatch actually resolved to, when MIR can confirm the
+        // type exists here. The confirmation matters — the record is written
+        // before monomorphization, so a receiver typed as a bare type parameter
+        // (`T`) would otherwise mangle to `T_method`. Anything unconfirmed falls
+        // through to the guessing chain below, so this can only add precision.
+        let recorded_prefix = self.ctx.recorded_prefix(expr.id).filter(|prefix| {
+            let base = prefix.split('<').next().unwrap_or(prefix).trim();
+            self.ctx.find_struct(base).is_some()
+                || self.ctx.find_enum(base).is_some()
+                || rask_stdlib::mir_metadata::type_has_method(base, &method)
+        });
         // Inline Result/Option methods that have no runtime impl —
         // `.map(f)`, `.ok()`, `.filter(f)`. These were dispatching
         // to Vec_map et al. as a fallback and silently
@@ -3161,6 +3173,7 @@ impl<'a> MirLowerer<'a> {
         // `{Type}_{method}`. Dispatch is driven by the resolved receiver
         // type and the stub-derived metadata — not a hand-maintained
         // method-name table. Priority:
+        //   0. the receiver dispatch resolved to (CALL6), when MIR confirms it
         //   1. user struct/enum from the type checker
         //   2. tracked local/field type (LocalMeta, struct layout)
         //   3. resolved receiver type, when that stdlib type actually
@@ -3173,7 +3186,8 @@ impl<'a> MirLowerer<'a> {
             self.ctx.lookup_raw_type(object.id)
                 .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
         };
-        let qualified_name = user_type_prefix
+        let qualified_name = recorded_prefix
+            .or(user_type_prefix)
             .or_else(|| if let ExprKind::Ident(var_name) = &object.kind {
                 self.meta(var_name).and_then(|m| m.type_prefix.clone())
             } else {

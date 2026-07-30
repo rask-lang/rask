@@ -498,11 +498,14 @@ impl<'a> Monomorphizer<'a> {
                 // CALL6 already picked the receiver type. Use it rather than
                 // widening to every method sharing the bare name — that pulled
                 // in unrelated stdlib bodies and lowered them out of context.
+                // Only user-defined receivers steer reachability here. A stdlib
+                // receiver is recorded too, but its body isn't a user function
+                // to enqueue — those keep the name-based path below.
                 let dispatched = self.typed
                     .and_then(|typed| match typed.call_targets.get(&expr.id) {
-                        Some(Callee::Method { type_id, method }) => {
-                            Some((*type_id, typed.types.type_name(*type_id), method.clone()))
-                        }
+                        Some(callee @ Callee::Method { method, .. }) => callee
+                            .recv_type_id()
+                            .map(|id| (id, typed.types.type_name(id), method.clone())),
                         _ => None,
                     });
 

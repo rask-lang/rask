@@ -213,6 +213,14 @@ pub struct MirContext<'a> {
     pub trait_coercions: &'a HashMap<NodeId, String>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: &'a HashMap<NodeId, String>,
+    /// CALL6: the receiver type dispatch actually selected, per call node.
+    ///
+    /// Authoritative for method-name qualification. `node_types` holds the type
+    /// assigned to the receiver *expression*, which is frequently an unresolved
+    /// variable or missing outright; this is the applied type the checker
+    /// dispatched on, so lowering reads it instead of guessing a prefix from
+    /// the receiver's syntactic shape.
+    pub call_targets: &'a HashMap<NodeId, rask_types::Callee>,
     /// Type names marked with `@resource` — used for resource tracking ops (C1/C2).
     pub resource_types: &'a std::collections::HashSet<String>,
     /// Nominal newtype name → the type it wraps, as a type string.
@@ -248,6 +256,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_types::Callee>> =
+            std::sync::LazyLock::new(HashMap::new);
         static EMPTY_RESOURCE_TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, String>> =
@@ -267,6 +277,7 @@ impl<'a> MirContext<'a> {
             trait_methods: HashMap::new(),
             trait_coercions: &EMPTY_COERCIONS,
             call_rewrites: &EMPTY_REWRITES,
+            call_targets: &EMPTY_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
             nominal_underlying: &EMPTY_NOMINAL,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -560,6 +571,21 @@ impl<'a> MirContext<'a> {
                 Some(name.clone())
             }
             _ => None,
+        }
+    }
+
+    /// CALL6: the method-name prefix dispatch chose for the call at `node`.
+    ///
+    /// This is the receiver type the checker actually resolved, so it stays
+    /// right where the syntactic guesses go wrong — a `self` receiver, a
+    /// pool-element binding, a Handle deref, a nominal newtype, an if-let
+    /// binding of a stdlib type. `None` means nothing was recorded (a call node
+    /// synthesized after checking) or the receiver is a primitive, which
+    /// qualifies through the MIR type instead.
+    pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
+        match self.call_targets.get(&node)? {
+            rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names),
+            rask_types::Callee::Free(_) => None,
         }
     }
 
@@ -3857,6 +3883,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
+        let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let ctx = MirContext {
@@ -3874,6 +3901,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
+            call_targets: &empty_targets,
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -3916,6 +3944,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
+        let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let ctx = MirContext {
@@ -3933,6 +3962,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
+            call_targets: &empty_targets,
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -3981,6 +4011,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_rewrites = HashMap::new();
+        let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let ctx = MirContext {
@@ -3998,6 +4029,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             call_rewrites: &empty_rewrites,
+            call_targets: &empty_targets,
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
