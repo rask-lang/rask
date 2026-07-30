@@ -92,7 +92,8 @@ SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match 
 **Three things that will waste your time:**
 
 - `stdlib/*.rk` is `include_str!`'d into the compiler (`rask-stdlib/src/stubs.rs`), and the C runtime is a static lib. Editing either does nothing until you rebuild — `cargo build --release -p rask-cli`, plus `cd compiler/runtime && make` first if you touched `runtime/*.c`.
-- A **failed** `rask build` exits 1 and leaves the previous binary in `build/debug/`. Run it without checking and you're testing old code — which reads exactly like "my fix didn't work". Don't pipe the build through `tail`; check the exit code. (Builds don't cache: source and compiler changes both take effect on every build.)
+- A **failed** `rask build` exits 1 and leaves the previous binary in `build/debug/`. Run it without checking and you're testing old code — which reads exactly like "my fix didn't work". Don't pipe the build through `tail`; check the exit code.
+- `rask build` caches object files in `build/.cache/*.o`, keyed on **source**. Nothing in the key covers the compiler, so after you rebuild `rask` the package relinks the old objects and your compiler fix appears to do nothing. `rm -rf build/.cache` before testing a compiler change against a package. (`rask run` / `rask compile` on a single file don't cache.)
 - `println` is fully buffered to a pipe, so output before a crash is lost. Always `stdbuf -o0 -e0 ./binary > log 2>&1`, or you'll place the crash earlier than it is.
 
 Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after editing `specs/*.md`.
