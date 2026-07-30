@@ -36,6 +36,23 @@ If something genuinely seems wrong, flag it once with a concrete reason — then
 - Don’t add yourself as a co-author to git commits.
 - When creating a PR, tag the issues it resolves in the body with closing keywords (`Closes #N` / `Fixes #N`) so GitHub auto-closes them on merge. Issues it only relates to get a plain `#N` reference.
 
+## Keep going
+
+**Don't hand back unless there's a decision only I can make.**
+
+Bug crunching has no decisions in it — work the whole list. A judgment call with a
+defensible answer isn't a decision for me: pick it, say which way you went, carry
+on. When the two backends disagree, the interpreter is the reference — read it
+instead of asking. "I've been at this a while" is not a reason to stop.
+
+Do stop for: a change that would make the flagship example worse, a spec question
+with no answer in `specs/`, or anything needing credentials or an outward-facing
+action.
+
+Messy is fine. A branch with eight fixes and two written-up dead ends beats three
+fixes and a status report. If a fix trades one failure for a worse one, revert it
+and file what you learned — that's a finished piece of work, not a blocker.
+
 ## Debugging discipline
 
 - Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
@@ -71,7 +88,7 @@ SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match 
 **Three things that will waste your time:**
 
 - `stdlib/*.rk` is `include_str!`'d into the compiler (`rask-stdlib/src/stubs.rs`), and the C runtime is a static lib. Editing either does nothing until you rebuild — `cargo build --release -p rask-cli`, plus `cd compiler/runtime && make` first if you touched `runtime/*.c`.
-- `rask build <pkg>` caches. A stale `build/` dir silently serves the old binary, so a fix looks like it didn't work. `rm -rf <pkg>/build` when a result surprises you.
+- A **failed** `rask build` exits 1 and leaves the previous binary in `build/debug/`. Run it without checking and you're testing old code — which reads exactly like "my fix didn't work". Don't pipe the build through `tail`; check the exit code. (Builds don't cache: source and compiler changes both take effect on every build.)
 - `println` is fully buffered to a pipe, so output before a crash is lost. Always `stdbuf -o0 -e0 ./binary > log 2>&1`, or you'll place the crash earlier than it is.
 
 Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after editing `specs/*.md`.
