@@ -78,11 +78,27 @@ test "codegen — enum field survives the builder's frame" {
     assert m.path == "/health"
 }
 
-// `m.kind is Kind.B` is deliberately not asserted here — an `is` pattern on a
-// fieldless enum is false on native regardless of this fix (#476).
 test "codegen — enum field matches through a plain call" {
     const m = make_msg("b")
+    assert m.kind is Kind.B
     assert label(m.kind) == "B"
+}
+
+// A qualified variant pattern has to resolve to that variant's tag, not to 0
+// (#476). Every variant is checked so a wrong-but-constant tag can't pass.
+test "codegen — `is Enum.Variant` picks the right tag" {
+    const a = Kind.A
+    const b = Kind.B
+    const c = Kind.C
+    assert a is Kind.A
+    assert !(a is Kind.B)
+    assert !(a is Kind.C)
+    assert !(b is Kind.A)
+    assert b is Kind.B
+    assert !(b is Kind.C)
+    assert !(c is Kind.A)
+    assert !(c is Kind.B)
+    assert c is Kind.C
 }
 
 test "codegen — 8-byte struct field survives the builder's frame" {

@@ -1872,16 +1872,42 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Look up the tag value for a variant name.
+    ///
+    /// Accepts both the bare and the qualified spelling. A pattern written
+    /// `Kind.B` arrives here as one string, and searching the layouts for a
+    /// variant literally named "Kind.B" never matched — so every `x is
+    /// Enum.Variant` compared the tag against 0 and only ever answered true for
+    /// the first variant (#476). `match` already stripped the qualifier.
+    ///
+    /// When the qualifier is there it also pins down which enum to look in,
+    /// which matters as soon as two enums share a variant name.
     fn variant_tag(&self, name: &str) -> i64 {
         // Well-known built-in variant tags
         match name {
             "Some" | "Ok" => 0,
             "None" | "Err" => 1,
             _ => {
-                // Search enum layouts for user-defined variants
+                let (enum_name, bare) = match name.rsplit_once('.') {
+                    Some((qualifier, variant)) => (
+                        Some(qualifier.rsplit('.').next().unwrap_or(qualifier)),
+                        variant,
+                    ),
+                    None => (None, name),
+                };
+                if let Some(enum_name) = enum_name {
+                    for layout in self.ctx.enum_layouts.iter().filter(|l| l.name == enum_name) {
+                        for variant in &layout.variants {
+                            if variant.name == bare {
+                                return variant.tag as i64;
+                            }
+                        }
+                    }
+                }
+                // Unqualified, or the qualifier named no known enum: first
+                // layout that declares the variant.
                 for layout in self.ctx.enum_layouts {
                     for variant in &layout.variants {
-                        if variant.name == name {
+                        if variant.name == bare {
                             return variant.tag as i64;
                         }
                     }
