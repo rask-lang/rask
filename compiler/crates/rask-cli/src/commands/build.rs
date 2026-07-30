@@ -700,7 +700,9 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
         let source_hash = super::cache::hash_source_files(&source_files);
         let target_str = opts.target.as_deref().unwrap_or("native");
-        let cache_key = super::cache::compute_cache_key(&source_hash, &opts.profile, target_str);
+        let compiler_fp = super::cache::compiler_fingerprint();
+        let cache_key =
+            super::cache::compute_cache_key(&source_hash, &opts.profile, target_str, compiler_fp);
         let cache_dir = root.join("build").join(".cache");
 
         let obj_path = out_dir.join(format!("{}.o", bin_name));
@@ -712,7 +714,11 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         if !opts.no_cache && !opts.force {
             if let Some(cached_obj) = super::cache::lookup(&cache_dir, &cache_key) {
                 if opts.verbose {
-                    println!("  {} (cache hit)", "Skipping codegen".dimmed());
+                    println!(
+                        "  {} (cache hit, compiler {:016x})",
+                        "Skipping codegen".dimmed(),
+                        compiler_fp
+                    );
                 }
                 if let Err(e) = std::fs::copy(&cached_obj, &obj_path) {
                     eprintln!("warning: cache copy failed: {}", e);
