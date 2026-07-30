@@ -851,6 +851,23 @@ impl<'a> MirLowerer<'a> {
         self.ctx.const_slot_types.borrow().get(name).cloned()
     }
 
+    /// Element MIR type of a checker `Vec<T>`, in either the pre-resolve
+    /// (`UnresolvedGeneric`) or resolved (`Generic`) spelling.
+    pub(crate) fn vec_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+        let (name, args) = match ty {
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            Type::Generic { base, args } => (self.ctx.type_names.get(base)?.clone(), args),
+            _ => return None,
+        };
+        if name != "Vec" {
+            return None;
+        }
+        match args.first()? {
+            rask_types::GenericArg::Type(inner) => Some(self.ctx.type_to_mir(inner)),
+            _ => None,
+        }
+    }
+
     /// Is `name` a nominal newtype with no layout of its own?
     pub(crate) fn is_transparent_newtype(&self, name: &str) -> bool {
         self.ctx.nominal_underlying.contains_key(name)

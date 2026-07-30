@@ -958,6 +958,44 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Unannotated binding from a call: take the element type from the
+        // initializer's own type, then from the callee's declared return type.
+        //
+        // Without this `const rows = build()` where `build() -> Vec<Ranked>`
+        // left the element type unknown, so `for r in rows` typed the loop
+        // variable i64 and Vec_get's scalar deref read the element's first
+        // 8 bytes as a pointer (#478).
+        if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
+            let from_init = self
+                .ctx
+                .lookup_raw_type(init.id)
+                .and_then(|t| self.vec_elem_of_checker_type(t));
+            let from_callee = || match &init.kind {
+                ExprKind::Call { func, .. } => match &func.kind {
+                    ExprKind::Ident(callee) => {
+                        let key = self.ctx.call_rewrites.get(&init.id).cloned()
+                            .unwrap_or_else(|| callee.clone());
+                        self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
+                    }
+                    _ => None,
+                },
+                ExprKind::MethodCall { object, method, .. } => {
+                    let prefix = match &object.kind {
+                        ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
+                        _ => None,
+                    }?;
+                    let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                    self.func_sigs
+                        .get(&format!("{}_{}", base, method))
+                        .and_then(|s| s.ret_vec_elem.clone())
+                }
+                _ => None,
+            };
+            if let Some(elem) = from_init.or_else(from_callee) {
+                self.meta_mut(name).elem_type = Some(elem);
+            }
+        }
+
         // Track closure bindings and alias the func_sig so callers can
         // look up the return type by variable name.
         if is_closure {
