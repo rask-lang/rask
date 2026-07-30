@@ -175,6 +175,34 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or_default()
     }
 
+    /// How many element-typed parameters a collection method hands its closure.
+    /// `sort_by(|a, b| …)` gets two elements, `any(|x| …)` one. `fold` isn't here
+    /// — its first parameter is the accumulator, not an element.
+    fn elem_closure_arity(method: &str) -> Option<usize> {
+        Some(match method {
+            "sort_by" | "min_by" | "max_by" => 2,
+            "sort_by_key" | "min_by_key" | "max_by_key" | "any" | "all" | "find"
+            | "position" | "retain" | "for_each" | "each" | "count_by" => 1,
+            _ => return None,
+        })
+    }
+
+    /// Parameter types for a closure whose arguments are collection elements.
+    /// Without them the parameters default to `i64`, so a field read inside the
+    /// body picks its index from whatever struct happens to declare that field
+    /// name — `|a, b| a.priority.compare(b.priority)` on a `Vec<Ranked>`
+    /// compiled to field 2 of an unrelated struct and a string comparison.
+    fn elem_closure_param_tys(&self, object: &Expr, method: &str) -> Vec<String> {
+        let Some(arity) = Self::elem_closure_arity(method) else { return Vec::new() };
+        let Some(key) = Self::vec_tracking_key(object) else { return Vec::new() };
+        let elem = self
+            .meta(&key)
+            .and_then(|m| m.elem_type.clone())
+            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned());
+        let Some(name) = elem.and_then(|ty| self.mir_type_name(&ty)) else { return Vec::new() };
+        vec![name; arity]
+    }
+
     /// Derive a tracking key for Vec element type inference.
     /// Returns `"v"` for `v.push(x)` and `"self.field"` for `self.field.push(x)`.
     fn vec_tracking_key(object: &Expr) -> Option<String> {
@@ -2555,6 +2583,10 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
+        if let Some(r) = self.try_lower_primitive_compare(method, args, &obj_op, &obj_ty)? {
+            return Ok(r);
+        }
+
         if let Some(r) = self.try_lower_string_compare(object, method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
@@ -3053,9 +3085,13 @@ impl<'a> MirLowerer<'a> {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
+        let elem_params = self.elem_closure_param_tys(object, &method);
         for (i, arg) in args.iter().enumerate() {
             let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
-                let expected = Self::expected_closure_param_tys(&tentative_params, i);
+                let mut expected = Self::expected_closure_param_tys(&tentative_params, i);
+                if expected.is_empty() {
+                    expected = elem_params.clone();
+                }
                 self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected)?
             } else {
                 self.lower_expr(&arg.expr)?
@@ -3325,8 +3361,19 @@ impl<'a> MirLowerer<'a> {
                         // real type so `string_clone` has the 16-byte slot it copies
                         // into, and the store has to write all of it — as an i64 temp
                         // a `string` field was truncated to its first 8 bytes (#463).
-                        let wide = field.size > 8;
-                        let field_val = self.builder.alloc_temp(MirType::I64);
+                        // A struct/enum field also comes back as a pointer, even
+                        // when it fits in a word — reading one gives the address
+                        // of the field inside the source. Typed as an i64 temp
+                        // that address got stored where the value belongs, so a
+                        // `priority: Priority` field cloned to a stack address
+                        // and every later read of it saw an out-of-range tag.
+                        let field_mir_ty = self.ctx.type_to_mir(&field.ty);
+                        let wide = field.size > 8 || super::mir_ty_is_aggregate(&field_mir_ty);
+                        let field_val = self.builder.alloc_temp(if wide {
+                            field_mir_ty.clone()
+                        } else {
+                            MirType::I64
+                        });
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: field_val,
                             rvalue: MirRValue::Field {
@@ -3761,6 +3808,131 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// String comparison operators → `string_lt`, `string_ge`, etc.
+    /// Read an enum's variant tag into a fresh local.
+    fn emit_enum_tag(&mut self, value: MirOperand) -> crate::LocalId {
+        let tag = self.builder.alloc_temp(MirType::U16);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value },
+        }));
+        tag
+    }
+
+    /// `a.compare(b)` on a number, char, bool, or fieldless enum → inline
+    /// three-way compare (-1 / 0 / 1), the same shape the auto-derived struct
+    /// `compare` emits.
+    ///
+    /// Neither has a `compare` anywhere: primitives have no runtime one, and the
+    /// derive pass only writes bodies for structs. The fallback for an
+    /// unqualified `compare` is `string_compare`, so comparing two integers read
+    /// their values as string pointers and dereferenced them. For an enum,
+    /// declaration order is the ordering (`type.enums`/CO1), so comparing tags is
+    /// the whole operation.
+    fn try_lower_primitive_compare(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if method != "compare" || args.len() != 1 {
+            return Ok(None);
+        }
+        let scalar = matches!(
+            obj_ty,
+            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+                | MirType::F32 | MirType::F64
+                | MirType::Char | MirType::Bool
+        );
+        // Only fieldless enums: a payload-carrying variant needs the payloads
+        // compared too, which is the derive pass's job, not a tag compare.
+        let fieldless_enum = match obj_ty {
+            MirType::Enum(EnumLayoutId { id, .. }) => self
+                .ctx
+                .enum_layouts
+                .get(*id as usize)
+                .is_some_and(|l| l.variants.iter().all(|v| v.fields.is_empty())),
+            _ => false,
+        };
+        if !scalar && !fieldless_enum {
+            return Ok(None);
+        }
+        let (rhs, _) = self.lower_expr(&args[0].expr)?;
+        let (obj_op, rhs) = if fieldless_enum {
+            (
+                MirOperand::Local(self.emit_enum_tag(obj_op.clone())),
+                MirOperand::Local(self.emit_enum_tag(rhs)),
+            )
+        } else {
+            (obj_op.clone(), rhs)
+        };
+        let obj_op = &obj_op;
+        let result = self.builder.alloc_temp(MirType::I64);
+
+        let lt_cond = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: lt_cond,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: obj_op.clone(),
+                right: rhs.clone(),
+            },
+        }));
+
+        let less_block = self.builder.create_block();
+        let not_less_block = self.builder.create_block();
+        let greater_block = self.builder.create_block();
+        let equal_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(lt_cond),
+            then_block: less_block,
+            else_block: not_less_block,
+        }));
+
+        self.builder.switch_to_block(less_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(-1))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+
+        self.builder.switch_to_block(not_less_block);
+        let gt_cond = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: gt_cond,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Gt,
+                left: obj_op.clone(),
+                right: rhs,
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(gt_cond),
+            then_block: greater_block,
+            else_block: equal_block,
+        }));
+
+        self.builder.switch_to_block(greater_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+
+        self.builder.switch_to_block(equal_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+
+        self.builder.switch_to_block(done_block);
+        Ok(Some((MirOperand::Local(result), MirType::I64)))
+    }
+
     fn try_lower_string_compare(
         &mut self,
         object: &Expr,

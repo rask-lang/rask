@@ -671,6 +671,11 @@ pub struct MirLowerer<'a> {
     /// Set while lowering a const's init thunk. Inside its own thunk the const
     /// is a definition, not a reference — that one place runs the initializer.
     const_init_target: Option<String>,
+    /// Element type of a Vec built by a fused `collect()`, keyed by the local
+    /// holding it. The fused loop is the only place that type exists — the
+    /// checker leaves `collect()`'s element an inference variable — and a binding
+    /// needs it so `for v in page` knows what it is iterating.
+    collected_elem_types: HashMap<LocalId, MirType>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -1417,6 +1422,7 @@ impl<'a> MirLowerer<'a> {
             pending_module_consts: HashMap::new(),
             const_slots: HashMap::new(),
             const_init_target: const_init.map(|(n, _)| n.to_string()),
+            collected_elem_types: HashMap::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -1808,7 +1814,7 @@ impl<'a> MirLowerer<'a> {
     /// the callee's declared return type. Without this an if-let over a stdlib
     /// `T or E` binds its payload as a bare i64 and method dispatch on the
     /// binding has no type to work from.
-    fn payload_of_mir(ty: &MirType) -> Option<MirType> {
+    pub(crate) fn payload_of_mir(ty: &MirType) -> Option<MirType> {
         match ty {
             MirType::Result { ok, .. } => Some((**ok).clone()),
             MirType::Option(inner) => Some((**inner).clone()),

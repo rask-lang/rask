@@ -411,7 +411,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Slot size for an already-lowered `MirType`: scalars and pointers occupy
     /// one 8-byte slot, string is 16, aggregates use their layout size.
-    fn mir_slot_size(ty: &MirType) -> i64 {
+    pub(super) fn mir_slot_size(ty: &MirType) -> i64 {
         match ty {
             MirType::String => 16,
             MirType::Void => 0,

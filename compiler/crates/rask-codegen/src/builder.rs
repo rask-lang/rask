@@ -35,6 +35,10 @@ pub(crate) const OVERFLOW_MESSAGES: &[&str] = &[
 struct CodegenCtx<'a> {
     var_map: &'a HashMap<LocalId, Variable>,
     locals: &'a [rask_mir::MirLocal],
+    /// Parameters live in their own list, so `locals` alone never resolves one.
+    params: &'a [rask_mir::MirLocal],
+    /// Declared param types of every Rask function, by MIR name
+    fn_param_types: &'a HashMap<String, Vec<MirType>>,
     func_refs: &'a HashMap<String, FuncRef>,
     struct_layouts: &'a [StructLayout],
     enum_layouts: &'a [EnumLayout],
@@ -107,6 +111,8 @@ pub struct FunctionBuilder<'a> {
     panicking_fns: &'a HashSet<String>,
     /// Names of functions compiled as Rask code (vs C stdlib)
     internal_fns: &'a HashSet<String>,
+    /// Declared param types of every Rask function, by MIR name
+    fn_param_types: &'a HashMap<String, Vec<MirType>>,
     /// Debug vs Release — controls whether pool access is inlined
     build_mode: BuildMode,
 
@@ -143,6 +149,7 @@ impl<'a> FunctionBuilder<'a> {
         vtable_globals: &'a HashMap<String, GlobalValue>,
         panicking_fns: &'a HashSet<String>,
         internal_fns: &'a HashSet<String>,
+        fn_param_types: &'a HashMap<String, Vec<MirType>>,
         build_mode: BuildMode,
     ) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
@@ -157,6 +164,7 @@ impl<'a> FunctionBuilder<'a> {
             vtable_globals,
             panicking_fns,
             internal_fns,
+            fn_param_types,
             build_mode,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
@@ -321,6 +329,8 @@ impl<'a> FunctionBuilder<'a> {
         let mut ctx = CodegenCtx {
             var_map: &self.var_map,
             locals: &self.mir_fn.locals,
+            params: &self.mir_fn.params,
+            fn_param_types: self.fn_param_types,
             func_refs: self.func_refs,
             struct_layouts: self.struct_layouts,
             enum_layouts: self.enum_layouts,
@@ -1640,6 +1650,16 @@ impl<'a> FunctionBuilder<'a> {
             } else { false }
         } else { false };
 
+        // An aggregate-typed *parameter* is a pointer to the caller's data.
+        // Params get no stack slot of their own, so they miss the copy above and
+        // the pointer itself would land in the field — `create_task(priority:
+        // Priority)` stored the caller's stack address where the enum tag
+        // belongs, and reading it back trapped on an out-of-range tag. Copy the
+        // pointee, same as a slot-backed aggregate.
+        let is_aggregate = is_aggregate || Self::copy_from_aggregate_param(
+            builder, addr_val, *offset, value, store_size, ctx,
+        );
+
         if !is_aggregate {
             let val = Self::lower_operand(builder, value, ctx)?;
 
@@ -1668,6 +1688,111 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Aggregate params are passed by pointer. Where the callee declares a
+    /// struct/enum/tuple but the caller's own local is a scalar, spill the value
+    /// into a stack slot and pass its address, so the callee's "this is a
+    /// pointer" assumption always holds.
+    ///
+    /// MIR sometimes types an 8-byte struct as a bare `i64` — a payload
+    /// extraction that had no checker type to read falls back to it — and then a
+    /// value reaches a by-pointer param. Fixing every such fallback is the real
+    /// cure; this makes the boundary safe either way.
+    fn spill_scalars_for_aggregate_params(
+        builder: &mut ClifFunctionBuilder,
+        callee: &str,
+        arg_vals: &mut [Value],
+        mir_args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) {
+        let Some(param_tys) = ctx.fn_param_types.get(callee) else { return };
+        for (i, param_ty) in param_tys.iter().enumerate() {
+            if i >= arg_vals.len() {
+                break;
+            }
+            if !matches!(
+                param_ty,
+                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
+            ) {
+                continue;
+            }
+            // The operand's own type decides. Aggregate-typed operands already
+            // hold a pointer; a scalar-typed one holds the value itself.
+            let arg_is_aggregate = Self::operand_arg_type(&mir_args[i], ctx).is_none_or(|ty| {
+                matches!(
+                    ty,
+                    MirType::Struct(_)
+                        | MirType::Enum(_)
+                        | MirType::Tuple(_)
+                        | MirType::Array { .. }
+                        | MirType::Ptr
+                        | MirType::Handle
+                )
+            });
+            if arg_is_aggregate {
+                continue;
+            }
+            let (size, _) = Self::real_type_size_align(param_ty, ctx);
+            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size.max(8),
+                0,
+            ));
+            builder.ins().stack_store(arg_vals[i], ss, 0);
+            arg_vals[i] = builder.ins().stack_addr(types::I64, ss, 0);
+        }
+    }
+
+    /// MIR type of a call argument, looking in both locals and params.
+    fn operand_arg_type(operand: &MirOperand, ctx: &CodegenCtx) -> Option<MirType> {
+        match operand {
+            MirOperand::Local(id) => ctx
+                .locals
+                .iter()
+                .chain(ctx.params.iter())
+                .find(|l| l.id == *id)
+                .map(|l| l.ty.clone()),
+            MirOperand::Constant(_) => None,
+        }
+    }
+
+    /// Copy a struct/enum/tuple parameter's bytes into a field. Returns false
+    /// when `value` isn't such a parameter and the caller should store a scalar.
+    ///
+    /// Only parameters qualify: every other aggregate local is slot-backed, and
+    /// one that isn't means the MIR type doesn't match the representation —
+    /// dereferencing it would turn a wrong value into a crash.
+    fn copy_from_aggregate_param(
+        builder: &mut ClifFunctionBuilder,
+        addr_val: Value,
+        offset: u32,
+        value: &MirOperand,
+        store_size: &Option<u32>,
+        ctx: &CodegenCtx,
+    ) -> bool {
+        let MirOperand::Local(src_id) = value else { return false };
+        if ctx.stack_slot_map.contains_key(src_id) {
+            return false;
+        }
+        let Some(local) = ctx.params.iter().find(|l| l.id == *src_id) else { return false };
+        if !matches!(
+            local.ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
+        ) {
+            return false;
+        }
+        let (real_size, _) = Self::real_type_size_align(&local.ty, ctx);
+        // Layout gives fields 8-byte slots, so store_size can exceed the type's
+        // real size. Copy only what the value actually has.
+        let size = store_size.map_or(real_size, |ss| ss.min(real_size));
+        if size == 0 {
+            return false;
+        }
+        let Some(src_var) = ctx.var_map.get(src_id) else { return false };
+        let src_addr = builder.use_var(*src_var);
+        Self::copy_bytes(builder, src_addr, 0, addr_val, offset as i32, size);
+        true
     }
 
     fn lower_pool_checked_access(
@@ -3099,6 +3224,8 @@ impl<'a> FunctionBuilder<'a> {
             };
             arg_vals.push(converted);
         }
+
+        Self::spill_scalars_for_aggregate_params(builder, &func.name, &mut arg_vals, args, ctx);
 
         // Adapt args for typed runtime API
         let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, dst, ctx, ctx.adapt_table);

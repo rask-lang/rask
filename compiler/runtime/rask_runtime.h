@@ -716,8 +716,12 @@ void rask_shared_write(RaskShared *s, RaskAccessFn f, void *ctx);
 int64_t rask_shared_try_read(RaskShared *s, RaskAccessFn f, void *ctx);
 int64_t rask_shared_try_write(RaskShared *s, RaskAccessFn f, void *ctx);
 
+// Rask closure layout (see closures.rs): [func_ptr(8) | env...].
+// The call takes the env pointer as its first argument.
+#define CLOSURE_FUNC(cl)  (*(int64_t *)(intptr_t)(cl))
+#define CLOSURE_ENV(cl)   ((cl) + 8)
+
 // i64-based Shared wrappers for codegen dispatch table.
-// Closure layout matches closures.rs: [func_ptr(8) | env...].
 int64_t rask_shared_new_i64(int64_t value);
 int64_t rask_shared_read_i64(int64_t shared, int64_t closure);
 int64_t rask_shared_write_i64(int64_t shared, int64_t closure);

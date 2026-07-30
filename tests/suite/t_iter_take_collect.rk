@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A fused `.iter().skip(n).take(m).map(…).collect()` chain.
+//
+// Two bugs met here. `take(m)` set the loop's end bound to `skip + m` with no
+// regard for how long the source actually is, so taking 50 of three elements
+// ran to index 50 and panicked on the first read past the end. And `collect()`
+// built its Vec before the loop, when it didn't yet know what the closure
+// returns, so the Vec got the default 8-byte stride and 24-byte structs
+// overlapped each other.
+
+struct View {
+    public id: u64
+    public title: string
+}
+
+struct Ranked {
+    public rank: i64
+    public view: View
+}
+
+func rows() -> Vec<Ranked> {
+    mut v = Vec.new()
+    v.push(Ranked { rank: 3, view: View { id: 1, title: "one" } })
+    v.push(Ranked { rank: 2, view: View { id: 2, title: "two" } })
+    v.push(Ranked { rank: 1, view: View { id: 3, title: "three" } })
+    return v
+}
+
+test "stdlib.collections — take past the end yields what there is" {
+    const page = rows()
+        .iter()
+        .skip(0)
+        .take(50)
+        .map(|r| r.view.clone())
+        .collect()
+
+    assert page.len() == 3
+    assert page[0].id == 1
+    assert page[0].title == "one"
+    assert page[2].id == 3
+    assert page[2].title == "three"
+}
+
+test "stdlib.collections — skip and take page a slice out of the middle" {
+    const page = rows()
+        .iter()
+        .skip(1)
+        .take(1)
+        .map(|r| r.view.clone())
+        .collect()
+
+    assert page.len() == 1
+    assert page[0].id == 2
+    assert page[0].title == "two"
+}
+
+test "stdlib.collections — skipping past the end yields nothing" {
+    const page = rows()
+        .iter()
+        .skip(9)
+        .take(50)
+        .map(|r| r.view.clone())
+        .collect()
+
+    assert page.len() == 0
+}
+
+// The collected element type has to survive the binding, or reads off it use
+// the wrong stride. Indexed rather than iterated: a `for` loop over a Vec of
+// aggregates reads garbage inside a `test` block on native (#495).
+test "stdlib.collections — a collected Vec of structs reads at the right stride" {
+    const page = rows()
+        .iter()
+        .take(3)
+        .map(|r| r.view.clone())
+        .collect()
+
+    assert page.len() == 3
+    assert page[0].id == 1
+    assert page[1].id == 2
+    assert page[2].id == 3
+    assert page[1].title == "two"
+    assert page[2].title == "three"
+}

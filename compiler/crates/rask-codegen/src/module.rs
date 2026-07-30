@@ -31,6 +31,9 @@ pub struct CodeGenerator {
     panicking_fns: HashSet<String>,
     /// Names of functions compiled as Rask code (not C stdlib)
     internal_fns: HashSet<String>,
+    /// Declared param types per Rask function. Call sites need these to pass
+    /// aggregates by pointer even when the caller's own local is a scalar.
+    fn_param_types: HashMap<String, Vec<rask_mir::MirType>>,
     /// Debug or Release — controls inlining of pool checks
     build_mode: BuildMode,
     /// VTable data sections for trait objects (vtable_name → DataId)
@@ -72,6 +75,7 @@ impl CodeGenerator {
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
+            fn_param_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
             debug_srclocs: Vec::new(),
@@ -118,6 +122,7 @@ impl CodeGenerator {
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
+            fn_param_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
             debug_srclocs: Vec::new(),
@@ -667,6 +672,10 @@ impl CodeGenerator {
             // Store under the MIR name so internal calls resolve correctly
             self.func_ids.insert(mir_fn.name.clone(), func_id);
             self.internal_fns.insert(mir_fn.name.clone());
+            self.fn_param_types.insert(
+                mir_fn.name.clone(),
+                mir_fn.params.iter().map(|p| p.ty.clone()).collect(),
+            );
         }
         Ok(())
     }
@@ -1037,6 +1046,7 @@ impl CodeGenerator {
             &vtable_globals,
             &self.panicking_fns,
             &self.internal_fns,
+            &self.fn_param_types,
             self.build_mode,
         )?;
         if let Some(lm) = &self.line_map {

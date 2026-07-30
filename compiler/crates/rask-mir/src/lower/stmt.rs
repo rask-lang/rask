@@ -762,8 +762,18 @@ impl<'a> MirLowerer<'a> {
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: local_id,
-            rvalue: MirRValue::Use(init_op),
+            rvalue: MirRValue::Use(init_op.clone()),
         }));
+
+        // A fused `collect()` records its element type against the local it
+        // built; carry it onto the binding so `for v in page` iterates the right
+        // stride and dispatches methods on the right type.
+        if let MirOperand::Local(src) = &init_op {
+            if let Some(elem) = self.collected_elem_types.get(src).cloned() {
+                self.collected_elem_types.insert(local_id, elem.clone());
+                self.meta_mut(name).elem_type = Some(elem);
+            }
+        }
 
         // Track collection element types for for-in iteration heuristics
         if let ExprKind::MethodCall { object, method, .. } = &init.kind {

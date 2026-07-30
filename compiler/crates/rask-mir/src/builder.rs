@@ -148,6 +148,34 @@ impl BlockBuilder {
         false
     }
 
+    /// Replace the args of the call to `name` at `(block, index)`. Callers that
+    /// only learn a call's argument later — `collect()` doesn't know its element
+    /// size until the loop body has been lowered — record the position when they
+    /// emit the call and fill it in afterwards.
+    pub fn set_call_args(&mut self, block: BlockId, index: usize, name: &str, args: Vec<crate::MirOperand>) -> bool {
+        let Some(stmt) = self.function.blocks
+            .get_mut(block.0 as usize)
+            .and_then(|b| b.statements.get_mut(index))
+        else {
+            return false;
+        };
+        match &mut stmt.kind {
+            MirStmtKind::Call { func, args: call_args, .. } if func.name == name => {
+                *call_args = args;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Block and index the next pushed statement will land at.
+    pub fn next_stmt_pos(&self) -> (BlockId, usize) {
+        (
+            self.current_block,
+            self.function.blocks[self.current_block.0 as usize].statements.len(),
+        )
+    }
+
     /// Read statements from a block (for inlining cleanup at exit points).
     pub fn block_stmts(&self, block: BlockId) -> &[MirStmt] {
         &self.function.blocks[block.0 as usize].statements
