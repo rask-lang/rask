@@ -619,6 +619,19 @@ impl<'a> MirLowerer<'a> {
                 _ => None,
             }
         }
+        // The enclosing struct field's declared type, when the checker has nothing
+        // for this node. `Headers { entries: Map<string, string> }` initialised by
+        // `Map.new()` inside a stdlib body is exactly that case, and falling back
+        // to an 8-byte slot silently halved every `string` value stored in it.
+        if self.ctx.lookup_raw_type(node_id).is_none() {
+            if let Some(hint) = self.field_type_hint.clone() {
+                if let Some(inner) = super::generic_args_of_str(&hint) {
+                    if let Some(arg) = inner.get(index) {
+                        return Self::mir_slot_size(&self.ctx.resolve_type_str(arg));
+                    }
+                }
+            }
+        }
         let size = self.ctx.lookup_raw_type(node_id).and_then(|ty| {
             // `Channel<T>.buffered()` resolves to `(Sender<T>, Receiver<T>)` — the
             // element type lives in the tuple's first component. Everything else

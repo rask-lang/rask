@@ -671,6 +671,12 @@ pub struct MirLowerer<'a> {
     /// Set while lowering a const's init thunk. Inside its own thunk the const
     /// is a definition, not a reference — that one place runs the initializer.
     const_init_target: Option<String>,
+    /// Declared type of the struct field currently being initialised, as written.
+    /// `Map.new()` needs its key/value sizes, and the checker doesn't type the
+    /// nodes of a stdlib body — `Headers { entries: Map.new() }` had no type on
+    /// that call, so the map was built with 8-byte slots and a `string` value lost
+    /// half of its 16 bytes.
+    field_type_hint: Option<String>,
     /// Element type of a Vec built by a fused `collect()`, keyed by the local
     /// holding it. The fused loop is the only place that type exists — the
     /// checker leaves `collect()`'s element an inference variable — and a binding
@@ -1513,6 +1519,7 @@ impl<'a> MirLowerer<'a> {
             const_slots: HashMap::new(),
             const_init_target: const_init.map(|(n, _)| n.to_string()),
             collected_elem_types: HashMap::new(),
+            field_type_hint: None,
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -2884,6 +2891,13 @@ fn split_top_level_parens(s: &str, sep: char) -> Vec<&str> {
     }
     parts.push(&s[start..]);
     parts
+}
+
+/// Generic arguments of a type written as `Name<A, B>`, split at top level.
+pub(super) fn generic_args_of_str(s: &str) -> Option<Vec<&str>> {
+    let open = s.find('<')?;
+    let inner = s[open + 1..].strip_suffix('>')?;
+    Some(split_top_level_parens(inner, ',').into_iter().map(str::trim).collect())
 }
 
 fn find_top_level_comma(s: &str) -> Option<usize> {

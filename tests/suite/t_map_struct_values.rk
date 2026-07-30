@@ -113,3 +113,37 @@ test "stdlib.collections — a string map value survives get through an accessor
     assert (h.get("Host") ?? "MISSING") == "localhost"
     assert (h.get("Nope") ?? "MISSING") == "MISSING"
 }
+
+// The map's key/value sizes come from `Map.new()`'s own inferred type — and the
+// checker doesn't type the nodes of a stdlib body, so a `Map.new()` initializing
+// a struct field fell back to 8-byte slots. Every 16-byte `string` value stored
+// in it lost its second half, which reads back as an SSO string of length 15:
+// the first eight bytes were right and the length was wrong.
+struct Session {
+    values: Map<string, string>
+}
+
+extend Session {
+    func new() -> Session { return Session { values: Map.new() } }
+
+    func put(mutate self, k: string, v: string) -> void {
+        self.values.insert(k, v)
+    }
+
+    func take(self, k: string) -> string? {
+        return self.values.get(k)
+    }
+}
+
+test "stdlib.collections — a Map field sized from the field's declared type" {
+    mut s = Session.new()
+    // Short enough for SSO, and long enough to need the heap.
+    s.put("short", "0123456789")
+    s.put("long", "0123456789abcdefghij")
+
+    assert (s.take("short") ?? "MISSING").len() == 10
+    assert (s.take("short") ?? "MISSING") == "0123456789"
+    assert (s.take("long") ?? "MISSING").len() == 20
+    assert (s.take("long") ?? "MISSING") == "0123456789abcdefghij"
+    assert (s.take("absent") ?? "MISSING") == "MISSING"
+}

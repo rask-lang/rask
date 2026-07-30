@@ -1420,7 +1420,16 @@ impl<'a> MirLowerer<'a> {
                     }
                 } else {
                 for field in fields.iter() {
-                    let (val_op, _) = self.lower_expr(&field.value)?;
+                    // The field's declared type is the only place a `Map.new()`
+                    // initializer can learn its key/value sizes when the checker
+                    // never typed this node (every stdlib body).
+                    let saved_hint = self.field_type_hint.take();
+                    self.field_type_hint = layout
+                        .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name))
+                        .map(|f| format!("{}", f.ty));
+                    let lowered = self.lower_expr(&field.value);
+                    self.field_type_hint = saved_hint;
+                    let (val_op, _) = lowered?;
                     // Look up field offset and size from layout
                     let field_layout = layout
                         .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name));
