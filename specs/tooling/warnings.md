@@ -29,6 +29,7 @@ On by default. Suppress with `@allow(warning_name)`.
 | **W3: unused_variable** | W0901 | `unused_variable` | Binding never read after assignment |
 | **W4: unreachable_code** | W0902 | `unreachable_code` | Code after `return` or `break` |
 | **W5: deprecated** | W0903 | `deprecated` | Calling an item marked `@deprecated` |
+| **W9: torn_lock_update** | W0907 | `torn_lock_update` | `with` block over `Mutex`/`Shared` assigns 2+ fields of the locked value without `.staged()` (`conc.sync/ST1–ST4`) |
 
 <!-- test: skip -->
 ```rask
@@ -40,6 +41,8 @@ func process(data: Vec<u8>) -> i32 {
 ```
 
 **W2 (unused_result) exceptions:** Not triggered by plain return types (no error to miss), `T?` values (intentional absence), or results assigned to a binding (that's W3's job).
+
+**W9 (torn_lock_update) scope:** Fires on two or more field assignments to the locked binding in one `with` block. Mutating method calls (`q.push(a)` twice) don't trigger — method bodies are opaque, and flagging every call pair would drown the real signal. A panic between the flagged writes leaves survivors a broken invariant (`ctrl.panic/LK3–LK4`); `.staged()` makes the update panic-atomic.
 
 ## Opt-In Warnings
 
@@ -146,6 +149,25 @@ FIX: use `try` to propagate, or handle the error explicitly
 ```
 
 ```
+WARNING [tool.warnings/W9]: multi-field update under a lock without staged()
+   |
+3  |  with accounts as a {
+4  |      a.checking -= amount
+   |      ^^^^^^^^^^ first field written
+5  |      a.savings += amount
+   |      ^^^^^^^^^ second field — a panic between these leaves other tasks a half-done update
+
+FIX: stage the update — commits as one move on clean exit, discards on panic:
+
+    with accounts.staged() as a {
+        a.checking -= amount
+        a.savings += amount
+    }
+
+Or `@allow(torn_lock_update)` if partial state is harmless here.
+```
+
+```
 WARNING [tool.warnings/W4]: unreachable code
    |
 7  |     println("unreachable")
@@ -185,6 +207,8 @@ NOTE: use connect_with_options instead
 **W6 (implicit_copy) off by default:** Implicit copy is a core ergonomic feature. Most code shouldn't care. But game loops and embedded code sometimes need to audit every copy. See `mem.value-semantics` for the 16-byte threshold design.
 
 **W7 (shadowing) off by default:** Shadowing is a deliberate language feature. Some teams want to see it, especially in long functions where it causes confusion, but flagging it by default would be noisy.
+
+**W9 (torn_lock_update) on by default:** Rask has no lock poisoning — a panic mid-update releases the lock and survivors see whatever was written (`ctrl.panic/LK1–LK4`). The by-construction fix (`staged()`) only helps if the sites that need it get pointed at it, so the pointer can't be opt-in tooling. Started as a lint candidate (`idiom/staged-multi-write`); promoted to a default compiler warning when [#485](https://github.com/rask-lang/rask/issues/485) made the point that the torn-invariant story shouldn't rest on tools you have to turn on.
 
 ### Patterns & Guidance
 

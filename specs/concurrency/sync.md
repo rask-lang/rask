@@ -221,7 +221,11 @@ func transfer(amount: i64) {
 }
 ```
 
-The clone is the price and the method name says so — same visibility deal as `.clone()`. Plain `with mutex as v` stays free; only sites guarding a real invariant pay. Cross-box invariants stay out of reach, but nested locks are already forbidden (DL1), so per-box atomicity is all the language promises anyway. Lint (candidate, `idiom/staged-multi-write`): a `with` block over a sync box that writes 2+ fields without `staged()` gets a nudge.
+The clone is the price and the method name says so — same visibility deal as `.clone()`. Plain `with mutex as v` stays free; only sites guarding a real invariant pay. Cross-box invariants stay out of reach, but nested locks are already forbidden (DL1), so per-box atomicity is all the language promises anyway.
+
+The compiler backs this up by default: a `with` block over a sync box that assigns two or more fields of the locked value without `staged()` gets the `torn_lock_update` warning (`tool.warnings/W9`). Suppress with `@allow(torn_lock_update)` where partial state is genuinely harmless.
+
+Panic is the only way another task can see a half-done update. Suspension keeps the lock held, and cancellation surfaces as an ordinary error return — never a kill at the pause point (`ctrl.panic/LK4`, `conc.async/CN4`).
 
 ## Non-blocking variants
 
@@ -251,6 +255,9 @@ const got_it = mutex.try_lock(|v| v.push(item))
 | Inline access inside `with` on same primitive | DL2 | Compile error |
 | Panic inside `with` on a sync primitive | — | Lock releases cleanly, no poisoning; writes so far kept (`ctrl.panic/LK1–LK3`) |
 | Panic inside `with x.staged()` | ST3 | Working copy discarded — nothing committed |
+| Task pauses on I/O inside `with` on a sync primitive | — | Lock stays held while parked; waiters block, never see intermediate state (`ctrl.panic/LK4`) |
+| Task cancelled inside `with` on a sync primitive | — | Cancellation is an error return (`conc.async/CN4`); the block exits through normal control flow, writes kept — same as any early `try` exit |
+| Multi-field write without `staged()` | — | `torn_lock_update` warning, on by default (`tool.warnings/W9`) |
 | Writers starve under read load | SY1 | By design — read performance prioritized |
 
 ---

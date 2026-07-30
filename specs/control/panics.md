@@ -63,8 +63,11 @@ U5 is deliberate. Rask has no hidden destructors — that's the point of linear 
 | **LK1: Clean release** | A Mutex/Shared lock held by the panicking task unlocks during unwind (via U3/U4). Waiting tasks acquire normally |
 | **LK2: No poison state** | There is no poisoned flag. The next `with mutex` succeeds and sees the value exactly as the dying task left it |
 | **LK3: Torn invariants are yours** | A panic mid-mutation can leave *application-level* invariants broken for survivors. Language-level invariants (memory safety, lock state, generation counts) always hold |
+| **LK4: Panic is the only mid-update death** | A task cannot be killed at a suspension point. Pausing on I/O keeps the lock held — waiters block, they never see intermediate state. Cancellation is cooperative and arrives as an ordinary error return (`conc.async/CN1–CN4`) — visible early-exit control flow, not a death. The only path from "lock held, update half-done" to "another task reads it" is a panic between the writes |
 
 Where LK3 isn't acceptable — a multi-field invariant that other tasks will read — opt into **staged access**: `with mutex.staged() as v { }` works on a copy that commits as one move on non-panic exit and is discarded on unwind. Torn state impossible by construction at staged sites. Rules and example: `conc.sync/ST1–ST4`.
+
+This isn't left to optional tooling: the compiler warns by default (`tool.warnings/W9`, `torn_lock_update`) when a `with` block over a sync box assigns two or more fields of the locked value without `staged()`.
 
 ## Ensure × Panic
 
@@ -132,6 +135,8 @@ Resolves the panic open question in `determinism`.
 | Non-empty `Pool<Resource>` scope exits during unwind | E3 | R5 guard fires as secondary — reported, contained; elements leak (U5's consequence) |
 | Unconsumed `TaskHandle` scope exits during unwind | E3 | H1 guard fires as secondary — reported, contained; the task keeps running as if detached |
 | Panic while holding nested pool bindings (`with pool[h1] as a, pool[h2] as b`) | U3 | Both accesses released |
+| Task parked on I/O while holding a lock | LK4 | Not a death — lock stays held, waiters wait until the task resumes and exits |
+| Task cancelled while parked holding a lock | LK4 | Task wakes; the pending I/O returns `Cancelled` as an error value; the block exits through normal control flow and releases the lock — no unwind, writes kept |
 | Panic between linear acquisition and its `ensure` | U5 | Resource leaks; lint nudges ensure-immediately-after |
 | `os.exit()` inside an ensure body | P5 | Immediate exit — remaining ensures skipped (that's what exit means) |
 | Detached task panics during `using` block drain | O4, C4 | Reported to stderr; drain continues |
@@ -164,6 +169,10 @@ Other alternatives worked through:
 - **Invariant validators** (a check function attached to the box, run at release): hidden user code at unlock time — hidden cost and hidden control flow at once.
 
 LK3 + staged is the honest split: the language guarantees its invariants everywhere, and gives you a visible, by-construction tool for yours where they matter.
+
+**The suspension angle** ([#485](https://github.com/rask-lang/rask/issues/485)): no coloring means any call can pause with a lock held. That looked like it composed badly with no-poisoning — a task suspended mid-update, then cancelled, would expose torn state just like a panic. It doesn't, because pausing isn't dying. A parked task still holds the lock (waiters block longer — a liveness cost, not a tearing channel) and will resume. Cancellation can't convert a pause point into a death point: it's cooperative (`conc.async/CN1/CN4`), surfacing as a `Cancelled` error from the pending call — and an error return between two writes is ordinary, source-visible early exit, the same exposure any `try` mid-update has with or without concurrency. So every mid-update death is a panic, the analysis collapses to LK1–LK4, and staged covers it. LK4 pins this down; before, it was only implied by the runtime spec.
+
+**Auto-staging every sync `with` block** (considered for #485): would close LK3 by construction, but puts an invisible clone on every lock block — the exact hidden cost `staged()` exists to make visible. Rejected for the same reason implicit clones are rejected everywhere else. The default-on `torn_lock_update` warning (`tool.warnings/W9`) is the decided strengthening instead: the sites that need staging get pointed at it, the rest stay free.
 
 ### Decision C: run remaining ensures
 

@@ -118,7 +118,7 @@ const results = try group.join_all()
 | **C1: Single active runtime** | At most one `using Multitasking` block is active in the process at any time. Entering a second while one is active is an error |
 | **C2: Process-global visibility** | While the block is active, every thread in the process can `spawn()` — the runtime lives in a process-global slot |
 | **C3: Block-scoped lifetime** | The runtime starts on block entry and shuts down on block exit. No refcounting, no persistence across blocks |
-| **C4: Drain on exit** | Normal block exit waits for all tasks (including detached ones) to finish before returning. Panic-unwinding the block aborts remaining tasks |
+| **C4: Drain on exit** | Normal block exit waits for all tasks (including detached ones) to finish before returning. Panic-unwinding the block signals cancellation to remaining tasks without draining them (see edge cases) |
 | **C5: Sequential blocks OK** | After one block exits cleanly, another may be opened (new runtime, possibly different config). Non-overlapping only |
 | **C6: Libraries don't install runtimes** | Only application code opens `using Multitasking`. Libraries call `spawn()` assuming the caller already did. Violation triggers C1's nesting error |
 
@@ -189,6 +189,9 @@ match h.join() { }    // explicit handling
 | **CN1: Cooperative** | Cancellation sets a flag; task checks `cancelled()` |
 | **CN2: Ensure runs** | `ensure` blocks always run, even on cancellation |
 | **CN3: I/O checks** | I/O operations check cancel flag and return `Cancelled` error if set |
+| **CN4: No kill at pause points** | Cancellation never terminates a task at a suspension point. A cancelled task always resumes and exits through its own control flow — the flag check or the `Cancelled` error return. Preemption pauses tasks, never kills them |
+
+CN4 is what keeps invisible suspension safe around locks: a lock held across a pause is released only by the holder's own block exit or panic unwind — there is no third "died while suspended" path (`ctrl.panic/LK4`).
 
 <!-- test: skip -->
 ```rask
@@ -309,6 +312,9 @@ Install a `using Multitasking { ... }` block that encloses the call.
 | Call to function transitively reaching `spawn`, outside any block | CC2 | Compile error |
 | Closure stored / trait object dispatch reaches `spawn` outside a block | CC3 | Runtime panic |
 | `.join()` on cancelled task | H2, CN1 | Returns `Cancelled` error |
+| Cancelled while parked on I/O | CN3, CN4 | Task resumes; the pending operation returns `Cancelled`; task exits via its own control flow, ensures run |
+| Cancelled while holding a lock | CN4 | No forced release — the lock releases when the task's own exit path leaves the block (`ctrl.panic/LK4`) |
+| Panic-unwind of `using` block with tasks still pending | C4 | Cancellation signalled, no drain. A task that never reaches another check point never runs again — its ensures are skipped and locks it held stay held. Teardown of a dying runtime, not a state the program continues from |
 | Channel send after all receivers closed | CH3 | Returns `Closed` error |
 | Nested `using Multitasking` blocks | C1 | Error — second `enter` aborts (compile error if lexically nested, runtime panic otherwise) |
 | Library opens `using Multitasking` while app already did | C6 | Falls under C1 — runtime panic |
