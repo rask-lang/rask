@@ -452,7 +452,14 @@ pub fn typecheck_with_stdlib_lenient(
     let mut checker = TypeChecker::new(resolved);
     checker.collect_type_declarations(stdlib_decls);
     if std::env::var("RASK_TRIAGE_STDLIB").is_ok() {
-        let mut all: Vec<Decl> = rask_stdlib::StubRegistry::compilable_decls();
+        // Bodies only. The types were already registered from the stub set
+        // above; re-declaring them here mints a second TypeId for the same
+        // name, and then `JsonValue` fails to unify with itself.
+        let mut all: Vec<Decl> = rask_stdlib::StubRegistry::compilable_decls()
+            .into_iter()
+            .filter(|d| matches!(d.kind,
+                rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))
+            .collect();
         all.extend_from_slice(decls);
         let (typed, errs) = checker.check_lenient(&all);
         let mut by_kind: std::collections::BTreeMap<String, (usize, String)> =
@@ -468,6 +475,7 @@ pub fn typecheck_with_stdlib_lenient(
         for (kind, (n, sample)) in by_kind.iter().rev() {
             eprintln!("[triage] {:5}  {}  |  e.g. {}", n, kind, sample);
         }
+
         return (typed, errs);
     }
     checker.check_lenient(decls)
