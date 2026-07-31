@@ -964,11 +964,17 @@ impl TypeChecker {
             DeclKind::Test(t) => {
                 for stmt in &t.body {
                     self.check_stmt(stmt);
+                    // Solve as we go, same as check_fn — a later statement
+                    // (e.g. `m.insert(...)`) needs an earlier local's generic
+                    // args (e.g. `Map.new()`'s value type) already resolved,
+                    // or it stays an unbound type var forever (#390).
+                    self.solve_constraints();
                 }
             }
             DeclKind::Benchmark(b) => {
                 for stmt in &b.body {
                     self.check_stmt(stmt);
+                    self.solve_constraints();
                 }
             }
             DeclKind::Import(imp) => {
