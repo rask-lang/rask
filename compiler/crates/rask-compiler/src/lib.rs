@@ -243,7 +243,7 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
 
     // --- Resolve (blocking — need ResolvedProgram) ---
     // Resolved alongside the program only when stdlib checking is on — the
-    // two have to agree about which decls exist. See #514 for why it isn't
+    // two have to agree about which decls exist. See #515 for why it isn't
     // the default yet.
     let stdlib_bodies = if std::env::var("RASK_CHECK_STDLIB").is_ok() {
         rask_stdlib::StubRegistry::compilable_decls()

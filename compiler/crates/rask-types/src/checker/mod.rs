@@ -455,7 +455,7 @@ pub fn typecheck_with_stdlib_lenient(
     // dispatch targets inside them (#425). It works — the stdlib checks clean —
     // but it can't be the default yet: stdlib types and program types share one
     // table, so a program `struct Headers` stops shadowing the stdlib's once
-    // both are registered. See #514.
+    // both are registered. See #515.
     if std::env::var("RASK_CHECK_STDLIB").is_ok() {
         // Bodies only: the types were registered from the stub set above, and
         // re-declaring them here would mint a second TypeId per name — which is
