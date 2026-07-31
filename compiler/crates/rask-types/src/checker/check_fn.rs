@@ -157,7 +157,7 @@ impl TypeChecker {
 
         // GC10: Public methods must declare self mode explicitly
         if let Some(sp) = self_param {
-            if f.is_pub && !sp.is_mutate && !sp.is_take && Self::body_writes_self(&f.body) {
+            if f.is_pub && !sp.is_mutate && !sp.is_take && Self::body_assigns_self(&f.body) {
                 // Public method writes to self but doesn't declare mutate
                 self.errors.push(TypeError::MutateReadOnlyParam {
                     name: "self".to_string(),
@@ -508,27 +508,42 @@ impl TypeChecker {
     }
 
     /// GC9: Check if body writes to self fields (implies mutate self).
+    /// Conservative: any method call on `self` counts as a write.
+    ///
+    /// Right for GC9, which uses it to *infer* `mutate` on a private method —
+    /// over-inferring there is harmless. Wrong for anything that reports an
+    /// error; use `body_assigns_self` for that.
     pub(super) fn body_writes_self(body: &[Stmt]) -> bool {
-        body.iter().any(|stmt| Self::stmt_writes_self(stmt))
+        body.iter().any(|stmt| Self::stmt_writes_self(stmt, true))
     }
 
-    fn stmt_writes_self(stmt: &Stmt) -> bool {
+    /// Definite writes only — an actual assignment into `self`.
+    ///
+    /// GC10 rejects a public method that mutates without saying so, and that
+    /// has to be certain. The conservative walk assumes `self.foo()` mutates
+    /// because it can't see `foo`'s declaration, so a public method that only
+    /// *reads* through a helper was reported as mutating (#513).
+    pub(super) fn body_assigns_self(body: &[Stmt]) -> bool {
+        body.iter().any(|stmt| Self::stmt_writes_self(stmt, false))
+    }
+
+    fn stmt_writes_self(stmt: &Stmt, conservative: bool) -> bool {
         match &stmt.kind {
             StmtKind::Assign { target, value } => {
-                Self::expr_targets_self(target) || Self::expr_writes_self(value)
+                Self::expr_targets_self(target) || Self::expr_writes_self(value, conservative)
             }
-            StmtKind::Expr(e) => Self::expr_writes_self(e),
+            StmtKind::Expr(e) => Self::expr_writes_self(e, conservative),
             StmtKind::Const { init, .. } | StmtKind::Mut { init, .. } => {
-                Self::expr_writes_self(init)
+                Self::expr_writes_self(init, conservative)
             }
             StmtKind::ConstTuple { init, .. } | StmtKind::MutTuple { init, .. } => {
-                Self::expr_writes_self(init)
+                Self::expr_writes_self(init, conservative)
             }
-            StmtKind::Return(Some(e)) => Self::expr_writes_self(e),
-            StmtKind::Break { value: Some(v), .. } => Self::expr_writes_self(v),
+            StmtKind::Return(Some(e)) => Self::expr_writes_self(e, conservative),
+            StmtKind::Break { value: Some(v), .. } => Self::expr_writes_self(v, conservative),
             StmtKind::While { body, .. } | StmtKind::For { body, .. }
             | StmtKind::Loop { body, .. } | StmtKind::WhileLet { body, .. } => {
-                Self::body_writes_self(body)
+                body.iter().any(|s| Self::stmt_writes_self(s, conservative))
             }
             _ => false,
         }
@@ -545,9 +560,9 @@ impl TypeChecker {
     }
 
     /// Check if an expression contains self-mutating method calls.
-    fn expr_writes_self(expr: &Expr) -> bool {
+    fn expr_writes_self(expr: &Expr, conservative: bool) -> bool {
         match &expr.kind {
-            ExprKind::MethodCall { object, .. } => {
+            ExprKind::MethodCall { object, .. } if conservative => {
                 // Conservative: a direct method call on self (`self.foo()`)
                 // is assumed to mutate. Without a second pass over all
                 // declarations we can't know whether `foo` is `self` or
@@ -560,24 +575,28 @@ impl TypeChecker {
                 }
                 false
             }
-            ExprKind::Block(stmts) => Self::body_writes_self(stmts),
+            ExprKind::Block(stmts) => stmts.iter().any(|s| Self::stmt_writes_self(s, conservative)),
             ExprKind::If { then_branch, else_branch, .. }
             | ExprKind::IfLet { then_branch, else_branch, .. } => {
-                Self::expr_writes_self(then_branch)
-                    || else_branch.as_ref().map_or(false, |e| Self::expr_writes_self(e))
+                Self::expr_writes_self(then_branch, conservative)
+                    || else_branch.as_ref().map_or(false, |e| Self::expr_writes_self(e, conservative))
             }
-            ExprKind::GuardPattern { else_branch, .. } => Self::expr_writes_self(else_branch),
+            ExprKind::GuardPattern { else_branch, .. } => {
+                Self::expr_writes_self(else_branch, conservative)
+            }
             ExprKind::Match { arms, .. } => {
-                arms.iter().any(|arm| Self::expr_writes_self(&arm.body))
+                arms.iter().any(|arm| Self::expr_writes_self(&arm.body, conservative))
             }
-            ExprKind::Try { expr, .. } => Self::expr_writes_self(expr),
+            ExprKind::Try { expr, .. } => Self::expr_writes_self(expr, conservative),
             ExprKind::Unwrap { expr, .. } | ExprKind::IsPresent { expr, .. } => {
-                Self::expr_writes_self(expr)
+                Self::expr_writes_self(expr, conservative)
             }
             ExprKind::Unsafe { body } | ExprKind::Comptime { body } => {
-                Self::body_writes_self(body)
+                body.iter().any(|s| Self::stmt_writes_self(s, conservative))
             }
-            ExprKind::Loop { body, .. } => Self::body_writes_self(body),
+            ExprKind::Loop { body, .. } => {
+                body.iter().any(|s| Self::stmt_writes_self(s, conservative))
+            }
             _ => false,
         }
     }

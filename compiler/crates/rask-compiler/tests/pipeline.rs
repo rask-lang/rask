@@ -178,6 +178,45 @@ fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
 }
 
 #[test]
+fn gc10_reports_real_self_writes_not_reads_through_a_helper() {
+    // GC10 rejects a public method that mutates self without saying `mutate`.
+    // It shared its detection with GC9, which deliberately over-approximates —
+    // any `self.foo()` counts, since it can't see foo's declaration. That's
+    // fine for inferring `mutate` on a private method and wrong for raising an
+    // error: a public method that only *read* through a helper was rejected
+    // (#513). GC10 now asks for a definite assignment.
+    let writes = tmp_rk(r#"
+        struct Counter { public n: i64 }
+        extend Counter {
+            public func bump(self) { self.n = self.n + 1 }
+        }
+        func main() { println("x") }
+    "#);
+    let out = check_file(writes.to_str().unwrap(), &default_config());
+    assert!(
+        out.diagnostics.iter().any(|d| d.message.contains("cannot mutate parameter")),
+        "a public method assigning to self must still be rejected",
+    );
+    let _ = std::fs::remove_file(&writes);
+
+    let reads = tmp_rk(r#"
+        struct Counter { public n: i64 }
+        extend Counter {
+            func peek(self) -> i64 { return self.n }
+            public func describe(self) -> i64 { return self.peek() }
+        }
+        func main() { println("x") }
+    "#);
+    let out = check_file(reads.to_str().unwrap(), &default_config());
+    assert_eq!(
+        error_count(&out.diagnostics), 0,
+        "a public method that only reads through a helper is not a mutation: {:?}",
+        out.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
+    let _ = std::fs::remove_file(&reads);
+}
+
+#[test]
 fn shadowing_a_stdlib_type_name_keeps_the_program_body() {
     // #258: stdlib json.rk declares `enum JsonError` with a `message()` that
     // matches on `self`. A program struct of the same name mangles to the same

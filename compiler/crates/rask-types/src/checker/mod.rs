@@ -451,32 +451,22 @@ pub fn typecheck_with_stdlib_lenient(
 ) -> (TypedProgram, Vec<TypeError>) {
     let mut checker = TypeChecker::new(resolved);
     checker.collect_type_declarations(stdlib_decls);
-    if std::env::var("RASK_TRIAGE_STDLIB").is_ok() {
-        // Bodies only. The types were already registered from the stub set
-        // above; re-declaring them here mints a second TypeId for the same
-        // name, and then `JsonValue` fails to unify with itself.
+    // Checking the stdlib's own bodies is what gives lowering real types and
+    // dispatch targets inside them (#425). It works — the stdlib checks clean —
+    // but it can't be the default yet: stdlib types and program types share one
+    // table, so a program `struct Headers` stops shadowing the stdlib's once
+    // both are registered. See #514.
+    if std::env::var("RASK_CHECK_STDLIB").is_ok() {
+        // Bodies only: the types were registered from the stub set above, and
+        // re-declaring them here would mint a second TypeId per name — which is
+        // how `JsonValue` ended up not unifying with itself.
         let mut all: Vec<Decl> = rask_stdlib::StubRegistry::compilable_decls()
             .into_iter()
             .filter(|d| matches!(d.kind,
                 rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))
             .collect();
         all.extend_from_slice(decls);
-        let (typed, errs) = checker.check_lenient(&all);
-        let mut by_kind: std::collections::BTreeMap<String, (usize, String)> =
-            Default::default();
-        for e in &errs {
-            let msg = format!("{}", e);
-            let kind = msg.split(':').next().unwrap_or("?").to_string();
-            let entry = by_kind.entry(kind).or_insert((0, msg.clone()));
-            entry.0 += 1;
-        }
-        eprintln!("[triage] total={} node_types={} call_targets={}",
-            errs.len(), typed.node_types.len(), typed.call_targets.len());
-        for (kind, (n, sample)) in by_kind.iter().rev() {
-            eprintln!("[triage] {:5}  {}  |  e.g. {}", n, kind, sample);
-        }
-
-        return (typed, errs);
+        return checker.check_lenient(&all);
     }
     checker.check_lenient(decls)
 }

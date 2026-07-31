@@ -242,22 +242,14 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
     }
 
     // --- Resolve (blocking — need ResolvedProgram) ---
-    // EXPERIMENT: resolve stdlib bodies alongside the program so their names
-    // are in scope when we check them.
-    let triage = std::env::var("RASK_TRIAGE_STDLIB").is_ok();
-    let combined_decls: Vec<rask_ast::decl::Decl> = if triage {
-        let mut v = rask_stdlib::StubRegistry::compilable_decls();
-        v.extend(parse_result.decls.iter().cloned());
-        v
-    } else {
-        Vec::new()
-    };
-    let stdlib_bodies: Vec<rask_ast::decl::Decl> = if triage {
+    // Resolved alongside the program only when stdlib checking is on — the
+    // two have to agree about which decls exist. See #514 for why it isn't
+    // the default yet.
+    let stdlib_bodies = if std::env::var("RASK_CHECK_STDLIB").is_ok() {
         rask_stdlib::StubRegistry::compilable_decls()
     } else {
         Vec::new()
     };
-    let _ = &combined_decls;
     let resolved = match rask_resolve::resolve_with_stdlib_and_cfg(
         &parse_result.decls,
         &stdlib_bodies,
