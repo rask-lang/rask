@@ -233,7 +233,7 @@ I chose against it for three reasons:
 
 2. **`own` already marks the destructive case.** Ownership transfer (`take`) is the dangerous one — after the call, your value is gone. That gets a call-site marker (`own`). Mutation is temporary — your value comes back, possibly changed. The asymmetry is intentional: mark the irreversible action, not the reversible one.
 
-3. **Tooling covers the readability gap.** The compiler knows which arguments are mutated. IDEs show `mutate` as ghost text at call sites, and `rask annotate --diff` writes the same markers into a diff for review (`tool.annotate`). The remaining cost: bare text with no tooling at all still loses this. I think that's acceptable — the signature is one jump away, and `mutate` in the signature is loud enough to notice.
+3. **Tooling covers the readability gap.** The compiler knows which arguments are mutated. IDEs show `mutate` as ghost text at call sites, and `rask annotate --diff` renders the same markers beside a diff for review (`tool.annotate`). The remaining cost: bare text with no tooling at all still loses this. I think that's acceptable — the signature is one jump away, and `mutate` in the signature is loud enough to notice.
 
 This is a deliberate tradeoff, not an oversight. If real-world usage shows that hidden mutation at call sites causes bugs or confusion, call-site markers can be added without breaking existing code (they'd be optional annotations on existing syntax).
 
@@ -279,7 +279,7 @@ process(data)                   // IDE shows nothing (borrow is default, no anno
 | `mutate` argument | `mutate` ghost before argument |
 | `take` argument | `own` ghost before argument (redundant if `own` already written) |
 
-This bridges the gap between source-level simplicity and full visibility. In an IDE, mutation is always visible. In plain text (diffs, terminal), run `rask annotate`, which writes call-site modes back in as comments (`tool.annotate`) — or check the function signature.
+This bridges the gap between source-level simplicity and full visibility. In an IDE, mutation is always visible. In plain text (diffs, terminal), run `rask annotate`, which renders call-site modes beside each line (`tool.annotate`) — or check the function signature.
 
 ### See Also
 

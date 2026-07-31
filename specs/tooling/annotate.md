@@ -1,41 +1,44 @@
 <!-- id: tool.annotate -->
 <!-- status: proposed -->
-<!-- summary: rask annotate — ghost text materialized as plain comments for diffs, review, and terminals -->
+<!-- summary: rask annotate — ghost text materialized as a read-only report for diffs, review, and terminals -->
 <!-- depends: compiler/effects.md, memory/parameters.md, memory/closures.md, concurrency/io-context.md, types/gradual-constraints.md, memory/context-clauses.md, tooling/describe-schema.md -->
 
 # Annotate
 
-`rask annotate` prints source with compiler-inferred information written out as comments — the same information IDEs show as ghost text, for the surfaces that have no ghosts: diffs, PR review, pastebins, grep output, terminals.
+`rask annotate` renders source with compiler-inferred information set beside each line — the same information IDEs show as ghost text, for the surfaces that have no ghosts: diffs, PR review, pastebins, grep output, terminals.
 
 This closes the gap principles 7 and 9 leave open: the compiler knows, tooling shows — but code is mostly *reviewed* in places where "tooling" meant only the IDE. One command, one renderer, three outputs: annotated source (default), annotated diff (`--diff`), machine-readable sidecar (`--json`).
+
+Annotations are computed when displayed and stored nowhere — the same lifecycle as ghost text. Nothing is run "before" a PR and nothing annotate produces lives in the repository.
 
 ## The Command
 
 | Rule | Description |
 |------|-------------|
-| **AN1: View, not edit** | Output goes to stdout. `rask annotate` never writes source files — annotations are a projection of analysis, not content |
-| **AN2: Marker** | Annotations render as end-of-line comments starting with `//~ `. Nothing else in the toolchain emits that marker |
+| **AN1: View, not state** | Output goes to stdout, computed at display time. `rask annotate` never writes files, and its output is never an input to anything but eyes and the `--json` consumers |
+| **AN2: Report, not source** | Output is a line-numbered report (diagnostics-formatter style) with annotations in a right-hand gutter. It is deliberately **not** valid Rask — it cannot be committed, hand-edited, or left to go stale, and no comment form is reserved for it |
 | **AN3: One renderer** | Label text is shared with the IDE ghost layer, verbatim: `[io]` from `comp.effects`, `⟨pauses⟩` from `conc.io-context`, `[moves: x (T)]` from `mem.closures`, `mutate x` from `mem.parameters`. Annotate introduces no vocabulary of its own |
 | **AN4: Deterministic** | Same source + same compiler → byte-identical output. Multiple annotations on one line render in fixed order — call-site modes, captures, match modes, inferred signature/context, effects, pause — joined with ` · ` |
-| **AN5: Valid source** | Output parses: annotations are ordinary comments appended to the line |
-| **AN6: Clean check required** | Annotation data comes from the type-check, ownership, and effect passes. A file that doesn't check prints diagnostics instead |
+| **AN5: Clean check required** | Annotation data comes from the type-check, ownership, and effect passes. A file that doesn't check prints diagnostics instead |
 
-<!-- test: skip -->
-```rask
-// $ rask annotate src/round.rk
-func damage(h, amount) {                       //~ func damage(h: Handle<Player>, amount: i32) · using Pool<Player>
-    with pools[h] as player {
-        player.hp -= amount
-    }
-}
+```
+$ rask annotate src/round.rk
 
-func run_round(seed: i32) {                    //~ func run_round(seed: i32) -> void or Error · [io]
-    mut player = Player.new(seed)
-    apply_damage(player, 10)                   //~ mutate player
-    const report = try http.post(STATS_URL, player.encode())
-                                               //~ ⟨pauses⟩
-    spawn(own || { archive(report) }).detach() //~ [moves: report (Response)]
-}
+src/round.rk
+   1 | func damage(h, amount) {                     « func damage(h: Handle<Player>, amount: i32) · using Pool<Player>
+   2 |     with pools[h] as player {
+   3 |         player.hp -= amount
+   4 |     }
+   5 | }
+   6 |
+   7 | func run_round(seed: i32) {                  « func run_round(seed: i32) -> void or Error · [io]
+   8 |     mut player = Player.new(seed)
+   9 |     apply_damage(player, 10)                 « mutate player
+  10 |     const report = try http.post(STATS_URL, player.encode())
+     |                                              « ⟨pauses⟩
+  11 |     spawn(own || { archive(report) }).detach()
+     |                                              « [moves: report (Response)]
+  12 | }
 ```
 
 ## What Gets Annotated
@@ -72,21 +75,20 @@ The PR-review case. `rask annotate --diff <rev>` takes a git revision and annota
 
 | Rule | Description |
 |------|-------------|
-| **DF1: Changed lines** | Output is the unified diff against `<rev>` with review-tier annotations appended to added and context lines |
+| **DF1: Changed lines** | Output renders the diff hunks against `<rev>` with review-tier annotations in the gutter on added and context lines |
 | **DF2: Drift** | After the diff, a `drift:` section lists review-tier annotations that *changed* on lines the diff does **not** touch — a caller whose effect set, pause behavior, or inferred signature moved because a callee changed |
 | **DF3: Diffable elaboration** | Because output is deterministic (AN4), CI can also diff two full `rask annotate --all` runs directly — the "elaborated view" is this command's output, not a separate artifact |
 
 ```
 $ rask annotate --diff main src/
---- a/src/config.rk
-+++ b/src/config.rk
-@@ -12,4 +12,5 @@
--func load_defaults() -> Config {
-+func load_defaults() -> Config or Error {   //~ [pure] → [io]
--    return Config.builtin()
-+    const data = try fs.read_text(DEFAULTS) //~ ⟨pauses⟩
-+    return try Config.parse(data)
- }
+
+src/config.rk @@ -12,4 +12,5 @@
+ -12 | func load_defaults() -> Config {
+ +12 | func load_defaults() -> Config or Error {   « [pure] → [io]
+ -13 |     return Config.builtin()
+ +13 |     const data = try fs.read_text(DEFAULTS)  « ⟨pauses⟩
+ +14 |     return try Config.parse(data)
+  15 | }
 
 drift: unchanged lines whose meaning changed
   src/server.rk:41   handle_request — [pure] → [io]      (via load_defaults)
@@ -120,18 +122,17 @@ The sidecar is the CI integration point: a PR bot consumes it to decorate the di
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Line already ends in a comment | AN2 | Annotation appends after the existing comment |
 | Multiple annotated calls on one line | AN4 | Annotations grouped per call, in call order |
+| Annotation wider than the gutter | AN2 | Continuation line below (` | « …`), never truncated |
 | Generic function effects | TR1 | Definition shows the union across instantiations (`comp.effects/INF1` is per-instance; the union is the honest definition-site summary) |
-| Borrow-scope line numbers | TR2 | Refer to lines of the annotated output being read, full tier only — they don't survive diff context trimming |
-| `//~ ` found in input source | AN2 | Saved annotate output rots the moment code changes — `tool.lint` flags it (stale-marker rule) |
-| File doesn't typecheck | AN6 | Print diagnostics, exit nonzero, no partial annotation |
+| Borrow-scope line numbers | TR2 | Source line numbers, which the report already shows — full tier only |
+| File doesn't typecheck | AN5 | Print diagnostics, exit nonzero, no partial annotation |
 | Hover-only payloads (comptime values, struct layout, loop modes, reflection dumps) | — | Out of scope: point queries, not line facts. They stay IDE/hover territory |
 
 ## Error Messages
 
 ```
-ERROR [tool.annotate/AN6]: cannot annotate — file does not typecheck
+ERROR [tool.annotate/AN5]: cannot annotate — file does not typecheck
    |
    = annotations are computed from type, ownership, and effect analysis
    = fix the errors below, then re-run
@@ -145,7 +146,9 @@ ERROR [tool.annotate/AN6]: cannot annotate — file does not typecheck
 
 ### Rationale
 
-**Why a view, not `rask fmt --explicit`?** A formatter that writes ghost info into source files creates comments the compiler no longer checks — stale the moment the code changes, churn in every diff after that, and a second copy of the truth to maintain. The whole point of the ghost layer is that it's *recomputed*. So annotate is a lens you hold up to the code, never a state the code is in. (AN5 means you *can* save the output — the stale-marker lint exists because someone will.)
+**This is not "the language needs generated comments to be readable."** The source is readable for what it says — intent, the irreversible actions (`own`, `take` in signatures), error flow (`try`), cost (`.clone()`, `spawn`). What annotate recovers is the layer the language *deliberately* keeps out of source (`mem.parameters`, `comp.effects`): call-site mutation, effects, pause points. A reviewer who never runs annotate is exactly where the standing rationale put them — "the signature is one jump away." Annotate removes the jump; it isn't a prerequisite for reading. If practice shows reviewers genuinely can't live without this layer inline, the fix is the syntax door in `mem.parameters` (optional call-site markers), not more tooling.
+
+**Why a report and not comments in the source (`rask fmt --explicit`)?** First draft of this spec emitted valid Rask with `//~` ghost comments appended. Review killed it, correctly, three ways: valid source invites saving, and saved output is a set of claims the compiler no longer checks — stale the moment code changes; hand-edited annotations lie with the compiler's voice; and the marker becomes a reserved comment form policed by a lint. A report format (AN2) forecloses all three structurally instead of by lint — there is nothing to commit, nothing to edit, nothing to reserve. The whole point of the ghost layer is that it's *recomputed*; annotate is a lens you hold up to the code, never a state the code is in.
 
 **Why not call-site markers in the language instead?** That's the standing decision in `mem.parameters` (appendix, "Why no call-site markers"): mark the irreversible action (`own`), not the reversible one (`mutate`), and don't pay per-call ceremony for per-definition contracts. Annotate is the missing half of that argument — the recovery path for the reviewer that rationale used to wave at the IDE for.
 
@@ -168,7 +171,7 @@ The LSP inlay-hint provider and annotate should share one span→label layer (AN
 ### See Also
 
 - `tool.describe` — declared API surface (`rask api`); annotate covers what it deliberately excludes ("Type inference results — only explicitly written types")
-- `tool.lint` — stale-marker rule; `@pure` checking against the same effect metadata
+- `tool.lint` — `@pure` checking against the same effect metadata
 - `comp.effects` — effect inference and the ghost label format
 - `mem.parameters` — the call-site-marker decision this spec completes
 - `mem.closures` — capture list ghost format

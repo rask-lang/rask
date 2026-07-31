@@ -100,7 +100,6 @@ func bad_pure(path: string) -> Config or Error {
 | **ST2: pascal-case-type** | Type/enum/trait names are `PascalCase` | warning |
 | **ST3: public-return-type** | Public functions have explicit return type annotations | error |
 | **ST4: context-clause-count** | Function has >3 `using` clauses | warning |
-| **ST5: stale-annotate-marker** | `//~ ` comment in a source file — saved `rask annotate` output, stale the moment code changes (`tool.annotate/AN2`) | warning |
 
 ```
 WARNING [tool.lint/ST4]: function has 4 context clauses (recommend ≤3)
