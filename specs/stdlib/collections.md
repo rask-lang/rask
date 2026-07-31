@@ -219,8 +219,8 @@ users.sort_by(|a, b| b.score.compare(a.score))  // descending
 | Method | Signature | Trait Required | Notes |
 |--------|-----------|----------------|-------|
 | `vec.contains(item)` | `(T) -> bool` | `T: Equal` | Linear scan |
-| `vec.first()` | `() -> T?` | `T: Copy` | First element or `none` |
-| `vec.last()` | `() -> T?` | `T: Copy` | Last element or `none` |
+| `vec.first()` | `() -> T?` | `T: Copy` | First element or `none`. On a `Vec<T?>` the result is `T??` — outer layer says "vec was empty", inner says "slot was empty" (`type.optionals/OPT28`) |
+| `vec.last()` | `() -> T?` | `T: Copy` | Last element or `none`. Same layering on a `Vec<T?>` |
 | `vec.reverse()` | `(mutate self)` | none | In-place reversal |
 | `vec.remove_adjacent_duplicates()` | `(mutate self)` | `T: Equal` | The name says the limitation: only runs of equal neighbors collapse. Sort first for full dedup |
 

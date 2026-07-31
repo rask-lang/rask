@@ -1230,8 +1230,18 @@ impl Parser {
             name.push('>');
         }
 
-        if self.match_token(&TokenKind::Question) {
-            name.push('?');
+        // Optional markers stack: `T?`, `T??`, … Each `?` adds a `none` layer
+        // (type.optionals/OPT28, OPT31). The lexer hands back `??` as one token
+        // — in type position there is no coalescing operator, so it is just two
+        // markers.
+        loop {
+            if self.match_token(&TokenKind::QuestionQuestion) {
+                name.push_str("??");
+            } else if self.match_token(&TokenKind::Question) {
+                name.push('?');
+            } else {
+                break;
+            }
         }
 
         Ok(name)

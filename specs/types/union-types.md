@@ -17,8 +17,8 @@ The outer `or` keyword forms a sum type (`T or E`). Optionals (`T?`) desugar to 
 | **U2: Anonymous enum** | `A \| B \| C` compiles to a compiler-generated anonymous enum |
 | **U3: Canonical ordering** | Union types normalized alphabetically; duplicates deduplicated |
 | **U4: Equality** | Two union types equal if their canonical forms are equal |
-| **U5: Duplicate variants forbidden** | A sum type cannot contain the same variant twice. `T??` (= `(T or none) or none`), `(T or E) or E`, and `A \| A` are compile errors |
-| **U6: Disjointness for `T or E`** | The outer `T or E` sum requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Same rule as [error-types.md](error-types.md) ER3 |
+| **U5: Duplicate variants forbidden** | A sum type cannot contain the same payload variant twice. `(T or E) or E` and `A \| A` are compile errors. **Exception:** `none`. `T??` (= `(T or none) or none`) is a legal two-layer optional — `none` carries no payload and the layers are reached in order, so nothing is ambiguous. See [optionals.md](optionals.md) |
+| **U6: Disjointness for `T or E`** | The outer `T or E` sum requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Checked where the type is written and again after generic substitution. Same rule as [error-types.md](error-types.md) ER3/ER3a |
 
 <!-- test: skip -->
 ```rask
@@ -126,9 +126,10 @@ FIX: Add ParseError to the return type:
 | Single type in `\|` union | U3 | Equivalent to bare error type |
 | Order differences | U3 | Normalized alphabetically |
 | `\|` union in non-error position | U1 | Compile error |
-| `T??` (nested optional) | U5 | Compile error — duplicate `none` variant |
+| `T??` (nested optional) | U5 | Legal — `none` layers; see [optionals.md](optionals.md) |
 | `(T or E) or E` | U5 | Compile error — duplicate `E` variant |
 | `T or T` | U6 | Compile error — disjointness; newtype one side |
+| `f<T>() -> T or E` called with `T = E` | U6 | Compile error at the call site (`type.errors/ER3a`) |
 | Generic error extension | G1 | Union extends E with additional variants |
 
 ---

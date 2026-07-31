@@ -1,6 +1,6 @@
 <!-- id: type.errors -->
 <!-- status: decided -->
-<!-- summary: T or E is a builtin sum type with type-based branch disambiguation. No Ok/Err wrappers. Disjointness rule (T ≠ E) via the nominal/alias split. E must implement ErrorMessage. Auto-wrap fires only at return. Operator family + match for multi-error unions. -->
+<!-- summary: T or E is a builtin sum type with type-based branch disambiguation. No Ok/Err wrappers. Disjointness rule (T ≠ E) via the nominal/alias split, checked at the call site once a generic's type argument is known. E must implement ErrorMessage. Auto-wrap fires only at return. Operator family + match for multi-error unions. -->
 <!-- depends: types/types.md, types/optionals.md, types/union-types.md, types/type-aliases.md -->
 
 # Error Types
@@ -15,7 +15,9 @@ Libraries use union errors (`T or (A | B | C)`), applications use `any Error` (t
 |------|-------------|
 | **ER1: Builtin sum** | `T or E` is a compiler-generated tagged union, not a user-definable enum. Optionals (`T?`) are sugar for `T or none` and share the same machinery — see [optionals.md](optionals.md) |
 | **ER2: No user wrapper** | There is no `Ok` or `Err` constructor, keyword, or pattern. Success values are bare; error values are the error type's own constructor (e.g. `DivError.ByZero`) |
-| **ER3: Disjointness** | `T or E` requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Violation is a compile error at type formation. Same rule as [union-types.md](union-types.md) U6 |
+| **ER3: Disjointness** | `T or E` requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Checked where the type is written, and again after generic substitution (ER3a). Same rule as [union-types.md](union-types.md) U6. **Exception:** `none` — see ER3b |
+| **ER3a: Disjointness is a use-site obligation** | A signature that writes `T or E` with a type parameter on either side *is* the disjointness bound — there's no separate syntax to declare it. The compiler reads the obligation off the signature and checks it at the call site, where the type argument is known. A generic caller that forwards its own parameter passes the obligation on to *its* call sites, same as a trait bound (GF3) |
+| **ER3b: `none` layers instead of colliding** | `none` is exempt from disjointness and from the duplicate-variant rule. `T?` where `T` is itself optional is a legal two-layer optional, not a collision — see [optionals.md](optionals.md) |
 | **ER4: Error bound** | Every `E` must implement `ErrorMessage` — `func message(self) -> string`, auto-derived for enums (ER6). Enforced at type formation. Primitives (`i32`, `f64`, `string`) don't qualify; newtype them. **Exception:** `none` is exempt — it's the absent sentinel for optionals (`T or none`), not an error type |
 | **ER5: No `Result<T, E>` name** | The generic `Result<T, E>` type is gone. Use `T or E` directly |
 
@@ -29,6 +31,29 @@ func save(data: Data) -> void or IoError                   // unit success
 `T or E` is valid in return types, bindings (inferred or explicit), fields, generics — same positions as any type.
 
 **Precedence:** `?` (tightest) > `|` (error union) > `or` (loosest). `string? or IoError | ParseError` parses as `(string?) or (IoError | ParseError)`.
+
+### Disjointness Under Generics [ER3a]
+
+A generic signature can be fine at the definition and broken at one instantiation:
+
+<!-- test: skip -->
+```rask
+func cached<T>(f: || -> T or CacheError) -> T or CacheError    // fine: T and CacheError are different types here
+```
+
+Substitute `T = CacheError` and the return type becomes `CacheError or CacheError`. Nothing can be done at that point: the body's `return v` picked the success branch, but the only match arm the caller can write is `CacheError as e`, which reads as the error branch. The caller would be told an error happened when it didn't.
+
+So the compiler reads `T or CacheError` as a requirement — "T may not be `CacheError`" — and checks it at the call site:
+
+<!-- test: skip -->
+```rask
+cached(|| load())              // T = Config: fine
+cached(|| CacheError.Miss)     // T = CacheError: error at this line
+```
+
+The error lands on the call, not inside `cached`. That's the point — a use-site failure with the type argument in hand, not a mystery error in someone else's generic body.
+
+No new syntax. The signature already says which types can't collide; writing a separate `T: !CacheError` bound would just repeat it. When a caller genuinely wants both branches to carry a `CacheError`, newtype one side — the same escape hatch as the non-generic case.
 
 ### The `ErrorMessage` Trait
 
@@ -427,6 +452,9 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `const x: T or E = 5` (assignment, E ≠ none) | ER11 | Type error — auto-wrap is return-only |
 | `const x: T? = bare_t` (assignment) | ER11/optionals | Legal — `T or none` widens at any position |
 | `T or T` | ER3 | Compile error; newtype one side |
+| `f<T>() -> T or E` called with `T = E` | ER3a | Compile error at the call site, naming the parameter |
+| Generic caller forwards its own `T` into `T or E` | ER3a | Obligation propagates to the caller's own call sites |
+| `T?` where `T` is itself optional | ER3b | Legal — two-layer optional, see [optionals.md](optionals.md) |
 | `T or i32` (primitive E) | ER4 | Compile error — E lacks `ErrorMessage` |
 | `T or none` | ER4 | Legal — `none` is exempt from the `ErrorMessage` bound |
 | `try r` in `fn -> T?` | — | Cross-shape, ill-typed. Use `r.ok()` then `try` |
@@ -470,6 +498,24 @@ WHY: The compiler picks the branch from the value's type at return.
 FIX: Newtype one side:
      type ParseError = i32 with (…)
      func f() -> i32 or ParseError
+```
+
+**Disjointness violation at instantiation [ER3a]:**
+```
+ERROR [type.errors/ER3a]: `T` may not be `CacheError` here
+    |
+12  |  const r = cached(|| CacheError.Miss)
+    |            ^^^^^^ T = CacheError
+    |
+ 4  |  func cached<T>(f: || -> T or CacheError) -> T or CacheError
+    |                          ------------------ both branches become CacheError
+
+WHY: `cached` returns `T or CacheError`. The compiler picks the branch from
+     the value's type, so the two branches have to stay distinct. With
+     T = CacheError the caller can't tell a cached value from a cache miss.
+
+FIX: Newtype the success side at this call:
+     type Cached = CacheError with (…)
 ```
 
 **Missing ErrorMessage [ER4]:**
@@ -534,6 +580,22 @@ The reverse case — `try r` (a `T or E`) in a `T?`-returning function — fails
 **ER1 (builtin sum).** The old spec said `Result<T, E>` was a normal enum with `T or E` as sugar. In practice Result had dedicated sugar, auto-Ok wrapping, `try` propagation, `any Error` boxing, origin tracking, and union widening — more bespoke surface than any user enum. Making `T or E` a builtin lets the spec stop pretending.
 
 **ER3 (disjointness).** Type-based branch disambiguation at construction (no `Ok`/`Err` wrappers) only works if T ≠ E. Rask's existing nominal-vs-alias split gives this for free: nominal types are distinct, aliases are transparent. The escape hatch is newtype, not a wrapper keyword.
+
+**ER3a (checked at the call site, not the definition).** Three ways to handle a generic whose `T or E` can collapse:
+
+1. Reject the bad instantiation at the call site.
+2. Add a negative bound, `T: !CacheError`.
+3. Auto-newtype one branch behind the scenes.
+
+I picked 1. Option 3 doesn't actually work: renaming a branch internally doesn't help the caller, who still has one type name and two branches to point it at. Option 2 buys nothing — the signature already says `T or CacheError`, so a separate `T: !CacheError` clause is the same fact written twice, and negative bounds drag in reasoning ("does any type *not* equal this one?") that the rest of the language doesn't need.
+
+Rask already checks generics at the use site (`type.generics/G2`) rather than proving the definition good for all `T`. So an instantiation-time disjointness failure isn't a new kind of error — it's the same shape as a failed trait bound, and it lands in the same place: the caller's line, with the type argument named. The C++-template failure mode is an error reported *inside* someone else's body with no path back to the call. This one is reported on the call.
+
+The honest cost: `func cached<T>(…) -> T or CacheError` is not total over `T`, and its signature doesn't say so in a single glance. That's the price of type-based branch selection. It's paid by a small set of generics — those that mix a type parameter with a concrete error in one `or` — and the diagnostic points at the fix.
+
+**ER3b (`none` is the one variant that layers).** Disjointness exists so that *branch selection stays decidable* — on the producing side (which branch does `return x` pick?) and on the consuming side (which branch does `match … { E as e }` name?). Substituting `T = E` breaks the consuming side irreparably, because `E` carries a payload the caller wants and now names two branches.
+
+`none` is different on both counts. It carries no payload, and its layers are reached in order: the outer operators (`?`, `??`, `!`, `== none`) act on the outer layer, and the inner layer is only visible after narrowing through it. One rule — a bare `none` literal means the outer absent — closes the only remaining ambiguity. So `none` layers and payload variants don't. See [optionals.md](optionals.md).
 
 **ER4 (ErrorMessage bound).** A minimum bound on E solves three problems at once: (1) `r!` can always produce a useful panic message; (2) primitives can't accidentally be error types, so `i32 or i32` style ambiguities don't arise; (3) richer capabilities (context, codes, stack traces) layer opt-in on top without forcing complexity on simple errors.
 

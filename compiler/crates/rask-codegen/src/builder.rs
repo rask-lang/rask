@@ -1490,6 +1490,16 @@ impl<'a> FunctionBuilder<'a> {
             val = Self::convert_value(builder, val, val_ty, dst_ty);
         }
 
+        // #493: an Option destination deeper than its source gains the layers
+        // it's missing, rather than being copied over as if the depths matched.
+        // `const inner: T?? = slot` where `slot: T?` means "the container had
+        // something, and that something is this slot" (type.optionals/OPT28) —
+        // copying the 16 bytes straight across would silently reinterpret the
+        // inner layer as the outer one.
+        if let Some(()) = Self::try_widen_option_depth(builder, dst, &dst_local.ty, rvalue, val, ctx)? {
+            return Ok(());
+        }
+
         // When dest is Option(T) and the source is already Option-typed,
         // copy the struct. When the source is a scalar, wrap as Some.
         let src_option_ty = if let MirType::Option(_) = &dst_local.ty {
@@ -2738,8 +2748,11 @@ impl<'a> FunctionBuilder<'a> {
             // Option/Result: payload starts after tag.
             // MIR uses EnumTag for the tag; Field indices are payload-relative.
             Some(MirType::Option(inner)) => {
-                // Aggregate payload (struct/enum/tuple/string): return address, not load
-                if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String) {
+                // Aggregate payload: return address, not load. A nested Option
+                // counts — the payload of a `T??` is a whole `T?` slot, and
+                // loading its first 8 bytes as a scalar would hand `tag` a
+                // number to dereference (#493).
+                if Self::is_boxed_payload(inner.as_ref()) {
                     let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::PAYLOAD_OFFSET as i64);
                     return Ok(payload_addr);
                 }
@@ -2752,7 +2765,7 @@ impl<'a> FunctionBuilder<'a> {
                 } else {
                     // Aggregate payload (Ok or Err): return address, not load.
                     // MIR uses field_index 0 for both Ok and Err payloads — check both.
-                    let is_aggregate = |t: &MirType| matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String);
+                    let is_aggregate = Self::is_boxed_payload;
                     if *field_index == 0 && (is_aggregate(ok.as_ref()) || is_aggregate(err.as_ref())) {
                         let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::RESULT_PAYLOAD_OFFSET as i64);
                         // If the caller expects a scalar (non-I64), this is a scalar
@@ -4127,6 +4140,124 @@ impl<'a> FunctionBuilder<'a> {
     fn build_none(builder: &mut ClifFunctionBuilder, slot: StackSlot) {
         let tag = builder.ins().iconst(types::I64, 1);
         builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
+    }
+
+    /// Payload types that live in their own storage, so extracting one yields
+    /// an address rather than a loaded scalar. Nested `Option`/`Result` belong
+    /// here: a `T??` payload is a whole 16-byte `T?` slot (#493).
+    fn is_boxed_payload(ty: &MirType) -> bool {
+        matches!(
+            ty,
+            MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Tuple(_)
+                | MirType::String
+                | MirType::Option(_)
+                | MirType::Result { .. }
+        )
+    }
+
+    /// How many optional layers a MIR type carries.
+    fn option_depth(ty: &MirType) -> usize {
+        match ty {
+            MirType::Option(inner) => 1 + Self::option_depth(inner),
+            _ => 0,
+        }
+    }
+
+    /// `ty` peeled back to `depth` optional layers.
+    fn option_type_at_depth(ty: &MirType, depth: usize) -> &MirType {
+        let mut cur = ty;
+        let mut d = Self::option_depth(ty);
+        while d > depth {
+            match cur {
+                MirType::Option(inner) => {
+                    cur = inner;
+                    d -= 1;
+                }
+                _ => break,
+            }
+        }
+        cur
+    }
+
+    /// Optional depth of an rvalue's source, when it can be known statically.
+    /// `None` means "can't tell" — callers leave such assignments alone.
+    fn rvalue_option_depth(rvalue: &MirRValue, ctx: &CodegenCtx) -> Option<usize> {
+        match rvalue {
+            MirRValue::Use(MirOperand::Local(id)) => ctx
+                .locals
+                .iter()
+                .find(|l| l.id == *id)
+                .map(|l| Self::option_depth(&l.ty)),
+            MirRValue::Use(MirOperand::Constant(_)) => Some(0),
+            _ => None,
+        }
+    }
+
+    /// #493: give an Option destination the layers its source is missing.
+    ///
+    /// `const inner: T?? = slot` where `slot: T?` has to gain one layer — the
+    /// outer says the container held something, the inner carries the slot
+    /// (type.optionals/OPT28). Copying the source's bytes straight into the
+    /// destination would read the inner layer's tag as the outer one.
+    ///
+    /// Only fires at depth 2 and beyond; a bare `T` into a `T?` slot is the
+    /// ordinary `wrap_as_some` path below and stays there. A bare `none` is
+    /// already typed at the annotation's depth by MIR, so it arrives with
+    /// matching depth and never widens (OPT29).
+    ///
+    /// Returns `Some(())` when it handled the assignment.
+    fn try_widen_option_depth(
+        builder: &mut ClifFunctionBuilder,
+        dst: &LocalId,
+        dst_ty: &MirType,
+        rvalue: &MirRValue,
+        val: Value,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Option<()>> {
+        let dst_depth = Self::option_depth(dst_ty);
+        if dst_depth < 2 {
+            return Ok(None);
+        }
+        // Niche-optimized Option<Handle> has no tag to write (mem.pools).
+        if matches!(dst_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
+            return Ok(None);
+        }
+        let Some(src_depth) = Self::rvalue_option_depth(rvalue, ctx) else {
+            return Ok(None);
+        };
+        if src_depth >= dst_depth {
+            return Ok(None);
+        }
+        let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst).copied() else {
+            return Ok(None);
+        };
+
+        // Build outwards. The innermost added layer takes the value itself
+        // (a scalar when the source carried no layers); every layer above it
+        // wraps the aggregate slot built beneath.
+        let mut payload_ptr: Option<Value> = (src_depth > 0).then_some(val);
+        for depth in (src_depth + 1)..=dst_depth {
+            let size = Self::option_type_at_depth(dst_ty, depth).size() as u32;
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                0,
+            ));
+            match payload_ptr {
+                None => Self::build_some(builder, slot, val),
+                Some(ptr) => {
+                    let inner_size = Self::option_type_at_depth(dst_ty, depth - 1).size() as u32;
+                    Self::build_wrapped_aggregate(builder, slot, false, 0, ptr, inner_size);
+                }
+            }
+            payload_ptr = Some(builder.ins().stack_addr(types::I64, slot, 0));
+        }
+
+        let src_ptr = payload_ptr.expect("widening builds at least one layer");
+        Self::copy_aggregate(builder, src_ptr, dst_ss, dst_size);
+        Ok(Some(()))
     }
 
     /// Wrap an aggregate payload (copied from `src_ptr`) into an Option/Result

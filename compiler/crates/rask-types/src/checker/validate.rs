@@ -9,6 +9,50 @@ use super::TypeChecker;
 
 use crate::types::Type;
 
+/// ER3a: "after substitution, `left` and `right` must still be different types."
+/// `left`/`right` carry the fresh vars standing in for the call's type args;
+/// `param`/`other` are the source spellings, for the message.
+pub(super) struct DisjointObligation {
+    pub callee: String,
+    pub param: String,
+    pub left: Type,
+    pub right: Type,
+    pub other: Type,
+    pub span: Span,
+}
+
+/// Gather every `T or E` node in a type as an `(ok, err)` pair.
+fn collect_result_nodes<'a>(ty: &'a Type, out: &mut Vec<(&'a Type, &'a Type)>) {
+    match ty {
+        Type::Result { ok, err } => {
+            out.push((ok, err));
+            collect_result_nodes(ok, out);
+            collect_result_nodes(err, out);
+        }
+        Type::Slice(inner) | Type::RawPtr(inner) => collect_result_nodes(inner, out),
+        Type::Array { elem, .. } | Type::SimdVector { elem, .. } => collect_result_nodes(elem, out),
+        Type::Tuple(elems) | Type::Union(elems) => {
+            for e in elems {
+                collect_result_nodes(e, out);
+            }
+        }
+        Type::Fn { params, ret } => {
+            for p in params {
+                collect_result_nodes(p, out);
+            }
+            collect_result_nodes(ret, out);
+        }
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+            for a in args {
+                if let crate::types::GenericArg::Type(inner) = a {
+                    collect_result_nodes(inner, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 impl TypeChecker {
     /// Walk `ty` and validate every `Result { ok, err }` node against ER3, ER4,
     /// and the duplicate-variant rule (U5 from union-types.md).
@@ -16,14 +60,14 @@ impl TypeChecker {
     /// ER3: T ≠ E (disjointness).
     /// ER4: E (or each component of a union E) implements `ErrorMessage`.
     /// U5:  flattening the nested `or` tree must not yield a repeated variant
-    ///      (e.g. `T??` = `(T or none) or none`, `(T or E) or E`).
+    ///      (e.g. `(T or E) or E`). `none` is exempt — repeated `none` layers
+    ///      are nested optionals, which stay distinct (type.optionals/OPT28).
     ///
     /// Unresolved components (`Var`, `Error`) are skipped to avoid false positives
     /// during inference.
     pub(super) fn validate_result_types_in(&mut self, ty: &Type, span: Span) {
         let mut errs = Vec::new();
         collect_result_errors(ty, span, self, &mut errs);
-        check_nested_optional(ty, span, &mut errs);
         self.errors.extend(errs);
     }
 
@@ -63,6 +107,86 @@ impl TypeChecker {
                     });
                 }
             }
+        }
+    }
+
+    /// ER3a: read the disjointness obligations off a generic callee's signature
+    /// and record them against this call site.
+    ///
+    /// `sig` is the callee's signature with type params still spelled as
+    /// `UnresolvedNamed`; `subst` maps each param name to the fresh var standing
+    /// in for its type argument. For every `T or E` node in the signature, each
+    /// success leaf is obliged to differ from each error leaf. The obligation
+    /// only bites when a type param is involved — a signature that writes two
+    /// concrete colliding types was already rejected at its declaration.
+    pub(super) fn note_disjointness_obligations(
+        &mut self,
+        callee: &str,
+        sig: &Type,
+        subst: &std::collections::HashMap<&str, Type>,
+        span: Span,
+    ) {
+        let mut nodes = Vec::new();
+        collect_result_nodes(sig, &mut nodes);
+        for (ok, err) in nodes {
+            let mut ok_leaves = Vec::new();
+            let mut err_leaves = Vec::new();
+            collect_or_leaves(ok, &mut ok_leaves);
+            collect_or_leaves(err, &mut err_leaves);
+            for l in &ok_leaves {
+                for r in &err_leaves {
+                    // `none` layers instead of colliding (ER3b).
+                    if matches!(l, Type::None) || matches!(r, Type::None) {
+                        continue;
+                    }
+                    // Blame the type param; if both sides are params, the first.
+                    // Neither being a param means nothing substitution can
+                    // change, and the declaration site already checked it.
+                    let param = [l, r].into_iter().find_map(|t| match t {
+                        Type::UnresolvedNamed(n) if subst.contains_key(n.as_str()) => Some(n.clone()),
+                        _ => None,
+                    });
+                    let Some(param) = param else { continue };
+                    let other = if matches!(l, Type::UnresolvedNamed(n) if *n == param) { r } else { l };
+                    self.pending_disjointness.push(DisjointObligation {
+                        callee: callee.to_string(),
+                        param,
+                        left: TypeChecker::substitute_type_params(l, subst),
+                        right: TypeChecker::substitute_type_params(r, subst),
+                        other: (*other).clone(),
+                        span,
+                    });
+                }
+            }
+        }
+    }
+
+    /// ER3a: report every recorded obligation whose two sides resolved to the
+    /// same concrete type. One error per (call site, parameter).
+    pub(super) fn validate_pending_disjointness(&mut self) {
+        let pending = std::mem::take(&mut self.pending_disjointness);
+        let mut reported: Vec<(Span, String)> = Vec::new();
+        for ob in pending {
+            let left = self.ctx.apply(&ob.left);
+            let right = self.ctx.apply(&ob.right);
+            if is_unresolved(&left) || is_unresolved(&right) || left != right {
+                continue;
+            }
+            if left == Type::None {
+                continue;
+            }
+            let key = (ob.span, ob.param.clone());
+            if reported.contains(&key) {
+                continue;
+            }
+            reported.push(key);
+            self.errors.push(TypeError::ResultNotDisjointAtInstantiation {
+                callee: ob.callee,
+                param: ob.param,
+                arg: left,
+                other: ob.other,
+                span: ob.span,
+            });
         }
     }
 
@@ -139,6 +263,10 @@ fn collect_result_errors(
 /// U5: walk an `or`-tree (nested Result/Option/Union) and report any leaf type
 /// that appears more than once. Each unique duplicate is reported once.
 ///
+/// `none` is exempt: repeated `none` layers form a nested optional, where the
+/// layers are told apart by position rather than by type (type.optionals/OPT28).
+/// `collect_or_leaves` therefore never descends into an optional.
+///
 /// Skips any variant that disjointness (ER3) already flagged at this span — the
 /// fix is the same and reporting both is noise.
 fn check_duplicate_sum_variants(
@@ -180,60 +308,15 @@ fn check_duplicate_sum_variants(
     }
 }
 
-/// Detects T?? — Option<Option<_>> — outside of any Result wrapper, where the
-/// duplicate-variant rule still applies but `validate_single_result` doesn't
-/// fire (because there's no surrounding T or E node).
-fn check_nested_optional(ty: &Type, span: Span, errs: &mut Vec<TypeError>) {
-    walk_for_nested_option(ty, span, errs);
-}
-
-fn walk_for_nested_option(ty: &Type, span: Span, errs: &mut Vec<TypeError>) {
-    match ty {
-        Type::Result { ok: inner, err } if **err == Type::None => {
-            if inner.is_option() {
-                errs.push(TypeError::DuplicateSumVariant {
-                    ty: ty.clone(),
-                    variant: Type::None,
-                    span,
-                });
-            }
-            walk_for_nested_option(inner, span, errs);
-        }
-        Type::Result { ok, err } => {
-            walk_for_nested_option(ok, span, errs);
-            walk_for_nested_option(err, span, errs);
-        }
-        Type::Slice(inner) | Type::RawPtr(inner) => walk_for_nested_option(inner, span, errs),
-        Type::Array { elem, .. } | Type::SimdVector { elem, .. } => {
-            walk_for_nested_option(elem, span, errs)
-        }
-        Type::Tuple(elems) | Type::Union(elems) => {
-            for e in elems {
-                walk_for_nested_option(e, span, errs);
-            }
-        }
-        Type::Fn { params, ret } => {
-            for p in params {
-                walk_for_nested_option(p, span, errs);
-            }
-            walk_for_nested_option(ret, span, errs);
-        }
-        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
-            for a in args {
-                if let crate::types::GenericArg::Type(inner) = a {
-                    walk_for_nested_option(inner, span, errs);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Gather the leaf types of an `or`-tree. `Result { ok, err }` recurses both
-/// sides (for `T?` = `T or none`, this naturally pushes T then Type::None);
-/// `Union` contributes each component. Anything else is a leaf.
+/// sides; `Union` contributes each component. Anything else is a leaf.
+///
+/// An optional (`X or none`) is a leaf, not a node to flatten. Flattening it
+/// would make `T??` look like two `none` variants of one sum, when it is really
+/// two layers that stay distinct (type.optionals/OPT28).
 fn collect_or_leaves<'a>(ty: &'a Type, out: &mut Vec<&'a Type>) {
     match ty {
+        Type::Result { err, .. } if **err == Type::None => out.push(ty),
         Type::Result { ok, err } => {
             collect_or_leaves(ok, out);
             collect_or_leaves(err, out);
@@ -262,11 +345,12 @@ fn validate_single_result(
     }
 
     // ER3: disjointness — T ≠ E, and T ∉ components of a union E.
+    // ER3b: `none` is exempt. `none?` is a two-layer optional, not a collision.
     let err_components: Vec<&Type> = match &err_r {
         Type::Union(types) => types.iter().collect(),
         other => vec![other],
     };
-    for comp in &err_components {
+    for comp in err_components.iter().filter(|_| ok_r != Type::None) {
         if &&ok_r == comp {
             errs.push(TypeError::ResultNotDisjoint {
                 ty: ok_r.clone(),

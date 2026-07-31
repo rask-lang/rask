@@ -232,6 +232,25 @@ impl TypeChecker {
             // wrap only at return.
             let err_is_none = matches!(self.ctx.apply(err), Type::None);
             let allow_wrap = position == WrapPosition::Return || err_is_none;
+            // OPT29/OPT31: widening adds an optional layer. A value already
+            // typed as the target's *inner* optional fills the outer present
+            // branch — `const x: T?? = y` where `y: T?` means "the inner one".
+            // Anything else keeps the ordinary same-shape unify.
+            if err_is_none {
+                let inner = self.ctx.apply(ok);
+                let ret_now = self.ctx.apply(&ret_ty);
+                // A value that already has the inner optional type, or one that
+                // isn't optional-shaped at all and so can only reach the target
+                // by gaining layers. A bare `none` is neither — its own `ok` is
+                // still a var, and it binds to the outermost layer (OPT29).
+                let widens = inner.is_option()
+                    && ret_now != resolved_expected
+                    && !matches!(ret_now, Type::Var(_))
+                    && (ret_now == inner || !ret_now.is_option());
+                if widens {
+                    return self.resolve_return_value(ret_ty, *ok.clone(), position, span);
+                }
+            }
             match &resolved_ret {
                 Type::Result { .. } => self.unify(&expected, &ret_ty, span),
                 Type::Var(id) if !allow_wrap && self.ctx.literal_vars.contains_key(id) => {
