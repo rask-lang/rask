@@ -451,5 +451,24 @@ pub fn typecheck_with_stdlib_lenient(
 ) -> (TypedProgram, Vec<TypeError>) {
     let mut checker = TypeChecker::new(resolved);
     checker.collect_type_declarations(stdlib_decls);
+    if std::env::var("RASK_TRIAGE_STDLIB").is_ok() {
+        let mut all: Vec<Decl> = rask_stdlib::StubRegistry::compilable_decls();
+        all.extend_from_slice(decls);
+        let (typed, errs) = checker.check_lenient(&all);
+        let mut by_kind: std::collections::BTreeMap<String, (usize, String)> =
+            Default::default();
+        for e in &errs {
+            let msg = format!("{}", e);
+            let kind = msg.split(':').next().unwrap_or("?").to_string();
+            let entry = by_kind.entry(kind).or_insert((0, msg.clone()));
+            entry.0 += 1;
+        }
+        eprintln!("[triage] total={} node_types={} call_targets={}",
+            errs.len(), typed.node_types.len(), typed.call_targets.len());
+        for (kind, (n, sample)) in by_kind.iter().rev() {
+            eprintln!("[triage] {:5}  {}  |  e.g. {}", n, kind, sample);
+        }
+        return (typed, errs);
+    }
     checker.check_lenient(decls)
 }
