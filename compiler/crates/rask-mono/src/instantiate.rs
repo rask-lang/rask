@@ -41,8 +41,12 @@ fn split_type_args(s: &str) -> Vec<&str> {
 struct TypeSubstitutor {
     /// Mapping from type parameter name to concrete type
     substitutions: HashMap<String, Type>,
-    /// Counter for generating fresh NodeIds
+    /// Counter for generating fresh NodeIds. Seeded by the caller so copies
+    /// never reuse the original program's ids.
     next_node_id: u32,
+    /// New node id -> the original node it was cloned from, so the checker's
+    /// per-node records can be carried onto the copy.
+    node_origin: HashMap<NodeId, NodeId>,
 }
 
 impl TypeSubstitutor {
@@ -54,12 +58,20 @@ impl TypeSubstitutor {
         Self {
             substitutions,
             next_node_id: 0,
+            node_origin: HashMap::new(),
         }
     }
 
     fn fresh_id(&mut self) -> NodeId {
         let id = NodeId(self.next_node_id);
         self.next_node_id += 1;
+        id
+    }
+
+    /// A fresh id that remembers which original node it replaces.
+    fn fresh_id_from(&mut self, origin: NodeId) -> NodeId {
+        let id = self.fresh_id();
+        self.node_origin.insert(id, origin);
         id
     }
 
@@ -220,7 +232,7 @@ impl TypeSubstitutor {
 
     fn clone_stmt(&mut self, stmt: &Stmt) -> Stmt {
         Stmt {
-            id: self.fresh_id(),
+            id: self.fresh_id_from(stmt.id),
             kind: match &stmt.kind {
                 StmtKind::Expr(e) => StmtKind::Expr(self.clone_expr(e)),
 
@@ -346,7 +358,7 @@ impl TypeSubstitutor {
 
     fn clone_expr(&mut self, expr: &Expr) -> Expr {
         Expr {
-            id: self.fresh_id(),
+            id: self.fresh_id_from(expr.id),
             kind: match &expr.kind {
                 // Literals
                 ExprKind::Int(val, suffix) => ExprKind::Int(*val, *suffix),
@@ -676,7 +688,33 @@ impl TypeSubstitutor {
 ///
 /// Clones the AST and replaces all type parameters with concrete types.
 /// Works for functions, structs, and enums.
+///
+/// Node IDs in the copy come from the caller's allocator so they can't collide
+/// with the original program's — see [`instantiate_function_from`].
 pub fn instantiate_function(decl: &Decl, type_args: &[Type]) -> Decl {
+    let mut next = 0u32;
+    instantiate_function_from(decl, type_args, &mut next).0
+}
+
+/// Instantiate, allocating node IDs from `next` and reporting where each one
+/// came from.
+///
+/// Every copy used to number its nodes from zero. Those numbers are the key
+/// into everything the checker recorded — types, dispatch targets, type
+/// arguments — so an instantiated body didn't just lose that information, it
+/// silently read *another* function's: node 7 of a generic copy answered with
+/// whatever node 7 of the original program happened to be. Lowering compensated
+/// with a layer of guessing from AST shape, which is why so much of it is
+/// reconstruction rather than lookup.
+///
+/// Allocating from a shared counter above the program's range makes a miss a
+/// miss. The returned map says which original node each copy came from, so the
+/// recorded facts can be carried across instead.
+pub fn instantiate_function_from(
+    decl: &Decl,
+    type_args: &[Type],
+    next_node_id: &mut u32,
+) -> (Decl, HashMap<NodeId, NodeId>) {
     let implicit_params: Vec<TypeParam>;
     let type_params: &[TypeParam] = match &decl.kind {
         DeclKind::Fn(f) => {
@@ -707,10 +745,13 @@ pub fn instantiate_function(decl: &Decl, type_args: &[Type]) -> Decl {
         DeclKind::Enum(e) => &e.type_params,
         _ => {
             // No type parameters to substitute — return a clone
-            return decl.clone();
+            return (decl.clone(), HashMap::new());
         }
     };
 
     let mut substitutor = TypeSubstitutor::new(type_params, type_args);
-    substitutor.clone_decl(decl)
+    substitutor.next_node_id = *next_node_id;
+    let cloned = substitutor.clone_decl(decl);
+    *next_node_id = substitutor.next_node_id;
+    (cloned, substitutor.node_origin)
 }

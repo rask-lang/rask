@@ -81,6 +81,16 @@ pub struct Monomorphizer<'a> {
     /// Call expression NodeId → mangled callee name.
     /// Used by MIR lowering to rewrite calls to generic function instantiations.
     pub call_rewrites: HashMap<NodeId, String>,
+    /// Node ids handed out to instantiated copies. Starts above every id the
+    /// original program used, so a copy's nodes can never be mistaken for the
+    /// nodes they were cloned from.
+    next_instantiated_id: u32,
+    /// Per-node facts carried onto the instantiated copies: the checker keys
+    /// everything by node id, and a copy's nodes are new. Populated from the
+    /// origin map each instantiation reports.
+    pub instantiated_node_types: HashMap<NodeId, rask_types::Type>,
+    /// Dispatch targets for the copies, same idea as `instantiated_node_types`.
+    pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
     /// Trait name → object-compatible method names (TR1–TR3).
     /// A vtable references a slot per compatible method, so boxing a value as
     /// `any Trait` makes every such method of the concrete type reachable even
@@ -222,6 +232,9 @@ impl<'a> Monomorphizer<'a> {
             queue: VecDeque::new(),
             results: Vec::new(),
             call_rewrites: HashMap::new(),
+            next_instantiated_id: 0,
+            instantiated_node_types: HashMap::new(),
+            instantiated_call_targets: HashMap::new(),
             trait_methods,
             trait_coercions: HashMap::new(),
             decls,
@@ -238,8 +251,92 @@ impl<'a> Monomorphizer<'a> {
     pub fn with_typed_program(decls: &'a [Decl], typed: &'a TypedProgram) -> Self {
         let mut mono = Self::new(decls, &typed.call_type_args);
         mono.typed = Some(typed);
+        // Instantiated copies number their nodes from here up. Anything at or
+        // below this is a real node of the original program, and a copy reusing
+        // one would answer type and dispatch queries with that node's record.
+        mono.next_instantiated_id = typed
+            .node_types
+            .keys()
+            .chain(typed.call_targets.keys())
+            .map(|n| n.0)
+            .max()
+            .map_or(0, |m| m + 1);
         mono.bind_methods_by_type(typed);
         mono
+    }
+
+    /// Copy the checker's per-node records onto an instantiated body.
+    ///
+    /// The copy's nodes are new, so nothing the checker recorded reaches them
+    /// on their own ids. Each one knows which original node it came from, which
+    /// is enough to bring the type and the dispatch target across.
+    ///
+    /// Types recorded against the *generic* body still mention its type
+    /// parameters, so they're substituted on the way over: a receiver the
+    /// checker typed `T` becomes the concrete type this instantiation is for.
+    /// A record that still names a type parameter afterwards is dropped rather
+    /// than carried — a wrong answer here is worse than no answer, because
+    /// lowering's fallbacks can recognise absence but not incorrectness.
+    fn carry_node_records(
+        &mut self,
+        origins: &HashMap<NodeId, NodeId>,
+        type_args: &[Type],
+    ) {
+        let Some(typed) = self.typed else { return };
+        for (&new_id, &old_id) in origins {
+            if let Some(ty) = typed.node_types.get(&old_id) {
+                if let Some(concrete) = Self::concretize(ty, type_args) {
+                    self.instantiated_node_types.insert(new_id, concrete);
+                }
+            }
+            if let Some(callee) = typed.call_targets.get(&old_id) {
+                let carried = match callee {
+                    rask_types::Callee::Free(sym) => Some(rask_types::Callee::Free(*sym)),
+                    rask_types::Callee::Method { recv, method } => {
+                        Self::concretize(recv, type_args).map(|recv| {
+                            rask_types::Callee::Method { recv, method: method.clone() }
+                        })
+                    }
+                };
+                if let Some(c) = carried {
+                    self.instantiated_call_targets.insert(new_id, c);
+                }
+            }
+        }
+    }
+
+    /// A recorded type with this instantiation's arguments substituted in, or
+    /// `None` if it still refers to something only the generic body knows.
+    ///
+    /// Single-letter uppercase names are type parameters (type.gradual/PC3), so
+    /// they're the marker for "this came from the generic and wasn't resolved".
+    fn concretize(ty: &Type, type_args: &[Type]) -> Option<Type> {
+        fn is_type_param(name: &str) -> bool {
+            let mut chars = name.chars();
+            matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
+        }
+        match ty {
+            // The common case by far: the receiver is the type parameter
+            // itself, and a single-argument instantiation pins it.
+            Type::UnresolvedNamed(name) if is_type_param(name) => {
+                if type_args.len() == 1 { Some(type_args[0].clone()) } else { None }
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                if is_type_param(name) {
+                    return None;
+                }
+                // `Vec<T>` and friends: only carry it when every argument
+                // came through concrete.
+                for arg in args {
+                    if let rask_types::GenericArg::Type(inner) = arg {
+                        Self::concretize(inner, type_args)?;
+                    }
+                }
+                Some(ty.clone())
+            }
+            Type::Var(_) => None,
+            other => Some(other.clone()),
+        }
     }
 
     /// Re-key `method_table` on type identity instead of declaration order.
@@ -368,7 +465,11 @@ impl<'a> Monomorphizer<'a> {
             let concrete = if item.type_args.is_empty() {
                 original.clone()
             } else {
-                instantiate_function(original, &item.type_args)
+                let (cloned, origins) = crate::instantiate::instantiate_function_from(
+                    original, &item.type_args, &mut self.next_instantiated_id,
+                );
+                self.carry_node_records(&origins, &item.type_args);
+                cloned
             };
 
             // Walk the concrete body to discover more calls (M4: transitive)

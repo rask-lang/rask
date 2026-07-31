@@ -129,6 +129,55 @@ fn call_targets_records_free_and_method_dispatch() {
 }
 
 #[test]
+fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
+    // An instantiated generic used to number its nodes from zero, so its nodes
+    // collided with the original program's. Every per-node lookup inside such a
+    // body — type, dispatch target, type arguments — then answered with an
+    // unrelated node's record rather than missing. Lowering papered over it by
+    // guessing from AST shape, which is why so much of it reconstructs
+    // information the checker already had.
+    //
+    // Two instantiations also numbered from zero identically, so they collided
+    // with each other as well.
+    let path = tmp_rk(r#"
+        func identity<T>(x: T) -> T {
+            return x
+        }
+        func main() {
+            const a = identity(7)
+            const b = identity("hi")
+            println("{a} {b}")
+        }
+    "#);
+    let output = compile_file(path.to_str().unwrap(), Vec::new(), &default_config());
+    let result = output.result.expect("expected success");
+
+    let checker_max = result.typed.node_types.keys().map(|n| n.0).max().unwrap_or(0);
+    let carried = &result.mono.instantiated_node_types;
+
+    assert!(
+        !carried.is_empty(),
+        "two instantiations of first_of<T> should have carried node records; \
+         an empty map means lowering is back to guessing inside them",
+    );
+    for id in carried.keys() {
+        assert!(
+            id.0 > checker_max,
+            "instantiated node {} is inside the original program's id range \
+             (max {}) — a lookup there answers with another node's record",
+            id.0, checker_max,
+        );
+    }
+    // Both instantiations must be represented. Numbering each copy from zero
+    // made them collide with each other as well as with the program.
+    assert!(
+        result.mono.functions.iter().filter(|f| !f.type_args.is_empty()).count() >= 2,
+        "expected an instantiation per type argument",
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn shadowing_a_stdlib_type_name_keeps_the_program_body() {
     // #258: stdlib json.rk declares `enum JsonError` with a `message()` that
     // matches on `self`. A program struct of the same name mangles to the same

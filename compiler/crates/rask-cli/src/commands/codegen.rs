@@ -267,10 +267,14 @@ pub fn cmd_mir(path: &str, format: Format) {
     mir_interp.register_functions(&decls);
     let empty_packages = std::collections::HashSet::new();
     let nominal_underlying = super::compile::build_nominal_underlying(&typed);
+    // Instantiated generic bodies have nodes the checker never saw; mono
+    // carried its records onto them. Lowering wants one map for both.
+    let all_node_types = mono.all_node_types(&typed);
+    let all_call_targets = mono.all_call_targets(&typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
-        node_types: &typed.node_types,
+        node_types: &all_node_types,
         type_names: &type_names,
         comptime_globals: &comptime_globals,
         extern_funcs: &extern_funcs,
@@ -282,7 +286,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         comptime_interp: Some(std::cell::RefCell::new(mir_interp)),
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
-        call_targets: &typed.call_targets,
+        call_targets: &all_call_targets,
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -344,10 +348,14 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
 
     let nominal_underlying = super::compile::build_nominal_underlying(&typed);
+    // Instantiated generic bodies have nodes the checker never saw; mono
+    // carried its records onto them. Lowering wants one map for both.
+    let all_node_types = mono.all_node_types(&typed);
+    let all_call_targets = mono.all_call_targets(&typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
-        node_types: &typed.node_types,
+        node_types: &all_node_types,
         type_names: &type_names,
         comptime_globals: &comptime_globals,
         extern_funcs: &extern_funcs,
@@ -359,7 +367,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         comptime_interp: None,
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
-        call_targets: &typed.call_targets,
+        call_targets: &all_call_targets,
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
