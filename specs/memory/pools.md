@@ -70,6 +70,8 @@ Every access validates the handle.
 pool.get(h)   // Returns T? (T: Copy)
 ```
 
+**What this actually guarantees.** Holding a handle to a slot you already removed is a use-after-free in the semantic sense — you're reaching for something that's gone. The generation counter doesn't prevent that; it makes the reach fail loudly at the point of access instead of silently handing you whatever now lives in the slot. Detection, not impossibility. It's the same deal every ECS makes, and it's what lets a `Pool` hand out identifiers that outlive the things they name. The part that *is* impossible by construction is dangling: a handle is an integer, not an address, so it never points into freed memory even when the pool reallocates.
+
 **Generation overflow:** Saturating semantics. When a slot's generation reaches max, the slot becomes permanently unusable. Practically never happens (~4B cycles per slot with default u32). For extreme high-churn: `Pool<T, Gen=u64>`.
 
 ## Inline Expression Access
@@ -266,7 +268,7 @@ The handle safety story is a three-layer tower where each layer strips more chec
 
 | Layer | What it gives up | What you keep | Residual cost |
 |-------|------------------|---------------|---------------|
-| **1. Bare access** (`pool[h]`) | Nothing | Use-after-free safety | ~1ns per access |
+| **1. Bare access** (`pool[h]`) | Nothing | Stale handles caught | ~1ns per access |
 | **2. Coalesced access** (repeated `pool[h].x`, `pool[h].y`) | One access per block, tracked by compiler | Same safety | ~1ns per coalesced group |
 | **3. Frozen context** (`using frozen Pool<T>`) | Structural mutation inside the context | Same safety + read-only guarantee | Often zero |
 
@@ -543,7 +545,7 @@ func render_entities() using frozen entities: Pool<Entity> {
 
 **PF5 (frozen context):** I considered making FrozenPool a separate type with freeze/thaw ownership ceremonies. That's the Rust approach — explicit state transitions. But it adds a whole type to learn, and `using frozen Pool<T>` already provides the compile-time guarantee. The `frozen` modifier is a context property, not a type.
 
-**PL9 (handle stability):** This is why handles exist — stable identifiers that don't break when memory moves. Pointers would become dangling; handles never do. This stability is what allows `insert` and `remove(other)` inside `with` blocks (W2a/W2b) — the compiler re-resolves the binding via the still-valid handle after each structural mutation. Vec/Map can't do this (indices shift, keys rehash), but pools can because handle stability is a structural guarantee.
+**PL9 (handle stability):** This is why handles exist — stable identifiers that don't break when memory moves. A pointer into a reallocated buffer dangles; a handle doesn't, because it names a slot rather than an address. (A handle to a slot you *removed* still goes stale — that's the generation check's job, a separate thing from relocation.) This stability is what allows `insert` and `remove(other)` inside `with` blocks (W2a/W2b) — the compiler re-resolves the binding via the still-valid handle after each structural mutation. Vec/Map can't do this (indices shift, keys rehash), but pools can because handle stability is a structural guarantee.
 
 ### Patterns & Guidance
 
