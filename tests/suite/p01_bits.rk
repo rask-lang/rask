@@ -82,3 +82,14 @@ test "std.bits/round trips" {
     assert x.swap_bytes().swap_bytes() == x
     assert x.reverse_bits().reverse_bits() == x
 }
+
+test "std.bits/byte order round-trips" {
+    const a: u16 = 258
+    assert a.to_be() == 513
+    assert a.to_le() == 258
+    assert a.to_be().to_be() == a
+
+    const b: u32 = 1
+    assert b.to_be() == 16777216
+    assert b.to_le() == 1
+}

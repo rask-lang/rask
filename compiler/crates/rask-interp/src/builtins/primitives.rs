@@ -86,7 +86,8 @@ impl Interpreter {
             | "leading_zeros" | "trailing_zeros"
             | "leading_ones" | "trailing_ones"
             | "reverse_bits" | "swap_bytes"
-            | "rotate_left" | "rotate_right" => {
+            | "rotate_left" | "rotate_right"
+            | "to_be" | "to_le" => {
                 let width = kind.bits().unwrap_or(64);
                 let masked = mask_to_width(a, width);
                 let out = match method {
@@ -99,7 +100,10 @@ impl Interpreter {
                     "trailing_zeros" => masked.trailing_zeros().min(width) as i64,
                     "trailing_ones" => masked.trailing_ones().min(width) as i64,
                     "reverse_bits" => (masked.reverse_bits() >> (64 - width)) as i64,
-                    "swap_bytes" => (masked.swap_bytes() >> (64 - width)) as i64,
+                    // Hosts Rask targets are little-endian, so to_be is a byte
+                    // swap and to_le is the identity.
+                    "swap_bytes" | "to_be" => (masked.swap_bytes() >> (64 - width)) as i64,
+                    "to_le" => masked as i64,
                     "rotate_left" | "rotate_right" => {
                         let n = (self.expect_int(args, 0)? as u32).rem_euclid(width);
                         let n = if method == "rotate_right" { (width - n) % width } else { n };

@@ -2768,6 +2768,11 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
+            // std.bits B2/B3 — byte order. Same width in, same width out;
+            // bits.rk documents these as methods on the integer types and
+            // uses them (`hton_u16` is `x.to_be()`), but nothing registered
+            // them, so the stdlib's own definitions didn't resolve.
+            "to_be" | "to_le" if args.is_empty() => self.unify(ret, ty, span),
             _ => Err(TypeError::NoSuchMethod {
                 ty: ty.clone(),
                 method: method.to_string(),

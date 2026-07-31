@@ -3931,7 +3931,9 @@ impl<'a> MirLowerer<'a> {
             "trailing_zeros" => (MirUnaryOp::TrailingZeros, false),
             "trailing_ones" => (MirUnaryOp::TrailingZeros, true),
             "reverse_bits" => (MirUnaryOp::ReverseBits, false),
-            "swap_bytes" => (MirUnaryOp::SwapBytes, false),
+            // Little-endian hosts: to_be swaps, to_le is already in order.
+            "swap_bytes" | "to_be" => (MirUnaryOp::SwapBytes, false),
+            "to_le" => return Ok(Some((obj_op.clone(), obj_ty.clone()))),
             _ => return Ok(None),
         };
 
