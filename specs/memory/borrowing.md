@@ -12,7 +12,7 @@ A view into `point.x` can't go stale — struct fields sit at fixed offsets. But
 
 **Growable sources** (Vec, Pool, Map) own heap buffers that can reallocate. Each access is temporary — copy out the value for one expression, or use `with` for multi-statement access.
 
-`string` is immutable and Copy (16 bytes, refcounted). String slices (`s[i..j]`) are temporary views — they can't be stored because the slice would dangle if the source string's refcount drops to zero. See `std.strings/S2`.
+`string` is immutable and Copy (16 bytes, refcounted). String slices (`s[i..j]`) are temporary views — they can't be stored because the slice would dangle if the source string's refcount drops to zero. To store a substring, convert it: `.view()` for a zero-copy `StringView` that holds a refcount on the source buffer, or `.to_string()` for an independent copy. See `std.strings/S2`, `std.strings/V1`.
 
 | Rule | Source | Access model | Why |
 |------|--------|-------------|-----|
@@ -96,12 +96,15 @@ const s = "hello world"
 const slice = s[0..5]    // ERROR: string slices can't be stored
 ```
 
-String slices are temporary views into the string's buffer — storing one would create a dangling reference if the source string is freed. Use `.to_string()` or `Span` indices:
+String slices are temporary views into the string's buffer — storing one directly would create a dangling reference if the source string is freed. Convert to a storable form: `.view()` (zero-copy, refcounted), `.to_string()` (independent copy), or `Span` indices:
 <!-- test: skip -->
 ```rask
 const s = "hello world"
-const owned = s[0..5].to_string()  // copy to owned string
-process(owned)                     // OK: independent value
+const v = s[0..5].view()           // zero-copy view, keeps s's buffer alive
+process(v)
+
+const owned = s[0..5].to_string()  // copy to independent string
+process(owned)
 
 const span = Span(0, 5)            // or store indices
 process(s[span])                   // resolve inline
@@ -414,14 +417,18 @@ ERROR [mem.borrowing/B2]: cannot store string slice
 WHY: String slices are temporary views without their own refcount.
      Storing one would dangle if the source is freed.
 
-FIX 1: Copy to owned string:
+FIX 1: Store a zero-copy view (keeps line's buffer alive):
+
+  const view = line[0..5].view()
+
+FIX 2: Copy to an independent string:
 
   const copy = line[0..5].to_string()
 
-FIX 2: Store indices:
+FIX 3: Store indices:
 
-  const view = Span(0, 5)
-  process(line[view])
+  const span = Span(0, 5)
+  process(line[span])
 ```
 
 **Structural mutation inside with — Vec/Map/string [W2]:**
@@ -518,15 +525,17 @@ FIX: Move the removal outside the with block:
 ### String Parsing
 <!-- test: parse -->
 ```rask
-type alias Header = (string, string)
+type alias Header = (StringView, StringView)
 
 func parse_header(line: string) -> Header? {
     const colon = try line.find(':')
-    const key = line[0..colon].trim().to_string()      // Copy out (B2)
-    const value = line[colon+1..].trim().to_string()   // Copy out (B2)
+    const key = line[0..colon].trim().view()      // Zero-copy view (std.strings/V1)
+    const value = line[colon+1..].trim().view()   // Shares line's buffer
     return (key, value)
 }
 ```
+
+Use `.to_string()` instead of `.view()` when the result must not pin the source buffer (e.g. keeping a few headers from a huge request body).
 
 ### Entity Update (Inline Access)
 <!-- test: parse -->
@@ -576,7 +585,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
 
 **E5 (sync inline access):** Collections got inline access through `[]` indexing — `pool[h].field` works without `with`. Sync primitives didn't have an equivalent. `.read()`, `.write()`, and `.lock()` now serve the same role: they produce expression-scoped access to the inner value. The lock is visible in the dot-chain (`config.read().timeout`), so cost transparency is preserved. `with` blocks remain for multi-statement access — inline is just the single-expression shorthand.
 
-**Why string slices are temporary:** Strings are immutable and refcounted, but a slice (`s[i..j]`) is a raw view into the buffer without its own refcount. Storing it would require either a hidden view type or borrow tracking — both contradict the "no storable references" principle. The cost is `.to_string()` calls or `Span` indices — visible, simple, no borrow tracking needed.
+**Why string slices are temporary:** Strings are immutable and refcounted, but a slice (`s[i..j]`) is a raw view into the buffer without its own refcount. Storing it directly would require borrow tracking — contradicting the "no storable references" principle. Instead, storing is an explicit conversion: `.view()` produces a `StringView` that holds its own refcount on the buffer (zero-copy, can't dangle — a value, not a tracked borrow), `.to_string()` produces an independent copy. Both costs are visible at the conversion site; no borrow tracking needed.
 
 **Inline access is still a temporary borrow:** `process(pool[h].name)` where `name` is a string — it's a temporary borrow for the expression. The user sees: "you can use it inline, or copy it out, or use `with`." Value-based framing, borrow-based implementation. Users don't need to understand the implementation.
 
@@ -600,30 +609,31 @@ with pool[h] as entity {
 with pool[h] as e: e.health -= damage
 ```
 
-**The pattern for parsers (zero-copy via indices):**
+**The pattern for parsers (zero-copy views):**
 
-Block-scoped borrowing means parsers can't return references into input buffers. Two patterns handle this.
-
-*Simple case:* `Span` stores `(start, end)` indices. Resolve against the original input inline:
+Parsers can't return raw references into input buffers — but they don't need to. `StringView` (`std.strings/V1`) is a storable zero-copy substring: it shares the source's buffer and holds a refcount on it, so it can't dangle.
 
 <!-- test: parse -->
 ```rask
 struct Token {
     kind: TokenKind
-    span: Span
+    text: StringView
 }
 
 func tokenize(input: string) -> Vec<Token> {
     mut tokens = Vec.new()
-    mut pos = 0
-    // scan() returns positions — no allocations per token
+    // scan() returns positions — views allocate nothing per token
     for (start, end, kind) in scan(input) {
-        tokens.push(Token { kind, span: Span(start, end) })
+        tokens.push(Token { kind, text: input[start..end].view() })
     }
     return tokens
 }
+```
 
-// Caller resolves spans against original input
+*When you want positions, not text* (diagnostics, wire offsets), or when pinning the input buffer is wrong, store `Span` indices instead and resolve against the original input inline:
+
+<!-- test: skip -->
+```rask
 const source = try read_file(path)
 const tokens = tokenize(source)
 for tok in tokens {
@@ -631,9 +641,7 @@ for tok in tokens {
 }
 ```
 
-*Shared buffer case:* `StringPool` gives validated handle-based access when multiple functions share the buffer. See `std.strings` for the full tokenizer pattern.
-
-The cost vs Rust: one `.to_string()` call per token if you need owned strings, zero copies if you keep spans and resolve inline. For hot parsers, the StringPool pattern avoids allocations entirely.
+The cost vs Rust: zero copies either way. Views carry a refcount bump per token (elidable — `comp.string-refcount-elision`) and keep the input buffer alive; spans are free but unvalidated — indices into the wrong string are on you.
 
 ### IDE Integration
 

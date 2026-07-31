@@ -31,6 +31,7 @@ Percentages are rough coverage vs spec.
 - [ ] **Net (~70%)** — `UdpSocket`, `net.resolve()` DNS.
 - [ ] **JSON (~70%)** — Typed `encode()`/`decode()` (depends on Encode/Decode traits).
 - [ ] **CLI (~60%)** — `cli.Parser` builder, auto-generated `--help`/`--version`, `CliError` enum.
+- [ ] **StringView (0%)** — Zero-copy substrings, spec'd in `std.strings/V1–V6` (#492). New primitive: 16-byte tagged repr sharing the string heap header, `.view()` on strings and expression-scoped slices, read-only string API on views. Needs typecheck + interp + codegen + runtime. Replaces the never-implemented StringPool/StringSlice.
 - [ ] **Encoding (~40%)** — Stub file. Auto-derive and field annotations depend on comptime for.
 - [ ] **Formatting (~40%)** — Stub file. Full compile-time template checking not implemented.
 - [ ] **Bits (~40%)** — Per-integer bit methods (`popcount`, `leading_zeros`) not registered as type methods.
