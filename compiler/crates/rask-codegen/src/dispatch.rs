@@ -873,6 +873,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Clone ────────────────────────────────────────────────────
         StdlibEntry::simple("clone", "rask_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_clone", "rask_vec_clone", &[types::I64], Some(types::I64), false),
+        // I3: hands the elements over and leaves the source empty.
+        StdlibEntry::simple("Vec_take_all", "rask_vec_take_all", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Map_clone", "rask_map_clone", &[types::I64], Some(types::I64), false),
 
         // ── ThreadPool ─────────────────────────────────────────────

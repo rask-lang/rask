@@ -17,6 +17,5 @@ t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (
 # --- interpreter lag (native correct) ---
 
 # --- shared / both-backend bugs ---
-t25_iterator_adapters.rk   # fold accumulator type never resolves — #327 (both, check)
 
 # --- new regression witnesses (this session) ---

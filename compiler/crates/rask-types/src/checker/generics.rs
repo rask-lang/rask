@@ -146,6 +146,75 @@ impl TypeChecker {
         subst
     }
 
+    /// Replace a signature's *own* type parameters with fresh inference vars.
+    ///
+    /// `build_type_param_subst` only knows the receiving type's parameters. A
+    /// method can declare more — `Vec<T>.map(self, f: func(T) -> U) -> Vec<U>`
+    /// has a `U` that belongs to the call, not the Vec. Left literal it came
+    /// out as the element type of the result, and `doubled[0] == 2` reported
+    /// "no method `eq` found for type `U`" (#327).
+    ///
+    /// PC3: a single uppercase name is always a type parameter. `seen` is
+    /// shared across the whole signature so every `U` in it is the same var.
+    pub(super) fn freshen_free_type_params(
+        &mut self,
+        ty: &Type,
+        seen: &mut HashMap<String, Type>,
+    ) -> Type {
+        fn is_param(name: &str) -> bool {
+            let mut chars = name.chars();
+            matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
+        }
+        match ty {
+            Type::UnresolvedNamed(name) if is_param(name) => seen
+                .entry(name.clone())
+                .or_insert_with(|| self.ctx.fresh_var())
+                .clone(),
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.freshen_free_type_params(ok, seen)),
+                err: Box::new(self.freshen_free_type_params(err, seen)),
+            },
+            Type::Fn { params, ret } => Type::Fn {
+                params: params.iter().map(|p| self.freshen_free_type_params(p, seen)).collect(),
+                ret: Box::new(self.freshen_free_type_params(ret, seen)),
+            },
+            Type::Tuple(elems) => Type::Tuple(
+                elems.iter().map(|e| self.freshen_free_type_params(e, seen)).collect(),
+            ),
+            Type::Union(variants) => Type::Union(
+                variants.iter().map(|v| self.freshen_free_type_params(v, seen)).collect(),
+            ),
+            Type::Array { elem, len } => Type::Array {
+                elem: Box::new(self.freshen_free_type_params(elem, seen)),
+                len: *len,
+            },
+            Type::Slice(inner) => Type::Slice(Box::new(self.freshen_free_type_params(inner, seen))),
+            Type::RawPtr(inner) => Type::RawPtr(Box::new(self.freshen_free_type_params(inner, seen))),
+            Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
+                name: name.clone(),
+                args: args.iter().map(|a| self.freshen_generic_arg(a, seen)).collect(),
+            },
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(|a| self.freshen_generic_arg(a, seen)).collect(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn freshen_generic_arg(
+        &mut self,
+        arg: &GenericArg,
+        seen: &mut HashMap<String, Type>,
+    ) -> GenericArg {
+        match arg {
+            GenericArg::Type(t) => {
+                GenericArg::Type(Box::new(self.freshen_free_type_params(t, seen)))
+            }
+            other => other.clone(),
+        }
+    }
+
     pub(super) fn instantiate_type_vars(&mut self, types: &[Type]) -> Vec<Type> {
         let mut subst: HashMap<TypeVarId, Type> = HashMap::new();
         for ty in types {

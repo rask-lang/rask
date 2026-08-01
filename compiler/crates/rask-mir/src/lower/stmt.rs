@@ -15,6 +15,40 @@ use rask_ast::{
 };
 
 impl<'a> MirLowerer<'a> {
+    /// The element type of `m.keys()` / `m.values()` — the map's key or value
+    /// type. Nothing downstream of the call knows it otherwise.
+    fn map_projection_elem_type(&self, iter_expr: &Expr) -> Option<MirType> {
+        let ExprKind::MethodCall { object, method, .. } = &iter_expr.kind else {
+            return None;
+        };
+        let index = match method.as_str() {
+            "keys" => 0,
+            "values" => 1,
+            _ => return None,
+        };
+        let pair = self.map_entry_pair_types(object);
+        pair.get(index).cloned().filter(|t| !matches!(t, MirType::I64))
+    }
+
+    /// The MIR types of a map's (key, value) pair, for iterating its entries.
+    /// Falls back to two words when the checker didn't resolve `Map<K, V>`.
+    fn map_entry_pair_types(&self, iter_expr: &Expr) -> Vec<MirType> {
+        use rask_types::{GenericArg, Type};
+        let pair = self.ctx.lookup_raw_type(iter_expr.id).and_then(|ty| {
+            let args = match ty {
+                Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+                _ => return None,
+            };
+            let mut out = Vec::new();
+            for a in args.iter().take(2) {
+                let GenericArg::Type(t) = a else { return None };
+                out.push(self.ctx.type_to_mir(t));
+            }
+            (out.len() == 2).then_some(out)
+        });
+        pair.unwrap_or_else(|| vec![MirType::I64, MirType::I64])
+    }
+
     /// OPT6/#380: wrap a bare `T` operand into `Some(T)` when it's stored into an
     /// `Option<T>` place. Same two-store construction the return-path auto-wrap
     /// uses (tag 0 at offset 0, payload at offset 8). Returns the value unchanged
@@ -1364,8 +1398,15 @@ impl<'a> MirLowerer<'a> {
 
         // Iterator chain: for x in vec.iter().filter(...).map(...) { ... }
         // Fuse into index loop with inlined adapter closures.
-        if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
-            return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
+        //
+        // Not for `for mutate`: the fused loop has no writeback, so the body's
+        // changes went into a local copy and the collection never saw them
+        // (LP11-LP12). A bare `for mutate x in v` parses as a trivial chain, so
+        // it was landing here.
+        if !mutate {
+            if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
+                return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
+            }
         }
 
         // pool.entries(): for (h, val) in pool.entries() { ... }
@@ -1393,18 +1434,18 @@ impl<'a> MirLowerer<'a> {
             ) || matches!(
                 ty,
                 rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool"
-            )
+            ) || super::MirContext::type_prefix(ty, self.ctx.type_names)
+                .is_some_and(|p| p.split('<').next() == Some("Pool"))
         });
 
         // LP13: Detect Map iteration for correct writeback target.
+        // The name has to come from `type_prefix`, not a match on the
+        // Unresolved shapes alone: once the checker resolves the receiver it's
+        // a `Type::Generic { base: TypeId, .. }` and the literal-name test
+        // missed it entirely.
         let is_map = self.ctx.lookup_raw_type(iter_expr.id).map_or(false, |ty| {
-            matches!(
-                ty,
-                rask_types::Type::UnresolvedNamed(n) if n == "Map"
-            ) || matches!(
-                ty,
-                rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map"
-            )
+            super::MirContext::type_prefix(ty, self.ctx.type_names)
+                .is_some_and(|p| p.split('<').next() == Some("Map"))
         });
 
         // Index-based iteration: for item in collection { ... }
@@ -1425,6 +1466,24 @@ impl<'a> MirLowerer<'a> {
                 args: vec![MirOperand::Local(pool_tmp)],
             }));
             (MirOperand::Local(handles_vec), MirType::I64)
+        } else if is_map {
+            // LP13: a map iterates over its entries. Without this the loop ran
+            // `Vec_len`/`Vec_get` straight on the map pointer, and reading a
+            // field off whatever came back segfaulted. `Map_entries` snapshots
+            // it as a Vec of 16-byte (key, value) pairs, which the tuple
+            // destructuring below already knows how to read.
+            let map_tmp = self.builder.alloc_temp(iter_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: map_tmp,
+                rvalue: MirRValue::Use(iter_op),
+            }));
+            let entries_vec = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(entries_vec),
+                func: FunctionRef::internal("Map_entries".to_string()),
+                args: vec![MirOperand::Local(map_tmp)],
+            }));
+            (MirOperand::Local(entries_vec), MirType::I64)
         } else {
             (iter_op, iter_ty)
         };
@@ -1505,9 +1564,34 @@ impl<'a> MirLowerer<'a> {
 
         // body: item = collection[_i]
         self.builder.switch_to_block(body_block);
-        let elem_ty = self.extract_iterator_elem_type(iter_expr)
-            .unwrap_or(MirType::I64);
-        let binding_local = self.builder.alloc_local(single_name.to_string(), elem_ty.clone());
+        let elem_ty = if is_map {
+            // A map entry is a (key, value) pair, laid out like a tuple. Typed
+            // as a bare i64 the element load came back as just the key, and
+            // reading field 1 off it dereferenced that value as a pointer.
+            MirType::Tuple(self.map_entry_pair_types(iter_expr))
+        } else {
+            self.extract_iterator_elem_type(iter_expr)
+                // `m.keys()` / `m.values()` hand back a Vec of the map's own key
+                // or value type; nothing else in the chain says what that is.
+                .or_else(|| self.map_projection_elem_type(iter_expr))
+                .unwrap_or(MirType::I64)
+        };
+        // Destructuring reads the whole element, then splits it. The binding
+        // named first carries the *first field's* type, so it can't double as
+        // the slot holding the pair — codegen reads a local's declared type,
+        // and a `string` key binding would make the field-1 read offset into a
+        // RaskStr instead of the pair.
+        let pair_tys: Vec<MirType> = match (&elem_ty, binding) {
+            (MirType::Tuple(tys), ForBinding::Tuple(_)) => tys.clone(),
+            _ => Vec::new(),
+        };
+        let binding_ty = pair_tys.first().cloned().unwrap_or_else(|| elem_ty.clone());
+        let binding_local = self.builder.alloc_local(single_name.to_string(), binding_ty.clone());
+        let elem_slot = if pair_tys.is_empty() {
+            binding_local
+        } else {
+            self.builder.alloc_temp(elem_ty.clone())
+        };
         if let Some(prefix) = self.mir_type_name(&elem_ty) {
             self.meta_mut(single_name).type_prefix = Some(prefix);
         } else {
@@ -1525,11 +1609,11 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        self.locals.insert(single_name.to_string(), (binding_local, elem_ty));
+        self.locals.insert(single_name.to_string(), (binding_local, binding_ty.clone()));
         if is_array {
             // Fixed-size array: direct memory load
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: binding_local,
+                dst: elem_slot,
                 rvalue: MirRValue::ArrayIndex {
                     base: MirOperand::Local(collection),
                     index: MirOperand::Local(idx),
@@ -1538,7 +1622,7 @@ impl<'a> MirLowerer<'a> {
             }));
         } else {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(binding_local),
+                dst: Some(elem_slot),
                 func: FunctionRef::internal("Vec_get".to_string()),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
@@ -1551,12 +1635,16 @@ impl<'a> MirLowerer<'a> {
         if let ForBinding::Tuple(names) = binding {
             for (i, name) in names.iter().enumerate() {
                 if i == 0 { continue; }
-                let field_local = self.builder.alloc_local(name.clone(), MirType::I64);
-                self.locals.insert(name.clone(), (field_local, MirType::I64));
+                let field_ty = pair_tys.get(i).cloned().unwrap_or(MirType::I64);
+                let field_local = self.builder.alloc_local(name.clone(), field_ty.clone());
+                self.locals.insert(name.clone(), (field_local, field_ty.clone()));
+                if let Some(prefix) = self.mir_type_name(&field_ty) {
+                    self.meta_mut(name).type_prefix = Some(prefix);
+                }
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: field_local,
                     rvalue: MirRValue::Field {
-                        base: MirOperand::Local(binding_local),
+                        base: MirOperand::Local(elem_slot),
                         field_index: i as u32,
                         byte_offset: None,
                         field_size: None,
@@ -1567,20 +1655,18 @@ impl<'a> MirLowerer<'a> {
                     map_value_local = Some(field_local);
                 }
             }
-            // Re-extract field 0 into the first binding (was whole tuple)
-            let first_field = self.builder.alloc_temp(MirType::I64);
+            // Field 0 goes to the binding named first.
+            if let Some(prefix) = self.mir_type_name(&binding_ty) {
+                self.meta_mut(single_name).type_prefix = Some(prefix);
+            }
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: first_field,
+                dst: binding_local,
                 rvalue: MirRValue::Field {
-                    base: MirOperand::Local(binding_local),
+                    base: MirOperand::Local(elem_slot),
                     field_index: 0,
                     byte_offset: None,
                     field_size: None,
                 },
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: binding_local,
-                rvalue: MirRValue::Use(MirOperand::Local(first_field)),
             }));
         }
 

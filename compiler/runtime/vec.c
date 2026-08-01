@@ -208,6 +208,15 @@ RaskVec *rask_vec_clone(const RaskVec *src) {
     return dst;
 }
 
+// `v.take_all()` hands the elements over and leaves `v` empty (I3). The copy
+// is what makes the source safe to keep using — iteration reads the returned
+// vec, and nothing points into the original's buffer any more.
+RaskVec *rask_vec_take_all(RaskVec *v) {
+    RaskVec *out = rask_vec_clone(v);
+    if (v) rask_vec_clear(v);
+    return out;
+}
+
 // rask_string_append is the builder primitive: when the accumulator is the sole
 // owner of its buffer it appends in place and hands the SAME buffer back, so the
 // result aliases the accumulator. Freeing the accumulator after appending
