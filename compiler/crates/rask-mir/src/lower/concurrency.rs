@@ -5,7 +5,7 @@
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     stmt::ClosureCapture, types::StructLayoutId, BlockBuilder, FunctionRef,
-    MirOperand, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
+    MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{CallArg, Expr, ExprKind};
 use rask_ast::{NodeId, Span};
@@ -88,7 +88,23 @@ impl<'a> MirLowerer<'a> {
             self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
         }
 
-        let data_param_id = closure_builder.add_param(binding_name.to_string(), data_param_ty.clone());
+        // The box stores the payload's bytes; the lock hands the closure their
+        // address. For a struct that address *is* the value, but anything that
+        // fits in a word — a Map or Vec handle, an integer — has to be loaded
+        // out. Passed straight through, `with mutex.lock() as m { m.insert(…) }`
+        // on a `Mutex<Map>` handed the map runtime a pointer to a pointer and
+        // crashed on the first hash (#477).
+        let data_param_id = if matches!(data_param_ty, MirType::Struct(_) | MirType::Enum(_)) {
+            closure_builder.add_param(binding_name.to_string(), data_param_ty.clone())
+        } else {
+            let slot = closure_builder.add_param("__guard_slot".to_string(), MirType::Ptr);
+            let loaded = closure_builder.alloc_local(binding_name.to_string(), data_param_ty.clone());
+            closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: loaded,
+                rvalue: MirRValue::Deref(MirOperand::Local(slot)),
+            }));
+            loaded
+        };
 
         let mut closure_locals = std::collections::HashMap::new();
         closure_locals.insert(binding_name.to_string(), (data_param_id, data_param_ty));
@@ -202,7 +218,23 @@ impl<'a> MirLowerer<'a> {
             self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
         }
 
-        let data_param_id = closure_builder.add_param(binding_name.to_string(), data_param_ty.clone());
+        // The box stores the payload's bytes; the lock hands the closure their
+        // address. For a struct that address *is* the value, but anything that
+        // fits in a word — a Map or Vec handle, an integer — has to be loaded
+        // out. Passed straight through, `with mutex.lock() as m { m.insert(…) }`
+        // on a `Mutex<Map>` handed the map runtime a pointer to a pointer and
+        // crashed on the first hash (#477).
+        let data_param_id = if matches!(data_param_ty, MirType::Struct(_) | MirType::Enum(_)) {
+            closure_builder.add_param(binding_name.to_string(), data_param_ty.clone())
+        } else {
+            let slot = closure_builder.add_param("__guard_slot".to_string(), MirType::Ptr);
+            let loaded = closure_builder.alloc_local(binding_name.to_string(), data_param_ty.clone());
+            closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: loaded,
+                rvalue: MirRValue::Deref(MirOperand::Local(slot)),
+            }));
+            loaded
+        };
 
         let mut closure_locals = std::collections::HashMap::new();
         closure_locals.insert(binding_name.to_string(), (data_param_id, data_param_ty));
@@ -350,6 +382,8 @@ impl<'a> MirLowerer<'a> {
         let guard_name = format!("__lock_guard_{}", self.closure_counter);
         self.closure_counter += 1;
         let guard_local = self.builder.alloc_local(guard_name.clone(), guard_ty.clone());
+        // Codegen loads through the acquire result for a non-struct payload, so
+        // the guard already holds the value here — no deref at this level.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(guard_local),
             func: FunctionRef::internal(acquire.to_string()),
