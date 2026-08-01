@@ -290,7 +290,7 @@ Effect inference runs as a pass after type checking, alongside the hidden-params
 **When effects are useful to know:**
 
 - Debugging performance: "Why is this slow?" → IDE shows IO effect on an inner function you thought was pure
-- Code review: ghost annotations make side effects visible in diffs
+- Code review: `rask annotate --diff` writes effect labels into the diff, and flags callers whose effects changed even when their lines didn't (`tool.annotate/DF2`)
 - Refactoring: moving IO out of a hot path — effects show which functions are safe to inline
 - Architecture: effect summary per module shows which modules are IO-heavy vs pure computation
 

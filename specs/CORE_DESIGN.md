@@ -128,6 +128,18 @@ Information the compiler can infer should be displayed by tooling, not required 
 
 **Tooling contract:** IDEs SHOULD display compiler-inferred information as unobtrusive ghost annotations. This is not optional polish—it's how the language achieves clarity without ceremony.
 
+**Honest carve-out: most code review happens where there are no ghosts.** Diffs, PR review, pastebins, grep output. Ghost text covers writing and reading in an editor; it does nothing for a reviewer staring at a unified diff — and the whole design bets on the machine-writes/human-reviews world ([design-horizon.md](design-horizon.md)), so the reviewer is the reader that matters most. The answer is that the ghost layer must be *materializable*: `rask annotate` renders any file or diff with the same information set beside each line — a read-only report, computed on demand and stored nowhere, so nothing can be committed or go stale — and its JSON output lets CI decorate a PR the way the IDE decorates a buffer ([tooling/annotate.md](tooling/annotate.md)). The contract extends: compiler knowledge may be IDE-displayed, but never IDE-locked.
+
+Three visibility bands make the claim checkable:
+
+| Band | What lives there | Where you can read it |
+|------|------------------|----------------------|
+| Source | Parameter modes on signatures, `own`, `take`, `mutate` captures, `try`, `.clone()`, `spawn`, `ensure`, `using` on public functions | Anywhere text renders |
+| Materialized metadata | Parameter modes at call sites, effects, pause points, capture lists, consuming match arms, inferred private signatures and `using` clauses | IDE ghosts; `rask annotate` everywhere else |
+| IDE comfort | Inferred local types, borrow scopes, optimizer decisions | IDE; `rask annotate --all` |
+
+The rule that keeps the bands honest: anything that mutates, consumes, suspends, or performs I/O sits in the top two bands — never IDE-only.
+
 ### 8. Machine-Readable Code
 
 Code should be analyzable by tools — linters, refactoring engines, IDE plugins — without whole-program analysis. This falls naturally out of the other principles but I'm making it explicit because it should guide future decisions.
@@ -149,7 +161,7 @@ The compiler tracks information the language deliberately keeps out of the type 
 **What this means:**
 - I/O, async, and mutation effects are tracked transitively (`comp.effects`) but don't appear in function signatures and don't color call syntax. A caller of a function that does I/O writes the call the same way as a caller of a pure one.
 - `@pure` is a lint annotation, not a type qualifier. A pure function can call an impure one; the lint warns.
-- IDE ghost annotations show parameter modes, closure captures, inferred types, and pause points — the compiler knows, the source doesn't say.
+- IDE ghost annotations show parameter modes, closure captures, inferred types, and pause points — the compiler knows, the source doesn't say. Outside an IDE, `rask annotate` materializes the same layer into diffs and terminals ([tooling/annotate.md](tooling/annotate.md)), so "tooling shows" doesn't quietly mean "only the IDE shows."
 
 **Honest carve-out: pool contexts color signatures.** `using Pool<T>` (and its named/frozen variants) is declared in signatures and propagates up the call graph via `mem.context/CC5`, because a pool is a value callees dereference — it must be threaded through as a hidden parameter reference. This is scope-level coloring, deliberately traded for uncolored call syntax. See [context-clauses.md](memory/context-clauses.md).
 

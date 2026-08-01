@@ -37,6 +37,10 @@ Percentages are rough coverage vs spec.
 - [ ] **Bits (~40%)** — Per-integer bit methods (`popcount`, `leading_zeros`) not registered as type methods.
 - [ ] **Testing (~85%)** — Doc test extraction (T14–T15).
 
+## Tooling
+
+- [ ] **`rask annotate` (tool.annotate)** — materialize ghost text for diffs/review; spec proposed, nothing implemented. Cheapest first slice: effect labels — `Effects::label()` in rask-effects already renders the ghost strings and has zero callers. Command shape precedent: `rask unsafe --json`.
+
 ## Design questions
 
 - [ ] **Conformance condition inference** — deferred from the trait review: `extend Ring<T> with Trait { }` inferring its `where` clause from the block body (gradual-constraints machinery). Explicit `where` required everywhere for now (`type.generics/CC2`); relaxing to inference is purely additive.
