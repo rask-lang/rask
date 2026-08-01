@@ -444,8 +444,12 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
             if guard.fields.is_empty() {
                 return "{}".to_string();
             }
-            let mut sorted_keys: Vec<&String> = guard.fields.keys().collect();
-            sorted_keys.sort();
+            // Declaration order, not alphabetical. `fields` is an IndexMap, so
+            // its own order is the order the struct declares — which is what
+            // native emits, and what encoding.md's `comptime for` walk produces.
+            // Sorting here made the same struct encode two different ways
+            // depending on which backend ran it (#540).
+            let sorted_keys: Vec<&String> = guard.fields.keys().collect();
             if pretty {
                 let mut s = "{\n".to_string();
                 for (i, key) in sorted_keys.iter().enumerate() {
