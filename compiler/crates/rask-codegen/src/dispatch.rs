@@ -234,17 +234,30 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Vec_sort", "rask_vec_sort", &[types::I64], None, false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
-        StdlibEntry::simple("Vec_contains", "rask_vec_contains", &[types::I64, types::I64], Some(types::I64), false),
+        // The runtime compares the element bytes through a pointer, so the
+        // needle has to be spilled and passed by address — as a raw value it
+        // was read as an address and the compare walked off into memory (#413).
+        StdlibEntry {
+            mir_name: "Vec_contains", c_name: "rask_vec_contains",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        // String elements need a real string compare: a heap RaskStr holds a
+        // pointer, so equal strings don't match byte-for-byte.
+        StdlibEntry::simple("Vec_contains_str", "rask_vec_contains_str", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_dedup", "rask_vec_dedup", &[types::I64], None, false),
+        // Both return `Option<T>` — NULL for an empty Vec — so the result is
+        // wrapped, not dereferenced. `DerefOrString` read through the NULL and
+        // handed back a bare value for a destination expecting an option (#412).
         StdlibEntry {
             mir_name: "Vec_first", c_name: "rask_vec_first",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
         StdlibEntry {
             mir_name: "Vec_last", c_name: "rask_vec_last",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
 
         // ── Iterator runtime support ──────────────────────────────

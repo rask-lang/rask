@@ -24,4 +24,3 @@ t25_iterator_adapters.rk   # fold accumulator type never resolves — #327 (both
 
 # --- new regression witnesses (this session) ---
 t43_widening_regressions.rk # optional widening interp lag — #393 (interp; result T-bind native part fixed in #389)
-t61_nested_optionals_vec.rk # native Vec.first() panics on an empty Vec — #412 (native; the nesting itself is green in t60)

@@ -236,6 +236,7 @@ int64_t rask_char_eq(int32_t a, int32_t b);
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
+int64_t  rask_vec_contains_str(const RaskVec *v, const RaskStr *needle);
 
 // ─── Map ────────────────────────────────────────────────────
 // Open-addressing hash map with linear probing.

@@ -419,6 +419,17 @@ int64_t rask_vec_contains(const RaskVec *v, const void *elem) {
     return 0;
 }
 
+// contains(vec, needle) — string elements. A heap RaskStr holds a pointer, so
+// two equal strings differ byte-for-byte; memcmp can't be used here.
+int64_t rask_vec_contains_str(const RaskVec *v, const RaskStr *needle) {
+    if (!v || !needle) return 0;
+    for (int64_t i = 0; i < v->len; i++) {
+        const RaskStr *elem = (const RaskStr *)(v->data + i * v->elem_size);
+        if (rask_string_eq(elem, needle)) return 1;
+    }
+    return 0;
+}
+
 // dedup(vec) — remove consecutive duplicates in-place.
 void rask_vec_dedup(RaskVec *v) {
     if (!v || v->len <= 1) return;
@@ -438,15 +449,16 @@ void rask_vec_dedup(RaskVec *v) {
     v->len = write;
 }
 
-// first(vec) — returns pointer to first element, or panics if empty.
+// first(vec) — pointer to the first element, or NULL when empty.
+// `first()` is declared `-> Option<T>`, so empty is `none`, not a panic.
 void *rask_vec_first(const RaskVec *v) {
-    if (!v || v->len == 0) rask_panic("first on empty Vec");
+    if (!v || v->len == 0) return NULL;
     return v->data;
 }
 
-// last(vec) — returns pointer to last element, or panics if empty.
+// last(vec) — pointer to the last element, or NULL when empty.
 void *rask_vec_last(const RaskVec *v) {
-    if (!v || v->len == 0) rask_panic("last on empty Vec");
+    if (!v || v->len == 0) return NULL;
     return v->data + (v->len - 1) * v->elem_size;
 }
 

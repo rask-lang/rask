@@ -4656,6 +4656,28 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
     ) -> CallAdapt {
         match func_name {
+            // Vec.contains: the runtime compares elem_size bytes through a
+            // pointer. An aggregate argument is already an address; a scalar
+            // has to be spilled so there's something to point at.
+            "Vec_contains" => {
+                if args.len() >= 2 {
+                    let is_aggregate = matches!(
+                        mir_args.get(1),
+                        Some(MirOperand::Local(id)) if ctx.locals.iter()
+                            .find(|l| l.id == *id)
+                            .map(|l| Self::resolve_type_alloc_size(
+                                &l.ty, ctx.struct_layouts, ctx.enum_layouts,
+                            ).is_some())
+                            .unwrap_or(false)
+                    ) || Self::is_string_arg(mir_args, 1, ctx.locals);
+                    if !is_aggregate {
+                        let val = args[1];
+                        args[1] = Self::value_to_ptr(builder, val);
+                    }
+                }
+                CallAdapt::None
+            }
+
             // Pool insert: wrap value as pointer, append elem_size
             "Pool_insert" => {
                 let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);

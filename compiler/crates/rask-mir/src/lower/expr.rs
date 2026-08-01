@@ -117,6 +117,15 @@ fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static st
 }
 
 impl<'a> MirLowerer<'a> {
+    /// Does this Vec receiver hold string elements? Drives the dispatch choice
+    /// for the runtime entry points that need a real string compare.
+    fn vec_elem_is_string(&self, object: &Expr) -> bool {
+        Self::vec_tracking_key(object)
+            .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
+                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+            .map_or(false, |ty| matches!(ty, MirType::String))
+    }
+
     /// Wrap a plain value for a struct field declared `T?` or `T or E`.
     /// Returns the operand unchanged when no wrapping is needed — the field
     /// isn't a sum type, the value already has the sum shape, or the option
@@ -1455,11 +1464,15 @@ impl<'a> MirLowerer<'a> {
                     let elem_size = elem_ty.size();
                     let elem_align = elem_ty.align().max(1);
                     offset = (offset + elem_align - 1) & !(elem_align - 1);
+                    // An element wider than a word is a value, not a pointer:
+                    // a string constant lowers to the address of its 16-byte
+                    // blob, so without a size the address landed in the slot
+                    // and reading `t.1` back gave garbage (#442).
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset,
                         value: elem_op,
-                        store_size: None,
+                        store_size: (elem_size > 8).then_some(elem_size),
                     }));
                     offset += elem_size;
                 }
@@ -3487,6 +3500,21 @@ impl<'a> MirLowerer<'a> {
                 .or(tracked_elem)
                 .unwrap_or(MirType::I64);
             Some(MirType::Option(Box::new(elem)))
+        } else if matches!(qualified_name.as_str(), "Vec_first" | "Vec_last") {
+            // Same reasoning as Vec_get: these answer `T?`, and the payload type
+            // sizes the result slot. From the stub metadata the result came back
+            // as a bare `T`, so a `Vec<i64?>` got a 16-byte slot for a 24-byte
+            // answer and the tag was read off the wrong bytes.
+            let tracked = Self::vec_tracking_key(object).and_then(|key| {
+                self.meta(&key).and_then(|m| m.elem_type.clone())
+                    .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+            });
+            // In a generic body the checker's payload is still the unresolved
+            // type parameter; the receiver's tracked element type is the
+            // concrete one after monomorphization.
+            let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
+                .unwrap_or(MirType::I64);
+            Some(MirType::Option(Box::new(elem)))
         } else if qualified_name == "Map_get" {
             // Same reasoning as Vec_get: `Map.get` returns `V?`, and the payload
             // type sizes the result slot. The DerefOption adapter copies
@@ -3651,15 +3679,15 @@ impl<'a> MirLowerer<'a> {
             ("Vec_get_opt".to_string(), all_args)
         } else if qualified_name == "Vec_join" {
             // Vec_join assumes Vec<string>; use Vec_join_i64 for non-string elements
-            let is_string = Self::vec_tracking_key(object)
-                .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
-                    .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
-                .map_or(false, |ty| matches!(ty, MirType::String));
-            if is_string {
+            if self.vec_elem_is_string(object) {
                 (qualified_name.clone(), all_args)
             } else {
                 ("Vec_join_i64".to_string(), all_args)
             }
+        } else if qualified_name == "Vec_contains" && self.vec_elem_is_string(object) {
+            // The byte-compare runtime can't match two equal heap strings —
+            // they hold different pointers. Route strings to a real compare.
+            ("Vec_contains_str".to_string(), all_args)
         } else {
             (qualified_name.clone(), all_args)
         };

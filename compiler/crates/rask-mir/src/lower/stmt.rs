@@ -11,7 +11,7 @@ use crate::{
 };
 use rask_ast::{
     expr::{Expr, ExprKind, UnaryOp},
-    stmt::{ForBinding, Stmt, StmtKind},
+    stmt::{ForBinding, Stmt, StmtKind, TuplePat},
 };
 
 impl<'a> MirLowerer<'a> {
@@ -455,9 +455,20 @@ impl<'a> MirLowerer<'a> {
             // Tuple destructuring
             StmtKind::MutTuple { patterns, init }
             | StmtKind::ConstTuple { patterns, init } => {
-                let names: Vec<String> = rask_ast::stmt::tuple_pats_flat_names(patterns)
-                    .into_iter().map(|s| s.to_string()).collect();
-                self.lower_tuple_destructure(&names, init)
+                // Flattening the pattern to a name list loses the shape: a
+                // nested `((a, b), c)` then read a, b and c off the *outer*
+                // tuple at flat positions 0, 1, 2, and a wildcard shifted
+                // everything after it up one (#442). Only a pattern that's
+                // already flat can use the name-list path — which is also where
+                // channel handles and type-prefix tracking live.
+                if patterns.iter().all(|p| matches!(p, TuplePat::Name(_))) {
+                    let names: Vec<String> = rask_ast::stmt::tuple_pats_flat_names(patterns)
+                        .into_iter().map(|s| s.to_string()).collect();
+                    self.lower_tuple_destructure(&names, init)
+                } else {
+                    let (init_op, init_ty) = self.lower_expr(init)?;
+                    self.destructure_tuple_pattern(patterns, &init_op, &init_ty)
+                }
             }
 
             // While-let pattern loop
@@ -1078,6 +1089,50 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Lower tuple destructuring: evaluate init, extract each element by field index.
+    /// Bind a tuple pattern against `base`, following the pattern's shape.
+    /// A nested pattern reads its own sub-tuple out first, so element indices
+    /// always match the tuple they're read from.
+    fn destructure_tuple_pattern(
+        &mut self,
+        pats: &[TuplePat],
+        base: &MirOperand,
+        base_ty: &MirType,
+    ) -> Result<(), LoweringError> {
+        let elem_types = match base_ty {
+            MirType::Tuple(fields) => Some(fields.clone()),
+            _ => None,
+        };
+        for (i, pat) in pats.iter().enumerate() {
+            if matches!(pat, TuplePat::Wildcard) {
+                continue;
+            }
+            let elem_ty = elem_types.as_ref()
+                .and_then(|f| f.get(i).cloned())
+                .unwrap_or(MirType::I64);
+            let dst = match pat {
+                TuplePat::Name(name) => {
+                    let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
+                    self.locals.insert(name.clone(), (local_id, elem_ty.clone()));
+                    local_id
+                }
+                _ => self.builder.alloc_temp(elem_ty.clone()),
+            };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::Field {
+                    base: base.clone(),
+                    field_index: i as u32,
+                    byte_offset: None,
+                    field_size: None,
+                },
+            }));
+            if let TuplePat::Nested(inner) = pat {
+                self.destructure_tuple_pattern(inner, &MirOperand::Local(dst), &elem_ty)?;
+            }
+        }
+        Ok(())
+    }
+
     fn lower_tuple_destructure(&mut self, names: &[String], init: &Expr) -> Result<(), LoweringError> {
         // Channel.buffered()/unbuffered() returns a raw channel pointer in
         // codegen, not a (Sender, Receiver) tuple. Emit channel_tx/channel_rx
