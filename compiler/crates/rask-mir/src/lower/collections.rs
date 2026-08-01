@@ -42,12 +42,18 @@ impl<'a> MirLowerer<'a> {
             len: elems.len() as u32,
         };
         let arr_local = self.builder.alloc_temp(array_ty);
+        // Elements wider than a word are values, not pointers: a string
+        // constant lowers to the address of its 16-byte blob, so without a
+        // store size codegen drops the address into the slot and the reader
+        // sees the pointer's bytes as a string. `Vec.from(["ab", "cde"])`
+        // reported len 15 for every element that way (#508).
+        let store_size = (elem_size > 8).then_some(elem_size);
         for (i, op) in lowered.into_iter().enumerate() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: arr_local,
                 offset: i as u32 * elem_size,
                 value: op,
-                store_size: None,
+                store_size,
             }));
         }
 
