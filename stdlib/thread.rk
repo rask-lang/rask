@@ -7,7 +7,7 @@ public struct Thread { }
 
 extend Thread {
     /// Spawn an OS thread. Returns a handle that must be joined or detached.
-    public func spawn(f: func()) -> ThreadHandle { }
+    public func spawn(f: func() -> T) -> ThreadHandle<T> { }
 }
 
 /// Handle to a spawned OS thread. Must be joined or detached.
@@ -28,5 +28,5 @@ public struct ThreadPool { }
 
 extend ThreadPool {
     /// Spawn work on the thread pool. Returns a handle.
-    public func spawn(f: func()) -> ThreadHandle { }
+    public func spawn(f: func() -> T) -> ThreadHandle<T> { }
 }

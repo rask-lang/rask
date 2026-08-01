@@ -431,6 +431,17 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
+    /// Is there a body here to make a concrete copy of? Stdlib stubs declare a
+    /// signature and an empty block — the implementation is in the runtime.
+    fn has_instantiable_body(&self, name: &str) -> bool {
+        let decl = self
+            .fn_table
+            .get(name)
+            .copied()
+            .or_else(|| self.method_table.get(name));
+        matches!(decl.map(|d| &d.kind), Some(DeclKind::Fn(f)) if !f.body.is_empty())
+    }
+
     /// Seed the work queue with main()
     pub fn add_entry(&mut self, name: &str) -> bool {
         if self.fn_table.contains_key(name) {
@@ -608,8 +619,12 @@ impl<'a> Monomorphizer<'a> {
                         .get(&expr.id)
                         .cloned()
                         .unwrap_or_default();
-                    // Record call rewrite so MIR lowering uses the mangled name
-                    if !type_args.is_empty() {
+                    // Record call rewrite so MIR lowering uses the mangled name.
+                    // Only for functions with a body to instantiate — a stdlib
+                    // stub like `spawn(f: func() -> T)` is generic in its
+                    // signature but resolves to one C entry point, so mangling
+                    // it produced a call to `spawn$i64` that nothing emits.
+                    if !type_args.is_empty() && self.has_instantiable_body(name) {
                         let mangled = mangle_name(name, &type_args);
                         self.call_rewrites.insert(expr.id, mangled);
                     }
