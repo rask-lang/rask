@@ -4431,7 +4431,8 @@ impl<'a> MirLowerer<'a> {
                     // Unsigned values print unsigned. Shared with the signed
                     // helper, `u8` 200 came out as -56 (#326).
                     MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "u64_to_string",
-                    MirType::F64 | MirType::F32 => "f64_to_string",
+                    MirType::F64 => "f64_to_string",
+                    MirType::F32 => "f32_to_string",
                     MirType::Bool => "bool_to_string",
                     MirType::Char => "char_to_string",
                     _ => "i64_to_string",

@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Floats print the same on both backends.
+//
+// The C runtime formatted every float with `%g` — 6 significant digits and
+// exponent notation past that — so 1234567.75 came out as 1.23457e+06 while the
+// interpreter printed it in full. f32 had the mirror problem once that was
+// fixed: widening to double before formatting spells out the exact binary
+// value, turning 0.1f into 0.10000000149011612.
+
+test "a float keeps its digits past six significant" {
+    const d: f64 = 1234567.75
+    assert d.to_string() == "1234567.75"
+}
+
+test "a whole float prints without a decimal point" {
+    const c: f64 = 16777216.0
+    assert c.to_string() == "16777216"
+}
+
+test "a large magnitude is spelled out, not exponentiated" {
+    const h: f64 = 1e20
+    assert h.to_string() == "100000000000000000000"
+}
+
+test "a small magnitude is spelled out too" {
+    const g: f64 = 0.000001
+    assert g.to_string() == "0.000001"
+}
+
+test "an f32 round-trips against its own width" {
+    const e: f32 = 0.1
+    assert e.to_string() == "0.1"
+    assert "{e}" == "0.1"
+}
+
+test "the short forms are unchanged" {
+    const a: f32 = 1.5
+    const b: f64 = 1.5
+    assert a.to_string() == "1.5"
+    assert b.to_string() == "1.5"
+    assert "{a} {b}" == "1.5 1.5"
+}
+
+test "a negative float keeps its sign" {
+    const n: f64 = -2.25
+    assert n.to_string() == "-2.25"
+}

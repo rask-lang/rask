@@ -633,6 +633,17 @@ impl CodeGenerator {
             self.func_ids.insert("rask_f64_to_string".to_string(), id);
         }
 
+        // rask_f32_to_string(out: *RaskStr, val: f32) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // out ptr
+            sig.params.push(AbiParam::new(types::F32)); // val
+            let id = self.module
+                .declare_function("rask_f32_to_string", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_f32_to_string".to_string(), id);
+        }
+
         // rask_char_to_string(out: *RaskStr, codepoint: i32) -> void
         {
             let mut sig = self.module.make_signature();

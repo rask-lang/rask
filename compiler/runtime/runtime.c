@@ -26,11 +26,15 @@ void rask_print_bool(int8_t val) {
 }
 
 void rask_print_f64(double val) {
-    printf("%g", val);
+    char buf[RASK_F64_BUF_SIZE];
+    rask_fmt_double(buf, sizeof(buf), val);
+    fputs(buf, stdout);
 }
 
 void rask_print_f32(float val) {
-    printf("%g", (double)val);
+    char buf[RASK_F64_BUF_SIZE];
+    rask_fmt_float(buf, sizeof(buf), val);
+    fputs(buf, stdout);
 }
 
 void rask_print_char(int32_t codepoint) {
@@ -1329,8 +1333,9 @@ void rask_json_buf_add_i64(RaskJsonBuf *buf, const RaskStr *key, int64_t val) {
 void rask_json_buf_add_f64(RaskJsonBuf *buf, const RaskStr *key, double val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
     json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
-    char num[64];
-    snprintf(num, sizeof(num), ":%g", val);
+    char num[RASK_F64_BUF_SIZE + 1];
+    num[0] = ':';
+    rask_fmt_double(num + 1, sizeof(num) - 1, val);
     json_buf_append_cstr(buf, num);
     buf->field_count++;
 }
@@ -1391,8 +1396,8 @@ void rask_json_buf_array_add_i64(RaskJsonBuf *buf, int64_t val) {
 
 void rask_json_buf_array_add_f64(RaskJsonBuf *buf, double val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
-    char num[64];
-    snprintf(num, sizeof(num), "%g", val);
+    char num[RASK_F64_BUF_SIZE];
+    rask_fmt_double(num, sizeof(num), val);
     json_buf_append_cstr(buf, num);
     buf->field_count++;
 }

@@ -140,6 +140,14 @@ int64_t     rask_string_eq(const RaskStr *a, const RaskStr *b);
 
 // struct.targets/EX4: main returned its error branch — print and exit 1.
 _Noreturn void rask_main_error_exit(const RaskStr *msg);
+
+// Shortest round-tripping decimal for a double, never in exponent form.
+// Matches the interpreter's float formatting. Buffers must be this big:
+// a large magnitude spelled out needs every digit before the point.
+#define RASK_F64_BUF_SIZE 350
+void rask_fmt_double(char *buf, size_t n, double val);
+void rask_fmt_float(char *buf, size_t n, float val);
+void rask_f32_to_string(RaskStr *out, float val);
 int64_t     rask_string_compare(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_lt(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_gt(const RaskStr *a, const RaskStr *b);

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <dirent.h>
 #include <errno.h>
 
@@ -769,9 +770,68 @@ void rask_bool_to_string(RaskStr *out, int64_t val) {
     rask_string_from(out, val ? "true" : "false");
 }
 
+// Render a double the way the interpreter does: the shortest digit string
+// that reads back as the same value, never in exponent form. `%g` alone gives
+// 6 significant digits, so 1234567.75 printed as 1.23457e+06 — both a loss of
+// digits and a different shape from the interpreter's output.
+//
+// `buf` should be RASK_F64_BUF_SIZE bytes: a large magnitude in fixed notation
+// needs room for every digit before the decimal point.
+void rask_fmt_double(char *buf, size_t n, double val) {
+    if (isnan(val)) { snprintf(buf, n, "NaN"); return; }
+    if (isinf(val)) { snprintf(buf, n, val < 0 ? "-inf" : "inf"); return; }
+
+    int prec = 1;
+    for (; prec < 17; prec++) {
+        snprintf(buf, n, "%.*g", prec, val);
+        if (strtod(buf, NULL) == val) break;
+    }
+    if (prec >= 17) snprintf(buf, n, "%.17g", val);
+
+    // %g switches to exponent form once the magnitude passes the precision.
+    // Re-render those with the same significant digits, spelled out.
+    if (strchr(buf, 'e')) {
+        int exp10 = (int)floor(log10(fabs(val)));
+        int decimals = prec - 1 - exp10;
+        if (decimals < 0) decimals = 0;
+        if (decimals > 320) decimals = 320;
+        snprintf(buf, n, "%.*f", decimals, val);
+    }
+}
+
+// Same idea for f32. Widening to double first and formatting as a double
+// spells out the f32's exact binary value — 0.1f comes back as
+// 0.10000000149011612 instead of 0.1, because the round-trip is checked
+// against the wrong width.
+void rask_fmt_float(char *buf, size_t n, float val) {
+    if (isnan(val)) { snprintf(buf, n, "NaN"); return; }
+    if (isinf(val)) { snprintf(buf, n, val < 0 ? "-inf" : "inf"); return; }
+
+    int prec = 1;
+    for (; prec < 9; prec++) {
+        snprintf(buf, n, "%.*g", prec, (double)val);
+        if (strtof(buf, NULL) == val) break;
+    }
+    if (prec >= 9) snprintf(buf, n, "%.9g", (double)val);
+
+    if (strchr(buf, 'e')) {
+        int exp10 = (int)floorf(log10f(fabsf(val)));
+        int decimals = prec - 1 - exp10;
+        if (decimals < 0) decimals = 0;
+        if (decimals > 60) decimals = 60;
+        snprintf(buf, n, "%.*f", decimals, (double)val);
+    }
+}
+
 void rask_f64_to_string(RaskStr *out, double val) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%g", val);
+    char buf[RASK_F64_BUF_SIZE];
+    rask_fmt_double(buf, sizeof(buf), val);
+    rask_string_from(out, buf);
+}
+
+void rask_f32_to_string(RaskStr *out, float val) {
+    char buf[RASK_F64_BUF_SIZE];
+    rask_fmt_float(buf, sizeof(buf), val);
     rask_string_from(out, buf);
 }
 

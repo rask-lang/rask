@@ -518,6 +518,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::F64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // f32 round-trips against its own width — formatting it as a double
+        // spells out the exact binary value (0.1f → 0.10000000149011612).
+        StdlibEntry {
+            mir_name: "f32_to_string", c_name: "rask_f32_to_string",
+            params: &[types::I64, types::F32], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry {
             mir_name: "char_to_string", c_name: "rask_char_to_string",
             params: &[types::I64, types::I32], ret_ty: None, can_panic: false,

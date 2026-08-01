@@ -1393,7 +1393,7 @@ impl<'a> FunctionBuilder<'a> {
                     let (fn_name, arg_ty) = match src_mir_ty.as_ref() {
                         Some(MirType::Bool) => ("rask_bool_to_string", types::I64),
                         Some(MirType::F64) => ("rask_f64_to_string", types::F64),
-                        Some(MirType::F32) => ("rask_f64_to_string", types::F64),
+                        Some(MirType::F32) => ("rask_f32_to_string", types::F32),
                         Some(MirType::Char) => ("rask_char_to_string", types::I32),
                         _ => match value {
                             MirOperand::Constant(MirConst::Bool(_)) => ("rask_bool_to_string", types::I64),
