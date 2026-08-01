@@ -811,29 +811,34 @@ impl Interpreter {
                 result
             }
 
-            ExprKind::Loop { body, .. } => loop {
-                self.env.push_scope();
-                match self.exec_stmts(body) {
-                    Ok(_) => {}
-                    Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
-                        let val = match diag.error {
-                            RuntimeError::Break(v) => v,
-                            _ => unreachable!(),
-                        };
-                        self.env.pop_scope();
-                        break Ok(val);
+            ExprKind::Loop { body, label } => {
+                let loop_label = label.as_deref();
+                loop {
+                    self.env.push_scope();
+                    match self.exec_stmts(body) {
+                        Ok(_) => {}
+                        Err(diag) => {
+                            self.env.pop_scope();
+                            match diag.error {
+                                // `break search i` from inside a nested loop
+                                // lands here, at the loop that owns the label.
+                                RuntimeError::Break(v, ref target)
+                                    if target.is_none() || target.as_deref() == loop_label =>
+                                {
+                                    break Ok(v);
+                                }
+                                RuntimeError::Continue(ref target)
+                                    if target.is_none() || target.as_deref() == loop_label =>
+                                {
+                                    continue;
+                                }
+                                _ => break Err(diag),
+                            }
+                        }
                     }
-                    Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
-                        self.env.pop_scope();
-                        continue;
-                    }
-                    Err(e) => {
-                        self.env.pop_scope();
-                        break Err(e);
-                    }
+                    self.env.pop_scope();
                 }
-                self.env.pop_scope();
-            },
+            }
 
             ExprKind::If {
                 cond,

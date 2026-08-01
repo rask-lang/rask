@@ -675,11 +675,15 @@ pub enum RuntimeError {
     #[error("return")]
     Return(Value),
 
+    /// Break value plus the label it targets, if any (CF23/CF25). A loop only
+    /// absorbs an unlabeled break or one naming itself; anything else keeps
+    /// unwinding to the loop that owns the label.
     #[error("break")]
-    Break(Value),
+    Break(Value, Option<String>),
 
+    /// Continue plus the label it targets, if any (CF24).
     #[error("continue")]
-    Continue,
+    Continue(Option<String>),
 
     /// Error propagation via try operator
     #[error("try error")]

@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Labeled break/continue reach the loop they name (CF22-CF25, #392).
+//
+// The interpreter's break/continue signal carried no label, so the innermost
+// loop swallowed every one of them — `continue outer` from a nested loop just
+// continued the inner loop.
+
+test "continue label skips the outer iteration" {
+    mut count = 0
+    outer: for i in 0..5 {
+        for j in 0..5 {
+            if j == 2: continue outer
+            count += 1
+        }
+    }
+    // j = 0, 1 each outer round, then on to the next i
+    assert count == 10
+}
+
+test "break label exits the outer loop" {
+    mut seen = 0
+    outer: for i in 0..5 {
+        for j in 0..5 {
+            seen += 1
+            if i == 1 && j == 1: break outer
+        }
+    }
+    // 5 full inner rounds for i=0, then j=0 and j=1 for i=1
+    assert seen == 7
+}
+
+test "break label carries a value out of a loop expression" {
+    const found = search: loop {
+        for i in 0..10 {
+            if i == 7: break search i
+        }
+        break search -1
+    }
+    assert found == 7
+}
+
+test "an unlabeled break still stops at the nearest loop" {
+    mut count = 0
+    outer: for i in 0..3 {
+        for j in 0..3 {
+            if j == 1: break
+            count += 1
+        }
+        count += 10
+    }
+    assert count == 33
+}
+
+test "break value is still a value, not a label" {
+    const n = 42
+    const got = loop {
+        break n
+    }
+    assert got == 42
+}
+
+test "labeled continue on a loop expression" {
+    mut ticks = 0
+    const done = spin: loop {
+        ticks += 1
+        for _ in 0..3 {
+            if ticks < 3: continue spin
+        }
+        break spin ticks
+    }
+    assert done == 3
+}
