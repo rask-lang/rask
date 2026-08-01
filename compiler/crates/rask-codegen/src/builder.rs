@@ -507,7 +507,7 @@ impl<'a> FunctionBuilder<'a> {
                         let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;
                         let actual_ty = builder.func.dfg.value_type(cond_val);
                         let cond_final = if actual_ty != types::I8 {
-                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8)
+                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8, None)
                         } else {
                             cond_val
                         };
@@ -616,7 +616,7 @@ impl<'a> FunctionBuilder<'a> {
                         let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;
                         let actual_ty = builder.func.dfg.value_type(cond_val);
                         let cond_final = if actual_ty != types::I8 {
-                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8)
+                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8, None)
                         } else {
                             cond_val
                         };
@@ -942,11 +942,16 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Convert a value between Cranelift types (integer widening/narrowing, float conversion).
+    /// `from_mir` is the source's MIR type where the caller has it. A Cranelift
+    /// type carries no signedness, so without it every widening sign-extends,
+    /// and `x as u64` on a `u16` holding 60000 came out as 2^64 - 5536 (#326).
+    /// Callers used to patch that themselves; two did, the rest didn't.
     fn convert_value(
         builder: &mut ClifFunctionBuilder,
         val: Value,
         from_ty: Type,
         to_ty: Type,
+        from_mir: Option<&MirType>,
     ) -> Value {
         if from_ty == to_ty {
             return val;
@@ -961,6 +966,8 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().icmp_imm(IntCC::NotEqual, val, 0)
             } else if from_bits > to_bits {
                 builder.ins().ireduce(to_ty, val)
+            } else if from_mir.is_some_and(|t| t.is_unsigned()) {
+                builder.ins().uextend(to_ty, val)
             } else {
                 builder.ins().sextend(to_ty, val)
             }
@@ -995,7 +1002,7 @@ impl<'a> FunctionBuilder<'a> {
         let raw = Self::lower_operand(builder, value, ctx)?;
         let raw_ty = builder.func.dfg.value_type(raw);
         let val = if raw_ty != src_clif {
-            Self::convert_value(builder, raw, raw_ty, src_clif)
+            Self::convert_value(builder, raw, raw_ty, src_clif, None)
         } else {
             raw
         };
@@ -1417,7 +1424,8 @@ impl<'a> FunctionBuilder<'a> {
                     let mut val = Self::lower_operand_typed(builder, value, Some(arg_ty), ctx)?;
                     let val_ty = builder.func.dfg.value_type(val);
                     if val_ty != arg_ty {
-                        val = Self::convert_value(builder, val, val_ty, arg_ty);
+                        let src_mir = Self::operand_mir_type(value, ctx.locals);
+                        val = Self::convert_value(builder, val, val_ty, arg_ty, src_mir.as_ref());
                     }
 
                     builder.ins().call(*fr, &[out_ptr, val]);
@@ -1427,17 +1435,8 @@ impl<'a> FunctionBuilder<'a> {
                 let val = Self::lower_operand(builder, value, ctx)?;
                 let target = mir_to_cranelift_type(target_ty)?;
                 let val_ty = builder.func.dfg.value_type(val);
-                // Widening an unsigned source zero-extends. Sign-extending it
-                // turned `x as u64` on a `u16` 60000 into 2^64 - 5536 (#326).
-                let src_unsigned = Self::operand_mir_type(value, ctx.locals)
-                    .is_some_and(|t| matches!(t,
-                        MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64));
-                if src_unsigned && target.is_int() && val_ty.is_int()
-                    && target.bits() > val_ty.bits()
-                {
-                    return Ok(builder.ins().uextend(target, val));
-                }
-                Ok(Self::convert_value(builder, val, val_ty, target))
+                let src_mir = Self::operand_mir_type(value, ctx.locals);
+                Ok(Self::convert_value(builder, val, val_ty, target, src_mir.as_ref()))
             }
 
             MirRValue::Convert { value, source_ty, target_ty, kind } => {
@@ -1543,7 +1542,7 @@ impl<'a> FunctionBuilder<'a> {
 
         let val_ty = builder.func.dfg.value_type(val);
         if val_ty != dst_ty {
-            val = Self::convert_value(builder, val, val_ty, dst_ty);
+            val = Self::convert_value(builder, val, val_ty, dst_ty, None);
         }
 
         // #493: an Option destination deeper than its source gains the layers
@@ -1744,7 +1743,8 @@ impl<'a> FunctionBuilder<'a> {
                 let val = if val_ty == types::F32 {
                     builder.ins().fpromote(types::F64, val)
                 } else if val_ty.is_int() && val_ty.bits() < 64 {
-                    Self::convert_value(builder, val, val_ty, types::I64)
+                    let src_mir = Self::operand_mir_type(value, ctx.locals);
+                    Self::convert_value(builder, val, val_ty, types::I64, src_mir.as_ref())
                 } else {
                     val
                 };
@@ -2312,9 +2312,9 @@ impl<'a> FunctionBuilder<'a> {
         } else if lhs_ty.is_int() && rhs_ty.is_int() {
             // Widen narrower integer
             if lhs_ty.bits() < rhs_ty.bits() {
-                (Self::convert_value(builder, lhs_val, lhs_ty, rhs_ty), rhs_val)
+                (Self::convert_value(builder, lhs_val, lhs_ty, rhs_ty, None), rhs_val)
             } else {
-                (lhs_val, Self::convert_value(builder, rhs_val, rhs_ty, lhs_ty))
+                (lhs_val, Self::convert_value(builder, rhs_val, rhs_ty, lhs_ty, None))
             }
         } else if lhs_ty.is_float() && rhs_ty.is_float() {
             // Promote narrower float
@@ -3204,7 +3204,7 @@ impl<'a> FunctionBuilder<'a> {
         let result = if let Some(exp) = expected_ty {
             let loaded_ty = builder.func.dfg.value_type(loaded);
             if loaded_ty != exp {
-                Self::convert_value(builder, loaded, loaded_ty, exp)
+                Self::convert_value(builder, loaded, loaded_ty, exp, None)
             } else {
                 loaded
             }
@@ -3247,7 +3247,7 @@ impl<'a> FunctionBuilder<'a> {
                 if let Some(expected) = expected_ty {
                     let actual = builder.func.dfg.value_type(val);
                     if actual != expected {
-                        val = Self::convert_value(builder, val, actual, expected);
+                        val = Self::convert_value(builder, val, actual, expected, None);
                     }
                 }
                 builder.ins().call(*fr, &[val]);
@@ -3531,7 +3531,7 @@ impl<'a> FunctionBuilder<'a> {
             let actual = builder.func.dfg.value_type(val);
             if let Some(exp) = expected {
                 if actual != exp {
-                    arg_vals.push(Self::convert_value(builder, val, actual, exp));
+                    arg_vals.push(Self::convert_value(builder, val, actual, exp, None));
                 } else {
                     arg_vals.push(val);
                 }
@@ -3586,7 +3586,7 @@ impl<'a> FunctionBuilder<'a> {
                         let dst_ty = mir_to_cranelift_type(&local.ty)?;
                         let val_ty = builder.func.dfg.value_type(result);
                         if val_ty != dst_ty {
-                            Self::convert_value(builder, result, val_ty, dst_ty)
+                            Self::convert_value(builder, result, val_ty, dst_ty, None)
                         } else {
                             result
                         }
@@ -3636,7 +3636,7 @@ impl<'a> FunctionBuilder<'a> {
             };
             let actual = builder.func.dfg.value_type(val);
             let converted = if actual != types::I64 && actual.is_int() {
-                Self::convert_value(builder, val, actual, types::I64)
+                Self::convert_value(builder, val, actual, types::I64, None)
             } else {
                 val
             };
@@ -3658,7 +3658,7 @@ impl<'a> FunctionBuilder<'a> {
             if let Some(&expected) = param_types.get(i) {
                 let actual = builder.func.dfg.value_type(*val);
                 if actual != expected {
-                    *val = Self::convert_value(builder, *val, actual, expected);
+                    *val = Self::convert_value(builder, *val, actual, expected, None);
                 }
             }
         }
@@ -3911,7 +3911,7 @@ impl<'a> FunctionBuilder<'a> {
                         let value = if writer_ty == ok_ty {
                             raw
                         } else {
-                            Self::convert_value(builder, raw, writer_ty, ok_ty)
+                            Self::convert_value(builder, raw, writer_ty, ok_ty, None)
                         };
                         Self::build_ok(builder, dst_ss, value);
                         builder.ins().jump(merge_block, &[]);
@@ -3944,7 +3944,7 @@ impl<'a> FunctionBuilder<'a> {
                 let dst_ty = mir_to_cranelift_type(&local.ty)?;
                 let val_ty = builder.func.dfg.value_type(val);
                 if val_ty != dst_ty {
-                    Self::convert_value(builder, val, val_ty, dst_ty)
+                    Self::convert_value(builder, val, val_ty, dst_ty, None)
                 } else {
                     val
                 }
@@ -4229,7 +4229,7 @@ impl<'a> FunctionBuilder<'a> {
                             let val = Self::lower_operand_typed(builder, val_op, Some(expected_ty), ctx)?;
                             let actual_ty = builder.func.dfg.value_type(val);
                             let final_val = if actual_ty != expected_ty {
-                                Self::convert_value(builder, val, actual_ty, expected_ty)
+                                Self::convert_value(builder, val, actual_ty, expected_ty, None)
                             } else {
                                 val
                             };
@@ -4493,7 +4493,7 @@ impl<'a> FunctionBuilder<'a> {
             let val = Self::lower_operand_typed(builder, val_op, Some(expected_ty), ctx)?;
             let actual_ty = builder.func.dfg.value_type(val);
             let final_val = if actual_ty != expected_ty {
-                Self::convert_value(builder, val, actual_ty, expected_ty)
+                Self::convert_value(builder, val, actual_ty, expected_ty, None)
             } else {
                 val
             };
@@ -5375,7 +5375,7 @@ impl<'a> FunctionBuilder<'a> {
                         if is_unsigned && exp_ty.bits() > actual_ty.bits() {
                             return Ok(builder.ins().uextend(exp_ty, val));
                         }
-                        return Ok(Self::convert_value(builder, val, actual_ty, exp_ty));
+                        return Ok(Self::convert_value(builder, val, actual_ty, exp_ty, None));
                     }
                 }
                 Ok(val)
