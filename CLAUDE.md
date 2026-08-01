@@ -195,6 +195,8 @@ The stdlib should feel Rask, not Rust-with-different-keywords. Don't lift names,
 
 If a Rust name genuinely is the right one, fine — but justify it from Rask's side, not from "that's what `std` calls it."
 
+Formal rules (one screen per module, the guess test, SD1–SD5): [specs/stdlib/api-design.md](specs/stdlib/api-design.md).
+
 ## Error messages
 
 Diagnostics are a first-class feature, not an afterthought. A confusing error is a bug.

@@ -150,6 +150,26 @@ I target SN ≤ 0.3 because error handling shouldn't dominate the actual logic.
 
 ---
 
+### 7. Reading-Set Size (RS)
+
+```
+RS = distinct language concepts required to READ the five validation programs
+Target: every concept used is on DAY_ONE.md, and DAY_ONE.md stays one page (~12 concepts)
+```
+
+SN measures noise per line; RS measures how much language lives in your head. They fail independently: a language can be token-quiet and still demand twenty concepts to read a web handler.
+
+What counts is the *reading* set — concepts a reader must already know to not misread the code. Concepts that announce themselves in types (`Pool<T>`, `Shared<T>`), are opt-in (`comptime`, `unsafe`), or arrive as self-explaining compile errors (linearity, stale handles) don't count against RS; concepts that appear bare in ordinary code do.
+
+**Measurement:** audit the five validation programs against [DAY_ONE.md](DAY_ONE.md). Every construct in them must be on the page.
+
+**Red flags:**
+- A validation program uses a concept not on DAY_ONE.md → either the page grows (a budget decision, Ceremony-Test scrutiny) or the program gets rewritten — the same discipline as the Go-length litmus
+- DAY_ONE.md exceeds one page
+- A new feature's docs say "commonly used" and it isn't on the page — those two claims conflict
+
+---
+
 ### 7. Innovation Factor (IF)
 
 **Qualitative:** Must enable patterns impossible or 10× harder in existing languages.
