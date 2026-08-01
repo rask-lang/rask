@@ -586,6 +586,7 @@ pub fn print_typecheck_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}  Output type information as structured JSON", output::arg("--json"));
+    println!("  {}  Print the type table and expression types", output::arg("--verbose, -v"));
 }
 
 pub fn print_ownership_help() {

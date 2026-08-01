@@ -37,14 +37,14 @@ fn resolve_rk_targets(path: &str) -> Vec<String> {
     files
 }
 
-pub fn cmd_typecheck(path: &str, format: Format) {
+pub fn cmd_typecheck(path: &str, format: Format, verbose: bool) {
     let files = resolve_rk_targets(path);
     for file in &files {
-        typecheck_single(file, format, files.len() > 1);
+        typecheck_single(file, format, files.len() > 1, verbose);
     }
 }
 
-fn typecheck_single(path: &str, format: Format, multi: bool) {
+fn typecheck_single(path: &str, format: Format, multi: bool, verbose: bool) {
     let mut result = crate::run_check_or_exit(path, format);
 
     // CC8: run the hidden-params pass's context resolution so `rask check`
@@ -60,6 +60,10 @@ fn typecheck_single(path: &str, format: Format, multi: bool) {
         if multi {
             println!("{} {} {}", "===".dimmed(), output::file_path(path), "===".dimmed());
         }
+        // The type table is a debug view, not a check result: it lists every
+        // stdlib type as well as the program's, so a one-line file printed 74
+        // types before saying OK. Behind --verbose, like the other commands.
+        if verbose {
         println!("{} Types ({} registered) {}\n", "===".dimmed(), result.typed.types.iter().count(), "===".dimmed());
         for type_def in result.typed.types.iter() {
             match type_def {
@@ -112,8 +116,10 @@ fn typecheck_single(path: &str, format: Format, multi: bool) {
         if result.typed.node_types.len() > 20 {
             println!("  ... and {} more", result.typed.node_types.len() - 20);
         }
+        println!();
+        }
 
-        println!("\n{}", output::banner_ok("Typecheck"));
+        println!("{}", output::banner_ok("Typecheck"));
     }
 }
 
