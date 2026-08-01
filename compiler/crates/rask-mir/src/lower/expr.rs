@@ -55,6 +55,64 @@ fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static
     }
 }
 
+/// Could evaluating this twice do something the second run would notice?
+///
+/// Only used to decide whether an assert operand needs parking in a temp, so it
+/// leans the safe way: anything not obviously a read of something already there
+/// counts as work. Reads stay as they were written, which matters — lowering
+/// special-cases whole shapes like `x == none`, and swapping a side for a
+/// temporary would step past them.
+fn expr_may_do_work(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Ident(_)
+        | ExprKind::Int(..)
+        | ExprKind::Float(..)
+        | ExprKind::String(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Char(_)
+        | ExprKind::None
+        | ExprKind::Null => false,
+        ExprKind::Field { object, .. } => expr_may_do_work(object),
+        ExprKind::Index { object, index } => expr_may_do_work(object) || expr_may_do_work(index),
+        ExprKind::Unary { operand, .. } => expr_may_do_work(operand),
+        _ => true,
+    }
+}
+
+/// Rebuild `a.eq(b)` (or `!a.eq(b)`) with the two sides swapped for expressions
+/// that just read an already-computed value. The node ids are carried over, so
+/// method dispatch still sees the same checker types it would have.
+fn rebuild_assert_condition(condition: &Expr, left: Expr, right: Expr) -> Expr {
+    let rebuild_call = |call: &Expr, left: Expr, right: Expr| -> Expr {
+        let ExprKind::MethodCall { method, args, type_args, .. } = &call.kind else {
+            return call.clone();
+        };
+        let mut args = args.clone();
+        args[0].expr = right;
+        Expr {
+            id: call.id,
+            span: call.span,
+            kind: ExprKind::MethodCall {
+                object: Box::new(left),
+                method: method.clone(),
+                args,
+                type_args: type_args.clone(),
+            },
+        }
+    };
+    match &condition.kind {
+        ExprKind::Unary { op: UnaryOp::Not, operand } => Expr {
+            id: condition.id,
+            span: condition.span,
+            kind: ExprKind::Unary {
+                op: UnaryOp::Not,
+                operand: Box::new(rebuild_call(operand, left, right)),
+            },
+        },
+        _ => rebuild_call(condition, left, right),
+    }
+}
+
 /// Extract pattern name from an `is` pattern in an assert condition.
 /// Returns the pattern name as a string for the failure message.
 fn extract_assert_is_pattern(condition: &Expr) -> Option<String> {
@@ -203,6 +261,31 @@ impl<'a> MirLowerer<'a> {
             store_size: (payload_size > 8).then_some(payload_size),
         }));
         MirOperand::Local(slot)
+    }
+
+    /// Park an assert operand in a named local and hand back an expression that
+    /// reads it. Keeps the original node id so the comparison built around it
+    /// still resolves to the same type. A plain ident needs no parking — it's
+    /// already a name, and re-reading it costs nothing.
+    fn bind_assert_operand(&mut self, src: &Expr, op: &MirOperand, ty: &MirType) -> Expr {
+        if !expr_may_do_work(src) {
+            return src.clone();
+        }
+        let name = format!("__assert_operand_{}", self.closure_counter);
+        self.closure_counter += 1;
+        let local = match op {
+            MirOperand::Local(id) => *id,
+            other => {
+                let local = self.builder.alloc_local(name.clone(), ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: local,
+                    rvalue: MirRValue::Use(other.clone()),
+                }));
+                local
+            }
+        };
+        self.locals.insert(name.clone(), (local, ty.clone()));
+        Expr { id: src.id, span: src.span, kind: ExprKind::Ident(name) }
     }
 
     /// Widen a scalar operand to the width an assert-failure helper takes.
@@ -2551,8 +2634,17 @@ impl<'a> MirLowerer<'a> {
                     let (left_op, left_ty) = self.lower_expr(left_expr)?;
                     let (right_op, right_ty) = self.lower_expr(right_expr)?;
 
-                    // Now lower the full condition
-                    let (cond_op, _) = self.lower_expr(condition)?;
+                    // Then compare the values we already have. Lowering the whole
+                    // condition here instead would run both sides a second time,
+                    // so `assert push(v) == 1` pushed twice.
+                    let (cond_op, _) = if expr_may_do_work(left_expr) || expr_may_do_work(right_expr) {
+                        let left_ref = self.bind_assert_operand(left_expr, &left_op, &left_ty);
+                        let right_ref = self.bind_assert_operand(right_expr, &right_op, &right_ty);
+                        let rebuilt = rebuild_assert_condition(condition, left_ref, right_ref);
+                        self.lower_expr(&rebuilt)?
+                    } else {
+                        self.lower_expr(condition)?
+                    };
                     let ok_block = self.builder.create_block();
                     let fail_block = self.builder.create_block();
 
