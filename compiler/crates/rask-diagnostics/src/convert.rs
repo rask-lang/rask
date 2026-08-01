@@ -281,6 +281,25 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("method calls are resolved at compile time against the type's extend blocks")
             }
 
+            UnimplementedStdlibMethod { ty, method, span } => {
+                Diagnostic::error(format!(
+                    "`{}.{}` is declared but not implemented yet",
+                    ty, method
+                ))
+                .with_code("E0353")
+                .with_primary(*span, "no implementation behind this signature")
+                .with_help(format!(
+                    "the signature exists so the API can be referenced, but \
+                     neither backend implements `{}.{}` — pick another method \
+                     or implement it in stdlib/",
+                    ty, method
+                ))
+                .with_note(
+                    "stdlib signatures are marked `@unimplemented` when nothing \
+                     backs them, so this is caught at the call instead of \
+                     surfacing later as a missing function during codegen"
+                )
+            }
             UnboundedTypeParamMethod { param, method, bounds, span } => {
                 let bound_list = if bounds.is_empty() {
                     format!("`{}` has no bounds", param)

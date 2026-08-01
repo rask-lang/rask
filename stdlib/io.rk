@@ -136,12 +136,14 @@ extend Buffer {
     public func write_all(mutate self, data: Vec<u8>) -> void or IoError { }
 
     /// View all written bytes.
+    @unimplemented
     public func as_bytes(self) -> Vec<u8> { }
 
     /// Total bytes written.
     public func len(self) -> i64 { }
 
     /// Reset read position to 0.
+    @unimplemented
     public func reset(mutate self) { }
 }
 

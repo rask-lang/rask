@@ -13,12 +13,14 @@ extend string {
     public func new() -> string { }
 
     /// From validated UTF-8 bytes. Returns error on invalid UTF-8 (S4).
+    @unimplemented
     public func from_utf8(bytes: Vec<u8>) -> string or utf8_error { }
 
     /// From UTF-8 bytes without validation. Unsafe — caller guarantees valid UTF-8.
     public unsafe func from_utf8_unchecked(bytes: Vec<u8>) -> string { }
 
     /// Single-character string.
+    @unimplemented
     public func from_char(c: char) -> string { }
 
     /// Concatenate two strings. Allocates.
@@ -30,6 +32,7 @@ extend string {
     public func len(self) -> usize { }
 
     /// Number of Unicode scalars. O(n).
+    @unimplemented
     public func char_count(self) -> usize { }
 
     /// True if the string is empty. O(1).
@@ -119,6 +122,7 @@ extend string {
     public func replace(self, from: string, to: string) -> string { }
 
     /// Replace first n occurrences. Allocates.
+    @unimplemented
     public func replacen(self, from: string, to: string, n: usize) -> string { }
 
     /// Reverse by Unicode scalars. Allocates.
@@ -213,6 +217,7 @@ public struct StringView { }
 extend string {
     /// Storable zero-copy view. On a slice, captures the slice's range;
     /// on a whole string, views all of it. Keeps the source buffer alive.
+    @unimplemented
     public func view(self) -> StringView { }
 }
 
@@ -227,6 +232,7 @@ extend StringView {
     public func to_string(self) -> string { }
 
     /// Sub-view. Same as slicing then .view() — references the original buffer.
+    @unimplemented
     public func view(self) -> StringView { }
 
     /// Hash the view contents.
@@ -252,5 +258,6 @@ extend cstring {
 
 extend string {
     /// Convert to null-terminated cstring. Fails if string contains \0.
+    @unimplemented
     public func to_cstring(self) -> cstring or null_byte_error { }
 }

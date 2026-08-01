@@ -178,6 +178,28 @@ fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
 }
 
 #[test]
+fn calling_an_unimplemented_stdlib_stub_fails_at_the_call() {
+    // Most stdlib stubs have empty bodies and are implemented natively, so an
+    // empty body says nothing. The ones with nothing behind them on either
+    // backend are marked `@unimplemented`, and calling one is an error where
+    // the call is — not `Function not found: Vec_reserve` out of codegen, and
+    // not a runtime error part-way through a run.
+    let path = tmp_rk(r#"
+        func main() {
+            mut v = Vec.from([1, 2, 3])
+            v.reserve(100)
+        }
+    "#);
+    let out = check_file(path.to_str().unwrap(), &default_config());
+    let msgs: Vec<&String> = out.diagnostics.iter().map(|d| &d.message).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("Vec.reserve") && m.contains("not implemented")),
+        "expected an unimplemented-stub error naming the method, got {msgs:?}",
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn a_program_type_shadows_the_stdlib_one_of_the_same_name() {
     // The stdlib's bodies are type-checked alongside the program now, so both
     // its types and the program's are registered. A program `struct Headers`

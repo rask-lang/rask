@@ -75,21 +75,27 @@ extend SystemTime {
     public func now() -> SystemTime { }
 
     /// The UNIX epoch: 1970-01-01 00:00:00 UTC.
+    @unimplemented
     public func unix_epoch() -> SystemTime { }
 
     /// Reconstruct from a stored seconds-since-epoch timestamp.
+    @unimplemented
     public func from_unix_seconds(seconds: i64) -> SystemTime { }
 
     /// Reconstruct from a stored millis-since-epoch timestamp.
+    @unimplemented
     public func from_unix_millis(millis: i64) -> SystemTime { }
 
     /// Whole seconds since the UNIX epoch (negative before 1970).
+    @unimplemented
     public func unix_seconds(self) -> i64 { }
 
     /// Whole milliseconds since the UNIX epoch.
+    @unimplemented
     public func unix_millis(self) -> i64 { }
 
     /// Nanoseconds since the UNIX epoch.
+    @unimplemented
     public func unix_nanos(self) -> i128 { }
 
     /// Duration since an earlier point. Fails if the clock went backward.

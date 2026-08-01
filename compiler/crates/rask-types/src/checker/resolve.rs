@@ -269,6 +269,22 @@ impl TypeChecker {
             }
         }
 
+        // A stdlib signature with nothing behind it. Caught here, where every
+        // receiver passes, so the user sees it at their call rather than as
+        // `Function not found: Vec_reserve` out of codegen or a runtime error
+        // part-way through a run.
+        if !matches!(ty, Type::Var(_) | Type::Error) {
+            if let Some(prefix) = super::receiver_name(&ty, &self.types) {
+                if rask_stdlib::mir_metadata::is_unimplemented(&prefix, &method) {
+                    return Err(TypeError::UnimplementedStdlibMethod {
+                        ty: prefix,
+                        method,
+                        span,
+                    });
+                }
+            }
+        }
+
         if method == "clone" && args.is_empty() {
             return self.unify(&ty, &ret, span);
         }

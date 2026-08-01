@@ -162,6 +162,19 @@ pub fn lookup(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
 }
 
 /// Does stdlib type `prefix` define a method `method`? Keyed on the stub API.
+/// Whether `prefix.method` is declared `@unimplemented` — a signature with
+/// nothing behind it on either backend.
+///
+/// Callers get a diagnostic at their call site instead of discovering it as
+/// `Function not found: Vec_reserve` out of codegen, or as a runtime error
+/// after the program has already started.
+pub fn is_unimplemented(prefix: &str, method: &str) -> bool {
+    StubRegistry::load()
+        .get_type(prefix)
+        .and_then(|t| t.methods.iter().find(|m| m.name == method))
+        .is_some_and(|m| m.unimplemented)
+}
+
 pub fn type_has_method(prefix: &str, method: &str) -> bool {
     cache().by_name.contains_key(&format!("{}_{}", prefix, method))
 }
