@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `is` pattern bindings survive an `&&` chain (#256).
+//
+// `if m is Msg.Text(t) && t.len() > 1` binds `t` for the rest of the condition
+// and for the branch body. The interpreter used to evaluate the `is` as a bare
+// boolean and throw the bindings away, so `t` was undefined.
+
+enum Msg {
+    Text(string)
+    Num(i64)
+    Quit
+}
+
+func describe(m: Msg) -> string {
+    if m is Msg.Text(t) && t.len() > 1 {
+        return "long text {t}"
+    } else if m is Msg.Text(t) {
+        return "short text {t}"
+    } else if m is Msg.Num(v) && v > 10 {
+        return "big {v}"
+    } else if m is Msg.Num(v) {
+        return "small {v}"
+    }
+    return "quit"
+}
+
+test "a binding reaches the rest of the condition" {
+    assert describe(Msg.Text("hi")) == "long text hi"
+    assert describe(Msg.Text("x")) == "short text x"
+    assert describe(Msg.Num(42)) == "big 42"
+    assert describe(Msg.Num(3)) == "small 3"
+    assert describe(Msg.Quit) == "quit"
+}
+
+test "two patterns bind in one condition" {
+    const a = Msg.Num(4)
+    const b = Msg.Num(9)
+    mut sum = 0
+    if a is Msg.Num(x) && b is Msg.Num(y) && x < y {
+        sum = x + y
+    }
+    assert sum == 13
+}
+
+test "a failed second pattern leaves the branch untaken" {
+    const a = Msg.Num(4)
+    const b = Msg.Text("no")
+    mut hit = false
+    if a is Msg.Num(x) && b is Msg.Num(y) && x < y {
+        hit = true
+    }
+    assert hit == false
+}
+
+test "a binding survives a chain that starts with a plain test" {
+    const flag = true
+    const m = Msg.Text("abc")
+    mut n = 0
+    if flag && m is Msg.Text(s) {
+        n = s.len()
+    }
+    assert n == 3
+}

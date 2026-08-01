@@ -4709,17 +4709,11 @@ impl<'a> MirLowerer<'a> {
         left: &Expr,
         right: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
-        // Special case `&& with IsPattern lhs`: the pattern test must bind its
-        // payload locals before the rhs is evaluated, so `s is Rectangle(w, h)
-        // && w > h` can reference w and h on the matched path. The bare
-        // IsPattern lowering only emits a tag comparison and drops bindings.
-        if matches!(op, BinOp::And) {
-            if let ExprKind::IsPattern { expr: scrutinee, pattern } = &left.kind {
-                return self.lower_and_with_pattern(scrutinee, pattern, right);
-            }
-        }
-
-        let (left_op, _) = self.lower_expr(left)?;
+        let (left_op, _) = if matches!(op, BinOp::And) {
+            self.lower_and_operand(left)?
+        } else {
+            self.lower_expr(left)?
+        };
 
         let rhs_block = self.builder.create_block();
         let short_block = self.builder.create_block();
@@ -4756,7 +4750,11 @@ impl<'a> MirLowerer<'a> {
 
         // Long branch: evaluate rhs, yield rhs.
         self.builder.switch_to_block(rhs_block);
-        let (right_op, _) = self.lower_expr(right)?;
+        let (right_op, _) = if matches!(op, BinOp::And) {
+            self.lower_and_operand(right)?
+        } else {
+            self.lower_expr(right)?
+        };
         if self.builder.current_block_unterminated() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result_local,
@@ -4772,14 +4770,26 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), MirType::Bool))
     }
 
-    /// Lower `(scrutinee is Pattern) && rhs` so payload bindings from the
-    /// pattern are in scope while rhs is evaluated. Falls back to a plain
-    /// tag-test value on the no-match path.
-    fn lower_and_with_pattern(
+    /// Lower one operand of an `&&` chain. An `is` pattern anywhere in the
+    /// chain has to bind its payload, because everything to its right — and the
+    /// branch the chain guards — only runs when it matched (#256).
+    fn lower_and_operand(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        match &expr.kind {
+            ExprKind::IsPattern { expr: scrutinee, pattern } => {
+                self.lower_is_pattern_binding(scrutinee, pattern)
+            }
+            _ => self.lower_expr(expr),
+        }
+    }
+
+    /// Lower `scrutinee is Pattern` as a bool, binding the payload on the
+    /// matched path. The bare `IsPattern` lowering is just a tag comparison and
+    /// drops the bindings; extracting the payload unconditionally isn't an
+    /// option either, since a wrong-variant read can produce a bogus string.
+    fn lower_is_pattern_binding(
         &mut self,
         scrutinee: &Expr,
         pattern: &rask_ast::expr::Pattern,
-        right: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
         let is_niche = self.option_is_niche(scrutinee, &val_ty);
@@ -4818,22 +4828,19 @@ impl<'a> MirLowerer<'a> {
             target: merge_block,
         }));
 
-        // Match path: bind payload, then evaluate rhs.
+        // Match path: bind the payload, yield true.
         self.builder.switch_to_block(bind_block);
         let payload_ty = self
             .extract_payload_type(scrutinee)
             .unwrap_or(MirType::I64);
         self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche, &val_ty);
-        let (right_op, _) = self.lower_expr(right)?;
-        if self.builder.current_block_unterminated() {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: result_local,
-                rvalue: MirRValue::Use(right_op),
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-                target: merge_block,
-            }));
-        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
 
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), MirType::Bool))

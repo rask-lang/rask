@@ -36,6 +36,19 @@ fn value_is_copy_scalar(v: &Value) -> bool {
     )
 }
 
+/// True when a condition contains an `is` pattern whose bindings the rest of
+/// the condition and the taken branch need to see. Only `&&` chains qualify:
+/// under `||` or `!` a match on one side says nothing about the other.
+pub(super) fn cond_binds_pattern(cond: &Expr) -> bool {
+    match &cond.kind {
+        ExprKind::IsPattern { .. } => true,
+        ExprKind::Binary { op: BinOp::And, left, right } => {
+            cond_binds_pattern(left) || cond_binds_pattern(right)
+        }
+        _ => false,
+    }
+}
+
 /// Set origin on an error value (the inner payload of Err). Only sets if not already set (ER15).
 fn set_error_origin(val: Value, origin: &Arc<str>) -> Value {
     match val {
@@ -166,6 +179,36 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
 }
 
 impl Interpreter {
+    /// Evaluate a condition, defining each `is` pattern's bindings in the
+    /// current scope as it matches, so later `&&` operands can use them.
+    /// Callers push the scope that holds them.
+    pub(super) fn eval_cond_bindings(&mut self, cond: &Expr) -> Result<bool, RuntimeDiagnostic> {
+        match &cond.kind {
+            ExprKind::Binary { op: BinOp::And, left, right } => {
+                if !self.eval_cond_bindings(left)? {
+                    return Ok(false);
+                }
+                self.eval_cond_bindings(right)
+            }
+            ExprKind::IsPattern { expr: inner, pattern } => {
+                let value = self.eval_expr(inner)?;
+                match self.match_pattern(pattern, &value) {
+                    Some(bindings) => {
+                        for (name, val) in bindings {
+                            self.env.define(name, val);
+                        }
+                        Ok(true)
+                    }
+                    None => Ok(false),
+                }
+            }
+            _ => {
+                let value = self.eval_expr(cond)?;
+                Ok(self.is_truthy(&value))
+            }
+        }
+    }
+
     /// Pick which string parse a `parse` call wants. An explicit
     /// `parse<f64>()` names the target; `const x: f64 = s.parse()` leaves it to
     /// inference, so fall back to the checker's type for the call node. Names
@@ -898,6 +941,29 @@ impl Interpreter {
                     }
                 }
 
+                // `if x is Pat(v) && …` — the payload has to be in scope for the
+                // rest of the condition and for the then-branch (#256).
+                if cond_binds_pattern(cond) {
+                    self.env.push_scope();
+                    let taken = match self.eval_cond_bindings(cond) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            self.env.pop_scope();
+                            return Err(e);
+                        }
+                    };
+                    if taken {
+                        let result = self.eval_expr(then_branch);
+                        self.env.pop_scope();
+                        return result;
+                    }
+                    self.env.pop_scope();
+                    return match else_branch {
+                        Some(else_br) => self.eval_expr(else_br),
+                        None => Ok(Value::Unit),
+                    };
+                }
+
                 let cond_val = self.eval_expr(cond)?;
                 if self.is_truthy(&cond_val) {
                     self.eval_expr(then_branch)
@@ -1505,6 +1571,7 @@ impl Interpreter {
                 let matched = self.match_pattern(pattern, &value).is_some();
                 Ok(Value::Bool(matched))
             }
+
 
             // Guard pattern: const v = expr is Ok(v) else { diverge }
             ExprKind::GuardPattern { expr: inner, pattern, else_branch } => {

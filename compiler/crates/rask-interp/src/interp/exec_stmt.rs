@@ -77,12 +77,31 @@ impl Interpreter {
             }
 
             StmtKind::While { cond, body } => {
+                // `while x is Pat(v) && …` binds v for the rest of the condition
+                // and for the body, so the condition is evaluated inside the same
+                // scope the body runs in (#256).
+                let binds = super::eval_expr::cond_binds_pattern(cond);
                 loop {
-                    let cond_val = self.eval_expr(cond)?;
-                    if !self.is_truthy(&cond_val) {
-                        break;
+                    if binds {
+                        self.env.push_scope();
+                        let taken = match self.eval_cond_bindings(cond) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                self.env.pop_scope();
+                                return Err(e);
+                            }
+                        };
+                        if !taken {
+                            self.env.pop_scope();
+                            break;
+                        }
+                    } else {
+                        let cond_val = self.eval_expr(cond)?;
+                        if !self.is_truthy(&cond_val) {
+                            break;
+                        }
+                        self.env.push_scope();
                     }
-                    self.env.push_scope();
                     match self.exec_stmts(body) {
                         Ok(_) => {}
                         Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
