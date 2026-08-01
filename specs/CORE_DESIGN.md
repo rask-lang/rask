@@ -24,7 +24,7 @@ I enforce memory safety through the type system and scope rules without requirin
 
 ### 2. Everything is a Value
 
-There is no distinction between "value types" and "reference types." Every type in Rask is a value — it has a single owner, it copies or moves on assignment, and it's freed when the owner goes out of scope.
+Every type in Rask is a value — it has a single owner, it copies or moves on assignment, and it's freed when the owner goes out of scope. There is no user-facing "reference type" category to learn alongside it: no reference-typed field, no `Box<T>`/`Rc<T>` split at the type level. A few built-ins — `string`, `Shared<T>`, `Mutex<T>`, `Atomic*<T>`, and that list is closed — obey the ownership rules but share their *insides*; the carve-out below spells that out.
 
 **What this means:**
 - Assigning or passing a value either copies it (for small types) or moves it (transfers ownership)
@@ -58,7 +58,9 @@ References cannot outlive their lexical scope. You can borrow a value temporaril
 - No types that "hold a pointer to another value"
 - Collections use handles (opaque identifiers) instead of references
 - Graphs, trees with parent pointers, and self-referential structures use key-based indirection
-- Eliminates use-after-free, dangling pointers, and iterator invalidation by construction
+- Dangling pointers can't happen — there's no reference to outlive anything
+- Use-after-free never goes silent: reaching through a stale handle panics at the access (see the pool tradeoff below)
+- Iterator invalidation is caught the same way, at the access
 
 **The tradeoff:** Some patterns require explicit indirection. **The gain:** No lifetime annotations, no borrow checker fights, no runtime tracking.
 
@@ -83,7 +85,7 @@ Major costs are visible in code. Small safety checks can be implicit.
 
 ### 5. Local Analysis Only
 
-All compiler analysis is function-local. No whole-program inference, no cross-function lifetime tracking, no escape analysis.
+Every check the compiler runs looks at one function body at a time. No whole-program inference, no cross-function lifetime tracking, no escape analysis. What this buys is the cost of *checking*, not zero ripple: editing a private body can shift its inferred signature and force its callers to re-check. That propagation is bounded and stops at the package — the detail is in the list below.
 
 **What this means:**
 - Public function signatures fully describe their interface (explicit types required)
@@ -267,7 +269,7 @@ I'm not pretending there aren't costs to these choices. Every design has tradeof
 
 Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses, this adds up.
 
-**Benefit:** Use-after-free impossible. No dangling pointers. Iterator invalidation caught at runtime. Self-referential structures work without unsafe code.
+**Benefit:** No dangling pointers — a handle is an integer, not an address, so there's nothing to dangle. Use-after-free through a stale handle *is* possible to write, and the generation check turns it into a panic at the access instead of a read of whatever now occupies the slot. Iterator invalidation is the same mechanism. Self-referential structures work without unsafe code.
 
 **When to use pools:** Graph structures, ECS entities, caches with stable identity, anything with cycles or parent pointers.
 
@@ -282,10 +284,10 @@ Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses,
 - String slices in structs → store indices or use `StringPool`
 - Caches holding references → use `Pool<T>` with handles
 
-**Benefit:** Eliminates entire categories of bugs:
-- Use-after-free (impossible by construction)
-- Dangling pointers (references can't escape scope)
-- Iterator invalidation (iteration uses handles/indices)
+**Benefit:** Removes entire categories of bugs — two of them by construction, one by making it loud:
+- Dangling pointers — impossible; references can't escape their scope, so there's nothing to leave behind
+- Use-after-free — a stale handle still compiles, but the generation check catches it at the access. Detection, not impossibility; the point is that it can't be silent
+- Iterator invalidation — same check, same guarantee: a handle invalidated mid-loop panics instead of being followed
 
 No lifetime annotations needed. Function signatures are simple. Reasoning about ownership is local.
 
