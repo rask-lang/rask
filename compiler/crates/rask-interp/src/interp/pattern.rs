@@ -11,6 +11,24 @@ use crate::value::Value;
 use super::Interpreter;
 
 impl Interpreter {
+    /// Does `name` name a real type (primitive, or a declared struct/enum)?
+    /// Used to tell a type-discriminator pattern (`i32`, `DivError`) apart
+    /// from a plain variable-binding pattern (`x`) on a Result scrutinee —
+    /// only the former should fail the arm outright on a mismatch instead of
+    /// falling through to bind.
+    fn is_known_type_name(&self, name: &str) -> bool {
+        const PRIMITIVES: &[&str] = &[
+            "i8", "i16", "i32", "i64", "i128", "isize",
+            "u8", "u16", "u32", "u64", "u128", "usize",
+            "int", "uint", "f32", "f64", "bool", "char", "string",
+        ];
+        let base = name.split('<').next().unwrap_or(name);
+        PRIMITIVES.contains(&base)
+            || self.enums.contains_key(base)
+            || self.struct_decls.contains_key(base)
+            || matches!(base, "Vec" | "Map")
+    }
+
     pub(super) fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Option<HashMap<String, Value>> {
         match pattern {
             Pattern::Wildcard => Some(HashMap::new()),
@@ -64,14 +82,19 @@ impl Interpreter {
                 // ER27: bare type name as match arm on a Result scrutinee —
                 // match by payload type. Primitives (`i32`, `f64`, ...) and
                 // user type names (`DivError`) match if the Ok/Err payload
-                // has that runtime type.
+                // has that runtime type. A name that's a *recognized* type
+                // (primitive, or a declared struct/enum) settles the arm
+                // outright: match or don't, but never fall through to the
+                // generic variable-binding case below, which binds
+                // unconditionally and used to let e.g. an `i32` arm catch an
+                // Err(DivError) payload just because "i32" looked like an
+                // ordinary identifier (#391).
                 if let Value::Enum { name: sc_name, fields, .. } = value {
-                    if sc_name == "Result" {
-                        if let Some(inner) = fields.first() {
-                            if runtime_type_matches(inner, name) {
-                                return Some(HashMap::new());
-                            }
-                        }
+                    if sc_name == "Result" && self.is_known_type_name(name) {
+                        return match fields.first() {
+                            Some(inner) if runtime_type_matches(inner, name) => Some(HashMap::new()),
+                            _ => None,
+                        };
                     }
                 }
                 // Not a known variant — treat as variable binding
@@ -370,6 +393,11 @@ fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
             let guard = s.lock().unwrap();
             guard.name == ty_name
         }
+        // Generic containers: compare the base name only (`Vec<i32>` ->
+        // `Vec`) — the interpreter doesn't track element types at runtime,
+        // so it can't verify `<i32>` matches. rask#217 generic type patterns.
+        Value::Vec(_) => ty_name.split('<').next() == Some("Vec"),
+        Value::Map(_) => ty_name.split('<').next() == Some("Map"),
         _ => false,
     }
 }
