@@ -109,6 +109,7 @@ func try_duplicate<T>(value: T) -> (T, T) {
 | `Point{x: i32, y: i32}` | Yes | 8 bytes, all fields Copy |
 | `@unique struct UserId{id: u64}` | No | Explicitly unique |
 | `string` | Yes | 16 bytes, immutable refcounted (see `std.strings/S1`) |
+| `StringView` | Yes | 16 bytes, refcounted view into a string (see `std.strings/V1`) |
 | `Vec<i32>` | No | Collection type, never Copy |
 | `any Widget` | No | Trait object, owns heap data |
 

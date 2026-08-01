@@ -1,11 +1,11 @@
 <!-- id: std.strings -->
 <!-- status: decided -->
-<!-- summary: Immutable refcounted string (Copy), inline slicing, StringBuilder for construction -->
-<!-- depends: memory/borrowing.md, memory/value-semantics.md, memory/pools.md -->
+<!-- summary: Immutable refcounted string (Copy), inline slicing, StringView for storable zero-copy substrings, StringBuilder for construction -->
+<!-- depends: memory/borrowing.md, memory/value-semantics.md -->
 
 # String Handling
 
-Immutable refcounted `string` type with UTF-8 validation, inline slicing for zero-copy expression access, `StringBuilder` for construction, `StringPool` for validated handle-based access. `Span` (a core type, not string-specific) is used for byte-index ranges.
+Immutable refcounted `string` type with UTF-8 validation, inline slicing for zero-copy expression access, `StringView` for storable zero-copy substrings, `StringBuilder` for construction. `Span` (a core type, not string-specific) is used for byte-index ranges.
 
 ## Type Categories
 
@@ -13,12 +13,13 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 |------|-------------|
 | **S1: Immutable, refcounted, Copy** | `string` is UTF-8, immutable, 16 bytes (tagged union — see S8). Under VS1 threshold → implicit Copy |
 | **S2: Inline slicing** | `s[i..j]` creates a temporary view valid only within the expression |
-| **S3: Public APIs use string** | Prefer `string` over `StringSlice` in public APIs. `Span` is fine — it's a general-purpose range type |
+| **S3: Public APIs use string** | Prefer `string` parameters in public APIs — callers shouldn't need to know your storage strategy. `StringView` is a storage and return type for parsing layers; `Span` is fine anywhere — it's a general-purpose range type |
 | **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
 | **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |
 | **S6: Refcount semantics** | Atomic refcount in heap header. SSO strings (S8) bypass refcounting entirely. Literals ≤ 15 bytes use SSO; longer literals use sentinel refcount (never freed/decremented). Compiler elides atomic ops for provably sole-owner heap strings (see `comp.string-refcount-elision`). This is a language primitive — not available to user-defined types |
 | **S7: Builder for mutation** | `push`, `push_char` live on `StringBuilder` only. `string` has no mutation methods |
 | **S8: Small string optimization** | Strings ≤ 15 bytes are stored inline in the 16-byte value (no heap allocation, no refcount). Longer strings use heap mode with refcounted header. Layout is a tagged union — discriminant is the MSB of the last byte. User-facing semantics are identical in both modes |
+| **S9: Storable views** | `StringView` is the storable form of a slice — zero-copy, shares the source's buffer, holds a refcount on it. 16 bytes, Copy. See V1–V6 |
 
 ### Internal Layout (S1 + S8)
 
@@ -47,10 +48,9 @@ SSO strings are pure value copies — no heap, no refcount. Heap strings share b
 | Type | Description | Ownership | Storable? |
 |------|-------------|-----------|-----------|
 | `string` | UTF-8 immutable, refcounted | Copy (16 bytes) | Yes |
+| `StringView` | Zero-copy substring, shares source buffer | Copy (16 bytes) | Yes |
 | `Span` | Plain indices into a string | Copy (2 words) | Yes |
 | `StringBuilder` | Growable mutable buffer | Move on assignment | Yes |
-| `StringPool` | Pool of strings with validated handles | Move on assignment | Yes |
-| `StringSlice` | Handle + indices into StringPool | Copy (4 words) | Yes |
 | `cstring` | Null-terminated for C FFI | Move on assignment | Yes (unsafe only) |
 
 ## Ownership Rules
@@ -74,40 +74,85 @@ Slicing follows the same inline access rules as Vec and other growable sources u
 | Function argument | `process(s[0..5])` | Yes |
 | Method receiver | `s[0..5].len()` | Yes |
 | Chained expression | `s[0..5].to_uppercase()` | Yes |
+| Storable conversion | `s[0..5].view()`, `s[0..5].to_string()` | Yes |
 | Variable assignment | `const x = s[0..5]` | Compile error |
 | Struct field | `Foo { field: s[0..5] }` | Compile error |
 | Return value | `return s[0..5]` | Compile error |
 
-> **Why copy on `.to_string()`, not shared slice?** A 50-byte substring must not silently retain a 10MB source buffer. `.to_string()` copies bytes into a fresh allocation with its own refcount. The cost is visible and bounded by the slice size, not the source size. This prevents the classic "small slice pins large buffer" memory leak.
+To keep a substring past the expression, pick the conversion whose cost you want: `.view()` is zero-copy but keeps the whole source buffer alive (V2); `.to_string()` copies the bytes and is independent of the source.
+
+> **Why does `.to_string()` copy instead of sharing?** A 50-byte substring must not *silently* retain a 10MB source buffer. `.to_string()` copies bytes into a fresh allocation with its own refcount — cost bounded by the slice size, not the source size. Sharing exists, but it's opt-in and named: `.view()` returns a `StringView`, and the pinned buffer is visible in the type (V2).
+
+## The `StringView` Type
+
+A `StringView` is the storable form of a string slice: it references a byte range of a source string's buffer and holds a refcount on that buffer, so the view can never dangle. Zero-copy, 16 bytes, Copy. This is what parsers store in tokens, deserializers store in fields, and split results collect into — without allocating per substring.
+
+| Rule | Description |
+|------|-------------|
+| **V1: Refcounted view** | A view shares the source string's heap buffer and holds a refcount on it. The buffer stays alive as long as any view does. 16 bytes, Copy — same copy semantics as `string` (memcpy + atomic increment, elidable per `comp.string-refcount-elision`) |
+| **V2: Pin is type-visible** | A view keeps the *whole* source buffer alive, not just its range. That cost lives in the type: a `StringView` field says "shares a buffer", a `string` field says "independent". `.to_string()` copies out and releases the pin |
+| **V3: Read-only string API** | Views support the full read-only string API — length, search, iteration, slicing, trimming, parsing, comparison, interpolation. No mutation, same as `string`. `==` between views and between a view and a string compares bytes |
+| **V4: Small views inline** | Views ≤ 15 bytes store their bytes inline (same SSO layout as S8) — no refcount, no pin. Invisible to user code |
+| **V5: Creation via `.view()`** | `.view()` on a string views the whole string; on an expression-scoped slice (`s[i..j]`, `.trim()`, split/lines items) it captures that slice's range. No copy either way |
+| **V6: Views never chain** | Slicing a view and calling `.view()` re-references the original buffer directly. There is one header pointer, no matter how many times you re-slice |
+
+| Operation | Return | Notes |
+|-----------|--------|-------|
+| `s.view()` | `StringView` | View of the whole string. Refcount bump (heap mode) |
+| `s[i..j].view()` | `StringView` | Storable view of the slice. Works on any expression-scoped slice: `s.trim().view()`, split items |
+| `v[i..j]` | expression-scoped slice | Same inline slicing rules as string (S2, S5) |
+| `v.to_string()` | `string` | Copy bytes into an independent string — releases the pin |
+| `v.len()`, `v.chars()`, `v.index_of(pat)`, ... | — | Full read-only string API (V3) |
+
+<!-- test: parse -->
+```rask
+struct Header {
+    name: StringView
+    value: StringView
+}
+
+func parse_header(line: string) -> Header? {
+    const colon = try line.index_of(":")
+    return Header {
+        name: line[0..colon].trim().view(),
+        value: line[colon+1..].trim().view(),
+    }
+}
+```
+
+No allocation per header — both fields share `line`'s buffer. The pre-view version of this pattern called `.to_string()` twice per line.
+
+### Internal Layout (V1 + V4)
+
+16 bytes, tagged union — same discriminant trick as `string` (S8):
+
+```
+Heap-view mode (last byte MSB = 0):
+  [header_ptr: *u8 (8B)][start: u32 (4B)][len: u32 (4B)]
+  header_ptr → the source string's heap header (shared refcount)
+
+SSO mode (last byte MSB = 1):
+  [inline_data: [u8; 15]][len_tag: u8]     — identical to string's SSO mode
+```
+
+The `start`/`len` fields cap views at 4 GiB source offset and 2 GiB view length (the tag bit lives in `len`'s top byte). `.view()` panics beyond those — sources that size are `mmap` territory; use `.to_string()` for the range instead. Views of string literals reference sentinel-refcount storage (S6): no atomic ops, nothing pinned.
+
+`StringView` is a language primitive like `string` — user types can't opt into refcounted sharing (see "Why Only String?" and `mem.boxes/BX2`).
 
 ## The `Span` Type
 
-Plain indices for lightweight stored references — the span type for parsers, tokenizers, and diagnostics. No validation — user ensures source string validity (like storing a Vec index). 16 bytes, copy-eligible.
+Plain indices for lightweight stored references — offsets for diagnostics, serialization, or when you don't want the source buffer pinned. No validation — user ensures source string validity (like storing a Vec index). 16 bytes, copy-eligible.
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `Span(i, j)` | `Span` | Create view (just start, end indices) |
+| `Span(i, j)` | `Span` | Create span (just start, end indices) |
 | `source[span]` | expression-scoped slice | Panics if out of bounds |
 | `source.get(span)` | `(expression-scoped slice)?` | Safe bounds check |
-| `view.to_string(source)` | `string` | Allocates copy (panics if OOB) |
-| `view.start`, `view.end` | `usize` | Read indices |
-| `view.len()` | `usize` | `end - start` |
+| `span.to_string(source)` | `string` | Allocates copy (panics if OOB) |
+| `span.start`, `span.end` | `usize` | Read indices |
+| `span.len()` | `usize` | `end - start` |
 
-## The `StringPool` Type
-
-Validated stored references using handles (parsers, tokenizers, ASTs). Follows `Pool<T>` pattern.
-
-| Operation | Return | Notes |
-|-----------|--------|-------|
-| `StringPool.new()` | `StringPool` | Empty pool |
-| `pool.insert(s)` | `Handle<string> or InsertError` | Add string, get handle |
-| `pool.slice(h, i, j)` | `StringSlice or SliceError` | Create validated slice |
-| `pool[slice]` | inline access (expression-scoped) | Panics if invalid |
-| `pool.get(slice)` | `(inline access)?` | Safe access |
-| `with pool[slice] as s { ... }` | block value | Multi-statement access |
-| `pool.remove(h)` | `string?` | Remove and return ownership |
-
-Handle validation: pool_id + index + generation. Wrong pool or stale handle returns `none`.
+Prefer `StringView` when you want the text itself; prefer `Span` when you want positions (error messages pointing into source, byte offsets in a wire format) or when pinning the source buffer is unacceptable.
 
 ## UTF-8 Validation
 
@@ -129,6 +174,8 @@ Iterators borrow for expression scope only. Cannot be stored.
 | `s.lines()` | Expression-scoped slices | Split on newlines |
 | `s.split(pat)` | Expression-scoped slices | Split on pattern |
 | `s.split_whitespace()` | Expression-scoped slices | Split on Unicode whitespace, skip empty |
+
+Slice-yielding iterators are zero-cost per item. To keep items, convert each: `.view()` (zero-copy, pins source — V2) or `.to_string()` (copies).
 
 ## Length and Properties
 
@@ -288,13 +335,17 @@ ERROR [std.strings/S2]: cannot store string slice
    |            ^^^^^^^ string slices can't be stored
 
 WHY: String slices are temporary views into a heap buffer.
-     Use inline or copy out.
+     Convert to a storable form or use inline.
 
-FIX 1: Copy to owned string:
+FIX 1: Store a zero-copy view (keeps s's buffer alive):
+
+  const x = s[0..5].view()
+
+FIX 2: Copy to an independent string:
 
   const x = s[0..5].to_string()  // allocate copy
 
-FIX 2: Store indices instead:
+FIX 3: Store indices instead:
 
   const v = Span(0, 5)    // store indices, resolve later
 ```
@@ -341,8 +392,14 @@ FIX:
 | Short string (≤ 15 bytes) | S8 | SSO — pure value copy, no atomic ops |
 | `Span` of freed source | — | Undefined behavior (user's responsibility) |
 | `Span` out of bounds | — | Panic on `s[span]`, `none` on `s.get(span)` |
-| `StringSlice` with stale handle | — | `pool.get(slice)` returns `none` |
-| `StringSlice` wrong pool | — | `pool.get(slice)` returns `none` |
+| `.view()` on SSO string | V4 | Bytes copied inline — no heap, no pin |
+| View ≤ 15 bytes from heap string | V4 | Stored inline — no refcount, no pin |
+| View of literal (> 15 bytes) | V1/S6 | References sentinel storage — no atomic ops, nothing pinned |
+| `.view()` mid-codepoint or OOB slice | S5 | Panic (the slice panics before `.view()` runs) |
+| View from source offset > 4 GiB or length ≥ 2 GiB | V1 | Panic — use `.to_string()` for the range |
+| `view == string` | V3 | Byte comparison, both directions |
+| View sent cross-task | V1 | Allowed — refcount is atomic |
+| Last view outlives all copies of source string | V1 | Fine — buffer freed when last holder (string or view) drops |
 | Refcount overflow | S6 | Panic (practically unreachable — requires ~4 billion live copies) |
 | Multiple simultaneous iterators | — | Allowed (string is immutable) |
 
@@ -373,6 +430,23 @@ This is one of the few cases where a type owns heap memory but is still Copy. Th
 **S7 (builder for mutation):** All mutation lives on `StringBuilder`. This means `string` is truly immutable — no COW surprise, no hidden cost. The builder is always the sole owner of its buffer, so mutation is always O(1) amortized.
 
 **S8 (small string optimization):** Short strings are the most common case in many programs — field names, status codes, short identifiers, small log messages. The 15-byte threshold covers the vast majority of these. Without SSO, every string — even `"OK"` — heap-allocates and atomic-refcounts. With SSO, short strings are pure 16-byte values: no heap, no refcount, same cost as copying an `i128`. The tagged union uses a well-proven technique (same approach as libc++ and fbstring): the MSB of the last byte discriminates between SSO and heap mode. The 16-byte size and Copy semantics are unchanged — SSO is invisible to user code. `StringBuilder.build()` produces an SSO string when the result is ≤ 15 bytes, avoiding the heap allocation entirely.
+
+**V1–V6 (StringView):** This is the zero-copy answer (issue #492). Before views, everything that escaped an expression was a copy: parsers couldn't return slices into their input, deserializers couldn't have borrowed fields, split results couldn't be collected without allocating per item. For a language whose pitch is "eliminate abstraction tax", copies-everywhere in parsing hot paths was the tax, relocated.
+
+Directions evaluated:
+
+- **Typed spans** (a `Span` carrying provenance so resolving against the wrong string errors): compile-time branding is lifetime tracking through the side door — exactly the machinery Rask exists to avoid. Runtime provenance needs per-string identity (a generation), which refcounted immutable strings don't have. `StringPool` was this idea built out of existing parts, and it stayed manual: an extra pool value threaded everywhere, handles resolved by hand at each use.
+- **A borrowed-input scope** (`with input as ...` where slice-typed locals and fields of locally-scoped structs are legal): needs a new kind of escape checking and a new "local-only struct" concept that infects the type system — any struct with a slice field becomes scope-bound, and that property propagates through everything that contains it. Too much machinery for one pattern.
+- **Accepting the copy tax:** gives up the pitch in exactly the workloads (parsing, proxying, networking) a systems language is judged on.
+- **Refcounted views** (chosen): `string` is already the blessed refcount exception — immutable, so sharing is safe; refcounted, so a view holding a count can't dangle. A view is mechanically safe by construction, needs zero new analysis (it's just a value), and costs one atomic bump that the existing elision pass (`comp.string-refcount-elision`) already knows how to delete.
+
+**Why the old "small slice pins large buffer" rejection doesn't apply:** that argument (S2 rationale) was against `.to_string()` sharing *implicitly* — a `string` that sometimes secretly retains 10MB. `StringView` makes the pin opt-in and visible at both ends: `.view()` at the creation site, `StringView` in the struct definition. A reader seeing `StringView` fields knows the source buffer outlives them; `.to_string()` is the release valve when that's wrong (long-lived tokens from a huge input). Same transparency principle, both directions.
+
+**Why `.view()` and not `s.view(start, end)`:** slicing syntax already exists and composes — `line[0..colon].trim().view()` captures the trimmed sub-range with no copy. One method, no arity overloads, and every slice-producing operation (indexing, `trim`, `split`, `lines`, `Span` resolution) gets storability for free.
+
+**Why StringPool/StringSlice are gone:** `StringView` covers the same use case — validated storable substrings — with no pool value to thread through call graphs and no handle resolution at use sites. What remains of StringPool's pitch is interning, and interning is deduplication, not new sharing: `Map<string, Handle<T>>` per `mem.boxes/BX3`. Neither type was implemented.
+
+**What views don't cover:** binary data. Parsing bytes zero-copy (`Vec<u8>` views) has no equivalent — `Vec<u8>` is mutable, so views into it would need real borrow tracking. `Shared<Vec<u8>>` remains the refcounted-buffer answer (`mem.boxes/BX3`). If an immutable `bytes` primitive ever lands, it should get the same view treatment; that's a separate decision.
 
 ### Why Immutable Strings?
 
@@ -471,25 +545,40 @@ const s2 = s1  // COPY: both s1 and s2 valid (refcount incremented)
 
 process(s2[0..3])  // passes "hel" as temporary slice
 
-const view = Span(0, 3)
-process(s2[view])  // same as s2[0..3], user ensures s2 is still valid
+const kept = s2[0..3].view()  // storable zero-copy view (V1)
+process(kept)
+
+const span = Span(0, 3)
+process(s2[span])  // same as s2[0..3], user ensures s2 is still valid
 ```
 
-**Parsing with StringPool (validated access):**
+**Parsing with StringView (zero-copy tokens):**
 
 <!-- test: skip -->
 ```rask
-func tokenize(source: string) -> (StringPool, Vec<Token>) or Error {
-    const pool = StringPool.new()
-    const source_handle = pool.insert(source)
-    const tokens: Vec<Token> = Vec.new()
+struct Token {
+    kind: TokenKind
+    text: StringView
+}
 
-    for (start, end, kind) in scan(pool[source_handle]) {
-        const slice = try pool.slice(source_handle, start, end)
-        tokens.push(Token { text: slice, kind })
+func tokenize(source: string) -> Vec<Token> {
+    mut tokens = Vec.new()
+    for (start, end, kind) in scan(source) {
+        tokens.push(Token { kind, text: source[start..end].view() })
     }
+    return tokens
+}
+```
 
-    return (pool, tokens)
+One source buffer, N tokens, zero copies. Each view bumps the source's refcount (elidable); the buffer lives until the last token drops.
+
+**Collecting split results:**
+
+<!-- test: skip -->
+```rask
+mut fields: Vec<StringView> = Vec.new()
+for part in line.split(",") {
+    fields.push(part.trim().view())
 }
 ```
 
@@ -505,10 +594,11 @@ for (i, c) in text.char_indices() {
 
 ### Integration
 
-- `string` implements `Displayable`, `Hashable`, `Comparable` traits. Copy is structural (S1)
-- All types (`string`, `Span`, `StringBuilder`, `StringPool`, `StringSlice`) are in core prelude
+- `string` and `StringView` implement `Displayable`, `Hashable`, `Comparable` traits. Copy is structural (S1, V1)
+- All types (`string`, `StringView`, `Span`, `StringBuilder`) are in core prelude
 - String builders can contain linear resources; `build()` consumes builder to preserve linearity
 - String literals ≤ 15 bytes produce SSO values (inline, no allocation). Longer literals use static storage with sentinel refcount. Comptime interpolation follows the same rule based on result length
+- Auto-derived `Decode` into `StringView` fields (serde-style borrowed deserialization) is a natural extension once `std.encoding` lands — the decoded struct's fields view the input document. Not specified yet
 
 ### Implementation Notes (Interpreter)
 
@@ -526,6 +616,7 @@ These will converge to spec behavior in the compiled version.
 ### See Also
 
 - `mem.borrowing` — Inline access (B2) for strings, block-scoped (B1) for struct fields/arrays
-- `mem.pools` — Pool/Handle pattern used by StringPool
+- `mem.boxes` — Why refcounted sharing is a closed set (`BX1`–`BX4`)
+- `comp.string-refcount-elision` — Atomic op elision, applies to views identically
 - `std.iteration` — General iteration design
 - `std.path` — Path type wraps string

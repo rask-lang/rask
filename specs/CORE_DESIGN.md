@@ -46,7 +46,7 @@ There's no `Box<T>` because there's no need to distinguish "heap-allocated value
 
 **Why this matters:** When everything is a value, the ownership rules apply everywhere identically. Move a `Vec` and the buffer moves. Move a `Cell` and the inner value moves. Move an `any Widget` and the heap data moves. One model for owned data — the uniform rule.
 
-**Honest carve-out: a small fixed set of language primitives with shared semantics.** `string`, `Shared<T>`, `Mutex<T>`, and `Atomic*<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define, and that set is closed on purpose — see [the Box family](memory/boxes.md) for the disciplines (`Pool`, `Cell`, `Shared`, `Mutex`, `Owned`, plus `Atomic*` as adjacent) and for why I don't hand out a way to build more of them (`mem.boxes/BX1`–`BX4`). Short version: those types don't use a secret type-system feature, they have permission to run code on assignment, on scope exit, and at borrow boundaries — three places I keep free of user code so cost stays readable and cleanup stays visible. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
+**Honest carve-out: a small fixed set of language primitives with shared semantics.** `string` (with its substring view `StringView`), `Shared<T>`, `Mutex<T>`, and `Atomic*<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define, and that set is closed on purpose — see [the Box family](memory/boxes.md) for the disciplines (`Pool`, `Cell`, `Shared`, `Mutex`, `Owned`, plus `Atomic*` as adjacent) and for why I don't hand out a way to build more of them (`mem.boxes/BX1`–`BX4`). Short version: those types don't use a secret type-system feature, they have permission to run code on assignment, on scope exit, and at borrow boundaries — three places I keep free of user code so cost stays readable and cleanup stays visible. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
 
 **Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Pool`+`Handle` for graphs, disjoint field borrowing for partial borrows, and context clauses for implicit state threading — solutions to problems that pure MVS hits once you go beyond simple value passing.
 
@@ -175,7 +175,7 @@ Ref counting (Swift, Python) solves the GC pause problem but introduces overhead
 
 I'd rather have explicit `.clone()` calls than hidden overhead on every pointer operation.
 
-`string` is the deliberate exception — immutable data where refcounting is safe and the ergonomic payoff is highest. The compiler aggressively elides the atomic ops (`comp.string-refcount-elision`). For mutable types, the argument stands: move semantics over hidden refcount overhead.
+`string` — and `StringView`, its zero-copy substring — is the deliberate exception: immutable data where refcounting is safe and the ergonomic payoff is highest. The compiler aggressively elides the atomic ops (`comp.string-refcount-elision`). For mutable types, the argument stands: move semantics over hidden refcount overhead.
 
 ### Why Not Rust's Borrow Checker?
 
@@ -229,7 +229,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`build.rk`) handle full-language code generation. See [comptime.md](control/comptime.md).
 
-**Strings.** One type: `string` (UTF-8, immutable, refcounted, Copy). `StringBuilder` for construction (UTF-8 by construction — zero-copy `build()`). Slicing is inline — `.to_string()` copies bytes into a new independent string (no shared backing). `StringPool` for validated handle-based access. See [strings.md](stdlib/strings.md).
+**Strings.** `string` (UTF-8, immutable, refcounted, Copy) plus `StringView`, its storable zero-copy substring — a view shares the source's buffer and holds a refcount on it, so parsers store views in tokens and structs without copying and without dangling. `StringBuilder` for construction (UTF-8 by construction — zero-copy `build()`). Slicing is inline; escaping the expression is an explicit conversion: `.view()` (zero-copy, pins source) or `.to_string()` (independent copy). See [strings.md](stdlib/strings.md).
 
 **Modules.** Package = directory. Two visibility levels: default (package-internal) and `public`. Imports are qualified by default; `using` for selective unqualified access. See [modules.md](structure/modules.md), [packages.md](structure/packages.md).
 
@@ -281,7 +281,7 @@ Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses,
 
 **Cost:** Some patterns require restructuring:
 - Parent pointers → store `Handle<Parent>` instead
-- String slices in structs → store indices or use `StringPool`
+- String slices in structs → `StringView` (zero-copy, refcounted) or `Span` indices
 - Caches holding references → use `Pool<T>` with handles
 
 **Benefit:** Removes entire categories of bugs — two of them by construction, one by making it loud:

@@ -76,7 +76,7 @@ Full rationale: [specs/CORE_DESIGN.md](specs/CORE_DESIGN.md).
 
 More `.clone()` calls. Some patterns restructure around handles:
 - parent pointers → `Handle<Parent>`
-- string slices in structs → `Span` indices or `StringPool`
+- string slices in structs → `StringView` (zero-copy, refcounted) or `Span` indices
 - arbitrary graphs → `Pool<T>`
 
 That's most of the cost. What you get back: no lifetime annotations in signatures, no GC pauses, no use-after-free, no data races. I think it's a good trade. Some days I'm less sure.

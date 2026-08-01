@@ -11,6 +11,8 @@
 
 This is a compiler optimization. No user annotation, no semantic change. Strings behave identically whether ops are elided or not.
 
+Everything here applies to `StringView` (`std.strings/V1`) the same way — a view shares the source string's heap header and refcount, and has the same SSO bypass for ≤ 15 bytes. Read "string" as "string or StringView" throughout.
+
 ## Rules
 
 | Rule | Description |

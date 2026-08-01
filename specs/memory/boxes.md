@@ -136,7 +136,7 @@ Same shape as `T or E`, `T?`, and `none` (`type.errors/ER1`, `type.optionals/OPT
 |------|-------------|
 | String interner | `Map<string, Handle<T>>` — `string` is already refcounted, interning is deduplication, not new sharing |
 | Arena with handout semantics | `Pool<T>` + `Handle<T>` — this *is* the blessed pattern for many values with stable identity |
-| Refcounted immutable buffer (zero-copy net) | `Shared<Vec<u8>>`, or `string` for text |
+| Refcounted immutable buffer (zero-copy net) | `Shared<Vec<u8>>` for bytes; `string`/`StringView` for text |
 | Shared cache | `Shared<Map<K,V>>` |
 
 The real limit is narrow: you can't put your own type *into* the privileged set, so you compose with a box instead of becoming one. That costs a wrapper and one `with` block. It buys the guarantee that every type in the language copies, drops, and borrows the same way.
