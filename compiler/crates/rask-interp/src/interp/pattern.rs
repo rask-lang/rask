@@ -291,6 +291,13 @@ impl Interpreter {
                         b.fields.get(name).is_some_and(|bv| Self::value_eq(av, bv))
                     })
             }
+            // A nominal newtype is its underlying value plus a name (T9), so
+            // two of the same type compare by what they wrap. Without this a
+            // `Map<UserId, …>` could be inserted into but never read back.
+            (Value::Nominal { type_name: n1, inner: i1 },
+             Value::Nominal { type_name: n2, inner: i2 }) => {
+                n1 == n2 && Self::value_eq(i1, i2)
+            }
             _ => false,
         }
     }
@@ -322,6 +329,10 @@ impl Interpreter {
                     k.hash(&mut hasher);
                     Self::value_hash(v).hash(&mut hasher);
                 }
+            }
+            Value::Nominal { type_name, inner } => {
+                type_name.hash(&mut hasher);
+                Self::value_hash(inner).hash(&mut hasher);
             }
             _ => 0u8.hash(&mut hasher),
         }

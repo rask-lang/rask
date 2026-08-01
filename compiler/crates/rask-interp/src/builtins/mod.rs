@@ -241,6 +241,10 @@ impl Interpreter {
         let type_name = match &receiver {
             Value::Struct(ref s) => s.lock().unwrap().name.clone(),
             Value::Enum { name, .. } => name.clone(),
+            // A nominal newtype's methods are registered under its own name.
+            // Falling back to `type_name()` looked them up under the literal
+            // string "nominal" and never found any (#445).
+            Value::Nominal { type_name, .. } => type_name.clone(),
             _ => receiver.type_name().to_string(),
         };
 
@@ -267,6 +271,13 @@ impl Interpreter {
             let mut all_args = vec![receiver];
             all_args.extend(args);
             return self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
+        }
+
+        // `type Id = u64 with (Hashable)` delegates whatever it doesn't define
+        // itself to the underlying value, so anything the newtype doesn't
+        // answer is asked of what it wraps.
+        if let Value::Nominal { inner, .. } = &receiver {
+            return self.call_builtin_method((**inner).clone(), method, args);
         }
 
         Err(RuntimeError::NoSuchMethod {

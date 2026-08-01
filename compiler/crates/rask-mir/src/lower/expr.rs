@@ -3314,6 +3314,12 @@ impl<'a> MirLowerer<'a> {
                 let base = prefix.split('<').next().unwrap_or(prefix);
                 self.ctx.find_struct(base).is_some()
                     || self.ctx.find_enum(base).is_some()
+                    // A nominal newtype has no layout of its own, but its
+                    // `extend` methods are registered under its own name. Left
+                    // out, `Label("hey").shout()` on a `type Label = string`
+                    // mangled to `string_shout`, which doesn't exist (#445).
+                    || (self.is_transparent_newtype(base)
+                        && self.func_sigs.contains_key(&format!("{}_{}", base, method)))
             });
 
         // CALL6: what dispatch actually resolved to, when MIR can confirm the
