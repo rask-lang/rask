@@ -4921,13 +4921,33 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Look up struct layout size for a MIR arg, returning (elem_size, is_struct).
+    /// (byte size, already-a-pointer) for an aggregate argument.
+    ///
+    /// Every aggregate is passed as an address, so a caller that spills
+    /// "scalars" through `value_to_ptr` must not touch these — doing so stores
+    /// the address itself and hands the runtime a pointer to a pointer. Only
+    /// structs used to count, so sending an enum over a channel copied the
+    /// pointer's bytes as if they were the value (#360).
     fn struct_elem_size(mir_args: &[MirOperand], arg_index: usize, ctx: &CodegenCtx) -> (i64, bool) {
         if let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) {
             if let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) {
-                if let MirType::Struct(layout_id) = &local.ty {
-                    if let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) {
-                        return (layout.size as i64, true);
+                match &local.ty {
+                    MirType::Struct(layout_id) => {
+                        if let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) {
+                            return (layout.size as i64, true);
+                        }
                     }
+                    MirType::Enum(layout_id) => {
+                        if let Some(layout) = ctx.enum_layouts.get(layout_id.id as usize) {
+                            return (layout.size as i64, true);
+                        }
+                    }
+                    ty @ (MirType::Tuple(_)
+                    | MirType::String
+                    | MirType::Option(_)
+                    | MirType::Result { .. }
+                    | MirType::Array { .. }) => return (ty.size() as i64, true),
+                    _ => {}
                 }
             }
         }

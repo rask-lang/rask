@@ -3497,11 +3497,7 @@ impl<'a> MirLowerer<'a> {
         // Channel recv with struct elements: switch to struct variant
         // and inject elem_size so the builder can allocate the right buffer.
         let qualified_name = if qualified_name == "Receiver_receive" {
-            let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
-                self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
-            } else {
-                8
-            };
+            let elem_size = self.channel_elem_size(object);
             if elem_size > 8 {
                 all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
                 "Receiver_receive_struct".to_string()
@@ -3511,11 +3507,7 @@ impl<'a> MirLowerer<'a> {
         } else if qualified_name == "Receiver_try_receive" {
             // try_receive recvs into a buffer of the element's real size and
             // maps status→Result in codegen. Pass elem_size for the buffer.
-            let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
-                self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
-            } else {
-                8
-            };
+            let elem_size = self.channel_elem_size(object);
             all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
             qualified_name
         } else {
@@ -3572,8 +3564,11 @@ impl<'a> MirLowerer<'a> {
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
             tracked_elem
-        } else if qualified_name == "Pool_get" {
-            // Pool.get returns Option<T> — extract T from tracked element type
+        } else if qualified_name == "Pool_get" || qualified_name == "Pool_remove" {
+            // Both return T? — extract T from the tracked element type. Without
+            // this `remove` answered `i64?` regardless of what the pool held,
+            // so reading a struct back out of it dereferenced a field offset
+            // into a scalar (#356).
             let elem_ty = Self::vec_tracking_key(object)
                 .and_then(|key| {
                     self.meta(&key).and_then(|m| m.elem_type.clone())

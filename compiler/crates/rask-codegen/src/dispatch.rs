@@ -624,7 +624,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // the runtime.
         StdlibEntry::simple("Pool_with_capacity", "rask_pool_with_capacity", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_alloc", "rask_pool_alloc_packed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_remove", "rask_pool_remove_packed", &[types::I64, types::I64], Some(types::I64), false),
+        // `remove` answers `T?` — DerefOption turns the returned slot pointer
+        // into some(elem), and NULL (stale handle) into none.
+        StdlibEntry {
+            mir_name: "Pool_remove", c_name: "rask_pool_remove_ptr",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
         StdlibEntry {
             mir_name: "Pool_get", c_name: "rask_pool_get_packed",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,

@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Structs and enums survive a trip through a channel (#360).
+//
+// Two things went wrong natively. The receive buffer was sized from metadata
+// recorded at the `Channel.buffered()` call, which a receiver pulled out of the
+// returned pair never had — so a 24-byte struct was received into 8 bytes and
+// smashed the stack. And the send path spilled any non-struct argument through
+// a scratch slot, storing the *address* of an enum instead of its bytes, so the
+// tag arrived as the low word of a pointer.
+
+struct Msg {
+    public id: i64
+    public text: string
+}
+
+enum Kind {
+    Ping
+    Pong(i64)
+    Quit
+}
+
+func struct_roundtrip() -> string or ReceiveError {
+    using Multitasking {
+        const ch = Channel<Msg>.buffered(4)
+        const tx = ch.0
+        const rx = ch.1
+        tx.send(Msg { id: 1, text: "first" })
+        tx.send(Msg { id: 2, text: "second" })
+        const a = try rx.receive()
+        const b = try rx.receive()
+        return "{a.id}/{a.text} {b.id}/{b.text}"
+    }
+}
+
+func enum_payload_roundtrip() -> i64 or ReceiveError {
+    using Multitasking {
+        const ch = Channel<Kind>.buffered(2)
+        const tx = ch.0
+        const rx = ch.1
+        tx.send(Kind.Pong(7))
+        const k = try rx.receive()
+        if k is Kind.Pong(n) {
+            return n
+        }
+        return -1
+    }
+}
+
+func fieldless_enum_roundtrip() -> bool or ReceiveError {
+    using Multitasking {
+        const ch = Channel<Kind>.buffered(2)
+        ch.0.send(Kind.Quit)
+        const k = try ch.1.receive()
+        return k is Kind.Quit
+    }
+}
+
+func scalar_roundtrip() -> i64 or ReceiveError {
+    using Multitasking {
+        const ch = Channel<i64>.buffered(2)
+        ch.0.send(99)
+        return try ch.1.receive()
+    }
+}
+
+test "a struct keeps every field" {
+    assert struct_roundtrip()! == "1/first 2/second"
+}
+
+test "an enum keeps its tag and payload" {
+    assert enum_payload_roundtrip()! == 7
+}
+
+test "a fieldless enum keeps its tag" {
+    assert fieldless_enum_roundtrip()!
+}
+
+test "a scalar still works" {
+    assert scalar_roundtrip()! == 99
+}

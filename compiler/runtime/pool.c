@@ -326,6 +326,19 @@ int64_t rask_pool_remove_packed(RaskPool *p, int64_t packed) {
     return rask_pool_remove(p, handle_unpack(p, packed), NULL);
 }
 
+// `p.remove(h)` answers `T?`, so codegen needs the element back, not a status.
+// The slot's bytes are untouched by removal — only the generation and the free
+// list change — so the pointer stays readable until the next insert reuses it,
+// and the caller copies it out immediately.
+void *rask_pool_remove_ptr(RaskPool *p, int64_t packed) {
+    RaskHandle h = handle_unpack(p, packed);
+    if (!pool_validate(p, h)) return NULL;
+    char *slot = slot_at(p, h.index);
+    void *data = slot_data(slot);
+    rask_pool_remove(p, h, NULL);
+    return data;
+}
+
 int64_t rask_pool_is_valid_packed(const RaskPool *p, int64_t packed) {
     return rask_pool_is_valid(p, handle_unpack(p, packed));
 }

@@ -313,6 +313,7 @@ void       *rask_pool_get_packed(const RaskPool *p, int64_t packed);
 void       *rask_pool_get_checked(const RaskPool *p, int64_t packed,
                                   const char *file, int32_t line, int32_t col);
 int64_t     rask_pool_remove_packed(RaskPool *p, int64_t packed);
+void       *rask_pool_remove_ptr(RaskPool *p, int64_t packed);
 int64_t     rask_pool_is_valid_packed(const RaskPool *p, int64_t packed);
 RaskVec    *rask_pool_handles_packed(const RaskPool *p);
 RaskVec    *rask_pool_values(const RaskPool *p);
