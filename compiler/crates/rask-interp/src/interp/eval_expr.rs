@@ -978,8 +978,25 @@ impl Interpreter {
                     }
                 }
 
+                // A field declared `T?` or `T or E` given a bare `T` has to be
+                // wrapped here, the same way an annotated binding is — without
+                // it `Holder { slot: 77 }` stored a raw 77 and `h.slot?` then
+                // complained the value wasn't an optional at all (#376).
+                let field_types = self.struct_decls.get(&concrete_name).map(|d| {
+                    d.fields.iter()
+                        .map(|f| (f.name.clone(), f.ty.clone()))
+                        .collect::<Vec<_>>()
+                });
                 for field in fields {
                     let value = self.eval_owned(&field.value)?;
+                    let value = match field_types.as_ref()
+                        .and_then(|ts| ts.iter().find(|(n, _)| *n == field.name))
+                    {
+                        Some((_, ty)) => super::exec_stmt::auto_wrap_for_annotation(
+                            value, ty, super::exec_stmt::is_none_literal(&field.value),
+                        ),
+                        None => value,
+                    };
                     field_values.insert(field.name.clone(), value);
                 }
 

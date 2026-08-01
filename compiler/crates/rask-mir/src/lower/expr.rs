@@ -117,6 +117,73 @@ fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static st
 }
 
 impl<'a> MirLowerer<'a> {
+    /// Wrap a plain value for a struct field declared `T?` or `T or E`.
+    /// Returns the operand unchanged when no wrapping is needed — the field
+    /// isn't a sum type, the value already has the sum shape, or the option
+    /// uses a niche (a `Handle?` is a sentinel, not a tag plus payload).
+    fn wrap_sum_field_value(
+        &mut self,
+        field_ty: Option<&MirType>,
+        val_ty: &MirType,
+        val: MirOperand,
+    ) -> MirOperand {
+        let Some(field_ty) = field_ty else { return val };
+        let (tag_offset, payload_offset, inner) = match field_ty {
+            MirType::Option(inner) => {
+                if matches!(val_ty, MirType::Option(_)) || matches!(**inner, MirType::Handle) {
+                    return val;
+                }
+                (
+                    rask_mono::abi::OPTION_TAG_OFFSET,
+                    rask_mono::abi::OPTION_PAYLOAD_OFFSET,
+                    (**inner).clone(),
+                )
+            }
+            MirType::Result { ok, err } => {
+                // Only the ok side gets wrapped implicitly; an error value at a
+                // field position isn't allowed (ER11).
+                if matches!(val_ty, MirType::Result { .. }) || val_ty == &**err {
+                    return val;
+                }
+                (
+                    rask_mono::abi::RESULT_TAG_OFFSET,
+                    rask_mono::abi::RESULT_PAYLOAD_OFFSET,
+                    (**ok).clone(),
+                )
+            }
+            _ => return val,
+        };
+
+        let slot = self.builder.alloc_temp(field_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: tag_offset,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: Some(8),
+        }));
+        if payload_offset == rask_mono::abi::RESULT_PAYLOAD_OFFSET {
+            for off in [
+                rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET,
+                rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET,
+            ] {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: slot,
+                    offset: off,
+                    value: MirOperand::Constant(MirConst::Int(0)),
+                    store_size: Some(8),
+                }));
+            }
+        }
+        let payload_size = inner.size();
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: payload_offset,
+            value: val,
+            store_size: (payload_size > 8).then_some(payload_size),
+        }));
+        MirOperand::Local(slot)
+    }
+
     /// Widen a scalar operand to the width an assert-failure helper takes.
     /// Aggregates and strings pass through — they reach the helper as pointers,
     /// which is what it already expects.
@@ -1463,12 +1530,21 @@ impl<'a> MirLowerer<'a> {
                         .map(|f| format!("{}", f.ty));
                     let lowered = self.lower_expr(&field.value);
                     self.field_type_hint = saved_hint;
-                    let (val_op, _) = lowered?;
+                    let (val_op, val_ty) = lowered?;
                     // Look up field offset and size from layout
                     let field_layout = layout
                         .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name));
                     let offset = field_layout.map(|f| f.offset).unwrap_or(0);
                     let store_size = field_layout.map(|f| f.size);
+                    // A `T?` or `T or E` field given a plain `T` has to be
+                    // wrapped here. Stored bare, the value landed where the tag
+                    // belongs — `Row { name: "bo" }` for a `string?` field put
+                    // the string's first word in the tag slot and left the
+                    // payload unwritten, so reading it back crashed (#376).
+                    let field_mir_ty = field_layout.map(|f| self.ctx.type_to_mir(&f.ty));
+                    let val_op = self.wrap_sum_field_value(
+                        field_mir_ty.as_ref(), &val_ty, val_op,
+                    );
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset,

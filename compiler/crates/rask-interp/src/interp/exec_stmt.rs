@@ -640,7 +640,7 @@ impl Interpreter {
 /// the *outermost* absent, so it never gains a layer no matter how deep the
 /// annotation is — `const x: T?? = none` means "nothing at all", not "an empty
 /// inner slot" (OPT29).
-fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_literal: bool) -> Value {
+pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_literal: bool) -> Value {
     let ty = ty.trim();
     if ty.ends_with('?') && !ty.starts_with('(') {
         if rhs_is_none_literal {
@@ -684,7 +684,7 @@ fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_literal: bool) -
 }
 
 /// OPT29: is this expression a bare `none` literal?
-fn is_none_literal(expr: &rask_ast::expr::Expr) -> bool {
+pub(crate) fn is_none_literal(expr: &rask_ast::expr::Expr) -> bool {
     matches!(expr.kind, rask_ast::expr::ExprKind::None)
 }
 
