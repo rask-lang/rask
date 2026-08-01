@@ -178,6 +178,44 @@ fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
 }
 
 #[test]
+fn a_program_type_shadows_the_stdlib_one_of_the_same_name() {
+    // The stdlib's bodies are type-checked alongside the program now, so both
+    // its types and the program's are registered. A program `struct Headers`
+    // must still shadow the stdlib's for the program's own references, and the
+    // stdlib's body must still mean its own — one flat name map can't say that,
+    // and the second registration silently won (#515).
+    //
+    // The failure mode is "expected `Headers`, found `Headers`": two TypeIds,
+    // one name.
+    let path = tmp_rk(r#"
+        struct Headers {
+            entries: Map<string, string>
+        }
+        extend Headers {
+            func new() -> Headers { return Headers { entries: Map.new() } }
+            func set(mutate self, name: string, value: string) -> void {
+                self.entries.insert(name, value)
+            }
+            func get(self, name: string) -> string? {
+                return self.entries.get(name)
+            }
+        }
+        func main() {
+            mut h = Headers.new()
+            h.set("Host", "localhost")
+            println("{h.get(\"Host\") ?? \"MISSING\"}")
+        }
+    "#);
+    let out = check_file(path.to_str().unwrap(), &default_config());
+    assert_eq!(
+        error_count(&out.diagnostics), 0,
+        "a program type sharing a stdlib type's name must shadow it: {:?}",
+        out.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn gc10_reports_real_self_writes_not_reads_through_a_helper() {
     // GC10 rejects a public method that mutates self without saying `mutate`.
     // It shared its detection with GC9, which deliberately over-approximates —

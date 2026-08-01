@@ -16,8 +16,23 @@ use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 pub struct TypeTable {
     /// User-defined types indexed by TypeId.
     pub(super) types: Vec<TypeDef>,
-    /// Name to TypeId mapping.
+    /// Name to TypeId mapping, as seen from program code.
     pub(super) type_names: HashMap<String, TypeId>,
+    /// Name to TypeId mapping, as seen from stdlib code.
+    ///
+    /// A program may declare `struct Headers` over the stdlib's, and its own
+    /// type wins — but only for *its* references. The stdlib's body still has
+    /// to mean the stdlib's `Headers`. One flat map can't say that: the second
+    /// registration overwrites the first, and the name then resolves to
+    /// whichever declaration happened to come last (#515).
+    ///
+    /// Both types exist either way; this is only about which one a name means
+    /// where. `type_method_decls` already binds methods by TypeId for the same
+    /// reason.
+    pub(super) stdlib_type_names: HashMap<String, TypeId>,
+    /// Whether registrations and lookups are on behalf of stdlib code.
+    /// Mirrors the resolver's flag of the same name.
+    pub(super) stdlib_mode: bool,
     /// Built-in type names mapped to Type.
     pub(super) builtins: HashMap<String, Type>,
     /// Type alias name → target type string.
@@ -52,6 +67,8 @@ impl TypeTable {
         let mut table = Self {
             types: Vec::new(),
             type_names: HashMap::new(),
+            stdlib_type_names: HashMap::new(),
+            stdlib_mode: false,
             builtins: HashMap::new(),
             type_aliases: HashMap::new(),
             option_type_id: None,
@@ -176,13 +193,44 @@ impl TypeTable {
 
         let id = TypeId(self.types.len() as u32);
         self.types.push(def);
+
+        let mut names = vec![name.clone()];
         // Also register the base name (without <...>) for generic type lookup
         if let Some(base_end) = name.find('<') {
-            let base_name = name[..base_end].to_string();
-            self.type_names.insert(base_name, id);
+            names.push(name[..base_end].to_string());
         }
-        self.type_names.insert(name, id);
+
+        for n in names {
+            if self.stdlib_mode {
+                // Stdlib code always means this one.
+                self.stdlib_type_names.insert(n.clone(), id);
+                // Program code means it too, unless the program declares its
+                // own. Registering stdlib first and not overwriting later is
+                // what makes a program type shadow rather than collide.
+                self.type_names.entry(n).or_insert(id);
+            } else {
+                self.type_names.insert(n, id);
+            }
+        }
         id
+    }
+
+    /// The name map to consult first, given who's asking.
+    fn primary_names(&self) -> &HashMap<String, TypeId> {
+        if self.stdlib_mode { &self.stdlib_type_names } else { &self.type_names }
+    }
+
+    /// The other one, for names the primary doesn't know.
+    fn fallback_names(&self) -> &HashMap<String, TypeId> {
+        if self.stdlib_mode { &self.type_names } else { &self.stdlib_type_names }
+    }
+
+    /// Resolve a type name from the current scope.
+    fn resolve_name(&self, name: &str) -> Option<TypeId> {
+        self.primary_names()
+            .get(name)
+            .or_else(|| self.fallback_names().get(name))
+            .copied()
     }
 
     /// Note that `decl` declares methods on `id`.
@@ -257,9 +305,9 @@ impl TypeTable {
             if let Some(ty) = self.builtins.get(target) {
                 return Some(ty.clone());
             }
-            return self.type_names.get(target).map(|&id| Type::Named(id));
+            return self.resolve_name(target).map(Type::Named);
         }
-        self.type_names.get(name).map(|&id| Type::Named(id))
+        self.resolve_name(name).map(Type::Named)
     }
 
     /// Get a type definition by ID.
@@ -316,11 +364,11 @@ impl TypeTable {
     /// Get TypeId for a name (user-defined types only).
     /// Resolves through aliases.
     pub fn get_type_id(&self, name: &str) -> Option<TypeId> {
-        if let Some(id) = self.type_names.get(name) {
-            return Some(*id);
+        if let Some(id) = self.resolve_name(name) {
+            return Some(id);
         }
         if let Some(target) = self.resolve_alias(name) {
-            return self.type_names.get(target).copied();
+            return self.resolve_name(target);
         }
         None
     }
