@@ -1599,22 +1599,8 @@ impl<'a> MirLowerer<'a> {
                     .flatten())
                 .unwrap_or(MirType::I64)
         };
-        // Destructuring reads the whole element, then splits it. The binding
-        // named first carries the *first field's* type, so it can't double as
-        // the slot holding the pair — codegen reads a local's declared type,
-        // and a `string` key binding would make the field-1 read offset into a
-        // RaskStr instead of the pair.
-        let pair_tys: Vec<MirType> = match (&elem_ty, binding) {
-            (MirType::Tuple(tys), ForBinding::Tuple(_)) => tys.clone(),
-            _ => Vec::new(),
-        };
-        let binding_ty = pair_tys.first().cloned().unwrap_or_else(|| elem_ty.clone());
-        let binding_local = self.builder.alloc_local(single_name.to_string(), binding_ty.clone());
-        let elem_slot = if pair_tys.is_empty() {
-            binding_local
-        } else {
-            self.builder.alloc_temp(elem_ty.clone())
-        };
+        let (pair_tys, binding_ty, binding_local, elem_slot) =
+            self.alloc_destructure_slots(&elem_ty, binding, single_name);
         if let Some(prefix) = self.mir_type_name(&elem_ty) {
             self.meta_mut(single_name).type_prefix = Some(prefix);
         } else {
@@ -1632,7 +1618,6 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        self.locals.insert(single_name.to_string(), (binding_local, binding_ty.clone()));
         if is_array {
             // Fixed-size array: direct memory load
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1656,41 +1641,13 @@ impl<'a> MirLowerer<'a> {
         // LP13: Track value local for Map writeback (key=field0, value=field1).
         let mut map_value_local = None;
         if let ForBinding::Tuple(names) = binding {
-            for (i, name) in names.iter().enumerate() {
-                if i == 0 { continue; }
-                let field_ty = pair_tys.get(i).cloned().unwrap_or(MirType::I64);
-                let field_local = self.builder.alloc_local(name.clone(), field_ty.clone());
-                self.locals.insert(name.clone(), (field_local, field_ty.clone()));
-                if let Some(prefix) = self.mir_type_name(&field_ty) {
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                }
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: field_local,
-                    rvalue: MirRValue::Field {
-                        base: MirOperand::Local(elem_slot),
-                        field_index: i as u32,
-                        byte_offset: None,
-                        field_size: None,
-                    },
-                }));
-                // Track value local (field 1) for Map writeback
-                if i == 1 && is_map {
-                    map_value_local = Some(field_local);
-                }
-            }
-            // Field 0 goes to the binding named first.
             if let Some(prefix) = self.mir_type_name(&binding_ty) {
                 self.meta_mut(single_name).type_prefix = Some(prefix);
             }
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: binding_local,
-                rvalue: MirRValue::Field {
-                    base: MirOperand::Local(elem_slot),
-                    field_index: 0,
-                    byte_offset: None,
-                    field_size: None,
-                },
-            }));
+            let second = self.split_destructured_element(names, &pair_tys, elem_slot, binding_local);
+            if is_map {
+                map_value_local = second;
+            }
         }
 
         let ensure_depth = self.ensure_stack.len();
@@ -1789,6 +1746,84 @@ impl<'a> MirLowerer<'a> {
 
     /// Pool entries iteration: `for (h, val) in pool.entries()`
     /// Desugars to snapshot handle iteration with Pool_get for each handle.
+    /// Work out where a `for` loop's element and its destructured pieces live.
+    ///
+    /// Destructuring reads the whole element, then splits it. The binding named
+    /// first carries the *first field's* type, so it can't double as the slot
+    /// holding the pair — codegen reads a local's declared type, and a `string`
+    /// key binding would make the field-1 read offset into a RaskStr instead of
+    /// the pair. So a destructuring loop gets a separate slot for the element.
+    ///
+    /// Returns the field types (empty when there's nothing to destructure), the
+    /// first binding's local, and the slot the element itself goes in.
+    fn alloc_destructure_slots(
+        &mut self,
+        elem_ty: &MirType,
+        binding: &ForBinding,
+        first_name: &str,
+    ) -> (Vec<MirType>, MirType, crate::LocalId, crate::LocalId) {
+        let pair_tys: Vec<MirType> = match (elem_ty, binding) {
+            (MirType::Tuple(tys), ForBinding::Tuple(_)) => tys.clone(),
+            _ => Vec::new(),
+        };
+        let binding_ty = pair_tys.first().cloned().unwrap_or_else(|| elem_ty.clone());
+        let binding_local = self.builder.alloc_local(first_name.to_string(), binding_ty.clone());
+        let elem_slot = if pair_tys.is_empty() {
+            binding_local
+        } else {
+            self.builder.alloc_temp(elem_ty.clone())
+        };
+        if let Some(prefix) = self.mir_type_name(&binding_ty) {
+            self.meta_mut(first_name).type_prefix = Some(prefix);
+        }
+        self.locals.insert(first_name.to_string(), (binding_local, binding_ty.clone()));
+        (pair_tys, binding_ty, binding_local, elem_slot)
+    }
+
+    /// Copy each field of the element in `elem_slot` into its own binding.
+    /// Field 0 goes to the binding named first, which already has a local.
+    /// Returns the local field 1 landed in — Map iteration writes back through it.
+    fn split_destructured_element(
+        &mut self,
+        names: &[String],
+        pair_tys: &[MirType],
+        elem_slot: crate::LocalId,
+        binding_local: crate::LocalId,
+    ) -> Option<crate::LocalId> {
+        let mut second = None;
+        for (i, name) in names.iter().enumerate() {
+            if i == 0 { continue; }
+            let field_ty = pair_tys.get(i).cloned().unwrap_or(MirType::I64);
+            let field_local = self.builder.alloc_local(name.clone(), field_ty.clone());
+            self.locals.insert(name.clone(), (field_local, field_ty.clone()));
+            if let Some(prefix) = self.mir_type_name(&field_ty) {
+                self.meta_mut(name).type_prefix = Some(prefix);
+            }
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: field_local,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(elem_slot),
+                    field_index: i as u32,
+                    byte_offset: None,
+                    field_size: None,
+                },
+            }));
+            if i == 1 {
+                second = Some(field_local);
+            }
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: binding_local,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(elem_slot),
+                field_index: 0,
+                byte_offset: None,
+                field_size: None,
+            },
+        }));
+        second
+    }
+
     /// LP11-LP13: `for mutate` adds Pool_set writeback.
     fn lower_for_pool_entries(
         &mut self,
@@ -2227,60 +2262,15 @@ impl<'a> MirLowerer<'a> {
                 .unwrap_or(final_ty),
             _ => final_ty,
         };
-        let pair_tys: Vec<MirType> = match (&final_ty, for_binding) {
-            (MirType::Tuple(tys), ForBinding::Tuple(_)) => tys.clone(),
-            _ => Vec::new(),
-        };
-        let binding_ty = pair_tys.first().cloned().unwrap_or_else(|| final_ty.clone());
-
-        // Bind final value to the loop variable
-        let binding_local = self.builder.alloc_local(binding_name.to_string(), binding_ty.clone());
-        if let Some(prefix) = self.mir_type_name(&binding_ty) {
-            self.meta_mut(binding_name).type_prefix = Some(prefix);
-        }
-        self.locals.insert(binding_name.to_string(), (binding_local, binding_ty.clone()));
-        // The whole element needs its own slot when destructuring: the first
-        // binding carries the first field's type, so it can't also hold the pair.
-        let elem_slot = if pair_tys.is_empty() {
-            binding_local
-        } else {
-            self.builder.alloc_temp(final_ty.clone())
-        };
+        let (pair_tys, _binding_ty, binding_local, elem_slot) =
+            self.alloc_destructure_slots(&final_ty, for_binding, binding_name);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: elem_slot,
             rvalue: MirRValue::Use(final_op),
         }));
 
-        // Tuple destructuring for iter chains
         if let ForBinding::Tuple(names) = for_binding {
-            for (i, name) in names.iter().enumerate() {
-                if i == 0 { continue; }
-                let field_ty = pair_tys.get(i).cloned().unwrap_or(MirType::I64);
-                let field_local = self.builder.alloc_local(name.clone(), field_ty.clone());
-                self.locals.insert(name.clone(), (field_local, field_ty.clone()));
-                if let Some(prefix) = self.mir_type_name(&field_ty) {
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                }
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: field_local,
-                    rvalue: MirRValue::Field {
-                        base: MirOperand::Local(elem_slot),
-                        field_index: i as u32,
-                        byte_offset: None,
-                        field_size: None,
-                    },
-                }));
-            }
-            // Field 0 goes to the binding named first.
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: binding_local,
-                rvalue: MirRValue::Field {
-                    base: MirOperand::Local(elem_slot),
-                    field_index: 0,
-                    byte_offset: None,
-                    field_size: None,
-                },
-            }));
+            self.split_destructured_element(names, &pair_tys, elem_slot, binding_local);
         }
 
         let ensure_depth = self.ensure_stack.len();

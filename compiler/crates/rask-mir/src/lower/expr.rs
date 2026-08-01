@@ -263,6 +263,34 @@ impl<'a> MirLowerer<'a> {
         MirOperand::Local(slot)
     }
 
+    /// Lower an absent optional. `none` and `None` are the same value written
+    /// two ways, and both land here.
+    ///
+    /// A `Handle?` is a niche — the sentinel *is* the none, with no tag beside
+    /// it. The checker's type is the primary signal for that, but at a bare
+    /// `none` it's usually still unresolved, so the lowered type gets a look
+    /// too; without the second check this built a tagged option for a slotless
+    /// niche and stored its tag through a null address (#438).
+    fn lower_none(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        if self.is_niche_option_expr(expr) {
+            return Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle));
+        }
+        let option_ty = self.lookup_expr_type(expr)
+            .filter(|t| matches!(t, MirType::Option(_)))
+            .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
+        if matches!(&option_ty, MirType::Option(i) if **i == MirType::Handle) {
+            return Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle));
+        }
+        let result_local = self.builder.alloc_temp(option_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)), // tag = None
+            store_size: None,
+        }));
+        Ok((MirOperand::Local(result_local), option_ty))
+    }
+
     /// Park an assert operand in a named local and hand back an expression that
     /// reads it. Keeps the original node id so the comparison built around it
     /// still resolves to the same type. A plain ident needs no parking — it's
@@ -553,36 +581,7 @@ impl<'a> MirLowerer<'a> {
                 // Null pointer literal — zero value
                 Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Ptr))
             }
-            ExprKind::None => {
-                // OPT3: `none` — identical lowering to bare `None`.
-                // Niche Option<Handle<T>> uses a sentinel; otherwise tag = 1.
-                if self.is_niche_option_expr(expr) {
-                    Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle))
-                } else {
-                    let option_ty = self.lookup_expr_type(expr)
-                        .filter(|t| matches!(t, MirType::Option(_)))
-                        .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
-                    // The checker's type is the primary niche signal, but it's
-                    // often unresolved at a `none` — check the lowered type too,
-                    // or this builds a tagged option for a slotless niche and
-                    // stores its tag through a null address (#438).
-                    if matches!(&option_ty, MirType::Option(i) if **i == MirType::Handle) {
-                        return Ok((
-                            MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)),
-                            MirType::Handle,
-                        ));
-                    }
-                    let result_local = self.builder.alloc_temp(option_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: 0,
-                        value: MirOperand::Constant(MirConst::Int(1)), // tag = None
-                        store_size: None,
-                    }));
-                    Ok((MirOperand::Local(result_local), option_ty))
-                }
-            }
-
+            ExprKind::None => self.lower_none(expr),
             // Variable reference (or bare enum variant like None)
             ExprKind::Ident(name) => {
                 // A module-level const with a non-literal initializer is emitted
@@ -640,29 +639,7 @@ impl<'a> MirLowerer<'a> {
                     }
                     Ok((MirOperand::Local(id), ty))
                 } else if name == "None" {
-                    // Niche: Option<Handle<T>> uses sentinel instead of tag
-                    if self.is_niche_option_expr(expr) {
-                        Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle))
-                    } else {
-                        // Allocate a proper tagged union with tag=1 (None)
-                        let option_ty = self.lookup_expr_type(expr)
-                            .filter(|t| matches!(t, MirType::Option(_)))
-                            .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
-                        if matches!(&option_ty, MirType::Option(i) if **i == MirType::Handle) {
-                            return Ok((
-                                MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)),
-                                MirType::Handle,
-                            ));
-                        }
-                        let result_local = self.builder.alloc_temp(option_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: result_local,
-                            offset: 0,
-                            value: MirOperand::Constant(MirConst::Int(1)), // tag = None
-                            store_size: None,
-                        }));
-                        Ok((MirOperand::Local(result_local), option_ty))
-                    }
+                    self.lower_none(expr)
                 } else if let Some(meta) = self.ctx.comptime_globals.get(name) {
                     // Module-level comptime global reference
                     let global_local = self.builder.alloc_temp(MirType::Ptr);

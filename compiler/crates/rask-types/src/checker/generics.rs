@@ -162,6 +162,11 @@ impl TypeChecker {
         seen: &mut HashMap<String, Type>,
     ) -> Type {
         fn is_param(name: &str) -> bool {
+            // `parse_stub_type` has already rewritten single uppercase names in
+            // a stub signature to `_Any`, so both spellings arrive here.
+            if name == "_Any" {
+                return true;
+            }
             let mut chars = name.chars();
             matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
         }

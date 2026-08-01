@@ -4441,10 +4441,15 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
-    /// Call `{ErrType}_message(err) -> string`, copying the result somewhere
-    /// safe. A string-returning Rask function hands back a pointer into its own
-    /// frame — fine for a caller that reads it immediately, but the next call
-    /// overwrites that frame, and the next call here is the one that prints it.
+    /// Call `{ErrType}_message(err) -> string` and copy the 16 bytes out.
+    ///
+    /// An aggregate return is a pointer to the callee's own storage, so the
+    /// convention everywhere is: copy before doing anything else. Calls with a
+    /// MIR destination get that copy for free — `stack_slot_map` gives them a
+    /// caller-owned slot. This one is hand-rolled and has no destination local,
+    /// so it does its own copy; the next call would otherwise reuse the frame
+    /// the pointer names, and the next call here is the one that prints it.
+    ///
     /// Returns a null pointer when the error type has no `message()`.
     fn call_message(
         builder: &mut ClifFunctionBuilder,

@@ -1100,25 +1100,6 @@ impl TypeChecker {
         }
     }
 
-    /// Replace a stub signature's method-level type parameters with fresh
-    /// inference vars. `parse_stub_type` already collapses single uppercase
-    /// names (PC3) to the `_Any` wildcard, so that's what shows up here.
-    fn freshen_method_type_params(&mut self, ty: &Type) -> Type {
-        let fresh = self.ctx.fresh_var();
-        Self::substitute_any(ty, &fresh)
-    }
-
-    fn substitute_any(ty: &Type, fresh: &Type) -> Type {
-        match ty {
-            Type::UnresolvedNamed(n) if n == "_Any" => fresh.clone(),
-            Type::Result { ok, err } => Type::Result {
-                ok: Box::new(Self::substitute_any(ok, fresh)),
-                err: Box::new(Self::substitute_any(err, fresh)),
-            },
-            _ => ty.clone(),
-        }
-    }
-
     pub(super) fn resolve_string_method(
         &mut self,
         method: &str,
@@ -1141,8 +1122,9 @@ impl TypeChecker {
             // every parse yield the literal type `T`, so `const x: f64 =
             // s.parse()` never learned the target and ran the integer parse
             // (#480). A fresh var lets the call site decide.
-            let ret_ty = self.freshen_method_type_params(
+            let ret_ty = self.freshen_free_type_params(
                 &super::builtins::parse_stub_type(&method_def.ret_ty),
+                &mut std::collections::HashMap::new(),
             );
             return self.unify(ret, &ret_ty, span);
         }
