@@ -2,6 +2,7 @@
 
 //! Expression lowering.
 
+use crate::FieldAccess;
 use super::{
     binop_result_type, is_type_constructor_name, lower_binop, lower_unaryop,
     operator_method_to_binop, operator_method_to_unaryop, LoopContext, LoweringError,
@@ -599,7 +600,7 @@ impl<'a> MirLowerer<'a> {
                                 base: MirOperand::Local(id),
                                 field_index: 0,
                                 byte_offset: Some(0),
-                                field_size: Some(sty.size()),
+                                access: FieldAccess::Sized(sty.size()),
                             },
                         }));
                         return Ok((MirOperand::Local(tmp), sty));
@@ -632,7 +633,7 @@ impl<'a> MirLowerer<'a> {
                                 base: MirOperand::Local(id),
                                 field_index: 0,
                                 byte_offset: None,
-                                field_size: None,
+                                access: FieldAccess::Word,
                             },
                         }));
                         return Ok((MirOperand::Local(inner_local), inner_ty));
@@ -1216,7 +1217,7 @@ impl<'a> MirLowerer<'a> {
                                         base: obj_op,
                                         field_index: ti,
                                         byte_offset: tbo,
-                                        field_size: tfs,
+                                        access: tfs.map_or(FieldAccess::Word, FieldAccess::Sized),
                                     },
                                 }));
                                 Ok((MirOperand::Local(result_local), trt))
@@ -1292,7 +1293,7 @@ impl<'a> MirLowerer<'a> {
                         base: obj_op,
                         field_index,
                         byte_offset,
-                        field_size,
+                        access: field_size.map_or(FieldAccess::Word, FieldAccess::Sized),
                     },
                 }));
                 Ok((MirOperand::Local(result_local), result_ty))
@@ -1700,7 +1701,7 @@ impl<'a> MirLowerer<'a> {
                                     base: base_op.clone(),
                                     field_index: idx as u32,
                                     byte_offset: Some(offset),
-                                    field_size: Some(size),
+                                    access: FieldAccess::Sized(size),
                                 },
                             }));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -2122,7 +2123,7 @@ impl<'a> MirLowerer<'a> {
                             base: obj.clone(),
                             field_index: 0,
                             byte_offset: None,
-                            field_size: None,
+                            access: FieldAccess::Word,
                         },
                     }));
                     let field_local = self.builder.alloc_temp(field_ty.clone());
@@ -2132,7 +2133,7 @@ impl<'a> MirLowerer<'a> {
                             base: MirOperand::Local(payload_local),
                             field_index,
                             byte_offset,
-                            field_size,
+                            access: field_size.map_or(FieldAccess::Word, FieldAccess::Sized),
                         },
                     }));
                     if field_is_option {
@@ -3753,7 +3754,7 @@ impl<'a> MirLowerer<'a> {
                                 base: src.clone(),
                                 field_index: idx as u32,
                                 byte_offset: None,
-                                field_size: None,
+                                access: FieldAccess::Word,
                             },
                         }));
                         // Deep clone heap types
@@ -4978,7 +4979,7 @@ impl<'a> MirLowerer<'a> {
                     base: val.clone(),
                     field_index: 0,
                     byte_offset: self.payload_byte_offset(&payload_ty),
-                    field_size: None,
+                    access: FieldAccess::Word,
                 }
             };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
@@ -5015,7 +5016,7 @@ impl<'a> MirLowerer<'a> {
                     base: val.clone(),
                     field_index: 0,
                     byte_offset: self.payload_byte_offset(&err_ty),
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
             self.locals.insert(name.clone(), (local, err_ty.clone()));

@@ -11,6 +11,7 @@ mod iterators;
 mod match_lower;
 mod stmt;
 
+use crate::FieldAccess;
 use crate::{
     BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType, BlockId, LocalId, operand::{MirConst, FunctionRef},
@@ -861,7 +862,7 @@ impl<'a> MirLowerer<'a> {
                         base: value.clone(),
                         field_index: 0,
                         byte_offset: Some(off),
-                        field_size: Some(8),
+                        access: FieldAccess::Sized(8),
                     },
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -2280,7 +2281,7 @@ impl<'a> MirLowerer<'a> {
             } else {
                 Some(crate::types::RESULT_PAYLOAD_OFFSET)
             };
-            MirRValue::Field { base: value, field_index: 0, byte_offset, field_size: None }
+            MirRValue::Field { base: value, field_index: 0, byte_offset, access: FieldAccess::Word }
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: result, rvalue }));
         result
@@ -2358,7 +2359,7 @@ impl<'a> MirLowerer<'a> {
                                 base: value.clone(),
                                 field_index: i as u32,
                                 byte_offset: field_loc.map(|(off, _)| off),
-                                field_size: field_loc.map(|(_, sz)| sz),
+                                access: field_loc.map_or(FieldAccess::Word, |(_, sz)| FieldAccess::Sized(sz)),
                             }
                         };
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2396,7 +2397,7 @@ impl<'a> MirLowerer<'a> {
                         } else {
                             None
                         },
-                        field_size: None,
+                        access: FieldAccess::Word,
                     }
                 };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

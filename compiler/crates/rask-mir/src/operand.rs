@@ -23,6 +23,45 @@ pub enum MirConst {
     String(String),
 }
 
+/// How a field read hands its value back.
+///
+/// This used to be a bare `Option<u32>` called `field_size`, carrying two
+/// different facts depending on which branch of codegen read it: "how many
+/// bytes" in one place, "MIR already decided this is an aggregate" in another.
+/// The two only stayed apart because a byte-offset check happened to separate
+/// them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldAccess {
+    /// No layout info — read a word at `field_index * 8`.
+    Word,
+    /// The field is this many bytes. It comes back loaded if it fits a
+    /// register, and as an address if it doesn't.
+    Sized(u32),
+    /// The field lives in place — hand back its address whatever its size.
+    /// A `T? or E` payload is this: `ok` and `err` can disagree about being an
+    /// aggregate, so the size alone can't decide it (#383/#389).
+    InPlace(u32),
+}
+
+impl FieldAccess {
+    /// Does reading this field yield an address rather than a loaded value?
+    pub fn is_address(&self) -> bool {
+        match self {
+            FieldAccess::Word => false,
+            FieldAccess::Sized(size) => *size > 8,
+            FieldAccess::InPlace(_) => true,
+        }
+    }
+
+    /// The field's size in bytes, when it's known.
+    pub fn size(&self) -> Option<u32> {
+        match self {
+            FieldAccess::Word => None,
+            FieldAccess::Sized(size) | FieldAccess::InPlace(size) => Some(*size),
+        }
+    }
+}
+
 /// MIR rvalue - right-hand side of assignment
 #[derive(Debug, Clone)]
 pub enum MirRValue {
@@ -53,10 +92,10 @@ pub enum MirRValue {
     Field {
         base: MirOperand,
         field_index: u32,
-        /// Pre-computed byte offset and size from struct layout (when available).
-        /// Codegen uses byte_offset directly; size > 8 means aggregate (return address).
+        /// Pre-computed byte offset from struct layout, when available.
         byte_offset: Option<u32>,
-        field_size: Option<u32>,
+        /// How the field comes back.
+        access: FieldAccess,
     },
     EnumTag {
         value: MirOperand,

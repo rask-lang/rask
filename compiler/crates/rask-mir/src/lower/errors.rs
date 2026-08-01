@@ -2,6 +2,7 @@
 
 //! Error handling lowering: try, try-else, map_err.
 
+use crate::FieldAccess;
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::{BinOp, MirConst}, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
@@ -95,7 +96,7 @@ impl<'a> MirLowerer<'a> {
                 // Explicit offset so a scalar err payload loads its value even when
                 // the ok side is an aggregate (same ambiguity as #389's ok-path fix).
                 byte_offset: err_byte_offset,
-                field_size: None,
+                access: FieldAccess::Word,
             },
         }));
 
@@ -106,7 +107,7 @@ impl<'a> MirLowerer<'a> {
                     base: result.clone(),
                     field_index: 1,
                     byte_offset: Some(crate::types::RESULT_ORIGIN_LINE_OFFSET),
-                    field_size: Some(8),
+                    access: FieldAccess::Sized(8),
                 },
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -141,7 +142,7 @@ impl<'a> MirLowerer<'a> {
                 base: result.clone(),
                 field_index: 1, // origin_line is the second field (after tag, before payload)
                 byte_offset: Some(crate::types::RESULT_ORIGIN_LINE_OFFSET),
-                field_size: Some(8),
+                access: FieldAccess::Sized(8),
             },
         }));
         // Compute this try site's line number
@@ -292,7 +293,7 @@ impl<'a> MirLowerer<'a> {
                 // payload is an aggregate, so codegen knows to take its address
                 // rather than load its first word (#383).
                 byte_offset: self.payload_byte_offset(&ok_ty),
-                field_size: aggregate_payload_size(&ok_ty),
+                access: aggregate_payload_access(&ok_ty),
             },
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -409,7 +410,7 @@ impl<'a> MirLowerer<'a> {
                 // Explicit offset so a scalar err payload loads its value even when
                 // the ok side is an aggregate (same ambiguity as #389's ok-path fix).
                 byte_offset: self.payload_byte_offset(&err_ty),
-                field_size: None,
+                access: FieldAccess::Word,
             },
         }));
 
@@ -421,7 +422,7 @@ impl<'a> MirLowerer<'a> {
                 base: result.clone(),
                 field_index: 1,
                 byte_offset: Some(crate::types::RESULT_ORIGIN_LINE_OFFSET),
-                field_size: Some(8),
+                access: FieldAccess::Sized(8),
             },
         }));
 
@@ -523,7 +524,7 @@ impl<'a> MirLowerer<'a> {
                 // back the slot address — the ok path of `try ... else` was still
                 // returning the slot address here after #467's partial fix (#389).
                 byte_offset: self.payload_byte_offset(&ok_ty),
-                field_size: None,
+                access: FieldAccess::Word,
             },
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -580,7 +581,7 @@ impl<'a> MirLowerer<'a> {
         let err_payload = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: err_payload,
-            rvalue: MirRValue::Field { base: result_op, field_index: 0, byte_offset: None, field_size: None },
+            rvalue: MirRValue::Field { base: result_op, field_index: 0, byte_offset: None, access: FieldAccess::Word },
         }));
         let new_err = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
@@ -658,7 +659,7 @@ impl<'a> MirLowerer<'a> {
         let err_payload = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: err_payload,
-            rvalue: MirRValue::Field { base: result_op, field_index: 0, byte_offset: None, field_size: None },
+            rvalue: MirRValue::Field { base: result_op, field_index: 0, byte_offset: None, access: FieldAccess::Word },
         }));
         let constructor_tag = self.variant_tag(constructor_name);
         let wrapped = self.builder.alloc_temp(MirType::Ptr);
@@ -846,7 +847,7 @@ impl<'a> MirLowerer<'a> {
                 base: obj_op.clone(),
                 field_index: 0,
                 byte_offset: in_byte_offset,
-                field_size: None,
+                access: FieldAccess::Word,
             },
         }));
         let mapped_local = self.builder.alloc_temp(out_ok_ty.clone());
@@ -946,7 +947,7 @@ impl<'a> MirLowerer<'a> {
                 base: obj_op.clone(),
                 field_index: 0,
                 byte_offset: ok_byte_offset,
-                field_size: None,
+                access: FieldAccess::Word,
             },
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -1031,7 +1032,7 @@ impl<'a> MirLowerer<'a> {
                 base: obj_op.clone(),
                 field_index: 0,
                 byte_offset: None,
-                field_size: None,
+                access: FieldAccess::Word,
             },
         }));
         let mapped_local = self.builder.alloc_temp(out_ty.clone());
@@ -1120,7 +1121,7 @@ impl<'a> MirLowerer<'a> {
                 base: obj_op.clone(),
                 field_index: 0,
                 byte_offset: None,
-                field_size: None,
+                access: FieldAccess::Word,
             },
         }));
         let keep_local = self.builder.alloc_temp(MirType::Bool);
@@ -1166,16 +1167,13 @@ impl<'a> MirLowerer<'a> {
     }
 }
 
-/// The size of an aggregate payload, or None for a scalar one. Codegen reads
-/// the presence of a size as "this payload lives in place — take its address".
-fn aggregate_payload_size(ty: &MirType) -> Option<u32> {
-    match ty {
-        MirType::Struct(_)
-        | MirType::Enum(_)
-        | MirType::Tuple(_)
-        | MirType::String
-        | MirType::Option(_)
-        | MirType::Result { .. } => Some(ty.size()),
-        _ => None,
+/// How a `T or E` payload comes back. An aggregate one lives in place, so its
+/// address is the answer — and that has to be said outright, because `ok` and
+/// `err` can disagree and the size alone can't settle it (#383/#389).
+fn aggregate_payload_access(ty: &MirType) -> FieldAccess {
+    if ty.passed_by_address() {
+        FieldAccess::InPlace(ty.size())
+    } else {
+        FieldAccess::Word
     }
 }

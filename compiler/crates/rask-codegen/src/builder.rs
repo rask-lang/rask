@@ -8,6 +8,7 @@ use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilderContext};
 use std::collections::{HashMap, HashSet};
 
+use rask_mir::FieldAccess;
 use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, UnaryOp};
 use rask_mono::{StructLayout, EnumLayout};
 use rask_types::Type as RaskType;
@@ -1444,7 +1445,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Struct/enum field access: load from base pointer + field offset
-            MirRValue::Field { base, field_index, byte_offset, field_size } => Self::field_address_and_load(builder, base, field_index, byte_offset, field_size, expected_ty, ctx),
+            MirRValue::Field { base, field_index, byte_offset, access } => Self::field_address_and_load(builder, base, field_index, byte_offset, access, expected_ty, ctx),
 
             // Enum discriminant extraction: load tag byte from base pointer
             MirRValue::EnumTag { value } => {
@@ -3062,7 +3063,7 @@ impl<'a> FunctionBuilder<'a> {
         base: &MirOperand,
         field_index: &u32,
         byte_offset: &Option<u32>,
-        field_size: &Option<u32>,
+        access: &FieldAccess,
         expected_ty: Option<Type>,
         ctx: &CodegenCtx,
     ) -> CodegenResult<Value> {
@@ -3157,7 +3158,7 @@ impl<'a> FunctionBuilder<'a> {
                     // (#389). Without this, unwrapping a `T? or E` loaded the
                     // T?'s first 8 bytes and dereferenced them as a pointer.
                     if *off as i32 == crate::layouts::RESULT_PAYLOAD_OFFSET
-                        && field_size.is_some()
+                        && matches!(access, FieldAccess::InPlace(_))
                     {
                         let payload_addr = builder
                             .ins()
@@ -3190,8 +3191,8 @@ impl<'a> FunctionBuilder<'a> {
             _ => byte_offset.map(|o| o as i32).unwrap_or((*field_index * 8) as i32)
         };
 
-        // Aggregate field (embedded struct, size > 8): return pointer, don't load
-        if field_size.map_or(false, |s| s > 8) {
+        // A field that lives in place hands back its address, not a load.
+        if access.is_address() {
             let addr = builder.ins().iadd_imm(base_val, offset as i64);
             return Ok(addr);
         }

@@ -3,6 +3,7 @@
 //! Collection construction and cloning lowering:
 //! Vec.from, Map.from, JSON encode/decode, enum clone.
 
+use crate::FieldAccess;
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::MirConst, types::{EnumLayoutId, StructLayoutId}, FunctionRef, MirOperand, MirRValue,
@@ -141,7 +142,7 @@ impl<'a> MirLowerer<'a> {
                     base: struct_op.clone(),
                     field_index: idx as u32,
                     byte_offset: None,
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
 
@@ -702,7 +703,7 @@ impl<'a> MirLowerer<'a> {
                     base: src.clone(),
                     field_index: offset,
                     byte_offset: None,
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -725,7 +726,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(result),
                     field_index: layout.tag_offset,
                     byte_offset: None,
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
 
@@ -751,7 +752,7 @@ impl<'a> MirLowerer<'a> {
                                 base: MirOperand::Local(result),
                                 field_index: abs_offset,
                                 byte_offset: None,
-                                field_size: None,
+                                access: FieldAccess::Word,
                             },
                         }));
                         let cloned = self.builder.alloc_temp(MirType::I64);

@@ -29,7 +29,7 @@ pub use transform::string_append::optimize_string_concat;
 pub use transform::pass::{MirPass, PassManager, PipelineResult};
 pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
 pub use transform::inline::InlineRegion;
-pub use operand::{BinOp, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
+pub use operand::{BinOp, FieldAccess, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
 pub use rask_ast::expr::ConvertKind;
 pub use stmt::{ClosureCapture, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span};
 pub use lower::ComptimeGlobalMeta;

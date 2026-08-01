@@ -2,6 +2,7 @@
 
 //! Statement lowering.
 
+use crate::FieldAccess;
 use super::{LoopContext, LoweringError, MirLowerer};
 use crate::{
     operand::{BinOp, MirConst},
@@ -750,7 +751,7 @@ impl<'a> MirLowerer<'a> {
                                 base: MirOperand::Local(call_dst),
                                 field_index: 0,
                                 byte_offset: None,
-                                field_size: None,
+                                access: FieldAccess::Word,
                             },
                         }));
                         self.locals.insert(param_name.clone(), (err_local, err_ty));
@@ -1221,7 +1222,7 @@ impl<'a> MirLowerer<'a> {
                     base: base.clone(),
                     field_index: i as u32,
                     byte_offset: None,
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
             if let TuplePat::Nested(inner) = pat {
@@ -1291,7 +1292,7 @@ impl<'a> MirLowerer<'a> {
                         base: init_op.clone(),
                         field_index: i as u32,
                         byte_offset: None,
-                        field_size: None,
+                        access: FieldAccess::Word,
                     },
                 }));
             }
@@ -1805,7 +1806,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(elem_slot),
                     field_index: i as u32,
                     byte_offset: None,
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
             if i == 1 {
@@ -1818,7 +1819,7 @@ impl<'a> MirLowerer<'a> {
                 base: MirOperand::Local(elem_slot),
                 field_index: 0,
                 byte_offset: None,
-                field_size: None,
+                access: FieldAccess::Word,
             },
         }));
         second

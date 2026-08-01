@@ -461,12 +461,12 @@ fn remap_rvalue(rv: &MirRValue, local_map: &HashMap<LocalId, LocalId>) -> MirRVa
             base,
             field_index,
             byte_offset,
-            field_size,
+            access,
         } => MirRValue::Field {
             base: remap_operand(base, local_map),
             field_index: *field_index,
             byte_offset: *byte_offset,
-            field_size: *field_size,
+            access: access.clone(),
         },
         MirRValue::EnumTag { value } => MirRValue::EnumTag {
             value: remap_operand(value, local_map),
