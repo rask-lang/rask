@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The top half of u64 can be written down (#517).
+//
+// Tokens carry an i64, so the lexer parsed every integer literal as one and
+// rejected anything above i64::MAX outright — `18446744073709551615` wasn't a
+// number. A literal that doesn't fit i64 can only be a u64, so it gets that
+// width and its bit pattern. Printing then had to respect the width: the value
+// lives in a signed slot, so u64::MAX came out as -1.
+
+test "u64::MAX can be written" {
+    const top: u64 = 18446744073709551615
+    assert "{top}" == "18446744073709551615"
+}
+
+test "hex reaches the same place" {
+    const top: u64 = 18446744073709551615
+    const hex: u64 = 0xFFFFFFFFFFFFFFFF
+    assert hex == top
+    assert "{hex}" == "18446744073709551615"
+}
+
+test "a value between i64::MAX and u64::MAX" {
+    const mid: u64 = 10000000000000000000
+    assert "{mid}" == "10000000000000000000"
+}
+
+test "unsigned comparison follows the width" {
+    const top: u64 = 18446744073709551615
+    const mid: u64 = 10000000000000000000
+    assert mid < top
+    assert (top < mid) == false
+}
+
+test "arithmetic stays unsigned" {
+    const top: u64 = 18446744073709551615
+    const mid: u64 = 10000000000000000000
+    assert "{top - mid}" == "8446744073709551615"
+}
+
+test "small and signed values are untouched" {
+    const small: u64 = 42
+    const neg: i64 = -5
+    const u32max: u32 = 4294967295
+    assert "{small}" == "42"
+    assert "{neg}" == "-5"
+    assert "{u32max}" == "4294967295"
+}

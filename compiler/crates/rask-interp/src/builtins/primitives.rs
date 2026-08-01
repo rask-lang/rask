@@ -76,7 +76,16 @@ impl Interpreter {
             "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.wrapping_pow(b as u32), kind)) }
             "min" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.min(b), arg_kind(args))) }
             "max" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.max(b), arg_kind(args))) }
-            "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            // An unsigned receiver holds its bit pattern in the i64 slot, so
+            // the top half of u64 prints negative without the width (#517).
+            "to_string" | "debug_string" => {
+                let text = if kind.is_unsigned() {
+                    (a as u64).to_string()
+                } else {
+                    a.to_string()
+                };
+                Ok(Value::String(Arc::new(Mutex::new(text))))
+            }
             "to_float" => Ok(Value::Float(a as f64)),
             // std.bits B1. Every answer depends on the receiver's declared
             // width, not on the i64 the value happens to live in — `(0 as
