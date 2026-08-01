@@ -44,6 +44,22 @@ const token = match c {
 | **CF5: Braces required** | Braces required for blocks (except inline syntax `if c: a else: b`) |
 | **CF6: Branch type matching** | Expression context: both branches must have same type |
 | **CF7: Omitted else** | Omitting `else` produces `()` (statement context only) |
+| **CF7b: No bare struct literal in a condition** | A `{` in an `if`/`while` condition starts the body. To write a struct literal there, parenthesize it |
+
+The `{` after a condition belongs to the block, so `Shape.Circle { r: 4 }` in
+condition position has nowhere to go. Parens settle it — inside them a `{` can
+only be a literal:
+
+```rask
+if s == Shape.Dot { ... }                      // fine — unit variant, no braces
+if (c == Shape.Circle { r: 4 }) { ... }        // literal needs parens
+const want = Shape.Circle { r: 4 }             // or bind it first
+if c == want { ... }
+```
+
+I follow Rust and Swift here. The alternative — deciding by whether the name
+happens to be a unit variant — makes the parse depend on a declaration the
+parser hasn't read yet.
 
 ```rask
 // Inline expression

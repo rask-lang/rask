@@ -3640,6 +3640,17 @@ impl Parser {
         let start = self.current().span.start;
         self.expect(&TokenKind::LParen)?;
 
+        // Parens close the ambiguity a condition opens: inside them a `{` can
+        // only start a struct literal, never the body of the `if`. So this is
+        // the way to write one there — `if (c == Shape.Circle { r: 4 }) { … }`.
+        let outer_braces = self.allow_brace_expr;
+        self.allow_brace_expr = true;
+        let result = self.parse_paren_or_tuple_inner(start);
+        self.allow_brace_expr = outer_braces;
+        result
+    }
+
+    fn parse_paren_or_tuple_inner(&mut self, start: usize) -> Result<Expr, ParseError> {
         if self.check(&TokenKind::RParen) {
             self.advance();
             let end = self.tokens[self.pos - 1].span.end;
@@ -3867,9 +3878,13 @@ impl Parser {
                         self.current_kind(),
                         self.current().span,
                     ).with_hint("Generic type arguments must be followed by ()"))
-                } else if self.check(&TokenKind::LBrace) {
+                } else if self.check(&TokenKind::LBrace) && self.allow_brace_expr {
                     // Struct variant constructor: Enum.Variant { field: value }
-                    // Only when base is a type name (uppercase) to avoid ambiguity with blocks
+                    // Only when base is a type name (uppercase) to avoid ambiguity
+                    // with blocks — and never in a condition, where the brace
+                    // starts the body. Without that second guard,
+                    // `if m == Mode.On { … }` read `Mode.On { … }` as a struct
+                    // literal and swallowed the if-block (#342).
                     if let ExprKind::Ident(base) = &lhs.kind {
                         if base.starts_with(|c: char| c.is_uppercase()) && field.starts_with(|c: char| c.is_uppercase()) {
                             let full_name = format!("{}.{}", base, field);
