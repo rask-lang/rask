@@ -2724,6 +2724,16 @@ impl<'a> FunctionBuilder<'a> {
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. })
     }
 
+    /// A field with no ordering stops the whole comparison. Returning "equal"
+    /// instead would let `<` on the containing struct quietly skip that field
+    /// and answer from the next one — a wrong sort with nothing to notice.
+    fn unorderable_field(what: &str) -> CodegenError {
+        CodegenError::UnsupportedFeature(format!(
+            "ordering comparison on a field of type {what} — there is no order \
+             defined for it, so the struct can't be ordered either"
+        ))
+    }
+
     /// Three-way compare of two aggregates behind `lhs`/`rhs`. Returns i64:
     /// negative, zero, positive. Without this, `<` on a struct compared the two
     /// stack-slot addresses, so the answer depended on allocation order.
@@ -2942,13 +2952,11 @@ impl<'a> FunctionBuilder<'a> {
                 } else if let Some(eidx) = ctx.enum_layouts.iter().position(|l| l.name == *name) {
                     Self::emit_enum_cmp(builder, ctx, lhs, rhs, eidx)
                 } else {
-                    // Opaque named type — no ordering to derive; treat as equal
-                    // so the comparison falls to the following fields.
                     let _ = size;
-                    Ok(builder.ins().iconst(types::I64, 0))
+                    Err(Self::unorderable_field(&format!("`{}`", name)))
                 }
             }
-            _ => Ok(builder.ins().iconst(types::I64, 0)),
+            other => Err(Self::unorderable_field(&format!("`{:?}`", other))),
         }
     }
 
@@ -2996,7 +3004,7 @@ impl<'a> FunctionBuilder<'a> {
                 let b = builder.ins().sextend(types::I64, b);
                 Ok(Self::emit_signed_three_way(builder, a, b))
             }
-            _ => Ok(builder.ins().iconst(types::I64, 0)),
+            other => Err(Self::unorderable_field(&format!("`{:?}`", other))),
         }
     }
 
@@ -3705,9 +3713,9 @@ impl<'a> FunctionBuilder<'a> {
                 } else {
                     builder.ins().iconst(types::I64, 0)
                 };
-                let payload_is_struct =
-                    matches!(dst_local.map(|l| &l.ty), Some(MirType::Struct(_)));
-                let bound = if payload_is_struct {
+                let payload_by_address =
+                    dst_local.is_some_and(|l| l.ty.passed_by_address());
+                let bound = if payload_by_address {
                     ptr
                 } else {
                     let load_ty = dst_local
@@ -4952,29 +4960,36 @@ impl<'a> FunctionBuilder<'a> {
     /// structs used to count, so sending an enum over a channel copied the
     /// pointer's bytes as if they were the value (#360).
     fn struct_elem_size(mir_args: &[MirOperand], arg_index: usize, ctx: &CodegenCtx) -> (i64, bool) {
-        if let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) {
-            if let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) {
-                match &local.ty {
-                    MirType::Struct(layout_id) => {
-                        if let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) {
-                            return (layout.size as i64, true);
+        match mir_args.get(arg_index) {
+            Some(MirOperand::Local(arg_id)) => {
+                if let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) {
+                    match &local.ty {
+                        MirType::Struct(layout_id) => {
+                            if let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) {
+                                return (layout.size as i64, true);
+                            }
                         }
-                    }
-                    MirType::Enum(layout_id) => {
-                        if let Some(layout) = ctx.enum_layouts.get(layout_id.id as usize) {
-                            return (layout.size as i64, true);
+                        MirType::Enum(layout_id) => {
+                            if let Some(layout) = ctx.enum_layouts.get(layout_id.id as usize) {
+                                return (layout.size as i64, true);
+                            }
                         }
+                        // Same question the lock side asks: does the address
+                        // name the value? The two used to spell out different
+                        // lists, and the short one made a `Mutex<string>` look
+                        // word-sized.
+                        ty if ty.passed_by_address() => return (ty.size() as i64, true),
+                        _ => {}
                     }
-                    ty @ (MirType::Tuple(_)
-                    | MirType::String
-                    | MirType::Option(_)
-                    | MirType::Result { .. }
-                    | MirType::Array { .. }) => return (ty.size() as i64, true),
-                    _ => {}
                 }
+                (8, false)
             }
+            // A string constant is already the address of its 16 bytes — same
+            // shape as a string local. Reading only the operand kind, it looked
+            // like a scalar and `Mutex.new("hello")` copied 8 of them.
+            Some(MirOperand::Constant(MirConst::String(_))) => (16, true),
+            _ => (8, false),
         }
-        (8, false)
     }
 
     /// Adapt stdlib call args for the typed runtime API.

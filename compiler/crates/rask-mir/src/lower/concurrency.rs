@@ -44,6 +44,23 @@ impl<'a> MirLowerer<'a> {
         None
     }
 
+    /// The MIR type of what a sync box holds: the `T` of `Mutex<T>`/`Shared<T>`.
+    /// Only the type name was resolved before, so anything that isn't a named
+    /// struct — a `string`, a tuple — fell back to `i64` and got treated as a
+    /// word-sized payload. The lock then handed back an address and codegen
+    /// loaded eight bytes out of it, which for a `Mutex<string>` is the string's
+    /// first half read as a pointer.
+    pub(super) fn resolve_sync_payload_mir(&self, object: &Expr) -> Option<MirType> {
+        let raw_ty = self.ctx.lookup_raw_type(object.id)?;
+        let args = match raw_ty {
+            rask_types::Type::UnresolvedGeneric { args, .. }
+            | rask_types::Type::Generic { args, .. } => args,
+            _ => return None,
+        };
+        let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
+        Some(self.ctx.type_to_mir(inner))
+    }
+
     /// Lower `with shared.read() as d { body }` / `with shared.write() as d { body }`.
     pub(super) fn lower_shared_with_block(
         &mut self,
@@ -79,7 +96,7 @@ impl<'a> MirLowerer<'a> {
         let mut closure_builder = BlockBuilder::new(closure_name.clone(), MirType::I64);
         let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
 
-        let mut data_param_ty = MirType::I64;
+        let mut data_param_ty = self.resolve_sync_payload_mir(object).unwrap_or(MirType::I64);
         let inner_type_name = self.resolve_shared_inner_type_name(object);
         if let Some(ref type_name) = inner_type_name {
             if let Some((layout_idx, sl)) = self.ctx.find_struct(type_name) {
@@ -89,17 +106,16 @@ impl<'a> MirLowerer<'a> {
         }
 
         // The box stores the payload's bytes; the lock hands the closure their
-        // address. For a struct that address *is* the value, but anything that
-        // fits in a word — a Map or Vec handle, an integer — has to be loaded
-        // out. Passed straight through, `with mutex.lock() as m { m.insert(…) }`
-        // on a `Mutex<Map>` handed the map runtime a pointer to a pointer and
-        // crashed on the first hash (#477).
-        // A struct is mutated in place through the address the lock hands over.
-        // A word-sized payload is loaded into a local instead, so whatever the
-        // body did to it has to be written back before the guard drops —
-        // otherwise `with m.lock() as v { v += 5 }` incremented a copy (#268).
+        // address. When the payload lives in its own storage that address *is*
+        // the value, but anything that fits in a word — a Map or Vec handle, an
+        // integer — has to be loaded out. Passed straight through, `with
+        // mutex.lock() as m { m.insert(…) }` on a `Mutex<Map>` handed the map
+        // runtime a pointer to a pointer and crashed on the first hash (#477).
+        // A word-sized payload is loaded into a local, so whatever the body did
+        // to it has to be written back before the guard drops — otherwise
+        // `with m.lock() as v { v += 5 }` incremented a copy (#268).
         let mut writeback_slot = None;
-        let data_param_id = if matches!(data_param_ty, MirType::Struct(_) | MirType::Enum(_)) {
+        let data_param_id = if data_param_ty.passed_by_address() {
             closure_builder.add_param(binding_name.to_string(), data_param_ty.clone())
         } else {
             let slot = closure_builder.add_param("__guard_slot".to_string(), MirType::Ptr);
@@ -220,18 +236,17 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         let (mutex_op, _) = self.lower_expr(object)?;
 
-        // A struct payload is aliased through the pointer acquire hands back;
-        // anything word-sized is loaded into the local (codegen does the load),
-        // which is why it needs writing back. The struct test mirrors the one
-        // `Mutex_new` uses, so both sides agree on which payloads are indirect.
+        // A payload that lives in its own storage is aliased through the pointer
+        // acquire hands back; anything word-sized is loaded into the local
+        // (codegen does the load), which is why it needs writing back.
         let inner_type_name = self.resolve_shared_inner_type_name(object);
-        let mut guard_ty = MirType::I64;
+        let mut guard_ty = self.resolve_sync_payload_mir(object).unwrap_or(MirType::I64);
         if let Some(ref type_name) = inner_type_name {
             if let Some((layout_idx, sl)) = self.ctx.find_struct(type_name) {
                 guard_ty = MirType::Struct(StructLayoutId::new(layout_idx, sl.size, sl.align));
             }
         }
-        let by_address = matches!(guard_ty, MirType::Struct(_) | MirType::Enum(_));
+        let by_address = guard_ty.passed_by_address();
 
         let guard_local = self.builder.alloc_local(binding_name.to_string(), guard_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
