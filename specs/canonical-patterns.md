@@ -367,7 +367,7 @@ When a value needs cross-scope access — shared ownership, identity-based refer
 | Read-heavy config / feature flags across tasks | `Shared<T>` | Many readers XOR one writer |
 | Queue / state machine / exclusive mutation across tasks | `Mutex<T>` | Exclusive lock |
 | Recursive types / single-owner heap value | `Owned<T>` | Linear, single consumer |
-| Single primitive read/written atomically | `Atomic*<T>` | Intrinsic ops (not a box) |
+| Single primitive read/written atomically | `Atomic<T>` | Intrinsic ops (not a box) |
 
 **Rule of thumb:** scope grows from left to right. `Cell` stays in one task; `Owned` is linear and moves; `Pool` is identity-durable and sendable; `Shared`/`Mutex` cross task boundaries. Start with the smallest discipline that fits.
 

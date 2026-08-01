@@ -22,7 +22,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 | **VS2: Primitives always Copy** | Primitives are always Copy |
 | **VS3: Collections never Copy** | Vec, Pool, Map are never Copy (own heap memory, mutable). `string` is not a collection — it's a language primitive with compiler-special refcount semantics. No user-defined type can replicate string's refcounted Copy behavior. This is a deliberate exception, not a pattern |
 | **VS3.1: Trait objects never Copy** | `any Trait` is never Copy (owns heap data; copying would create two owners) |
-| **VS4: Sync types never Copy** | Shared, Mutex, Atomic* are never Copy |
+| **VS4: Sync types never Copy** | Shared, Mutex, Atomic are never Copy |
 | **VS5: Automatic derivation** | Copy is structural — no `extend Copy` needed |
 
 ## The 16-Byte Threshold
