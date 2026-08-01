@@ -509,10 +509,86 @@ impl Interpreter {
             .map_err(|e| RuntimeDiagnostic::new(e, Span::new(0, 0)))?;
 
         if let Some(entry) = registered.entry_fn {
-            self.call_function(&entry, vec![])
+            let value = self.call_function(&entry, vec![])?;
+            // struct.targets/EX4: an error out of main is exit status 1, not 0.
+            // A `try` that propagates already lands in the error path; an
+            // explicit `return SomeError` came back as an ordinary value and
+            // the process reported success (#345).
+            if let Some(err) = Self::main_error_return(entry.ret_ty.as_deref(), &value) {
+                let msg = self.describe_error_value(err);
+                return Err(RuntimeDiagnostic::new(
+                    RuntimeError::MainReturnedError(msg),
+                    entry.span,
+                ));
+            }
+            Ok(value)
         } else {
             Err(RuntimeDiagnostic::new(RuntimeError::NoEntryPoint, Span::new(0, 0)))
         }
+    }
+
+    /// The error `main` returned, if it returned one. `ret_ty` is main's
+    /// declared return type — without a `T or E` there's no error branch and
+    /// every value is a success.
+    fn main_error_return<'v>(ret_ty: Option<&str>, value: &'v Value) -> Option<&'v Value> {
+        // Desugar rewrites `T or E` to `Result<T, E>`, but the source spelling
+        // survives in some paths — accept either.
+        let ret_ty = ret_ty?.trim();
+        let err_branch = match ret_ty.split_once(" or ") {
+            Some((_, e)) => e.trim(),
+            None => {
+                let inner = ret_ty.strip_prefix("Result<")?.strip_suffix('>')?;
+                Self::split_top_level_comma(inner)?.1.trim()
+            }
+        };
+        match value {
+            Value::Enum { name, variant, fields, .. } if name == "Result" => {
+                (variant == "Err").then(|| fields.first().unwrap_or(&Value::Unit))
+            }
+            Value::Unit => None,
+            other => {
+                // A bare error value returned without a Result wrapper. It's
+                // the error branch when its type is named there — `void or Fail`
+                // returning a `Fail`, or one arm of a `A | B` union.
+                let name = match other {
+                    Value::Struct(s) => s.lock().unwrap().name.clone(),
+                    Value::Enum { name, .. } => {
+                        name.split('.').next().unwrap_or(name).to_string()
+                    }
+                    Value::Nominal { type_name, .. } => type_name.clone(),
+                    _ => return None,
+                };
+                err_branch
+                    .split('|')
+                    .any(|e| e.trim() == name)
+                    .then_some(other)
+            }
+        }
+    }
+
+    /// Split `Result<...>`'s arguments at the comma that separates ok from err,
+    /// ignoring commas inside a nested generic.
+    fn split_top_level_comma(s: &str) -> Option<(&str, &str)> {
+        let mut depth = 0usize;
+        for (i, c) in s.char_indices() {
+            match c {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => return Some((&s[..i], &s[i + 1..])),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Human-readable text for an error value: its own `message()` when the
+    /// type defines one, otherwise the value as printed.
+    fn describe_error_value(&mut self, err: &Value) -> String {
+        let owned = err.clone();
+        if let Ok(Value::String(s)) = self.call_method(owned.clone(), "message", vec![]) {
+            return s.lock().unwrap().clone();
+        }
+        format!("{}", owned)
     }
 
     /// Run a build script: register declarations, find `func build(ctx)`,
@@ -664,6 +740,10 @@ pub enum RuntimeError {
 
     #[error("no entry point found; add `func main()` or use `@entry`")]
     NoEntryPoint,
+
+    /// struct.targets/EX4: main returned the error branch of its `T or E`.
+    #[error("{0}")]
+    MainReturnedError(String),
 
     #[error("{0}")]
     Generic(String),

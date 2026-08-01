@@ -360,6 +360,16 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail_cmp_char".to_string(), id);
         }
 
+        // main_error_exit(msg: *RaskStr | null) — prints and exits 1 (EX4)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // message str ptr (may be null)
+            let id = self.module
+                .declare_function("rask_main_error_exit", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("main_error_exit".to_string(), id);
+        }
+
         // assert_fail_cmp_str(left: ptr, right: ptr, op: ptr, file: ptr, line: i32, col: i32)
         {
             let mut sig = self.module.make_signature();

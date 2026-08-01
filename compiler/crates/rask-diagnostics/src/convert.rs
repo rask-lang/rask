@@ -1571,6 +1571,14 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_primary(self.span, "panic occurred here")
             }
 
+            RuntimeError::MainReturnedError(msg) => {
+                Diagnostic::error(format!("main returned an error: {}", msg))
+                    .with_code("R0022")
+                    .with_primary(self.span, "error returned from here")
+                    .with_help("the process exits with status 1")
+                    .with_why("an error out of main is a failed run, not a successful one [struct.targets/EX4]")
+            }
+
             RuntimeError::NoMatchingArm => {
                 Diagnostic::error("no matching arm in match")
                     .with_code("R0011")

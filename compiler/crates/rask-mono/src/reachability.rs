@@ -435,9 +435,39 @@ impl<'a> Monomorphizer<'a> {
     pub fn add_entry(&mut self, name: &str) -> bool {
         if self.fn_table.contains_key(name) {
             self.enqueue(name.to_string(), Vec::new());
+            self.add_entry_error_message_roots(name);
             true
         } else {
             false
+        }
+    }
+
+    /// struct.targets/EX4: an error out of main is printed before the process
+    /// exits 1, so `{ErrType}_message` is called from the entry's return path
+    /// even when nothing in the program calls it. Nothing in the call graph
+    /// says so, hence this root.
+    fn add_entry_error_message_roots(&mut self, entry: &str) {
+        let Some(decl) = self.fn_table.get(entry) else { return };
+        let DeclKind::Fn(f) = &decl.kind else { return };
+        let Some(ret_ty) = f.ret_ty.clone() else { return };
+        let err_branch = match ret_ty.split_once(" or ") {
+            Some((_, e)) => e.trim().to_string(),
+            None => match ret_ty
+                .trim()
+                .strip_prefix("Result<")
+                .and_then(|s| s.strip_suffix('>'))
+                .and_then(split_result_args)
+            {
+                Some((_, e)) => e.trim().to_string(),
+                None => return,
+            },
+        };
+        // `A | B` — every arm can be the one that reaches main.
+        for arm in err_branch.split('|') {
+            let name = format!("{}_message", arm.trim());
+            if self.method_table.contains_key(&name) {
+                self.enqueue(name, Vec::new());
+            }
         }
     }
 
@@ -816,4 +846,19 @@ impl<'a> Monomorphizer<'a> {
             | ExprKind::Ident(_) => {}
         }
     }
+}
+
+/// Split `Result<...>`'s arguments at the comma separating ok from err,
+/// ignoring commas nested inside a generic.
+fn split_result_args(inner: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return Some((&inner[..i], &inner[i + 1..])),
+            _ => {}
+        }
+    }
+    None
 }

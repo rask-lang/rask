@@ -795,6 +795,35 @@ fn error_bad_interpolation() {
     );
 }
 
+// #345: `func main() -> void or E` that ends up on the error branch exits 1,
+// not 0. Both backends: the interpreter treated the error as an ordinary
+// return value, and native's main always returned void.
+#[test]
+fn main_error_return_exits_1() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_returns_error.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("starting"), "{mode}: should run up to the error: {stdout}");
+        assert!(
+            !stdout.contains("unreachable"),
+            "{mode}: must stop at the propagated error: {stdout}",
+        );
+        assert!(
+            stderr.contains("the thing failed"),
+            "{mode}: should report the error's message: {stderr}",
+        );
+    }
+}
+
+#[test]
+fn main_ok_return_exits_0() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_returns_ok.rk");
+        assert_eq!(code, 0, "{mode}: expected exit 0, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("v=7"), "{mode}: {stdout}");
+    }
+}
+
 #[test]
 fn error_stdlib_renames() {
     // task-2b (#302): the old stdlib names are HARD errors, not aliases. Each

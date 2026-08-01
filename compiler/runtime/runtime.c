@@ -69,6 +69,19 @@ void rask_exit(int64_t code) {
     exit((int)code);
 }
 
+// struct.targets/EX4: an error returned from main is a failed run — status 1.
+// A panic is 101 and goes through rask_panic instead. `msg` is optional; when
+// the error type has no message() there's nothing to print but the fact.
+_Noreturn void rask_main_error_exit(const RaskStr *msg) {
+    fflush(stdout);
+    if (msg && rask_string_len(msg) > 0) {
+        fprintf(stderr, "error: %.*s\n", (int)rask_string_len(msg), rask_string_ptr(msg));
+    } else {
+        fprintf(stderr, "error: main returned an error\n");
+    }
+    exit(1);
+}
+
 void rask_panic_unwrap(void) {
     rask_panic("called unwrap on None/Err value");
 }

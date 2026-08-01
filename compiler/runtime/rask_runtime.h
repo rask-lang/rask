@@ -137,6 +137,9 @@ int64_t     rask_string_len(const RaskStr *s);
 const char *rask_string_ptr(const RaskStr *s);
 int64_t     rask_string_is_empty(const RaskStr *s);
 int64_t     rask_string_eq(const RaskStr *a, const RaskStr *b);
+
+// struct.targets/EX4: main returned its error branch — print and exit 1.
+_Noreturn void rask_main_error_exit(const RaskStr *msg);
 int64_t     rask_string_compare(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_lt(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_gt(const RaskStr *a, const RaskStr *b);

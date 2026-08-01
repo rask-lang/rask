@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The success side of a `void or E` main still exits 0 (#345).
+
+enum Fail {
+    Bad
+}
+
+extend Fail {
+    func message(self) -> string {
+        return "the thing failed"
+    }
+}
+
+func risky() -> i64 or Fail {
+    return 7
+}
+
+func main() -> void or Fail {
+    const v = try risky()
+    println("v={v}")
+}
