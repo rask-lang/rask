@@ -2217,14 +2217,37 @@ impl<'a> MirLowerer<'a> {
             setup.inc_block, setup.idx,
         )?;
 
+        // Destructuring needs the element's real shape. A `Vec<(string, i64)>`
+        // element is 24 bytes; typed as a word, field 1 was read 8 bytes in and
+        // the string binding had no type to dispatch `.len()` on (#535).
+        let final_ty = match (for_binding, &final_ty) {
+            (ForBinding::Tuple(_), MirType::Tuple(_)) => final_ty,
+            (ForBinding::Tuple(_), _) => self
+                .vec_tuple_elem_type(chain.source)
+                .unwrap_or(final_ty),
+            _ => final_ty,
+        };
+        let pair_tys: Vec<MirType> = match (&final_ty, for_binding) {
+            (MirType::Tuple(tys), ForBinding::Tuple(_)) => tys.clone(),
+            _ => Vec::new(),
+        };
+        let binding_ty = pair_tys.first().cloned().unwrap_or_else(|| final_ty.clone());
+
         // Bind final value to the loop variable
-        let binding_local = self.builder.alloc_local(binding_name.to_string(), final_ty.clone());
-        if let Some(prefix) = self.mir_type_name(&final_ty) {
+        let binding_local = self.builder.alloc_local(binding_name.to_string(), binding_ty.clone());
+        if let Some(prefix) = self.mir_type_name(&binding_ty) {
             self.meta_mut(binding_name).type_prefix = Some(prefix);
         }
-        self.locals.insert(binding_name.to_string(), (binding_local, final_ty));
+        self.locals.insert(binding_name.to_string(), (binding_local, binding_ty.clone()));
+        // The whole element needs its own slot when destructuring: the first
+        // binding carries the first field's type, so it can't also hold the pair.
+        let elem_slot = if pair_tys.is_empty() {
+            binding_local
+        } else {
+            self.builder.alloc_temp(final_ty.clone())
+        };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: binding_local,
+            dst: elem_slot,
             rvalue: MirRValue::Use(final_op),
         }));
 
@@ -2232,32 +2255,31 @@ impl<'a> MirLowerer<'a> {
         if let ForBinding::Tuple(names) = for_binding {
             for (i, name) in names.iter().enumerate() {
                 if i == 0 { continue; }
-                let field_local = self.builder.alloc_local(name.clone(), MirType::I64);
-                self.locals.insert(name.clone(), (field_local, MirType::I64));
+                let field_ty = pair_tys.get(i).cloned().unwrap_or(MirType::I64);
+                let field_local = self.builder.alloc_local(name.clone(), field_ty.clone());
+                self.locals.insert(name.clone(), (field_local, field_ty.clone()));
+                if let Some(prefix) = self.mir_type_name(&field_ty) {
+                    self.meta_mut(name).type_prefix = Some(prefix);
+                }
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: field_local,
                     rvalue: MirRValue::Field {
-                        base: MirOperand::Local(binding_local),
+                        base: MirOperand::Local(elem_slot),
                         field_index: i as u32,
                         byte_offset: None,
                         field_size: None,
                     },
                 }));
             }
-            // Re-extract field 0 into the first binding
-            let first_field = self.builder.alloc_temp(MirType::I64);
+            // Field 0 goes to the binding named first.
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: first_field,
+                dst: binding_local,
                 rvalue: MirRValue::Field {
-                    base: MirOperand::Local(binding_local),
+                    base: MirOperand::Local(elem_slot),
                     field_index: 0,
                     byte_offset: None,
                     field_size: None,
                 },
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: binding_local,
-                rvalue: MirRValue::Use(MirOperand::Local(first_field)),
             }));
         }
 
