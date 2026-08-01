@@ -222,11 +222,39 @@ impl TypeChecker {
     /// types for every expression that was successfully inferred. Callers can
     /// run ownership/effects analysis on the partial program to collect more
     /// diagnostics in a single pipeline pass.
-    pub fn check_lenient(mut self, decls: &[Decl]) -> (TypedProgram, Vec<TypeError>) {
+    pub fn check_lenient(self, decls: &[Decl]) -> (TypedProgram, Vec<TypeError>) {
+        self.check_lenient_with_stdlib(&[], decls)
+    }
+
+    /// Check stdlib bodies and the program together, each in its own scope.
+    ///
+    /// Two phases rather than one concatenated list, because a name can mean
+    /// different types on either side: a program `struct Headers` shadows the
+    /// stdlib's, and the stdlib's own body still has to mean its own (#515).
+    /// The resolver sequences its two sets the same way.
+    pub fn check_lenient_with_stdlib(
+        mut self,
+        stdlib_decls: &[Decl],
+        decls: &[Decl],
+    ) -> (TypedProgram, Vec<TypeError>) {
+        // Stdlib types register first so a program declaration of the same name
+        // shadows rather than overwrites.
+        if !stdlib_decls.is_empty() {
+            self.types.stdlib_mode = true;
+            self.collect_type_declarations(stdlib_decls);
+            self.types.stdlib_mode = false;
+        }
         self.collect_type_declarations(decls);
 
         // Global scope for module-level bindings (imports, etc.)
         self.push_scope();
+        if !stdlib_decls.is_empty() {
+            self.types.stdlib_mode = true;
+            for decl in stdlib_decls {
+                self.check_decl(decl);
+            }
+            self.types.stdlib_mode = false;
+        }
         for decl in decls {
             self.check_decl(decl);
         }
@@ -442,7 +470,11 @@ pub fn typecheck_with_stdlib(
     stdlib_decls: &[Decl],
 ) -> Result<TypedProgram, Vec<TypeError>> {
     let mut checker = TypeChecker::new(resolved);
+    // In stdlib scope: these registrations are what stdlib code means by a
+    // name, and they must not be overwritten when the program declares its own.
+    checker.types.stdlib_mode = true;
     checker.collect_type_declarations(stdlib_decls);
+    checker.types.stdlib_mode = false;
     checker.check(decls)
 }
 
@@ -458,23 +490,20 @@ pub fn typecheck_with_stdlib_lenient(
     stdlib_decls: &[Decl],
 ) -> (TypedProgram, Vec<TypeError>) {
     let mut checker = TypeChecker::new(resolved);
+    checker.types.stdlib_mode = true;
     checker.collect_type_declarations(stdlib_decls);
-    // Checking the stdlib's own bodies is what gives lowering real types and
-    // dispatch targets inside them (#425). It works — the stdlib checks clean —
-    // but it can't be the default yet: stdlib types and program types share one
-    // table, so a program `struct Headers` stops shadowing the stdlib's once
-    // both are registered. See #515.
-    if std::env::var("RASK_CHECK_STDLIB").is_ok() {
-        // Bodies only: the types were registered from the stub set above, and
-        // re-declaring them here would mint a second TypeId per name — which is
-        // how `JsonValue` ended up not unifying with itself.
-        let mut all: Vec<Decl> = rask_stdlib::StubRegistry::compilable_decls()
-            .into_iter()
-            .filter(|d| matches!(d.kind,
-                rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))
-            .collect();
-        all.extend_from_slice(decls);
-        return checker.check_lenient(&all);
-    }
-    checker.check_lenient(decls)
+    checker.types.stdlib_mode = false;
+    // The stdlib's bodies are compiled into every program, so they're checked
+    // with it. Without that, everything downstream sees them as untyped and
+    // lowering has to guess what a call inside them refers to (#425).
+    //
+    // Bodies only: the types were registered from the stub set above, and
+    // re-declaring them here would mint a second TypeId per name — which is
+    // how `JsonValue` ended up not unifying with itself.
+    let bodies: Vec<Decl> = rask_stdlib::StubRegistry::compilable_decls()
+        .into_iter()
+        .filter(|d| matches!(d.kind,
+            rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))
+        .collect();
+    checker.check_lenient_with_stdlib(&bodies, decls)
 }

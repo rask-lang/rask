@@ -22,6 +22,7 @@ extend Option<T> {
     public func unwrap_or(self, default: T) -> T { }
 
     /// Return self if present, otherwise `other`.
+    @unimplemented
     public func or(self, other: T?) -> T? { }
 
     /// Transform the contained value if present.
@@ -31,10 +32,12 @@ extend Option<T> {
     public func filter(self, f: func(T) -> bool) -> T? { }
 
     /// Transform and flatten nested Options.
+    @unimplemented
     public func and_then(self, f: func(T) -> U?) -> U? { }
 
     /// Lift to Result, using `err` when absent.
     ///
     /// Required because `??` does not widen to `T or E`.
+    @unimplemented
     public func to_result(self, err: E) -> T or E { }
 }

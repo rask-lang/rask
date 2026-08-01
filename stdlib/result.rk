@@ -22,6 +22,7 @@ extend Result<T, E> {
     public func unwrap(self) -> T { }
 
     /// Extract the error, panicking on success.
+    @unimplemented
     public func unwrap_err(self) -> E { }
 
     /// Return the success value or `default` on error.
@@ -34,6 +35,7 @@ extend Result<T, E> {
     public func map_err(self, f: func(E) -> F) -> T or F { }
 
     /// Transform the success value, flattening nested Results.
+    @unimplemented
     public func and_then(self, f: func(T) -> U or E) -> U or E { }
 
     /// Drop the error and lift to Option.

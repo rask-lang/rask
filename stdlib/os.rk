@@ -98,21 +98,27 @@ public struct Process { }
 
 extend Process {
     /// Wait for the process to finish and return its output.
+    @unimplemented
     public func wait(self) -> Output or IoError { }
 
     /// Kill the process and wait for it to finish.
+    @unimplemented
     public func kill_and_wait(self) -> Output or IoError { }
 
     /// Check if the process has exited without blocking.
+    @unimplemented
     public func try_wait(self) -> Option<Output> or IoError { }
 
     /// Get the process ID.
+    @unimplemented
     public func id(self) -> i64 { }
 
     /// Write data to the process stdin (requires Stdio.Piped).
+    @unimplemented
     public func write_stdin(self, data: string) -> void or IoError { }
 
     /// Read from the process stdout (requires Stdio.Piped).
+    @unimplemented
     public func read_stdout(self) -> string or IoError { }
 }
 

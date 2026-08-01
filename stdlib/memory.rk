@@ -41,6 +41,7 @@ extend Pool<T> {
     public func get(self, handle: Handle<T>) -> Option<T> { }
 
     /// Get a clone of element by handle.
+    @unimplemented
     public func get_clone(self, handle: Handle<T>) -> Option<T> { }
 
     /// Read element through a closure.

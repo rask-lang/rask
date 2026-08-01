@@ -32,6 +32,14 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
+    /// A stdlib method declared `@unimplemented` — the signature exists so the
+    /// API can be referenced, but nothing implements it on either backend.
+    #[error("`{ty}.{method}` is declared but not implemented yet")]
+    UnimplementedStdlibMethod {
+        ty: String,
+        method: String,
+        span: Span,
+    },
     /// #314: method called on a type param whose bounds don't provide it.
     #[error("no method '{method}' provided by the bounds on `{param}`")]
     UnboundedTypeParamMethod {

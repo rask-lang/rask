@@ -53,6 +53,15 @@ pub struct MethodStub {
     pub source_file: String,
     /// Byte offset span of the method name within the stub source.
     pub span: Span,
+    /// Declared `@unimplemented` — the signature exists so the API can be
+    /// designed and referenced, but nothing implements it on either backend.
+    ///
+    /// An empty body alone doesn't mean this: most stubs have empty bodies and
+    /// are implemented natively in the runtime or the interpreter. This marks
+    /// the ones that are genuinely holes, so calling one is an error the user
+    /// sees at their call site rather than `Function not found: Vec_reserve`
+    /// out of codegen.
+    pub unimplemented: bool,
 }
 
 /// A type extracted from a stub file.
@@ -396,6 +405,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         doc: f.doc.clone(),
         source_file: format!("stdlib/{}", filename),
         span,
+        unimplemented: f.attrs.iter().any(|a| a == "unimplemented"),
     }
 }
 

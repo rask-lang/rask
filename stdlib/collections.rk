@@ -11,6 +11,7 @@ extend Vec<T> {
     public func with_capacity(n: usize) -> Vec<T> { }
 
     /// Create a bounded vector that cannot grow beyond n elements.
+    @unimplemented
     public func fixed(n: usize) -> Vec<T> { }
 
     /// Number of elements.
@@ -23,12 +24,14 @@ extend Vec<T> {
     public func capacity(self) -> Option<usize> { }
 
     /// True if this vector has a fixed capacity.
+    @unimplemented
     public func is_bounded(self) -> bool { }
 
     /// Remaining capacity before the vector is full.
     public func remaining(self) -> Option<usize> { }
 
     /// Total bytes allocated.
+    @unimplemented
     public func allocated(self) -> usize { }
 
     /// Push a value onto the end. Panics if bounded and full, or on OOM.
@@ -50,15 +53,18 @@ extend Vec<T> {
     public func remove(mutate self, index: i64) -> T { }
 
     /// Reserve space for at least `additional` more elements. Panics on OOM.
+    @unimplemented
     public func reserve(mutate self, additional: usize) { }
 
     /// Reserve space for at least `additional` more elements. Returns error on OOM.
+    @unimplemented
     public func try_reserve(mutate self, additional: usize) -> void or AllocError { }
 
     /// Get element at index (borrows).
     public func get(self, index: i64) -> Option<T> { }
 
     /// Get a clone of element at index.
+    @unimplemented
     public func get_clone(self, index: i64) -> Option<T> { }
 
     /// Get the first element.
@@ -74,6 +80,7 @@ extend Vec<T> {
     public func modify(mutate self, index: i64, f: func(T) -> R) -> Option<R> { }
 
     /// Swap elements at two indices.
+    @unimplemented
     public func swap(mutate self, i: i64, j: i64) { }
 
     /// Iterate over elements by reference.
@@ -89,12 +96,15 @@ extend Vec<T> {
     public func take(self, n: usize) -> Vec<T> { }
 
     /// Keep only elements where f returns true.
+    @unimplemented
     public func retain(mutate self, f: func(T) -> bool) { }
 
     /// Remove elements where f returns true, return count removed.
+    @unimplemented
     public func remove_where(mutate self, f: func(T) -> bool) -> usize { }
 
     /// Remove and return elements where f returns true.
+    @unimplemented
     public func drain_where(mutate self, f: func(T) -> bool) -> Vec<T> { }
 
     /// True if the vector contains the given value.
@@ -176,9 +186,11 @@ extend Vec<T> {
     public func set(mutate self, index: i64, value: T) { }
 
     /// Shrink allocation to fit current length.
+    @unimplemented
     public func shrink_to_fit(mutate self) { }
 
     /// Shrink allocation to at least min_capacity.
+    @unimplemented
     public func shrink_to(mutate self, min_capacity: usize) { }
 
     /// Construct an element in place via closure. Panics on alloc failure.
@@ -214,6 +226,7 @@ extend Map<K, V> {
     public func capacity(self) -> Option<usize> { }
 
     /// True if this map has a fixed capacity.
+    @unimplemented
     public func is_bounded(self) -> bool { }
 
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
@@ -229,6 +242,7 @@ extend Map<K, V> {
     public func get(self, key: K) -> Option<V> { }
 
     /// Get a clone of value for key.
+    @unimplemented
     public func get_clone(self, key: K) -> Option<V> { }
 
     /// True if the map contains this key.
