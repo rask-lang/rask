@@ -3205,7 +3205,9 @@ impl Parser {
             TokenKind::String(s) => {
                 self.advance();
                 let str_span = self.span(start, self.tokens[self.pos - 1].span.end);
-                if s.contains('{') {
+                // `}` alone matters too: `"}}"` is an escaped brace with no
+                // `{` anywhere in it (fmt/F4).
+                if s.contains('{') || s.contains('}') {
                     match self.parse_string_interpolation(&s, str_span) {
                         Some(segments) => Ok(Expr { id: self.next_id(), kind: ExprKind::StringInterp(segments), span: str_span }),
                         None => Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span }),
@@ -4564,12 +4566,18 @@ impl Parser {
         let mut literal = String::new();
         let chars: Vec<char> = s.chars().collect();
         let mut i = 0;
+        // A string with escapes but no expressions still has to come back as
+        // segments — returning None handed the raw text on with the `{{` still
+        // in it, and the next scanner down read `{braces}` as an expression
+        // (#521, fmt/F4).
+        let mut escaped_any = false;
 
         while i < chars.len() {
             if chars[i] == '{' {
                 if i + 1 < chars.len() && chars[i + 1] == '{' {
                     // Escaped brace: {{ → {
                     literal.push('{');
+                    escaped_any = true;
                     i += 2;
                     continue;
                 }
@@ -4677,6 +4685,7 @@ impl Parser {
             } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
                 // Escaped brace: }} → }
                 literal.push('}');
+                escaped_any = true;
                 i += 2;
             } else {
                 literal.push(chars[i]);
@@ -4688,8 +4697,9 @@ impl Parser {
             segments.push(StringSegment::Literal(literal));
         }
 
-        // Only return segments if there was at least one expression
-        if segments.iter().any(|s| matches!(s, StringSegment::Expr(_))) {
+        // Segments are worth returning when there's an expression to evaluate,
+        // or an escape whose unescaping would otherwise be lost.
+        if escaped_any || segments.iter().any(|s| matches!(s, StringSegment::Expr(_))) {
             Some(segments)
         } else {
             None

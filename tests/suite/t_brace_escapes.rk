@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `{{` and `}}` are literal braces (fmt/F4, #521, #458).
+//
+// Three scanners looked at the same string and only one of them knew that. The
+// parser unescaped correctly but then threw the result away when there was no
+// expression to evaluate, handing the raw text on; desugar's fallback scanner
+// had no escape rule at all; and the interpreter re-scanned every plain string
+// at runtime, so even a correctly desugared `{braces}` got read back as an
+// interpolation. `println("literal {{braces}} here")` failed to compile.
+
+test "a string of only escapes is literal text" {
+    const text = "literal {{braces}} here"
+    assert text.len() == 21
+    assert text == "literal {{braces}} here"
+    assert text.starts_with("literal {{")
+    assert text.ends_with("}} here")
+}
+
+test "escapes and interpolations mix" {
+    const n = 5
+    const text = "value {n} and {{n}}"
+    assert text == "value 5 and {{n}}"
+    assert text.len() == 15
+}
+
+test "a JSON body survives" {
+    assert "{{\"k\": 1}}".len() == 8
+}
+
+test "a lone escaped brace on each side" {
+    assert "{{" == "{"
+    assert "}}" == "}"
+    assert "{{}}" == "{}"
+}
+
+test "an escape next to an interpolation" {
+    const v = 7
+    const text = "{{{v}}}"
+    assert text.len() == 3
+    assert text == "{{7}}"
+}
+
+test "unescaped text is untouched" {
+    assert "no braces at all" == "no braces at all"
+    const x = 1
+    assert "just {x}" == "just 1"
+}
+
+test "an escape round-trips through equality" {
+    assert "{{a}}" == "{{a}}"
+    assert ("{{a}}" == "{{b}}") == false
+}

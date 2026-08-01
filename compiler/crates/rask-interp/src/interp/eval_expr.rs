@@ -336,14 +336,27 @@ impl Interpreter {
                 Ok(Value::Int(*n, kind))
             }
             ExprKind::Float(n, _) => Ok(Value::Float(*n)),
-            ExprKind::String(s) => {
-                if s.contains('{') {
-                    let interpolated = self.interpolate_string(s)
-                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                    Ok(Value::String(Arc::new(Mutex::new(interpolated))))
-                } else {
-                    Ok(Value::String(Arc::new(Mutex::new(s.clone()))))
+            // A plain string is literal text. It used to be re-scanned for
+            // `{...}` at runtime, which broke escapes: `"{{braces}}"` desugars
+            // to the literal `{braces}`, and the re-scan read that back as an
+            // interpolation and went looking for a variable (#521).
+            ExprKind::String(s) => Ok(Value::String(Arc::new(Mutex::new(s.clone())))),
+
+            // Parsed segments, for the paths that skip desugar (the spec test
+            // runner). Desugar turns these into a concat chain instead.
+            ExprKind::StringInterp(segments) => {
+                use rask_ast::expr::StringSegment;
+                let mut out = String::new();
+                for seg in segments {
+                    match seg {
+                        StringSegment::Literal(text) => out.push_str(text),
+                        StringSegment::Expr(inner) => {
+                            let v = self.eval_expr(inner)?;
+                            out.push_str(&format!("{}", v));
+                        }
+                    }
                 }
+                Ok(Value::String(Arc::new(Mutex::new(out))))
             }
             ExprKind::Char(c) => Ok(Value::Char(*c)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
