@@ -90,7 +90,7 @@ pub(crate) fn display_pipeline_output<T>(
                 } else if !source_files.is_empty() {
                     show_diagnostic_multi(d, source_files);
                 } else {
-                    eprintln!("{}: {}", self::output::error_label(), d.message);
+                    eprintln!("{}: {}", self::output::severity_label(d.severity), d.message);
                 }
             }
             Format::Json => {
