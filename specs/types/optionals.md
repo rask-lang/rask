@@ -1,6 +1,6 @@
 <!-- id: type.optionals -->
 <!-- status: decided -->
-<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family operators (?, ?., ??, !, try, == none) apply to any two-variant union where one variant is none. No Some/None constructors. Narrowing rides on const. -->
+<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family operators (?, ?., ??, !, try, == none) apply to any two-variant union where one variant is none. No Some/None constructors. Narrowing rides on const. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
 <!-- depends: types/types.md, types/union-types.md, types/error-types.md, control/control-flow.md -->
 
 # Optionals
@@ -24,7 +24,7 @@ const user: User? = load()       // present value, widens to User or none
 const missing: User? = none      // absent sentinel
 ```
 
-`T??` is `(T or none) or none` — rejected by the union duplicate-variant rule (see [union-types.md](union-types.md)). No optional-specific rule needed.
+`T??` is `(T or none) or none`. It's legal and the two layers stay distinct — see [Nesting](#nesting) below.
 
 ## Construction
 
@@ -104,6 +104,58 @@ greet(user)                   // user: User after the guard
 ```
 
 **Anonymous expressions don't narrow.** `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `const v = compute()` then `if v?`, or `if compute()? as v` to bind at the check site.
+
+## Nesting
+
+Optionals nest. `T??` is `(T or none) or none` and the layers do **not** collapse — the outer one answers one question, the inner one answers another.
+
+This isn't a corner case you have to go looking for. Any generic that returns `T?` produces it the moment `T` is itself optional:
+
+<!-- test: skip -->
+```rask
+const slots: Vec<Config?> = load_slots()      // a slot may be empty
+const first = slots.first()                    // Config??
+```
+
+`Vec.first()` returns `T?` because the vec may be empty. With `T = Config?` the result carries both facts, and the caller can tell them apart:
+
+<!-- test: skip -->
+```rask
+if slots.first()? as slot {          // outer: the vec was not empty
+    if slot? as config {             // inner: that slot was filled
+        apply(config)
+    } else {
+        println("first slot is empty")
+    }
+} else {
+    println("no slots at all")
+}
+```
+
+Collapsing the layers would throw the distinction away — an empty vec and an empty first slot would both read as `none`. That's Kotlin's nested-nullable bug, and it's exactly the information a caller of `first()` needs.
+
+| Rule | Description |
+|------|-------------|
+| **OPT28: Layers stay distinct** | `T?` where `T` is itself `U or none` is a two-layer optional. `none` is exempt from the duplicate-variant rule ([union-types.md](union-types.md) U5) for this reason: it carries no payload, so the layers are told apart by position, not by type |
+| **OPT29: `none` binds outermost** | A bare `none` literal at a `T??` position means the *outer* absent. To produce an inner absent, widen a value that already has the inner optional type |
+| **OPT30: Operators act on the outer layer** | `?`, `??`, `!`, `try`, `== none` and `match` all see the outer layer only. `if x? as v` binds `v` at the inner type; unwrap again to reach the value. `??`'s fallback must therefore have the inner *optional* type, not the payload type |
+| **OPT31: Depth is part of the type** | `T?`, `T??` and `T???` are three different types. Widening adds layers (a `T` reaches a `T??` position, an inner absent stays inner); nothing ever removes one implicitly |
+
+<!-- test: skip -->
+```rask
+const outer_absent: Config?? = none            // vec was empty        [OPT29]
+
+const empty_slot: Config? = none
+const inner_absent: Config?? = empty_slot      // slot was empty       [OPT29]
+
+const present: Config?? = load_config()        // widens through both layers
+```
+
+**Spelling.** Write `T??` for two layers. Rask reads `??` in type position as two optional markers — there's no coalescing operator inside a type, so nothing is ambiguous.
+
+**Linear payloads.** Each layer narrows separately, so a linear `T` is consumed on the innermost present path (OPT24 applies at that layer). `?.` still can't reach through a linear payload (OPT25).
+
+**Depth beyond two** is legal and falls out of the same rules, but it's almost always a sign that two questions got layered where one nominal type would read better — `enum SlotState { Missing, Empty, Filled(Config) }`.
 
 ## Methods
 
@@ -187,7 +239,11 @@ No optional-specific equality rule.
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Nested optionals (`T??`) | union duplicate-variant | Compile error |
+| Nested optionals (`T??`) | OPT28 | Legal — layers stay distinct |
+| Bare `none` at a `T??` position | OPT29 | Outer absent |
+| `x ?? default` on `T??` | OPT30 | `default` must be `T?`, not `T` |
+| `x?.field` on `T??` | OPT3/OPT30 | Compile error — the outer payload is `T?`, not a struct. Narrow first |
+| `Vec<T?>.first()` | OPT28 | `T??` — outer says "vec empty", inner says "slot empty" |
 | `?.` on `T or E or none` | OPT3 | Compile error suggesting layering: `(T or E)?` or `T or (E?)` |
 | `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
 | Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
@@ -270,6 +326,14 @@ SUGGEST: user?.name ?? default_name()
 **OPT16 (`!x?` forbidden).** `!x?` parses right-to-left but reads left-to-right as "not present" — the directions fight. `x == none` is unambiguous. The rule is specific to `!` directly applied to a `?`-suffixed expression; other uses of `!` on booleans stay normal.
 
 **OPT27 (match is a lint, not an error).** Hard errors should enforce safety or correctness, not style. Match on a two-arm union is perfectly safe; it's just verbose. A lint catches the common case.
+
+**OPT28 (nesting is allowed; it used to be an error).** The earlier rule — `T??` is a duplicate-variant error — was written for optionals you spell out by hand, where nobody wants two layers anyway. It doesn't survive generics. `func head<T>(v: Vec<T>) -> T?` is about as ordinary as generic code gets, and under the old rule it silently failed to compile for every optional `T`. Rejecting it is the C++-template failure mode in the most boring code imaginable, and there's no bound the author could have written to warn you.
+
+The alternatives were worse. Collapsing (Kotlin) throws away the distinction between "the vec was empty" and "the first slot was empty" — the caller of `first()` can no longer recover what happened. Erroring at instantiation makes every `-> T?` generic partial over `T`, which is precisely the non-compositionality being fixed for `T or E` (`type.errors/ER3a`).
+
+The reason nesting works here and not for `T or E` is that branch selection stays decidable at every layer. Producing: `return v` picks by the declared type *before* substitution, so instantiation never changes which branch a `return` chose. Consuming: the outer operators act on the outer layer and the inner layer is only reachable by narrowing through it. The single leftover ambiguity — a bare `none` literal, which could mean either layer — is closed by OPT29.
+
+**OPT29 (`none` binds outermost).** Both readings are defensible; picking one and stating it is what matters. Outermost wins because it matches how the layers get built: the outer layer is the one the immediate context added (`first()` may fail to find anything), so `none` at that position means "the thing right here is absent". Reaching an inner absent means you already have an inner-typed value in hand, and widening it is explicit.
 
 **Narrowing rides on `const`.** The usual flow-typing complications (mutation, intervening calls, closure capture, field paths) collapse into one structural fact the language already enforces: const bindings cannot be reassigned. Narrowing on a const scrutinee is trivially stable; `mut` requires an explicit `as v` bind. No flow analysis beyond "is this const?"
 

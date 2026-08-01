@@ -14,7 +14,7 @@ Rask originally had `Option<T>` and `Result<T, E>` as standard enums with `Some(
 
 `T or E` and `T?` are now builtin tagged unions. The compiler picks the branch from the value's type at return (enforced by the disjointness rule T ≠ E and the `ErrorMessage` bound on E), so construction is keyword-free on both paths: `return config` or `return MyError.Failed`, never `return Ok(config)` / `return Err(MyError.Failed)`. `none` stays as the absent sentinel (literal, not a variant).
 
-The trade-off is a disjointness rule (T ≠ E in `T or E`, `T?` can't nest). Newtype is the escape hatch. The rule also rules out primitive-error patterns like `i32 or i32`, which were always bad style.
+The trade-off is a disjointness rule (T ≠ E in `T or E`). Newtype is the escape hatch. The rule also rules out primitive-error patterns like `i32 or i32`, which were always bad style. In generic code it's an obligation read off the signature and checked at the call site (`type.errors/ER3a`). `none` is exempt — optionals nest, and the layers stay distinct (`type.optionals/OPT28`).
 
 See [types/error-model-redesign-proposal.md](types/error-model-redesign-proposal.md) for the full design record.
 

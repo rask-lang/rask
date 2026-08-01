@@ -15,7 +15,7 @@ impl Interpreter {
             StmtKind::Const { name, init, ty, .. } => {
                 let mut value = self.eval_owned(init)?;
                 if let Some(ty_str) = ty {
-                    value = auto_wrap_for_annotation(value, ty_str);
+                    value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
                 }
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone());
@@ -35,7 +35,7 @@ impl Interpreter {
                 };
                 // OPT6: auto-wrap bare T into T? / T or E when annotated.
                 let value = if let Some(ty_str) = ty {
-                    auto_wrap_for_annotation(value, ty_str)
+                    auto_wrap_for_annotation(value, ty_str, is_none_literal(init))
                 } else {
                     value
                 };
@@ -631,23 +631,33 @@ impl Interpreter {
     }
 }
 
-/// OPT6: wrap `value` to match the declared `T?` or `Result<T, E>` annotation.
-/// No-op for non-Option/non-Result annotations, or when the value is already
-/// shaped like the annotation. For Result, picks Ok vs Err by the value's type.
-fn auto_wrap_for_annotation(value: Value, ty: &str) -> Value {
+/// OPT6/OPT29: wrap `value` to match the declared `T?` / `T??` / `Result<T, E>`
+/// annotation. No-op for non-Option/non-Result annotations, or when the value
+/// already has as many optional layers as the annotation asks for. For Result,
+/// picks Ok vs Err by the value's type.
+///
+/// `rhs_is_none_literal` marks a bare `none` on the right-hand side. It names
+/// the *outermost* absent, so it never gains a layer no matter how deep the
+/// annotation is — `const x: T?? = none` means "nothing at all", not "an empty
+/// inner slot" (OPT29).
+fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_literal: bool) -> Value {
     let ty = ty.trim();
     if ty.ends_with('?') && !ty.starts_with('(') {
-        // T? annotation
-        if matches!(&value, Value::Enum { name, .. } if name == "Option") {
+        if rhs_is_none_literal {
             return value;
         }
-        return Value::Enum {
-            name: "Option".to_string(),
-            variant: "Some".to_string(),
-            fields: vec![value],
-            variant_index: 0,
-            origin: None,
-        };
+        let want = ty.chars().rev().take_while(|c| *c == '?').count();
+        let mut out = value;
+        for _ in value_option_depth(&out)..want {
+            out = Value::Enum {
+                name: "Option".to_string(),
+                variant: "Some".to_string(),
+                fields: vec![out],
+                variant_index: 0,
+                origin: None,
+            };
+        }
+        return out;
     }
     if ty.starts_with("Result<") && ty.ends_with('>') {
         if matches!(&value, Value::Enum { name, .. } if name == "Result") {
@@ -671,6 +681,22 @@ fn auto_wrap_for_annotation(value: Value, ty: &str) -> Value {
         };
     }
     value
+}
+
+/// OPT29: is this expression a bare `none` literal?
+fn is_none_literal(expr: &rask_ast::expr::Expr) -> bool {
+    matches!(expr.kind, rask_ast::expr::ExprKind::None)
+}
+
+/// How many optional layers a value already carries at its head.
+/// `none` is one layer; `Some(none)` is two; a bare payload is zero.
+fn value_option_depth(value: &Value) -> usize {
+    match value {
+        Value::Enum { name, fields, .. } if name == "Option" => {
+            1 + fields.first().map_or(0, value_option_depth)
+        }
+        _ => 0,
+    }
 }
 
 /// Parse `Result<T, E>` and return the error type component names.

@@ -135,15 +135,19 @@ func main() {
 }
 ```
 
-### Compile-time checking
+### Checking for a runtime
 
-The compiler infers which functions transitively require a runtime (reach `spawn` through their call graph). This inference is **internal compiler metadata** — users write no annotations on signatures.
+"Is there a runtime?" is a **runtime check with a static fast path.** `spawn` reads the process-global runtime slot and panics if it's empty — that's the check that always holds. On top of it, the compiler proves the common cases ahead of time and reports them as compile errors, so most missing-scope bugs never reach a running program. Dynamic dispatch is where the static path gives up.
+
+The static path works from inference: the compiler figures out which functions transitively reach `spawn` through their call graph. That inference is **internal compiler metadata** — users write no annotations on signatures.
 
 | Rule | Description |
 |------|-------------|
 | **CC1: Direct spawn check** | A lexical `spawn()` call outside any `using Multitasking` block → compile error |
 | **CC2: Inferred-requirement check** | A call to any function inferred as requiring the runtime, lexically outside any block → compile error |
-| **CC3: Runtime fallback** | Cases the compiler cannot prove statically — closures stored and called across block boundaries, trait-object dispatch, FFI — fall through to a runtime panic with a clear message |
+| **CC3: Runtime check** | The check the other two are an optimization of. Where the call target isn't statically known — a closure stored and called across block boundaries, trait-object dispatch, FFI calling in — `spawn` finds the slot empty and panics with a clear message |
+
+So the honest summary: direct calls and ordinary call chains are caught at compile time; anything reached through a stored closure, an `any Trait`, or an FFI entry point is caught on the first `spawn`, at runtime. A program can't spawn without a runtime either way — what varies is whether you find out before or after you run it.
 
 Inference is invisible in source: writing or reading a function's body never involves Multitasking annotations. Users see the compile error at the **call site** ("calling `X` requires a `using Multitasking` scope; `X` needs it because it calls `spawn` at `f.rk:42`"), not at the definition.
 
@@ -310,7 +314,7 @@ Install a `using Multitasking { ... }` block that encloses the call.
 |------|------|----------|
 | Direct `spawn` outside any block | CC1 | Compile error |
 | Call to function transitively reaching `spawn`, outside any block | CC2 | Compile error |
-| Closure stored / trait object dispatch reaches `spawn` outside a block | CC3 | Runtime panic |
+| Closure stored / trait object dispatch reaches `spawn` outside a block | CC3 | Runtime panic — target not statically known |
 | `.join()` on cancelled task | H2, CN1 | Returns `Cancelled` error |
 | Cancelled while parked on I/O | CN3, CN4 | Task resumes; the pending operation returns `Cancelled`; task exits via its own control flow, ensures run |
 | Cancelled while holding a lock | CN4 | No forced release — the lock releases when the task's own exit path leaves the block (`ctrl.panic/LK4`) |

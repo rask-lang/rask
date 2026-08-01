@@ -24,7 +24,7 @@ I enforce memory safety through the type system and scope rules without requirin
 
 ### 2. Everything is a Value
 
-There is no distinction between "value types" and "reference types." Every type in Rask is a value — it has a single owner, it copies or moves on assignment, and it's freed when the owner goes out of scope.
+Every type in Rask is a value — it has a single owner, it copies or moves on assignment, and it's freed when the owner goes out of scope. There is no user-facing "reference type" category to learn alongside it: no reference-typed field, no `Box<T>`/`Rc<T>` split at the type level. A few built-ins — `string`, `Shared<T>`, `Mutex<T>`, `Atomic*<T>`, and that list is closed — obey the ownership rules but share their *insides*; the carve-out below spells that out.
 
 **What this means:**
 - Assigning or passing a value either copies it (for small types) or moves it (transfers ownership)
@@ -46,7 +46,7 @@ There's no `Box<T>` because there's no need to distinguish "heap-allocated value
 
 **Why this matters:** When everything is a value, the ownership rules apply everywhere identically. Move a `Vec` and the buffer moves. Move a `Cell` and the inner value moves. Move an `any Widget` and the heap data moves. One model for owned data — the uniform rule.
 
-**Honest carve-out: a small fixed set of language primitives with shared semantics.** `string`, `Shared<T>`, `Mutex<T>`, and `Atomic*<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define, and that set is closed on purpose — see [the Box family](memory/boxes.md) for the disciplines (`Pool`, `Cell`, `Shared`, `Mutex`, `Owned`, plus `Atomic*` as adjacent) and for why I don't hand out a way to build more of them (`mem.boxes/BX1`–`BX4`). Short version: those types don't use a secret type-system feature, they have permission to run code on assignment, on scope exit, and at borrow boundaries — three places I keep free of user code so cost stays readable and cleanup stays visible. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
+**Honest carve-out: a small fixed set of language primitives with shared semantics.** `string` (with its substring view `StringView`), `Shared<T>`, `Mutex<T>`, and `Atomic*<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define, and that set is closed on purpose — see [the Box family](memory/boxes.md) for the disciplines (`Pool`, `Cell`, `Shared`, `Mutex`, `Owned`, plus `Atomic*` as adjacent) and for why I don't hand out a way to build more of them (`mem.boxes/BX1`–`BX4`). Short version: those types don't use a secret type-system feature, they have permission to run code on assignment, on scope exit, and at borrow boundaries — three places I keep free of user code so cost stays readable and cleanup stays visible. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
 
 **Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Pool`+`Handle` for graphs, disjoint field borrowing for partial borrows, and context clauses for implicit state threading — solutions to problems that pure MVS hits once you go beyond simple value passing.
 
@@ -58,7 +58,9 @@ References cannot outlive their lexical scope. You can borrow a value temporaril
 - No types that "hold a pointer to another value"
 - Collections use handles (opaque identifiers) instead of references
 - Graphs, trees with parent pointers, and self-referential structures use key-based indirection
-- Eliminates use-after-free, dangling pointers, and iterator invalidation by construction
+- Dangling pointers can't happen — there's no reference to outlive anything
+- Use-after-free never goes silent: reaching through a stale handle panics at the access (see the pool tradeoff below)
+- Iterator invalidation is caught the same way, at the access
 
 **The tradeoff:** Some patterns require explicit indirection. **The gain:** No lifetime annotations, no borrow checker fights, no runtime tracking.
 
@@ -83,7 +85,7 @@ Major costs are visible in code. Small safety checks can be implicit.
 
 ### 5. Local Analysis Only
 
-All compiler analysis is function-local. No whole-program inference, no cross-function lifetime tracking, no escape analysis.
+Every check the compiler runs looks at one function body at a time. No whole-program inference, no cross-function lifetime tracking, no escape analysis. What this buys is the cost of *checking*, not zero ripple: editing a private body can shift its inferred signature and force its callers to re-check. That propagation is bounded and stops at the package — the detail is in the list below.
 
 **What this means:**
 - Public function signatures fully describe their interface (explicit types required)
@@ -126,6 +128,18 @@ Information the compiler can infer should be displayed by tooling, not required 
 
 **Tooling contract:** IDEs SHOULD display compiler-inferred information as unobtrusive ghost annotations. This is not optional polish—it's how the language achieves clarity without ceremony.
 
+**Honest carve-out: most code review happens where there are no ghosts.** Diffs, PR review, pastebins, grep output. Ghost text covers writing and reading in an editor; it does nothing for a reviewer staring at a unified diff — and the whole design bets on the machine-writes/human-reviews world ([design-horizon.md](design-horizon.md)), so the reviewer is the reader that matters most. The answer is that the ghost layer must be *materializable*: `rask annotate` renders any file or diff with the same information set beside each line — a read-only report, computed on demand and stored nowhere, so nothing can be committed or go stale — and its JSON output lets CI decorate a PR the way the IDE decorates a buffer ([tooling/annotate.md](tooling/annotate.md)). The contract extends: compiler knowledge may be IDE-displayed, but never IDE-locked.
+
+Three visibility bands make the claim checkable:
+
+| Band | What lives there | Where you can read it |
+|------|------------------|----------------------|
+| Source | Parameter modes on signatures, `own`, `take`, `mutate` captures, `try`, `.clone()`, `spawn`, `ensure`, `using` on public functions | Anywhere text renders |
+| Materialized metadata | Parameter modes at call sites, effects, pause points, capture lists, consuming match arms, inferred private signatures and `using` clauses | IDE ghosts; `rask annotate` everywhere else |
+| IDE comfort | Inferred local types, borrow scopes, optimizer decisions | IDE; `rask annotate --all` |
+
+The rule that keeps the bands honest: anything that mutates, consumes, suspends, or performs I/O sits in the top two bands — never IDE-only.
+
 ### 8. Machine-Readable Code
 
 Code should be analyzable by tools — linters, refactoring engines, IDE plugins — without whole-program analysis. This falls naturally out of the other principles but I'm making it explicit because it should guide future decisions.
@@ -147,7 +161,7 @@ The compiler tracks information the language deliberately keeps out of the type 
 **What this means:**
 - I/O, async, and mutation effects are tracked transitively (`comp.effects`) but don't appear in function signatures and don't color call syntax. A caller of a function that does I/O writes the call the same way as a caller of a pure one.
 - `@pure` is a lint annotation, not a type qualifier. A pure function can call an impure one; the lint warns.
-- IDE ghost annotations show parameter modes, closure captures, inferred types, and pause points — the compiler knows, the source doesn't say.
+- IDE ghost annotations show parameter modes, closure captures, inferred types, and pause points — the compiler knows, the source doesn't say. Outside an IDE, `rask annotate` materializes the same layer into diffs and terminals ([tooling/annotate.md](tooling/annotate.md)), so "tooling shows" doesn't quietly mean "only the IDE shows."
 
 **Honest carve-out: pool contexts color signatures.** `using Pool<T>` (and its named/frozen variants) is declared in signatures and propagates up the call graph via `mem.context/CC5`, because a pool is a value callees dereference — it must be threaded through as a hidden parameter reference. This is scope-level coloring, deliberately traded for uncolored call syntax. See [context-clauses.md](memory/context-clauses.md).
 
@@ -173,7 +187,7 @@ Ref counting (Swift, Python) solves the GC pause problem but introduces overhead
 
 I'd rather have explicit `.clone()` calls than hidden overhead on every pointer operation.
 
-`string` is the deliberate exception — immutable data where refcounting is safe and the ergonomic payoff is highest. The compiler aggressively elides the atomic ops (`comp.string-refcount-elision`). For mutable types, the argument stands: move semantics over hidden refcount overhead.
+`string` — and `StringView`, its zero-copy substring — is the deliberate exception: immutable data where refcounting is safe and the ergonomic payoff is highest. The compiler aggressively elides the atomic ops (`comp.string-refcount-elision`). For mutable types, the argument stands: move semantics over hidden refcount overhead.
 
 ### Why Not Rust's Borrow Checker?
 
@@ -227,7 +241,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`build.rk`) handle full-language code generation. See [comptime.md](control/comptime.md).
 
-**Strings.** One type: `string` (UTF-8, immutable, refcounted, Copy). `StringBuilder` for construction (UTF-8 by construction — zero-copy `build()`). Slicing is inline — `.to_string()` copies bytes into a new independent string (no shared backing). `StringPool` for validated handle-based access. See [strings.md](stdlib/strings.md).
+**Strings.** `string` (UTF-8, immutable, refcounted, Copy) plus `StringView`, its storable zero-copy substring — a view shares the source's buffer and holds a refcount on it, so parsers store views in tokens and structs without copying and without dangling. `StringBuilder` for construction (UTF-8 by construction — zero-copy `build()`). Slicing is inline; escaping the expression is an explicit conversion: `.view()` (zero-copy, pins source) or `.to_string()` (independent copy). See [strings.md](stdlib/strings.md).
 
 **Modules.** Package = directory. Two visibility levels: default (package-internal) and `public`. Imports are qualified by default; `using` for selective unqualified access. See [modules.md](structure/modules.md), [packages.md](structure/packages.md).
 
@@ -267,7 +281,7 @@ I'm not pretending there aren't costs to these choices. Every design has tradeof
 
 Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses, this adds up.
 
-**Benefit:** Use-after-free impossible. No dangling pointers. Iterator invalidation caught at runtime. Self-referential structures work without unsafe code.
+**Benefit:** No dangling pointers — a handle is an integer, not an address, so there's nothing to dangle. Use-after-free through a stale handle *is* possible to write, and the generation check turns it into a panic at the access instead of a read of whatever now occupies the slot. Iterator invalidation is the same mechanism. Self-referential structures work without unsafe code.
 
 **When to use pools:** Graph structures, ECS entities, caches with stable identity, anything with cycles or parent pointers.
 
@@ -279,13 +293,13 @@ Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses,
 
 **Cost:** Some patterns require restructuring:
 - Parent pointers → store `Handle<Parent>` instead
-- String slices in structs → store indices or use `StringPool`
+- String slices in structs → `StringView` (zero-copy, refcounted) or `Span` indices
 - Caches holding references → use `Pool<T>` with handles
 
-**Benefit:** Eliminates entire categories of bugs:
-- Use-after-free (impossible by construction)
-- Dangling pointers (references can't escape scope)
-- Iterator invalidation (iteration uses handles/indices)
+**Benefit:** Removes entire categories of bugs — two of them by construction, one by making it loud:
+- Dangling pointers — impossible; references can't escape their scope, so there's nothing to leave behind
+- Use-after-free — a stale handle still compiles, but the generation check catches it at the access. Detection, not impossibility; the point is that it can't be silent
+- Iterator invalidation — same check, same guarantee: a handle invalidated mid-loop panics instead of being followed
 
 No lifetime annotations needed. Function signatures are simple. Reasoning about ownership is local.
 

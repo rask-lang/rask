@@ -816,6 +816,19 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("newtype one side (e.g. `type MyError = ...`) or pick a different error type")
                     .with_why("type-based branch disambiguation only works when T and E are distinct [type.errors/ER3]")
             }
+            ResultNotDisjointAtInstantiation { callee, param, arg, other, span } => {
+                Diagnostic::error(format!("`{}` may not be `{}` here", param, arg))
+                    .with_code("E0358")
+                    .with_primary(*span, format!("{} = {}", param, arg))
+                    .with_help(format!(
+                        "newtype one side, e.g. `type Cached{arg} = {arg} with (…)`, and pass that instead"
+                    ))
+                    .with_why(format!(
+                        "`{callee}` returns `{param} or {other}`; the compiler picks the branch from the value's \
+                         type, so with {param} = {arg} both branches would be `{arg}` and the caller could not \
+                         tell them apart [type.errors/ER3a]"
+                    ))
+            }
             ErrorMessageMissing { ty, span } => {
                 Diagnostic::error(format!("error type `{}` does not implement `ErrorMessage`", ty))
                     .with_code("E0344")
@@ -824,16 +837,11 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("every error type must provide `func message(self) -> string`; primitives don't qualify — newtype them [type.errors/ER4]")
             }
             DuplicateSumVariant { ty, variant, span } => {
-                let hint = if matches!(variant, rask_types::Type::None) {
-                    "use a named enum like `T or NotFound` to distinguish two flavours of absence"
-                } else {
-                    "flatten the union or rename one branch"
-                };
                 Diagnostic::error(format!("duplicate variant `{}` in sum type `{}`", variant, ty))
                     .with_code("E0354")
                     .with_primary(*span, format!("`{}` appears more than once", variant))
-                    .with_help(hint)
-                    .with_why("a sum type cannot contain the same variant twice — `T??` and `(T or E) or E` collapse ambiguously [type.unions/U5]")
+                    .with_help("flatten the union or rename one branch")
+                    .with_why("a sum type cannot contain the same payload variant twice — the compiler picks the branch from the value's type, and a `(T or E) or E` value fits both [type.unions/U5]")
             }
             ElseBindingNotResult { name, span } => {
                 Diagnostic::error(format!("`else as {}` requires a Result condition", name))

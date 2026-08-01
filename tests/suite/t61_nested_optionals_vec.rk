@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The motivating case for nested optionals (#488, type.optionals/OPT28):
+// a generic accessor on a Vec of optional slots.
+//
+// `head` returns `T?` because the vec may be empty. At `T = i64?` that is
+// `i64??`, and the two layers answer different questions — "was there a first
+// element at all?" and "was that slot filled?". Split out from t60 because the
+// empty-vec path also needs native `Vec.first()`, which is #412.
+
+test "empty vec and empty slot are different answers" {
+    mut empty: Vec<i64?> = Vec.new()
+    assert head(empty) == none
+
+    mut hole: Vec<i64?> = Vec.new()
+    hole.push(none)
+    const h = head(hole)
+    assert h?
+    assert inner_present(h) == false
+}
+
+// --- helpers ---
+
+// Generic accessor: instantiating it at T = i64? is what produces i64??.
+func head<T>(v: Vec<T>) -> T? {
+    return v.first()
+}
+
+func inner_present(x: i64??) -> bool {
+    if x? as inner {
+        return inner?
+    }
+    return false
+}

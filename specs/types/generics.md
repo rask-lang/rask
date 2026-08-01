@@ -92,6 +92,7 @@ The publish-time warning (DT2) is in [build.md](../structure/build.md#publishing
 | **GF1: Public bounds explicit** | Public generic functions must declare trait constraints explicitly |
 | **GF2: Private bounds inferred** | Non-public functions may omit constraints; compiler infers from body |
 | **GF3: Caller constraints** | Calling a constrained function requires same or stronger constraints (explicit or inferred) |
+| **GF4: Disjointness travels with the signature** | A signature writing `T or E` with a type parameter on either side carries an implicit "these must stay distinct" obligation, checked at the call site once `T` is known. Not spelled as a bound — the `or` already says it. See [error-types.md](error-types.md) ER3a |
 
 ```rask
 // Public: bounds MUST be explicit
@@ -414,7 +415,9 @@ func increment<T: Numeric>(val: T) -> T {
 | Same method required by two traits | MN2/MN3 | Same signature: shared implementation. Different: `scoped` or error |
 | Trait evolution | TD2 | Adding a required method with a default body is non-breaking; without one it breaks every conformer (major version) |
 | Generic struct fields | G1 | `struct Foo<T: Comparable>` requires T: Comparable at every usage |
-| Negative constraints | — | Not in MVP; workaround via naming convention or separate functions |
+| Negative constraints | — | Not in MVP; workaround via naming convention or separate functions. `T or E` disjointness is the one exception and needs no syntax (GF4) |
+| `f<T>() -> T or E` called with `T = E` | GF4 | Compile error on the call, naming the parameter (`type.errors/ER3a`) |
+| `f<T>() -> T?` called with `T = U?` | — | Legal — optionals nest, layers stay distinct (`type.optionals/OPT28`) |
 | Associated types | — | Not in MVP; deferred |
 | More than 2 type params | — | Not in MVP; traits limited to 1-2 parameters |
 | Omitted bounds (private) | GF2 | Inferred from body; see [Gradual Constraints](gradual-constraints.md) |

@@ -29,6 +29,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [missing_return.rk](missing_return.rk) | Function without return statement |
 | [trait_bound_unsatisfied.rk](trait_bound_unsatisfied.rk) | Type argument doesn't implement the bound's trait (#314) |
 | [trait_bound_missing_method.rk](trait_bound_missing_method.rk) | Method not provided by the type param's bounds (#314) |
+| [generic_disjointness.rk](generic_disjointness.rk) | Generic instantiation collapses `T or E` into `E or E` (ER3a, #488) — free function, propagated through a generic caller, and a method on a generic receiver |
 
 ### Ownership & Borrowing
 
