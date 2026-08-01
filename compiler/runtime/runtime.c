@@ -105,6 +105,23 @@ void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
     rask_panic_at(file, line, col, buf);
 }
 
+// Chars reach here as scalars, same as integers — but reporting `120 == 121`
+// for `'x' == 'y'` tells the reader nothing. Print the characters.
+void rask_assert_fail_cmp_char(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col) {
+    RaskStr ls, rs;
+    rask_char_to_string(&ls, (int32_t)left);
+    rask_char_to_string(&rs, (int32_t)right);
+    const char *lbuf = rask_string_ptr(&ls);
+    const char *rbuf = rask_string_ptr(&rs);
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assertion failed: '%s' %s '%s' (left: '%s', right: '%s')",
+             lbuf, op ? op : "?", rbuf, lbuf, rbuf);
+    rask_panic_at(file, line, col, buf);
+}
+
 void rask_assert_fail_cmp_str(const char *left, const char *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col) {

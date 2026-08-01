@@ -166,6 +166,30 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
 }
 
 impl Interpreter {
+    /// Pick which string parse a `parse` call wants. An explicit
+    /// `parse<f64>()` names the target; `const x: f64 = s.parse()` leaves it to
+    /// inference, so fall back to the checker's type for the call node. Names
+    /// other than `parse` pass through untouched.
+    fn parse_target_method(
+        &self,
+        method: &str,
+        type_args: &Option<Vec<std::string::String>>,
+        node_id: rask_ast::NodeId,
+    ) -> std::string::String {
+        if method != "parse" {
+            return method.to_string();
+        }
+        let float_target = match type_args.as_ref().and_then(|ta| ta.first()) {
+            Some(name) => matches!(name.as_str(), "f32" | "f64"),
+            None => matches!(
+                self.node_types.get(&node_id),
+                Some(rask_types::Type::Result { ok, .. })
+                    if matches!(**ok, rask_types::Type::F32 | rask_types::Type::F64)
+            ),
+        };
+        if float_target { "parse_float".to_string() } else { method.to_string() }
+    }
+
     /// Find the `Pool` backing a handle by its pool id. Handle auto-deref
     /// (mem.context/CC1) resolves the element through whichever `Pool<T>` is in
     /// scope; the handle's pool id names it unambiguously, so a match by id
@@ -661,7 +685,14 @@ impl Interpreter {
                     return result.map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
-                self.call_method(receiver, method, arg_vals)
+                // `parse` picks its runtime by target type. An explicit
+                // `parse<f64>()` carries it in type_args; `const x: f64 =
+                // s.parse()` infers it, so fall back to the checker's type for
+                // the call. Without this every parse ran the integer path and
+                // "3.5" came back as an error (#480).
+                let method = self.parse_target_method(method, type_args, expr.id);
+
+                self.call_method(receiver, &method, arg_vals)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 

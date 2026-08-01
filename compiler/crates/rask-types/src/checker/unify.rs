@@ -364,6 +364,19 @@ impl TypeChecker {
                 Ok(false)
             }
 
+            // Two bare vars, one of them a literal's: point the plain var at the
+            // literal var, not the other way round. Binding the literal var
+            // takes it off the defaulting list, and if nothing else ever pins
+            // the pair down both stay unresolved — `"3.5".parse<f64>() ?? -1.0`
+            // ended up with an untyped result that printed as an integer (#480).
+            (Type::Var(a), Type::Var(b))
+                if self.ctx.literal_vars.contains_key(a)
+                    && !self.ctx.literal_vars.contains_key(b) =>
+            {
+                self.ctx.substitutions.insert(*b, Type::Var(*a));
+                Ok(true)
+            }
+
             (Type::Var(id), other) => {
                 if self.ctx.occurs_in(*id, other) {
                     return Err(TypeError::InfiniteType {

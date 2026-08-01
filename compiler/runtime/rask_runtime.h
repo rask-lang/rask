@@ -500,6 +500,9 @@ void rask_assert_fail_msg_at(const char *msg, const char *file,
 void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
+void rask_assert_fail_cmp_char(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col);
 void rask_assert_fail_cmp_str(const char *left, const char *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);

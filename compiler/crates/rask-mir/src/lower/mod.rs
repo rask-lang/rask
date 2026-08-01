@@ -715,6 +715,23 @@ pub struct MirLowerer<'a> {
     /// checker leaves `collect()`'s element an inference variable — and a binding
     /// needs it so `for v in page` knows what it is iterating.
     collected_elem_types: HashMap<LocalId, MirType>,
+    /// Stack of enclosing `try { … } else |e| …` handlers (innermost last).
+    /// A `try` inside one of these blocks jumps to the handler instead of
+    /// returning from the function (ER18).
+    try_else_stack: Vec<TryElseFrame>,
+}
+
+/// Where a `try` inside a `try { … } else |e| …` block sends its error.
+#[derive(Clone)]
+pub(crate) struct TryElseFrame {
+    /// Block that binds `e` and runs the handler body.
+    pub(crate) handler_block: BlockId,
+    /// Slot the failing error payload is copied into before the jump.
+    pub(crate) err_val: LocalId,
+    /// Type of that slot — the enclosing function's error type.
+    pub(crate) err_ty: MirType,
+    /// Slot carrying the failing Result's origin line (ER15).
+    pub(crate) origin_line: LocalId,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -1591,6 +1608,7 @@ impl<'a> MirLowerer<'a> {
             const_init_target: const_init.map(|(n, _)| n.to_string()),
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
+            try_else_stack: Vec::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -2752,6 +2770,11 @@ pub(crate) fn is_integer_type_name(name: &str) -> bool {
         "i8" | "i16" | "i32" | "i64" | "isize"
         | "u8" | "u16" | "u32" | "u64" | "usize"
     )
+}
+
+/// Type arguments `string.parse<T>` accepts — the numeric primitives.
+pub(crate) fn is_parse_target_type_name(name: &str) -> bool {
+    is_integer_type_name(name) || matches!(name, "f32" | "f64")
 }
 
 /// Recognize operator method names produced by desugar (e.g. "add", "sub", "eq")

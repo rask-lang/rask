@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The assert-failure helpers have fixed signatures, so narrow operands have to
+// be widened before the call. `assert 'a' == 'a'` and `assert <f32> == 2.25`
+// used to fail the Cranelift verifier outright (#332).
+
+test "char equality" {
+    const a = 'x'
+    const b = 'x'
+    assert a == b
+    assert a == 'x'
+    assert a != 'y'
+}
+
+test "f32 against a float literal" {
+    const b: f32 = 2.25
+    assert b == 2.25
+    assert b < 3.0
+}
+
+test "narrow integer widths" {
+    const a: i32 = 5
+    assert a == 5
+    const b: u8 = 9
+    assert b == 9
+    const c: i16 = -3
+    assert c == -3
+    const d: u16 = 700
+    assert d == 700
+}
+
+test "bool" {
+    const t = true
+    assert t == true
+}
+
+test "mixed float widths" {
+    const a: f32 = 1.5
+    const b: f64 = 3.0
+    assert a < b
+}

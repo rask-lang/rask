@@ -117,6 +117,34 @@ fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static st
 }
 
 impl<'a> MirLowerer<'a> {
+    /// Widen a scalar operand to the width an assert-failure helper takes.
+    /// Aggregates and strings pass through — they reach the helper as pointers,
+    /// which is what it already expects.
+    fn widen_for_assert_helper(
+        &mut self,
+        op: MirOperand,
+        from: &MirType,
+        want: &MirType,
+    ) -> MirOperand {
+        let needs_widening = match want {
+            MirType::F64 => matches!(from, MirType::F32),
+            MirType::I64 => matches!(from,
+                MirType::I8 | MirType::I16 | MirType::I32
+                | MirType::U8 | MirType::U16 | MirType::U32
+                | MirType::Bool | MirType::Char),
+            _ => false,
+        };
+        if !needs_widening {
+            return op;
+        }
+        let dst = self.builder.alloc_temp(want.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::Cast { value: op, target_ty: want.clone() },
+        }));
+        MirOperand::Local(dst)
+    }
+
     /// Resolve a MirType to its named type prefix using struct/enum layouts.
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
         match ty {
@@ -1664,10 +1692,14 @@ impl<'a> MirLowerer<'a> {
 
             // Try expression (spec L3)
             ExprKind::Try { expr: inner, ref else_clause } => {
-                if let Some(try_else) = else_clause {
-                    self.lower_try_else(inner, try_else)
-                } else {
-                    self.lower_try(inner)
+                match (else_clause, &inner.kind) {
+                    // ER18 block form: the block's own value is the result, and
+                    // any `try` inside it lands in the handler.
+                    (Some(try_else), ExprKind::Block(_)) => {
+                        self.lower_try_else_block(inner, try_else)
+                    }
+                    (Some(try_else), _) => self.lower_try_else(inner, try_else),
+                    (None, _) => self.lower_try(inner),
                 }
             }
 
@@ -1722,7 +1754,7 @@ impl<'a> MirLowerer<'a> {
             // Null coalescing (a ?? b)
             ExprKind::NullCoalesce { value, default } => {
                 let is_niche = self.is_niche_option_expr(value);
-                let (val, _) = self.lower_expr(value)?;
+                let (val, val_ty) = self.lower_expr(value)?;
                 let tag_local = self.emit_option_tag(&val, is_niche);
 
                 let some_block = self.builder.create_block();
@@ -1736,8 +1768,19 @@ impl<'a> MirLowerer<'a> {
                 }));
 
                 self.builder.switch_to_block(some_block);
-                let payload_ty = self.extract_payload_type(value)
-                    .unwrap_or(MirType::I64);
+                // The checker often leaves this node's type an unresolved var,
+                // and reading the payload as an opaque pointer hands back the
+                // slot's address instead of the value. The lowered receiver
+                // knows its own ok type — take that when the checker has
+                // nothing better.
+                let payload_ty = Self::better_payload_ty(
+                    self.extract_payload_type(value),
+                    match &val_ty {
+                        MirType::Result { ok, .. } => Some((**ok).clone()),
+                        MirType::Option(inner) => Some((**inner).clone()),
+                        _ => None,
+                    },
+                ).unwrap_or(MirType::I64);
                 let result_local = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -2400,12 +2443,29 @@ impl<'a> MirLowerer<'a> {
                     // helper, strings to the str helper, everything else i64.
                     let is_float = matches!(left_ty, MirType::F32 | MirType::F64)
                         || matches!(right_ty, MirType::F32 | MirType::F64);
+                    let is_char = matches!(left_ty, MirType::Char)
+                        && matches!(right_ty, MirType::Char);
                     let fail_fn = if is_string {
                         "assert_fail_cmp_str"
                     } else if is_float {
                         "assert_fail_cmp_f64"
+                    } else if is_char {
+                        "assert_fail_cmp_char"
                     } else {
                         "assert_fail_cmp_i64"
+                    };
+                    // Each fail helper has one fixed signature, so a narrower
+                    // operand has to be widened to it. An f32 or a char reached
+                    // the f64/i64 helper at its own width and Cranelift
+                    // rejected the call outright (#332).
+                    let (left_op, right_op) = if is_string {
+                        (left_op, right_op)
+                    } else {
+                        let want = if is_float { MirType::F64 } else { MirType::I64 };
+                        (
+                            self.widen_for_assert_helper(left_op, &left_ty, &want),
+                            self.widen_for_assert_helper(right_op, &right_ty, &want),
+                        )
                     };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
@@ -3106,6 +3166,19 @@ impl<'a> MirLowerer<'a> {
             method.clone()
         };
 
+        // `const x: f64 = "3.5".parse()` infers the target from context, so
+        // there's no type argument to mangle and the name stays plain `parse`
+        // — which dispatches to the integer runtime and fails on "3.5" (#480).
+        // Recover the target from the checker's type for the call.
+        let method = match (method.as_str(), self.ctx.lookup_node_type(expr.id)) {
+            ("parse", Some(MirType::Result { ok, .. })) => match *ok {
+                MirType::F32 => "parse_f32".to_string(),
+                MirType::F64 => "parse_f64".to_string(),
+                _ => method,
+            },
+            _ => method,
+        };
+
         // Regular method call. Clone the receiver operand so obj_op stays
         // available for the inline Result/Option dispatch below (which
         // must reuse it rather than re-lower `object` — see #349).
@@ -3385,26 +3458,21 @@ impl<'a> MirLowerer<'a> {
                 .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
                 .or_else(|| self.func_sigs.get("Receiver_receive").map(|s| s.ret_ty.clone()))
                 .or_else(|| Some(super::stdlib_return_mir_type("Receiver_receive")))
-        } else if let Some(target) = qualified_name.strip_prefix("string_parse_")
-            .filter(|t| super::is_integer_type_name(t))
+        } else if qualified_name == "string_parse"
+            || qualified_name.strip_prefix("string_parse_")
+                .is_some_and(super::is_parse_target_type_name)
         {
-            // `parse<T>` yields `T or ParseError`, but the type argument is
-            // mangled into the call name, so there's no `string_parse_<T>` entry
-            // in the stub metadata and the fallback below lands on plain i64.
-            // The local then gets no Result slot, while the caller still reads a
-            // tag and payload off it — garbage, and a segfault on the `??`.
-            // Prefer the checker's type; rebuild it from the mangled type
-            // argument when node types aren't available (instantiated bodies).
-            //
-            // Integer targets only. The runtime shape is the same for floats
-            // (status return, value through an out-param) and the codegen
-            // adapter already handles a float writer, so this looks liftable —
-            // it isn't. Giving `parse<f64>` a Result type makes something
-            // downstream treat the f64 payload as a pointer, and stdlib
-            // `JsonParser_parse_number` stops compiling on a Cranelift verifier
-            // error. Tried it, reverted it; see #480.
+            // `parse<T>` yields `T or ParseError`. The stub's signature still
+            // says the literal `T`, which maps to i64, and a mangled
+            // `string_parse_<T>` isn't in the stub metadata at all — either way
+            // the fallback below lands on a bare i64. The local then gets no
+            // Result slot while the caller still reads a tag and payload off it
+            // — garbage, and a segfault on the `??`. Prefer the checker's type;
+            // rebuild it from the mangled type argument when node types aren't
+            // available (instantiated bodies).
+            let target = qualified_name.strip_prefix("string_parse_").unwrap_or("i64");
             Some(self.ctx.lookup_node_type(expr.id)
-                .filter(|t| matches!(t, MirType::Result { .. }))
+                .filter(|t| matches!(t, MirType::Result { ok, .. } if !matches!(**ok, MirType::Ptr)))
                 .unwrap_or_else(|| MirType::Result {
                     ok: Box::new(self.ctx.resolve_type_str(target)),
                     err: Box::new(self.ctx.resolve_type_str("ParseError")),

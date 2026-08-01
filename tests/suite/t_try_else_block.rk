@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ER18 block form: `try { … } else |e| …`. A `try` inside the block belongs to
+// the handler, not the caller. Native used to lower the block's own value as if
+// it were a Result and tag-test it (#480).
+
+struct LowError { detail: string }
+
+extend LowError {
+    func message(self) -> string {
+        return self.detail
+    }
+}
+
+func low(fail: bool) -> i64 or LowError {
+    if fail {
+        return LowError { detail: "low failed" }
+    }
+    return 10
+}
+
+func doubled(fail: bool) -> i64 or LowError {
+    const v = try {
+        try low(fail)
+    } else |_e| {
+        return LowError { detail: "handled" }
+    }
+    return v * 2
+}
+
+test "block value passes through when nothing fails" {
+    match doubled(false) {
+        i64 as v => assert v == 20
+        LowError as _e => assert false, "expected a value"
+    }
+}
+
+test "a try inside the block runs the handler" {
+    match doubled(true) {
+        i64 as _v => assert false, "expected the handler"
+        LowError as e => assert e.message() == "handled"
+    }
+}
+
+func parsed(s: string) -> f64 or LowError {
+    const v = try {
+        try s.parse<f64>()
+    } else |_e| {
+        return LowError { detail: "not a number" }
+    }
+    return v + 1.0
+}
+
+test "float parse inside a try block" {
+    match parsed("3.5") {
+        f64 as v => assert v == 4.5
+        LowError as _e => assert false, "expected a value"
+    }
+    match parsed("junk") {
+        f64 as _v => assert false, "expected the handler"
+        LowError as e => assert e.message() == "not a number"
+    }
+}

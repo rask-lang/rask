@@ -727,12 +727,17 @@ impl TypeChecker {
                         }
                         let handler_ty = self.infer_expr(&ec.body);
                         self.pop_scope();
-                        // Block and handler must produce the same type.
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            block_ty.clone(),
-                            handler_ty,
-                            expr.span,
-                        ));
+                        // Block and handler must produce the same type — unless
+                        // the handler diverges (`else |e| return …`), which
+                        // produces nothing and would otherwise drag the whole
+                        // expression's type down to `!`.
+                        if !matches!(self.ctx.apply(&handler_ty), Type::Never) {
+                            self.ctx.add_constraint(TypeConstraint::Equal(
+                                block_ty.clone(),
+                                handler_ty,
+                                expr.span,
+                            ));
+                        }
                     }
                     return block_ty;
                 }
@@ -1291,20 +1296,30 @@ impl TypeChecker {
                 let resolved_def = self.ctx.apply(&def_ty);
                 // OPT13: diverging default (`?? return y`, `?? break`, `?? continue`,
                 // `?? panic(…)`) unwraps the scrutinee and yields the inner type.
+                // ER14: the fallback replaces the *success* value, so only the
+                // ok side has to match it. Forcing the whole scrutinee to be
+                // `Option<default>` demanded `E == none` and rejected every
+                // `T or E` — `divide(10, 0) ?? -1` reported "expected DivError,
+                // found none" (#394).
+                // The error side stays a free var so both shapes fit: `T?`
+                // binds it to `none`, `T or E` binds it to E.
+                let constrain_ok = |checker: &mut Self, want: &Type| {
+                    let free_err = checker.ctx.fresh_var();
+                    checker.ctx.add_constraint(TypeConstraint::Equal(
+                        val_ty.clone(),
+                        Type::Result {
+                            ok: Box::new(want.clone()),
+                            err: Box::new(free_err),
+                        },
+                        expr.span,
+                    ));
+                };
                 if matches!(resolved_def, Type::Never) {
                     let inner = self.ctx.fresh_var();
-                    self.ctx.add_constraint(TypeConstraint::Equal(
-                        val_ty,
-                        Type::option(inner.clone()),
-                        expr.span,
-                    ));
+                    constrain_ok(self, &inner);
                     inner
                 } else {
-                    self.ctx.add_constraint(TypeConstraint::Equal(
-                        val_ty,
-                        Type::option(def_ty.clone()),
-                        expr.span,
-                    ));
+                    constrain_ok(self, &def_ty);
                     def_ty
                 }
             }

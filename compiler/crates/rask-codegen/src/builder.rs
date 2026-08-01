@@ -2975,15 +2975,17 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
                 builder.ins().call(*assert_fn, &[]);
             }
-        } else if func.name == "assert_fail_cmp_i64" {
-            // Comparison assert failure with i64 values: args = [left, right, op_str]
+        } else if func.name == "assert_fail_cmp_i64" || func.name == "assert_fail_cmp_char" {
+            // Comparison assert failure with scalar values: args = [left, right, op_str].
+            // Same shape for both; the char helper formats the codepoints as
+            // characters instead of numbers.
             if args.len() >= 3 {
                 let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
                 let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
                 if let Some(file_str) = ctx.source_file {
                     if let (Some(func_ref), Some(gv)) = (
-                        ctx.func_refs.get("assert_fail_cmp_i64"),
+                        ctx.func_refs.get(func.name.as_str()),
                         ctx.string_globals.get(file_str),
                     ) {
                         let file_ptr = builder.ins().global_value(types::I64, *gv);

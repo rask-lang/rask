@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `parse` at a float target, and `??` on a `T or E` (#480, #394).
+//
+// The target type reaches `parse` two ways: written out as `parse<f64>()`, or
+// inferred from what the result is used as. Both have to run the float parse.
+
+test "type.primitives — parse<f64> with the type written out" {
+    assert ("3.5".parse<f64>() ?? -1.0) == 3.5
+    assert ("junk".parse<f64>() ?? -1.0) == -1.0
+}
+
+test "type.primitives — parse to a float inferred from the binding" {
+    const a: f64 = "3.5".parse() ?? -1.0
+    assert a == 3.5
+    const b: f32 = "2.25".parse() ?? -1.0
+    assert b == 2.25
+    const c: f64 = "junk".parse() ?? -1.0
+    assert c == -1.0
+}
+
+test "type.primitives — integer targets still parse as integers" {
+    const a: i32 = "17".parse() ?? -1
+    assert a == 17
+    // "3.5" is not an integer — trailing garbage after the digits.
+    const b: i64 = "3.5".parse() ?? -1
+    assert b == -1
+}
+
+enum DivError { ByZero }
+
+extend DivError {
+    func message(self) -> string {
+        return "div by zero"
+    }
+}
+
+func divide(a: i64, b: i64) -> i64 or DivError {
+    if b == 0 {
+        return DivError.ByZero
+    }
+    return a / b
+}
+
+test "type.errors — ER14 value fallback on a T or E" {
+    assert (divide(10, 2) ?? -1) == 5
+    assert (divide(10, 0) ?? -1) == -1
+}
+
+test "type.errors — ER14 still works on an optional" {
+    const present: i64? = 4
+    const absent: i64? = none
+    assert (present ?? -1) == 4
+    assert (absent ?? -1) == -1
+}
