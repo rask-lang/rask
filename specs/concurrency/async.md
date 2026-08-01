@@ -322,6 +322,7 @@ Install a `using Multitasking { ... }` block that encloses the call.
 | Channel send after all receivers closed | CH3 | Returns `Closed` error |
 | Nested `using Multitasking` blocks | C1 | Error — second `enter` aborts (compile error if lexically nested, runtime panic otherwise) |
 | Library opens `using Multitasking` while app already did | C6 | Falls under C1 — runtime panic |
+| Test block spawns | C6 | Tests are application code — the test opens its own `using Multitasking { }`; the runner serializes runtime-holding tests to respect C1 (`std.testing/T17–T19`) |
 | Detached task outlives `using` block body | C4 | Block exit still drains detached tasks. Truly outliving the block is impossible |
 
 ---

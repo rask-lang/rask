@@ -22,7 +22,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 | **VS2: Primitives always Copy** | Primitives are always Copy |
 | **VS3: Collections never Copy** | Vec, Pool, Map are never Copy (own heap memory, mutable). `string` is not a collection — it's a language primitive with compiler-special refcount semantics. No user-defined type can replicate string's refcounted Copy behavior. This is a deliberate exception, not a pattern |
 | **VS3.1: Trait objects never Copy** | `any Trait` is never Copy (owns heap data; copying would create two owners) |
-| **VS4: Sync types never Copy** | Shared, Mutex, Atomic* are never Copy |
+| **VS4: Sync types never Copy** | Shared, Mutex, Atomic are never Copy |
 | **VS5: Automatic derivation** | Copy is structural — no `extend Copy` needed |
 
 ## The 16-Byte Threshold
@@ -142,11 +142,27 @@ const p5 = Pair{first: [1i64; 2], second: [2i64; 2]} // Pair<[i64;2]> is NOT Cop
 const p6 = p5                              // ERROR: move, not copy
 ```
 
+## Error Messages
+
+Move errors name *why* the type moves — the checker tracks the reason (size over threshold, owns heap memory, `@unique`, `@resource`) and the diagnostic states it. This matters most when a struct grows past 16 bytes and every assignment flips from copy to move: the errors land at call sites, so the note is what connects them back to the type.
+
+```
+ERROR [E0800]: use of moved value: `x`
+   |
+ 9 |     const y = x
+   |     ----------- value moved here
+10 |     println("{x.a}")
+   |               ^ value used here after move
+
+NOTE: `Big` is 24 bytes (copy threshold is 16) — assignment moves instead of copying
+HELP: add `x.clone()` if you need an independent copy
+```
+
 ## Edge Cases
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Struct with all Copy fields but >16 bytes | VS1 | Move-only (size exceeds threshold) |
+| Struct with all Copy fields but >16 bytes | VS1 | Move-only (size exceeds threshold); move errors name the size and threshold (see Error Messages) |
 | Generic type usage | VS5 | Copy derived when the compiler generates code for a specific type |
 | Removing `@unique` from a type | U1 | Non-breaking change (makes type more permissive) |
 | Copy type in `take` parameter | — | Value is copied in; `take` is semantically redundant but allowed |

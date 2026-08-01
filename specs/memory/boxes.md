@@ -19,7 +19,7 @@ One shape, one syntax, several access disciplines.
 | [`Mutex<T>`](../concurrency/sync.md) | Exclusive lock | Yes | Queues, state machines |
 | [`Owned<T>`](owned.md) | Linear (single consumer) | Sendable | Recursive types, AST nodes |
 
-`Atomic*<T>` (see [`mem.atomics`](atomics.md)) is adjacent but not a box — its access is intrinsic operations, not `with`.
+`Atomic<T>` (see [`mem.atomics`](atomics.md)) is adjacent but not a box — its access is intrinsic operations, not `with`.
 
 ## The shared shape
 
@@ -68,7 +68,7 @@ Rust-style guards (`MutexGuard`, `Ref`, `RefMut`) let a reference escape the acq
 
 | Rule | Description |
 |------|-------------|
-| **BX1: Fixed set** | The box family is `Cell`, `Pool`, `Shared`, `Mutex`, `Owned`, plus adjacent `Atomic*`. Boxes are language constructs with type-shaped names, like `T or E` and `T?` — not library types |
+| **BX1: Fixed set** | The box family is `Cell`, `Pool`, `Shared`, `Mutex`, `Owned`, plus adjacent `Atomic`. Boxes are language constructs with type-shaped names, like `T or E` and `T?` — not library types |
 | **BX2: No user boxes** | No user-defined type gets box semantics: refcounted copy, shared interior, or `with`-scoped access. There is no annotation, trait, or generic parameter that grants them |
 | **BX3: Compose instead** | Types that need sharing wrap a box — `Shared<Map<K,V>>` for a cache, `Pool<T>` + `Handle<T>` for an arena, `Shared<Vec<u8>>` for a refcounted buffer |
 | **BX4: `unsafe` doesn't unlock it** | Raw pointers let you build any data structure you like (`mem.unsafe`). They don't let a type opt into running code on assignment, on scope exit, or at borrow boundaries — that's what box semantics require, and it isn't a pointer capability |

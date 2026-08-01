@@ -80,6 +80,29 @@ test "file processing" {
 }
 ```
 
+## Concurrency in Tests
+
+Tests are application code. `conc.async/C6` says application code opens the runtime — so a test that spawns opens the block itself, exactly like `main` does. No harness-provided runtime, no annotation, no magic.
+
+| Rule | Description |
+|------|-------------|
+| **T17: Tests open their own runtime** | A test whose body reaches `spawn` (directly or transitively) contains a `using Multitasking { }` block. Forgetting it is the standard `conc.async/CC2` compile error at the call site, naming the function that spawns — the ceremony is one line, and the error teaches it |
+| **T18: Runner respects C1** | At most one runtime per process (`conc.async/C1`), so the runner never executes two runtime-holding tests concurrently in-process: tests containing a `using Multitasking` block are serialized with respect to each other, while runtime-free tests keep running in parallel around them (T7). The runner knows which tests qualify lexically — no new analysis |
+| **T19: Drain bounds the test** | Block exit waits for the test's tasks (`conc.async/C4`), so a leaked or hung task fails *that* test by timeout, under that test's name — it can't pollute later tests. Same rule for `using ThreadPool` |
+
+<!-- test: skip -->
+```rask
+test "concurrent fetch joins all workers" {
+    using Multitasking {
+        const (a, b) = join_all(
+            spawn(|| { fetch(url_a) }),
+            spawn(|| { fetch(url_b) })
+        )
+        assert a? && b?
+    }
+}
+```
+
 ## Subtests
 
 | Rule | Description |
@@ -222,6 +245,10 @@ WHY: Comptime tests run during compilation; failures are compile errors.
 | `assert` failure in table loop | Test stops at failing iteration | A1 |
 | `comptime test` uses I/O | Compile error (comptime subset only) | T11 |
 | `benchmark` in debug build | Stripped | B1 |
+| `spawn` in a test with no `using Multitasking` block | Compile error at the call site (`conc.async/CC2`) | T17 |
+| Two runtime-holding tests under parallel execution | Serialized by the runner — never concurrent in-process | T18 |
+| Detached task still running at test's block exit | Block exit waits; hang is reported as that test's timeout | T19 |
+| `comptime test` reaches `spawn` | Compile error (comptime subset has no concurrency) | T11 |
 
 ---
 
@@ -234,6 +261,8 @@ WHY: Comptime tests run during compilation; failures are compile errors.
 **A1 vs A2:** `assert` for invariants that make the rest of the test meaningless. `check` for collecting multiple failures in one run (especially table-driven tests).
 
 **T16 (trait injection):** No runtime mocking or monkey-patching. Dependency injection through traits keeps tests explicit and avoids hidden magic.
+
+**T17–T19 (no harness runtime):** Two alternatives were considered and rejected ([#519](https://github.com/rask-lang/rask/issues/519)). A harness-provided per-test runtime (wrap every spawning test in an implicit block) fails the same test as auto-installing a runtime in binaries: a runtime you didn't write is a cost you didn't see, and the explicit block is precisely how you find out that your code — or a dependency you just added — wants a scheduler. Banning tasks in tests outright fails harder: the concurrency model's own semantics (join, cancel, panic-in-task) need test coverage more than most code. The explicit block costs one line, gives each test its own drain point (T19) and config site (`using Multitasking(workers: 1)` for deterministic scheduling), and keeps the reading rule uniform: anywhere you see a runtime, someone wrote it.
 
 ### Open Issues
 

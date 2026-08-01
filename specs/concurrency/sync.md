@@ -284,8 +284,8 @@ const got_it = mutex.try_lock(|v| v.push(item))
 | Feature flags | `Shared<T>` | Read-heavy |
 | Connection pool | `Mutex<T>` | Checkout/checkin is write-heavy |
 | Request queue | `Mutex<T>` | Push/pop are mutations |
-| Metrics counter | `AtomicU64` | Single value, lock-free |
-| Shutdown flag | `AtomicBool` | Single value, lock-free |
+| Metrics counter | `Atomic<u64>` | Single value, lock-free |
+| Shutdown flag | `Atomic<bool>` | Single value, lock-free |
 | Cache | `Shared<T>` or Channel | Depends on invalidation pattern |
 
 ### Shared\<T\> vs Channel
@@ -325,7 +325,7 @@ func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
 |-----------|-------------|-----------------|------------------|
 | `Shared<T>` | ~20ns | Scales linearly | Blocks all |
 | `Mutex<T>` | ~20ns | N/A (no read mode) | Serialized |
-| `AtomicU64` | ~1ns | ~1ns | ~10ns (CAS retry) |
+| `Atomic<u64>` | ~1ns | ~1ns | ~10ns (CAS retry) |
 | Channel | ~50ns | N/A | Bounded: blocks, Unbounded: allocates |
 
 ### Examples
@@ -344,8 +344,8 @@ func get_timeout() -> Duration {
 <!-- test: skip -->
 ```rask
 struct Metrics {
-    requests: AtomicU64,
-    errors: AtomicU64,
+    requests: Atomic<u64>,
+    errors: Atomic<u64>,
     latencies: Mutex<Vec<Duration>>,
 }
 
