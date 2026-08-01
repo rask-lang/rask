@@ -138,8 +138,20 @@ impl<'a> MirLowerer<'a> {
     ) -> MirOperand {
         let Some(field_ty) = field_ty else { return val };
         let (tag_offset, payload_offset, inner) = match field_ty {
+            // A `Handle?` is a sentinel, not a tag plus payload. A handle
+            // stores as itself; `none` has to become the sentinel, because the
+            // generic `none` lowering builds a tagged option and storing that
+            // into the field left a tag where the handle belongs (#438).
+            MirType::Option(inner) if matches!(**inner, MirType::Handle) => {
+                if matches!(val_ty, MirType::Option(_)) {
+                    return MirOperand::Constant(MirConst::Int(
+                        crate::lower::HANDLE_NONE_SENTINEL,
+                    ));
+                }
+                return val;
+            }
             MirType::Option(inner) => {
-                if matches!(val_ty, MirType::Option(_)) || matches!(**inner, MirType::Handle) {
+                if matches!(val_ty, MirType::Option(_)) {
                     return val;
                 }
                 (
@@ -467,6 +479,16 @@ impl<'a> MirLowerer<'a> {
                     let option_ty = self.lookup_expr_type(expr)
                         .filter(|t| matches!(t, MirType::Option(_)))
                         .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
+                    // The checker's type is the primary niche signal, but it's
+                    // often unresolved at a `none` — check the lowered type too,
+                    // or this builds a tagged option for a slotless niche and
+                    // stores its tag through a null address (#438).
+                    if matches!(&option_ty, MirType::Option(i) if **i == MirType::Handle) {
+                        return Ok((
+                            MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)),
+                            MirType::Handle,
+                        ));
+                    }
                     let result_local = self.builder.alloc_temp(option_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
@@ -543,6 +565,12 @@ impl<'a> MirLowerer<'a> {
                         let option_ty = self.lookup_expr_type(expr)
                             .filter(|t| matches!(t, MirType::Option(_)))
                             .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
+                        if matches!(&option_ty, MirType::Option(i) if **i == MirType::Handle) {
+                            return Ok((
+                                MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)),
+                                MirType::Handle,
+                            ));
+                        }
                         let result_local = self.builder.alloc_temp(option_ty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: result_local,
@@ -1554,7 +1582,16 @@ impl<'a> MirLowerer<'a> {
                     // belongs — `Row { name: "bo" }` for a `string?` field put
                     // the string's first word in the tag slot and left the
                     // payload unwritten, so reading it back crashed (#376).
-                    let field_mir_ty = field_layout.map(|f| self.ctx.type_to_mir(&f.ty));
+                    let field_mir_ty = field_layout.map(|f| {
+                        // A `Handle?` field is a niche — the sentinel stands in
+                        // for `none`. `type_to_mir` doesn't always keep the
+                        // Handle inside the option, so read the declared type.
+                        if super::is_niche_option_handle(&f.ty) {
+                            MirType::Option(Box::new(MirType::Handle))
+                        } else {
+                            self.ctx.type_to_mir(&f.ty)
+                        }
+                    });
                     let val_op = self.wrap_sum_field_value(
                         field_mir_ty.as_ref(), &val_ty, val_op,
                     );
@@ -1626,8 +1663,8 @@ impl<'a> MirLowerer<'a> {
                 then_branch,
                 else_branch,
             } => {
-                let is_niche = self.is_niche_option_expr(expr);
                 let (val, val_ty) = self.lower_expr(expr)?;
+                let is_niche = self.option_is_niche(expr, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
 
                 // Compare tag against expected variant. Use type-context
@@ -1714,8 +1751,8 @@ impl<'a> MirLowerer<'a> {
                 pattern,
                 else_branch,
             } => {
-                let is_niche = self.is_niche_option_expr(expr);
                 let (val, val_ty) = self.lower_expr(expr)?;
+                let is_niche = self.option_is_niche(expr, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
 
                 let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
@@ -1763,8 +1800,8 @@ impl<'a> MirLowerer<'a> {
 
             // Pattern test (expr is Pattern) — evaluates to bool
             ExprKind::IsPattern { expr: inner, pattern } => {
-                let is_niche = self.is_niche_option_expr(inner);
                 let (val, val_ty) = self.lower_expr(inner)?;
+                let is_niche = self.option_is_niche(inner, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
                 let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
                 let result = self.builder.alloc_temp(MirType::Bool);
@@ -1795,8 +1832,8 @@ impl<'a> MirLowerer<'a> {
             // Presence predicate (postfix ?) — evaluates to bool.
             // Some/Ok tag is 0 (present/ok); None/Err tag is 1.
             ExprKind::IsPresent { expr: inner, .. } => {
-                let is_niche = self.is_niche_option_expr(inner);
                 let (val, _ty) = self.lower_expr(inner)?;
+                let is_niche = self.option_is_niche(inner, &_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
                 let result = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1812,8 +1849,8 @@ impl<'a> MirLowerer<'a> {
 
             // Unwrap (postfix !) - panic on None/Err
             ExprKind::Unwrap { expr: inner, message: _ } => {
-                let is_niche = self.is_niche_option_expr(inner);
                 let (val, _inner_ty) = self.lower_expr(inner)?;
+                let is_niche = self.option_is_niche(inner, &_inner_ty);
                 let tag_local = self.emit_option_tag(&val, is_niche);
 
                 let ok_block = self.builder.create_block();
@@ -1842,8 +1879,8 @@ impl<'a> MirLowerer<'a> {
 
             // Null coalescing (a ?? b)
             ExprKind::NullCoalesce { value, default } => {
-                let is_niche = self.is_niche_option_expr(value);
                 let (val, val_ty) = self.lower_expr(value)?;
+                let is_niche = self.option_is_niche(value, &val_ty);
                 let tag_local = self.emit_option_tag(&val, is_niche);
 
                 let some_block = self.builder.create_block();
@@ -1955,8 +1992,8 @@ impl<'a> MirLowerer<'a> {
                 // type. Earlier lowering ignored the field name and just
                 // unwrapped the Option, which collapsed the chain to garbage
                 // for any non-leaf access (#271).
-                let is_niche = self.is_niche_option_expr(object);
-                let (obj, _) = self.lower_expr(object)?;
+                let (obj, obj_opt_ty) = self.lower_expr(object)?;
+                let is_niche = self.option_is_niche(object, &obj_opt_ty);
                 let tag_local = self.emit_option_tag(&obj, is_niche);
 
                 // Resolve the payload struct's layout to find the field's
@@ -3952,7 +3989,12 @@ impl<'a> MirLowerer<'a> {
             && self.ctx.lookup_raw_type(object.id)
                 .map_or(false, |ty| ty.is_option());
         if is_option_none_cmp {
-            let is_niche = self.is_niche_option_expr(object);
+            let operand_ty = match obj_op {
+                MirOperand::Local(id) => self.builder.local_type(*id),
+                _ => None,
+            };
+            let is_niche = self.is_niche_option_expr(object)
+                || matches!(operand_ty, Some(MirType::Option(ref i)) if **i == MirType::Handle);
             let tag_local = self.emit_option_tag(obj_op, is_niche);
             let result = self.builder.alloc_temp(MirType::Bool);
             // tag == 1 means None; tag == 0 means Some.
@@ -4488,7 +4530,8 @@ impl<'a> MirLowerer<'a> {
             }
         }
         if method == "unwrap" && args.is_empty() {
-            let is_niche = self.is_niche_option_expr(object);
+            let is_niche = self.is_niche_option_expr(object)
+                || matches!(obj_ty, MirType::Option(ref i) if **i == MirType::Handle);
             let tag_local = self.emit_option_tag(obj_op, is_niche);
 
             let ok_block = self.builder.create_block();
@@ -4738,8 +4781,8 @@ impl<'a> MirLowerer<'a> {
         pattern: &rask_ast::expr::Pattern,
         right: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
-        let is_niche = self.is_niche_option_expr(scrutinee);
         let (val, val_ty) = self.lower_expr(scrutinee)?;
+        let is_niche = self.option_is_niche(scrutinee, &val_ty);
         let tag = self.emit_option_tag(&val, is_niche);
         let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
 
@@ -4807,8 +4850,8 @@ impl<'a> MirLowerer<'a> {
         then_name: Option<String>,
         else_name: Option<String>,
     ) -> Result<TypedOperand, LoweringError> {
-        let is_niche = self.is_niche_option_expr(inner);
         let (val, scrutinee_ty) = self.lower_expr(inner)?;
+        let is_niche = self.option_is_niche(inner, &scrutinee_ty);
         let tag = self.emit_option_tag(&val, is_niche);
 
         // Branch on tag: 0 = present (Some/Ok), nonzero = absent (None/Err).

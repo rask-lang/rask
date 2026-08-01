@@ -4064,6 +4064,11 @@ impl<'a> FunctionBuilder<'a> {
                 // Scalars are stored as 8-byte values in codegen; .max(8) prevents OOB writes.
                 Some(crate::layouts::RESULT_PAYLOAD_OFFSET as u32 + ok_size.max(8).max(err_size.max(8)))
             }
+            // A `Handle?` is a niche: `none` is a sentinel handle, so the value
+            // is one word with no tag and needs no slot. Giving it the tagged
+            // layout made the local hold a slot address, and comparing that
+            // against the sentinel was always false (#438).
+            MirType::Option(inner) if **inner == MirType::Handle => None,
             MirType::Option(inner) => {
                 let inner_size = Self::resolve_type_alloc_size(inner, struct_layouts, enum_layouts)
                     .unwrap_or(inner.size());

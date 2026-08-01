@@ -2180,6 +2180,15 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or(false)
     }
 
+    /// Same question, with the lowered type as a second opinion. A `Handle?`
+    /// field inside a pool element often has no checker type to read — the
+    /// element's fields aren't typed at the use site — and reading it as a
+    /// tagged option then tested a tag that isn't there (#438).
+    pub(crate) fn option_is_niche(&self, expr: &Expr, ty: &MirType) -> bool {
+        self.is_niche_option_expr(expr)
+            || matches!(ty, MirType::Option(inner) if **inner == MirType::Handle)
+    }
+
     /// Emit a tag-equivalent check for an option value.
     ///
     /// Returns a local that is 0 for Some, non-zero for None — matching
