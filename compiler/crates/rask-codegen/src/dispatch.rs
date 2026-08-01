@@ -234,6 +234,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Vec_sort", "rask_vec_sort", &[types::I64], None, false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
+        StdlibEntry::simple("Vec_swap", "rask_vec_swap", &[types::I64, types::I64, types::I64], None, true),
         StdlibEntry::simple("Vec_contains", "rask_vec_contains", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_dedup", "rask_vec_dedup", &[types::I64], None, false),
         StdlibEntry {
@@ -464,6 +465,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
+            mir_name: "string_replacen", c_name: "rask_string_replacen",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "string_from_char", c_name: "rask_string_from_char",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("string_char_count", "rask_string_char_count", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_is_ascii", "rask_string_str_is_ascii", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
             mir_name: "string_append", c_name: "rask_string_append",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
@@ -574,9 +587,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::DerefOrString,
         },
         StdlibEntry {
-            mir_name: "Map_remove", c_name: "rask_map_remove",
+            // Declared `-> Option<V>`: hand back the removed value, not a
+            // 0/-1 status. NULL → none, otherwise some(the value).
+            mir_name: "Map_remove", c_name: "rask_map_take",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::DerefOption,
         },
         StdlibEntry::simple("Map_len", "rask_map_len", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Map_is_empty", "rask_map_is_empty", &[types::I64], Some(types::I64), false),

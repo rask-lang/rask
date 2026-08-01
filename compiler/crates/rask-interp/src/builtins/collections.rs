@@ -137,6 +137,20 @@ impl Interpreter {
                 }
             }
             "reverse" => { v.lock().unwrap().reverse(); Ok(Value::Unit) }
+            "swap" => {
+                let i = self.expect_int(&args, 0)?;
+                let j = self.expect_int(&args, 1)?;
+                let mut guard = v.lock().unwrap();
+                let len = guard.len() as i64;
+                if i < 0 || i >= len || j < 0 || j >= len {
+                    return Err(RuntimeError::Panic(format!(
+                        "Vec.swap: index out of bounds: {}/{} but length is {}",
+                        i, j, len
+                    )));
+                }
+                guard.swap(i as usize, j as usize);
+                Ok(Value::Unit)
+            }
             "join" => {
                 let sep = self.expect_string(&args, 0)?;
                 let joined: String = v
@@ -1334,6 +1348,15 @@ impl Interpreter {
             }
             (TypeConstructorKind::String, "new") => {
                 Ok(Value::String(Arc::new(Mutex::new(String::new()))))
+            }
+            (TypeConstructorKind::String, "from_char") => {
+                let c = match args.first() {
+                    Some(Value::Char(c)) => *c,
+                    _ => return Err(RuntimeError::TypeError(
+                        "string.from_char expects a char".to_string(),
+                    )),
+                };
+                Ok(Value::String(Arc::new(Mutex::new(c.to_string()))))
             }
             (TypeConstructorKind::String, "from_c") => {
                 // In the interpreter, from_c just copies the string (no real raw pointers).

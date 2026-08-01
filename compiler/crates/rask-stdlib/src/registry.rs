@@ -117,12 +117,13 @@ const STRING_METHODS: &[&str] = &[
     "replace", "substring", "parse_int", "parse",
     "char_at", "byte_at", "parse_float", "find", "index_of", "rfind",
     "repeat", "reverse", "eq", "ne",
+    "char_count", "is_ascii", "replacen", "from_char",
 ];
 
 const VEC_METHODS: &[&str] = &[
     "push", "pop", "len", "get", "is_empty", "clear",
     "iter", "skip", "take", "first", "last", "contains",
-    "reverse", "join", "eq", "ne", "clone", "to_vec",
+    "reverse", "swap", "join", "eq", "ne", "clone", "to_vec",
     "insert", "remove", "collect", "chunks",
     "filter", "map", "flat_map", "fold", "reduce",
     "enumerate", "zip", "limit", "flatten",

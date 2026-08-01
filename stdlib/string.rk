@@ -20,7 +20,6 @@ extend string {
     public unsafe func from_utf8_unchecked(bytes: Vec<u8>) -> string { }
 
     /// Single-character string.
-    @unimplemented
     public func from_char(c: char) -> string { }
 
     /// Concatenate two strings. Allocates.
@@ -32,7 +31,6 @@ extend string {
     public func len(self) -> usize { }
 
     /// Number of Unicode scalars. O(n).
-    @unimplemented
     public func char_count(self) -> usize { }
 
     /// True if the string is empty. O(1).
@@ -122,7 +120,6 @@ extend string {
     public func replace(self, from: string, to: string) -> string { }
 
     /// Replace first n occurrences. Allocates.
-    @unimplemented
     public func replacen(self, from: string, to: string, n: usize) -> string { }
 
     /// Reverse by Unicode scalars. Allocates.

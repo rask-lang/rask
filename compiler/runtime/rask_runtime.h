@@ -99,6 +99,7 @@ int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
 void     rask_vec_reverse(RaskVec *v);
+void     rask_vec_swap(RaskVec *v, int64_t i, int64_t j);
 int64_t  rask_vec_contains(const RaskVec *v, const void *elem);
 void     rask_vec_dedup(RaskVec *v);
 void    *rask_vec_first(const RaskVec *v);
@@ -163,6 +164,10 @@ void        rask_string_trim_end(RaskStr *out, const RaskStr *s);
 void        rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_reverse(RaskStr *out, const RaskStr *s);
 void        rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to);
+void        rask_string_replacen(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to, int64_t n);
+int64_t     rask_string_char_count(const RaskStr *s);
+int64_t     rask_string_str_is_ascii(const RaskStr *s);
+void        rask_string_from_char(RaskStr *out, int64_t cp);
 
 // Builder operations (out-param: mutates string via promote-to-heap)
 void        rask_string_push_byte(RaskStr *out, const RaskStr *s, uint8_t byte);
@@ -257,6 +262,7 @@ int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
 void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);
+void    *rask_map_take(RaskMap *m, const void *key);
 int64_t  rask_map_contains(const RaskMap *m, const void *key);
 int64_t  rask_map_is_empty(const RaskMap *m);
 void     rask_map_clear(RaskMap *m);

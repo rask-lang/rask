@@ -408,6 +408,25 @@ void rask_vec_reverse(RaskVec *v) {
     }
 }
 
+// swap(i, j) — exchange two elements in place. Out-of-range indices panic,
+// same as indexing does; a silent no-op would hide the mistake.
+void rask_vec_swap(RaskVec *v, int64_t i, int64_t j) {
+    if (!v) return;
+    if (i < 0 || i >= v->len || j < 0 || j >= v->len) {
+        rask_panic("Vec.swap: index out of bounds");
+        return;
+    }
+    if (i == j) return;
+    int64_t es = v->elem_size;
+    char *a = v->data + i * es;
+    char *b = v->data + j * es;
+    for (int64_t k = 0; k < es; k++) {
+        char t = a[k];
+        a[k] = b[k];
+        b[k] = t;
+    }
+}
+
 // contains(vec, value) — returns 1 if any element equals value.
 int64_t rask_vec_contains(const RaskVec *v, const void *elem) {
     if (!v) return 0;

@@ -216,8 +216,13 @@ void *rask_map_get_unwrap(const RaskMap *m, const void *key) {
     return result;
 }
 
-int64_t rask_map_remove(RaskMap *m, const void *key) {
-    if (!m || m->len == 0) return -1;
+// Remove and hand back the value. `Map.remove` is declared `-> Option<V>`, so
+// the caller needs the value, not just whether something was there. The slot is
+// tombstoned but its bytes are left alone, so the returned pointer stays good
+// until the map is next written — the same window `rask_map_get`'s callers
+// already copy within.
+void *rask_map_take(RaskMap *m, const void *key) {
+    if (!m || m->len == 0) return NULL;
 
     uint64_t h = m->hash_fn(key, m->key_size);
     int64_t idx = (int64_t)(h % (uint64_t)m->cap);
@@ -226,16 +231,20 @@ int64_t rask_map_remove(RaskMap *m, const void *key) {
         int64_t slot = (idx + i) % m->cap;
         uint8_t state = m->states[slot];
 
-        if (state == MAP_EMPTY) return -1;
+        if (state == MAP_EMPTY) return NULL;
         if (state == MAP_TOMBSTONE) continue;
         if (m->eq_fn(m->keys + slot * m->key_size, key, m->key_size)) {
             m->states[slot] = MAP_TOMBSTONE;
             m->len--;
             m->tombstones++;
-            return 0;
+            return m->vals + slot * m->val_size;
         }
     }
-    return -1;
+    return NULL;
+}
+
+int64_t rask_map_remove(RaskMap *m, const void *key) {
+    return rask_map_take(m, key) != NULL ? 0 : -1;
 }
 
 int64_t rask_map_contains(const RaskMap *m, const void *key) {

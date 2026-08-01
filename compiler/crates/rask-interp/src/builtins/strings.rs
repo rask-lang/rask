@@ -128,6 +128,18 @@ impl Interpreter {
                 let to = self.expect_string(&args, 1)?;
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().replace(&from, &to)))))
             }
+            "replacen" => {
+                let from = self.expect_string(&args, 0)?;
+                let to = self.expect_string(&args, 1)?;
+                let n = self.expect_int(&args, 2)?;
+                let n = if n < 0 { 0 } else { n as usize };
+                Ok(Value::String(Arc::new(Mutex::new(
+                    s.lock().unwrap().replacen(&from, &to, n),
+                ))))
+            }
+            // Unicode scalars, not bytes — `len` is the byte count.
+            "char_count" => Ok(Value::int(s.lock().unwrap().chars().count() as i64)),
+            "is_ascii" => Ok(Value::Bool(s.lock().unwrap().is_ascii())),
             "substring" => {
                 let sb = s.lock().unwrap();
                 let start = self.expect_int(&args, 0)? as usize;
