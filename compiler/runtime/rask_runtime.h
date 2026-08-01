@@ -144,6 +144,7 @@ int64_t     rask_string_le(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_ge(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_byte_at(const RaskStr *s, int64_t pos);
 int64_t     rask_string_char_at(const RaskStr *s, int64_t index);
+int64_t     rask_string_index(const RaskStr *s, int64_t index);
 int64_t     rask_string_contains(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_starts_with(const RaskStr *s, const RaskStr *prefix);
 int64_t     rask_string_ends_with(const RaskStr *s, const RaskStr *suffix);

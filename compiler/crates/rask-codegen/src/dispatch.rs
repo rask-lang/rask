@@ -329,7 +329,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::neg_none("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_index_of", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
+        // `char_at` answers `char?`; the runtime signals out-of-range with -1,
+        // which is never a valid scalar.
+        StdlibEntry::neg_none("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
+        // `s[i]` — indexing panics on an out-of-range index, so it needs its own
+        // entry point rather than `char_at`'s none-on-miss (#353).
+        StdlibEntry::simple("string_index", "rask_string_index", &[types::I64, types::I64], Some(types::I64), true),
         StdlibEntry::simple("string_starts_with", "rask_string_starts_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_ends_with", "rask_string_ends_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_contains", "rask_string_contains", &[types::I64, types::I64], Some(types::I64), false),
