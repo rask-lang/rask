@@ -807,6 +807,57 @@ impl Interpreter {
                     }
                 }
 
+                // ER24: early-exit narrowing. `if x == none { <diverges> }` with
+                // no `else` — reaching the code after this `if` means the guard
+                // didn't fire, so `x` holds the success side. Rebind it directly
+                // in the current scope (not a pushed one, unlike the `if x?`
+                // case above) so the narrowing is visible to the statements that
+                // follow the whole `if`, not just inside a branch.
+                // (The `if x is ErrType { … }` shape is parsed as `IfLet`, not
+                // `If` — its equivalent narrowing lives in the `IfLet` arm.)
+                if else_branch.is_none() {
+                    // `x == none` desugars to `x.eq(none)`; a bare `Binary` survives
+                    // when desugar was skipped (e.g. the spec test runner).
+                    let none_check = match &cond.kind {
+                        ExprKind::MethodCall { object, method, args, .. }
+                            if method == "eq"
+                                && args.len() == 1
+                                && matches!(args[0].expr.kind, ExprKind::None) =>
+                        {
+                            match &object.kind {
+                                ExprKind::Ident(name) => Some((name.clone(), object.as_ref())),
+                                _ => None,
+                            }
+                        }
+                        ExprKind::Binary { op: BinOp::Eq, left, right }
+                            if matches!(right.kind, ExprKind::None) =>
+                        {
+                            match &left.kind {
+                                ExprKind::Ident(name) => Some((name.clone(), left.as_ref())),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some((name, inner)) = none_check {
+                        let scrutinee_val = self.eval_expr(inner)?;
+                        let is_none = matches!(
+                            &scrutinee_val,
+                            Value::Enum { variant, .. } if variant == "None"
+                        );
+                        if is_none {
+                            return self.eval_expr(then_branch);
+                        }
+                        if let Value::Enum { variant, fields, .. } = &scrutinee_val {
+                            if variant == "Some" {
+                                let payload = fields.first().cloned().unwrap_or(Value::Unit);
+                                self.env.define(name, payload);
+                            }
+                        }
+                        return Ok(Value::Unit);
+                    }
+                }
+
                 let cond_val = self.eval_expr(cond)?;
                 if self.is_truthy(&cond_val) {
                     self.eval_expr(then_branch)
@@ -1375,6 +1426,19 @@ impl Interpreter {
                 } else if let Some(else_br) = else_branch {
                     self.eval_expr(else_br)
                 } else {
+                    // ER24: early-exit narrowing. `if x is ErrType { <diverges> }`
+                    // with no `else` — the pattern didn't match, so `x` holds the
+                    // success side. Rebind it (in the current scope, so the
+                    // narrowing reaches the statements after this whole `if`) to
+                    // the unwrapped payload.
+                    if let (ExprKind::Ident(name), Value::Enum { variant, fields, .. }) =
+                        (&expr.kind, &value)
+                    {
+                        if matches!(variant.as_str(), "Ok" | "Some") {
+                            let payload = fields.first().cloned().unwrap_or(Value::Unit);
+                            self.env.define(name.clone(), payload);
+                        }
+                    }
                     Ok(Value::Unit)
                 }
             }
