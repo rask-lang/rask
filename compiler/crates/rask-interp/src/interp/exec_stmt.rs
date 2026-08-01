@@ -195,9 +195,13 @@ impl Interpreter {
                         start,
                         end,
                         inclusive,
+                        step,
+                        rev,
                     } => {
-                        let end_val = if inclusive { end + 1 } else { end };
-                        for i in start..end_val {
+                        let n = crate::value::range_count(start, end, inclusive, step);
+                        for k in 0..n {
+                            let idx = if rev { n - 1 - k } else { k };
+                            let i = start.wrapping_add(idx.wrapping_mul(step));
                             self.env.push_scope();
                             self.define_for_binding(binding, Value::int(i));
                             match self.exec_stmts(body) {

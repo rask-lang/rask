@@ -2202,16 +2202,37 @@ impl TypeChecker {
         field_ty
     }
 
+    /// type.primitives/NT1 — `ZERO`, `ONE`, `MIN`, `MAX` on every numeric type,
+    /// plus the float-only `EPSILON`/`NAN`/`INFINITY`.
+    ///
+    /// The constant has the type it names: `i32.MAX` is an `i32`. Handing back
+    /// `UnresolvedNamed("i32")` instead meant nothing downstream could see a
+    /// number there, so `i32.MAX == 2147483647` failed with "no method `eq`
+    /// found for type `i32`".
     pub(super) fn primitive_type_constant(type_name: &str, field: &str) -> Option<Type> {
-        if !matches!(field, "MAX" | "MIN" | "EPSILON" | "NAN" | "INFINITY") {
+        let float_only = matches!(field, "EPSILON" | "NAN" | "INFINITY");
+        if !float_only && !matches!(field, "MAX" | "MIN" | "ZERO" | "ONE") {
             return None;
         }
-        match type_name {
-            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => Some(Type::UnresolvedNamed(type_name.to_string())),
-            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => Some(Type::UnresolvedNamed(type_name.to_string())),
-            "f32" | "f64" => Some(Type::UnresolvedNamed(type_name.to_string())),
-            _ => None,
+        let ty = match type_name {
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "u64" | "usize" => Type::U64,
+            "u128" => Type::U128,
+            "i8" => Type::I8,
+            "i16" => Type::I16,
+            "i32" => Type::I32,
+            "i64" | "isize" => Type::I64,
+            "i128" => Type::I128,
+            "f32" => Type::F32,
+            "f64" => Type::F64,
+            _ => return None,
+        };
+        if float_only && !matches!(ty, Type::F32 | Type::F64) {
+            return None;
         }
+        Some(ty)
     }
 
     pub(super) fn get_symbol_type(&mut self, sym_id: SymbolId) -> Type {

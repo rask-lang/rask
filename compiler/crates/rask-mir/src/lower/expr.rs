@@ -72,22 +72,46 @@ fn extract_assert_is_pattern(condition: &Expr) -> Option<String> {
     }
 }
 
-/// Resolve primitive type associated constants (e.g. i64.MAX, i32.MIN).
+/// Resolve primitive type associated constants (type.primitives/NT1):
+/// `ZERO`, `ONE`, `MIN`, `MAX` on every numeric type.
 fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand> {
-    let (val, ty) = match (type_name, field) {
-        ("i8", "MAX") => (i8::MAX as i64, MirType::I8),
-        ("i8", "MIN") => (i8::MIN as i64, MirType::I8),
-        ("i16", "MAX") => (i16::MAX as i64, MirType::I16),
-        ("i16", "MIN") => (i16::MIN as i64, MirType::I16),
-        ("i32", "MAX") => (i32::MAX as i64, MirType::I32),
-        ("i32", "MIN") => (i32::MIN as i64, MirType::I32),
-        ("i64", "MAX") => (i64::MAX, MirType::I64),
-        ("i64", "MIN") => (i64::MIN, MirType::I64),
-        ("u8", "MAX") => (u8::MAX as i64, MirType::U8),
-        ("u16", "MAX") => (u16::MAX as i64, MirType::U16),
-        ("u32", "MAX") => (u32::MAX as i64, MirType::U32),
-        ("u64", "MAX") => (u64::MAX as i64, MirType::U64),
-        ("u8" | "u16" | "u32" | "u64", "MIN") => (0, MirType::U64),
+    if matches!(type_name, "f32" | "f64") {
+        let val = match field {
+            "ZERO" => 0.0,
+            "ONE" => 1.0,
+            "MIN" if type_name == "f32" => f32::MIN as f64,
+            "MIN" => f64::MIN,
+            "MAX" if type_name == "f32" => f32::MAX as f64,
+            "MAX" => f64::MAX,
+            "EPSILON" if type_name == "f32" => f32::EPSILON as f64,
+            "EPSILON" => f64::EPSILON,
+            "INFINITY" => f64::INFINITY,
+            "NAN" => f64::NAN,
+            _ => return None,
+        };
+        let ty = if type_name == "f32" { MirType::F32 } else { MirType::F64 };
+        return Some((MirOperand::Constant(MirConst::Float(val)), ty));
+    }
+
+    // `MIN`/`MAX` per width; `ZERO`/`ONE` are the same everywhere. u64::MAX
+    // rides in an i64 constant as its two's-complement bit pattern — the
+    // width in `ty` is what tells codegen to read it unsigned.
+    let (min, max, ty) = match type_name {
+        "i8" => (i8::MIN as i64, i8::MAX as i64, MirType::I8),
+        "i16" => (i16::MIN as i64, i16::MAX as i64, MirType::I16),
+        "i32" => (i32::MIN as i64, i32::MAX as i64, MirType::I32),
+        "i64" | "isize" => (i64::MIN, i64::MAX, MirType::I64),
+        "u8" => (0, u8::MAX as i64, MirType::U8),
+        "u16" => (0, u16::MAX as i64, MirType::U16),
+        "u32" => (0, u32::MAX as i64, MirType::U32),
+        "u64" | "usize" => (0, u64::MAX as i64, MirType::U64),
+        _ => return None,
+    };
+    let val = match field {
+        "MIN" => min,
+        "MAX" => max,
+        "ZERO" => 0,
+        "ONE" => 1,
         _ => return None,
     };
     Some((MirOperand::Constant(MirConst::Int(val)), ty))

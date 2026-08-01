@@ -299,6 +299,12 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match method {
             "eq" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a == b)) }
+            "ne" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a != b)) }
+            // false < true (type.operators support table)
+            "lt" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(!a & b)) }
+            "le" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a <= b)) }
+            "gt" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a & !b)) }
+            "ge" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a >= b)) }
             "compare" => { let b = self.expect_bool(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {
@@ -329,6 +335,12 @@ impl Interpreter {
             "len_utf8" => Ok(Value::int(c.len_utf8() as i64)),
             "to_string" => Ok(Value::String(Arc::new(Mutex::new(c.to_string())))),
             "eq" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c == other)) }
+            "ne" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c != other)) }
+            // Unicode scalar order (type.operators support table)
+            "lt" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c < other)) }
+            "le" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c <= other)) }
+            "gt" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c > other)) }
+            "ge" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c >= other)) }
             "compare" => { let other = self.expect_char(args, 0)?; Ok(ordering_value(c.cmp(&other))) }
             "debug_string" => Ok(Value::String(Arc::new(Mutex::new(format!("'{}'", c))))),
             "to_int" => Ok(Value::int(c as i64)),

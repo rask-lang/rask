@@ -518,6 +518,20 @@ impl TypeChecker {
                     _ => Err(TypeError::NoSuchMethod { ty, method, span }),
                 }
             }
+            // ctrl.ranges — the range adapters. Both return a range so they
+            // chain, and `for i in (0..5).rev()` still sees something iterable.
+            Type::UnresolvedNamed(name) if name == "Range" => {
+                match method.as_str() {
+                    "rev" if args.is_empty() => {
+                        self.unify(&ret, &Type::UnresolvedNamed("Range".to_string()), span)
+                    }
+                    "step" if args.len() == 1 => {
+                        self.unify(&args[0], &Type::I64, span)?;
+                        self.unify(&ret, &Type::UnresolvedNamed("Range".to_string()), span)
+                    }
+                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
+                }
+            }
             // Pool (bare, for static constructors like Pool.new())
             Type::UnresolvedNamed(name) if name == "Pool" => {
                 self.resolve_pool_static_method(&method, &args, &ret, span)
@@ -741,6 +755,30 @@ impl TypeChecker {
             Type::F32 | Type::F64 => {
                 self.resolve_float_method(&ty, &method, &args, &ret, span)
             }
+            // `bool` is Equal and Comparable with `false < true`
+            // (type.operators, support table).
+            Type::Bool => match method.as_str() {
+                "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                    self.unify(&args[0], &Type::Bool, span)?;
+                    self.unify(&ret, &Type::Bool, span)
+                }
+                "compare" if args.len() == 1 => {
+                    self.unify(&args[0], &Type::Bool, span)?;
+                    self.unify(&ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                }
+                "to_string" if args.is_empty() => self.unify(&ret, &Type::String, span),
+                _ => Err(TypeError::NoSuchMethod { ty, method, span }),
+            },
+            // type.tuples/TU9 — `==`/`!=` on tuples, element by element. The
+            // elements have to be comparable themselves, which unifying the
+            // two tuple types checks.
+            Type::Tuple(_) => match method.as_str() {
+                "eq" | "ne" if args.len() == 1 => {
+                    self.unify(&args[0], &ty, span)?;
+                    self.unify(&ret, &Type::Bool, span)
+                }
+                _ => Err(TypeError::NoSuchMethod { ty, method, span }),
+            },
             ty if ty.is_option() => {
                 let inner = ty.as_option().unwrap().clone();
                 self.resolve_option_method(&inner, &method, &args, &ret, span)
@@ -1074,9 +1112,16 @@ impl TypeChecker {
         }
 
         match method {
-            "eq" | "ne" if args.len() == 1 => {
+            // `char` is Comparable in Unicode scalar order (type.operators
+            // ORD1 and the support table). Only `eq`/`ne` were wired up, so
+            // `'a' < 'b'` reported "no method lt found for type char".
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
                 self.unify(&args[0], &Type::Char, span)?;
                 self.unify(ret, &Type::Bool, span)
+            }
+            "compare" if args.len() == 1 => {
+                self.unify(&args[0], &Type::Char, span)?;
+                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
             }
             // CH3: runtime construction returns `char?` — `none` on invalid scalar.
             "from_u32" if args.len() == 1 => {

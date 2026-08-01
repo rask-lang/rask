@@ -100,13 +100,13 @@ const F64_METHODS: &[&str] = &[
     "ln", "log10", "log2", "exp",
 ];
 
-const BOOL_METHODS: &[&str] = &["eq"];
+const BOOL_METHODS: &[&str] = &["eq", "lt", "le", "gt", "ge", "compare", "to_string"];
 
 const CHAR_METHODS: &[&str] = &[
     "is_whitespace", "is_ascii", "is_alphabetic", "is_numeric",
     "is_alphanumeric", "is_digit", "is_uppercase", "is_lowercase",
     "to_uppercase", "to_lowercase", "len_utf8",
-    "to_string", "eq",
+    "to_string", "eq", "lt", "le", "gt", "ge", "compare",
 ];
 
 const STRING_METHODS: &[&str] = &[
