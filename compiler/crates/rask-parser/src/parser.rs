@@ -4582,14 +4582,54 @@ impl Parser {
                 i += 1; // skip '}'
 
                 // Calculate byte offset of this expression within the string content
-                let byte_offset = s.char_indices()
+                let abs_offset = str_span.start + 1 + s.char_indices()
                     .nth(expr_start)
                     .map(|(pos, _)| pos)
                     .unwrap_or(0);
+                // `{}` and `{:spec}` are placeholders the runtime formatter
+                // fills in — nothing to parse here.
+                if expr_str.is_empty() || expr_str.starts_with(':') {
+                    literal.push('{');
+                    literal.push_str(&expr_str);
+                    literal.push('}');
+                    continue;
+                }
+
+                // `{expr}` or `{expr:spec}` (fmt/F1–F4). Split the same way the
+                // formatter does, then sanity-check the spec: a real one is a
+                // short run of spec characters. Anything with quotes or commas
+                // in it means these braces were never an interpolation —
+                // `"{\"x\":1,\"y\":2}"` used to parse as the expression `"x"`
+                // with `1,"y":2` as its "format spec", and the rest of the JSON
+                // vanished without a word (#506).
+                let (expr_part, spec) = match top_level_colon(&expr_str) {
+                    Some(pos) => (&expr_str[..pos], Some(&expr_str[pos + 1..])),
+                    None => (expr_str.as_str(), None),
+                };
+                let spec_is_plausible = spec.is_none_or(|sp| {
+                    !sp.is_empty() && sp.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || "_.<>^+-#$ ".contains(c)
+                    })
+                });
+
+                let bad_expr = |parser: &mut Self, detail: &str| {
+                    parser.errors.push(ParseError {
+                        span: Span::new(abs_offset, abs_offset + expr_str.len()),
+                        message: format!("`{{{}}}` is not a valid interpolation: {}", expr_str, detail),
+                        hint: Some("write `{{` for a literal `{` — a lone `{` starts an interpolation".to_string()),
+                        why: None,
+                    }.with_why("a `{` in a string always starts an interpolation, so what follows has to be an expression"));
+                };
+
+                if !spec_is_plausible {
+                    bad_expr(self, "there's more here than an expression and a format spec");
+                    return None;
+                }
 
                 // Parse the expression using the lexer/parser with correct context
-                let lex = rask_lexer::Lexer::new(&expr_str).tokenize();
+                let lex = rask_lexer::Lexer::new(expr_part).tokenize();
                 if !lex.errors.is_empty() {
+                    bad_expr(self, "the text inside doesn't lex");
                     return None;
                 }
                 // Reuse this parser's file_id and get sequential NodeIds
@@ -4597,18 +4637,27 @@ impl Parser {
                 let saved_pos = std::mem::replace(&mut self.pos, 0);
 
                 let result = self.parse_expr();
+                // The whole expression part belongs to the interpolation.
+                let leftover = !self.at_end()
+                    && !matches!(self.current_kind(), TokenKind::Newline);
 
                 self.tokens = saved_tokens;
                 self.pos = saved_pos;
 
                 let mut parsed = match result {
                     Ok(expr) => expr,
-                    Err(_) => return None,
+                    Err(e) => {
+                        bad_expr(self, &e.message);
+                        return None;
+                    }
                 };
+                if leftover {
+                    bad_expr(self, "there's more here than one expression");
+                    return None;
+                }
 
                 // Remap spans from 0-based (within expr_str) to absolute file position.
                 // str_span.start is the opening quote, +1 for content start, +byte_offset for position.
-                let abs_offset = str_span.start + 1 + byte_offset;
                 Self::offset_spans(&mut parsed, abs_offset);
 
                 segments.push(StringSegment::Expr(Box::new(parsed)));
@@ -5066,4 +5115,30 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Profile => "profile",
         _ => return None,
     })
+}
+
+/// Byte offset of the `:` that separates an interpolation's expression from its
+/// format spec, if there is one. Only a colon at the outer level counts — a
+/// struct literal inside the braces (`{f(Pt { x: 1, y: 2 })}`) has colons of its
+/// own, and taking the first one split the expression in half.
+fn top_level_colon(expr: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, c) in expr.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            _ if in_string => {}
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ':' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
 }

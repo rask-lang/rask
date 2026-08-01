@@ -782,6 +782,19 @@ fn error_keyword_fn_name() {
     );
 }
 
+// #506: a `{...}` in a string that isn't a single expression (plus an optional
+// format spec) is rejected, instead of parsing whatever fits and dropping the
+// rest — which is how a JSON body reached json.decode as the string "x".
+#[test]
+fn error_bad_interpolation() {
+    let (failed, out) = compile_error_output("bad_interpolation.rk");
+    assert!(failed, "a malformed interpolation must be rejected: {}", out);
+    assert!(
+        out.contains("is not a valid interpolation"),
+        "should name the interpolation as the problem: {}", out,
+    );
+}
+
 #[test]
 fn error_stdlib_renames() {
     // task-2b (#302): the old stdlib names are HARD errors, not aliases. Each
