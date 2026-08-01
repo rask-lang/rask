@@ -20,4 +20,3 @@ t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (
 t25_iterator_adapters.rk   # fold accumulator type never resolves — #327 (both, check)
 
 # --- new regression witnesses (this session) ---
-t43_widening_regressions.rk # optional widening interp lag — #393 (interp; result T-bind native part fixed in #389)

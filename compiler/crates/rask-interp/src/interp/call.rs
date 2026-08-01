@@ -51,6 +51,10 @@ impl Interpreter {
             } else {
                 arg.copy_on_bind()
             };
+            // OPT6: a bare `T` passed where the parameter is `T?` widens at the
+            // call. Without it `present_bare(3)` bound a raw 3 and `x?` had no
+            // tag to read (#393).
+            let arg = wrap_optional_layers(arg, &param.ty);
             self.env.define(param.name.clone(), arg);
         }
 
