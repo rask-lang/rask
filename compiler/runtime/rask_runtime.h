@@ -188,6 +188,7 @@ RaskVec    *rask_string_chars(const RaskStr *s);
 
 // Conversion to string (out-param)
 void        rask_i64_to_string(RaskStr *out, int64_t val);
+void        rask_u64_to_string(RaskStr *out, uint64_t val);
 void        rask_bool_to_string(RaskStr *out, int64_t val);
 void        rask_f64_to_string(RaskStr *out, double val);
 void        rask_char_to_string(RaskStr *out, int32_t codepoint);

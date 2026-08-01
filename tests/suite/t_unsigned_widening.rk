@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Unsigned values widen by zero-extension, and print unsigned (#326).
+//
+// Cranelift's integer types carry no signedness, so every widen sign-extended:
+// `u8` 200 printed as -56, and `x as u64` on a `u16` 60000 became 2^64 - 5536.
+
+struct Rec { public n: u32, public m: u8 }
+
+func widen(x: u16) -> u64 {
+    return x as u64
+}
+
+test "printing at the top of each unsigned range" {
+    const a: u8 = 255
+    const b: u16 = 65535
+    const c: u32 = 4294967295
+    assert "{a}" == "255"
+    assert "{b}" == "65535"
+    assert "{c}" == "4294967295"
+    assert c.to_string() == "4294967295"
+}
+
+test "unsigned struct fields" {
+    const r = Rec { n: 4000000000, m: 200 }
+    assert "{r.n}" == "4000000000"
+    assert "{r.m}" == "200"
+}
+
+test "as-conversion to a wider unsigned type" {
+    assert widen(60000) == 60000
+    const s: u8 = 200
+    assert (s as u64) == 200
+    assert (s as u32) == 200
+}
+
+test "comparisons past the sign bit" {
+    const a: u8 = 200
+    const c: u32 = 4000000000
+    assert a > 100
+    assert c > 1000
+}
+
+test "arithmetic accumulating into a wider unsigned" {
+    const v = Vec.from([200, 250])
+    mut sum: u64 = 0
+    for e in v {
+        sum = sum + e
+    }
+    assert sum == 450
+}

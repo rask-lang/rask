@@ -1417,6 +1417,16 @@ impl<'a> FunctionBuilder<'a> {
                 let val = Self::lower_operand(builder, value, ctx)?;
                 let target = mir_to_cranelift_type(target_ty)?;
                 let val_ty = builder.func.dfg.value_type(val);
+                // Widening an unsigned source zero-extends. Sign-extending it
+                // turned `x as u64` on a `u16` 60000 into 2^64 - 5536 (#326).
+                let src_unsigned = Self::operand_mir_type(value, ctx.locals)
+                    .is_some_and(|t| matches!(t,
+                        MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64));
+                if src_unsigned && target.is_int() && val_ty.is_int()
+                    && target.bits() > val_ty.bits()
+                {
+                    return Ok(builder.ins().uextend(target, val));
+                }
                 Ok(Self::convert_value(builder, val, val_ty, target))
             }
 
@@ -4804,6 +4814,17 @@ impl<'a> FunctionBuilder<'a> {
                 if let Some(exp_ty) = expected_ty {
                     let actual_ty = builder.func.dfg.value_type(val);
                     if actual_ty != exp_ty && actual_ty.is_int() && exp_ty.is_int() {
+                        // Cranelift's integer types carry no signedness, so
+                        // `convert_value` widens by sign-extending. An unsigned
+                        // value has to zero-extend or its top bit reads as a
+                        // sign — `u8` 200 arrived as -56 (#326).
+                        let is_unsigned = ctx.locals.iter()
+                            .find(|l| l.id == *local_id)
+                            .map_or(false, |l| matches!(l.ty,
+                                MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64));
+                        if is_unsigned && exp_ty.bits() > actual_ty.bits() {
+                            return Ok(builder.ins().uextend(exp_ty, val));
+                        }
                         return Ok(Self::convert_value(builder, val, actual_ty, exp_ty));
                     }
                 }

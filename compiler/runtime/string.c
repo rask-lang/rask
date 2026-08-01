@@ -710,6 +710,12 @@ void rask_i64_to_string(RaskStr *out, int64_t val) {
     rask_string_from(out, buf);
 }
 
+void rask_u64_to_string(RaskStr *out, uint64_t val) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%llu", (unsigned long long)val);
+    rask_string_from(out, buf);
+}
+
 void rask_bool_to_string(RaskStr *out, int64_t val) {
     rask_string_from(out, val ? "true" : "false");
 }
