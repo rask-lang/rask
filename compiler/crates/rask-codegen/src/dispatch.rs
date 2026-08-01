@@ -55,6 +55,12 @@ pub enum ArgAdapt {
     /// parse: append an out-param for the value; the call returns 0/1 status,
     /// which becomes the `T or ParseError` tag.
     ParseOutParam,
+    /// Append the destination `T?`'s payload address as an out-param. The call
+    /// returns 1 (wrote a value) or 0 (nothing there), which becomes the tag.
+    /// For anything that hands an element back out of a container it's about to
+    /// free — the runtime copies while the element is still live, instead of
+    /// returning a pointer into freed storage.
+    OptionOutParam,
     /// Complex case handled by hand-written code
     Custom,
 }
@@ -635,9 +641,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // `remove` answers `T?` — DerefOption turns the returned slot pointer
         // into some(elem), and NULL (stale handle) into none.
         StdlibEntry {
-            mir_name: "Pool_remove", c_name: "rask_pool_remove_ptr",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+            mir_name: "Pool_remove", c_name: "rask_pool_remove_out",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::OptionOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
             mir_name: "Pool_get", c_name: "rask_pool_get_packed",

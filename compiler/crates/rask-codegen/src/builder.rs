@@ -106,6 +106,9 @@ enum CallAdapt {
     DerefOption,
     /// Pop-style: value written to this stack slot by callee
     PopOutParam(StackSlot),
+    /// The callee wrote the payload straight into the destination `T?`'s slot
+    /// and returned 1 (wrote) or 0 (nothing). Only the tag is left to set.
+    OptionOutParam(StackSlot),
     /// String out-param: callee wrote 16-byte RaskStr to this slot.
     /// Result is the slot address (pointer), not a loaded value.
     StringOutParam(StackSlot),
@@ -3776,6 +3779,26 @@ impl<'a> FunctionBuilder<'a> {
                     // Value was written to stack slot by callee
                     builder.ins().stack_load(types::I64, ss, 0)
                 }
+                CallAdapt::OptionOutParam(ss) => {
+                    // Payload is already in place; 1 means it's there (tag 0),
+                    // 0 means there was nothing (tag 1).
+                    let results = builder.inst_results(call_inst);
+                    let wrote = if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    let some_tag = builder.ins().iconst(types::I64, 0);
+                    let none_tag = builder.ins().iconst(types::I64, 1);
+                    let tag = builder.ins().select(wrote, some_tag, none_tag);
+                    builder.ins().stack_store(tag, ss, crate::layouts::TAG_OFFSET);
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                        if *dst_ss == ss {
+                            slot_already_written = true;
+                        }
+                    }
+                    builder.ins().iconst(types::I64, 0)
+                }
                 CallAdapt::StringOutParam(ss) => {
                     // 16-byte RaskStr written to stack slot — return slot address.
                     // If this slot is the dst's own slot, mark as already written.
@@ -5072,6 +5095,23 @@ impl<'a> FunctionBuilder<'a> {
                 ));
                 args.push(builder.ins().stack_addr(types::I64, ss, 0));
                 CallAdapt::PopOutParam(ss)
+            }
+
+            ArgAdapt::OptionOutParam => {
+                // Hand the callee the destination's payload address so it can
+                // copy the element out while it's still live. The old shape —
+                // return a pointer and have codegen copy afterwards — meant the
+                // pointer named storage the pool had already put on its free
+                // list by the time anyone read it.
+                let ss = dst
+                    .and_then(|id| ctx.stack_slot_map.get(id))
+                    .map(|(ss, _)| *ss)
+                    .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, 16, 0,
+                    )));
+                let addr = builder.ins().stack_addr(types::I64, ss, crate::layouts::PAYLOAD_OFFSET);
+                args.push(addr);
+                CallAdapt::OptionOutParam(ss)
             }
 
             ArgAdapt::ParseOutParam => {

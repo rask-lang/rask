@@ -49,6 +49,41 @@ test "removing twice answers none the second time" {
     assert (p.remove(a)? == false)
 }
 
+// The element used to come back as a pointer into the slot the pool had just
+// put on its free list. Whether that pointer still named the right bytes
+// depended on nothing else touching the pool first — so a second remove, or an
+// insert that reused the slot, could rewrite the value out from under it. The
+// element is copied out now, while it's still live.
+test "an earlier removal survives a later one" {
+    mut p: Pool<Node> = Pool.new()
+    const a = p.insert(Node { v: 5, tag: "first" })
+    const b = p.insert(Node { v: 9, tag: "second" })
+    const ra = p.remove(a)
+    const rb = p.remove(b)
+    mut first = 0
+    mut second = 0
+    if ra? as n {
+        first = n.v
+    }
+    if rb? as n {
+        second = n.v
+    }
+    assert first == 5
+    assert second == 9
+}
+
+test "a reused slot doesn't rewrite what was removed" {
+    mut p: Pool<Node> = Pool.new()
+    const a = p.insert(Node { v: 5, tag: "first" })
+    const taken = p.remove(a)
+    const b = p.insert(Node { v: 77, tag: "reused" })
+    assert p[b].v == 77
+    if taken? as n {
+        assert n.v == 5
+        assert n.tag == "first"
+    }
+}
+
 test "the other entries survive" {
     mut p: Pool<Node> = Pool.new()
     const a = p.insert(Node { v: 5, tag: "first" })
