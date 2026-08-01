@@ -288,7 +288,11 @@ mod tests {
                     .expect(&format!("Failed to read {}", path.display()));
                 let lex_result = rask_lexer::Lexer::new(&src).tokenize();
                 assert!(lex_result.is_ok(), "Lex errors in {}: {:?}", path.display(), lex_result.errors);
-                let parse_result = Parser::new(lex_result.tokens).parse();
+                // Stubs declare `func assert(...)` and friends so the checker
+                // knows their signatures — same allowance the stub loader uses.
+                let parse_result = Parser::new(lex_result.tokens)
+                    .allow_keyword_fn_names()
+                    .parse();
                 assert!(parse_result.is_ok(), "Parse errors in {}: {:?}", path.display(), parse_result.errors);
             }
         }

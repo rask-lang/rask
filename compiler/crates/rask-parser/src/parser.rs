@@ -28,6 +28,10 @@ pub struct Parser {
     doc_buffer: Vec<String>,
     /// File index for multi-file packages (0 for single-file).
     file_id: u16,
+    /// Stub files declare `func assert(...)` and friends so the checker knows
+    /// their signatures. Real source can't — the call would parse as the
+    /// keyword form — so only stub parsing sets this.
+    allow_keyword_fn_names: bool,
 }
 
 impl Parser {
@@ -43,7 +47,14 @@ impl Parser {
 
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false }
+    }
+
+    /// Let top-level `func` declarations use keyword names. Only stub files
+    /// need this — see `allow_keyword_fn_names`.
+    pub fn allow_keyword_fn_names(mut self) -> Self {
+        self.allow_keyword_fn_names = true;
+        self
     }
 
     /// Return the next available NodeId (for chaining across files).
@@ -235,78 +246,16 @@ impl Parser {
     /// Allow keywords as field/method names.
     /// After `.` or `?.`, any keyword can be used as an identifier.
     fn expect_ident_or_keyword(&mut self) -> Result<String, ParseError> {
-        let name = match self.current_kind().clone() {
-            TokenKind::Ident(name) => name,
-            // Control flow
-            TokenKind::If => "if".to_string(),
-            TokenKind::Else => "else".to_string(),
-            TokenKind::Match => "match".to_string(),
-            TokenKind::For => "for".to_string(),
-            TokenKind::In => "in".to_string(),
-            TokenKind::While => "while".to_string(),
-            TokenKind::Loop => "loop".to_string(),
-            TokenKind::Break => "break".to_string(),
-            TokenKind::Continue => "continue".to_string(),
-            TokenKind::Return => "return".to_string(),
-            // Declarations
-            TokenKind::Func => "func".to_string(),
-            TokenKind::Let => "let".to_string(),
-            TokenKind::Mut => "mut".to_string(),
-            TokenKind::Const => "const".to_string(),
-            TokenKind::Struct => "struct".to_string(),
-            TokenKind::Enum => "enum".to_string(),
-            TokenKind::Trait => "trait".to_string(),
-            TokenKind::Extend => "extend".to_string(),
-            TokenKind::Import => "import".to_string(),
-            TokenKind::Type => "type".to_string(),
-            // Modifiers
-            TokenKind::Public => "public".to_string(),
-            TokenKind::Private => "private".to_string(),
-            TokenKind::Take => "take".to_string(),
-            TokenKind::Own => "own".to_string(),
-            TokenKind::ReadKw => "read".to_string(),
-            TokenKind::MutateKw => "mutate".to_string(),
-            TokenKind::Unsafe => "unsafe".to_string(),
-            TokenKind::Comptime => "comptime".to_string(),
-            TokenKind::Native => "native".to_string(),
-            TokenKind::Export => "export".to_string(),
-            TokenKind::Using => "using".to_string(),
-            TokenKind::Lazy => "lazy".to_string(),
-            // Concurrency
-            TokenKind::Select => "select".to_string(),
-            TokenKind::With => "with".to_string(),
-            // Error handling
-            TokenKind::Ensure => "ensure".to_string(),
-            TokenKind::Try => "try".to_string(),
-            // Testing
-            TokenKind::Test => "test".to_string(),
-            TokenKind::Benchmark => "benchmark".to_string(),
-            TokenKind::Assert => "assert".to_string(),
-            TokenKind::Check => "check".to_string(),
-            // Operators/keywords
-            TokenKind::As => "as".to_string(),
-            TokenKind::Is => "is".to_string(),
-            TokenKind::Where => "where".to_string(),
-            TokenKind::Or => "or".to_string(),
-            // Literals/constants
-            TokenKind::Bool(true) => "true".to_string(),
-            TokenKind::Bool(false) => "false".to_string(),
-            TokenKind::None => "none".to_string(),
-            TokenKind::Null => "null".to_string(),
-            // Other
-            TokenKind::Extern => "extern".to_string(),
-            TokenKind::Asm => "asm".to_string(),
-            TokenKind::Discard => "discard".to_string(),
-            // Build system
-            TokenKind::Package => "package".to_string(),
-            TokenKind::Scope => "scope".to_string(),
-            TokenKind::Feature => "feature".to_string(),
-            TokenKind::Profile => "profile".to_string(),
-            _ => return Err(ParseError::expected(
-                "a name",
-                self.current_kind(),
-                self.current().span,
-            ).with_hint("Names start with a letter or '_'")),
+        let name = match self.current_kind() {
+            TokenKind::Ident(name) => name.clone(),
+            other => match keyword_spelling(other) {
+                Some(kw) => kw.to_string(),
+                None => return Err(ParseError::expected(
+                    "a name",
+                    self.current_kind(),
+                    self.current().span,
+                ).with_hint("Names start with a letter or '_'")),
+            },
         };
         self.advance();
         Ok(name)
@@ -495,6 +444,7 @@ impl Parser {
                             span: self.current().span,
                             message: "rebindable 'mut' bindings are not allowed at the top level".to_string(),
                             hint: Some("use 'const' for permanent bindings, or move into a function".to_string()),
+                            why: None,
                         };
                         if !self.record_error(err) { break; }
                         self.synchronize();
@@ -504,6 +454,7 @@ impl Parser {
                             span: self.current().span,
                             message: "'let' is not a keyword in Rask".to_string(),
                             hint: Some("use 'const' for permanent bindings at the top level, or 'mut' inside a function for rebindable".to_string()),
+                            why: None,
                         };
                         if !self.record_error(err) { break; }
                         self.synchronize();
@@ -512,6 +463,7 @@ impl Parser {
                             span: self.current().span,
                             message: "unknown keyword 'pub'".to_string(),
                             hint: Some("use 'public' instead of 'pub'".to_string()),
+                            why: None,
                         };
                         if !self.record_error(err) { break; }
                         self.synchronize();
@@ -520,6 +472,7 @@ impl Parser {
                             span: self.current().span,
                             message: "unknown keyword 'fn'".to_string(),
                             hint: Some("use 'func' instead of 'fn'".to_string()),
+                            why: None,
                         };
                         if !self.record_error(err) { break; }
                         self.synchronize();
@@ -578,6 +531,7 @@ impl Parser {
                     span: top_level_stmts[0].span,
                     message: "top-level statements cannot coexist with an explicit main function".to_string(),
                     hint: Some("move statements into main() or remove the main function".to_string()),
+                    why: None,
                 });
             } else {
                 let span = self.span(
@@ -652,18 +606,23 @@ impl Parser {
                     span: self.current().span,
                     message: "unknown keyword 'pub'".to_string(),
                     hint: Some("use 'public' instead of 'pub'".to_string()),
+                    why: None,
                 });
             } else if s == "fn" {
                 return Err(ParseError {
                     span: self.current().span,
                     message: "unknown keyword 'fn'".to_string(),
                     hint: Some("use 'func' instead of 'fn'".to_string()),
+                    why: None,
                 });
             }
         }
 
         let kind = match self.current_kind() {
-            TokenKind::Func => self.parse_fn_decl(is_pub, false, is_comptime, is_unsafe, attrs, doc)?,
+            TokenKind::Func => {
+                self.reject_keyword_fn_name()?;
+                self.parse_fn_decl(is_pub, false, is_comptime, is_unsafe, attrs, doc)?
+            }
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
@@ -692,6 +651,7 @@ impl Parser {
                         span: self.current().span,
                         message: "package declarations cannot have modifiers".to_string(),
                         hint: Some("remove 'public', 'comptime', 'unsafe', or attributes".to_string()),
+                        why: None,
                     });
                 }
                 self.parse_package_decl()?
@@ -755,6 +715,36 @@ impl Parser {
     // Declaration Parsing
     // =========================================================================
 
+    /// A free function named with a keyword can be declared but never called —
+    /// `check(r)` parses as a check-expression, not as a call, and the type
+    /// error that comes out points at the argument (#500). Say so at the
+    /// declaration instead. Methods are exempt: `x.check()` is unambiguous, and
+    /// that's how `Option.or` is spelled.
+    fn reject_keyword_fn_name(&mut self) -> Result<(), ParseError> {
+        if self.allow_keyword_fn_names {
+            return Ok(());
+        }
+        let name_tok = &self.tokens[(self.pos + 1).min(self.tokens.len() - 1)];
+        let keyword = match &name_tok.kind {
+            TokenKind::Ident(_) => return Ok(()),
+            other => keyword_spelling(other),
+        };
+        let Some(keyword) = keyword else { return Ok(()) };
+        Err(ParseError {
+            span: name_tok.span,
+            message: format!("`{}` is a keyword, so it can't name a function", keyword),
+            hint: Some(format!(
+                "pick another name, or make it a method so the call reads `x.{}()`",
+                keyword
+            )),
+            why: None,
+        }
+        .with_why(format!(
+            "`{0}(…)` at a call site parses as the `{0}` expression, so this function could never be called",
+            keyword
+        )))
+    }
+
     fn parse_fn_decl(&mut self, is_pub: bool, is_private: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         let fn_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
@@ -789,6 +779,7 @@ impl Parser {
                     span: or_span,
                     message: "`or` must follow an explicit return type".to_string(),
                     hint: Some("write `-> void or E` (or pick the concrete success type)".to_string()),
+                    why: None,
                 });
             }
             None
@@ -1038,6 +1029,7 @@ impl Parser {
                     span,
                     message: "`()` is not a type".to_string(),
                     hint: Some("use `void` for the zero-sized type".to_string()),
+                    why: None,
                 });
             }
             let first_ty = self.parse_type_name()?;
@@ -1057,6 +1049,7 @@ impl Parser {
                         span,
                         message: "1-tuples are not supported".to_string(),
                         hint: Some(format!("tuples have arity >= 2; use `{}` directly", types[0])),
+                        why: None,
                     });
                 }
                 return Ok(format!("({})", types.join(", ")));
@@ -1489,6 +1482,7 @@ impl Parser {
                     span: self.current().span,
                     message: "unions cannot have methods".to_string(),
                     hint: Some("define methods separately with extend".to_string()),
+                    why: None,
                 });
             }
 
@@ -2545,6 +2539,7 @@ impl Parser {
                     span: self.current().span,
                     message: "'let' is not a keyword in Rask".to_string(),
                     hint: Some("use 'mut' for rebindable bindings or 'const' for permanent bindings".to_string()),
+                    why: None,
                 };
                 self.advance(); // consume 'let' so recovery doesn't loop
                 return Err(err);
@@ -3349,6 +3344,7 @@ impl Parser {
                         span: self.span(start, end),
                         message: "cannot negate `?` with prefix `!`".to_string(),
                         hint: Some("use `x == none` for Option or `r is E` for Result".to_string()),
+                        why: None,
                     });
                 }
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Not, operand: Box::new(operand) }, span: self.span(start, end) })
@@ -3733,6 +3729,7 @@ impl Parser {
                         name
                     ),
                     hint: Some(format!("write it as |mutate {}: T|", name)),
+                    why: None,
                 });
             } else {
                 None
@@ -3970,6 +3967,7 @@ impl Parser {
                     span: self.current().span,
                     message: "unexpected '::'".to_string(),
                     hint: Some("use '.' for paths (e.g., Result.Ok) instead of '::'".to_string()),
+                    why: None,
                 });
             }
 
@@ -4482,6 +4480,7 @@ impl Parser {
                 span: self.span(start, end),
                 message: "select requires at least one arm".to_string(),
                 hint: None,
+                why: None,
             });
         }
 
@@ -4915,6 +4914,10 @@ pub struct ParseError {
     pub span: Span,
     pub message: String,
     pub hint: Option<String>,
+    /// Why this is a rule, in the reader's terms. Most parse errors share the
+    /// generic "expected valid syntax" line; set this when there's something
+    /// more useful to say.
+    pub why: Option<String>,
 }
 
 impl std::fmt::Display for ParseError {
@@ -4929,11 +4932,18 @@ impl ParseError {
     fn expected(expected: &str, found: &TokenKind, span: Span) -> Self {
         let message = format_expected_message(expected, found);
         let hint = crate::hints::for_expected(expected, found).map(String::from);
-        Self { span, message, hint }
+        Self { span, message, hint, why: None }
     }
 
     fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+        self
+    }
+
+    /// Replace the generic "expected valid syntax" explanation with one that
+    /// says what the actual rule is.
+    fn with_why(mut self, why: impl Into<String>) -> Self {
+        self.why = Some(why.into());
         self
     }
 
@@ -4942,6 +4952,7 @@ impl ParseError {
             span,
             message: format!("{} are not yet implemented", feature),
             hint: Some(hint.to_string()),
+            why: None,
         }
     }
 }
@@ -4981,4 +4992,78 @@ fn format_expected_message(expected: &str, found: &TokenKind) -> String {
         }
         _ => format!("Expected {}, found {}", expected, found.display_name()),
     }
+}
+
+/// How a keyword token is spelled in source. `None` for anything that isn't a
+/// keyword. Used where keywords are allowed as names (field and method
+/// positions) and to name one in a diagnostic.
+fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
+    Some(match kind {
+        // Control flow
+        TokenKind::If => "if",
+        TokenKind::Else => "else",
+        TokenKind::Match => "match",
+        TokenKind::For => "for",
+        TokenKind::In => "in",
+        TokenKind::While => "while",
+        TokenKind::Loop => "loop",
+        TokenKind::Break => "break",
+        TokenKind::Continue => "continue",
+        TokenKind::Return => "return",
+        // Declarations
+        TokenKind::Func => "func",
+        TokenKind::Let => "let",
+        TokenKind::Mut => "mut",
+        TokenKind::Const => "const",
+        TokenKind::Struct => "struct",
+        TokenKind::Enum => "enum",
+        TokenKind::Trait => "trait",
+        TokenKind::Extend => "extend",
+        TokenKind::Import => "import",
+        TokenKind::Type => "type",
+        // Modifiers
+        TokenKind::Public => "public",
+        TokenKind::Private => "private",
+        TokenKind::Take => "take",
+        TokenKind::Own => "own",
+        TokenKind::ReadKw => "read",
+        TokenKind::MutateKw => "mutate",
+        TokenKind::Unsafe => "unsafe",
+        TokenKind::Comptime => "comptime",
+        TokenKind::Native => "native",
+        TokenKind::Export => "export",
+        TokenKind::Using => "using",
+        TokenKind::Lazy => "lazy",
+        // Concurrency
+        TokenKind::Select => "select",
+        TokenKind::With => "with",
+        // Error handling
+        TokenKind::Ensure => "ensure",
+        TokenKind::Try => "try",
+        // Testing
+        TokenKind::Test => "test",
+        TokenKind::Benchmark => "benchmark",
+        TokenKind::Assert => "assert",
+        TokenKind::Check => "check",
+        // Operators/keywords
+        TokenKind::As => "as",
+        TokenKind::Is => "is",
+        TokenKind::Where => "where",
+        TokenKind::Or => "or",
+        // Literals/constants
+        TokenKind::Bool(true) => "true",
+        TokenKind::Bool(false) => "false",
+        TokenKind::None => "none",
+        TokenKind::Null => "null",
+        // Other
+        TokenKind::Extern => "extern",
+        TokenKind::Asm => "asm",
+        TokenKind::Discard => "discard",
+        // Build system
+        TokenKind::Package => "package",
+        TokenKind::Scope => "scope",
+        TokenKind::Feature => "feature",
+        TokenKind::Profile => "profile",
+        _ => return None,
+    })
 }

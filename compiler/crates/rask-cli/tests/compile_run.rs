@@ -769,6 +769,19 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+// #500: a free function named with a keyword can be declared but never called,
+// so the declaration is rejected — and the message says why, instead of the
+// backwards type error the call site used to produce.
+#[test]
+fn error_keyword_fn_name() {
+    let (failed, out) = compile_error_output("keyword_fn_name.rk");
+    assert!(failed, "`func check(...)` must be rejected: {}", out);
+    assert!(
+        out.contains("`check` is a keyword"),
+        "should name the keyword: {}", out,
+    );
+}
+
 #[test]
 fn error_stdlib_renames() {
     // task-2b (#302): the old stdlib names are HARD errors, not aliases. Each

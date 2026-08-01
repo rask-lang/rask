@@ -42,7 +42,8 @@ impl ToDiagnostic for rask_parser::ParseError {
             diag = diag
                 .with_help(hint.as_str())
                 .with_fix(hint.as_str())
-                .with_why("the parser expected valid syntax at this position");
+                .with_why(self.why.as_deref()
+                    .unwrap_or("the parser expected valid syntax at this position"));
         }
 
         diag
