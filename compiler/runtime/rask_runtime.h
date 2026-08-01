@@ -751,6 +751,9 @@ void    rask_shared_drop_i64(int64_t shared);
 int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
 
 // Cell — single-owner interior mutability (mem.cell). No lock.
+int64_t rask_os_pid(void);
+RaskVec *rask_os_env_vars(void);
+
 int64_t rask_cell_new(int64_t data_ptr, int64_t data_size);
 int64_t rask_cell_get(int64_t cell);
 void    rask_cell_set(int64_t cell, int64_t data_ptr);

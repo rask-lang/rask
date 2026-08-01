@@ -15,6 +15,21 @@ use rask_ast::{
 };
 
 impl<'a> MirLowerer<'a> {
+    /// A `Vec<(A, B)>`'s element as a MIR tuple, for `for (a, b) in v`.
+    fn vec_tuple_elem_type(&self, iter_expr: &Expr) -> Option<MirType> {
+        use rask_types::{GenericArg, Type};
+        let ty = self.ctx.lookup_raw_type(iter_expr.id)?;
+        let args = match ty {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        let GenericArg::Type(elem) = args.first()? else { return None };
+        let Type::Tuple(parts) = elem.as_ref() else { return None };
+        Some(MirType::Tuple(
+            parts.iter().map(|p| self.ctx.type_to_mir(p)).collect(),
+        ))
+    }
+
     /// The element type of `m.keys()` / `m.values()` — the map's key or value
     /// type. Nothing downstream of the call knows it otherwise.
     fn map_projection_elem_type(&self, iter_expr: &Expr) -> Option<MirType> {
@@ -1574,6 +1589,14 @@ impl<'a> MirLowerer<'a> {
                 // `m.keys()` / `m.values()` hand back a Vec of the map's own key
                 // or value type; nothing else in the chain says what that is.
                 .or_else(|| self.map_projection_elem_type(iter_expr))
+                .filter(|t| !matches!(binding, ForBinding::Tuple(_))
+                    || matches!(t, MirType::Tuple(_)))
+                // Destructuring needs the element's real shape: a `Vec<(string,
+                // string)>` element is 32 bytes, and typed as a word the second
+                // field was read 8 bytes in instead of 16.
+                .or_else(|| matches!(binding, ForBinding::Tuple(_))
+                    .then(|| self.vec_tuple_elem_type(iter_expr))
+                    .flatten())
                 .unwrap_or(MirType::I64)
         };
         // Destructuring reads the whole element, then splits it. The binding

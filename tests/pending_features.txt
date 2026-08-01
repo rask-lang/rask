@@ -17,7 +17,6 @@ p04_ranges_rev_step.rk     # ctrl.ranges .rev()/.step() adapters — RV/SP (PLAN
 
 # --- works on interp, native backend not built (native RED) ---
 p06_select.rk              # conc.select no native MIR lowering — #405
-t41_os.rk                  # os.pid/env_vars have no native C symbols — Track 4
 
 # --- spec-heavy pending features ---
 p07_owned.rk               # mem.owned Owned<T> / `own` linear heap pointer — unimplemented

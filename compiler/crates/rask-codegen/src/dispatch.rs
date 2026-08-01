@@ -805,6 +805,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
+        StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
+        StdlibEntry::simple("os_env_vars", "rask_os_env_vars", &[], Some(types::I64), false),
         StdlibEntry {
             mir_name: "os_env_or", c_name: "rask_os_env_or",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
