@@ -1,20 +1,25 @@
 <!-- id: mem.parameters -->
 <!-- status: decided -->
-<!-- summary: Three parameter modes — borrow (default), mutate, take -->
+<!-- summary: Three parameter modes — borrow (default), mutate, take. Mutate arguments are marked at the call site too -->
 <!-- depends: memory/ownership.md, memory/borrowing.md -->
 <!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-parser/ -->
 
 # Parameter Modes
 
-Three modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow), **take** (ownership transfer).
+Three modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow), **take** (ownership transfer). Mutation is marked at both ends: `mutate` in the signature *and* on the argument at the call site.
 
 ## Modes
 
-| Rule | Mode | Syntax | Meaning | Caller After |
-|------|------|--------|---------|--------------|
-| **PM1: Borrow** | Borrow | `param: T` | Read-only access (enforced) | Value still valid |
-| **PM2: Mutate** | Mutate | `mutate param: T` | Mutable access | Value still valid |
-| **PM3: Take** | Take | `take param: T` | Ownership transfer | Value invalid |
+| Rule | Mode | Signature | Call site | Caller After |
+|------|------|-----------|-----------|--------------|
+| **PM1: Borrow** | Borrow | `param: T` | `f(x)` | Value still valid |
+| **PM2: Mutate** | Mutate | `mutate param: T` | `f(mutate x)` — marker required (PM4) | Value still valid |
+| **PM3: Take** | Take | `take param: T` | `f(x)` or `f(own x)` — marker optional | Value invalid |
+
+| Rule | Description |
+|------|-------------|
+| **PM4: Call-site mutate marker** | An argument passed to a `mutate` parameter is written `mutate arg` at the call site. Omitting it is a compile error with the one-token fix. Method receivers are exempt: `player.take_damage(10)` needs no marker — the receiver is understood to be the thing operated on |
+| **PM5: Marker follows the signature** | PM4 is syntactic: the marker is required exactly when the parameter is declared `mutate`, regardless of the argument's type. A Copy argument to a `mutate` parameter still writes `mutate` — the rule never depends on a type's size |
 
 ### Borrow Mode (Default)
 
@@ -50,6 +55,11 @@ func apply_damage(mutate player: Player, amount: i32) {
 func reset(mutate player: Player) {
     player = Player.new()                // full reassignment — allowed
 }
+
+mut player = Player.new()
+apply_damage(mutate player, 10)          // marker required at the call site (PM4)
+reset(mutate player)
+player.take_damage(10)                   // receiver: no marker (PM4)
 ```
 
 ### Take Mode
@@ -114,8 +124,8 @@ func loot(mutate inventory: Inventory) {
 }
 
 func update(mutate player: Player) {
-    heal(player.health)         // Borrows player.health
-    loot(player.inventory)      // OK: borrows player.inventory (disjoint)
+    heal(mutate player.health)         // Borrows player.health
+    loot(mutate player.inventory)      // OK: borrows player.inventory (disjoint)
 }
 ```
 
@@ -175,6 +185,19 @@ FIX: Add 'mutate' to allow mutation:
 5  |  func update(mutate data: Data) {
 ```
 
+**Missing call-site marker [PM4]:**
+```
+ERROR [mem.parameters/PM4]: `apply_damage` mutates `player` — mark it at the call site
+   |
+9  |  apply_damage(player, 10)
+   |               ^^^^^^ passed to a `mutate` parameter
+   |
+4  |  func apply_damage(mutate player: Player, amount: i32)
+   |                    ------ declared here
+
+FIX: apply_damage(mutate player, 10)
+```
+
 **Taking a borrowed parameter [PM3]:**
 ```
 ERROR [mem.parameters/PM3]: cannot take ownership of borrowed parameter
@@ -206,8 +229,11 @@ ERROR [mem.parameters/PM3]: value used after being taken
 | Generic parameters | PM1–PM3 | Mode applies to concrete type at instantiation |
 | Closure captures | — | Captured borrows follow closure lifetime rules (`mem.closures`) |
 | Pattern matching | PM2 | Mutation only allowed if parameter is `mutate` |
-| Copy type + mutate | PM2 | Value is copied in; mutations affect the copy |
-| Disjoint field borrows | — | Passing `value.field` to `mutate` borrows only that field (`mem.borrowing/F1`) |
+| Copy type + mutate | PM2/PM5 | Value is copied in; mutations affect the copy. Call site still writes `mutate` — the marker follows the signature, not the size |
+| Disjoint field borrows | — | Passing `mutate value.field` borrows only that field (`mem.borrowing/F1`) |
+| Method receiver | PM4 | Exempt — `x.method()` never marks the receiver, even for `mutate self` |
+| `mutate` marker on a borrow argument | PM4 | Compile error — marker without a `mutate` parameter is a lie the compiler rejects |
+| `mutate` marker on a `const` binding | PM2 | Compile error — `const` is deep; bind with `mut` first |
 
 ---
 
@@ -223,19 +249,13 @@ Note the interaction with `const` bindings: `const` is deep — you cannot pass 
 
 **PM3 (take):** The rare case. Ownership transfer only when you need to store, send, or consume.
 
-**Why no call-site markers for `mutate`?** Swift (`&x`), C# (`ref x`), and Rue (`&x`) all require markers at call sites for mutable parameters. Three languages converging on the same choice deserves an answer for why Rask diverges.
+**PM4 (call-site `mutate` markers — this flipped).** Swift (`&x`), C# (`ref x`), and Rue (`&x`) all require markers at call sites for mutable parameters. The first version of this spec chose against, on three arguments: ceremony is per-call not per-definition; `own` marks the destructive case so mutation (the reversible one) can stay quiet; and tooling shows the mode at call sites anyway. That reasoning is preserved in history because knowing why it lost matters.
 
-The argument *for* call-site markers: mutation is a major effect. When reading `apply_damage(player, 10)` in a diff, you can't tell if `player` gets mutated without checking the signature. Diffs, terminal output, and code review tools don't have ghost annotations.
+It lost to one observation: **mark what the compiler can't backstop.** Misread a move and your next use of the value is a compile error — the checker corrects the wrong belief, which is why `own` can stay optional. Misread a mutation and nothing corrects you: `apply_damage(player, 10)` compiles identically whether `player` changes or not, and a reviewer's wrong belief survives all the way to production. The old rationale marked the irreversible action; the irreversible action was the one that never needed marking. Ceremony belongs exactly where a wrong reading is *legal*.
 
-I chose against it for three reasons:
+The cost stayed small for the same reason the old rationale said it would: most mutation flows through receivers (`vec.push(x)`, `player.take_damage(10)`), which are exempt — the receiver is the thing being operated on, the universal convention in Go, Swift, and Rust alike. What PM4 marks is the rarer, easily-missed case: a free function (or a non-receiver argument) that reaches in and changes something you passed. One word, at the exact sites a plain-diff reviewer would otherwise have to look up.
 
-1. **Ceremony cost is per-call, not per-definition.** A `mutate` parameter is declared once but called many times. Adding markers to every call site trades one line of signature clarity for N lines of call-site noise. The signature is the contract — calls are uses of the contract.
-
-2. **`own` already marks the destructive case.** Ownership transfer (`take`) is the dangerous one — after the call, your value is gone. That gets a call-site marker (`own`). Mutation is temporary — your value comes back, possibly changed. The asymmetry is intentional: mark the irreversible action, not the reversible one.
-
-3. **Tooling covers the readability gap.** The compiler knows which arguments are mutated. IDEs show `mutate` as ghost text at call sites, and `rask annotate --diff` renders the same markers beside a diff for review (`tool.annotate`). The remaining cost: bare text with no tooling at all still loses this. I think that's acceptable — the signature is one jump away, and `mutate` in the signature is loud enough to notice.
-
-This is a deliberate tradeoff, not an oversight. If real-world usage shows that hidden mutation at call sites causes bugs or confusion, call-site markers can be added without breaking existing code (they'd be optional annotations on existing syntax).
+`take` arguments keep the optional `own` marker: write it for emphasis, or let the checker's use-after-move errors do the guarding. Making it required would mark the backstopped case — the mistake the old PM4 rationale made, inverted.
 
 ### Patterns & Guidance
 
@@ -264,22 +284,22 @@ Builder.new()
 
 **Signatures:** All modes are visible in source — no ghost annotations needed.
 
-**Call sites:** The IDE shows parameter modes as ghost text at each argument:
+**Call sites:** `mutate` is in source (PM4), so the only ghost left is `own` on unmarked take arguments:
 
 <!-- test: skip -->
 ```rask
-apply_damage(player, 10)        // IDE shows: apply_damage(mutate player, 10)
-consume(user)                   // IDE shows: consume(own user)  [already in source if take]
+apply_damage(mutate player, 10) // in source — nothing to ghost
+consume(user)                   // IDE shows: consume(own user)  [nothing if own written]
 process(data)                   // IDE shows nothing (borrow is default, no annotation)
 ```
 
 | Context | Ghost annotation |
 |---------|-----------------|
 | Borrow argument | None (default, no noise) |
-| `mutate` argument | `mutate` ghost before argument |
-| `take` argument | `own` ghost before argument (redundant if `own` already written) |
+| `mutate` argument | None — PM4 puts it in source |
+| `take` argument | `own` ghost before argument (nothing if `own` already written) |
 
-This bridges the gap between source-level simplicity and full visibility. In an IDE, mutation is always visible. In plain text (diffs, terminal), run `rask annotate`, which renders call-site modes beside each line (`tool.annotate`) — or check the function signature.
+Mutation is visible on every surface — source, diff, grep — with no tooling required. The `own` ghost (and `rask annotate`'s `own` row) covers the one remaining call-site mode, where the checker already guards against misreading.
 
 ### See Also
 
