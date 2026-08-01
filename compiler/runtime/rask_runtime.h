@@ -709,6 +709,7 @@ int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size);
 int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_mutex_acquire(int64_t mutex);
 void    rask_mutex_release(int64_t mutex);
+int64_t rask_mutex_data(int64_t mutex);
 int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_shared_read_acquire(int64_t shared);
 int64_t rask_shared_write_acquire(int64_t shared);

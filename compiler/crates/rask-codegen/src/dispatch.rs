@@ -1033,6 +1033,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Mutex_lock", "rask_mutex_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_acquire", "rask_mutex_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_release", "rask_mutex_release", &[types::I64], None, false),
+        StdlibEntry::simple("Mutex_data", "rask_mutex_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_try_lock", "rask_mutex_try_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_clone", "rask_mutex_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_drop", "rask_mutex_drop", &[types::I64], None, false),

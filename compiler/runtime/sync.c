@@ -211,6 +211,15 @@ void rask_mutex_release(int64_t mutex) {
     pthread_mutex_unlock(&m->lock);
 }
 
+// The payload's address without touching the lock. `with m.lock() as v { ... }`
+// loads a word-sized payload into a local, so the local has to be written back
+// before the lock is released — and acquire already consumed its own result.
+// Only ever called while the lock is held.
+int64_t rask_mutex_data(int64_t mutex) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    return (int64_t)(intptr_t)m->data;
+}
+
 int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     if (pthread_mutex_trylock(&m->lock) == 0) {
