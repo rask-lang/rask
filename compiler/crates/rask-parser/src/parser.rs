@@ -4623,15 +4623,16 @@ impl Parser {
                 // `"{\"x\":1,\"y\":2}"` used to parse as the expression `"x"`
                 // with `1,"y":2` as its "format spec", and the rest of the JSON
                 // vanished without a word (#506).
-                let (expr_part, spec) = match top_level_colon(&expr_str) {
+                let (expr_part, spec) = match rask_ast::fmt_spec::split_spec(&expr_str) {
                     Some(pos) => (&expr_str[..pos], Some(&expr_str[pos + 1..])),
                     None => (expr_str.as_str(), None),
                 };
-                let spec_is_plausible = spec.is_none_or(|sp| {
-                    !sp.is_empty() && sp.chars().all(|c| {
-                        c.is_ascii_alphanumeric() || "_.<>^+-#$ ".contains(c)
-                    })
-                });
+                // The spec has to be one the formatters actually understand.
+                // A character-class guess accepted ` 1`, so a one-pair JSON
+                // body `{"k": 1}` parsed as the expression `"k"` with ` 1` as
+                // its spec and printed `k` (#506).
+                let spec_is_plausible =
+                    spec.is_none_or(rask_ast::fmt_spec::is_valid_spec);
 
                 let bad_expr = |parser: &mut Self, detail: &str| {
                     parser.errors.push(ParseError {
@@ -5140,28 +5141,3 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
     })
 }
 
-/// Byte offset of the `:` that separates an interpolation's expression from its
-/// format spec, if there is one. Only a colon at the outer level counts — a
-/// struct literal inside the braces (`{f(Pt { x: 1, y: 2 })}`) has colons of its
-/// own, and taking the first one split the expression in half.
-fn top_level_colon(expr: &str) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (i, c) in expr.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            _ if in_string => {}
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            ':' if depth == 0 => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}

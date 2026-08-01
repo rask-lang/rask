@@ -348,7 +348,17 @@ impl Interpreter {
     }
 
     /// Format a value with a format specifier like :.2, :.1, :b, :x, etc.
+    /// Render `value` under `spec` (which still carries its leading `:`).
+    ///
+    /// The set of specs handled here is the one `rask_ast::fmt_spec` defines —
+    /// the parser rejects anything else before it gets this far, so the
+    /// fall-through arms are for specs that don't apply to this value's type
+    /// (`:x` on a string), not for unknown syntax.
     fn format_value_with_spec(value: &Value, spec: &str) -> String {
+        debug_assert!(
+            rask_ast::fmt_spec::is_valid_spec(&spec[1..]),
+            "unvalidated format spec reached the formatter: {spec}",
+        );
         let spec = &spec[1..]; // strip leading ':'
         match value {
             Value::Float(f) => {
@@ -359,8 +369,13 @@ impl Interpreter {
                 }
                 format!("{}", f)
             }
-            Value::Int(n, _) => {
+            Value::Int(n, k) => {
+                let unsigned = *n as u64;
                 match spec {
+                    "b" if k.is_unsigned() => format!("{:b}", unsigned),
+                    "x" if k.is_unsigned() => format!("{:x}", unsigned),
+                    "X" if k.is_unsigned() => format!("{:X}", unsigned),
+                    "o" if k.is_unsigned() => format!("{:o}", unsigned),
                     "b" => format!("{:b}", n),
                     "x" => format!("{:x}", n),
                     "X" => format!("{:X}", n),
