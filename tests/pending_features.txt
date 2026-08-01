@@ -16,7 +16,6 @@ p03_comparison_surface.rk  # char/tuple/bool ordering + equality operators — #
 p04_ranges_rev_step.rk     # ctrl.ranges .rev()/.step() adapters — RV/SP (PLAN)
 
 # --- works on interp, native backend not built (native RED) ---
-p05_operator_overload.rk   # type.operators user/derived operators native codegen — #399/#400
 p06_select.rk              # conc.select no native MIR lowering — #405
 t41_os.rk                  # os.pid/env_vars have no native C symbols — Track 4
 t50_boxes.rk               # Cell unlinked (Cell_new) + Mutex with garbage — #402/#268

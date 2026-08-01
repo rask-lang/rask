@@ -89,6 +89,13 @@ struct CodegenCtx<'a> {
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
 }
 
+/// How to compare one slot of an aggregate. Struct and enum-payload fields
+/// carry a Rask type from the layout; tuple and array elements carry a MIR one.
+enum FieldKind {
+    Rask(RaskType, u32),
+    Mir(MirType),
+}
+
 /// Result of adapting a stdlib call for the typed runtime API.
 enum CallAdapt {
     /// No special post-call handling needed
@@ -2260,6 +2267,29 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
 
+        // Same reasoning for `<`/`<=`/`>`/`>=`: comparing the two slot
+        // addresses answered from allocation order, so `a < b` on a struct was
+        // whichever local was declared first. Walk the contents instead —
+        // fields in declaration order, enum variant first then payload.
+        if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+            let agg_ty = Self::operand_mir_type(left, ctx.locals)
+                .filter(|t| Self::is_structural_ord_type(t))
+                .or_else(|| Self::operand_mir_type(right, ctx.locals)
+                    .filter(|t| Self::is_structural_ord_type(t)));
+            if let Some(ty) = agg_ty {
+                let lhs_ptr = Self::lower_operand(builder, left, ctx)?;
+                let rhs_ptr = Self::lower_operand(builder, right, ctx)?;
+                let cmp = Self::emit_aggregate_cmp(builder, ctx, lhs_ptr, rhs_ptr, &ty)?;
+                let cc = match op {
+                    BinOp::Lt => IntCC::SignedLessThan,
+                    BinOp::Le => IntCC::SignedLessThanOrEqual,
+                    BinOp::Gt => IntCC::SignedGreaterThan,
+                    _ => IntCC::SignedGreaterThanOrEqual,
+                };
+                return Ok(builder.ins().icmp_imm(cc, cmp, 0));
+            }
+        }
+
         let operand_ty = if is_comparison { None } else { expected_ty };
         let lhs_val = Self::lower_operand_typed(builder, left, operand_ty, ctx)?;
         let lhs_ty = builder.func.dfg.value_type(lhs_val);
@@ -2680,6 +2710,304 @@ impl<'a> FunctionBuilder<'a> {
             // content-compared yet.
             _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, size)),
         }
+    }
+
+    /// Aggregate types with a defined ordering: structs lexicographically by
+    /// declaration order (CO3), enums by variant order then payload (CO1),
+    /// tuples and arrays elementwise. Unions have no active-variant tag, so
+    /// there's nothing to order them by.
+    fn is_structural_ord_type(ty: &MirType) -> bool {
+        matches!(ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. })
+    }
+
+    /// Three-way compare of two aggregates behind `lhs`/`rhs`. Returns i64:
+    /// negative, zero, positive. Without this, `<` on a struct compared the two
+    /// stack-slot addresses, so the answer depended on allocation order.
+    fn emit_aggregate_cmp(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        ty: &MirType,
+    ) -> CodegenResult<Value> {
+        match ty {
+            MirType::Struct(id) => Self::emit_struct_cmp(builder, ctx, lhs, rhs, id.id as usize),
+            MirType::Tuple(elems) => {
+                let elems = elems.clone();
+                let mut parts = Vec::new();
+                let mut offset = 0u32;
+                for e in &elems {
+                    let align = e.align().max(1);
+                    offset = (offset + align - 1) & !(align - 1);
+                    parts.push((offset as i64, FieldKind::Mir(e.clone())));
+                    offset += e.size();
+                }
+                Self::emit_lexicographic_cmp(builder, ctx, lhs, rhs, &parts)
+            }
+            MirType::Array { elem, len } => {
+                let stride = elem.size();
+                let parts = (0..*len)
+                    .map(|i| ((i * stride) as i64, FieldKind::Mir((**elem).clone())))
+                    .collect::<Vec<_>>();
+                Self::emit_lexicographic_cmp(builder, ctx, lhs, rhs, &parts)
+            }
+            MirType::Enum(id) => Self::emit_enum_cmp(builder, ctx, lhs, rhs, id.id as usize),
+            _ => Err(CodegenError::UnsupportedFeature(
+                "ordering comparison on this aggregate type".into(),
+            )),
+        }
+    }
+
+    /// Compare every field of the struct at layout index `idx`, in declaration
+    /// order, stopping at the first that differs (CO3).
+    fn emit_struct_cmp(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        idx: usize,
+    ) -> CodegenResult<Value> {
+        let parts: Vec<(i64, FieldKind)> = {
+            let layout = ctx.struct_layouts.get(idx).ok_or_else(|| {
+                CodegenError::UnsupportedFeature("struct layout missing for ordering".into())
+            })?;
+            layout.fields.iter()
+                .map(|f| (f.offset as i64, FieldKind::Rask(f.ty.clone(), f.size)))
+                .collect()
+        };
+        Self::emit_lexicographic_cmp(builder, ctx, lhs, rhs, &parts)
+    }
+
+    /// Walk `parts` in order, stopping at the first that differs. Each entry is
+    /// a byte offset from the aggregate base plus how to compare what's there.
+    fn emit_lexicographic_cmp(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        parts: &[(i64, FieldKind)],
+    ) -> CodegenResult<Value> {
+        let merge = builder.create_block();
+        builder.append_block_param(merge, types::I64);
+
+        let mut pending = Vec::new();
+        for (off, kind) in parts {
+            let l = builder.ins().iadd_imm(lhs, *off);
+            let r = builder.ins().iadd_imm(rhs, *off);
+            let c = match kind {
+                FieldKind::Rask(fty, sz) => {
+                    Self::emit_field_cmp_rask(builder, ctx, l, r, fty, *sz)?
+                }
+                FieldKind::Mir(mty) => Self::emit_field_cmp_mir(builder, ctx, l, r, mty)?,
+            };
+            let next = builder.create_block();
+            let is_eq = builder.ins().icmp_imm(IntCC::Equal, c, 0);
+            builder.ins().brif(is_eq, next, &[], merge, &[c]);
+            builder.switch_to_block(next);
+            pending.push(next);
+        }
+
+        let equal = builder.ins().iconst(types::I64, 0);
+        builder.ins().jump(merge, &[equal]);
+        for b in pending {
+            builder.seal_block(b);
+        }
+        builder.switch_to_block(merge);
+        builder.seal_block(merge);
+        Ok(builder.block_params(merge)[0])
+    }
+
+    /// Enums order by variant first, then by the shared variant's payload (CO1).
+    fn emit_enum_cmp(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        idx: usize,
+    ) -> CodegenResult<Value> {
+        let (tag_off, variants): (i32, Vec<(u64, u32, Vec<(u32, RaskType, u32)>)>) = {
+            let layout = ctx.enum_layouts.get(idx).ok_or_else(|| {
+                CodegenError::UnsupportedFeature("enum layout missing for ordering".into())
+            })?;
+            let vs = layout.variants.iter().map(|v| {
+                let fields = v.fields.iter()
+                    .map(|f| (f.offset, f.ty.clone(), f.size))
+                    .collect::<Vec<_>>();
+                (v.tag, v.payload_offset, fields)
+            }).collect();
+            (layout.tag_offset as i32, vs)
+        };
+
+        let tag_l = builder.ins().load(types::I64, MemFlags::new(), lhs, tag_off);
+        let tag_r = builder.ins().load(types::I64, MemFlags::new(), rhs, tag_off);
+        let tag_cmp = Self::emit_signed_three_way(builder, tag_l, tag_r);
+
+        if variants.iter().all(|(_, _, f)| f.is_empty()) {
+            return Ok(tag_cmp);
+        }
+
+        let merge = builder.create_block();
+        builder.append_block_param(merge, types::I64);
+        let same_tag = builder.create_block();
+        let tags_eq = builder.ins().icmp_imm(IntCC::Equal, tag_cmp, 0);
+        builder.ins().brif(tags_eq, same_tag, &[], merge, &[tag_cmp]);
+
+        builder.switch_to_block(same_tag);
+        builder.seal_block(same_tag);
+        let mut chain_blocks = Vec::new();
+        for (tag_val, poff, fields) in variants.iter().filter(|(_, _, f)| !f.is_empty()) {
+            let var_block = builder.create_block();
+            let next_block = builder.create_block();
+            let tv = builder.ins().iconst(types::I64, *tag_val as i64);
+            let is_this = builder.ins().icmp(IntCC::Equal, tag_l, tv);
+            builder.ins().brif(is_this, var_block, &[], next_block, &[]);
+
+            builder.switch_to_block(var_block);
+            builder.seal_block(var_block);
+            let parts = fields
+                .iter()
+                .map(|(foff, fty, sz)| ((*poff + *foff) as i64, FieldKind::Rask(fty.clone(), *sz)))
+                .collect::<Vec<_>>();
+            let c = Self::emit_lexicographic_cmp(builder, ctx, lhs, rhs, &parts)?;
+            builder.ins().jump(merge, &[c]);
+
+            builder.switch_to_block(next_block);
+            chain_blocks.push(next_block);
+        }
+        // Same tag, and that variant has no payload → equal.
+        let equal = builder.ins().iconst(types::I64, 0);
+        builder.ins().jump(merge, &[equal]);
+        for b in chain_blocks {
+            builder.seal_block(b);
+        }
+
+        builder.switch_to_block(merge);
+        builder.seal_block(merge);
+        Ok(builder.block_params(merge)[0])
+    }
+
+    /// `(a > b) - (a < b)` as an i64.
+    fn emit_signed_three_way(builder: &mut ClifFunctionBuilder, a: Value, b: Value) -> Value {
+        let gt = builder.ins().icmp(IntCC::SignedGreaterThan, a, b);
+        let lt = builder.ins().icmp(IntCC::SignedLessThan, a, b);
+        let gt = builder.ins().uextend(types::I64, gt);
+        let lt = builder.ins().uextend(types::I64, lt);
+        builder.ins().isub(gt, lt)
+    }
+
+    /// Three-way compare of a struct/enum field of Rask type `ty`. Scalars sit
+    /// in 8-byte slots, same as `emit_field_eq_rask`.
+    fn emit_field_cmp_rask(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        ty: &RaskType,
+        size: u32,
+    ) -> CodegenResult<Value> {
+        match ty {
+            RaskType::F32 | RaskType::F64 => {
+                let a = builder.ins().load(types::F64, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(types::F64, MemFlags::new(), rhs, 0);
+                let gt = builder.ins().fcmp(FloatCC::GreaterThan, a, b);
+                let lt = builder.ins().fcmp(FloatCC::LessThan, a, b);
+                let gt = builder.ins().uextend(types::I64, gt);
+                let lt = builder.ins().uextend(types::I64, lt);
+                Ok(builder.ins().isub(gt, lt))
+            }
+            RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 => {
+                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                let gt = builder.ins().icmp(IntCC::UnsignedGreaterThan, a, b);
+                let lt = builder.ins().icmp(IntCC::UnsignedLessThan, a, b);
+                let gt = builder.ins().uextend(types::I64, gt);
+                let lt = builder.ins().uextend(types::I64, lt);
+                Ok(builder.ins().isub(gt, lt))
+            }
+            RaskType::Bool
+            | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64
+            | RaskType::Char => {
+                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                Ok(Self::emit_signed_three_way(builder, a, b))
+            }
+            RaskType::String => Self::emit_string_cmp(builder, ctx, lhs, rhs),
+            RaskType::UnresolvedNamed(name) => {
+                if let Some(sidx) = ctx.struct_layouts.iter().position(|l| l.name == *name) {
+                    Self::emit_struct_cmp(builder, ctx, lhs, rhs, sidx)
+                } else if let Some(eidx) = ctx.enum_layouts.iter().position(|l| l.name == *name) {
+                    Self::emit_enum_cmp(builder, ctx, lhs, rhs, eidx)
+                } else {
+                    // Opaque named type — no ordering to derive; treat as equal
+                    // so the comparison falls to the following fields.
+                    let _ = size;
+                    Ok(builder.ins().iconst(types::I64, 0))
+                }
+            }
+            _ => Ok(builder.ins().iconst(types::I64, 0)),
+        }
+    }
+
+    /// Three-way compare of a value of MIR type `ty` at `lhs`/`rhs`.
+    fn emit_field_cmp_mir(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        ty: &MirType,
+    ) -> CodegenResult<Value> {
+        match ty {
+            MirType::F32 | MirType::F64 => {
+                let lty = mir_to_cranelift_type(ty)?;
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                let gt = builder.ins().fcmp(FloatCC::GreaterThan, a, b);
+                let lt = builder.ins().fcmp(FloatCC::LessThan, a, b);
+                let gt = builder.ins().uextend(types::I64, gt);
+                let lt = builder.ins().uextend(types::I64, lt);
+                Ok(builder.ins().isub(gt, lt))
+            }
+            MirType::String => Self::emit_string_cmp(builder, ctx, lhs, rhs),
+            t if Self::is_structural_ord_type(t) => {
+                Self::emit_aggregate_cmp(builder, ctx, lhs, rhs, t)
+            }
+            MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 => {
+                let lty = mir_to_cranelift_type(ty)?;
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                let a = builder.ins().uextend(types::I64, a);
+                let b = builder.ins().uextend(types::I64, b);
+                let gt = builder.ins().icmp(IntCC::UnsignedGreaterThan, a, b);
+                let lt = builder.ins().icmp(IntCC::UnsignedLessThan, a, b);
+                let gt = builder.ins().uextend(types::I64, gt);
+                let lt = builder.ins().uextend(types::I64, lt);
+                Ok(builder.ins().isub(gt, lt))
+            }
+            MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+            | MirType::Char | MirType::Handle => {
+                let lty = mir_to_cranelift_type(ty)?;
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                let a = builder.ins().sextend(types::I64, a);
+                let b = builder.ins().sextend(types::I64, b);
+                Ok(Self::emit_signed_three_way(builder, a, b))
+            }
+            _ => Ok(builder.ins().iconst(types::I64, 0)),
+        }
+    }
+
+    /// Lexicographic string compare via the runtime. Returns i64 (-1/0/1).
+    fn emit_string_cmp(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+    ) -> CodegenResult<Value> {
+        let fr = ctx.func_refs.get("string_compare")
+            .ok_or_else(|| CodegenError::FunctionNotFound("string_compare".into()))?;
+        let call = builder.ins().call(*fr, &[lhs, rhs]);
+        Ok(builder.inst_results(call)[0])
     }
 
     /// Content equality of two strings via the runtime. Returns i8 (1 = equal).

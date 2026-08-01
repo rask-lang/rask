@@ -3866,7 +3866,16 @@ impl<'a> MirLowerer<'a> {
         // Detect field access on a module name and flatten to a qualified call.
         if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
             if let ExprKind::Ident(module_name) = &inner_obj.kind {
+                // `Level.Low.label()` looks like the same shape but isn't:
+                // `Level.Low` is an enum *value*, so flattening it to
+                // `Low_label()` threw the receiver away and mangled the call
+                // under the variant name instead of the enum's (#400).
+                let is_enum_variant = self
+                    .ctx
+                    .find_enum(module_name)
+                    .is_some_and(|(_, layout)| layout.variants.iter().any(|v| v.name == *type_name));
                 if !self.locals.contains_key(module_name)
+                    && !is_enum_variant
                     && is_type_constructor_name(module_name)
                 {
                     let func_name = format!("{}_{}", type_name, method);

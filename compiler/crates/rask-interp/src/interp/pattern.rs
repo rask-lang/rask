@@ -347,7 +347,12 @@ impl Interpreter {
             (Value::Int128(a), Value::Int128(b)) => Some(a.cmp(b)),
             (Value::Uint128(a), Value::Uint128(b)) => Some(a.cmp(b)),
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+            // `s <= s` hands the same Arc in twice; locking it a second time
+            // deadlocks, so answer from identity first.
             (Value::String(a), Value::String(b)) => {
+                if Arc::ptr_eq(a, b) {
+                    return Some(std::cmp::Ordering::Equal);
+                }
                 Some(a.lock().unwrap().cmp(&*b.lock().unwrap()))
             }
             (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)), // false < true
@@ -355,6 +360,9 @@ impl Interpreter {
             // CO3: structs — lexicographic by field declaration order
             // (IndexMap preserves insertion order = declaration order)
             (Value::Struct(ref s1), Value::Struct(ref s2)) => {
+                if Arc::ptr_eq(s1, s2) {
+                    return Some(std::cmp::Ordering::Equal);
+                }
                 let g1 = s1.lock().unwrap();
                 let g2 = s2.lock().unwrap();
                 for ((_, v1), (_, v2)) in g1.fields.iter().zip(g2.fields.iter()) {
