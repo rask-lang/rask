@@ -428,6 +428,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // Interpolation lowers `a.concat(b)` unqualified, but a call on a
+        // receiver the lowerer typed as a string mangles to `string_concat` —
+        // same function, and nothing answered to the qualified name.
+        StdlibEntry {
+            mir_name: "string_concat", c_name: "rask_string_concat",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry {
             mir_name: "string_substr", c_name: "rask_string_substr",
             params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
@@ -988,6 +996,24 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Shared_read", "rask_shared_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_write", "rask_shared_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
+        // Cell — single-owner interior mutability (mem.cell/CE6). `new` takes
+        // the value by pointer plus its size, the same way Shared does; `get`
+        // hands back the slot address for codegen to load or copy from.
+        StdlibEntry {
+            mir_name: "Cell_new", c_name: "rask_cell_new",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Cell_get", c_name: "rask_cell_get",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Cell_set", c_name: "rask_cell_set",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Shared_read_acquire", "rask_shared_read_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_write_acquire", "rask_shared_write_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_release", "rask_shared_release", &[types::I64], None, false),

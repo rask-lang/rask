@@ -315,3 +315,51 @@ int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure) {
     return 0; // None
 }
 
+
+// ─── Cell ───────────────────────────────────────────────────
+//
+// mem.cell: single-owner interior mutability. No lock — a Cell is not
+// shareable across tasks, so `get`/`set` are a plain copy in and out of a
+// heap slot. The slot keeps the value at a stable address, which is what
+// lets a `const` binding hand out a mutable interior.
+
+typedef struct {
+    int64_t data_size;
+    void   *data;
+} RaskCell;
+
+int64_t rask_cell_new(int64_t data_ptr, int64_t data_size) {
+    if (data_size <= 0) data_size = 8;
+    RaskCell *c = (RaskCell *)rask_alloc(sizeof(RaskCell));
+    c->data_size = data_size;
+    c->data = rask_alloc(data_size);
+    if (data_ptr) {
+        memcpy(c->data, (const void *)(intptr_t)data_ptr, (size_t)data_size);
+    } else {
+        memset(c->data, 0, (size_t)data_size);
+    }
+    return (int64_t)(intptr_t)c;
+}
+
+// The slot's address. Codegen loads a scalar through it, or copies an
+// aggregate out of it — same convention as Shared's guard pointer.
+int64_t rask_cell_get(int64_t cell) {
+    RaskCell *c = (RaskCell *)(intptr_t)cell;
+    RASK_CHECK_NONNULL(c, "Cell.get: cell is null");
+    return (int64_t)(intptr_t)c->data;
+}
+
+void rask_cell_set(int64_t cell, int64_t data_ptr) {
+    RaskCell *c = (RaskCell *)(intptr_t)cell;
+    RASK_CHECK_NONNULL(c, "Cell.set: cell is null");
+    if (data_ptr) {
+        memcpy(c->data, (const void *)(intptr_t)data_ptr, (size_t)c->data_size);
+    }
+}
+
+void rask_cell_free(int64_t cell) {
+    RaskCell *c = (RaskCell *)(intptr_t)cell;
+    if (!c) return;
+    rask_free(c->data);
+    rask_free(c);
+}

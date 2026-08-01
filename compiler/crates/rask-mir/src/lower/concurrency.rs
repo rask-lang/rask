@@ -94,6 +94,11 @@ impl<'a> MirLowerer<'a> {
         // out. Passed straight through, `with mutex.lock() as m { m.insert(…) }`
         // on a `Mutex<Map>` handed the map runtime a pointer to a pointer and
         // crashed on the first hash (#477).
+        // A struct is mutated in place through the address the lock hands over.
+        // A word-sized payload is loaded into a local instead, so whatever the
+        // body did to it has to be written back before the guard drops —
+        // otherwise `with m.lock() as v { v += 5 }` incremented a copy (#268).
+        let mut writeback_slot = None;
         let data_param_id = if matches!(data_param_ty, MirType::Struct(_) | MirType::Enum(_)) {
             closure_builder.add_param(binding_name.to_string(), data_param_ty.clone())
         } else {
@@ -103,6 +108,7 @@ impl<'a> MirLowerer<'a> {
                 dst: loaded,
                 rvalue: MirRValue::Deref(MirOperand::Local(slot)),
             }));
+            writeback_slot = Some((slot, loaded, data_param_ty.size()));
             loaded
         };
 
@@ -135,6 +141,17 @@ impl<'a> MirLowerer<'a> {
         }
 
         let (body_val, _) = body_result?;
+
+        if let Some((slot, loaded, size)) = writeback_slot {
+            if closure_builder.current_block_unterminated() {
+                closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: slot,
+                    offset: 0,
+                    value: MirOperand::Local(loaded),
+                    store_size: Some(size),
+                }));
+            }
+        }
 
         if closure_builder.current_block_unterminated() {
             closure_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
@@ -224,6 +241,11 @@ impl<'a> MirLowerer<'a> {
         // out. Passed straight through, `with mutex.lock() as m { m.insert(…) }`
         // on a `Mutex<Map>` handed the map runtime a pointer to a pointer and
         // crashed on the first hash (#477).
+        // A struct is mutated in place through the address the lock hands over.
+        // A word-sized payload is loaded into a local instead, so whatever the
+        // body did to it has to be written back before the guard drops —
+        // otherwise `with m.lock() as v { v += 5 }` incremented a copy (#268).
+        let mut writeback_slot = None;
         let data_param_id = if matches!(data_param_ty, MirType::Struct(_) | MirType::Enum(_)) {
             closure_builder.add_param(binding_name.to_string(), data_param_ty.clone())
         } else {
@@ -233,6 +255,7 @@ impl<'a> MirLowerer<'a> {
                 dst: loaded,
                 rvalue: MirRValue::Deref(MirOperand::Local(slot)),
             }));
+            writeback_slot = Some((slot, loaded, data_param_ty.size()));
             loaded
         };
 
@@ -265,6 +288,17 @@ impl<'a> MirLowerer<'a> {
         }
 
         let (body_val, _) = body_result?;
+
+        if let Some((slot, loaded, size)) = writeback_slot {
+            if closure_builder.current_block_unterminated() {
+                closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: slot,
+                    offset: 0,
+                    value: MirOperand::Local(loaded),
+                    store_size: Some(size),
+                }));
+            }
+        }
 
         if closure_builder.current_block_unterminated() {
             closure_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {

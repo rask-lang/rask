@@ -5164,6 +5164,31 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
+            // Cell_new(value, size) / Cell_set(cell, value): both take the
+            // value by pointer, so a scalar has to be spilled to a slot first.
+            "Cell_new" => {
+                if !args.is_empty() {
+                    let (data_size, is_aggregate) = Self::struct_elem_size(mir_args, 0, ctx);
+                    if !is_aggregate {
+                        let val = args[0];
+                        args[0] = Self::value_to_ptr(builder, val);
+                    }
+                    let size = builder.ins().iconst(types::I64, data_size);
+                    if args.len() >= 2 { args[1] = size; } else { args.push(size); }
+                }
+                CallAdapt::None
+            }
+            "Cell_set" => {
+                if args.len() >= 2 {
+                    let (_, is_aggregate) = Self::struct_elem_size(mir_args, 1, ctx);
+                    if !is_aggregate {
+                        let val = args[1];
+                        args[1] = Self::value_to_ptr(builder, val);
+                    }
+                }
+                CallAdapt::None
+            }
+
             // Shared_new / Mutex_new: ensure data is pointer, compute actual data_size
             "Shared_new" | "Mutex_new" => {
                 if args.len() >= 2 {

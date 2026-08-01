@@ -3591,6 +3591,10 @@ impl<'a> MirLowerer<'a> {
                 })
                 .unwrap_or(MirType::I64);
             Some(MirType::Option(Box::new(elem_ty)))
+        } else if qualified_name == "Cell_get" {
+            // What the cell holds. The stub's return type is a bare word, so a
+            // `Cell<string>` read came back as an i64 and printed as a pointer.
+            self.ctx.lookup_node_type(expr.id).filter(|t| !matches!(t, MirType::Ptr))
         } else if qualified_name == "Receiver_receive_struct" {
             // Renamed from Receiver_receive above for struct elements. Only the
             // original name is in the stub metadata, so the fallback typed the
