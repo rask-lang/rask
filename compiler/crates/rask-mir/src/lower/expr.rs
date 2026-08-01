@@ -3596,6 +3596,18 @@ impl<'a> MirLowerer<'a> {
             .map(|s| s.ret_ty.clone())
             .unwrap_or_else(|| super::stdlib_return_mir_type(&qualified_name)));
 
+        // A method on a generic type is lowered once, so its signature says `T`
+        // — which reaches MIR as a bare `Ptr`. The call site knows what `T`
+        // became: `Box<string>.get()` returning `Ptr` meant the caller printed
+        // the string's address as a number (#272).
+        let ret_ty = if matches!(ret_ty, MirType::Ptr) {
+            self.ctx.lookup_node_type(expr.id)
+                .filter(|t| !matches!(t, MirType::Ptr | MirType::Void))
+                .unwrap_or(ret_ty)
+        } else {
+            ret_ty
+        };
+
         // Struct clone: inline field-by-field copy with deep clone for
         // heap fields (string, Vec, Map). Avoids needing a generated
         // runtime clone function for every user struct.
