@@ -117,7 +117,7 @@ const STRING_METHODS: &[&str] = &[
     "replace", "substring", "parse_int", "parse",
     "char_at", "byte_at", "parse_float", "find", "index_of", "rfind",
     "repeat", "reverse", "eq", "ne",
-    "char_count", "is_ascii", "replacen", "from_char",
+    "char_count", "is_ascii", "replacen",
 ];
 
 const VEC_METHODS: &[&str] = &[

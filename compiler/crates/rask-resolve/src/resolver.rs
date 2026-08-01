@@ -441,6 +441,9 @@ impl Resolver {
             "math" => &["f32x4", "f32x8", "f64x2", "f64x4", "i32x4", "i32x8"],
             "async" => &["spawn", "Channel", "Sender", "Receiver", "TaskHandle"],
             "core" => &["transmute"],
+            // `std` re-exports the reflection module (`import std.reflect`).
+            // reflect.rk isn't in the stub set, so nothing else knows the name.
+            "std" => &["reflect", "exit"],
             "thread" => &["Thread", "ThreadPool", "ThreadHandle"],
             "time" => &["Duration", "Instant", "SystemTime"],
             _ => &[],
@@ -453,10 +456,15 @@ impl Resolver {
     fn nearest_export(module: &str, symbol: &str) -> Option<String> {
         let lower = symbol.to_lowercase();
         let mut best: Option<(usize, &str)> = None;
+        let stub_fns: Vec<&str> = rask_stdlib::StubRegistry::load()
+            .methods(module)
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
         let candidates = Self::stdlib_module_exports(module)
             .iter()
             .copied()
-            .chain(rask_stdlib::registry::module_method_names(module).iter().copied());
+            .chain(stub_fns.iter().copied());
         for cand in candidates {
             // A renamed symbol often keeps its start (`Rng` → `Random`), which
             // edit distance alone scores badly on short names.
@@ -1258,10 +1266,17 @@ impl Resolver {
                 // much later — `import random.Rng` (renamed to `Random`) got a
                 // plain variable binding, type-checked clean, and only broke at
                 // codegen with "Function not found: Rng_from_seed" (#395).
+                // The function set comes from the stub sources themselves, not
+                // from a hand-maintained list — `io.stdin` is declared in
+                // stdlib/io.rk but missing from the registry's IO_METHODS, and
+                // a check stricter than the actual API is worse than no check.
                 let known = Self::stdlib_module_exports(pkg_name).contains(&symbol_name.as_str())
-                    || rask_stdlib::registry::module_method_names(pkg_name)
-                        .contains(&symbol_name.as_str())
-                    || Self::stdlib_enum_variants(pkg_name, symbol_name).is_some();
+                    || rask_stdlib::mir_metadata::type_has_method(pkg_name, symbol_name)
+                    || Self::stdlib_enum_variants(pkg_name, symbol_name).is_some()
+                    // `import std.reflect` names a submodule, not a symbol.
+                    || rask_stdlib::mir_metadata::stdlib_module_names()
+                        .contains(symbol_name.as_str())
+                    || crate::BUILTIN_MODULE_NAMES.contains(&symbol_name.as_str());
                 if !known && !self.stdlib_mode {
                     self.errors.push(ResolveError::no_such_stdlib_export(
                         pkg_name.clone(),
