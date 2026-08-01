@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: selective import of a name the stdlib module doesn't have
+//
+// Spec: struct.modules (IM4)
+
+// ERROR[E0212]: `random` has no `Rng` to import — it's called `Random` now.
+// This used to type-check clean and only fall over at code generation with
+// "Function not found: Rng_from_seed" (#395).
+import random.Rng
+
+func main() {
+    mut r = Rng.from_seed(1)
+    println("{r.range(0, 10)}")
+}

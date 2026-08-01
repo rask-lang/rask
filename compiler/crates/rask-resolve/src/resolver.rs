@@ -13,6 +13,28 @@ use crate::symbol::{BuiltinModuleKind, SymbolTable, SymbolId, SymbolKind};
 use crate::package::PackageId;
 use crate::ResolvedProgram;
 
+/// Levenshtein distance, for "did you mean" on a misspelled import.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b_len = b.chars().count();
+    if a.is_empty() {
+        return b_len;
+    }
+    if b.is_empty() {
+        return a.chars().count();
+    }
+    let mut prev: Vec<usize> = (0..=b_len).collect();
+    let mut curr = vec![0; b_len + 1];
+    for (i, a_ch) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, b_ch) in b.chars().enumerate() {
+            let cost = if a_ch == b_ch { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b_len]
+}
+
 pub struct Resolver {
     symbols: SymbolTable,
     scopes: ScopeTree,
@@ -394,6 +416,61 @@ impl Resolver {
                 self.imported_symbols.insert(v.to_string());
             }
         }
+    }
+
+    /// Everything a stdlib module offers under a selective import — its types,
+    /// its enums, and any function that comes into scope with it. Module
+    /// functions (`fs.read_text`) are added separately from the stdlib registry.
+    ///
+    /// Kept next to `register_module_companions`, which registers the same
+    /// names when the whole module is imported; the two must agree.
+    fn stdlib_module_exports(module: &str) -> &'static [&'static str] {
+        match module {
+            "net" => &["TcpListener", "TcpConnection"],
+            "http" => &[
+                "Request", "Response", "Headers", "HttpServer", "Responder",
+                "HttpClient", "Method", "HttpError",
+            ],
+            "fs" => &["File", "Metadata"],
+            "random" => &["Random"],
+            "path" => &["Path"],
+            "cli" => &["Args"],
+            "os" => &["Command", "Process", "Output", "Stdio", "Signal"],
+            "io" => &["Stdin", "Stdout", "Stderr", "Buffer", "IoError"],
+            "json" => &["JsonValue", "JsonError"],
+            "math" => &["f32x4", "f32x8", "f64x2", "f64x4", "i32x4", "i32x8"],
+            "async" => &["spawn", "Channel", "Sender", "Receiver", "TaskHandle"],
+            "core" => &["transmute"],
+            "thread" => &["Thread", "ThreadPool", "ThreadHandle"],
+            "time" => &["Duration", "Instant", "SystemTime"],
+            _ => &[],
+        }
+    }
+
+    /// Closest export by name, for the "did you mean" on a bad import. Only
+    /// offers a suggestion when the names are actually close — a wrong guess
+    /// is worse than none.
+    fn nearest_export(module: &str, symbol: &str) -> Option<String> {
+        let lower = symbol.to_lowercase();
+        let mut best: Option<(usize, &str)> = None;
+        let candidates = Self::stdlib_module_exports(module)
+            .iter()
+            .copied()
+            .chain(rask_stdlib::registry::module_method_names(module).iter().copied());
+        for cand in candidates {
+            // A renamed symbol often keeps its start (`Rng` → `Random`), which
+            // edit distance alone scores badly on short names.
+            let shares_start = {
+                let c = cand.to_lowercase();
+                lower.len() >= 2 && (c.starts_with(&lower) || lower.starts_with(&c))
+            };
+            let d = if shares_start { 0 } else { edit_distance(symbol, cand) };
+            if best.map_or(true, |(bd, _)| d < bd) {
+                best = Some((d, cand));
+            }
+        }
+        best.filter(|(d, _)| *d <= symbol.chars().count() / 2 + 1)
+            .map(|(_, name)| name.to_string())
     }
 
     /// Returns enum variants if the symbol is a known stdlib enum.
@@ -1177,6 +1254,23 @@ impl Resolver {
             );
 
             if is_stdlib_module {
+                // A name the module doesn't have used to sail through and fail
+                // much later — `import random.Rng` (renamed to `Random`) got a
+                // plain variable binding, type-checked clean, and only broke at
+                // codegen with "Function not found: Rng_from_seed" (#395).
+                let known = Self::stdlib_module_exports(pkg_name).contains(&symbol_name.as_str())
+                    || rask_stdlib::registry::module_method_names(pkg_name)
+                        .contains(&symbol_name.as_str())
+                    || Self::stdlib_enum_variants(pkg_name, symbol_name).is_some();
+                if !known && !self.stdlib_mode {
+                    self.errors.push(ResolveError::no_such_stdlib_export(
+                        pkg_name.clone(),
+                        symbol_name.clone(),
+                        Self::nearest_export(pkg_name, symbol_name),
+                        span,
+                    ));
+                    return;
+                }
                 // IM4: selective import — register with correct symbol kind.
                 if self.scopes.lookup(&binding_name).is_none() {
                     // Enums need special handling (register variants too)
