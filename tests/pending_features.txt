@@ -15,7 +15,6 @@ p03_comparison_surface.rk  # green on interp; native waits on the assert-operand
 
 # --- works on interp, native backend not built (native RED) ---
 p05_operator_overload.rk   # type.operators user/derived operators native codegen — #399/#400
-p06_select.rk              # conc.select no native MIR lowering — #405
 t41_os.rk                  # os.pid/env_vars have no native C symbols — Track 4
 t50_boxes.rk               # Cell unlinked (Cell_new) + Mutex with garbage — #402/#268
 

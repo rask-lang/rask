@@ -2362,34 +2362,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Select (channel multiplexing)
-            ExprKind::Select { arms, .. } => {
-                let merge_block = self.builder.create_block();
-                let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
-
-                if let Some(&first) = arm_blocks.first() {
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: first }));
-                } else {
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-                }
-
-                let mut result_ty = MirType::Void;
-                let result_local = self.builder.alloc_temp(MirType::I32);
-                for (i, arm) in arms.iter().enumerate() {
-                    self.builder.switch_to_block(arm_blocks[i]);
-                    let (arm_val, arm_ty) = self.lower_expr(&arm.body)?;
-                    if i == 0 {
-                        result_ty = arm_ty;
-                    }
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: result_local,
-                        rvalue: MirRValue::Use(arm_val),
-                    }));
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-                }
-
-                self.builder.switch_to_block(merge_block);
-                Ok((MirOperand::Local(result_local), result_ty))
-            }
+            ExprKind::Select { arms, .. } => self.lower_select(arms),
 
             // Assert
             ExprKind::Assert { condition, message } => {

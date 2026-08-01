@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// conc.select — receive arms, send arms, the default arm, and blocking until a
+// producer shows up. Native used to fall straight into arm 0 and run every
+// body, so a receive binding was never defined (#405); these keep both backends
+// on the same poll-then-fire shape.
+
+import async.Channel
+
+func main() {}
+
+test "A1 — the ready receive arm fires, and its binding is the received value" {
+    const (tx1, rx1) = Channel<i64>.buffered(4)
+    const (tx2, rx2) = Channel<i64>.buffered(4)
+    tx1.send(7).ok()
+    const got = select {
+        rx1 -> v: v * 2,
+        rx2 -> v: v + 1000,
+    }
+    assert got == 14
+}
+
+test "A1 — a later arm fires when the earlier channel is empty" {
+    const (tx1, rx1) = Channel<i64>.buffered(4)
+    const (tx2, rx2) = Channel<i64>.buffered(4)
+    tx2.send(3).ok()
+    const got = select {
+        rx1 -> v: v,
+        rx2 -> v: v + 100,
+    }
+    assert got == 103
+}
+
+test "A3 — the default arm fires when nothing is ready" {
+    const (tx, rx) = Channel<i64>.buffered(4)
+    const got = select {
+        rx -> v: v,
+        _: -1,
+    }
+    assert got == -1
+}
+
+test "A3 — the default arm does not fire when something is ready" {
+    const (tx, rx) = Channel<i64>.buffered(4)
+    tx.send(42).ok()
+    const got = select {
+        rx -> v: v,
+        _: -1,
+    }
+    assert got == 42
+}
+
+test "A2 — a send arm fires when the channel has room" {
+    const (tx, rx) = Channel<i64>.buffered(2)
+    const got = select {
+        tx <- 9: 1,
+        _: 0,
+    }
+    assert got == 1
+    mut back = 0
+    if rx.receive() is i64 as v { back = v }
+    assert back == 9
+}
+
+test "select drains one value per evaluation" {
+    const (tx, rx) = Channel<i64>.buffered(4)
+    tx.send(1).ok()
+    tx.send(2).ok()
+    mut total = 0
+    for i in 0..2 {
+        total += select {
+            rx -> v: v,
+            _: 0,
+        }
+    }
+    assert total == 3
+}
+
+test "select blocks until a spawned producer sends" {
+    using Multitasking {
+        const (tx, rx) = Channel<i64>.buffered(1)
+        const h = spawn(own || {
+            tx.send(5).ok()
+            return 0
+        })
+        const got = select {
+            rx -> v: v,
+        }
+        assert got == 5
+        h.join()
+    }
+}

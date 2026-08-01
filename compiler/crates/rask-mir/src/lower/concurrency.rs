@@ -4,8 +4,8 @@
 
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
-    stmt::ClosureCapture, types::StructLayoutId, BlockBuilder, FunctionRef,
-    MirOperand, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
+    operand::MirConst, stmt::ClosureCapture, types::StructLayoutId, BlockBuilder, FunctionRef,
+    MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{CallArg, Expr, ExprKind};
 use rask_ast::{NodeId, Span};
@@ -391,4 +391,243 @@ impl<'a> MirLowerer<'a> {
         Ok((result, ret_ty))
     }
 
+}
+
+// ─── select ────────────────────────────────────────────────────────────────
+
+impl<'a> MirLowerer<'a> {
+    /// `select { rx -> v: …, tx <- msg: …, _: … }` (conc.select).
+    ///
+    /// Compiles to a poll loop over the arms. Each arm gets one non-blocking
+    /// probe per round; the first that succeeds jumps to its body. With a
+    /// `_:` arm, a round where nothing was ready falls into it (A3). Without
+    /// one, the loop yields and goes round again — unless every channel came
+    /// back closed, which is the end of the road (CL1).
+    ///
+    /// The old lowering fell straight into arm 0 and ran every body in
+    /// sequence, so a receive binding was never defined and MIR failed with
+    /// `UnresolvedVariable("v")`.
+    pub(super) fn lower_select(
+        &mut self,
+        arms: &[rask_ast::expr::SelectArm],
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_ast::expr::SelectArmKind;
+
+        if arms.is_empty() {
+            return Err(LoweringError::InvalidConstruct(
+                "select with zero arms [conc.select/P3]".to_string(),
+            ));
+        }
+
+        // Channel operands and send payloads are evaluated once, before the
+        // loop — polling must not re-run them each round.
+        enum Probe {
+            Recv { rx: MirOperand, buf: crate::LocalId, elem: MirType, binding: String, arm: usize },
+            Send { tx: MirOperand, value: MirOperand, arm: usize },
+        }
+        let mut probes = Vec::new();
+        let mut default_arm: Option<usize> = None;
+
+        for (i, arm) in arms.iter().enumerate() {
+            match &arm.kind {
+                SelectArmKind::Recv { channel, binding } => {
+                    let (rx, _) = self.lower_expr(channel)?;
+                    let elem = self.channel_elem_type(channel);
+                    // One-element array so the buffer is a real stack slot the
+                    // runtime can write into; a scalar local would spill to a
+                    // fresh slot per `Ref` and lose the value.
+                    let buf = self.builder.alloc_temp(MirType::Array {
+                        elem: Box::new(elem.clone()),
+                        len: 1,
+                    });
+                    probes.push(Probe::Recv { rx, buf, elem, binding: binding.clone(), arm: i });
+                }
+                SelectArmKind::Send { channel, value } => {
+                    let (tx, _) = self.lower_expr(channel)?;
+                    let (value, _) = self.lower_expr(value)?;
+                    probes.push(Probe::Send { tx, value, arm: i });
+                }
+                SelectArmKind::Default => default_arm = Some(i),
+            }
+        }
+
+        let merge_block = self.builder.create_block();
+        let poll_block = self.builder.create_block();
+        let arm_blocks: Vec<crate::BlockId> =
+            arms.iter().map(|_| self.builder.create_block()).collect();
+        // One probe block per arm plus the "nothing was ready" landing.
+        let probe_blocks: Vec<crate::BlockId> =
+            (0..=probes.len()).map(|_| self.builder.create_block()).collect();
+
+        // Tracks whether any channel could still deliver. Reset every round so
+        // a channel closing mid-wait is noticed.
+        let any_open = self.builder.alloc_temp(MirType::Bool);
+        let result_local = self.builder.alloc_temp(MirType::I64);
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: poll_block }));
+        self.builder.switch_to_block(poll_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: any_open,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: probe_blocks[0],
+        }));
+
+        for (p, probe) in probes.iter().enumerate() {
+            self.builder.switch_to_block(probe_blocks[p]);
+            let next = probe_blocks[p + 1];
+            let (status, arm_idx) = match probe {
+                Probe::Recv { rx, buf, .. } => {
+                    let addr = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: addr,
+                        rvalue: MirRValue::Ref(*buf),
+                    }));
+                    let status = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(status),
+                        func: FunctionRef::internal("rask_channel_try_recv_into".to_string()),
+                        args: vec![rx.clone(), MirOperand::Local(addr)],
+                    }));
+                    (status, *match probe { Probe::Recv { arm, .. } => arm, _ => unreachable!() })
+                }
+                Probe::Send { tx, value, arm } => {
+                    let status = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(status),
+                        func: FunctionRef::internal("rask_channel_try_send_i64".to_string()),
+                        args: vec![tx.clone(), value.clone()],
+                    }));
+                    (status, *arm)
+                }
+            };
+
+            // RASK_CHAN_OK is 0; CLOSED is -1; FULL/EMPTY are -2/-3.
+            let ready = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: ready,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Eq,
+                    left: MirOperand::Local(status),
+                    right: MirOperand::Constant(MirConst::Int(0)),
+                },
+            }));
+            let not_ready = self.builder.create_block();
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(ready),
+                then_block: arm_blocks[arm_idx],
+                else_block: not_ready,
+            }));
+
+            // Not ready: still open unless the channel reported CLOSED (CL2 —
+            // a closed channel is skipped, the others keep being waited on).
+            self.builder.switch_to_block(not_ready);
+            let closed = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: closed,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Eq,
+                    left: MirOperand::Local(status),
+                    right: MirOperand::Constant(MirConst::Int(-1)),
+                },
+            }));
+            let mark_open = self.builder.create_block();
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(closed),
+                then_block: next,
+                else_block: mark_open,
+            }));
+            self.builder.switch_to_block(mark_open);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: any_open,
+                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: next }));
+        }
+
+        // Nothing fired this round.
+        self.builder.switch_to_block(probe_blocks[probes.len()]);
+        if let Some(idx) = default_arm {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: arm_blocks[idx],
+            }));
+        } else {
+            let wait = self.builder.create_block();
+            let all_closed = self.builder.create_block();
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(any_open),
+                then_block: wait,
+                else_block: all_closed,
+            }));
+
+            self.builder.switch_to_block(wait);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("rask_yield".to_string()),
+                args: vec![],
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: poll_block,
+            }));
+
+            self.builder.switch_to_block(all_closed);
+            let msg = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(msg),
+                func: FunctionRef::internal("panic".to_string()),
+                args: vec![MirOperand::Constant(MirConst::String(
+                    "select: every channel is closed [conc.select/CL1]".to_string(),
+                ))],
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+        }
+
+        // Arm bodies. A receive arm binds its value from the probe's buffer.
+        let mut result_ty = MirType::Void;
+        for (i, arm) in arms.iter().enumerate() {
+            self.builder.switch_to_block(arm_blocks[i]);
+            if let Some(Probe::Recv { buf, elem, binding, .. }) =
+                probes.iter().find(|p| matches!(p, Probe::Recv { arm, .. } if *arm == i))
+            {
+                let bound = self.builder.alloc_local(binding.clone(), elem.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: bound,
+                    rvalue: MirRValue::ArrayIndex {
+                        base: MirOperand::Local(*buf),
+                        index: MirOperand::Constant(MirConst::Int(0)),
+                        elem_size: elem.size(),
+                    },
+                }));
+                self.locals.insert(binding.clone(), (bound, elem.clone()));
+            }
+            let (arm_val, arm_ty) = self.lower_expr(&arm.body)?;
+            if !matches!(arm_ty, MirType::Void) {
+                result_ty = arm_ty;
+            }
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result_local,
+                rvalue: MirRValue::Use(arm_val),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: merge_block,
+            }));
+        }
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// Element type behind a `Receiver<T>` expression, defaulting to a word.
+    fn channel_elem_type(&self, channel: &Expr) -> MirType {
+        let args = match self.ctx.lookup_raw_type(channel.id) {
+            Some(rask_types::Type::UnresolvedGeneric { args, .. }) => args.clone(),
+            Some(rask_types::Type::Generic { args, .. }) => args.clone(),
+            _ => return MirType::I64,
+        };
+        match args.first() {
+            Some(rask_types::GenericArg::Type(t)) => self.ctx.type_to_mir(t),
+            _ => MirType::I64,
+        }
+    }
 }

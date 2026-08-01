@@ -2475,16 +2475,18 @@ impl Interpreter {
                         }
                     }
 
-                    // All channels closed (CL1)
+                    // All channels closed (CL1). This used to hand back an
+                    // `Err(...)` — but a select's type is its arms' type, so a
+                    // Result appearing there is a value nothing can use:
+                    // `const got: i64 = select { … }` would be holding an enum.
+                    // Native panics here, and now so does this.
                     if all_closed && default_idx.is_none() {
-                        return Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(
-                                "all channels closed".to_string(),
-                            )))],
-                            variant_index: 0, origin: None,
-                        });
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic(
+                                "select: every channel is closed [conc.select/CL1]".to_string(),
+                            ),
+                            expr.span,
+                        ));
                     }
 
                     // Default arm fires if nothing ready (A3)
