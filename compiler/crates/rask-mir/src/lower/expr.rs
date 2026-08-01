@@ -3160,10 +3160,21 @@ impl<'a> MirLowerer<'a> {
         // (`T`) would otherwise mangle to `T_method`. Anything unconfirmed falls
         // through to the guessing chain below, so this can only add precision.
         let recorded_prefix = self.ctx.recorded_prefix(expr.id).filter(|prefix| {
+            // The one thing the record can't be trusted for: it's written
+            // before monomorphization, so a receiver still typed as a bare
+            // type parameter would mangle to `T_method`. Single uppercase
+            // letters are type parameters by rule (type.gradual/PC3), which
+            // is exactly the case to drop.
+            //
+            // Nothing else needs confirming. Requiring the type to also
+            // declare the method in a stub sounded safer and wasn't — it
+            // rejected `string.push_str`, which codegen has and no stub
+            // declares, sending a call the checker had already resolved back
+            // to the guessing chain.
             let base = prefix.split('<').next().unwrap_or(prefix).trim();
-            self.ctx.find_struct(base).is_some()
-                || self.ctx.find_enum(base).is_some()
-                || rask_stdlib::mir_metadata::type_has_method(base, &method)
+            let mut chars = base.chars();
+            !matches!((chars.next(), chars.next()),
+                      (Some(c), None) if c.is_ascii_uppercase())
         });
         // Inline Result/Option methods that have no runtime impl —
         // `.map(f)`, `.ok()`, `.filter(f)`. These were dispatching
