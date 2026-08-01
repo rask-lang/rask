@@ -536,6 +536,49 @@ impl Resolver {
         Self::resolve_inner(decls, true)
     }
 
+    /// Resolve the program with stdlib bodies alongside it.
+    ///
+    /// The single-file mirror of `resolve_package_with_stdlib_and_cfg`. Needed
+    /// because the stdlib's own bodies are compiled into every program, so they
+    /// have to be resolved — and then type-checked — for anything downstream to
+    /// know what a call inside them refers to.
+    ///
+    /// Stdlib decls go in under `stdlib_mode`: they *define* `Result`, `Option`
+    /// and `spawn`, so the builtin-shadowing check (E0209) would reject the
+    /// definitions of the very builtins it's protecting.
+    pub fn resolve_with_stdlib_and_cfg(
+        decls: &[Decl],
+        stdlib_decls: &[Decl],
+        cfg_values: HashMap<String, String>,
+    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        let mut resolver = Resolver::new();
+        resolver.cfg_values = cfg_values;
+
+        if !stdlib_decls.is_empty() {
+            resolver.stdlib_mode = true;
+            resolver.collect_declarations(stdlib_decls);
+            resolver.stdlib_mode = false;
+        }
+        resolver.collect_declarations(decls);
+
+        if !stdlib_decls.is_empty() {
+            resolver.stdlib_mode = true;
+            resolver.resolve_bodies(stdlib_decls);
+            resolver.stdlib_mode = false;
+        }
+        resolver.resolve_bodies(decls);
+
+        if resolver.errors.is_empty() {
+            Ok(ResolvedProgram {
+                symbols: resolver.symbols,
+                resolutions: resolver.resolutions,
+                external_decls: HashMap::new(),
+            })
+        } else {
+            Err(resolver.errors)
+        }
+    }
+
     pub fn resolve_package(
         decls: &[Decl],
         registry: &crate::PackageRegistry,
@@ -1097,7 +1140,12 @@ impl Resolver {
                 });
                 let is_stdlib = self.stdlib_symbols.contains(&existing_id);
                 let is_imported = self.imported_symbols.contains(&binding_name);
-                if !is_builtin && !is_stdlib && !is_imported {
+                // The stdlib's files are collected into one flat scope, so
+                // `import async.spawn` in http.rk meets async.rk's own `spawn`
+                // as if they were the same file. That's an artifact of the
+                // flattening, not the ambiguity this error is about — and the
+                // order depends on which file happens to be listed first.
+                if !is_builtin && !is_stdlib && !is_imported && !self.stdlib_mode {
                     self.errors.push(ResolveError::shadows_import(binding_name.clone(), span));
                     return;
                 }

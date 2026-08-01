@@ -97,21 +97,21 @@ extend JsonParser {
         if self.pos >= self.len {
             return 0
         }
-        return self.input.byte_at(self.pos)
+        return self.input.byte_at(self.pos) ?? 0
     }
 
     func advance(mutate self) -> u8 {
         if self.pos >= self.len {
             return 0
         }
-        const b = self.input.byte_at(self.pos)
+        const b = self.input.byte_at(self.pos) ?? 0
         self.pos = self.pos + 1
         return b
     }
 
     func skip_ws(mutate self) {
         while self.pos < self.len {
-            const b = self.input.byte_at(self.pos)
+            const b = self.input.byte_at(self.pos) ?? 0
             if b != 32 && b != 9 && b != 10 && b != 13 {
                 return
             }
@@ -503,7 +503,7 @@ func escape_string(s: string) -> string {
     b.push_char('"')
     mut i: usize = 0
     while i < s.len() {
-        const byte = s.byte_at(i)
+        const byte = s.byte_at(i) ?? 0
         if byte == 34 {
             b.push("\\\"")
         } else if byte == 92 {

@@ -78,8 +78,14 @@ fn check_returns_typed_program_on_success() {
 #[test]
 fn call_targets_records_free_and_method_dispatch() {
     // CALL6 keystone (#425): the checker records the resolved target of every
-    // call once, keyed by the call node — a SymbolId for free functions and a
-    // (TypeId, method) pair for methods. Never a reconstructed name string.
+    // call once, keyed by the call node — a SymbolId for free functions, the
+    // resolved receiver type plus the name for methods. Never a reconstructed
+    // name string.
+    //
+    // The receiver is what downstream can't rebuild: `node_types` holds the type
+    // of the receiver *expression*, which is routinely an unresolved variable.
+    // Stdlib and primitive receivers are recorded too, not just user types —
+    // those were exactly the ones lowering guessed wrong.
     use rask_types::Callee;
     let path = tmp_rk(r#"
         struct Counter { n: i32 }
@@ -91,6 +97,8 @@ fn call_targets_records_free_and_method_dispatch() {
             mut c = Counter { n: 0 }
             c.bump()
             const x = helper()
+            const v = Vec.from([1, 2, 3])
+            const n = v.len()
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
@@ -98,12 +106,114 @@ fn call_targets_records_free_and_method_dispatch() {
     let targets = &result.typed.call_targets;
 
     let has_free = targets.values().any(|c| matches!(c, Callee::Free(_)));
-    let has_method = targets
+    let user_method = targets
         .values()
-        .any(|c| matches!(c, Callee::Method { method, .. } if method == "bump"));
+        .find(|c| matches!(c, Callee::Method { method, .. } if method == "bump"));
+    let stdlib_method = targets
+        .values()
+        .any(|c| matches!(c, Callee::Method { method, .. } if method == "len"));
+
     assert!(has_free, "free call `helper()` should record a Callee::Free");
-    assert!(has_method, "method call `c.bump()` should record a Callee::Method{{..}}");
+    let user_method = user_method
+        .expect("method call `c.bump()` should record a Callee::Method{..}");
+    assert!(
+        user_method.recv_type_id().is_some(),
+        "a user-defined receiver should resolve to a TypeId, got {user_method:?}",
+    );
+    assert!(
+        stdlib_method,
+        "a stdlib receiver should record a target too — those are the calls \
+         lowering used to mis-qualify",
+    );
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
+    // An instantiated generic used to number its nodes from zero, so its nodes
+    // collided with the original program's. Every per-node lookup inside such a
+    // body — type, dispatch target, type arguments — then answered with an
+    // unrelated node's record rather than missing. Lowering papered over it by
+    // guessing from AST shape, which is why so much of it reconstructs
+    // information the checker already had.
+    //
+    // Two instantiations also numbered from zero identically, so they collided
+    // with each other as well.
+    let path = tmp_rk(r#"
+        func identity<T>(x: T) -> T {
+            return x
+        }
+        func main() {
+            const a = identity(7)
+            const b = identity("hi")
+            println("{a} {b}")
+        }
+    "#);
+    let output = compile_file(path.to_str().unwrap(), Vec::new(), &default_config());
+    let result = output.result.expect("expected success");
+
+    let checker_max = result.typed.node_types.keys().map(|n| n.0).max().unwrap_or(0);
+    let carried = &result.mono.instantiated_node_types;
+
+    assert!(
+        !carried.is_empty(),
+        "two instantiations of first_of<T> should have carried node records; \
+         an empty map means lowering is back to guessing inside them",
+    );
+    for id in carried.keys() {
+        assert!(
+            id.0 > checker_max,
+            "instantiated node {} is inside the original program's id range \
+             (max {}) — a lookup there answers with another node's record",
+            id.0, checker_max,
+        );
+    }
+    // Both instantiations must be represented. Numbering each copy from zero
+    // made them collide with each other as well as with the program.
+    assert!(
+        result.mono.functions.iter().filter(|f| !f.type_args.is_empty()).count() >= 2,
+        "expected an instantiation per type argument",
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn gc10_reports_real_self_writes_not_reads_through_a_helper() {
+    // GC10 rejects a public method that mutates self without saying `mutate`.
+    // It shared its detection with GC9, which deliberately over-approximates —
+    // any `self.foo()` counts, since it can't see foo's declaration. That's
+    // fine for inferring `mutate` on a private method and wrong for raising an
+    // error: a public method that only *read* through a helper was rejected
+    // (#513). GC10 now asks for a definite assignment.
+    let writes = tmp_rk(r#"
+        struct Counter { public n: i64 }
+        extend Counter {
+            public func bump(self) { self.n = self.n + 1 }
+        }
+        func main() { println("x") }
+    "#);
+    let out = check_file(writes.to_str().unwrap(), &default_config());
+    assert!(
+        out.diagnostics.iter().any(|d| d.message.contains("cannot mutate parameter")),
+        "a public method assigning to self must still be rejected",
+    );
+    let _ = std::fs::remove_file(&writes);
+
+    let reads = tmp_rk(r#"
+        struct Counter { public n: i64 }
+        extend Counter {
+            func peek(self) -> i64 { return self.n }
+            public func describe(self) -> i64 { return self.peek() }
+        }
+        func main() { println("x") }
+    "#);
+    let out = check_file(reads.to_str().unwrap(), &default_config());
+    assert_eq!(
+        error_count(&out.diagnostics), 0,
+        "a public method that only reads through a helper is not a mutation: {:?}",
+        out.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
+    let _ = std::fs::remove_file(&reads);
 }
 
 #[test]

@@ -26,7 +26,7 @@ mod generics;
 mod resolve;
 mod validate;
 
-pub use type_defs::{Callee, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram};
+pub use type_defs::{Callee, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, InvalidCastClass, IndexErrorKind};
@@ -459,5 +459,22 @@ pub fn typecheck_with_stdlib_lenient(
 ) -> (TypedProgram, Vec<TypeError>) {
     let mut checker = TypeChecker::new(resolved);
     checker.collect_type_declarations(stdlib_decls);
+    // Checking the stdlib's own bodies is what gives lowering real types and
+    // dispatch targets inside them (#425). It works — the stdlib checks clean —
+    // but it can't be the default yet: stdlib types and program types share one
+    // table, so a program `struct Headers` stops shadowing the stdlib's once
+    // both are registered. See #515.
+    if std::env::var("RASK_CHECK_STDLIB").is_ok() {
+        // Bodies only: the types were registered from the stub set above, and
+        // re-declaring them here would mint a second TypeId per name — which is
+        // how `JsonValue` ended up not unifying with itself.
+        let mut all: Vec<Decl> = rask_stdlib::StubRegistry::compilable_decls()
+            .into_iter()
+            .filter(|d| matches!(d.kind,
+                rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))
+            .collect();
+        all.extend_from_slice(decls);
+        return checker.check_lenient(&all);
+    }
     checker.check_lenient(decls)
 }

@@ -137,28 +137,9 @@ fn store_closure_data(
             // Aggregate: val is a pointer to data on the parent's stack.
             // Deep-copy the data into the closure environment so it survives
             // after the parent's stack slot is reused (e.g., in a loop).
-            let src_addr = val;
-            let size = capture.size as i32;
-            let mut off = 0i32;
-            while off + 8 <= size {
-                let word = builder.ins().load(types::I64, MemFlags::new(), src_addr, off);
-                builder.ins().store(MemFlags::new(), word, closure_ptr, store_offset + off);
-                off += 8;
-            }
-            if size - off >= 4 {
-                let word = builder.ins().load(types::I32, MemFlags::new(), src_addr, off);
-                builder.ins().store(MemFlags::new(), word, closure_ptr, store_offset + off);
-                off += 4;
-            }
-            if size - off >= 2 {
-                let word = builder.ins().load(types::I16, MemFlags::new(), src_addr, off);
-                builder.ins().store(MemFlags::new(), word, closure_ptr, store_offset + off);
-                off += 2;
-            }
-            if size - off >= 1 {
-                let word = builder.ins().load(types::I8, MemFlags::new(), src_addr, off);
-                builder.ins().store(MemFlags::new(), word, closure_ptr, store_offset + off);
-            }
+            crate::builder::copy_bytes(
+                builder, val, 0, closure_ptr, store_offset, capture.size,
+            );
         } else {
             // Scalar: store the value directly
             builder

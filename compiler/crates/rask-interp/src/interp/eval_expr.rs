@@ -622,6 +622,15 @@ impl Interpreter {
                                 Value::String(Arc::new(Mutex::new(first_type.clone()))),
                             );
                         }
+                        // `"3.5".parse<f64>()` — without the type name, parse
+                        // has nothing to go on and read every string as an
+                        // integer, so parsing a float reported an error (#480).
+                        if matches!(&receiver, Value::String(_)) && method == "parse" {
+                            arg_vals.insert(
+                                0,
+                                Value::String(Arc::new(Mutex::new(first_type.clone()))),
+                            );
+                        }
                     }
                 }
 

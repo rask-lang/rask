@@ -89,6 +89,10 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+    /// std.bits B1 — rotation, distinct from Shl/Shr in that bits wrap around
+    /// the receiver's width instead of falling off the end.
+    RotateLeft,
+    RotateRight,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +100,17 @@ pub enum UnaryOp {
     Neg,
     Not,
     BitNot,
+    // std.bits B1. These map to single machine instructions, so they're MIR
+    // ops rather than runtime calls — and because codegen carries the real
+    // width per value, each one counts over the receiver's own type rather
+    // than whatever register it happens to sit in.
+    // `count_zeros`/`leading_ones`/`trailing_ones` compose from these with
+    // BitNot instead of getting variants of their own.
+    CountOnes,
+    LeadingZeros,
+    TrailingZeros,
+    ReverseBits,
+    SwapBytes,
 }
 
 /// Function reference for calls

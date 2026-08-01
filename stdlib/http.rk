@@ -303,7 +303,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
         }
         line_end += 1
     }
-    const request_line = raw[0..line_end]
+    const request_line = raw[0..line_end].to_string()
 
     // Parse request line: "METHOD PATH HTTP/1.1"
     mut first_sp: usize = 0
@@ -545,7 +545,7 @@ func parse_http_response(raw: string) -> Response or HttpError {
     }
 
     // Parse status line: "HTTP/1.1 200 OK"
-    const status_line = raw[0..line_end]
+    const status_line = raw[0..line_end].to_string()
     mut first_sp: usize = 0
     while first_sp < line_end && (raw.byte_at(first_sp) ?? 0) != 32 {
         first_sp += 1
@@ -555,11 +555,11 @@ func parse_http_response(raw: string) -> Response or HttpError {
         second_sp += 1
     }
 
-    const status_str = raw[first_sp + 1..second_sp]
+    const status_str = raw[first_sp + 1..second_sp].to_string()
     const status_val = if status_str.parse_int()? as v { v } else {
         return HttpError.InvalidResponse("bad status code: {status_str}")
     }
-    const status = status_val as u16
+    const status = status_val truncate to u16
 
     // Parse headers
     mut headers = Headers.new()

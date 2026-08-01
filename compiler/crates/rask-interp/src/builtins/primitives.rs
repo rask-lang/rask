@@ -8,6 +8,22 @@ use std::sync::{Arc, Mutex};
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
 
+/// Reinterpret the low `width` bits as an unsigned value, dropping whatever
+/// the i64 carries above them (sign extension, or a wider previous result).
+fn mask_to_width(v: i64, width: u32) -> u64 {
+    if width >= 64 { v as u64 } else { (v as u64) & ((1u64 << width) - 1) }
+}
+
+/// Put a width-masked result back into an i64, sign-extending when the
+/// receiver's type is signed so `-1i8` stays -1 rather than becoming 255.
+fn sign_extend(v: i64, width: u32, signed: bool) -> i64 {
+    if !signed || width >= 64 {
+        return v;
+    }
+    let shift = 64 - width;
+    ((v << shift) >> shift) as i64
+}
+
 /// Create an Ordering enum value from a std::cmp::Ordering.
 fn ordering_value(ord: std::cmp::Ordering) -> Value {
     Value::Enum {
@@ -62,6 +78,42 @@ impl Interpreter {
             "max" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.max(b), arg_kind(args))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             "to_float" => Ok(Value::Float(a as f64)),
+            // std.bits B1. Every answer depends on the receiver's declared
+            // width, not on the i64 the value happens to live in — `(0 as
+            // i32).count_zeros()` is 32, not 64 — so mask to the width first.
+            // An untyped literal is i64-wide.
+            "count_ones" | "count_zeros"
+            | "leading_zeros" | "trailing_zeros"
+            | "leading_ones" | "trailing_ones"
+            | "reverse_bits" | "swap_bytes"
+            | "rotate_left" | "rotate_right"
+            | "to_be" | "to_le" => {
+                let width = kind.bits().unwrap_or(64);
+                let masked = mask_to_width(a, width);
+                let out = match method {
+                    "count_ones" => masked.count_ones() as i64,
+                    "count_zeros" => (width - masked.count_ones()) as i64,
+                    // Leading counts are over the declared width, so drop the
+                    // high bits the u64 carries beyond it.
+                    "leading_zeros" => (masked.leading_zeros() - (64 - width)) as i64,
+                    "leading_ones" => ((masked << (64 - width)).leading_ones()) as i64,
+                    "trailing_zeros" => masked.trailing_zeros().min(width) as i64,
+                    "trailing_ones" => masked.trailing_ones().min(width) as i64,
+                    "reverse_bits" => (masked.reverse_bits() >> (64 - width)) as i64,
+                    // Hosts Rask targets are little-endian, so to_be is a byte
+                    // swap and to_le is the identity.
+                    "swap_bytes" | "to_be" => (masked.swap_bytes() >> (64 - width)) as i64,
+                    "to_le" => masked as i64,
+                    "rotate_left" | "rotate_right" => {
+                        let n = (self.expect_int(args, 0)? as u32).rem_euclid(width);
+                        let n = if method == "rotate_right" { (width - n) % width } else { n };
+                        let rotated = (masked << n) | (masked >> ((width - n) % width));
+                        mask_to_width(rotated as i64, width) as i64
+                    }
+                    _ => unreachable!(),
+                };
+                Ok(Value::Int(sign_extend(out, width, kind.signed()), kind))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i64".to_string(),
                 method: method.to_string(),

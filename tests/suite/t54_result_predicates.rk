@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #482: is_ok/is_err on `T or E` and is_some/is_none on `T?`.
+// These type-checked but had no codegen — native died on
+// `Function not found: Result_is_err`.
+
+struct MyErr { detail: string }
+
+extend MyErr {
+    func message(self) -> string { return self.detail }
+}
+
+func load(fail: bool) -> i32 or MyErr {
+    if fail { return MyErr { detail: "no" } }
+    return 7
+}
+
+func find(hit: bool) -> i64? {
+    if hit { return 42 }
+    return none
+}
+
+test "is_err and is_ok on a result" {
+    const bad = load(true)
+    assert bad.is_err()
+    assert bad.is_ok() == false
+
+    const good = load(false)
+    assert good.is_ok()
+    assert good.is_err() == false
+}
+
+test "is_some and is_none on an optional" {
+    const present = find(true)
+    assert present.is_some()
+    assert present.is_none() == false
+
+    const absent = find(false)
+    assert absent.is_none()
+    assert absent.is_some() == false
+}
+
+test "predicates compose in conditions" {
+    const r = load(true)
+    mut seen = 0
+    if r.is_err() { seen = seen + 1 }
+    if r.is_ok() { seen = seen + 10 }
+    assert seen == 1
+}

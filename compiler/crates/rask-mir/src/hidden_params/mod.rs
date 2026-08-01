@@ -332,8 +332,9 @@ impl<'a> HiddenParamPass<'a> {
             rask_types::Callee::Free(sym) => {
                 typed.symbols.get(*sym).map(|s| s.name.clone())
             }
-            rask_types::Callee::Method { type_id, method } => {
-                Some(format!("{}.{}", typed.types.type_name(*type_id), method))
+            rask_types::Callee::Method { recv, method } => {
+                rask_types::receiver_name(recv, &typed.types)
+                    .map(|ty| format!("{}.{}", ty, method))
             }
         }
     }

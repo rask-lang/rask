@@ -107,6 +107,15 @@ pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveErro
     Resolver::resolve_stdlib(decls)
 }
 
+/// Resolve the program with the stdlib's own bodies alongside it.
+pub fn resolve_with_stdlib_and_cfg(
+    decls: &[Decl],
+    stdlib_decls: &[Decl],
+    cfg_values: HashMap<String, String>,
+) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve_with_stdlib_and_cfg(decls, stdlib_decls, cfg_values)
+}
+
 /// Resolve all names in a package with access to other packages (multi-file mode).
 pub fn resolve_package(
     decls: &[Decl],
