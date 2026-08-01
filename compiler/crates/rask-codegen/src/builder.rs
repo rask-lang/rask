@@ -4655,7 +4655,7 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CallAdapt {
         match func_name {
             // Pool insert: wrap value as pointer, append elem_size
-            "Pool_insert" => {
+            "Pool_insert" | "Pool_try_insert" => {
                 let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
                 if args.len() >= 2 && !is_struct {
                     let val = args[1];
