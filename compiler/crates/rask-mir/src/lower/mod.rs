@@ -1849,7 +1849,8 @@ impl<'a> MirLowerer<'a> {
                         Some(rask_ast::token::IntSuffix::U8) => MirType::U8,
                         Some(rask_ast::token::IntSuffix::U16) => MirType::U16,
                         Some(rask_ast::token::IntSuffix::U32) => MirType::U32,
-                        Some(rask_ast::token::IntSuffix::U64) => MirType::U64,
+                        Some(rask_ast::token::IntSuffix::U64)
+                        | Some(rask_ast::token::IntSuffix::U64ByMagnitude) => MirType::U64,
                         _ => MirType::I64,
                     }
                 };

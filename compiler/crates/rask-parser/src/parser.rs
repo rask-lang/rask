@@ -4,7 +4,7 @@
 use rask_ast::decl::{BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, ConvertKind, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
-use rask_ast::token::{Token, TokenKind};
+use rask_ast::token::{IntSuffix, Token, TokenKind};
 use rask_ast::{NodeId, Span};
 
 /// Maximum number of errors to collect before stopping.
@@ -3330,6 +3330,40 @@ impl Parser {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let end = operand.span.end;
+                // `-N` is one literal, not a negation of `N`. Folding the sign
+                // in here is what lets `i64::MIN` be written: the lexer sees
+                // 9223372036854775808 on its own, which only fits `u64`, so
+                // leaving the `-` as an operator asked for `neg` on a `u64`.
+                if let ExprKind::Int(v, suffix) = operand.kind {
+                    match suffix {
+                        None => {
+                            let kind = ExprKind::Int(-v, None);
+                            return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                        }
+                        // Only the lexer's "too big for i64" marker folds; an
+                        // explicitly written `u64` keeps meaning `u64`.
+                        Some(IntSuffix::U64ByMagnitude) => {
+                            if v == i64::MIN {
+                                let kind = ExprKind::Int(i64::MIN, None);
+                                return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                            }
+                            return Err(ParseError {
+                                span: self.span(start, end),
+                                message: format!("integer literal `-{}` is too small for `i64`", v as u64),
+                                hint: Some(format!("the smallest `i64` is {}", i64::MIN)),
+                                why: Some(
+                                    "integer literals are `i64` unless a suffix says otherwise, and \
+                                     there is no wider signed type to hold this one"
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                        Some(_) => {}
+                    }
+                    let operand = Expr { id: self.next_id(), kind: ExprKind::Int(v, suffix), span: operand.span };
+                    let kind = ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(operand) };
+                    return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                }
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Bang => {

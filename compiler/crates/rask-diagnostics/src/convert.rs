@@ -985,6 +985,22 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "invalid conversion form")
                     .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV5–CV10]")
             }
+            IntLiteralOutOfRange { literal, ty, min, max, span } => {
+                let label = format!("`{}` doesn't fit in `{}`", literal, ty);
+                Diagnostic::error(format!("integer literal `{}` is out of range for `{}`", literal, ty))
+                    .with_code("E0825")
+                    .with_primary(*span, label)
+                    .with_why(format!(
+                        "`{}` holds {} through {} — a literal outside that range would have to \
+                         wrap, and nothing here wraps silently",
+                        ty, min, max,
+                    ))
+                    .with_help(format!(
+                        "use a type that holds it, or convert at the use site:\n  \
+                         x truncate to {ty}   // wraps\n  x saturate to {ty}   // clamps",
+                        ty = ty,
+                    ))
+            }
             LinearInContainer { container, elem, span } => {
                 let rule = if container == "Map" { "RC3" } else { "RC1" };
                 let label = format!("`{}` cannot hold linear value `{}`", container, elem);

@@ -439,7 +439,7 @@ impl<'a> MirLowerer<'a> {
                     Some(IntSuffix::U8) => MirType::U8,
                     Some(IntSuffix::U16) => MirType::U16,
                     Some(IntSuffix::U32) => MirType::U32,
-                    Some(IntSuffix::U64) => MirType::U64,
+                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => MirType::U64,
                     Some(IntSuffix::I128 | IntSuffix::U128 | IntSuffix::Isize | IntSuffix::Usize) => MirType::I64,
                     None => self
                         .ctx

@@ -330,7 +330,8 @@ impl Interpreter {
                     Some(IntSuffix::U8) => IntKind::U8,
                     Some(IntSuffix::U16) => IntKind::U16,
                     Some(IntSuffix::U32) => IntKind::U32,
-                    Some(IntSuffix::U64) | Some(IntSuffix::Usize) => IntKind::U64,
+                    Some(IntSuffix::U64) | Some(IntSuffix::Usize)
+                    | Some(IntSuffix::U64ByMagnitude) => IntKind::U64,
                     None => self.node_types.get(&expr.id).map(IntKind::from_type).unwrap_or(IntKind::Untyped),
                 };
                 Ok(Value::Int(*n, kind))

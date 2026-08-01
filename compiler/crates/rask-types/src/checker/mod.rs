@@ -144,6 +144,10 @@ pub struct TypeChecker {
     /// #310: index sites validated after literal defaults resolve their index
     /// type. Deferred so `v[0]` sees `i32`, not a fresh literal var.
     pub(super) pending_index: Vec<check_expr::PendingIndex>,
+    /// Every integer literal, checked against its final type once solving is
+    /// done. Deferred because the type is usually a var at the point the literal
+    /// is seen. (value, whether the text was above `i64::MAX`, type, span).
+    pub(super) pending_int_literals: Vec<(i64, bool, Type, rask_ast::Span)>,
     /// RC1/RC3: container-typed sites (bindings, params, returns, fields, alias
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
@@ -199,6 +203,7 @@ impl TypeChecker {
             discarded_bindings: HashMap::new(),
             multitasking_depth: 0,
             pending_casts: Vec::new(),
+            pending_int_literals: Vec::new(),
             pending_index: Vec::new(),
             pending_linear_containers: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
@@ -276,6 +281,9 @@ impl TypeChecker {
 
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
+
+        // An integer literal has to fit the type it landed in.
+        self.validate_pending_int_literals();
 
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).

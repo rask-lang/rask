@@ -22,6 +22,22 @@ pub enum FloatSuffix {
 pub enum IntSuffix {
     I8, I16, I32, I64, I128, Isize,
     U8, U16, U32, U64, U128, Usize,
+    /// No suffix was written, but the literal's magnitude doesn't fit `i64`,
+    /// so it can only be a `u64` — the token carries its bit pattern. Distinct
+    /// from a written `u64` because a leading `-` can still claim it: the
+    /// parser folds the sign in, and `-9223372036854775808` is `i64::MIN`, not
+    /// a negated unsigned.
+    U64ByMagnitude,
+}
+
+impl IntSuffix {
+    /// The width this suffix names, with `U64ByMagnitude` reading as `u64`.
+    pub fn effective(self) -> IntSuffix {
+        match self {
+            IntSuffix::U64ByMagnitude => IntSuffix::U64,
+            other => other,
+        }
+    }
 }
 
 /// The kind of token.

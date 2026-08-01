@@ -698,9 +698,9 @@ fn int_value(cleaned: &str, radix: u32, suffix: Option<IntSuffix>) -> Option<(i6
         return Some((v, suffix));
     }
     let v = u64::from_str_radix(cleaned, radix).ok()?;
-    // An explicit suffix stays as written — `123u8` that doesn't fit is the
-    // checker's to complain about, not something to silently retype.
-    Some((v as i64, suffix.or(Some(IntSuffix::U64))))
+    // An explicit suffix stays as written; without one the magnitude is the
+    // only evidence, and the parser still gets to fold a `-` into it.
+    Some((v as i64, suffix.or(Some(IntSuffix::U64ByMagnitude))))
 }
 
 /// Parse integer type suffix from a number literal.

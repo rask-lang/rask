@@ -90,6 +90,9 @@ pub struct InferenceContext {
     pub(super) constraints: Vec<TypeConstraint>,
     /// Type vars created for unsuffixed literals. Defaults applied after solving.
     pub(super) literal_vars: HashMap<TypeVarId, LiteralKind>,
+    /// What each unsuffixed integer literal said, so the default can widen when
+    /// i32 is too narrow to hold it.
+    pub(super) literal_int_values: HashMap<TypeVarId, i64>,
 }
 
 impl InferenceContext {
@@ -132,18 +135,33 @@ impl InferenceContext {
         self.substitutions.insert(id, ty);
     }
 
+    /// Remember what an unsuffixed integer literal actually said, so defaulting
+    /// can tell `3` from `3000000000`.
+    pub fn record_literal_int(&mut self, id: TypeVarId, value: i64) {
+        self.literal_int_values.insert(id, value);
+    }
+
     /// Apply defaults for unresolved literal type vars.
     pub fn apply_literal_defaults(&mut self) {
+        let mut defaults = Vec::new();
         for (&var_id, &kind) in self.literal_vars.iter() {
             // Only default if not yet resolved
-            if !self.substitutions.contains_key(&var_id) {
-                let default = match kind {
-                    LiteralKind::Integer => Type::I32,
-                    LiteralKind::Float => Type::F64,
-                };
-                self.substitutions.insert(var_id, default);
+            if self.substitutions.contains_key(&var_id) {
+                continue;
             }
+            let default = match kind {
+                // i32 is the default (type.primitives/L1), but only where the
+                // value fits — `const big = 3000000000` used to keep the low 32
+                // bits and print -1294967296.
+                LiteralKind::Integer => match self.literal_int_values.get(&var_id) {
+                    Some(&v) if i32::try_from(v).is_err() => Type::I64,
+                    _ => Type::I32,
+                },
+                LiteralKind::Float => Type::F64,
+            };
+            defaults.push((var_id, default));
         }
+        self.substitutions.extend(defaults);
     }
 
     /// Add a constraint.

@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A literal means the same number everywhere it lands.
+//
+// Two separate holes, same root: nobody checked that a literal's value fits the
+// type it ended up in. `i64::MIN` couldn't be written at all — the lexer typed
+// 9223372036854775808 as u64 (only place it fits) and unary minus then had
+// nothing to bind to, so `-9223372036854775808` asked for `neg` on a u64. And
+// an unsuffixed literal too big for the i32 default kept only its low 32 bits
+// natively while the interpreter kept all of them: `const d = 3000000000`
+// printed 3000000000 interpreted and -1294967296 compiled.
+
+test "i64::MIN can be written" {
+    const m: i64 = -9223372036854775808
+    assert "{m}" == "-9223372036854775808"
+}
+
+test "i64::MIN without an annotation" {
+    const m = -9223372036854775808
+    assert "{m}" == "-9223372036854775808"
+}
+
+test "one above i64::MIN" {
+    const m: i64 = -9223372036854775807
+    assert "{m}" == "-9223372036854775807"
+}
+
+test "an unsuffixed literal too big for i32 widens instead of wrapping" {
+    const d = 3000000000
+    assert "{d}" == "3000000000"
+    const c = -1000000000000000000
+    assert "{c}" == "-1000000000000000000"
+    const big = 9223372036854775807
+    assert "{big}" == "9223372036854775807"
+}
+
+test "the i32 default still holds where it fits" {
+    const g = 300
+    assert "{g}" == "300"
+    const n = -5
+    assert "{n}" == "-5"
+}
+
+test "boundary values of each width" {
+    const a: u8 = 255
+    const b: i8 = -128
+    const c: u16 = 65535
+    const d: i16 = -32768
+    const e: u32 = 4294967295
+    const f: i32 = -2147483648
+    assert "{a} {b} {c} {d} {e} {f}" == "255 -128 65535 -32768 4294967295 -2147483648"
+}
+
+test "negation of a folded literal still negates" {
+    const n = -(-7)
+    assert n == 7
+    mut x = 10
+    x = x - 3
+    assert x == 7
+}
