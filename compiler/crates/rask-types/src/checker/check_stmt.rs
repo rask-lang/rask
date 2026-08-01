@@ -317,7 +317,7 @@ impl TypeChecker {
                 let init_ty = self.infer_expr(init);
                 self.bind_tuple_patterns(patterns, &init_ty, is_const, stmt.span);
             }
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { pattern, expr, body, .. } => {
                 let value_ty = self.infer_expr(expr);
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, stmt.span);

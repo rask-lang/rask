@@ -126,7 +126,7 @@ fn visit_stmt(stmt: &Stmt, index: &mut PositionIndex) {
             visit_expr(target, index);
             visit_expr(value, index);
         }
-        StmtKind::While { cond, body } => {
+        StmtKind::While { cond, body, .. } => {
             visit_expr(cond, index);
             for stmt in body {
                 visit_stmt(stmt, index);

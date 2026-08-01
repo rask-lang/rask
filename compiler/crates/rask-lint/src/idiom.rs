@@ -65,7 +65,7 @@ fn walk_stmt_for_unwrap(stmt: &Stmt, source: &str, diags: &mut Vec<LintDiagnosti
             walk_expr_for_unwrap(target, source, diags);
             walk_expr_for_unwrap(value, source, diags);
         }
-        StmtKind::While { cond, body } => {
+        StmtKind::While { cond, body, .. } => {
             walk_expr_for_unwrap(cond, source, diags);
             walk_stmts_for_unwrap(body, source, diags);
         }
@@ -496,7 +496,7 @@ fn walk_for_large_unsafe(stmts: &[Stmt], source: &str, max: usize, diags: &mut V
             StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
                 check_expr_for_large_unsafe(init, source, max, diags);
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 check_expr_for_large_unsafe(cond, source, max, diags);
                 walk_for_large_unsafe(body, source, max, diags);
             }

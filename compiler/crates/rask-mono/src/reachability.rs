@@ -511,7 +511,7 @@ impl<'a> Monomorphizer<'a> {
             }
             StmtKind::Return(Some(e)) => self.visit_expr(e),
             StmtKind::Return(None) => {}
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 self.visit_expr(cond);
                 for s in body {
                     self.visit_stmt(s);

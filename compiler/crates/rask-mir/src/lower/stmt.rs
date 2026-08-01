@@ -432,7 +432,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // While loop (spec L5)
-            StmtKind::While { cond, body } => self.lower_while(cond, body),
+            StmtKind::While { label, cond, body } => self.lower_while(label.as_deref(), cond, body),
 
             // For loop - desugar to while with iterator
             StmtKind::For {
@@ -472,7 +472,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // While-let pattern loop
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { label, pattern, expr, body } => {
                 let check_block = self.builder.create_block();
                 let body_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
@@ -513,7 +513,7 @@ impl<'a> MirLowerer<'a> {
                 self.bind_pattern_payload(pattern, val, payload_ty, &val_ty);
                 let ensure_depth = self.ensure_stack.len();
                 self.loop_stack.push(LoopContext {
-                    label: None,
+                    label: label.clone(),
                     continue_block: check_block,
                     exit_block,
                     result_local: None,
@@ -1251,7 +1251,7 @@ impl<'a> MirLowerer<'a> {
     // =================================================================
 
     /// While loop (spec L5).
-    fn lower_while(&mut self, cond: &Expr, body: &[Stmt]) -> Result<(), LoweringError> {
+    fn lower_while(&mut self, label: Option<&str>, cond: &Expr, body: &[Stmt]) -> Result<(), LoweringError> {
         let check_block = self.builder.create_block();
         let body_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
@@ -1271,7 +1271,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(body_block);
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
-            label: None,
+            label: label.map(|s| s.to_string()),
             continue_block: check_block,
             exit_block,
             result_local: None,

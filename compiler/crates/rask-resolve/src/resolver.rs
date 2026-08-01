@@ -1724,17 +1724,17 @@ impl Resolver {
                     self.errors.push(ResolveError::invalid_continue(None, stmt.span));
                 }
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { label, cond, body } => {
                 self.resolve_expr(cond);
-                self.scopes.push(ScopeKind::Loop { label: None });
+                self.scopes.push(ScopeKind::Loop { label: label.clone() });
                 for s in body {
                     self.resolve_stmt(s);
                 }
                 self.scopes.pop();
             }
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { label, pattern, expr, body } => {
                 self.resolve_expr(expr);
-                self.scopes.push(ScopeKind::Loop { label: None });
+                self.scopes.push(ScopeKind::Loop { label: label.clone() });
                 self.resolve_pattern(pattern);
                 for s in body {
                     self.resolve_stmt(s);

@@ -286,16 +286,19 @@ impl TypeSubstitutor {
 
                 StmtKind::Continue(label) => StmtKind::Continue(label.clone()),
 
-                StmtKind::While { cond, body } => StmtKind::While {
+                StmtKind::While { label, cond, body } => StmtKind::While {
+                    label: label.clone(),
                     cond: self.clone_expr(cond),
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),
                 },
 
                 StmtKind::WhileLet {
+                    label,
                     pattern,
                     expr,
                     body,
                 } => StmtKind::WhileLet {
+                    label: label.clone(),
                     pattern: self.clone_pattern(pattern),
                     expr: self.clone_expr(expr),
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),

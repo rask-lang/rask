@@ -2869,8 +2869,7 @@ impl Parser {
                 self.skip_newlines();
                 self.parse_block_body()?
             };
-            let _ = label;
-            return Ok(StmtKind::WhileLet { pattern, expr: *scrutinee, body });
+            return Ok(StmtKind::WhileLet { label, pattern, expr: *scrutinee, body });
         }
 
         let body = if self.match_token(&TokenKind::Colon) {
@@ -2879,8 +2878,7 @@ impl Parser {
             self.skip_newlines();
             self.parse_block_body()?
         };
-        let _ = label;
-        Ok(StmtKind::While { cond, body })
+        Ok(StmtKind::While { label, cond, body })
     }
 
     fn parse_loop_stmt(&mut self, label: Option<String>) -> Result<StmtKind, ParseError> {

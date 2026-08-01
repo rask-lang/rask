@@ -88,10 +88,8 @@ impl Interpreter {
                 Err(RuntimeDiagnostic::new(RuntimeError::Return(value), stmt.span))
             }
 
-            StmtKind::While { cond, body } => {
-                // The parser doesn't keep a label on `while` yet, so only
-                // unlabeled break/continue stop here.
-                let loop_label: Option<&str> = None;
+            StmtKind::While { label, cond, body } => {
+                let loop_label = label.as_deref();
                 // `while x is Pat(v) && …` binds v for the rest of the condition
                 // and for the body, so the condition is evaluated inside the same
                 // scope the body runs in (#256).
@@ -138,11 +136,12 @@ impl Interpreter {
             }
 
             StmtKind::WhileLet {
+                label,
                 pattern,
                 expr,
                 body,
             } => {
-                let loop_label: Option<&str> = None;
+                let loop_label = label.as_deref();
                 loop {
                     let value = self.eval_expr(expr)?;
 

@@ -59,6 +59,35 @@ test "break value is still a value, not a label" {
     assert got == 42
 }
 
+test "a labeled while is a real label" {
+    mut count = 0
+    mut i = 0
+    outer: while i < 5 {
+        i += 1
+        mut j = 0
+        while j < 5 {
+            j += 1
+            if j == 2: continue outer
+            count += 1
+        }
+    }
+    assert count == 5
+
+    mut hits = 0
+    mut a = 0
+    stop: while a < 5 {
+        a += 1
+        mut b = 0
+        while b < 5 {
+            b += 1
+            hits += 1
+            if a == 2 && b == 2: break stop
+        }
+    }
+    // 5 inner rounds for a=1, then b=1 and b=2 for a=2
+    assert hits == 7
+}
+
 test "labeled continue on a loop expression" {
     mut ticks = 0
     const done = spin: loop {

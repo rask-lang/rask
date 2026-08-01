@@ -579,11 +579,11 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 self.check_expr(cond);
                 self.check_loop_body(body, &[]);
             }
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { pattern, expr, body, .. } => {
                 self.check_expr(expr);
                 let scrutinee_ty = self.program.node_types.get(&expr.id).cloned();
                 self.register_pattern_bindings_typed(pattern, scrutinee_ty.as_ref(), expr.span);
@@ -2471,7 +2471,7 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Return(Some(e)) | StmtKind::Break { value: Some(e), .. } => {
                 self.collect_free_vars_inner(e, locals, out, projections);
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 self.collect_free_vars_inner(cond, locals, out, projections);
                 for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
             }

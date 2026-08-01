@@ -2646,11 +2646,11 @@ impl<'a> MirLowerer<'a> {
                 self.walk_free_vars(target, bound, seen, free);
                 self.walk_free_vars(value, bound, seen, free);
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 self.walk_free_vars(cond, bound, seen, free);
                 self.walk_free_vars_block(body, bound, seen, free);
             }
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { pattern, expr, body, .. } => {
                 self.walk_free_vars(expr, bound, seen, free);
                 let mut body_bound = bound.clone();
                 collect_pattern_names(pattern, &mut body_bound);
@@ -3226,7 +3226,7 @@ mod tests {
     fn while_stmt(cond: Expr, body: Vec<Stmt>) -> Stmt {
         Stmt {
             id: NodeId(204),
-            kind: StmtKind::While { cond, body },
+            kind: StmtKind::While { label: None, cond, body },
             span: sp(),
         }
     }

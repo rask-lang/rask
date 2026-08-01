@@ -83,7 +83,7 @@ fn has_unsafe_in_stmt(stmt: &Stmt) -> bool {
             has_unsafe_in_expr(target) || has_unsafe_in_expr(value)
         }
         StmtKind::Return(Some(expr)) => has_unsafe_in_expr(expr),
-        StmtKind::While { cond, body } => {
+        StmtKind::While { cond, body, .. } => {
             has_unsafe_in_expr(cond) || has_unsafe_in_stmts(body)
         }
         StmtKind::For { iter, body, .. } => {

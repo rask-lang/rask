@@ -447,12 +447,12 @@ impl Hasher {
                     self.feed_bool(false);
                 }
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 self.feed_tag(29);
                 self.hash_expr(cond);
                 self.hash_stmts(body);
             }
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { pattern, expr, body, .. } => {
                 self.feed_tag(30);
                 self.hash_pattern(pattern);
                 self.hash_expr(expr);
