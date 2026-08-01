@@ -150,6 +150,42 @@ impl CodeGenerator {
     /// Declare runtime functions as external imports.
     /// These are provided by the C runtime (compiler/runtime/runtime.c).
     pub fn declare_runtime_functions(&mut self) -> CodegenResult<()> {
+        // stdlib `math` — every entry is f64 in, f64 or bool out, so declare
+        // them from a table instead of 19 near-identical blocks. Symbol names
+        // match what MIR mangles for `math.foo(x)`; runtime/math.c provides them.
+        {
+            const MATH_F64: &[(&str, usize)] = &[
+                ("math_sin", 1), ("math_cos", 1), ("math_tan", 1),
+                ("math_asin", 1), ("math_acos", 1), ("math_atan", 1),
+                ("math_atan2", 2),
+                ("math_exp", 1), ("math_ln", 1), ("math_log2", 1), ("math_log10", 1),
+                ("math_hypot", 2), ("math_clamp", 3),
+                ("math_to_radians", 1), ("math_to_degrees", 1),
+            ];
+            const MATH_PRED: &[&str] = &["math_is_nan", "math_is_inf", "math_is_finite"];
+
+            for (name, arity) in MATH_F64 {
+                let mut sig = self.module.make_signature();
+                for _ in 0..*arity {
+                    sig.params.push(AbiParam::new(types::F64));
+                }
+                sig.returns.push(AbiParam::new(types::F64));
+                let id = self.module
+                    .declare_function(name, Linkage::Import, &sig)
+                    .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+                self.func_ids.insert((*name).to_string(), id);
+            }
+            for name in MATH_PRED {
+                let mut sig = self.module.make_signature();
+                sig.params.push(AbiParam::new(types::F64));
+                sig.returns.push(AbiParam::new(types::I8));
+                let id = self.module
+                    .declare_function(name, Linkage::Import, &sig)
+                    .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+                self.func_ids.insert((*name).to_string(), id);
+            }
+        }
+
         // rask_print_i64(val: i64) -> void
         {
             let mut sig = self.module.make_signature();

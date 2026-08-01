@@ -1,8 +1,10 @@
-// PENDING std.bits — integer bit methods (count_ones/count_zeros/leading_zeros/
-// trailing_zeros/rotate_left/rotate_right) are unregistered on BOTH backends
-// (bits.rk documents them as "registered in builtins" but nothing wires them;
-// #397). Expected RED until built; drives implementation. Do NOT assert current
-// (wrong) behavior.
+// std.bits B1 — bit inspection and permutation on integer types.
+// Implemented in #397: the checker resolves them on any integer, the
+// interpreter counts over the declared width, and native lowers each to a
+// single machine instruction.
+//
+// The width cases matter most: a count has to answer over the receiver's own
+// type, not over the 64-bit register the value sits in.
 
 func main() {}
 
@@ -21,4 +23,73 @@ test "std.bits/count_zeros over the width" {
     // 32-bit value 0 has 32 zero bits.
     const z: i32 = 0
     assert z.count_zeros() == 32
+}
+
+test "std.bits/counts answer over the receiver's width" {
+    const a: u8 = 0
+    assert a.count_zeros() == 8
+    assert a.leading_zeros() == 8
+
+    const b: u16 = 0
+    assert b.count_zeros() == 16
+    assert b.leading_zeros() == 16
+
+    const c: u32 = 1
+    assert c.leading_zeros() == 31
+    assert c.trailing_zeros() == 0
+
+    const d: u64 = 1
+    assert d.leading_zeros() == 63
+}
+
+test "std.bits/leading and trailing ones" {
+    const a: u8 = 255
+    assert a.leading_ones() == 8
+    assert a.trailing_ones() == 8
+
+    const b: u8 = 7
+    assert b.trailing_ones() == 3
+    assert b.leading_ones() == 0
+}
+
+test "std.bits/rotate wraps instead of dropping bits" {
+    const x: u8 = 1
+    assert x.rotate_left(1) == 2
+    // The high bit wraps back to the low end rather than falling off.
+    const high: u8 = 128
+    assert high.rotate_left(1) == 1
+    assert high.rotate_right(7) == 1
+
+    // A full turn is the identity.
+    const y: u32 = 305419896
+    assert y.rotate_left(32) == y
+    assert y.rotate_right(32) == y
+}
+
+test "std.bits/reverse_bits and swap_bytes stay in width" {
+    const a: u8 = 1
+    assert a.reverse_bits() == 128
+
+    const b: u16 = 258
+    assert b.swap_bytes() == 513
+
+    const c: u32 = 1
+    assert c.swap_bytes() == 16777216
+}
+
+test "std.bits/round trips" {
+    const x: u16 = 4660
+    assert x.swap_bytes().swap_bytes() == x
+    assert x.reverse_bits().reverse_bits() == x
+}
+
+test "std.bits/byte order round-trips" {
+    const a: u16 = 258
+    assert a.to_be() == 513
+    assert a.to_le() == 258
+    assert a.to_be().to_be() == a
+
+    const b: u32 = 1
+    assert b.to_be() == 16777216
+    assert b.to_le() == 1
 }

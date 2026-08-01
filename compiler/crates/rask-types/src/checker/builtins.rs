@@ -80,6 +80,17 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         return Type::option(parse_stub_type(inner));
     }
 
+    // `T?` — the way optionals are actually written in the stubs. Without this
+    // `byte_at(i) -> u8?` came back as the *name* "u8?", so the value was never
+    // an optional: `??` had nothing to narrow and no method resolved on the
+    // result. A generic argument can end in `>` (`Vec<i32>?`), so strip the
+    // suffix before the generic handling below rather than after.
+    if let Some(inner) = s.strip_suffix('?') {
+        if !inner.is_empty() {
+            return Type::option(parse_stub_type(inner));
+        }
+    }
+
     // Handle other generics: `Name<T1, T2, ...>` (Vec, Map, Pool, Handle, ...)
     // Without this, `Vec<string>` returns as `UnresolvedNamed("Vec<string>")`,
     // which the method-lookup path doesn't unify against `Generic { Vec, [string] }`.

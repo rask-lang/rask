@@ -142,18 +142,34 @@ impl Interpreter {
                 Ok(Value::String(Arc::new(Mutex::new(substring))))
             }
             "parse_int" | "parse" => {
-                match s.lock().unwrap().trim().parse::<i64>() {
-                    Ok(n) => Ok(Value::Enum {
+                // `parse<T>` passes T's name as arg 0 (injected at the call
+                // site); `parse_int` and a bare `parse()` have none and mean
+                // integer. Floats have to go through a float parse — reading
+                // "3.5" as an integer just fails (#480).
+                let target = match args.first() {
+                    Some(Value::String(t)) => t.lock().unwrap().clone(),
+                    _ => "i64".to_string(),
+                };
+                let text = s.lock().unwrap().trim().to_string();
+                let (parsed, what) = if matches!(target.as_str(), "f32" | "f64") {
+                    (text.parse::<f64>().ok().map(|f| {
+                        if target == "f32" { Value::Float(f as f32 as f64) } else { Value::Float(f) }
+                    }), "float")
+                } else {
+                    (text.parse::<i64>().ok().map(Value::int), "integer")
+                };
+                match parsed {
+                    Some(v) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
-                        fields: vec![Value::int(n)],
+                        fields: vec![v],
                         variant_index: 0, origin: None,
                     }),
-                    Err(_) => Ok(Value::Enum {
+                    None => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(
-                            "invalid integer".to_string(),
+                            format!("invalid {}", what),
                         )))],
                         variant_index: 0, origin: None,
                     }),

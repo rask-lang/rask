@@ -1332,6 +1332,12 @@ impl<'a> MirLowerer<'a> {
                         addr: result_local,
                         offset: i as u32 * elem_size,
                         value: elem_op,
+                        // Deliberately unsized: an array of strings holds
+                        // *pointers* to 16-byte values, not inline ones, and the
+                        // whole read path expects that. Passing elem_size here
+                        // makes codegen copy the value inline instead, which
+                        // reads correctly right up until something indexes the
+                        // array — see #414 for why the two disagree.
                         store_size: None,
                     }));
                 }
@@ -3147,6 +3153,18 @@ impl<'a> MirLowerer<'a> {
                 self.ctx.find_struct(base).is_some()
                     || self.ctx.find_enum(base).is_some()
             });
+
+        // CALL6: what dispatch actually resolved to, when MIR can confirm the
+        // type exists here. The confirmation matters — the record is written
+        // before monomorphization, so a receiver typed as a bare type parameter
+        // (`T`) would otherwise mangle to `T_method`. Anything unconfirmed falls
+        // through to the guessing chain below, so this can only add precision.
+        let recorded_prefix = self.ctx.recorded_prefix(expr.id).filter(|prefix| {
+            let base = prefix.split('<').next().unwrap_or(prefix).trim();
+            self.ctx.find_struct(base).is_some()
+                || self.ctx.find_enum(base).is_some()
+                || rask_stdlib::mir_metadata::type_has_method(base, &method)
+        });
         // Inline Result/Option methods that have no runtime impl —
         // `.map(f)`, `.ok()`, `.filter(f)`. These were dispatching
         // to Vec_map et al. as a fallback and silently
@@ -3161,6 +3179,7 @@ impl<'a> MirLowerer<'a> {
         // `{Type}_{method}`. Dispatch is driven by the resolved receiver
         // type and the stub-derived metadata — not a hand-maintained
         // method-name table. Priority:
+        //   0. the receiver dispatch resolved to (CALL6), when MIR confirms it
         //   1. user struct/enum from the type checker
         //   2. tracked local/field type (LocalMeta, struct layout)
         //   3. resolved receiver type, when that stdlib type actually
@@ -3173,7 +3192,8 @@ impl<'a> MirLowerer<'a> {
             self.ctx.lookup_raw_type(object.id)
                 .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
         };
-        let qualified_name = user_type_prefix
+        let qualified_name = recorded_prefix
+            .or(user_type_prefix)
             .or_else(|| if let ExprKind::Ident(var_name) = &object.kind {
                 self.meta(var_name).and_then(|m| m.type_prefix.clone())
             } else {
@@ -3365,9 +3385,13 @@ impl<'a> MirLowerer<'a> {
             // Prefer the checker's type; rebuild it from the mangled type
             // argument when node types aren't available (instantiated bodies).
             //
-            // Integer targets only: the float parse returns a raw f64 from the
-            // runtime, which the Result-wrapping store path can't box, so
-            // `parse<f64>` keeps its scalar return.
+            // Integer targets only. The runtime shape is the same for floats
+            // (status return, value through an out-param) and the codegen
+            // adapter already handles a float writer, so this looks liftable —
+            // it isn't. Giving `parse<f64>` a Result type makes something
+            // downstream treat the f64 payload as a pointer, and stdlib
+            // `JsonParser_parse_number` stops compiling on a Cranelift verifier
+            // error. Tried it, reverted it; see #480.
             Some(self.ctx.lookup_node_type(expr.id)
                 .filter(|t| matches!(t, MirType::Result { .. }))
                 .unwrap_or_else(|| MirType::Result {
@@ -3812,6 +3836,19 @@ impl<'a> MirLowerer<'a> {
                 .is_some_and(|qualified| self.func_sigs.contains_key(&qualified));
         let skip_binop = skip_binop || has_operator_overload;
 
+        // std.bits B1 on an integer receiver. These aren't operator methods —
+        // they're named calls — but they lower the same way, to a single
+        // machine instruction on the receiver's own width, so they belong here
+        // rather than in the `{Type}_{method}` dispatch chain (which had no
+        // `i64_count_ones` to find, #397).
+        if matches!(obj_ty, MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                          | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64)
+        {
+            if let Some(handled) = self.lower_int_bit_method(method, args, &obj_op, obj_ty)? {
+                return Ok(Some(handled));
+            }
+        }
+
         // Detect binary operator methods (desugared from a + b → a.add(b))
         // Skip for SIMD types and raw pointers — they use method dispatch.
         if !skip_binop {
@@ -3848,6 +3885,75 @@ impl<'a> MirLowerer<'a> {
         }
         } // end if !skip_binop
         Ok(None)
+    }
+
+    /// std.bits B1 bit methods on an integer receiver.
+    ///
+    /// The "ones" counts are the "zeros" counts of the complement, and
+    /// `count_zeros` is `count_ones` of the complement, so those three compose
+    /// from a BitNot rather than carrying MIR ops of their own. Every result
+    /// keeps the receiver's type, matching what the checker unified.
+    fn lower_int_bit_method(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Result<Option<super::TypedOperand>, LoweringError> {
+        use crate::operand::UnaryOp as MirUnaryOp;
+
+        // Rotations take an amount; the rest are nullary.
+        if let Some(rot) = match method {
+            "rotate_left" => Some(crate::operand::BinOp::RotateLeft),
+            "rotate_right" => Some(crate::operand::BinOp::RotateRight),
+            _ => None,
+        } {
+            if args.len() != 1 {
+                return Ok(None);
+            }
+            let (amount, _) = self.lower_expr(&args[0].expr)?;
+            let out = self.builder.alloc_temp(obj_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: out,
+                rvalue: MirRValue::BinaryOp { op: rot, left: obj_op.clone(), right: amount },
+            }));
+            return Ok(Some((MirOperand::Local(out), obj_ty.clone())));
+        }
+
+        if !args.is_empty() {
+            return Ok(None);
+        }
+        let (op, complement) = match method {
+            "count_ones" => (MirUnaryOp::CountOnes, false),
+            "count_zeros" => (MirUnaryOp::CountOnes, true),
+            "leading_zeros" => (MirUnaryOp::LeadingZeros, false),
+            "leading_ones" => (MirUnaryOp::LeadingZeros, true),
+            "trailing_zeros" => (MirUnaryOp::TrailingZeros, false),
+            "trailing_ones" => (MirUnaryOp::TrailingZeros, true),
+            "reverse_bits" => (MirUnaryOp::ReverseBits, false),
+            // Little-endian hosts: to_be swaps, to_le is already in order.
+            "swap_bytes" | "to_be" => (MirUnaryOp::SwapBytes, false),
+            "to_le" => return Ok(Some((obj_op.clone(), obj_ty.clone()))),
+            _ => return Ok(None),
+        };
+
+        let input = if complement {
+            let flipped = self.builder.alloc_temp(obj_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: flipped,
+                rvalue: MirRValue::UnaryOp { op: MirUnaryOp::BitNot, operand: obj_op.clone() },
+            }));
+            MirOperand::Local(flipped)
+        } else {
+            obj_op.clone()
+        };
+
+        let out = self.builder.alloc_temp(obj_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: out,
+            rvalue: MirRValue::UnaryOp { op, operand: input },
+        }));
+        Ok(Some((MirOperand::Local(out), obj_ty.clone())))
     }
 
     /// String comparison operators → `string_lt`, `string_ge`, etc.

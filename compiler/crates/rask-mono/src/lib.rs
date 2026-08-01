@@ -31,6 +31,37 @@ pub struct MonoProgram {
     pub enum_layouts: Vec<EnumLayout>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: HashMap<NodeId, String>,
+    /// Types and dispatch targets for the nodes of instantiated generic bodies.
+    ///
+    /// Those nodes don't exist in the checker's output — they were created
+    /// here — so without these, every lookup inside an instantiated body misses
+    /// and lowering falls back to guessing from AST shape.
+    pub instantiated_node_types: HashMap<NodeId, Type>,
+    pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
+}
+
+impl MonoProgram {
+    /// Node types for the whole program: the checker's, plus the ones carried
+    /// onto instantiated bodies.
+    ///
+    /// Lowering runs after monomorphization and sees both kinds of node, so it
+    /// wants one map. The two sets of ids are disjoint by construction —
+    /// instantiation allocates above everything the checker used.
+    pub fn all_node_types(&self, typed: &TypedProgram) -> HashMap<NodeId, Type> {
+        let mut merged = typed.node_types.clone();
+        merged.extend(self.instantiated_node_types.iter().map(|(k, v)| (*k, v.clone())));
+        merged
+    }
+
+    /// Dispatch targets for the whole program, merged the same way.
+    pub fn all_call_targets(
+        &self,
+        typed: &TypedProgram,
+    ) -> HashMap<NodeId, rask_types::Callee> {
+        let mut merged = typed.call_targets.clone();
+        merged.extend(self.instantiated_call_targets.iter().map(|(k, v)| (*k, v.clone())));
+        merged
+    }
 }
 
 /// Monomorphized function instance
@@ -283,6 +314,8 @@ pub fn monomorphize_with_packages(
         struct_layouts,
         enum_layouts,
         call_rewrites: mono.call_rewrites,
+        instantiated_node_types: mono.instantiated_node_types,
+        instantiated_call_targets: mono.instantiated_call_targets,
     })
 }
 

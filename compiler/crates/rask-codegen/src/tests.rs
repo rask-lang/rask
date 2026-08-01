@@ -1988,6 +1988,8 @@ mod tests {
 
     fn dummy_mono() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
+            instantiated_node_types: Default::default(),
+            instantiated_call_targets: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
@@ -1998,6 +2000,8 @@ mod tests {
     /// MonoProgram with a Point { x: i32, y: i32 } struct at index 0.
     fn mono_with_point_struct() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
+            instantiated_node_types: Default::default(),
+            instantiated_call_targets: Default::default(),
             functions: vec![],
             struct_layouts: vec![
                 rask_mono::StructLayout {
@@ -2030,6 +2034,8 @@ mod tests {
     /// MonoProgram with Result { Ok(i32), Err(i32) } enum at index 0.
     fn mono_with_result_enum() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
+            instantiated_node_types: Default::default(),
+            instantiated_call_targets: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![

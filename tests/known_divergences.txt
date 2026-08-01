@@ -21,7 +21,6 @@ t27_error_narrowing.rk     # interp && is-pattern binding drops payload bindings
 # --- shared / both-backend bugs ---
 t20_control_expressions.rk # interp labeled break/continue + native f64 enum payload + && is-pattern — #392, #388, #256 (both)
 t25_iterator_adapters.rk   # fold accumulator type never resolves — #327 (both, check)
-t_conditional_conformance.rk # stray [mir] debug print on native — #258 (native)
 
 # --- new regression witnesses (this session) ---
 t43_widening_regressions.rk # optional widening interp lag — #393 (interp; result T-bind native part fixed in #389)

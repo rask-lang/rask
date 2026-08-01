@@ -11,6 +11,7 @@ use crate::{
     MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
+use rask_types::Type;
 
 /// Internal state for iterator chain loop setup.
 pub(super) struct IterLoopSetup {
@@ -72,12 +73,64 @@ impl<'a> MirLowerer<'a> {
                             adapters.push(super::IterAdapter::Enumerate);
                             current = object;
                         }
-                        _ => return None,
+                        // Not an adapter. If the receiver is itself a
+                        // collection, it's the source — see below.
+                        _ => {
+                            if self.is_iterable_source(current) {
+                                adapters.reverse();
+                                return Some(super::IterChain { source: current, adapters });
+                            }
+                            return None;
+                        }
                     }
                 }
-                _ => return None,
+                // `v.fold(...)` with no `.iter()` in between. A collection is
+                // its own iteration source, so this is the same chain as
+                // `v.iter().fold(...)` — without this the terminal fell through
+                // to `{Type}_{method}` dispatch looking for a `Vec_fold` that
+                // was never implemented (#462).
+                _ => {
+                    if self.is_iterable_source(current) {
+                        adapters.reverse();
+                        return Some(super::IterChain { source: current, adapters });
+                    }
+                    return None;
+                }
             }
         }
+    }
+
+    /// Whether an expression can be iterated directly — a Vec, array or slice.
+    ///
+    /// Deliberately narrow: `setup_iter_chain_loop` indexes the source with
+    /// `Vec_len` plus element loads, so anything that isn't laid out that way
+    /// must keep falling through to normal method dispatch.
+    fn is_iterable_source(&self, expr: &Expr) -> bool {
+        match self.ctx.lookup_raw_type(expr.id) {
+            Some(Type::Array { .. }) | Some(Type::Slice(_)) => return true,
+            Some(Type::UnresolvedGeneric { name, .. }) if name == "Vec" => return true,
+            Some(Type::UnresolvedNamed(name)) if name == "Vec" => return true,
+            _ => {}
+        }
+        // The checker doesn't type every Ident node — an annotated
+        // `const v: Vec<i64> = Vec.new()` leaves the later uses of `v`
+        // untyped — so fall back to what lowering tracked for the local.
+        if let ExprKind::Ident(name) = &expr.kind {
+            if let Some(meta) = self.meta(name) {
+                if meta.type_prefix.as_deref() == Some("Vec") {
+                    return true;
+                }
+                if meta.full_type.as_deref().is_some_and(|t| t.trim_start().starts_with("Vec")) {
+                    return true;
+                }
+            }
+            if let Some((local_id, _)) = self.locals.get(name) {
+                if matches!(self.builder.local_type(*local_id), Some(MirType::Array { .. })) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Try to handle an iterator terminal method (.collect, .fold, .any, etc.)
@@ -102,6 +155,26 @@ impl<'a> MirLowerer<'a> {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     let result = self.lower_iter_fold(&chain, &args[0].expr, &args[1].expr)?;
                     return Ok(Some(result));
+                }
+            }
+            // `v.map(f)` / `v.filter(f)` standing on their own produce a Vec, so
+            // they're a chain with an implicit `.collect()`. Reaching here at
+            // all means this adapter is the outermost call — when it's part of
+            // a longer chain the terminal consumes it and this never runs.
+            //
+            // Without it these fell through to `Vec_map`, a runtime function
+            // that ignores the closure-object/env ABI and segfaulted (#441).
+            "map" | "filter" if args.len() == 1 => {
+                if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
+                    if let Some(mut chain) = self.try_parse_iter_chain(object) {
+                        chain.adapters.push(if method == "map" {
+                            super::IterAdapter::Map { closure: &args[0].expr }
+                        } else {
+                            super::IterAdapter::Filter { closure: &args[0].expr }
+                        });
+                        let result = self.lower_iter_collect(&chain)?;
+                        return Ok(Some(result));
+                    }
                 }
             }
             "any" if args.len() == 1 => {
@@ -165,12 +238,57 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Use(arg_op),
                 }));
                 self.locals.insert(param_name.clone(), (param_local, arg_ty));
-                let result = self.lower_expr(body)?;
+
+                // `|x| { return x % 2 == 0 }` is the ordinary way to write this
+                // — Rask functions return explicitly. Lowering it with no
+                // return target emitted a real Return terminator, which the
+                // caller then overwrote with its own branch/goto. The computed
+                // value was left dangling and the caller used the block's
+                // fall-off value instead, so a predicate always read as its
+                // placeholder (#462: the filter branched on a constant 0 and
+                // every element was skipped).
+                //
+                // Give the body somewhere to return *to*: a result local and a
+                // continuation block. The local's type isn't known until the
+                // body is lowered, so it's allocated as a placeholder and
+                // retyped afterwards.
+                let result_local = self.builder.alloc_temp(MirType::I64);
+                let cont_block = self.builder.create_block();
+
+                let saved_return_target = self.inline_return_target.take();
+                let saved_return_taken = self.inline_return_taken.take();
+                self.inline_return_target = Some((result_local, cont_block));
+
+                let (body_op, body_ty) = self.lower_expr(body)?;
+
+                let returned_ty = self.inline_return_taken.take();
+                self.inline_return_target = saved_return_target;
+                self.inline_return_taken = saved_return_taken;
+
+                // A body that fell off its end never used the target; keep its
+                // value and route it through the same local so both shapes
+                // leave the caller in the continuation block.
+                if returned_ty.is_none() {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: result_local,
+                        rvalue: MirRValue::Use(body_op),
+                    }));
+                }
+                // The returned expression's type is the real one; a body that
+                // ends in `return` leaves lower_expr reporting its fall-off
+                // placeholder instead.
+                let body_ty = returned_ty.unwrap_or(body_ty);
+                self.builder.terminate(MirTerminator::dummy(
+                    MirTerminatorKind::Goto { target: cont_block },
+                ));
+                self.builder.switch_to_block(cont_block);
+                self.builder.set_local_type(result_local, body_ty.clone());
+
                 self.locals.remove(param_name);
                 if let Some(prev) = saved {
                     self.locals.insert(param_name.clone(), prev);
                 }
-                return Ok(result);
+                return Ok((MirOperand::Local(result_local), body_ty));
             }
         }
         Err(LoweringError::InvalidConstruct("expected closure".to_string()))
@@ -514,17 +632,26 @@ impl<'a> MirLowerer<'a> {
                 let after_body = self.builder.create_block();
 
                 let saved_return_target = self.inline_return_target.take();
+                let saved_return_taken = self.inline_return_taken.take();
                 self.inline_return_target = Some((acc, setup.inc_block));
 
                 let (result_op, _) = self.lower_expr(body)?;
 
+                let returned = self.inline_return_taken.take().is_some();
                 self.inline_return_target = saved_return_target;
+                self.inline_return_taken = saved_return_taken;
 
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: acc,
-                    rvalue: MirRValue::Use(result_op),
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: after_body }));
+                // `|acc, x| { return acc + x }` already stored the result and
+                // jumped; the body has no fall-off value to take. Assigning one
+                // anyway overwrote the accumulator with a placeholder on every
+                // iteration, so the fold produced its init value (#462).
+                if !returned {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: acc,
+                        rvalue: MirRValue::Use(result_op),
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: after_body }));
+                }
 
                 self.builder.switch_to_block(after_body);
 

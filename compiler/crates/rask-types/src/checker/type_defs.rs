@@ -16,13 +16,66 @@ use crate::types::{Type, TypeId};
 ///
 /// A structured id, never a name string:
 /// - `Free` for `f(...)` — the callee's resolved symbol.
-/// - `Method` for `recv.m(...)` / `T.m(...)` — the receiver type plus the
-///   method name selected by dispatch. Methods have no single symbol id yet,
-///   so `(TypeId, name)` stands in as the structured id.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// - `Method` for `recv.m(...)` / `T.m(...)` — the *resolved* receiver type
+///   plus the method name selected by dispatch. Methods have no single symbol
+///   id yet, so `(receiver type, name)` stands in as the structured id.
+///
+/// The receiver is stored fully applied — substitutions run, aliases resolved —
+/// which is the part consumers can't reconstruct. `node_types` holds whatever
+/// the receiver *expression* was assigned, and that is routinely still a type
+/// variable (or missing entirely, for nodes synthesized after checking).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Callee {
     Free(SymbolId),
-    Method { type_id: TypeId, method: String },
+    Method { recv: Type, method: String },
+}
+
+impl Callee {
+    /// The receiver's TypeId, for user-defined types. `None` for stdlib and
+    /// primitive receivers, which have no entry in the type table.
+    pub fn recv_type_id(&self) -> Option<TypeId> {
+        match self {
+            Callee::Method { recv: Type::Named(id), .. } => Some(*id),
+            Callee::Method { recv: Type::Generic { base, .. }, .. } => Some(*base),
+            _ => None,
+        }
+    }
+}
+
+/// Canonical name for a method receiver, matching how monomorphization mangles
+/// `{Type}_{method}`. Returns `None` for receivers that don't qualify a method
+/// name on their own (bare type variables, tuples, unit).
+pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
+    match ty {
+        Type::Named(id) | Type::Generic { base: id, .. } => {
+            let name = types.type_name(*id);
+            (!name.starts_with('<')).then_some(name)
+        }
+        Type::UnresolvedNamed(name) => Some(name.clone()),
+        Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+        Type::String => Some("string".to_string()),
+        // `T?` is `T or none`; it dispatches as Option, everything else as Result.
+        Type::Result { err, .. } if **err == Type::None => Some("Option".to_string()),
+        Type::Result { .. } => Some("Result".to_string()),
+        Type::RawPtr(_) => Some("Ptr".to_string()),
+        Type::Slice(_) => Some("Slice".to_string()),
+        Type::Bool => Some("bool".to_string()),
+        Type::Char => Some("char".to_string()),
+        Type::I8 => Some("i8".to_string()),
+        Type::I16 => Some("i16".to_string()),
+        Type::I32 => Some("i32".to_string()),
+        Type::I64 => Some("i64".to_string()),
+        Type::I128 => Some("i128".to_string()),
+        Type::U8 => Some("u8".to_string()),
+        Type::U16 => Some("u16".to_string()),
+        Type::U32 => Some("u32".to_string()),
+        Type::U64 => Some("u64".to_string()),
+        Type::U128 => Some("u128".to_string()),
+        Type::F32 => Some("f32".to_string()),
+        Type::F64 => Some("f64".to_string()),
+        Type::TraitObject { trait_name } => Some(trait_name.clone()),
+        _ => None,
+    }
 }
 
 /// Information about a user-defined type.

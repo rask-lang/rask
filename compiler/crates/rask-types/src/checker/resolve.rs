@@ -253,6 +253,22 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
 
+        // CALL6: record the resolved receiver before any arm runs. Every path
+        // below dispatches on this exact type, so recording once here covers
+        // user types, stdlib types and the builtin methods alike — and it's the
+        // applied type, which is what downstream can't reconstruct.
+        //
+        // `Var` is skipped: it re-enters through the deferred HasMethod
+        // constraint once inference settles, and records then.
+        if let Some(node) = call_node {
+            if !matches!(ty, Type::Var(_) | Type::Error) {
+                self.call_targets.insert(
+                    node,
+                    Callee::Method { recv: ty.clone(), method: method.clone() },
+                );
+            }
+        }
+
         if method == "clone" && args.is_empty() {
             return self.unify(&ty, &ret, span);
         }
@@ -283,22 +299,6 @@ impl TypeChecker {
                 Ok(false)
             }
             Type::Named(type_id) => {
-                // CALL6: record the resolved method target once dispatch settles.
-                if let Some(node) = call_node {
-                    let is_method = matches!(
-                        self.types.get(*type_id),
-                        Some(TypeDef::Struct { methods, .. })
-                            | Some(TypeDef::Enum { methods, .. })
-                            | Some(TypeDef::NominalAlias { methods, .. })
-                            if methods.iter().any(|m| m.name == method)
-                    );
-                    if is_method {
-                        self.call_targets.insert(
-                            node,
-                            Callee::Method { type_id: *type_id, method: method.clone() },
-                        );
-                    }
-                }
                 let (methods, type_params) = match self.types.get(*type_id) {
                     Some(TypeDef::Struct { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
@@ -571,20 +571,6 @@ impl TypeChecker {
                 self.resolve_runtime_method(name, &method, &args, &ret, span)
             }
             Type::Generic { base, args: generic_args } => {
-                // CALL6: record the resolved method target (generic receiver).
-                if let Some(node) = call_node {
-                    let is_method = matches!(
-                        self.types.get(*base),
-                        Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. })
-                            if methods.iter().any(|m| m.name == method)
-                    );
-                    if is_method {
-                        self.call_targets.insert(
-                            node,
-                            Callee::Method { type_id: *base, method: method.clone() },
-                        );
-                    }
-                }
                 let (methods, type_params) = match self.types.get(*base) {
                     Some(TypeDef::Struct { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
@@ -2783,6 +2769,23 @@ impl TypeChecker {
                 self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
             }
             "to_float" if args.is_empty() => self.unify(ret, &Type::F64, span),
+            // std.bits B1 — bit inspection and permutation. All of these answer
+            // in the receiver's own type: a count can't exceed the width, so
+            // there's no reason to widen it to a separate counter type.
+            "count_ones" | "count_zeros"
+            | "leading_zeros" | "trailing_zeros"
+            | "leading_ones" | "trailing_ones"
+            | "reverse_bits" | "swap_bytes"
+                if args.is_empty() => self.unify(ret, ty, span),
+            "rotate_left" | "rotate_right" if args.len() == 1 => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, ty, span)
+            }
+            // std.bits B2/B3 — byte order. Same width in, same width out;
+            // bits.rk documents these as methods on the integer types and
+            // uses them (`hton_u16` is `x.to_be()`), but nothing registered
+            // them, so the stdlib's own definitions didn't resolve.
+            "to_be" | "to_le" if args.is_empty() => self.unify(ret, ty, span),
             _ => Err(TypeError::NoSuchMethod {
                 ty: ty.clone(),
                 method: method.to_string(),

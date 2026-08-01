@@ -198,6 +198,7 @@ fn try_eval_comptime_mir(
     let empty_packages = std::collections::HashSet::new();
     let empty_coercions = HashMap::new();
     let empty_rewrites = HashMap::new();
+        let empty_targets = HashMap::new();
     let empty_resource_types = std::collections::HashSet::new();
     let type_names: HashMap<rask_types::TypeId, String> = typed.types.iter()
         .enumerate()
@@ -229,6 +230,7 @@ fn try_eval_comptime_mir(
         comptime_interp: None,
         trait_coercions: &empty_coercions,
         call_rewrites: &empty_rewrites,
+        call_targets: &empty_targets,
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),

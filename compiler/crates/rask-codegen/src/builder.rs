@@ -15,6 +15,34 @@ use crate::dispatch::{ArgAdapt, RetAdapt};
 use crate::types::mir_to_cranelift_type;
 use crate::{BuildMode, CodegenError, CodegenResult};
 
+/// Copy `size` bytes from `src_ptr + src_off` to `dst_ptr + dst_off`.
+///
+/// The one canonical aggregate byte-copy in the backend. It emits the full
+/// 8→4→2→1 ladder, so every trailing size is covered. A hand-inlined copy that
+/// skipped the 2-byte step silently dropped a byte for any size ≡ 2,3,6,7
+/// (mod 8) (#365) — which is exactly the kind of bug that stays invisible
+/// until someone adds a struct with an odd layout.
+///
+/// Route ALL aggregate copies through this. Do not re-inline the ladder.
+pub(crate) fn copy_bytes(
+    builder: &mut ClifFunctionBuilder,
+    src_ptr: Value,
+    src_off: i32,
+    dst_ptr: Value,
+    dst_off: i32,
+    size: u32,
+) {
+    let size = size as i32;
+    let mut off = 0i32;
+    for (chunk, ty) in [(8, types::I64), (4, types::I32), (2, types::I16), (1, types::I8)] {
+        while size - off >= chunk {
+            let val = builder.ins().load(ty, MemFlags::new(), src_ptr, src_off + off);
+            builder.ins().store(MemFlags::new(), val, dst_ptr, dst_off + off);
+            off += chunk;
+        }
+    }
+}
+
 // Checked-arithmetic panic messages (type.overflow). Registered as string
 // globals unconditionally (see `register_strings`) so the message prints in
 // both debug and release builds — OV4 requires consistent behavior.
@@ -1336,6 +1364,14 @@ impl<'a> FunctionBuilder<'a> {
                         builder.ins().bxor(val, one)
                     }
                     UnaryOp::BitNot => builder.ins().bnot(val),
+                    // Counts come back as the operand's own type, so a
+                    // `count_ones()` on an i32 answers in i32 — matching the
+                    // checker, which gives these the receiver's type.
+                    UnaryOp::CountOnes => builder.ins().popcnt(val),
+                    UnaryOp::LeadingZeros => builder.ins().clz(val),
+                    UnaryOp::TrailingZeros => builder.ins().ctz(val),
+                    UnaryOp::ReverseBits => builder.ins().bitrev(val),
+                    UnaryOp::SwapBytes => builder.ins().bswap(val),
                 };
                 Ok(result)
             }
@@ -2363,6 +2399,10 @@ impl<'a> FunctionBuilder<'a> {
                     Self::guard_shift(builder, ctx, rhs_val, int_ty);
                     builder.ins().sshr(lhs_val, rhs_val)
                 }
+                // Rotation wraps within the width, so it needs no shift guard:
+                // any amount is well-defined.
+                BinOp::RotateLeft => builder.ins().rotl(lhs_val, rhs_val),
+                BinOp::RotateRight => builder.ins().rotr(lhs_val, rhs_val),
                 BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val),
                 BinOp::Ne => builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val),
                 BinOp::Lt if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThan, lhs_val, rhs_val),
@@ -4045,11 +4085,8 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Copy `size` bytes from `src_ptr + src_off` to `dst_ptr + dst_off`.
-    ///
-    /// The one canonical aggregate byte-copy. Emits the full 8→4→2→1 ladder so
-    /// every trailing size is covered — dropping the 2-byte step here silently
-    /// lost a byte for sizes ≡ 2,3,6,7 (mod 8) (#365). Route ALL aggregate copies
-    /// through this; do not hand-inline the ladder.
+    /// Delegates to the crate-wide [`copy_bytes`] — see it for why there's
+    /// exactly one of these.
     fn copy_bytes(
         builder: &mut ClifFunctionBuilder,
         src_ptr: Value,
@@ -4058,15 +4095,7 @@ impl<'a> FunctionBuilder<'a> {
         dst_off: i32,
         size: u32,
     ) {
-        let size = size as i32;
-        let mut off = 0i32;
-        for (chunk, ty) in [(8, types::I64), (4, types::I32), (2, types::I16), (1, types::I8)] {
-            while size - off >= chunk {
-                let val = builder.ins().load(ty, MemFlags::new(), src_ptr, src_off + off);
-                builder.ins().store(MemFlags::new(), val, dst_ptr, dst_off + off);
-                off += chunk;
-            }
-        }
+        copy_bytes(builder, src_ptr, src_off, dst_ptr, dst_off, size);
     }
 
     /// Copy aggregate data from a source pointer into a caller-owned stack slot.

@@ -262,7 +262,8 @@ fn main() {
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("typecheck"), output::arg("<file.rk | dir>"));
                 process::exit(1);
             }
-            commands::analysis::cmd_typecheck(cmd_args[2], format);
+            let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
+            commands::analysis::cmd_typecheck(cmd_args[2], format, verbose);
         }
         "ownership" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
