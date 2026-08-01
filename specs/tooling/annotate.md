@@ -33,7 +33,7 @@ src/round.rk
    6 |
    7 | func run_round(seed: i32) {                  « func run_round(seed: i32) -> void or Error · [io]
    8 |     mut player = Player.new(seed)
-   9 |     apply_damage(player, 10)                 « mutate player
+   9 |     apply_damage(mutate player, 10)
   10 |     const report = try http.post(STATS_URL, player.encode())
      |                                              « ⟨pauses⟩
   11 |     spawn(own || { archive(report) }).detach()
@@ -53,7 +53,7 @@ Not every ghost earns a place in a diff. The cut:
 
 | Information | Rendering (source spec) | Tier |
 |-------------|------------------------|------|
-| Parameter modes at call sites | `mutate player`, `own user` (`mem.parameters`) | review |
+| `own` at unmarked take call sites | `own user` (`mem.parameters`; `mutate` is in source per PM4 — never annotated) | review |
 | Pause points | `⟨pauses⟩` (`conc.io-context`) | review |
 | Effects on function definitions | `[pure]`, `[io]`, `[io, async]`, … (`comp.effects` Ghost Text Format) | review |
 | `own` closure captures | `[moves: name (T)]`, `[copies: name (T)]` (`mem.closures`) | review |
@@ -111,7 +111,7 @@ DF2 is the piece even an IDE reviewer doesn't get: the IDE ghosts the buffer you
   "file": "src/game.rk",
   "annotations": [
     {"line": 8, "span": [214, 226], "kind": "pause", "text": "⟨pauses⟩", "tier": "review"},
-    {"line": 3, "span": [40, 46], "kind": "param_mode", "text": "mutate player", "tier": "review"}
+    {"line": 3, "span": [40, 46], "kind": "param_mode", "text": "own user", "tier": "review"}
   ]
 }
 ```

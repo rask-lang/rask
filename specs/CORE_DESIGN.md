@@ -122,7 +122,7 @@ Information the compiler can infer should be displayed by tooling, not required 
 - Trait conformance is declared; inferred private bounds and duck traits match by shape while sketching, and the IDE shows inferred bounds and matching types as ghost text
 - Ownership transfers are tracked; IDE shows move/copy decisions at use sites
 - Closure captures are implicit; IDE shows capture list as ghost annotation
-- Parameter modes are in signatures; IDE shows them at call sites
+- Parameter modes are in signatures; `mutate` arguments are marked at call sites too (`mem.parameters/PM4`); the IDE ghosts only `own` on unmarked take arguments
 
 **The principle:** Write intent, not mechanics. The compiler knows the mechanics—let tooling reveal them.
 
@@ -134,8 +134,8 @@ Three visibility bands make the claim checkable:
 
 | Band | What lives there | Where you can read it |
 |------|------------------|----------------------|
-| Source | Parameter modes on signatures, `own`, `take`, `mutate` captures, `try`, `.clone()`, `spawn`, `ensure`, `using` on public functions | Anywhere text renders |
-| Materialized metadata | Parameter modes at call sites, effects, pause points, capture lists, consuming match arms, inferred private signatures and `using` clauses | IDE ghosts; `rask annotate` everywhere else |
+| Source | Parameter modes on signatures **and** `mutate` at call sites (`mem.parameters/PM4`), `own`, `take`, `mutate` captures, `try`, `.clone()`, `spawn`, `ensure`, `using` on public functions | Anywhere text renders |
+| Materialized metadata | `own` at take call sites, effects, pause points, capture lists, consuming match arms, inferred private signatures and `using` clauses | IDE ghosts; `rask annotate` everywhere else |
 | IDE comfort | Inferred local types, borrow scopes, optimizer decisions | IDE; `rask annotate --all` |
 
 The rule that keeps the bands honest: anything that mutates, consumes, suspends, or performs I/O sits in the top two bands — never IDE-only.
@@ -161,7 +161,7 @@ The compiler tracks information the language deliberately keeps out of the type 
 **What this means:**
 - I/O, async, and mutation effects are tracked transitively (`comp.effects`) but don't appear in function signatures and don't color call syntax. A caller of a function that does I/O writes the call the same way as a caller of a pure one.
 - `@pure` is a lint annotation, not a type qualifier. A pure function can call an impure one; the lint warns.
-- IDE ghost annotations show parameter modes, closure captures, inferred types, and pause points — the compiler knows, the source doesn't say. Outside an IDE, `rask annotate` materializes the same layer into diffs and terminals ([tooling/annotate.md](tooling/annotate.md)), so "tooling shows" doesn't quietly mean "only the IDE shows."
+- IDE ghost annotations show closure captures, inferred types, pause points, and `own` at take call sites — the compiler knows, the source doesn't say. (Mutation is not on this list: `mutate` is written at the call site, `mem.parameters/PM4` — a wrong reading of mutation is legal code, so it isn't left to tooling.) Outside an IDE, `rask annotate` materializes the same layer into diffs and terminals ([tooling/annotate.md](tooling/annotate.md)), so "tooling shows" doesn't quietly mean "only the IDE shows."
 
 **Honest carve-out: pool contexts color signatures.** `using Pool<T>` (and its named/frozen variants) is declared in signatures and propagates up the call graph via `mem.context/CC5`, because a pool is a value callees dereference — it must be threaded through as a hidden parameter reference. This is scope-level coloring, deliberately traded for uncolored call syntax. See [context-clauses.md](memory/context-clauses.md).
 
@@ -170,6 +170,20 @@ The compiler tracks information the language deliberately keeps out of the type 
 **Why I chose this:** Effect systems and async/await color every call site. Rask keeps effects as metadata (no call-site color) and restricts capability coloring to the one place it actually buys something — pool references, which are real values. Runtime capabilities are a single process-level resource and don't need to be threaded through every signature.
 
 This principle is what makes the async model (no `async`/`await` at call sites), the purity story (no effect types), and the IDE experience (ghost annotations everywhere) coherent rather than a list of compromises. The common rule: the compiler knows, tooling shows, call syntax stays clean. Capability requirements remain visible at the signature boundary where policy decisions belong.
+
+---
+
+## The Ceremony Test
+
+Every "should X be explicit in source?" debate has the same answer. A mark earns its place in the syntax only when **all three** hold:
+
+1. **A wrong reading is legal code.** The compiler doesn't backstop the misreading — both interpretations compile, so a reviewer's wrong belief survives. (If the checker catches misuse anyway, the mark is redundant with the checker.)
+2. **The mark is non-viral.** It attaches to one site and never propagates through signatures. The moment a mark is forced on callers because a *callee's implementation* changed, it's function coloring with different spelling.
+3. **The marked case is the minority.** A mark on the common case is noise that trains readers to skip it.
+
+Fail 1 → the checker guards it; a marker may exist for emphasis but stays optional (`own` on take arguments). Fail 2 → it stays metadata, with lints at the dangerous overlaps (suspension points, transitive lock acquisition). Fail 3 → opt-in warning for the teams that care (`@warn(implicit_copy)`).
+
+The one candidate that passed all three after the fact: `mutate` at call sites — a legal wrong reading, one non-viral word, on the minority case — which is why `mem.parameters/PM4` flipped from the original design. Run future candidates through the same three questions before adding syntax *or* before assuming tooling can carry something it can't.
 
 ---
 
@@ -221,7 +235,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Borrowing.** References are block-scoped for fixed-layout sources (struct fields, arrays — valid until end of enclosing block). Growable sources (Vec, Pool, Map, string) use inline access: expression-scoped for one-liners, `with...as` blocks for multi-statement operations. Cannot be stored in structs, returned, or sent cross-task. See [borrowing.md](memory/borrowing.md).
 
-**Parameters.** Three modes declared in the signature: borrow (default, read-only), `mutate` (mutable access, caller keeps ownership), and `take` (ownership transfer). Passing `value.field` to a `mutate` parameter borrows only that field — disjoint fields don't conflict. See [parameters.md](memory/parameters.md), [borrowing.md](memory/borrowing.md).
+**Parameters.** Three modes declared in the signature: borrow (default, read-only), `mutate` (mutable access, caller keeps ownership), and `take` (ownership transfer). Mutation is marked at both ends — `f(mutate x)` at the call site, receivers exempt (`mem.parameters/PM4`). Passing `mutate value.field` borrows only that field — disjoint fields don't conflict. See [parameters.md](memory/parameters.md), [borrowing.md](memory/borrowing.md).
 
 **Collections.** `Vec<T>` for sequences, `Map<K,V>` for key-value lookup, `Pool<T>` for handle-based sparse storage (graphs, entities, caches). Growth operations panic on allocation failure; `try_` variants (`try_push`, `try_insert`) return the rejected value for OOM-aware code (`std.collections/C2`). `with pool[h] as entity { ... }` for multi-statement element access. See [collections.md](stdlib/collections.md), [pools.md](memory/pools.md).
 

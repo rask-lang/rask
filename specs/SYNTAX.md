@@ -235,6 +235,10 @@ Default is read-only borrow. Mutation and ownership transfer are explicit.
 func validate(data: Data)            // Read-only borrow (default)
 func update(mutate data: Data)       // Mutable borrow (explicit)
 func consume(take data: Data)        // Takes ownership
+
+validate(data)                       // borrow: bare
+update(mutate data)                  // mutate: marked at the call site too
+consume(data)                        // take: bare (own data optional for emphasis)
 ```
 
 **Named arguments (optional, order-fixed):**
