@@ -173,6 +173,20 @@ This principle is what makes the async model (no `async`/`await` at call sites),
 
 ---
 
+## The Ceremony Test
+
+Every "should X be explicit in source?" debate has the same answer. A mark earns its place in the syntax only when **all three** hold:
+
+1. **A wrong reading is legal code.** The compiler doesn't backstop the misreading — both interpretations compile, so a reviewer's wrong belief survives. (If the checker catches misuse anyway, the mark is redundant with the checker.)
+2. **The mark is non-viral.** It attaches to one site and never propagates through signatures. The moment a mark is forced on callers because a *callee's implementation* changed, it's function coloring with different spelling.
+3. **The marked case is the minority.** A mark on the common case is noise that trains readers to skip it.
+
+Fail 1 → the checker guards it; a marker may exist for emphasis but stays optional (`own` on take arguments). Fail 2 → it stays metadata, with lints at the dangerous overlaps (suspension points, transitive lock acquisition). Fail 3 → opt-in warning for the teams that care (`@warn(implicit_copy)`).
+
+The one candidate that passed all three after the fact: `mutate` at call sites — a legal wrong reading, one non-viral word, on the minority case — which is why `mem.parameters/PM4` flipped from the original design. Run future candidates through the same three questions before adding syntax *or* before assuming tooling can carry something it can't.
+
+---
+
 ## Why Not X?
 
 ### Why Not Garbage Collection?

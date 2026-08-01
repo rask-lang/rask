@@ -257,6 +257,8 @@ The cost stayed small for the same reason the old rationale said it would: most 
 
 `take` arguments keep the optional `own` marker: write it for emphasis, or let the checker's use-after-move errors do the guarding. Making it required would mark the backstopped case — the mistake the old PM4 rationale made, inverted.
 
+The three conditions this decision fell out of — wrong reading is legal, mark is non-viral, marked case is the minority — are now the general rule for all explicitness debates: see "The Ceremony Test" in [CORE_DESIGN.md](../CORE_DESIGN.md).
+
 ### Patterns & Guidance
 
 **Method chains:**
