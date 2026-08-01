@@ -2186,9 +2186,29 @@ impl<'a> MirLowerer<'a> {
     /// field inside a pool element often has no checker type to read — the
     /// element's fields aren't typed at the use site — and reading it as a
     /// tagged option then tested a tag that isn't there (#438).
+    ///
+    /// This is the answer. `is_niche_option_expr` on its own is only right
+    /// where there is no lowered type to consult; three call sites used to
+    /// spell this out inline instead, which is how the checker-only version
+    /// kept getting used where a MIR type was sitting right there.
     pub(crate) fn option_is_niche(&self, expr: &Expr, ty: &MirType) -> bool {
         self.is_niche_option_expr(expr)
             || matches!(ty, MirType::Option(inner) if **inner == MirType::Handle)
+    }
+
+    /// `option_is_niche` for a value that's already lowered — reads the MIR
+    /// type off the operand's local.
+    pub(crate) fn option_operand_is_niche(&self, expr: &Expr, op: &MirOperand) -> bool {
+        if self.is_niche_option_expr(expr) {
+            return true;
+        }
+        match op {
+            MirOperand::Local(id) => self
+                .builder
+                .local_type(*id)
+                .is_some_and(|t| matches!(t, MirType::Option(inner) if *inner == MirType::Handle)),
+            _ => false,
+        }
     }
 
     /// Emit a tag-equivalent check for an option value.

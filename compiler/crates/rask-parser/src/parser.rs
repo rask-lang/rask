@@ -715,11 +715,16 @@ impl Parser {
     // Declaration Parsing
     // =========================================================================
 
-    /// A free function named with a keyword can be declared but never called —
-    /// `check(r)` parses as a check-expression, not as a call, and the type
-    /// error that comes out points at the argument (#500). Say so at the
-    /// declaration instead. Methods are exempt: `x.check()` is unambiguous, and
-    /// that's how `Option.or` is spelled.
+    /// A free function named with a keyword can be declared but never called
+    /// (#500). Say so at the declaration, where the name is, instead of leaving
+    /// a type error pointing at some argument. Methods are exempt: `x.check()`
+    /// is unambiguous, and that's how `Option.or` is spelled.
+    ///
+    /// There are two ways it goes wrong and the reason has to match, or the
+    /// message claims something that isn't true. `check(r)` parses as the
+    /// check-expression — the call is read as something else. `func struct()`
+    /// doesn't get that far: `struct` opens a declaration, so the name is never
+    /// read as a name at all.
     fn reject_keyword_fn_name(&mut self) -> Result<(), ParseError> {
         if self.allow_keyword_fn_names {
             return Ok(());
@@ -730,19 +735,30 @@ impl Parser {
             other => keyword_spelling(other),
         };
         let Some(keyword) = keyword else { return Ok(()) };
+        let (why, hint) = if starts_an_expression(&name_tok.kind) {
+            (
+                format!(
+                    "`{0}(…)` at a call site parses as the `{0}` expression, so this function could never be called",
+                    keyword
+                ),
+                format!("pick another name, or make it a method so the call reads `x.{}()`", keyword),
+            )
+        } else {
+            (
+                format!(
+                    "`{0}` only ever starts a declaration, so the parser never reads it as a name",
+                    keyword
+                ),
+                "pick another name".to_string(),
+            )
+        };
         Err(ParseError {
             span: name_tok.span,
             message: format!("`{}` is a keyword, so it can't name a function", keyword),
-            hint: Some(format!(
-                "pick another name, or make it a method so the call reads `x.{}()`",
-                keyword
-            )),
+            hint: Some(hint),
             why: None,
         }
-        .with_why(format!(
-            "`{0}(…)` at a call site parses as the `{0}` expression, so this function could never be called",
-            keyword
-        )))
+        .with_why(why))
     }
 
     fn parse_fn_decl(&mut self, is_pub: bool, is_private: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
@@ -5103,6 +5119,36 @@ fn format_expected_message(expected: &str, found: &TokenKind) -> String {
 
 /// How a keyword token is spelled in source. `None` for anything that isn't a
 /// keyword. Used where keywords are allowed as names (field and method
+/// Keywords the expression parser accepts in prefix position. A function named
+/// with one of these is shadowed at every call site; a function named with any
+/// other keyword doesn't parse at all. The two need different explanations.
+fn starts_an_expression(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Assert
+            | TokenKind::Check
+            | TokenKind::Comptime
+            | TokenKind::If
+            | TokenKind::Loop
+            | TokenKind::Match
+            | TokenKind::None
+            | TokenKind::Null
+            | TokenKind::Own
+            | TokenKind::ReadKw
+            | TokenKind::Select
+            | TokenKind::SelectPriority
+            | TokenKind::Try
+            | TokenKind::Unsafe
+            | TokenKind::Using
+            | TokenKind::With
+            | TokenKind::For
+            | TokenKind::While
+            | TokenKind::Return
+            | TokenKind::Break
+            | TokenKind::Continue
+    )
+}
+
 /// positions) and to name one in a diagnostic.
 fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
     Some(match kind {

@@ -273,13 +273,10 @@ impl<'a> MirLowerer<'a> {
     /// too; without the second check this built a tagged option for a slotless
     /// niche and stored its tag through a null address (#438).
     fn lower_none(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
-        if self.is_niche_option_expr(expr) {
-            return Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle));
-        }
         let option_ty = self.lookup_expr_type(expr)
             .filter(|t| matches!(t, MirType::Option(_)))
             .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
-        if matches!(&option_ty, MirType::Option(i) if **i == MirType::Handle) {
+        if self.option_is_niche(expr, &option_ty) {
             return Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle));
         }
         let result_local = self.builder.alloc_temp(option_ty.clone());
@@ -4067,12 +4064,7 @@ impl<'a> MirLowerer<'a> {
             && self.ctx.lookup_raw_type(object.id)
                 .map_or(false, |ty| ty.is_option());
         if is_option_none_cmp {
-            let operand_ty = match obj_op {
-                MirOperand::Local(id) => self.builder.local_type(*id),
-                _ => None,
-            };
-            let is_niche = self.is_niche_option_expr(object)
-                || matches!(operand_ty, Some(MirType::Option(ref i)) if **i == MirType::Handle);
+            let is_niche = self.option_operand_is_niche(object, obj_op);
             let tag_local = self.emit_option_tag(obj_op, is_niche);
             let result = self.builder.alloc_temp(MirType::Bool);
             // tag == 1 means None; tag == 0 means Some.
@@ -4609,8 +4601,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         if method == "unwrap" && args.is_empty() {
-            let is_niche = self.is_niche_option_expr(object)
-                || matches!(obj_ty, MirType::Option(ref i) if **i == MirType::Handle);
+            let is_niche = self.option_is_niche(object, &obj_ty);
             let tag_local = self.emit_option_tag(obj_op, is_niche);
 
             let ok_block = self.builder.create_block();
