@@ -135,10 +135,19 @@ impl Interpreter {
                     variant_index: 1, origin: None,
                 });
             }
+            // ER9: the ok value still has to satisfy the ok side. `KV? or E`
+            // returning a bare KV needs the optional layer too — without it,
+            // `try f()` handed back a KV where the caller expected a KV? and
+            // read it as absent (#383).
+            let ok_ty = func.ret_ty.as_ref().and_then(|t| result_ok_type(t));
+            let payload = match ok_ty {
+                Some(ok) => wrap_optional_layers(value, &ok),
+                None => value,
+            };
             return Ok(Value::Enum {
                 name: "Result".to_string(),
                 variant: "Ok".to_string(),
-                fields: vec![value],
+                fields: vec![payload],
                 variant_index: 0, origin: None,
             });
         } else if returns_option {
@@ -300,6 +309,55 @@ impl Interpreter {
             let _ = self.exec_ensure_body(handler);
             self.env.pop_scope();
         }
+    }
+}
+
+/// The T of a `Result<T, E>` string, as written.
+fn result_ok_type(ret_ty: &str) -> Option<String> {
+    let rest = ret_ty.trim().strip_prefix("Result<")?.strip_suffix('>')?;
+    let mut depth: i32 = 0;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
+            ',' if depth == 0 => return Some(rest[..i].trim().to_string()),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Add whatever optional layers `ty` asks for that `value` doesn't already
+/// carry. `KV?` / `Option<KV>` want one; `KV??` wants two.
+fn wrap_optional_layers(value: Value, ty: &str) -> Value {
+    let ty = ty.trim();
+    let want = if ty.ends_with('?') {
+        ty.chars().rev().take_while(|c| *c == '?').count()
+    } else if ty.starts_with("Option<") && ty.ends_with('>') {
+        1
+    } else {
+        return value;
+    };
+    let mut out = value;
+    for _ in option_depth(&out)..want {
+        out = Value::Enum {
+            name: "Option".to_string(),
+            variant: "Some".to_string(),
+            fields: vec![out],
+            variant_index: 0,
+            origin: None,
+        };
+    }
+    out
+}
+
+/// How many optional layers a value already carries at its head.
+fn option_depth(value: &Value) -> usize {
+    match value {
+        Value::Enum { name, fields, .. } if name == "Option" => {
+            1 + fields.first().map_or(0, option_depth)
+        }
+        _ => 0,
     }
 }
 

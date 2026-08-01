@@ -115,8 +115,16 @@ impl<'a> MirLowerer<'a> {
             return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
         }
 
-        // Construct full Result.Err with origin (ER15)
-        let ret_result = self.builder.alloc_temp(result_ty.clone());
+        // Construct full Result.Err with origin (ER15). The slot has to be the
+        // *enclosing* function's return type — this value is what `return`
+        // hands back. Using the callee's Result type gave the caller a slot of
+        // the wrong shape whenever the two differed, e.g. propagating a
+        // `KV? or E` out of a `string or E` function.
+        let ret_result_ty = match self.builder.ret_ty() {
+            ty @ MirType::Result { .. } => ty.clone(),
+            _ => result_ty.clone(),
+        };
+        let ret_result = self.builder.alloc_temp(ret_result_ty);
         // Tag = 1 (Err)
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: ret_result,
@@ -280,9 +288,11 @@ impl<'a> MirLowerer<'a> {
                 field_index: 0,
                 // Explicit offset so codegen loads the value at RESULT_PAYLOAD_OFFSET
                 // instead of guessing "aggregate" from the err side's type and handing
-                // back the slot address (#389).
+                // back the slot address (#389). The size goes with it when the
+                // payload is an aggregate, so codegen knows to take its address
+                // rather than load its first word (#383).
                 byte_offset: self.payload_byte_offset(&ok_ty),
-                field_size: None,
+                field_size: aggregate_payload_size(&ok_ty),
             },
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -1153,5 +1163,19 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), result_ty))
+    }
+}
+
+/// The size of an aggregate payload, or None for a scalar one. Codegen reads
+/// the presence of a size as "this payload lives in place — take its address".
+fn aggregate_payload_size(ty: &MirType) -> Option<u32> {
+    match ty {
+        MirType::Struct(_)
+        | MirType::Enum(_)
+        | MirType::Tuple(_)
+        | MirType::String
+        | MirType::Option(_)
+        | MirType::Result { .. } => Some(ty.size()),
+        _ => None,
     }
 }

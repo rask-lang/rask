@@ -58,7 +58,7 @@ pub enum TypeConstraint {
 }
 
 /// Kind of unsuffixed literal (for deferred defaulting).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiteralKind {
     Integer,
     Float,

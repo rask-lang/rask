@@ -554,7 +554,7 @@ const ARCH_ADD = comptime {
 /// - `ptr` MUST be properly aligned for `T`
 /// - The memory MUST be initialized as a valid `T`
 /// - No other thread may write to this memory during the read
-unsafe func read<T>(ptr: *T) -> T
+unsafe func read_at<T>(ptr: *T) -> T
 ```
 
 Contract categories: validity (pointer points to valid memory), alignment (properly aligned), initialization (memory contains valid data), aliasing (no conflicting concurrent access).

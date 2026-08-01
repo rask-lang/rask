@@ -795,6 +795,19 @@ fn error_bad_interpolation() {
     );
 }
 
+// A bare literal used to bind to whatever type it met first, so
+// `func f() -> string { return 1 }` type-checked. Found chasing #383, where a
+// `T? or E` return silently accepted anything numeric.
+#[test]
+fn error_literal_wrong_type() {
+    let (failed, out) = compile_error_output("literal_wrong_type.rk");
+    assert!(failed, "an int literal is not a string: {}", out);
+    assert!(
+        out.contains("expected `string`"),
+        "should name the expected type: {}", out,
+    );
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.

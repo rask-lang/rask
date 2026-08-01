@@ -809,14 +809,20 @@ fn has_unwrapped_return(callee: &MirFunction) -> bool {
             _ => None,
         };
         if let Some(MirOperand::Local(id)) = ret_val {
-            if let Some(local) = callee.locals.iter().find(|l| l.id == *id) {
-                if !is_result_or_option(&local.ty) {
-                    return true;
-                }
-            } else if let Some(param) = callee.params.iter().find(|p| p.id == *id) {
-                if !is_result_or_option(&param.ty) {
-                    return true;
-                }
+            // The value has to already *be* the return type. Merely being some
+            // Result or Option isn't enough: a `T? or E` function that returns
+            // a bare `T?` is one Ok layer short, and inlining it dropped that
+            // layer — the caller then read the option's tag as the Result's and
+            // took the error branch (#383).
+            let ty = callee
+                .locals
+                .iter()
+                .find(|l| l.id == *id)
+                .map(|l| &l.ty)
+                .or_else(|| callee.params.iter().find(|p| p.id == *id).map(|p| &p.ty));
+            match ty {
+                Some(t) if *t == callee.ret_ty => {}
+                _ => return true,
             }
         }
         // Constant returns (e.g. return 0) are scalars and would also need wrapping

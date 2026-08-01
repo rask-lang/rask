@@ -184,7 +184,56 @@ impl<'a> MirLowerer<'a> {
                     let ret_ty = self.builder.ret_ty().clone();
                     let needs_wrap = matches!(&ret_ty, MirType::Option(inner)
                         if !matches!(op_ty, MirType::Option(_)) && **inner == op_ty);
-                    let final_op = if needs_wrap {
+                    // ER9: `func -> T? or E { return t }` needs two layers, not
+                    // one. The single wrap above and codegen's Ok-wrap each add
+                    // only one, so a bare T came back with the caller reading
+                    // its first field as the Result tag (#383).
+                    let needs_double_wrap = matches!(&ret_ty, MirType::Result { ok, .. }
+                        if matches!(&**ok, MirType::Option(inner)
+                            if **inner == op_ty
+                                && !matches!(op_ty, MirType::Option(_) | MirType::Result { .. })));
+
+                    let final_op = if needs_double_wrap {
+                        let MirType::Result { ok, .. } = &ret_ty else { unreachable!() };
+                        let opt_ty = (**ok).clone();
+                        let some_local = self.builder.alloc_temp(opt_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: some_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(0)),
+                            store_size: Some(8),
+                        }));
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: some_local,
+                            offset: 8,
+                            value: op,
+                            store_size: Some(op_ty.size()),
+                        }));
+
+                        let res_local = self.builder.alloc_temp(ret_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: res_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(0)),
+                            store_size: Some(8),
+                        }));
+                        // ER15 origin slots stay zero for a success return.
+                        for offset in [8u32, 16] {
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                addr: res_local,
+                                offset,
+                                value: MirOperand::Constant(MirConst::Int(0)),
+                                store_size: Some(8),
+                            }));
+                        }
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: res_local,
+                            offset: crate::types::RESULT_PAYLOAD_OFFSET,
+                            value: MirOperand::Local(some_local),
+                            store_size: Some(opt_ty.size()),
+                        }));
+                        MirOperand::Local(res_local)
+                    } else if needs_wrap {
                         let wrap_local = self.builder.alloc_temp(ret_ty.clone());
                         // tag = 0 (Some)
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {

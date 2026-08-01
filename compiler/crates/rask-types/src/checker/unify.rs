@@ -9,6 +9,39 @@ use super::TypeChecker;
 
 use crate::types::{GenericArg, Type};
 
+/// Can a bare literal of this kind stand in for `ty`? An integer literal takes
+/// any numeric width (including a float, so `const x: f64 = 1` reads fine); a
+/// float literal only a float. Anything still unknown — a plain var, a name not
+/// yet registered — defers rather than rejects.
+///
+/// Without this a literal var bound to whatever it met first, so
+/// `func f() -> string { return 1 }` type-checked.
+fn literal_fits(kind: super::inference::LiteralKind, ty: &Type) -> bool {
+    use super::inference::LiteralKind;
+    match ty {
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
+            kind == LiteralKind::Integer
+        }
+        Type::F32 | Type::F64 => true,
+        Type::Var(_)
+        | Type::UnresolvedNamed(_)
+        | Type::UnresolvedGeneric { .. }
+        | Type::Error
+        | Type::Never => true,
+        _ => false,
+    }
+}
+
+/// The type to name in a mismatch when the value is still an unpinned literal.
+fn literal_kind_type(kind: super::inference::LiteralKind) -> Type {
+    use super::inference::LiteralKind;
+    match kind {
+        LiteralKind::Integer => Type::I64,
+        LiteralKind::Float => Type::F64,
+    }
+}
+
 impl TypeChecker {
     pub(super) fn solve_constraints(&mut self) {
         let mut changed = true;
@@ -252,7 +285,27 @@ impl TypeChecker {
                 }
             }
             match &resolved_ret {
-                Type::Result { .. } => self.unify(&expected, &ret_ty, span),
+                Type::Result { err: ret_err, .. } => {
+                    // ER9: in a `T? or E` function, a `T?` value is the success
+                    // branch — not a sum to match against the whole return
+                    // type. `return none` and `return some(v)` both arrive as
+                    // an option-shaped Result, and matching them whole put
+                    // `none` up against `E` (#383).
+                    let ok_is_option = self.ctx.apply(ok).is_option();
+                    let ret_is_option = matches!(self.ctx.apply(ret_err), Type::None);
+                    if allow_wrap
+                        && ok_is_option
+                        && ret_is_option
+                        && !resolved_expected.is_option()
+                    {
+                        let wrapped = Type::Result {
+                            ok: Box::new(ret_ty),
+                            err: err.clone(),
+                        };
+                        return self.unify(&expected, &wrapped, span);
+                    }
+                    self.unify(&expected, &ret_ty, span)
+                }
                 Type::Var(id) if !allow_wrap && self.ctx.literal_vars.contains_key(id) => {
                     // Bind position with a non-optional sum: a bare literal can
                     // never satisfy the union type. Default the literal var
@@ -307,6 +360,13 @@ impl TypeChecker {
                         Type::Result {
                             ok: ok.clone(),
                             err: Box::new(resolved_err),
+                        }
+                    } else if resolved_ok.is_option() && !resolved_ret.is_option() {
+                        // `return k` in a `KV? or E` function fills the present
+                        // side — two layers to add, not one (#383).
+                        Type::Result {
+                            ok: Box::new(Type::option(ret_ty)),
+                            err: err.clone(),
                         }
                     } else {
                         Type::Result {
@@ -385,8 +445,8 @@ impl TypeChecker {
                         span,
                     });
                 }
-                // Literal vars cannot implicitly coerce to nominal types
-                if self.ctx.literal_vars.contains_key(id) {
+                if let Some(kind) = self.ctx.literal_vars.get(id).copied() {
+                    // Literal vars cannot implicitly coerce to nominal types
                     if let Type::Named(type_id) = other {
                         if let Some(name) = self.types.get_nominal_name(*type_id) {
                             return Err(TypeError::NominalMismatch {
@@ -396,6 +456,13 @@ impl TypeChecker {
                                 span,
                             });
                         }
+                    }
+                    if !literal_fits(kind, other) {
+                        return Err(TypeError::Mismatch {
+                            expected: other.clone(),
+                            found: literal_kind_type(kind),
+                            span,
+                        });
                     }
                 }
                 self.ctx.substitutions.insert(*id, other.clone());
@@ -410,8 +477,8 @@ impl TypeChecker {
                         span,
                     });
                 }
-                // Literal vars cannot implicitly coerce to nominal types
-                if self.ctx.literal_vars.contains_key(id) {
+                if let Some(kind) = self.ctx.literal_vars.get(id).copied() {
+                    // Literal vars cannot implicitly coerce to nominal types
                     if let Type::Named(type_id) = other {
                         if let Some(name) = self.types.get_nominal_name(*type_id) {
                             return Err(TypeError::NominalMismatch {
@@ -421,6 +488,13 @@ impl TypeChecker {
                                 span,
                             });
                         }
+                    }
+                    if !literal_fits(kind, other) {
+                        return Err(TypeError::Mismatch {
+                            expected: other.clone(),
+                            found: literal_kind_type(kind),
+                            span,
+                        });
                     }
                 }
                 self.ctx.substitutions.insert(*id, other.clone());

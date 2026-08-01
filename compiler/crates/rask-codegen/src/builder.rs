@@ -3139,6 +3139,20 @@ impl<'a> FunctionBuilder<'a> {
             Some(MirType::Result { ok, err }) => {
                 // Use explicit byte_offset when provided (e.g., origin field reads)
                 if let Some(off) = byte_offset {
+                    // A payload read still hands back the address when the
+                    // payload is an aggregate. MIR passes a field_size for
+                    // exactly that case and leaves it None for a scalar, which
+                    // is what tells the two apart when ok and err disagree
+                    // (#389). Without this, unwrapping a `T? or E` loaded the
+                    // T?'s first 8 bytes and dereferenced them as a pointer.
+                    if *off as i32 == crate::layouts::RESULT_PAYLOAD_OFFSET
+                        && field_size.is_some()
+                    {
+                        let payload_addr = builder
+                            .ins()
+                            .iadd_imm(base_val, crate::layouts::RESULT_PAYLOAD_OFFSET as i64);
+                        return Ok(payload_addr);
+                    }
                     *off as i32
                 } else {
                     // Aggregate payload (Ok or Err): return address, not load.
