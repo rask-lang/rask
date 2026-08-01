@@ -1080,7 +1080,7 @@ impl<'a> MirLowerer<'a> {
             drop(shared);
             for (key, ty) in to_add {
                 self.meta_mut(&key).elem_type = Some(ty.clone());
-                self.ctx.shared_elem_types.borrow_mut().insert(key, ty);
+                self.ctx.record_shared_elem(key, ty);
             }
         }
 

@@ -55,6 +55,27 @@ fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static
     }
 }
 
+/// Can this expression be evaluated twice with the same result and no side
+/// effects? Only used to decide whether an assert's failure message may
+/// re-read its operands.
+///
+/// Deliberately narrow: names, literals, and reads through them. A call might
+/// do anything, so it doesn't qualify even when it obviously wouldn't.
+fn is_repeatable(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Int(..)
+        | ExprKind::Float(..)
+        | ExprKind::String(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Char(_)
+        | ExprKind::Ident(_) => true,
+        ExprKind::Field { object, .. } => is_repeatable(object),
+        ExprKind::Index { object, index } => is_repeatable(object) && is_repeatable(index),
+        ExprKind::Unary { operand, .. } => is_repeatable(operand),
+        _ => false,
+    }
+}
+
 /// Extract pattern name from an `is` pattern in an assert condition.
 /// Returns the pattern name as a string for the failure message.
 fn extract_assert_is_pattern(condition: &Expr) -> Option<String> {
@@ -69,6 +90,17 @@ fn extract_assert_is_pattern(condition: &Expr) -> Option<String> {
             Some(name)
         }
         _ => None,
+    }
+}
+
+/// The width a Vec element actually occupies. Scalars live in 8-byte slots, so
+/// a narrower type on the reading side sees half a value; aggregates keep their
+/// own size.
+fn vec_slot_type(ty: MirType) -> MirType {
+    match ty {
+        MirType::Struct(_) | MirType::Enum(_) => ty,
+        _ if ty.size() < 8 => MirType::I64,
+        _ => ty,
     }
 }
 
@@ -1481,7 +1513,7 @@ impl<'a> MirLowerer<'a> {
                         {
                             let field_key = format!("self.{}", field.name);
                             self.meta_mut(&field_key).elem_type = Some(elem_ty.clone());
-                            self.ctx.shared_elem_types.borrow_mut().insert(field_key, elem_ty);
+                            self.ctx.record_shared_elem(field_key, elem_ty);
                         }
                     }
                 }
@@ -2368,8 +2400,18 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Assert { condition, message } => {
                 // Detect comparison patterns for smart failure messages.
                 // After desugaring, `a == b` → `a.eq(b)`, `a != b` → `!a.eq(b)`.
+                // The rich "left: X, right: Y" message costs an extra
+                // evaluation of each operand: both sides are lowered for the
+                // message, then the whole condition is lowered again for the
+                // test. That is fine for a name or a field read and wrong for
+                // anything that does work — `assert v.remove(1) == 20` removed
+                // two elements and compared the second, then reported
+                // "20 == 20" for a comparison that never happened. Operands
+                // that might do something take the plain path, which evaluates
+                // the condition once and reports the source text.
                 let cmp_info = if message.is_none() {
                     extract_assert_comparison(condition)
+                        .filter(|(l, r, _, _)| is_repeatable(l) && is_repeatable(r))
                 } else {
                     None
                 };
@@ -3287,7 +3329,7 @@ impl<'a> MirLowerer<'a> {
                 if !matches!(arg_ty, MirType::I64) {
                     if let Some(key) = Self::vec_tracking_key(object) {
                         self.meta_mut(&key).elem_type = Some(arg_ty.clone());
-                        self.ctx.shared_elem_types.borrow_mut().insert(key, arg_ty.clone());
+                        self.ctx.record_shared_elem(key, arg_ty.clone());
                     }
                 }
             }
@@ -3356,6 +3398,28 @@ impl<'a> MirLowerer<'a> {
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
             tracked_elem
+        } else if qualified_name == "Vec_remove" {
+            // `.remove(i)` hands back the element itself. The stub says `-> T`,
+            // which the metadata fallback reads as a bare i64 — so a
+            // `Vec<string>` element came back through an 8-byte out-param and
+            // `positional.remove(0)` produced half a string's bytes as a number
+            // (#203's grep_clone entry).
+            //
+            // Tracking first, like `v[i]`; the checker's type second, because a
+            // `test` body doesn't carry the push tracking. Either way the width
+            // is rounded up to a word: a Vec keeps scalars in 8-byte slots, and
+            // an i32-typed destination read back only half of what the
+            // out-param wrote.
+            tracked_elem
+                .or_else(|| self.ctx.lookup_node_type(expr.id))
+                .map(vec_slot_type)
+        } else if qualified_name == "Vec_pop" {
+            // Same, one level in: `.pop()` is `T?`, and the payload type sizes
+            // the slot the DerefOption adapter copies into. A bare `i64?` slot
+            // took 8 of a string's 16 bytes and reading it segfaulted.
+            tracked_elem
+                .or_else(|| self.extract_payload_type(expr))
+                .map(|elem| MirType::Option(Box::new(vec_slot_type(elem))))
         } else if qualified_name == "Pool_get" {
             // Pool.get returns Option<T> — extract T from tracked element type
             let elem_ty = Self::vec_tracking_key(object)

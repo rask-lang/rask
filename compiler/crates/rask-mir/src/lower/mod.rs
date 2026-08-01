@@ -202,7 +202,18 @@ pub struct MirContext<'a> {
     /// Cross-function Vec element types inferred from push/set calls.
     /// Key: tracking path (e.g. "v", "self.history"), Value: element MirType.
     /// Shared across function lowerings via RefCell.
+    ///
+    /// The key is just the path, so two functions with a local of the same name
+    /// hash to the same entry. A name used for a `Vec<string>` in one function
+    /// and a `Vec<i64>` in another is a conflict, and guessing either way
+    /// miscompiles the other — so a conflicting name is dropped from the map
+    /// and never re-added, leaving those functions on their own per-function
+    /// tracking. Two `test` blocks that both call their vector `v` used to make
+    /// the second one fail codegen and vanish from the run.
     pub shared_elem_types: std::cell::RefCell<HashMap<String, MirType>>,
+    /// Tracking paths seen with more than one element type. Kept out of
+    /// `shared_elem_types` for good.
+    pub shared_elem_conflicts: std::cell::RefCell<std::collections::HashSet<String>>,
     /// Comptime interpreter for evaluating `comptime if` during lowering.
     /// None in tests or when cfg is unavailable.
     pub comptime_interp: Option<std::cell::RefCell<rask_comptime::ComptimeInterpreter>>,
@@ -273,6 +284,7 @@ impl<'a> MirContext<'a> {
             line_map: None,
             source_file: None,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &EMPTY_COERCIONS,
@@ -602,6 +614,29 @@ impl<'a> MirContext<'a> {
     /// binding of a stdlib type. `None` means nothing was recorded (a call node
     /// synthesized after checking) or the receiver is a primitive, which
     /// qualifies through the MIR type instead.
+    /// Record a tracking path's element type across function lowerings.
+    ///
+    /// A path already recorded with a *different* type is a name collision
+    /// between two functions, not new information: the entry is dropped and the
+    /// path blacklisted, so both functions fall back to their own tracking
+    /// instead of one of them getting the other's element width.
+    pub fn record_shared_elem(&self, key: String, ty: MirType) {
+        if self.shared_elem_conflicts.borrow().contains(&key) {
+            return;
+        }
+        let mut shared = self.shared_elem_types.borrow_mut();
+        match shared.get(&key) {
+            Some(existing) if *existing != ty => {
+                shared.remove(&key);
+                self.shared_elem_conflicts.borrow_mut().insert(key);
+            }
+            Some(_) => {}
+            None => {
+                shared.insert(key, ty);
+            }
+        }
+    }
+
     pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
         match self.call_targets.get(&node)? {
             rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names),
@@ -3977,6 +4012,7 @@ mod tests {
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
             comptime_interp: None,
@@ -4038,6 +4074,7 @@ mod tests {
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
             comptime_interp: None,
@@ -4105,6 +4142,7 @@ mod tests {
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
             comptime_interp: None,
