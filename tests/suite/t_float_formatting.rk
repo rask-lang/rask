@@ -45,3 +45,18 @@ test "a negative float keeps its sign" {
     const n: f64 = -2.25
     assert n.to_string() == "-2.25"
 }
+
+test "int to f32 rounds at f32's width" {
+    // CV1/CV4: int→float via `as` rounds. The interpreter kept full i64
+    // precision, so it answered 16777217 where native — which really has an
+    // f32 — answered 16777216 (#334).
+    const big: i64 = 16777217
+    assert "{big as f32}" == "16777216"
+    assert "{big as f64}" == "16777217"
+
+    const m: i64 = 123456789
+    assert "{m as f32}" == "123456792"
+
+    const small: i64 = 3
+    assert "{small as f32}" == "3"
+}

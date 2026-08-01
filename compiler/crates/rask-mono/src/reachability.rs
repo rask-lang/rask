@@ -91,6 +91,11 @@ pub struct Monomorphizer<'a> {
     pub instantiated_node_types: HashMap<NodeId, rask_types::Type>,
     /// Dispatch targets for the copies, same idea as `instantiated_node_types`.
     pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
+    /// Per-call-site type arguments for the copies. A generic calling another
+    /// generic (`func outer<T>(x: T) { inner(x) }`) records `[T]` at the inner
+    /// call; substituting this instantiation's arguments turns that into the
+    /// concrete pair that reachability needs to enqueue.
+    instantiated_call_type_args: HashMap<NodeId, Vec<Type>>,
     /// Trait name → object-compatible method names (TR1–TR3).
     /// A vtable references a slot per compatible method, so boxing a value as
     /// `any Trait` makes every such method of the concrete type reachable even
@@ -235,6 +240,7 @@ impl<'a> Monomorphizer<'a> {
             next_instantiated_id: 0,
             instantiated_node_types: HashMap::new(),
             instantiated_call_targets: HashMap::new(),
+            instantiated_call_type_args: HashMap::new(),
             trait_methods,
             trait_coercions: HashMap::new(),
             decls,
@@ -281,7 +287,24 @@ impl<'a> Monomorphizer<'a> {
         &mut self,
         origins: &HashMap<NodeId, NodeId>,
         type_args: &[Type],
+        param_names: &[String],
     ) {
+        let bindings: HashMap<&str, &Type> = param_names
+            .iter()
+            .map(|n| n.as_str())
+            .zip(type_args.iter())
+            .collect();
+        for (&new_id, &old_id) in origins {
+            if let Some(args) = self.call_type_args.get(&old_id) {
+                let concrete: Vec<Type> = args
+                    .iter()
+                    .map(|a| Self::substitute_param(a, &bindings, type_args))
+                    .collect();
+                if !concrete.is_empty() {
+                    self.instantiated_call_type_args.insert(new_id, concrete);
+                }
+            }
+        }
         let Some(typed) = self.typed else { return };
         for (&new_id, &old_id) in origins {
             if let Some(ty) = typed.node_types.get(&old_id) {
@@ -303,6 +326,19 @@ impl<'a> Monomorphizer<'a> {
                 }
             }
         }
+    }
+
+    /// A type argument with this instantiation's parameters filled in. Bind by
+    /// name first — `pair<A, B>` calling `level1(a)` records `[A]`, and only the
+    /// name says which of the two arguments that is. The positional fallback
+    /// covers a single-parameter instantiation whose name list is unavailable.
+    fn substitute_param(ty: &Type, bindings: &HashMap<&str, &Type>, type_args: &[Type]) -> Type {
+        if let Type::UnresolvedNamed(name) = ty {
+            if let Some(bound) = bindings.get(name.as_str()) {
+                return (*bound).clone();
+            }
+        }
+        Self::concretize(ty, type_args).unwrap_or_else(|| ty.clone())
     }
 
     /// A recorded type with this instantiation's arguments substituted in, or
@@ -506,10 +542,12 @@ impl<'a> Monomorphizer<'a> {
             let concrete = if item.type_args.is_empty() {
                 original.clone()
             } else {
+                let param_names =
+                    crate::instantiate::type_param_names(original, &item.type_args);
                 let (cloned, origins) = crate::instantiate::instantiate_function_from(
                     original, &item.type_args, &mut self.next_instantiated_id,
                 );
-                self.carry_node_records(&origins, &item.type_args);
+                self.carry_node_records(&origins, &item.type_args, &param_names);
                 cloned
             };
 
@@ -527,6 +565,17 @@ impl<'a> Monomorphizer<'a> {
                 body: concrete,
             });
         }
+    }
+
+    /// The resolved type arguments at a call site. A node inside an
+    /// instantiated copy has an id the checker never saw, so its arguments come
+    /// from what `carry_node_records` substituted.
+    fn type_args_at(&self, id: NodeId) -> Vec<Type> {
+        self.call_type_args
+            .get(&id)
+            .or_else(|| self.instantiated_call_type_args.get(&id))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Add a (name, type_args) pair to queue if not already seen
@@ -615,10 +664,7 @@ impl<'a> Monomorphizer<'a> {
         match &expr.kind {
             ExprKind::Call { func, args } => {
                 if let ExprKind::Ident(name) = &func.kind {
-                    let type_args = self.call_type_args
-                        .get(&expr.id)
-                        .cloned()
-                        .unwrap_or_default();
+                    let type_args = self.type_args_at(expr.id);
                     // Record call rewrite so MIR lowering uses the mangled name.
                     // Only for functions with a body to instantiate — a stdlib
                     // stub like `spawn(f: func() -> T)` is generic in its
@@ -636,10 +682,7 @@ impl<'a> Monomorphizer<'a> {
                 }
             }
             ExprKind::MethodCall { object, method, args, .. } => {
-                let type_args = self.call_type_args
-                    .get(&expr.id)
-                    .cloned()
-                    .unwrap_or_default();
+                let type_args = self.type_args_at(expr.id);
 
                 // CALL6 already picked the receiver type. Use it rather than
                 // widening to every method sharing the bare name — that pulled

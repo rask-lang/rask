@@ -713,6 +713,24 @@ pub fn instantiate_function(decl: &Decl, type_args: &[Type]) -> Decl {
 /// Allocating from a shared counter above the program's range makes a miss a
 /// miss. The returned map says which original node each copy came from, so the
 /// recorded facts can be carried across instead.
+/// The type-parameter names a declaration's arguments bind to, in order. Same
+/// derivation `instantiate_function_from` uses, exposed so callers can map a
+/// parameter name back to the argument it stands for.
+pub fn type_param_names(decl: &Decl, type_args: &[Type]) -> Vec<String> {
+    match &decl.kind {
+        DeclKind::Fn(f) => {
+            if f.type_params.len() < type_args.len() {
+                rask_types::signature_type_param_names(f)
+            } else {
+                f.type_params.iter().map(|p| p.name.clone()).collect()
+            }
+        }
+        DeclKind::Struct(s) => s.type_params.iter().map(|p| p.name.clone()).collect(),
+        DeclKind::Enum(e) => e.type_params.iter().map(|p| p.name.clone()).collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn instantiate_function_from(
     decl: &Decl,
     type_args: &[Type],

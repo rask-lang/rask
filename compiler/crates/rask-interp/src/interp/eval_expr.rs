@@ -1766,7 +1766,12 @@ impl Interpreter {
             ExprKind::Cast { expr, ty } => {
                 let val = self.eval_expr(expr)?;
                 match (val, ty.as_str()) {
-                    (Value::Int(n, _), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    // CV1/CV4: int→float rounds. f32 rounds at 24 bits, so the
+                    // result has to go through f32 — keeping full i64 precision
+                    // here made the interpreter answer 16777217 where native
+                    // (which really has an f32) answered 16777216 (#334).
+                    (Value::Int(n, _), "f32") => Ok(Value::Float(n as f32 as f64)),
+                    (Value::Int(n, _), "f64" | "float") => Ok(Value::Float(n as f64)),
                     (Value::Float(n), t @ ("i64" | "i32" | "int" | "i16" | "i8"
                         | "u64" | "u32" | "u16" | "u8" | "usize")) => {
                         let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
@@ -1794,14 +1799,16 @@ impl Interpreter {
                     (Value::Int(n, _), "u128") => Ok(Value::Uint128(n as u128)),
                     (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Int128(n), "u64" | "u32" | "u16" | "u8" | "usize" | "u128") => Ok(Value::Uint128(n as u128)),
-                    (Value::Int128(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Int128(n), "f32") => Ok(Value::Float(n as f32 as f64)),
+                    (Value::Int128(n), "f64" | "float") => Ok(Value::Float(n as f64)),
                     (Value::Int128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     // u128 conversions
                     (Value::Uint128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Uint128(n), "i128") => Ok(Value::Int128(n as i128)),
-                    (Value::Uint128(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Uint128(n), "f32") => Ok(Value::Float(n as f32 as f64)),
+                    (Value::Uint128(n), "f64" | "float") => Ok(Value::Float(n as f64)),
                     (Value::Uint128(n), "u128" | "u64" | "u32" | "u16" | "u8" | "usize") => Ok(Value::Uint128(n)),
                     (Value::Uint128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
