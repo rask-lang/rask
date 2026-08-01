@@ -2919,10 +2919,17 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
 
-                        // Static method on a type: Vec.new(), string.new()
-                        let is_known_type = self.ctx.find_struct(name).is_some()
-                            || self.ctx.find_enum(name).is_some()
-                            || is_type_constructor_name(name);
+                        // Static method on a type: Vec.new(), string.new().
+                        // A name that holds a value isn't a type, whatever its
+                        // capitalisation — `is_type_constructor_name` says yes to
+                        // anything starting with a capital, so a SCREAMING_CASE
+                        // module const was read as a type and `CT.to_string()`
+                        // compiled to a call to a function named `CT_to_string`
+                        // that doesn't exist (#403).
+                        let is_known_type = !self.name_holds_a_value(name)
+                            && (self.ctx.find_struct(name).is_some()
+                                || self.ctx.find_enum(name).is_some()
+                                || is_type_constructor_name(name));
 
                         // CH3: char.from_u32(n) → char?. Reuse the Convert→Option
                         // codegen path (same as `try convert`) with a Char target.

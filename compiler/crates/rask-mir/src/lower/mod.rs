@@ -328,6 +328,26 @@ impl<'a> MirContext<'a> {
                 if let Some(trait_name) = name.strip_prefix("any ") {
                     return MirType::TraitObject { trait_name: trait_name.to_string() };
                 }
+                // "[T; N]" → fixed-size array, "[]T" / "[T]" → slice. Without
+                // these an annotated `const a: [i32; 5]` fell through to the
+                // pointer default, and the array's length was gone by the time
+                // `a.len()` looked for it — the call failed dispatch outright
+                // while the same code without the annotation worked.
+                if let Some(inner) = name.strip_prefix("[]") {
+                    return MirType::Slice(Box::new(self.resolve_type_str(inner)));
+                }
+                if name.starts_with('[') && name.ends_with(']') {
+                    let inner = &name[1..name.len() - 1];
+                    if let Some(semi) = inner.rfind(';') {
+                        let elem = self.resolve_type_str(inner[..semi].trim());
+                        // A symbolic length (a comptime parameter) has no value
+                        // here; 0 keeps the element type intact, which is what
+                        // the checker does with the same shape.
+                        let len = inner[semi + 1..].trim().parse::<u32>().unwrap_or(0);
+                        return MirType::Array { elem: Box::new(elem), len };
+                    }
+                    return MirType::Slice(Box::new(self.resolve_type_str(inner)));
+                }
                 // "(T1, T2, ...)" → Tuple
                 if name.starts_with('(') && name.ends_with(')') {
                     let inner = &name[1..name.len() - 1];
@@ -728,6 +748,16 @@ impl<'a> MirLowerer<'a> {
     /// Get the metadata entry for a variable (read-only).
     pub(crate) fn meta(&self, name: &str) -> Option<&LocalMeta> {
         self.local_meta.get(name)
+    }
+
+    /// True when this name refers to a value here — a local, a module-level
+    /// const (materialised or still pending), or a comptime global. Used to
+    /// stop a capitalised value name from being read as a type.
+    pub(crate) fn name_holds_a_value(&self, name: &str) -> bool {
+        self.locals.contains_key(name)
+            || self.const_slots.contains_key(name)
+            || self.pending_module_consts.contains_key(name)
+            || self.ctx.comptime_globals.contains_key(name)
     }
 
     /// Record a module-level const's box type from its initializer, e.g.
@@ -1265,12 +1295,19 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Lower the body expression into the thunk (reuses method resolution).
+        // The pending module consts are saved along with the locals: the thunk
+        // is its own MIR function and materialises its own copy of any const it
+        // touches, but that must not consume the outer function's entry — the
+        // cleanup path lowers this same expression again, and with the entry
+        // gone the reference compiled to a call named after the const (#403).
         let saved_builder = std::mem::replace(&mut self.builder, thunk_builder);
         let saved_locals = std::mem::replace(&mut self.locals, thunk_locals);
+        let saved_pending = self.pending_module_consts.clone();
         let saved_loop_stack = std::mem::take(&mut self.loop_stack);
         let body_result = self.lower_expr(expr);
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
+        self.pending_module_consts = saved_pending;
         self.loop_stack = saved_loop_stack;
 
         if body_result.is_err() {
