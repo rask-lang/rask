@@ -1119,25 +1119,42 @@ impl<'a> FunctionBuilder<'a> {
         source_ty: &MirType,
         target_ty: &MirType,
     ) -> Value {
-        let (min, max) = Self::int_bounds_i64(target_ty);
+        let (min, max) = Self::int_bounds(target_ty);
         // Widen to I64 for the comparison, then reduce.
-        let v64 = Self::widen_i64(builder, val, source_ty);
-        let (gt, lt) = if source_ty.is_unsigned() {
-            (IntCC::UnsignedGreaterThan, IntCC::UnsignedLessThan)
+        let mut v64 = Self::widen_i64(builder, val, source_ty);
+
+        // Source and target don't have to share a signedness, and one
+        // comparison mode for both is wrong whenever they don't. Clamping
+        // `u64` to `i64` compared unsigned against `i64::MIN`, which reads as
+        // 2^63 unsigned — so every value below it, meaning every ordinary
+        // value, "underflowed" and came out as `i64::MIN`. `42 saturate to
+        // i64` was -9223372036854775808 (#495).
+        if source_ty.is_unsigned() {
+            // Nothing unsigned is below a target minimum; every one of those
+            // is zero or negative. Only the ceiling can bite, unsigned.
+            if max < u64::MAX as i128 {
+                let maxc = builder.ins().iconst(types::I64, max as i64);
+                let too_big = builder.ins().icmp(IntCC::UnsignedGreaterThan, v64, maxc);
+                v64 = builder.ins().select(too_big, maxc, v64);
+            }
         } else {
-            (IntCC::SignedGreaterThan, IntCC::SignedLessThan)
-        };
-        let maxc = builder.ins().iconst(types::I64, max);
-        let minc = builder.ins().iconst(types::I64, min);
-        let too_big = builder.ins().icmp(gt, v64, maxc);
-        let clamped = builder.ins().select(too_big, maxc, v64);
-        let too_small = builder.ins().icmp(lt, clamped, minc);
-        let clamped = builder.ins().select(too_small, minc, clamped);
+            let minc = builder.ins().iconst(types::I64, min as i64);
+            let too_small = builder.ins().icmp(IntCC::SignedLessThan, v64, minc);
+            v64 = builder.ins().select(too_small, minc, v64);
+            // A ceiling above `i64::MAX` — only `u64`'s — is out of a signed
+            // value's reach, so there's nothing to clamp against.
+            if max <= i64::MAX as i128 {
+                let maxc = builder.ins().iconst(types::I64, max as i64);
+                let too_big = builder.ins().icmp(IntCC::SignedGreaterThan, v64, maxc);
+                v64 = builder.ins().select(too_big, maxc, v64);
+            }
+        }
+
         let to = mir_to_cranelift_type(target_ty).unwrap_or(types::I64);
         if to.bits() < 64 {
-            builder.ins().ireduce(to, clamped)
+            builder.ins().ireduce(to, v64)
         } else {
-            clamped
+            v64
         }
     }
 
@@ -1148,17 +1165,34 @@ impl<'a> FunctionBuilder<'a> {
         source_ty: &MirType,
         target_ty: &MirType,
     ) -> Value {
-        let (min, max) = Self::int_bounds_i64(target_ty);
+        let (min, max) = Self::int_bounds(target_ty);
         let v64 = Self::widen_i64(builder, val, source_ty);
-        let (ge, le) = if source_ty.is_unsigned() {
-            (IntCC::UnsignedGreaterThanOrEqual, IntCC::UnsignedLessThanOrEqual)
+        let t = builder.func.dfg.value_type(v64);
+        let always = |b: &mut ClifFunctionBuilder| b.ins().iconst(types::I8, 1);
+
+        // Same asymmetry as the saturating form: which comparison is right
+        // depends on the *source*'s signedness, and which bound can bite at
+        // all depends on the target's.
+        let (ge_min, le_max) = if source_ty.is_unsigned() {
+            let ge_min = always(builder); // never below a target minimum
+            let le_max = if max < u64::MAX as i128 {
+                let maxc = builder.ins().iconst(t, max as i64);
+                builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, v64, maxc)
+            } else {
+                always(builder)
+            };
+            (ge_min, le_max)
         } else {
-            (IntCC::SignedGreaterThanOrEqual, IntCC::SignedLessThanOrEqual)
+            let minc = builder.ins().iconst(t, min as i64);
+            let ge_min = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, v64, minc);
+            let le_max = if max <= i64::MAX as i128 {
+                let maxc = builder.ins().iconst(t, max as i64);
+                builder.ins().icmp(IntCC::SignedLessThanOrEqual, v64, maxc)
+            } else {
+                always(builder)
+            };
+            (ge_min, le_max)
         };
-        let minc = builder.ins().iconst(types::I64, min);
-        let maxc = builder.ins().iconst(types::I64, max);
-        let ge_min = builder.ins().icmp(ge, v64, minc);
-        let le_max = builder.ins().icmp(le, v64, maxc);
         builder.ins().band(ge_min, le_max)
     }
 
@@ -1230,16 +1264,24 @@ impl<'a> FunctionBuilder<'a> {
     /// Target integer range as i64 constants. 64-bit unsigned upper bound is
     /// approximated by i64::MAX (saturate/try to u64 from ≤64-bit rarely overflows).
     fn int_bounds_i64(t: &MirType) -> (i64, i64) {
+        let (lo, hi) = Self::int_bounds(t);
+        (lo as i64, hi.min(i64::MAX as i128) as i64)
+    }
+
+    /// A target integer type's true range. `u64`'s maximum doesn't fit in an
+    /// `i64`, so the i64-shaped version above reported `i64::MAX` for it —
+    /// which is a real clamp point rather than the type's actual ceiling.
+    fn int_bounds(t: &MirType) -> (i128, i128) {
         match t {
-            MirType::I8 => (i8::MIN as i64, i8::MAX as i64),
-            MirType::I16 => (i16::MIN as i64, i16::MAX as i64),
-            MirType::I32 => (i32::MIN as i64, i32::MAX as i64),
-            MirType::I64 => (i64::MIN, i64::MAX),
-            MirType::U8 => (0, u8::MAX as i64),
-            MirType::U16 => (0, u16::MAX as i64),
-            MirType::U32 => (0, u32::MAX as i64),
-            MirType::U64 => (0, i64::MAX),
-            _ => (i64::MIN, i64::MAX),
+            MirType::I8 => (i8::MIN as i128, i8::MAX as i128),
+            MirType::I16 => (i16::MIN as i128, i16::MAX as i128),
+            MirType::I32 => (i32::MIN as i128, i32::MAX as i128),
+            MirType::I64 => (i64::MIN as i128, i64::MAX as i128),
+            MirType::U8 => (0, u8::MAX as i128),
+            MirType::U16 => (0, u16::MAX as i128),
+            MirType::U32 => (0, u32::MAX as i128),
+            MirType::U64 => (0, u64::MAX as i128),
+            _ => (i64::MIN as i128, i64::MAX as i128),
         }
     }
 

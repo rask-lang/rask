@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #495 — reading struct fields out of a `for … in` loop inside a test block.
+// The same code as the body of `main` always worked, so these live in test
+// blocks on purpose.
+
+struct Spec {
+    public title: string
+    public n: i64
+}
+
+struct View {
+    public id: u64
+    public title: string
+}
+
+test "a string field read through a for loop" {
+    mut specs = Vec.new()
+    specs.push(Spec { title: "one", n: 1 })
+    specs.push(Spec { title: "two", n: 2 })
+
+    mut labels = Vec.new()
+    for s in specs {
+        labels.push(s.title)
+    }
+    assert labels[0] == "one"
+    assert labels[1] == "two"
+}
+
+test "an i64 field summed through a for loop" {
+    mut specs = Vec.new()
+    specs.push(Spec { title: "one", n: 1 })
+    specs.push(Spec { title: "two", n: 2 })
+    specs.push(Spec { title: "three", n: 3 })
+
+    mut total = 0
+    for s in specs {
+        total += s.n
+    }
+    assert total == 6
+}
+
+test "a u64 field summed through a for loop" {
+    mut page = Vec.new()
+    page.push(View { id: 10, title: "a" })
+    page.push(View { id: 20, title: "b" })
+    page.push(View { id: 30, title: "c" })
+
+    mut ids = 0
+    for v in page {
+        ids += v.id saturate to i64
+    }
+    assert ids == 60
+}
+
+test "indexed access agrees with the loop" {
+    mut page = Vec.new()
+    page.push(View { id: 10, title: "a" })
+    page.push(View { id: 20, title: "b" })
+
+    assert page[0].id == 10
+    assert page[1].title == "b"
+    assert page.len() == 2
+}
