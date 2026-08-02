@@ -10,4 +10,12 @@ func main() {
     // ERROR: `{"x":1,"y":2}` is not a valid interpolation
     const body = "{\"x\":1,\"y\":2}"
     println(body)
+
+    // ERROR: `{"x":1}` is not a valid interpolation
+    // A single pair is the hard case: `1` is a perfectly good width spec, so
+    // the spec grammar can't rule it out. The bare string literal in the
+    // expression position can — nobody interpolates a literal they already
+    // have.
+    const one_pair = "{\"x\":1}"
+    println(one_pair)
 }

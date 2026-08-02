@@ -438,13 +438,17 @@ extend json {
     public func encode<T: Encode>(value: T) -> string {}
 
     /// Decode a JSON string into a typed value.
-    /// Compiler-expanded at MIR level for structs via comptime for + reflect.
+    /// Needs the Decode derivation (comptime for + reflect), which isn't built
+    /// yet — use `json.parse` and read the tree until it is.
+    @unimplemented
     public func decode<T: Decode>(str: string) -> T or JsonError {}
 
     /// Convert a typed value to a JsonValue tree.
+    @unimplemented
     public func to_value<T: Encode>(value: T) -> JsonValue {}
 
     /// Convert a JsonValue tree to a typed value.
+    @unimplemented
     public func from_value<T: Decode>(value: JsonValue) -> T or JsonError {}
 }
 

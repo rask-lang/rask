@@ -933,6 +933,10 @@ impl TypeChecker {
                             Type::Error
                         }
                     }
+                    // The operand's own error was already reported — saying
+                    // `try` needs a Result and found `<error>` on top of it
+                    // just buries the real one.
+                    Type::Error => Type::Error,
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
@@ -953,6 +957,10 @@ impl TypeChecker {
                         // Unresolved scrutinee — leave as bool, let later context constrain.
                         Type::Bool
                     }
+                    // The operand's own error was already reported — saying
+                    // `try` needs a Result and found `<error>` on top of it
+                    // just buries the real one.
+                    Type::Error => Type::Error,
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
@@ -2099,6 +2107,19 @@ impl TypeChecker {
         span: Span,
     ) -> Type {
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+
+        // A signature with nothing behind it. Methods on a receiver are caught
+        // in resolve_method; module functions took a different route and got
+        // no check at all, so `json.decode(body)` type-checked, compiled, and
+        // segfaulted at the call (#506).
+        if rask_stdlib::mir_metadata::is_unimplemented(module, method) {
+            self.errors.push(TypeError::UnimplementedStdlibMethod {
+                ty: module.to_string(),
+                method: method.to_string(),
+                span,
+            });
+            return Type::Error;
+        }
 
         if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
             // Check parameter count — skip for wildcard params (_Any accepts anything)

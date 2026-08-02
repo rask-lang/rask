@@ -4772,6 +4772,15 @@ impl Parser {
                     bad_expr(self, "there's more here than one expression");
                     return None;
                 }
+                // `{"x"}` renders the literal it already is, so nobody writes
+                // one on purpose — but a JSON body starts with exactly that
+                // shape. `"{\"x\":1}"` splits into the expression `"x"` with
+                // `1` as a width spec, and prints `x` (#506). The spec grammar
+                // can't tell those apart; the string literal can.
+                if matches!(parsed.kind, ExprKind::String(_)) {
+                    bad_expr(self, "a string literal on its own isn't something to interpolate");
+                    return None;
+                }
 
                 // Remap spans from 0-based (within expr_str) to absolute file position.
                 // str_span.start is the opening quote, +1 for content start, +byte_offset for position.
