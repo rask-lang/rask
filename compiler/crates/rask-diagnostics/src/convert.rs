@@ -793,6 +793,33 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("private fields restrict access to the type's own extend blocks (V5)")
             }
 
+            TypeCalledAsFunction { name, kind, fields, span } => {
+                let is_enum = kind.ends_with("enum");
+                let fix = if is_enum {
+                    format!("name a variant: `{}.Variant`", name)
+                } else if fields.is_empty() {
+                    format!("write the literal: `{} {{}}`", name)
+                } else {
+                    let list: Vec<String> = fields.iter()
+                        .map(|f| format!("{}: …", f))
+                        .collect();
+                    format!("write the literal: `{} {{ {} }}`", name, list.join(", "))
+                };
+                let why = if is_enum {
+                    "an enum value is one of its variants — there's no whole-enum constructor. \
+                     `Name(value)` builds a nominal type declared with `type Name = …` (T7)"
+                } else {
+                    "`Name(value)` builds a nominal type declared with `type Name = …` (T7). \
+                     Structs are built field by field — there are no tuple structs (S1)"
+                };
+                Diagnostic::error(format!("`{}` is {}, so calling it doesn't construct one", name, kind))
+                    .with_code("E0345")
+                    .with_primary(*span, format!("`{}` used as a function", name))
+                    .with_help(fix.clone())
+                    .with_fix(fix)
+                    .with_why(why)
+            }
+
             MissingFields { ty, fields, span } => {
                 let (label, list) = if fields.len() == 1 {
                     ("missing field".to_string(), format!("`{}`", fields[0]))

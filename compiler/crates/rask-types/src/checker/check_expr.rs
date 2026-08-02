@@ -1729,6 +1729,39 @@ impl TypeChecker {
                 for arg in args { self.infer_expr(&arg.expr); }
                 Type::Error
             }
+            // A type name in call position. `TaskId(1)` looks like a
+            // constructor but only nominal types have one (T7) — for a struct
+            // or enum it used to slip through here and blow up much later, in
+            // MIR lowering, as "method `next` on receiver of unresolved type".
+            Type::Named(type_id) => {
+                for arg in args { self.infer_expr(&arg.expr); }
+                match self.types.get(type_id) {
+                    Some(TypeDef::Struct { name, fields, .. }) => {
+                        let (name, fields) = (
+                            name.clone(),
+                            fields.iter().map(|(f, _)| f.clone()).collect(),
+                        );
+                        self.errors.push(TypeError::TypeCalledAsFunction {
+                            name,
+                            kind: "a struct".to_string(),
+                            fields,
+                            span,
+                        });
+                        Type::Error
+                    }
+                    Some(TypeDef::Enum { name, .. }) => {
+                        let name = name.clone();
+                        self.errors.push(TypeError::TypeCalledAsFunction {
+                            name,
+                            kind: "an enum".to_string(),
+                            fields: Vec::new(),
+                            span,
+                        });
+                        Type::Error
+                    }
+                    _ => self.ctx.fresh_var(),
+                }
+            }
             _ => {
                 for arg in args { self.infer_expr(&arg.expr); }
                 self.ctx.fresh_var()

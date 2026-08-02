@@ -782,6 +782,21 @@ fn error_keyword_fn_name() {
     );
 }
 
+// A struct or enum name in call position used to type-check silently and then
+// die in MIR lowering as "method `next` on receiver of unresolved type".
+// `Name(value)` is the nominal-type constructor (T7); structs have no tuple
+// form (S1).
+#[test]
+fn error_type_called_as_function() {
+    let (failed, out) = compile_error_output("type_called_as_function.rk");
+    assert!(failed, "`TaskId(1)` on a struct must be rejected: {}", out);
+    assert!(
+        out.contains("E0345") && out.contains("TaskId { value: …")
+            && out.contains("Color.Variant"),
+        "should name both cases with their fix: {}", out,
+    );
+}
+
 // #506: a `{...}` in a string that isn't a single expression (plus an optional
 // format spec) is rejected, instead of parsing whatever fits and dropping the
 // rest — which is how a JSON body reached json.decode as the string "x".

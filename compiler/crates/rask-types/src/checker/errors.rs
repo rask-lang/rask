@@ -295,6 +295,18 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// S1: a struct or enum name used as a function — `TaskId(1)`. Only a
+    /// nominal type (`type Name = U`) has a `Name(value)` constructor (T7).
+    #[error("`{name}` is {kind}, so calling it doesn't construct one")]
+    TypeCalledAsFunction {
+        name: String,
+        /// Noun phrase with its article: "a struct" or "an enum".
+        kind: String,
+        /// Struct field names, so the fix can show the literal form.
+        fields: Vec<String>,
+        span: Span,
+    },
+
     /// GC5: public function missing type annotation
     #[error("public function `{function_name}` requires explicit type annotations")]
     PublicMissingAnnotation {
