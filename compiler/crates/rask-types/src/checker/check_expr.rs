@@ -104,6 +104,22 @@ impl TypeChecker {
         ty
     }
 
+    /// The `any Trait` type arguments a container was instantiated with.
+    fn trait_object_type_args(ty: &Type) -> Vec<Type> {
+        let args = match ty {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return Vec::new(),
+        };
+        args.iter()
+            .filter_map(|a| match a {
+                GenericArg::Type(t) if matches!(**t, Type::TraitObject { .. }) => {
+                    Some((**t).clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// TR5: a concrete value flowing into an `any Trait` position gets boxed
     /// with a vtable. The site has to be recorded by NodeId or MIR emits the
     /// bare value and the first method call dispatches through whatever
@@ -1973,6 +1989,26 @@ impl TypeChecker {
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+
+        // TR5 for a collection element. `Vec<any Shape>.push(Circle { … })` has
+        // to box, but the parameter type here is the container's element
+        // variable, so the expected type isn't known at the argument. The
+        // receiver's own type argument is: if it's `any Trait`, a concrete
+        // argument can only be that element. Without this, push stored a bare
+        // struct pointer into a 16-byte element slot and every element read
+        // back through whichever vtable was written last (#335).
+        for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+            let applied = self.ctx.apply(arg_ty);
+            for elem in Self::trait_object_type_args(&self.ctx.apply(&obj_ty)) {
+                // Only an argument that satisfies the trait can be the element.
+                // Without this a `Map<string, any Shape>`'s key was flagged too,
+                // and codegen went looking for `string_area`.
+                let Type::TraitObject { ref trait_name } = elem else { continue };
+                if crate::traits::implements_trait(&self.types, &applied, trait_name) {
+                    self.note_trait_coercion(&arg.expr, &elem, arg_ty);
+                }
+            }
+        }
 
         // SP3: zero step on range is a compile error
         // SP1/SP2: step direction mismatch is a warning
