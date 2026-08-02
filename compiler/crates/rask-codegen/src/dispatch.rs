@@ -949,6 +949,30 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("json_get_bool", "rask_json_get_bool", &[types::I64, types::I64], Some(types::I8), false),
         StdlibEntry::simple("json_decode", "rask_json_decode", &[types::I64], Some(types::I64), false),
 
+        // Typed decode: the call site builds a shape describing the target
+        // type, then hands it to the decoder (json.c).
+        StdlibEntry::simple("json_shape_prim", "rask_json_shape_prim", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("json_shape_struct", "rask_json_shape_struct", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("json_shape_vec", "rask_json_shape_vec", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("json_shape_map", "rask_json_shape_map", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("json_shape_opt", "rask_json_shape_opt", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("json_shape_field", "rask_json_shape_field",
+            &[types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
+        StdlibEntry::simple("json_shape_free", "rask_json_shape_free", &[types::I64], None, false),
+        StdlibEntry::simple("json_decode_into", "rask_json_decode_into",
+            &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("json_decode_zero", "rask_json_decode_zero", &[types::I64, types::I64], None, false),
+        StdlibEntry {
+            mir_name: "json_error_message", c_name: "rask_json_error_message",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "json_encode_shaped", c_name: "rask_json_encode_shaped",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+
         // ── Clone ────────────────────────────────────────────────────
         StdlibEntry::simple("clone", "rask_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_clone", "rask_vec_clone", &[types::I64], Some(types::I64), false),

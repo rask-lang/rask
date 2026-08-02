@@ -33,6 +33,12 @@ struct WithOptional {
     public note: string?
 }
 
+struct Patch {
+    public status: string?
+    public add_tags: Vec<string>?
+    public counts: Map<string, i64>
+}
+
 func views() -> Vec<View> {
     mut v = Vec.new()
     v.push(View { id: 1, title: "one" })
@@ -75,4 +81,33 @@ test "stdlib.encoding — an absent optional field encodes as null" {
     assert encoded.contains("\"id\":4")
     assert encoded.contains("\"who\":null")
     assert encoded.contains("\"note\":null")
+}
+
+// A Map field and a `T?` around a collection both hold a pointer, and both used
+// to go through json_buf_add_i64: the map came out `{}` (it matched the stdlib
+// Map struct layout) and the optional Vec printed its address as a number. Both
+// route through the runtime's shape encoder now.
+test "stdlib.encoding — a Map field encodes as an object" {
+    mut counts = Map.new()
+    counts.insert("a", 1)
+    const p = Patch { status: none, add_tags: none, counts: counts }
+    const encoded = json.encode(p)
+    assert encoded.contains("\"counts\":{")
+    assert encoded.contains("\"a\":1")
+}
+
+test "stdlib.encoding — an optional collection encodes as its contents or null" {
+    mut tags = Vec.new()
+    tags.push("x")
+    mut empty = Map.new()
+    const present = Patch { status: "done", add_tags: tags, counts: empty }
+    const encoded = json.encode(present)
+    assert encoded.contains("\"add_tags\":[\"x\"]")
+    assert encoded.contains("\"status\":\"done\"")
+
+    mut empty2 = Map.new()
+    const absent = Patch { status: none, add_tags: none, counts: empty2 }
+    const encoded2 = json.encode(absent)
+    assert encoded2.contains("\"add_tags\":null")
+    assert encoded2.contains("\"counts\":{}")
 }

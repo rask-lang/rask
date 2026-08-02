@@ -132,6 +132,12 @@ impl<'a> MirLowerer<'a> {
         }));
 
         for (idx, field) in layout.fields.iter().enumerate() {
+            // `@skip` keeps a field out of the serialized form (std.encoding/E19).
+            if rask_ast::decl::field_attrs::is_skipped(&field.attrs) {
+                continue;
+            }
+            // `@rename` overrides the key; otherwise it's the field's own name (E18).
+            let key = rask_ast::decl::field_attrs::serial_name(&field.attrs, &field.name);
             // Hold the field in a local of its own type. An I64 temp made the
             // f64 load convert *numerically* on the way in, so 0.25 encoded as
             // 0 and 8.0 as 8 (#478).
@@ -176,11 +182,33 @@ impl<'a> MirLowerer<'a> {
                     func: FunctionRef::internal("json_buf_add_raw".to_string()),
                     args: vec![
                         MirOperand::Local(buf),
-                        MirOperand::Constant(MirConst::String(field.name.clone())),
+                        MirOperand::Constant(MirConst::String(key.clone())),
                         arr_json,
                     ],
                 }));
                 continue;
+            }
+
+            // Two shapes can't be unrolled here and go to the runtime encoder
+            // instead: a `Map<string, V>`, whose keys aren't known until it's
+            // walked, and a `T?` around a collection, whose payload is a Vec or
+            // Map pointer. The map used to match the nested-struct branch below
+            // (find_struct finds the stdlib Map layout) and encode as `{}`; the
+            // optional collection went through json_buf_add_i64 and printed the
+            // pointer as a number.
+            if self.is_map_type(&field.ty) || self.is_optional_collection(&field.ty) {
+                if let Some(json) = self.lower_json_encode_shaped(field_val, &field.ty) {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                        args: vec![
+                            MirOperand::Local(buf),
+                            MirOperand::Constant(MirConst::String(key.clone())),
+                            MirOperand::Local(json),
+                        ],
+                    }));
+                    continue;
+                }
             }
 
             // A `T?` field is the value or `null`. It used to go through
@@ -207,7 +235,7 @@ impl<'a> MirLowerer<'a> {
                     func: FunctionRef::internal("json_buf_add_raw".to_string()),
                     args: vec![
                         MirOperand::Local(buf),
-                        MirOperand::Constant(MirConst::String(field.name.clone())),
+                        MirOperand::Constant(MirConst::String(key.clone())),
                         nested_json,
                     ],
                 }));
@@ -226,7 +254,7 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal(helper.to_string()),
                 args: vec![
                     MirOperand::Local(buf),
-                    MirOperand::Constant(MirConst::String(field.name.clone())),
+                    MirOperand::Constant(MirConst::String(key.clone())),
                     MirOperand::Local(field_val),
                 ],
             }));
@@ -500,57 +528,6 @@ impl<'a> MirLowerer<'a> {
         }));
 
         Ok((MirOperand::Local(result), MirType::String))
-    }
-
-    /// Expand `json.decode<T>(str)` into json_parse + field extraction.
-    pub(super) fn lower_json_decode_struct(
-        &mut self,
-        str_op: MirOperand,
-        layout: StructLayout,
-    ) -> Result<TypedOperand, LoweringError> {
-        use rask_types::Type;
-
-        let parsed = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(parsed),
-            func: FunctionRef::internal("json_parse".to_string()),
-            args: vec![str_op],
-        }));
-
-        let struct_id = self.ctx.find_struct(&layout.name)
-            .map(|(id, sl)| StructLayoutId::new(id, sl.size, sl.align));
-        let struct_ty = struct_id
-            .map(MirType::Struct)
-            .unwrap_or(MirType::I64);
-
-        let result = self.builder.alloc_temp(struct_ty.clone());
-        for (_idx, field) in layout.fields.iter().enumerate() {
-            let helper = match &field.ty {
-                Type::String => "json_get_string",
-                Type::Bool => "json_get_bool",
-                Type::F32 | Type::F64 => "json_get_f64",
-                _ => "json_get_i64",
-            };
-
-            let field_val = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(field_val),
-                func: FunctionRef::internal(helper.to_string()),
-                args: vec![
-                    MirOperand::Local(parsed),
-                    MirOperand::Constant(MirConst::String(field.name.clone())),
-                ],
-            }));
-
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: result,
-                offset: field.offset,
-                value: MirOperand::Local(field_val),
-                store_size: None,
-            }));
-        }
-
-        Ok((MirOperand::Local(result), struct_ty))
     }
 
     /// Size in bytes for a MIR type (used for runtime allocation).

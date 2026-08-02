@@ -242,6 +242,15 @@ impl TypeChecker {
             .map(|f| f.name.clone())
             .collect();
 
+        // E19: a `@skip` field never reaches the wire, so it can't disqualify
+        // the type from Encode/Decode.
+        let skipped_fields: Vec<String> = s
+            .fields
+            .iter()
+            .filter(|f| rask_ast::decl::field_attrs::is_skipped(&f.attrs))
+            .map(|f| f.name.clone())
+            .collect();
+
         let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
 
         let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
@@ -276,6 +285,7 @@ impl TypeChecker {
             is_unique,
             is_binary,
             private_fields,
+            skipped_fields,
             // ER42/L1: refined by `propagate_resource_linearity` after all
             // declarations are collected. @resource is the seed; transitive
             // linearity propagates from there.

@@ -197,6 +197,22 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// std.encoding/E12: an `Encode`/`Decode` bound that fails because of a
+    /// specific field. Separate from `TraitNotSatisfied` because the advice is
+    /// different — these markers are derived from the shape, not written out,
+    /// so the fix is to change the field, and the message has to name it.
+    #[error("`{ty}` cannot be {verb}")]
+    NotSerializable {
+        ty: String,
+        trait_name: String,
+        /// `verb` reads in the message: "encoded" or "decoded".
+        verb: String,
+        /// Dotted path to the offending field, when one can be pinned down.
+        field: Option<String>,
+        field_ty: Option<String>,
+        span: Span,
+    },
+
     #[error("the `+` operator cannot be used on strings")]
     StringAddForbidden {
         span: Span,

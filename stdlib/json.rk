@@ -438,9 +438,9 @@ extend json {
     public func encode<T: Encode>(value: T) -> string {}
 
     /// Decode a JSON string into a typed value.
-    /// Needs the Decode derivation (comptime for + reflect), which isn't built
-    /// yet — use `json.parse` and read the tree until it is.
-    @unimplemented
+    /// Compiler-expanded: the call site describes T to the decoder, which
+    /// fills the value in one pass. Missing required fields, wrong types, and
+    /// malformed input all come back as JsonError.
     public func decode<T: Decode>(str: string) -> T or JsonError {}
 
     /// Convert a typed value to a JsonValue tree.

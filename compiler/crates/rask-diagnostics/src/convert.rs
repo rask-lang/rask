@@ -633,6 +633,37 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("generic methods can't be dispatched dynamically: each instantiation needs its own code, but a trait object erases the concrete type. Call it on the concrete type instead (TR3)")
             }
 
+            // Encode/Decode are shape markers, not method sets — you can't write
+            // them out, so "add the required methods" is the wrong advice. A type
+            // qualifies when every field does (std.encoding/E12–E17); the fix is
+            // to change the field, which means naming it.
+            NotSerializable { ty, trait_name, verb, field, field_ty, span } => {
+                let label = match (field, field_ty) {
+                    (Some(f), Some(fty)) => {
+                        format!("field `{}` has type `{}`, which can't be {}", f, fty, verb)
+                    }
+                    (Some(f), None) => format!("field `{}` can't be {}", f, verb),
+                    _ => format!("`{}` has a field that can't be {}", ty, verb),
+                };
+                // The list of what qualifies belongs in `fix`: the formatter
+                // drops `help` whenever fix/why are set, and someone reading
+                // this is exactly the person who needs the list.
+                let target = match field {
+                    Some(f) => format!("`{}`", f),
+                    None => "the offending field".to_string(),
+                };
+                Diagnostic::error(format!("`{}` cannot be {}", ty, verb))
+                    .with_code("E0333")
+                    .with_primary(*span, label)
+                    .with_fix(format!(
+                        "mark {} with `@skip`, or give it a serializable type — bool, char, \
+                         the integer and float types, string, `T?`, tuples, `Vec<T>`, \
+                         `Map<string, T>`, or a struct or enum of those",
+                        target
+                    ))
+                    .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", trait_name))
+            }
+
             TraitNotSatisfied { ty, trait_name, span } => {
                 Diagnostic::error(format!("`{}` does not implement `{}`", ty, trait_name))
                     .with_code("E0333")

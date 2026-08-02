@@ -100,11 +100,8 @@ impl TypeChecker {
                         continue;
                     }
                     reported.push(key);
-                    self.errors.push(TypeError::TraitNotSatisfied {
-                        ty: ty_name,
-                        trait_name,
-                        span,
-                    });
+                    let err = self.bound_error(&ty, ty_name, trait_name, span);
+                    self.errors.push(err);
                 }
             }
         }
@@ -420,8 +417,39 @@ fn implements_error_message(ty: &Type, checker: &TypeChecker) -> bool {
     })
 }
 
+impl TypeChecker {
+    /// The right error for a failed bound. `Encode`/`Decode` aren't method sets,
+    /// so they get their own shape of message — one that names the field that
+    /// blocked it rather than telling you to implement a trait you can't.
+    pub(super) fn bound_error(
+        &self,
+        ty: &Type,
+        ty_name: String,
+        trait_name: String,
+        span: Span,
+    ) -> TypeError {
+        if trait_name != "Encode" && trait_name != "Decode" {
+            return TypeError::TraitNotSatisfied { ty: ty_name, trait_name, span };
+        }
+        let verb = if trait_name == "Encode" { "encoded" } else { "decoded" };
+        let checker = crate::traits::TraitChecker::new(&self.types);
+        let (field, field_ty) = match checker.first_unencodable_field(ty) {
+            Some((f, fty)) => (Some(f), Some(fty)),
+            None => (None, None),
+        };
+        TypeError::NotSerializable {
+            ty: ty_name,
+            trait_name,
+            verb: verb.to_string(),
+            field,
+            field_ty,
+            span,
+        }
+    }
+}
+
 /// Best-effort `(type name, trait name)` for reporting a failed bound.
-fn trait_error_parts(e: &crate::traits::TraitError) -> (String, String) {
+pub(super) fn trait_error_parts(e: &crate::traits::TraitError) -> (String, String) {
     use crate::traits::TraitError::*;
     match e {
         NotSatisfied { ty, trait_name, .. } => (ty.clone(), trait_name.clone()),

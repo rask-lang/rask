@@ -498,6 +498,74 @@ double       rask_json_get_f64(RaskJsonObj *obj, const char *key);
 int8_t       rask_json_get_bool(RaskJsonObj *obj, const char *key);
 int64_t      rask_json_decode(const RaskStr *s);
 
+// ─── JSON value tree + typed decode (json.c) ────────────────
+//
+// `json.decode<T>(s)` lowers to: build a shape describing T, hand it and the
+// input to rask_json_decode_into, read back the error kind. The shape is what
+// stands in for reflection — codegen has no type info at runtime.
+
+// Parsed value kinds.
+#define RASK_JSON_NULL 0
+#define RASK_JSON_BOOL 1
+#define RASK_JSON_NUM  2
+#define RASK_JSON_STR  3
+#define RASK_JSON_ARR  4
+#define RASK_JSON_OBJ  5
+
+// Decode outcomes. Nonzero maps onto a JsonError variant at the call site.
+#define RASK_JSON_OK          0
+#define RASK_JSON_ERR_PARSE   1
+#define RASK_JSON_ERR_TYPE    2
+#define RASK_JSON_ERR_MISSING 3
+
+// Shape kinds. The primitives come first and their order is the index into the
+// singleton table, so keep them contiguous and keep PRIM_COUNT last of them.
+#define RASK_JSHAPE_BOOL   0
+#define RASK_JSHAPE_I8     1
+#define RASK_JSHAPE_I16    2
+#define RASK_JSHAPE_I32    3
+#define RASK_JSHAPE_I64    4
+#define RASK_JSHAPE_U8     5
+#define RASK_JSHAPE_U16    6
+#define RASK_JSHAPE_U32    7
+#define RASK_JSHAPE_U64    8
+#define RASK_JSHAPE_F32    9
+#define RASK_JSHAPE_F64    10
+#define RASK_JSHAPE_STRING 11
+#define RASK_JSHAPE_PRIM_COUNT 12
+#define RASK_JSHAPE_VEC    12
+#define RASK_JSHAPE_MAP    13
+#define RASK_JSHAPE_OPT    14
+#define RASK_JSHAPE_STRUCT 15
+
+// Shape field flags.
+// The key may be absent; whatever the caller already wrote stands (@default).
+#define RASK_JFIELD_OPTIONAL 1
+
+// Mirrors rask_mono::abi — an Option is [tag:8][payload], tag 0 = Some.
+#define RASK_OPTION_PAYLOAD_OFFSET 8
+
+typedef struct RaskJsonVal RaskJsonVal;
+typedef struct RaskJsonShape RaskJsonShape;
+
+RaskJsonVal *rask_json_tree_parse(const RaskStr *s);
+void         rask_json_tree_free(RaskJsonVal *v);
+
+RaskJsonShape *rask_json_shape_prim(int64_t kind);
+RaskJsonShape *rask_json_shape_struct(int64_t size);
+RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot);
+RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot);
+RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size);
+void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
+                                     RaskJsonShape *fs, int64_t flags);
+void           rask_json_shape_free(RaskJsonShape *s);
+
+int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);
+void    rask_json_encode_shaped(RaskStr *out, const void *src, RaskJsonShape *shape);
+void    rask_json_decode_zero(void *dst, int64_t size);
+int64_t rask_json_error_kind(void);
+void    rask_json_error_message(RaskStr *out);
+
 // ─── CLI args ───────────────────────────────────────────────
 
 void        rask_args_init(int argc, char **argv);

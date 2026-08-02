@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: json.decode<T> with a T that isn't Decode.
+//
+// `stdlib/json.rk` writes the bound (`decode<T: Decode>`), but stub loading
+// dropped it, so the module-method path never checked it. The call type-checked
+// and failed later — at MIR lowering on native, and on interp as a bogus
+// "missing field: p" that blames the JSON for a raw pointer in the struct.
+
+import json
+
+struct WithPtr {
+    public p: *u8
+    public n: i64
+}
+
+func main() {
+    // ERROR: `WithPtr` cannot be decoded — `p` is a raw pointer
+    const w = try json.decode<WithPtr>("{{\"n\":1}}") else |e| {
+        return
+    }
+    println("n={w.n}")
+}

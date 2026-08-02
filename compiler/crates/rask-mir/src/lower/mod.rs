@@ -8,6 +8,7 @@ mod concurrency;
 mod errors;
 mod expr;
 mod iterators;
+mod json_decode;
 mod match_lower;
 mod stmt;
 
@@ -1001,6 +1002,46 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// The struct layout of whatever an expression evaluates to, when it's a
+    /// struct. Walks field chains (`a.b.c`) so a nested field's declared type
+    /// stays reachable.
+    pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_mono::StructLayout> {
+        let from_checker = self.ctx.lookup_raw_type(expr.id).and_then(|ty| match ty {
+            Type::UnresolvedNamed(n) => self.ctx.find_struct(n).map(|(_, l)| l.clone()),
+            Type::Named(id) => self
+                .ctx
+                .type_names
+                .get(id)
+                .and_then(|n| self.ctx.find_struct(n).map(|(_, l)| l.clone())),
+            _ => None,
+        });
+        if from_checker.is_some() {
+            return from_checker;
+        }
+        match &expr.kind {
+            ExprKind::Ident(name) => match self.locals.get(name).map(|(_, t)| t.clone()) {
+                Some(MirType::Struct(crate::types::StructLayoutId { id, .. })) => {
+                    self.ctx.struct_layouts.get(id as usize).cloned()
+                }
+                _ => None,
+            },
+            ExprKind::Field { object, field } => {
+                let base = self.struct_layout_of_expr(object)?;
+                let f = base.fields.iter().find(|f| f.name == *field)?;
+                match &f.ty {
+                    Type::UnresolvedNamed(n) => self.ctx.find_struct(n).map(|(_, l)| l.clone()),
+                    Type::Named(id) => self
+                        .ctx
+                        .type_names
+                        .get(id)
+                        .and_then(|n| self.ctx.find_struct(n).map(|(_, l)| l.clone())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Element type of an expression that evaluates to a `Vec<T>`, or None when
     /// it isn't one (or the type can't be recovered).
     ///
@@ -1017,6 +1058,15 @@ impl<'a> MirLowerer<'a> {
         }
         match &expr.kind {
             ExprKind::Ident(name) => self.meta(name).and_then(|m| m.elem_type.clone()),
+            // A `Vec<T>` field: the struct's declaration is the answer, and it's
+            // the only one available when the Vec was built somewhere else —
+            // push tracking is per-function and the checker doesn't type every
+            // field node.
+            ExprKind::Field { object, field } => {
+                let layout = self.struct_layout_of_expr(object)?;
+                let f = layout.fields.iter().find(|f| f.name == *field)?;
+                self.vec_elem_of_checker_type(&f.ty.clone())
+            }
             ExprKind::Call { func, .. } => match &func.kind {
                 ExprKind::Ident(callee) => {
                     let key = self.ctx.call_rewrites.get(&expr.id).cloned()
@@ -2043,7 +2093,10 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        None
+        // Iterating a `Vec<T>` field — the struct declaration knows T even when
+        // nothing else here does, because the Vec was filled somewhere else
+        // (returned from a call, decoded from JSON).
+        self.vec_elem_of_expr(expr)
     }
 
     /// Extract the Ok/Some payload type from the raw type of an expression.
@@ -4039,6 +4092,7 @@ mod tests {
                         offset: 0,
                         size: 8,
                         align: 8,
+                        attrs: vec![],
                     }],
                 },
                 VariantLayout {
@@ -4052,6 +4106,7 @@ mod tests {
                         offset: 0,
                         size: 8,
                         align: 8,
+                        attrs: vec![],
                     }],
                 },
             ],
@@ -4180,8 +4235,8 @@ mod tests {
                     payload_offset: 4,
                     payload_size: 8,
                     fields: vec![
-                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4 },
-                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4 },
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![] },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![] },
                     ],
                 },
             ],

@@ -299,6 +299,72 @@ impl<'a> TraitChecker<'a> {
         }
     }
 
+    /// The first field that keeps a type from being Encode/Decode, as
+    /// `("home.zip", "Socket")`. Only for the diagnostic — "this struct isn't
+    /// serializable" without saying which field leaves you reading the
+    /// declaration line by line (the shape std.encoding's E12 error shows).
+    ///
+    /// Returns None for a type that qualifies, or one that fails for a reason
+    /// other than a field (a bare pointer asked about directly, say).
+    pub fn first_unencodable_field(&self, ty: &Type) -> Option<(String, String)> {
+        let id = match ty {
+            Type::Named(id) => Some(*id),
+            Type::UnresolvedNamed(name) => self.types.get_type_id(name),
+            Type::Generic { base, .. } => Some(*base),
+            Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
+            _ => None,
+        }?;
+        self.unencodable_field_of(id, &mut Vec::new())
+    }
+
+    fn unencodable_field_of(
+        &self,
+        id: TypeId,
+        visited: &mut Vec<TypeId>,
+    ) -> Option<(String, String)> {
+        if visited.contains(&id) {
+            return None;
+        }
+        visited.push(id);
+        let found = match self.types.get(id) {
+            Some(TypeDef::Struct { fields, private_fields, skipped_fields, .. }) => {
+                fields.iter().find_map(|(fname, fty)| {
+                    if private_fields.contains(fname) || skipped_fields.contains(fname) {
+                        return None;
+                    }
+                    if self.type_is_encodable(fty, &mut visited.clone()) {
+                        return None;
+                    }
+                    // Point at the innermost field, so a nested struct reports
+                    // `home.zip` rather than just `home`.
+                    match self.nested_field_id(fty) {
+                        Some(inner) => match self.unencodable_field_of(inner, visited) {
+                            Some((path, ty_name)) => Some((format!("{}.{}", fname, path), ty_name)),
+                            None => Some((fname.clone(), self.display_ty(fty))),
+                        },
+                        None => Some((fname.clone(), self.display_ty(fty))),
+                    }
+                })
+            }
+            _ => None,
+        };
+        visited.pop();
+        found
+    }
+
+    /// How a field's type reads in a message — `*u8`, not `RawPtr(U8)`.
+    fn display_ty(&self, ty: &Type) -> String {
+        format!("{}", self.types.resolve_type_names(ty))
+    }
+
+    fn nested_field_id(&self, ty: &Type) -> Option<TypeId> {
+        match ty {
+            Type::Named(id) => Some(*id),
+            Type::UnresolvedNamed(name) => self.types.get_type_id(name),
+            _ => None,
+        }
+    }
+
     /// A container spelling (`Vec`/`Map`/`Set`) encodes when its element types do;
     /// any other generic is a user struct/enum instantiation, checked field-wise.
     fn container_or_named_encodable(
@@ -334,11 +400,14 @@ impl<'a> TraitChecker<'a> {
         }
         visited.push(id);
         let result = match self.types.get(id) {
-            Some(TypeDef::Struct { fields, type_params, private_fields, .. }) => {
+            Some(TypeDef::Struct { fields, type_params, private_fields, skipped_fields, .. }) => {
                 let subst = Self::build_subst(type_params, targs);
-                // E12: only public fields participate
+                // E12: only public fields participate, and E19 takes `@skip`
+                // fields out of the wire form entirely — a skipped field holds
+                // whatever it likes without blocking the type.
                 fields.iter().all(|(fname, fty)| {
                     private_fields.contains(fname)
+                        || skipped_fields.contains(fname)
                         || self.type_is_encodable(&Self::apply_subst(fty, &subst), visited)
                 })
             }
@@ -959,6 +1028,7 @@ mod tests {
             is_unique: false,
             is_binary: false,
             private_fields: vec![],
+            skipped_fields: vec![],
             is_transitive_resource: false,
         });
         let coin = types.register_type(TypeDef::Struct {
@@ -970,6 +1040,7 @@ mod tests {
             is_unique: false,
             is_binary: false,
             private_fields: vec![],
+            skipped_fields: vec![],
             is_transitive_resource: false,
         });
         let blob = types.register_type(TypeDef::Struct {
@@ -981,6 +1052,7 @@ mod tests {
             is_unique: false,
             is_binary: false,
             private_fields: vec![],
+            skipped_fields: vec![],
             is_transitive_resource: false,
         });
 

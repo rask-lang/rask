@@ -62,6 +62,12 @@ pub struct MethodStub {
     /// sees at their call site rather than `Function not found: Vec_reserve`
     /// out of codegen.
     pub unimplemented: bool,
+    /// Trait bounds on the method's own type parameters: `decode<T: Decode>`
+    /// gives `[("T", "Decode")]`. Carried because nothing else does — the
+    /// checker builds module signatures from these stubs, and without the bound
+    /// `json.decode<WithPtr>` type-checked clean and failed later, in MIR
+    /// lowering on native and as a bogus "missing field" on interp.
+    pub type_param_bounds: Vec<(String, String)>,
 }
 
 /// A type extracted from a stub file.
@@ -410,6 +416,9 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         source_file: format!("stdlib/{}", filename),
         span,
         unimplemented: f.attrs.iter().any(|a| a == "unimplemented"),
+        type_param_bounds: f.type_params.iter()
+            .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.clone())))
+            .collect(),
     }
 }
 
@@ -464,6 +473,16 @@ fn strip_type_params(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn json_decode_carries_its_decode_bound() {
+        let reg = super::StubRegistry::load();
+        let m = reg.methods("json").iter()
+            .find(|m| m.name == "decode")
+            .expect("json.decode stub")
+            .clone();
+        assert_eq!(m.type_param_bounds, vec![("T".to_string(), "Decode".to_string())]);
+    }
+
     use super::*;
 
     #[test]

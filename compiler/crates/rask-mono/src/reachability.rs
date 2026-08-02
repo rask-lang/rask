@@ -681,7 +681,7 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_expr(&arg.expr);
                 }
             }
-            ExprKind::MethodCall { object, method, args, .. } => {
+            ExprKind::MethodCall { object, method, args, type_args: written_type_args, .. } => {
                 let type_args = self.type_args_at(expr.id);
 
                 // CALL6 already picked the receiver type. Use it rather than
@@ -748,6 +748,20 @@ impl<'a> Monomorphizer<'a> {
                             self.enqueue(method.clone(), type_args.clone());
                         } else {
                             self.enqueue(format!("{}_{}", name, method), type_args.clone());
+                        }
+                        // `json.decode<JsonValue>` lowers to a call to
+                        // `json.parse` — same job, already written in Rask — so
+                        // that body has to be reachable even though the source
+                        // never names it.
+                        if name == "json"
+                            && method == "decode"
+                            && written_type_args
+                                .as_ref()
+                                .and_then(|t| t.first())
+                                .map(|t| t.trim() == "JsonValue")
+                                .unwrap_or(false)
+                        {
+                            self.enqueue("json_parse".to_string(), Vec::new());
                         }
                     }
 

@@ -201,6 +201,64 @@ pub struct Field {
     pub default: Option<Expr>,
 }
 
+/// Serialization annotations on a struct field (std.encoding/E18–E20).
+///
+/// Attributes arrive as raw text — `rename("user_name")`, `skip`,
+/// `default("user")` — so reading them means a little parsing. Every format
+/// (JSON today, TOML and MessagePack later) asks the same three questions, so
+/// they're answered once here rather than in each encoder.
+pub mod field_attrs {
+    /// The key this field serializes under: `@rename("…")` when present,
+    /// otherwise the field's own name (E18).
+    pub fn serial_name(attrs: &[String], field_name: &str) -> String {
+        for attr in attrs {
+            if let Some(arg) = call_arg(attr, "rename") {
+                if let Some(text) = string_literal(arg) {
+                    return text;
+                }
+            }
+        }
+        field_name.to_string()
+    }
+
+    /// `@skip` — left out of the serialized form entirely (E19).
+    pub fn is_skipped(attrs: &[String]) -> bool {
+        attrs.iter().any(|a| a.trim() == "skip")
+    }
+
+    /// The `@default(…)` literal, verbatim, when the field has one (E20).
+    pub fn default_literal(attrs: &[String]) -> Option<&str> {
+        attrs.iter().find_map(|a| call_arg(a, "default"))
+    }
+
+    /// The argument text of `name(...)`, if this attribute is that call.
+    fn call_arg<'a>(attr: &'a str, name: &str) -> Option<&'a str> {
+        let rest = attr.trim().strip_prefix(name)?.trim_start();
+        rest.strip_prefix('(')?.strip_suffix(')').map(str::trim)
+    }
+
+    /// The contents of a `"…"` literal, with the usual escapes expanded.
+    pub fn string_literal(text: &str) -> Option<String> {
+        let inner = text.trim().strip_prefix('"')?.strip_suffix('"')?;
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some(other) => out.push(other),
+                None => break,
+            }
+        }
+        Some(out)
+    }
+}
+
 /// An enum declaration.
 #[derive(Debug, Clone)]
 pub struct EnumDecl {

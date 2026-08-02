@@ -807,15 +807,29 @@ fn error_nominal_trait_not_listed() {
     );
 }
 
+// A stdlib module function's declared type-param bound is checked against the
+// written type argument. `decode<T: Decode>` had the bound dropped during stub
+// loading, so `json.decode<WithPtr>` type-checked and blew up later — in MIR
+// lowering on native, as a bogus "missing field" on interp.
+#[test]
+fn error_decode_bound_not_satisfied() {
+    let (failed, out) = compile_error_output("decode_bound_not_satisfied.rk");
+    assert!(failed, "a non-Decode type argument must be rejected: {}", out);
+    assert!(
+        out.contains("E0333") && out.contains("cannot be decoded"),
+        "should say the type can't be decoded, not that it's missing methods: {}", out,
+    );
+}
+
 // #506: an @unimplemented stdlib *module* function is caught at the call, the
 // way a method on a receiver already was. `json.decode` used to type-check and
-// then segfault.
+// then segfault; it's implemented now, so `json.to_value` stands in.
 #[test]
 fn error_unimplemented_module_fn() {
     let (failed, out) = compile_error_output("unimplemented_module_fn.rk");
     assert!(failed, "an unimplemented module function must be rejected: {}", out);
     assert!(
-        out.contains("E0353") && out.contains("json.decode"),
+        out.contains("E0353") && out.contains("json.to_value"),
         "should name the function and the unimplemented code: {}", out,
     );
 }
