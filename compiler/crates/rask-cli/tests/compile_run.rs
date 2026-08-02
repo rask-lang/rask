@@ -2039,3 +2039,66 @@ test "default argument fills in" {
         stdout, stderr,
     );
 }
+
+// ─── assert_eq compares values, not addresses ───────────────
+//
+// Native lowering handed both sides to a runtime function typed (i64, i64):
+// two strings arrived as their addresses and never matched, and a float or a
+// char didn't fit the signature at all, so Cranelift rejected the whole test
+// function. The interpreter had it right all along.
+
+fn rask_test_output(args: &[&str]) -> (bool, String) {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("test")
+        .args(args)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask test");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    (out.status.success(), combined)
+}
+
+#[test]
+fn assert_eq_compares_by_value_on_both_backends() {
+    let path = fixture("assert_eq_types.rk");
+    let path = path.to_str().unwrap();
+
+    for args in [vec![path], vec!["--interp", path]] {
+        let (ok, combined) = rask_test_output(&args);
+        assert!(
+            ok && combined.contains("8 passed"),
+            "assert_eq must compare by value ({:?}): {}", args, combined,
+        );
+    }
+}
+
+#[test]
+fn assert_eq_failure_reports_got_and_expected() {
+    let dir = std::env::temp_dir().join(format!("rask_assert_eq_diff_{}", next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("mismatch.rk");
+    std::fs::write(&file, r#"
+func main() { println("x") }
+
+test "strings differ" {
+    const a = "hei"
+    assert_eq(a, "hallo")
+}
+"#).unwrap();
+
+    let (ok, combined) = rask_test_output(&[file.to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(!ok, "a mismatched assert_eq must fail the test: {}", combined);
+    assert!(
+        combined.contains("got:") && combined.contains("hei")
+            && combined.contains("expected:") && combined.contains("hallo"),
+        "failure must name both values: {}", combined,
+    );
+}

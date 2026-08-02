@@ -283,13 +283,12 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     // Render in the same format as native (JSON-per-line, then summarize).
     let mut json_lines = String::new();
     for r in &test_results {
-        let escaped_name = r.name.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_name = json_escape(&r.name);
         let dur_ns = r.duration.as_nanos() as u64;
         if let Some(reason) = &r.skipped {
-            let escaped = reason.replace('\\', "\\\\").replace('"', "\\\"");
             json_lines.push_str(&format!(
                 "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{},\"skipped\":\"{}\"}}\n",
-                escaped_name, dur_ns, escaped,
+                escaped_name, dur_ns, json_escape(reason),
             ));
         } else if r.passed {
             json_lines.push_str(&format!(
@@ -297,10 +296,9 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
                 escaped_name, dur_ns,
             ));
         } else {
-            let err = r.errors.join("; ").replace('\\', "\\\\").replace('"', "\\\"");
             json_lines.push_str(&format!(
                 "{{\"name\":\"{}\",\"passed\":false,\"duration_ns\":{},\"error\":\"{}\"}}\n",
-                escaped_name, dur_ns, err,
+                escaped_name, dur_ns, json_escape(&r.errors.join("; ")),
             ));
         }
     }
@@ -521,7 +519,7 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
             println!("  {} {} {}",
                 "SKIP".yellow(),
                 name,
-                format!("({})", reason).dimmed(),
+                format!("({})", format_test_error(reason)).dimmed(),
             );
             continue;
         }
@@ -540,7 +538,7 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
                 name,
             );
             if let Some(error) = parse_json_str(line, "error") {
-                println!("      {}", error.red());
+                println!("      {}", format_test_error(error).red());
             }
         }
     }
@@ -570,6 +568,53 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
         );
     }
     !truncated
+}
+
+/// Escape a string for the one-line-per-test JSON the display layer parses.
+///
+/// Newlines matter as much as quotes here: a raw newline splits the record
+/// across two lines and the parser then sees an unterminated string, so an
+/// `assert_eq` diff from the interpreter vanished instead of printing.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Undo the JSON escaping the test binary applies, and indent continuation
+/// lines so a multi-line diff stays under the test name instead of falling
+/// back to column 0. Without this an `assert_eq` failure printed its `\n`
+/// literally and the whole diff ran together on one line.
+fn format_test_error(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push_str("\n      "),
+            Some('t') => out.push('\t'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 fn parse_json_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {

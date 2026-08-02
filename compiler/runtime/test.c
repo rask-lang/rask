@@ -46,17 +46,8 @@ void rask_test_expect_fail(void) {
     rask_test_expects_fail = 1;
 }
 
-// assert_eq(got, expected) — compare two i64 values, panic with diff on mismatch
-void rask_assert_eq(int64_t got, int64_t expected) {
-    if (got != expected) {
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-                 "assert_eq failed\n  got:      %lld\n  expected: %lld",
-                 (long long)got, (long long)expected);
-        extern void rask_panic(const char *msg);
-        rask_panic(buf);
-    }
-}
+// assert_eq lives in runtime.c with the other assert reporters — the
+// comparison is generated code, so only the failure formatting is here.
 
 // Thread-local check failure tracking
 static __thread int rask_check_failures = 0;
