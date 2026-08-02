@@ -2871,6 +2871,10 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
+        if let Some(r) = self.try_lower_fmt(object, method, args, &obj_op, &obj_ty)? {
+            return Ok(r);
+        }
+
         if let Some(r) = self.try_lower_to_string(object, method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
@@ -4495,6 +4499,114 @@ impl<'a> MirLowerer<'a> {
             return Ok(Some((MirOperand::Local(result_local), MirType::String)));
         }
         Ok(None)
+    }
+
+    /// `x.__fmt(type, width, precision, align, fill)` — what desugaring makes
+    /// of `{x:spec}`. The spec's already parsed, so this picks the base
+    /// conversion by receiver type and then pads (std.fmt/CM5).
+    fn try_lower_fmt(
+        &mut self,
+        object: &Expr,
+        method: &String,
+        args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if method != "__fmt" || args.len() != 5 {
+            return Ok(None);
+        }
+
+        // Every argument is a literal the desugar pass put there.
+        let int_arg = |i: usize| match &args[i].expr.kind {
+            ExprKind::Int(n, _) => *n,
+            _ => 0,
+        };
+        let fill = match &args[4].expr.kind {
+            ExprKind::Char(c) => *c,
+            _ => ' ',
+        };
+        let spec = rask_ast::fmt_spec::FormatSpec::decode(
+            int_arg(0), int_arg(1), int_arg(2), int_arg(3), fill,
+        );
+
+        let is_unsigned = matches!(
+            obj_ty,
+            MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8
+        );
+        let is_int = is_unsigned
+            || matches!(obj_ty, MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8);
+        let is_float = matches!(obj_ty, MirType::F64 | MirType::F32);
+        let numeric = is_int || is_float;
+
+        // Stage 1: render the value. An unsupported pairing (a hex spec on a
+        // string, say) falls back to the plain rendering rather than failing —
+        // same as the interpreter.
+        let call = |this: &mut Self, name: &str, args: Vec<MirOperand>| {
+            let dst = this.builder.alloc_temp(MirType::String);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(dst),
+                func: FunctionRef::internal(name.to_string()),
+                args,
+            }));
+            MirOperand::Local(dst)
+        };
+        let int_const = |n: i64| MirOperand::Constant(MirConst::Int(n));
+
+        use rask_ast::fmt_spec::SpecType;
+        let base: MirOperand = match spec.ty {
+            SpecType::Hex { upper } if is_int => {
+                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
+                call(self, name, vec![obj_op.clone(), int_const(16), int_const(upper as i64)])
+            }
+            SpecType::Binary if is_int => {
+                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
+                call(self, name, vec![obj_op.clone(), int_const(2), int_const(0)])
+            }
+            SpecType::Octal if is_int => {
+                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
+                call(self, name, vec![obj_op.clone(), int_const(8), int_const(0)])
+            }
+            SpecType::Exp if is_float => call(self, "f64_to_exp", vec![obj_op.clone()]),
+            SpecType::Debug if matches!(obj_ty, MirType::String) => {
+                call(self, "string_debug", vec![obj_op.clone()])
+            }
+            SpecType::Debug if matches!(obj_ty, MirType::Char) => {
+                call(self, "char_debug", vec![obj_op.clone()])
+            }
+            SpecType::Display if is_float && spec.precision.is_some() => {
+                let prec = spec.precision.unwrap() as i64;
+                call(self, "f64_to_precision", vec![obj_op.clone(), int_const(prec)])
+            }
+            SpecType::Display if matches!(obj_ty, MirType::String) && spec.precision.is_some() => {
+                let prec = spec.precision.unwrap() as i64;
+                call(self, "string_truncate_chars", vec![obj_op.clone(), int_const(prec)])
+            }
+            // Everything else renders the ordinary way — including `debug` on
+            // a struct or enum, which goes to the type's own to_string.
+            _ => {
+                let (op, _) = self
+                    .try_lower_to_string(object, &"to_string".to_string(), &[], obj_op, obj_ty)?
+                    .unwrap_or_else(|| (obj_op.clone(), MirType::String));
+                op
+            }
+        };
+
+        // Stage 2: pad. Text reads left, numbers read right (S2).
+        if spec.width == 0 {
+            return Ok(Some((base, MirType::String)));
+        }
+        let align = spec.effective_align(numeric).as_code();
+        let padded = call(
+            self,
+            "string_pad",
+            vec![
+                base,
+                int_const(spec.width as i64),
+                int_const(align),
+                MirOperand::Constant(MirConst::Char(spec.fill)),
+            ],
+        );
+        Ok(Some((padded, MirType::String)))
     }
 
     /// `.to_string()` on a primitive → type-specific runtime call. Types with

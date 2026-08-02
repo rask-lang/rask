@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.fmt — format() templates and interpolation specs, on both backends.
+
+test "std.fmt/F2 — positional placeholders, auto and explicit" {
+    assert format("{}-{}", 1, 2) == "1-2"
+    assert format("{0}-{1}", "a", "b") == "a-b"
+    assert format("{1}-{0}", "a", "b") == "b-a"
+    assert format("{0}{0}", "x") == "xx"
+}
+
+test "std.fmt/F3 — named placeholders capture from scope" {
+    const name = "world"
+    const count = 3
+    assert format("hi {name}, {count} times") == "hi world, 3 times"
+}
+
+test "std.fmt/F4 — doubled braces are literal" {
+    assert format("{{x}} {}", 1) == "{{x}} 1"
+    assert format("{{}}") == "{{}}"
+    assert "{{literal}}".len() == 9
+}
+
+test "std.fmt/F1 — empty template is the empty string" {
+    assert format("") == ""
+    assert format("no placeholders") == "no placeholders"
+}
+
+test "std.fmt/S3 — integer bases" {
+    assert format("{:x}", 255) == "ff"
+    assert format("{:X}", 255) == "FF"
+    assert format("{:b}", 10) == "1010"
+    assert format("{:o}", 64) == "100"
+    assert format("0x{:08X}", 48879) == "0x0000BEEF"
+}
+
+test "std.fmt/S1 — float precision" {
+    assert format("{:.3}", 3.14159) == "3.142"
+    assert format("{:.0}", 2.7) == "3"
+    const pi = 3.14159
+    assert "{pi:.2}" == "3.14"
+}
+
+test "std.fmt/S2 — width, alignment and fill" {
+    assert format("{:>6}|", "hi") == "    hi|"
+    assert format("{:<6}|", "hi") == "hi    |"
+    assert format("{:^6}|", "hi") == "  hi  |"
+    assert format("{:0>5}", 42) == "00042"
+    // Numbers default to right-aligned, text to left.
+    assert format("{:5}|", 42) == "   42|"
+    assert format("{:5}|", "ab") == "ab   |"
+}
+
+test "std.fmt/G4 — debug rendering" {
+    assert format("{:debug}", "hi") == "\"hi\""
+    assert format("{:debug}", 'a') == "'a'"
+    assert format("{:debug}", 7) == "7"
+}
+
+test "std.fmt/S1 — interpolation carries the same specs" {
+    const n = 255
+    const s = "hi"
+    assert "{n:x}" == "ff"
+    assert "{n:X}" == "FF"
+    assert "{s:>4}|" == "  hi|"
+    assert "{s:debug}" == "\"hi\""
+}
+
+test "std.fmt/S1 — spec on an expression, not just a name" {
+    const a = 2.0
+    const b = 3.0
+    assert format("{:.1}", a + b) == "5.0"
+}

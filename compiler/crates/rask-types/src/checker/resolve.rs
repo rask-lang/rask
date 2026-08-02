@@ -330,6 +330,12 @@ impl TypeChecker {
             return self.unify(&ret, &Type::String, span);
         }
 
+        // `__fmt(type, width, precision, align, fill)` — what desugaring turns
+        // `{x:spec}` into. Compiler-internal, so it applies to any receiver.
+        if method == "__fmt" && args.len() == 5 {
+            return self.unify(&ret, &Type::String, span);
+        }
+
         // ER16: .origin() on any type returns the error origin string.
         // Set by `try` at first propagation (ER15). Returns "<no origin>" if unset.
         if method == "origin" && args.is_empty() {

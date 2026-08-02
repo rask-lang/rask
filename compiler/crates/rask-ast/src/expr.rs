@@ -234,8 +234,8 @@ pub enum ExprKind {
 pub enum StringSegment {
     /// Literal text between interpolation braces.
     Literal(String),
-    /// An expression inside `{...}`.
-    Expr(Box<Expr>),
+    /// An expression inside `{...}`, with the `:spec` that followed it.
+    Expr(Box<Expr>, Option<crate::fmt_spec::FormatSpec>),
 }
 
 /// How an argument is passed at a call site.

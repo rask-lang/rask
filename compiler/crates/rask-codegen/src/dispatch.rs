@@ -558,6 +558,50 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
 
+        // ── Format specs (std.fmt/S1) ─────────────────────────
+        // The spec is parsed at compile time, so each of these gets one piece
+        // of it: a base conversion first, then `string_pad` for width/align.
+        StdlibEntry {
+            mir_name: "i64_to_base", c_name: "rask_i64_to_base",
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "u64_to_base", c_name: "rask_u64_to_base",
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "f64_to_precision", c_name: "rask_f64_to_precision",
+            params: &[types::I64, types::F64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "f64_to_exp", c_name: "rask_f64_to_exp",
+            params: &[types::I64, types::F64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "string_truncate_chars", c_name: "rask_string_truncate_chars",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "string_pad", c_name: "rask_string_pad",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I32], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "string_debug", c_name: "rask_string_debug",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "char_debug", c_name: "rask_char_debug",
+            params: &[types::I64, types::I32], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+
         // ── Math operations ────────────────────────────────────
         StdlibEntry::simple("sqrt", "sqrt", &[types::F64], Some(types::F64), false),
         StdlibEntry::simple("f64_sqrt", "sqrt", &[types::F64], Some(types::F64), false),

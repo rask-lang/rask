@@ -211,6 +211,17 @@ void        rask_bool_to_string(RaskStr *out, int64_t val);
 void        rask_f64_to_string(RaskStr *out, double val);
 void        rask_char_to_string(RaskStr *out, int32_t codepoint);
 
+// Format specs (std.fmt/S1). The spec is parsed at compile time; each piece
+// arrives here separately — a base conversion, then padding.
+void        rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper);
+void        rask_u64_to_base(RaskStr *out, uint64_t val, int64_t base, int64_t upper);
+void        rask_f64_to_precision(RaskStr *out, double val, int64_t precision);
+void        rask_f64_to_exp(RaskStr *out, double val);
+void        rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count);
+void        rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill);
+void        rask_string_debug(RaskStr *out, const RaskStr *s);
+void        rask_char_debug(RaskStr *out, int32_t codepoint);
+
 // ─── Path ────────────────────────────────────────────────────
 // Filesystem path operations. Path is stored as a plain RaskStr.
 // Option-returning methods return NULL (None) or pointer to

@@ -395,9 +395,13 @@ impl Interpreter {
                 for seg in segments {
                     match seg {
                         StringSegment::Literal(text) => out.push_str(text),
-                        StringSegment::Expr(inner) => {
+                        StringSegment::Expr(inner, spec) => {
                             let v = self.eval_expr(inner)?;
-                            out.push_str(&format!("{}", v));
+                            let display = format!("{}", v);
+                            match spec {
+                                Some(spec) => out.push_str(&self.render_spec(&v, *spec, display)),
+                                None => out.push_str(&display),
+                            }
                         }
                     }
                 }

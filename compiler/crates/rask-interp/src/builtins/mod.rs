@@ -45,6 +45,30 @@ impl Interpreter {
             .filter(|f| !f.body.is_empty())
     }
 
+    /// `__fmt(type, width, precision, align, fill)` — the desugared form of a
+    /// `{x:spec}` placeholder. Display goes through the receiver's own
+    /// `to_string()` so a user `Displayable` impl is honoured (std.fmt/D4).
+    fn render_with_spec(&mut self, receiver: Value, args: &[Value]) -> Result<Value, RuntimeError> {
+        let int_at = |i: usize| match args.get(i) {
+            Some(Value::Int(n, _)) => *n,
+            _ => 0,
+        };
+        let fill = match args.get(4) {
+            Some(Value::Char(c)) => *c,
+            _ => ' ',
+        };
+        let spec = rask_ast::fmt_spec::FormatSpec::decode(
+            int_at(0), int_at(1), int_at(2), int_at(3), fill,
+        );
+
+        let display = match self.call_builtin_method(receiver.clone(), "to_string", vec![])? {
+            Value::String(s) => s.lock().unwrap().clone(),
+            other => format!("{}", other),
+        };
+        let rendered = self.render_spec(&receiver, spec, display);
+        Ok(Value::String(Arc::new(Mutex::new(rendered))))
+    }
+
     /// Dispatch a method call on a built-in type.
     /// Returns the result, or falls back to user-defined methods.
     pub(crate) fn call_builtin_method(
@@ -62,6 +86,13 @@ impl Interpreter {
                 _ => "<no origin>".to_string(),
             };
             return Ok(Value::String(Arc::new(Mutex::new(origin_str))));
+        }
+
+        // `{x:spec}` and `format("{:spec}", x)` both desugar to this. The five
+        // arguments are the spec's constants (std.fmt/CM5) — decode, render the
+        // value under the spec's type token, then pad.
+        if method == "__fmt" && args.len() == 5 {
+            return self.render_with_spec(receiver, &args);
         }
 
         // A user `lt`/`compare`/`eq`/… body wins over the derived one (#400).

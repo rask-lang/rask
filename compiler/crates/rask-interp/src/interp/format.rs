@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! String formatting and interpolation.
 
+use rask_ast::fmt_spec::{pad, parse_spec, FormatSpec, SpecType};
+
 use crate::value::Value;
 
 use super::{Interpreter, RuntimeError};
@@ -109,128 +111,61 @@ impl Interpreter {
         }
     }
 
+    /// A runtime template (`format(t, …)` where `t` isn't a literal) still
+    /// parses its specs here. Static templates never reach this — the desugar
+    /// pass turns them into `__fmt` calls (std.fmt/CM5).
     fn apply_format_spec(&self, value: &Value, spec: &str) -> Result<String, RuntimeError> {
-        let mut fill = ' ';
-        let mut align = None;
-        let mut width = 0usize;
-        let mut precision = None;
-
-        let spec_chars: Vec<char> = spec.chars().collect();
-        let mut pos = 0;
-
-        if spec_chars.len() >= 2 && matches!(spec_chars[1], '<' | '>' | '^') {
-            fill = spec_chars[0];
-            align = Some(spec_chars[1]);
-            pos = 2;
-        } else if !spec_chars.is_empty() && matches!(spec_chars[0], '<' | '>' | '^') {
-            align = Some(spec_chars[0]);
-            pos = 1;
+        match parse_spec(spec) {
+            Some(parsed) => Ok(self.render_spec(value, parsed, format!("{}", value))),
+            None => Err(RuntimeError::TypeError(format!("`{}` is not a format spec", spec))),
         }
+    }
 
-        let mut width_str = String::new();
-        while pos < spec_chars.len() && spec_chars[pos].is_ascii_digit() {
-            width_str.push(spec_chars[pos]);
-            pos += 1;
-        }
-        if !width_str.is_empty() {
-            width = width_str.parse().unwrap_or(0);
-        }
-
-        if pos < spec_chars.len() && spec_chars[pos] == '.' {
-            pos += 1;
-            let mut prec_str = String::new();
-            while pos < spec_chars.len() && spec_chars[pos].is_ascii_digit() {
-                prec_str.push(spec_chars[pos]);
-                pos += 1;
-            }
-            precision = Some(prec_str.parse::<usize>().unwrap_or(0));
-        }
-
-        // The trailing type token: a word (`debug`) or a single char (x/X/b/o/e).
-        let type_token: String = spec_chars[pos..].iter().collect();
-
-        let formatted = match type_token.as_str() {
-            "debug" => {
-                self.debug_format(value)
-            }
-            "x" => {
-                match value {
-                    Value::Int(n, _) => format!("{:x}", n),
-                    _ => format!("{}", value),
-                }
-            }
-            "X" => {
-                match value {
-                    Value::Int(n, _) => format!("{:X}", n),
-                    _ => format!("{}", value),
-                }
-            }
-            "b" => {
-                match value {
-                    Value::Int(n, _) => format!("{:b}", n),
-                    _ => format!("{}", value),
-                }
-            }
-            "o" => {
-                match value {
-                    Value::Int(n, _) => format!("{:o}", n),
-                    _ => format!("{}", value),
-                }
-            }
-            "e" => {
-                match value {
-                    Value::Float(n) => format!("{:e}", n),
-                    Value::Int(n, _) => format!("{:e}", *n as f64),
-                    _ => format!("{}", value),
-                }
-            }
-            _ => {
-                match precision {
-                    Some(prec) => match value {
-                        Value::Float(n) => format!("{:.prec$}", n, prec = prec),
-                        _ => format!("{}", value),
-                    },
-                    None => format!("{}", value),
-                }
-            }
+    /// Render `value` under `spec`. `display` is what the value's own
+    /// `to_string()` gives — passed in so a user `Displayable` impl can be
+    /// consulted by the caller that has the interpreter mutably.
+    pub(crate) fn render_spec(&self, value: &Value, spec: FormatSpec, display: String) -> String {
+        let as_int = |v: &Value| match v {
+            Value::Int(n, _) => Some(*n),
+            Value::Char(c) => Some(*c as i64),
+            Value::Bool(b) => Some(*b as i64),
+            _ => None,
         };
 
-        if width > 0 && formatted.len() < width {
-            let padding = width - formatted.len();
-            let effective_align = align.unwrap_or('>');
-            match effective_align {
-                '<' => {
-                    let mut s = formatted;
-                    for _ in 0..padding {
-                        s.push(fill);
-                    }
-                    Ok(s)
-                }
-                '^' => {
-                    let left_pad = padding / 2;
-                    let right_pad = padding - left_pad;
-                    let mut s = String::new();
-                    for _ in 0..left_pad {
-                        s.push(fill);
-                    }
-                    s.push_str(&formatted);
-                    for _ in 0..right_pad {
-                        s.push(fill);
-                    }
-                    Ok(s)
-                }
-                _ => {
-                    let mut s = String::new();
-                    for _ in 0..padding {
-                        s.push(fill);
-                    }
-                    s.push_str(&formatted);
-                    Ok(s)
-                }
-            }
-        } else {
-            Ok(formatted)
-        }
+        let base = match spec.ty {
+            SpecType::Debug => self.debug_format(value),
+            SpecType::Exp => match value {
+                Value::Float(n) => format!("{:e}", n),
+                Value::Int(n, _) => format!("{:e}", *n as f64),
+                _ => display,
+            },
+            SpecType::Hex { upper } => match as_int(value) {
+                Some(n) if upper => format!("{:X}", n),
+                Some(n) => format!("{:x}", n),
+                None => display,
+            },
+            SpecType::Binary => match as_int(value) {
+                Some(n) => format!("{:b}", n),
+                None => display,
+            },
+            SpecType::Octal => match as_int(value) {
+                Some(n) => format!("{:o}", n),
+                None => display,
+            },
+            SpecType::Display => match (spec.precision, value) {
+                (Some(prec), Value::Float(n)) => format!("{:.prec$}", n, prec = prec),
+                // Precision on a string truncates it — the one non-float use
+                // the grammar allows.
+                (Some(prec), Value::String(_)) => display.chars().take(prec).collect(),
+                _ => display,
+            },
+        };
+
+        let numeric = matches!(
+            value,
+            Value::Int(..) | Value::Float(_) | Value::Int128(_) | Value::Uint128(_)
+        );
+        pad(&base, spec.width, spec.effective_align(numeric), spec.fill)
     }
 
     fn debug_format(&self, value: &Value) -> String {
