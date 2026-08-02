@@ -3213,7 +3213,7 @@ impl Parser {
                 self.advance();
                 let str_span = self.span(start, self.tokens[self.pos - 1].span.end);
                 if s.contains('{') {
-                    match self.parse_string_interpolation(&s, str_span) {
+                    match self.parse_string_interpolation(&s, str_span)? {
                         Some(segments) => Ok(Expr { id: self.next_id(), kind: ExprKind::StringInterp(segments), span: str_span }),
                         None => Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span }),
                     }
@@ -4546,8 +4546,11 @@ impl Parser {
     }
 
     /// Parse string interpolation segments from a string like "hello {name}, age {age}".
-    /// Returns None if the string has no valid interpolation (e.g., escaped braces only).
-    fn parse_string_interpolation(&mut self, s: &str, str_span: Span) -> Option<Vec<StringSegment>> {
+    /// Returns `Ok(None)` if the string has no valid interpolation (e.g., escaped
+    /// braces only, or content that isn't a parseable expression). Returns `Err`
+    /// only for a `{expr:spec}` whose spec isn't a format spec Rask recognizes —
+    /// e.g. the old `{value:?}` debug syntax, replaced by `{value:debug}`.
+    fn parse_string_interpolation(&mut self, s: &str, str_span: Span) -> Result<Option<Vec<StringSegment>>, ParseError> {
         let mut segments = Vec::new();
         let mut literal = String::new();
         let chars: Vec<char> = s.chars().collect();
@@ -4577,7 +4580,7 @@ impl Parser {
                     if depth > 0 { i += 1; }
                 }
                 if depth != 0 {
-                    return None; // Unclosed brace
+                    return Ok(None); // Unclosed brace
                 }
                 let expr_str: String = chars[expr_start..i].iter().collect();
                 i += 1; // skip '}'
@@ -4587,11 +4590,12 @@ impl Parser {
                     .nth(expr_start)
                     .map(|(pos, _)| pos)
                     .unwrap_or(0);
+                let abs_offset = str_span.start + 1 + byte_offset;
 
                 // Parse the expression using the lexer/parser with correct context
                 let lex = rask_lexer::Lexer::new(&expr_str).tokenize();
                 if !lex.errors.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
                 // Reuse this parser's file_id and get sequential NodeIds
                 let saved_tokens = std::mem::replace(&mut self.tokens, lex.tokens);
@@ -4599,17 +4603,43 @@ impl Parser {
 
                 let result = self.parse_expr();
 
-                self.tokens = saved_tokens;
-                self.pos = saved_pos;
-
                 let mut parsed = match result {
                     Ok(expr) => expr,
-                    Err(_) => return None,
+                    Err(_) => {
+                        self.tokens = saved_tokens;
+                        self.pos = saved_pos;
+                        return Ok(None);
+                    }
                 };
 
+                // Anything left over after a complete expression is a `:spec`
+                // format suffix (`{value:debug}`) — or isn't, in which case it's
+                // the old `{value:?}` syntax or other garbage that must be
+                // rejected rather than silently thrown away.
+                if self.pos < self.tokens.len() && !matches!(self.tokens[self.pos].kind, TokenKind::Eof) {
+                    let leftover = self.tokens[self.pos].clone();
+                    self.tokens = saved_tokens;
+                    self.pos = saved_pos;
+                    if !matches!(leftover.kind, TokenKind::Colon) {
+                        return Ok(None);
+                    }
+                    let spec_text = &expr_str[leftover.span.end..];
+                    if !is_valid_format_spec(spec_text) {
+                        let spec_span = Span::new(
+                            abs_offset + leftover.span.start,
+                            abs_offset + expr_str.len(),
+                        );
+                        return Err(ParseError::invalid_format_spec(spec_text, spec_span));
+                    }
+                    // Recognized spec — accepted for now; applying it (rather
+                    // than just formatting the value plainly) is tracked
+                    // separately (#542).
+                } else {
+                    self.tokens = saved_tokens;
+                    self.pos = saved_pos;
+                }
+
                 // Remap spans from 0-based (within expr_str) to absolute file position.
-                // str_span.start is the opening quote, +1 for content start, +byte_offset for position.
-                let abs_offset = str_span.start + 1 + byte_offset;
                 Self::offset_spans(&mut parsed, abs_offset);
 
                 segments.push(StringSegment::Expr(Box::new(parsed)));
@@ -4629,9 +4659,9 @@ impl Parser {
 
         // Only return segments if there was at least one expression
         if segments.iter().any(|s| matches!(s, StringSegment::Expr(_))) {
-            Some(segments)
+            Ok(Some(segments))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -4944,6 +4974,52 @@ impl ParseError {
             hint: Some(hint.to_string()),
         }
     }
+
+    fn invalid_format_spec(spec: &str, span: Span) -> Self {
+        Self {
+            span,
+            message: format!("invalid format spec `:{}`", spec),
+            hint: Some(format!(
+                "`:{}` isn't a format spec Rask recognizes — use `:debug` for debug formatting, or one of `:x` `:X` `:b` `:o` `:e` `:.N`",
+                spec
+            )),
+        }
+    }
+}
+
+/// Whether the text after a `:` in a string interpolation is a format spec
+/// Rask recognizes: optional fill+align, optional width, optional `.precision`,
+/// then an optional trailing type token (`debug`, `x`, `X`, `b`, `o`, `e`).
+/// Matches what `apply_format_spec` (interpreter) actually understands — the
+/// old `{value:?}` debug marker fails this (trailing token `?` isn't known).
+fn is_valid_format_spec(spec: &str) -> bool {
+    let chars: Vec<char> = spec.chars().collect();
+    let mut pos = 0;
+
+    if chars.len() >= 2 && matches!(chars[1], '<' | '>' | '^') {
+        pos = 2;
+    } else if !chars.is_empty() && matches!(chars[0], '<' | '>' | '^') {
+        pos = 1;
+    }
+
+    while pos < chars.len() && chars[pos].is_ascii_digit() {
+        pos += 1;
+    }
+
+    if pos < chars.len() && chars[pos] == '.' {
+        pos += 1;
+        let mut has_digit = false;
+        while pos < chars.len() && chars[pos].is_ascii_digit() {
+            pos += 1;
+            has_digit = true;
+        }
+        if !has_digit {
+            return false;
+        }
+    }
+
+    let trailing: String = chars[pos..].iter().collect();
+    matches!(trailing.as_str(), "" | "x" | "X" | "b" | "o" | "e" | "debug")
 }
 
 /// Format a user-friendly "expected X, found Y" message.

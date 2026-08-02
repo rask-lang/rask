@@ -60,6 +60,8 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | File | What it tests |
 |------|--------------|
 | [stdlib_renames.rk](stdlib_renames.rk) | task-2b rename sweep (#302): old stdlib names are hard errors, not aliases — `recv`/`try_recv`, `as_secs`/`as_secs_f64`, `os.getpid`/`os.vars`, `fs.read_file`/`write_file`/`append_file`, removed `File.lines()` (E0313) |
+| [unknown_stdlib_import.rk](unknown_stdlib_import.rk) | Selective import of a symbol that doesn't exist in the stdlib module (#395, E0212) — `import random.Rng`, renamed to `Random` |
+| [old_debug_format_spec.rk](old_debug_format_spec.rk) | Old `{value:?}` debug format spec, replaced by `{value:debug}` (#395) |
 | [const_reassign.rk](const_reassign.rk) | Reassigning a const binding |
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |

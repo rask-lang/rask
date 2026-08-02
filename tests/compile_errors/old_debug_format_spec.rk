@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #395: the old `{value:?}` debug format spec must be a compile error, not
+// silently accepted. It was replaced by `{value:debug}`.
+
+func main() {
+    println("{7:?}")   // ERROR: invalid format spec `:?` — use `:debug`
+}

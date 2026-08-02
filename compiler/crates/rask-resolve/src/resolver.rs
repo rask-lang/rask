@@ -449,6 +449,84 @@ impl Resolver {
         SymbolKind::Variable { mutable: false }
     }
 
+    /// The stub source file backing a stdlib module's selective imports, if
+    /// it has one. `core` and `env` are pure compiler surface with no `.rk`
+    /// source — their symbols are only ever the hardcoded ones above.
+    fn stdlib_module_filename(module: &str) -> Option<&'static str> {
+        match module {
+            "io" => Some("io.rk"),
+            "fs" => Some("fs.rk"),
+            "cli" => Some("cli.rk"),
+            "std" => Some("std.rk"),
+            "json" => Some("json.rk"),
+            "random" => Some("random.rk"),
+            "time" => Some("time.rk"),
+            "math" => Some("math.rk"),
+            "path" => Some("path.rk"),
+            "os" => Some("os.rk"),
+            "net" => Some("net.rk"),
+            "async" => Some("async.rk"),
+            "thread" => Some("thread.rk"),
+            "http" => Some("http.rk"),
+            _ => None,
+        }
+    }
+
+    /// Selectively-importable names with no backing struct/enum/fn decl in
+    /// the stub source — comptime-only surface (`std.reflect`) that the
+    /// stub loader has no way to see.
+    fn stdlib_extra_symbols(module: &str) -> &'static [&'static str] {
+        match module {
+            "std" => &["reflect"],
+            _ => &[],
+        }
+    }
+
+    /// Whether `import module.symbol` names something that actually exists,
+    /// for modules with real stub source to check against. Modules without
+    /// one (see `stdlib_module_filename`) are trusted as-is — they only ever
+    /// resolve through the hardcoded matches in `resolve_stdlib_symbol`.
+    fn stdlib_symbol_exists(module: &str, symbol: &str) -> bool {
+        let Some(filename) = Self::stdlib_module_filename(module) else {
+            return true;
+        };
+        if Self::stdlib_extra_symbols(module).contains(&symbol) {
+            return true;
+        }
+        let file_tag = format!("stdlib/{}", filename);
+        let stub_reg = rask_stdlib::StubRegistry::load();
+        stub_reg.get_type(symbol).is_some_and(|t| t.source_file == file_tag)
+            || stub_reg.functions().iter().any(|f| f.name == symbol && f.source_file == file_tag)
+            // Each module is also its own type stub (`struct io {}` extended
+            // with `io.stdin()` etc.) — its "free functions" are methods on
+            // that module-shaped type, e.g. `import io.stdin`.
+            || stub_reg.has_method(module, symbol)
+    }
+
+    /// Every real name a stdlib module exports, for "did you mean" suggestions.
+    fn stdlib_module_candidates(module: &str) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        if let Some(filename) = Self::stdlib_module_filename(module) {
+            let file_tag = format!("stdlib/{}", filename);
+            let stub_reg = rask_stdlib::StubRegistry::load();
+            for type_name in stub_reg.type_names() {
+                if stub_reg.get_type(type_name).is_some_and(|t| t.source_file == file_tag) {
+                    names.push(type_name.to_string());
+                }
+            }
+            for f in stub_reg.functions() {
+                if f.source_file == file_tag {
+                    names.push(f.name.clone());
+                }
+            }
+            for m in stub_reg.methods(module) {
+                names.push(m.name.clone());
+            }
+        }
+        names.extend(Self::stdlib_extra_symbols(module).iter().map(|s| s.to_string()));
+        names
+    }
+
     fn is_primitive_type(name: &str) -> bool {
         matches!(name,
             "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
@@ -1184,6 +1262,24 @@ impl Resolver {
                         self.register_builtin_enum(symbol_name, variants);
                     } else {
                         let kind = self.resolve_stdlib_symbol(pkg_name, symbol_name);
+                        // resolve_stdlib_symbol falls back to a plain Variable
+                        // binding for anything it doesn't specifically know —
+                        // that fallback exists so real-but-uncurated symbols
+                        // (e.g. `os.Command`) still resolve, but it also let
+                        // outright typos (`random.Rng`, renamed to `Random`)
+                        // through silently. Gate the fallback on the symbol
+                        // actually existing in the module's stub source.
+                        let recognized = !matches!(kind, SymbolKind::Variable { .. });
+                        if !recognized && !Self::stdlib_symbol_exists(pkg_name, symbol_name) {
+                            let candidates = Self::stdlib_module_candidates(pkg_name);
+                            self.errors.push(ResolveError::unknown_stdlib_symbol(
+                                pkg_name.clone(),
+                                symbol_name.clone(),
+                                candidates,
+                                span,
+                            ));
+                            return;
+                        }
                         let sym_id = self.symbols.insert(
                             binding_name.clone(),
                             kind,

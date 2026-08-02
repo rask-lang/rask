@@ -120,6 +120,9 @@ impl Default for ErrorCodeRegistry {
                 "E0209" => ("shadows built-in", Resolution,
                     "A definition has the same name as a built-in type or function. This can cause confusing errors later. Choose a different name.",
                     "struct Vec { }  // error: shadows built-in Vec"),
+                "E0212" => ("unknown stdlib symbol", Resolution,
+                    "A selective stdlib import (`import module.Name`) names a symbol that doesn't exist in that module. Check the spelling against the module's actual API.",
+                    "import random.Rng  // error: no `Rng` in stdlib module `random` (did you mean `Random`?)"),
 
                 // Type errors (E03xx)
                 "E0308" => ("mismatched types", Type,

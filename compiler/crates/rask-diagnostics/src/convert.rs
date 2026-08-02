@@ -140,6 +140,22 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("shadowing imports makes code ambiguous — Rask disallows it for clarity")
             }
 
+            UnknownStdlibSymbol { module, symbol, candidates } => {
+                let help = match crate::suggestions::did_you_mean(
+                    symbol,
+                    candidates.iter().map(|s| s.as_str()),
+                ) {
+                    Some(suggestion) => format!("{} in `{}`", suggestion, module),
+                    None => format!("`{}` has no symbol named `{}`", module, symbol),
+                };
+                Diagnostic::error(format!("no `{}` in stdlib module `{}`", symbol, module))
+                    .with_code("E0212")
+                    .with_primary(self.span, "not found in this module")
+                    .with_help(help.clone())
+                    .with_fix(help)
+                    .with_why("importing a name that doesn't exist would only fail later, at runtime")
+            }
+
             CircularDependency { path } => {
                 Diagnostic::error(format!(
                     "circular import: {}",

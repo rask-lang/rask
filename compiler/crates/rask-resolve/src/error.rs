@@ -69,6 +69,13 @@ impl ResolveError {
         }
     }
 
+    pub fn unknown_stdlib_symbol(module: String, symbol: String, candidates: Vec<String>, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::UnknownStdlibSymbol { module, symbol, candidates },
+            span,
+        }
+    }
+
     pub fn circular_dependency(path: Vec<String>, span: Span) -> Self {
         Self {
             kind: ResolveErrorKind::CircularDependency { path },
@@ -124,6 +131,9 @@ pub enum ResolveErrorKind {
 
     #[error("cannot define `{name}` because it shadows an imported name; consider using a different name or aliasing the import")]
     ShadowsImport { name: String },
+
+    #[error("no `{symbol}` in stdlib module `{module}`")]
+    UnknownStdlibSymbol { module: String, symbol: String, candidates: Vec<String> },
 
     #[error("circular import dependency detected: {}", path.join(" -> "))]
     CircularDependency { path: Vec<String> },

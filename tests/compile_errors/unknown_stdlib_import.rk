@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #395: a selective stdlib import of a symbol that doesn't exist must be a
+// compile error (E0212), not silently accepted (it used to fall back to a
+// bare Variable binding and only fail at runtime). `Rng` was renamed to
+// `Random`.
+
+import random.Rng
+
+func main() {
+    mut r = Rng.from_seed(1)              // ERROR: no `Rng` in stdlib module `random`
+    const x: i64 = r.range(0, 10)
+    println(x.to_string())
+}

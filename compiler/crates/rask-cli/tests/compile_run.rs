@@ -786,6 +786,25 @@ fn error_stdlib_renames() {
     }
 }
 
+// #395a: `import random.Rng` used to fall back to a bare Variable binding and
+// only fail at runtime. It must be rejected at check time instead.
+#[test]
+fn error_unknown_stdlib_import() {
+    let (failed, out) = compile_error_output("unknown_stdlib_import.rk");
+    assert!(failed, "unknown stdlib symbol import must be rejected: {}", out);
+    assert!(out.contains("E0212"), "should be an unknown-stdlib-symbol error (E0212): {}", out);
+    assert!(out.contains("Rng") && out.contains("random"), "should name the bad symbol and module: {}", out);
+}
+
+// #395b: the old `{value:?}` debug format spec used to be silently accepted
+// (and silently dropped) instead of being rejected in favor of `{value:debug}`.
+#[test]
+fn error_old_debug_format_spec() {
+    let (failed, out) = compile_error_output("old_debug_format_spec.rk");
+    assert!(failed, "old `:?` debug format spec must be rejected: {}", out);
+    assert!(out.contains("invalid format spec"), "should report an invalid format spec: {}", out);
+}
+
 // mem.pools/PF5: writing through a handle in a `using frozen Pool<T>` context is
 // rejected (E0325); reads in the same file are fine.
 #[test]
