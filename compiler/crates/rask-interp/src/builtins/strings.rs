@@ -58,6 +58,17 @@ impl Interpreter {
                 let end = start + trimmed.len();
                 Ok(Value::Vec(Arc::new(Mutex::new(vec![Value::int(start as i64), Value::int(end as i64)]))))
             }
+            // FNV-1a over the bytes — the same function the native runtime
+            // and string-keyed maps use, so both backends agree.
+            "hash" => {
+                let guard = s.lock().unwrap();
+                let mut h: u64 = 0xcbf29ce484222325;
+                for b in guard.as_bytes() {
+                    h ^= *b as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
+                Ok(Value::int(h as i64))
+            }
             "to_string" => Ok(Value::String(Arc::clone(s))),
             "debug_string" => {
                 let val = s.lock().unwrap();
