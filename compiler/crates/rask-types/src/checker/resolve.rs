@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use rask_ast::{NodeId, Span};
 
-use super::type_defs::{Callee, TypeDef};
+use super::type_defs::{Callee, MethodSig, TypeDef};
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
 use super::TypeChecker;
@@ -242,6 +242,42 @@ impl TypeChecker {
         }
     }
 
+    /// Record a generic method's own type arguments against the call site, so
+    /// monomorphization instantiates one body per set of them.
+    ///
+    /// Only the method's parameters — the receiver's are already fixed by the
+    /// receiver's type, and mangling on them too would mint a separate copy per
+    /// receiver instantiation for no reason.
+    fn note_method_type_args(
+        &mut self,
+        call_node: Option<NodeId>,
+        method_sig: &MethodSig,
+        span: Span,
+        subst: &std::collections::HashMap<&str, Type>,
+    ) {
+        if method_sig.type_params.is_empty() {
+            return;
+        }
+        // #314: whatever the argument settles on has to satisfy the bound.
+        for (name, bounds) in &method_sig.type_params {
+            if bounds.is_empty() {
+                continue;
+            }
+            if let Some(var) = subst.get(name.as_str()) {
+                self.pending_bound_checks.push((var.clone(), bounds.clone(), span));
+            }
+        }
+        let Some(node) = call_node else { return };
+        let args: Vec<Type> = method_sig
+            .type_params
+            .iter()
+            .filter_map(|(name, _)| subst.get(name.as_str()).cloned())
+            .collect();
+        if args.len() == method_sig.type_params.len() {
+            self.pending_call_type_args.push((node, args));
+        }
+    }
+
     pub(super) fn resolve_method(
         &mut self,
         ty: Type,
@@ -346,10 +382,18 @@ impl TypeChecker {
                     // var instead of the literal "T" placeholder. Without this
                     // the placeholder leaks into node_types and downstream
                     // unifications (push, get, ...) silently no-op.
+                    //
+                    // The method's own parameters go in the same map. They
+                    // differ from the receiver's in when they're chosen — once
+                    // per call rather than once per receiver — but a fresh
+                    // variable each time is exactly that.
                     let subst: std::collections::HashMap<&str, Type> = type_params
                         .iter()
-                        .map(|p| (p.as_str(), self.ctx.fresh_var()))
+                        .map(|p| p.as_str())
+                        .chain(method_sig.type_params.iter().map(|(n, _)| n.as_str()))
+                        .map(|p| (p, self.ctx.fresh_var()))
                         .collect();
+                    self.note_method_type_args(call_node, method_sig, span, &subst);
 
                     // ER3a: a `T or E` in the method's signature is a
                     // disjointness obligation on the receiver's type args.
@@ -617,7 +661,7 @@ impl TypeChecker {
                     }
                 };
 
-                let subst = Self::build_type_param_subst(&type_params, generic_args);
+                let mut subst = Self::build_type_param_subst(&type_params, generic_args);
 
                 if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
                     if method_sig.params.len() != args.len() {
@@ -627,6 +671,14 @@ impl TypeChecker {
                             span,
                         });
                     }
+
+                    // The receiver's type args are pinned by the call site; the
+                    // method's own parameters are still open, one fresh variable
+                    // per call.
+                    for (name, _) in &method_sig.type_params {
+                        subst.insert(name.as_str(), self.ctx.fresh_var());
+                    }
+                    self.note_method_type_args(call_node, method_sig, span, &subst);
 
                     // ER3a: same obligation on the explicitly-spelled type args.
                     self.note_disjointness_obligations(&method, &method_sig.ret, &subst, span);

@@ -3321,6 +3321,13 @@ impl<'a> MirLowerer<'a> {
             ))),
         };
 
+        // A method with its own type parameters was monomorphized per call, so
+        // dispatch has to name the copy rather than the generic body.
+        let qualified_name = self.ctx.call_rewrites
+            .get(&expr.id)
+            .cloned()
+            .unwrap_or(qualified_name);
+
         // Track collection element types from push/insert so get returns the right type.
         // Handles both `v.push(x)` and `self.field.push(x)`.
         // Writes to both per-function and shared cross-function maps.

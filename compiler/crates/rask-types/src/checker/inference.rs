@@ -133,15 +133,31 @@ impl InferenceContext {
     }
 
     /// Apply defaults for unresolved literal type vars.
+    ///
+    /// A literal var can be bound to another *variable* rather than a type —
+    /// `echo(7)` unifies the literal with the fresh variable standing for the
+    /// method's `E`, and which of the two ends up pointing at the other depends
+    /// on unification order. Defaulting only the literal var itself then leaves
+    /// the other one free forever, and a type argument that stays a variable
+    /// mangles to `_`. So follow the chain: whatever a literal ultimately
+    /// resolves to, if it's still an unbound variable, that's what needs the
+    /// default.
     pub fn apply_literal_defaults(&mut self) {
-        for (&var_id, &kind) in self.literal_vars.iter() {
-            // Only default if not yet resolved
-            if !self.substitutions.contains_key(&var_id) {
-                let default = match kind {
-                    LiteralKind::Integer => Type::I32,
-                    LiteralKind::Float => Type::F64,
-                };
-                self.substitutions.insert(var_id, default);
+        let pending: Vec<(TypeVarId, LiteralKind)> = self
+            .literal_vars
+            .iter()
+            .map(|(&id, &kind)| (id, kind))
+            .collect();
+        for (var_id, kind) in pending {
+            let default = match kind {
+                LiteralKind::Integer => Type::I32,
+                LiteralKind::Float => Type::F64,
+            };
+            match self.apply(&Type::Var(var_id)) {
+                Type::Var(tail) => {
+                    self.substitutions.insert(tail, default);
+                }
+                _ => {}
             }
         }
     }

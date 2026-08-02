@@ -620,7 +620,18 @@ impl<'a> Monomorphizer<'a> {
                                 span: expr.span,
                             });
                         }
-                        _ => self.enqueue(qualified, type_args.clone()),
+                        _ => {
+                            // A method with its own type parameters gets one
+                            // body per set of arguments, same as a generic
+                            // function — so the call has to name the copy.
+                            if !type_args.is_empty() {
+                                self.call_rewrites.insert(
+                                    expr.id,
+                                    mangle_name(&qualified, &type_args),
+                                );
+                            }
+                            self.enqueue(qualified, type_args.clone());
+                        }
                     }
                 } else {
                     // Static method call: Type.method() → enqueue "Type_method"

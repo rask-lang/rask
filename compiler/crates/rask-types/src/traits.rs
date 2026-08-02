@@ -498,42 +498,49 @@ impl<'a> TraitChecker<'a> {
     fn get_builtin_trait_methods(&self, trait_name: &str) -> Option<Vec<MethodSig>> {
         match trait_name {
             "Add" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "add".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)], // Self type
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Sub" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "sub".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Mul" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "mul".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Div" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "div".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Rem" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "rem".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Neg" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "neg".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Equal" | "Eq" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "eq".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
@@ -541,6 +548,7 @@ impl<'a> TraitChecker<'a> {
             }]),
             "Comparable" | "Ord" => Some(vec![
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "compare".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
@@ -548,24 +556,28 @@ impl<'a> TraitChecker<'a> {
                     ret: Type::Var(crate::types::TypeVarId(0)),
                 },
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "lt".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "le".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "gt".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "ge".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
@@ -573,12 +585,14 @@ impl<'a> TraitChecker<'a> {
                 },
             ]),
             "Clone" | "Cloneable" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "clone".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Default" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "default".to_string(),
                 self_param: SelfParam::None, // Static method
                 params: vec![],
@@ -586,12 +600,14 @@ impl<'a> TraitChecker<'a> {
             }]),
             "Hashable" => Some(vec![
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "hash".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![],
                     ret: Type::U64,
                 },
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "eq".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
@@ -599,12 +615,14 @@ impl<'a> TraitChecker<'a> {
                 },
             ]),
             "Displayable" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "to_string".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
             }]),
             "Debug" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "debug_string".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
@@ -612,6 +630,7 @@ impl<'a> TraitChecker<'a> {
             }]),
             // Iterator<Item> trait — single method `next(mutate self) -> Item?`
             "Iterator" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "next".to_string(),
                 self_param: SelfParam::Mutate,
                 params: vec![],
@@ -619,6 +638,7 @@ impl<'a> TraitChecker<'a> {
             }]),
             // ER4/ER32: ErrorMessage trait — `func message(self) -> string`
             "ErrorMessage" => Some(vec![MethodSig {
+                type_params: Vec::new(),
                 name: "message".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
@@ -858,6 +878,7 @@ mod tests {
 
         let mut types = TypeTable::new();
         let show = || MethodSig {
+            type_params: Vec::new(),
             name: "show".to_string(),
             self_param: SelfParam::Value,
             params: vec![],

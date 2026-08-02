@@ -300,17 +300,24 @@ impl TypeChecker {
 
         // Resolve pending generic call type args, normalizing Named(TypeId)
         // to UnresolvedNamed(name) so monomorphizer can use consistent names.
-        let call_type_args: HashMap<_, _> = self
-            .pending_call_type_args
-            .iter()
-            .map(|(node_id, vars)| {
-                let resolved: Vec<Type> = vars.iter().map(|v| {
-                    let applied = self.ctx.apply(v);
-                    Self::normalize_named_types(&applied, &id_to_name)
-                }).collect();
-                (*node_id, resolved)
-            })
-            .collect();
+        // A call site can be recorded more than once — method resolution runs
+        // again whenever the constraint solver makes progress, and the earlier
+        // attempts hold variables that never got bound. Keep the entry that
+        // actually resolved; a half-resolved one mangles to `Box2_echo$_` and
+        // collides with every other unresolved instantiation of the same method.
+        let mut call_type_args: HashMap<NodeId, Vec<Type>> = HashMap::new();
+        for (node_id, vars) in &self.pending_call_type_args {
+            let resolved: Vec<Type> = vars.iter().map(|v| {
+                let applied = self.ctx.apply(v);
+                Self::normalize_named_types(&applied, &id_to_name)
+            }).collect();
+            let fully_resolved = !resolved.iter().any(Self::contains_type_var);
+            match call_type_args.get(node_id) {
+                Some(existing) if !fully_resolved
+                    && !existing.iter().any(Self::contains_type_var) => {}
+                _ => { call_type_args.insert(*node_id, resolved); }
+            }
+        }
 
         let trait_coercions = self.trait_coercions.clone();
 
@@ -355,6 +362,30 @@ impl TypeChecker {
 
     /// Replace Named(TypeId) with UnresolvedNamed(name) so the monomorphizer
     /// sees consistent string-based type names regardless of resolution order.
+    /// True when any part of the type is still an unbound inference variable.
+    /// Such a type mangles to `_`, which is not a name that identifies anything.
+    fn contains_type_var(ty: &Type) -> bool {
+        match ty {
+            Type::Var(_) => true,
+            Type::RawPtr(inner) | Type::Slice(inner)
+            | Type::Array { elem: inner, .. } => Self::contains_type_var(inner),
+            Type::Result { ok, err } => {
+                Self::contains_type_var(ok) || Self::contains_type_var(err)
+            }
+            Type::Tuple(items) | Type::Union(items) => items.iter().any(Self::contains_type_var),
+            Type::Fn { params, ret } => {
+                params.iter().any(Self::contains_type_var) || Self::contains_type_var(ret)
+            }
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+                args.iter().any(|a| match a {
+                    crate::GenericArg::Type(t) => Self::contains_type_var(t),
+                    _ => false,
+                })
+            }
+            _ => false,
+        }
+    }
+
     fn normalize_named_types(ty: &Type, id_to_name: &HashMap<crate::TypeId, String>) -> Type {
         match ty {
             Type::Named(id) => {

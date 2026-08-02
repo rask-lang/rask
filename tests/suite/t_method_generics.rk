@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Methods declaring their own type parameters — `func tag<E>(self, e: E) -> E`.
+// The syntax parsed and then nothing recognised the method: the parser folded
+// `<E>` into the name, so a call to `tag` found `tag<E>` and failed with "no
+// method found" (#504). Each call now gets its own instantiation, so a method
+// used at two types compiles two bodies rather than one wrong one.
+
+trait Named {
+    func label(self) -> string
+}
+
+struct Tag { n: i64 }
+extend Tag with Named {
+    func label(self) -> string { return "tag" }
+}
+
+struct Pair2 { a: i64, b: i64 }
+
+struct Util { seed: i64 }
+
+extend Util {
+    func echo<E>(self, e: E) -> E { return e }
+    func both<A, B>(self, a: A, b: B) -> (A, B) { return (a, b) }
+    func describe<T: Named>(self, x: T) -> string { return x.label() }
+    func uses_field<E>(self, e: E) -> E {
+        if self.seed > 0 { return e }
+        return e
+    }
+}
+
+struct Holder<T> { item: T }
+
+extend Holder<T> {
+    func mine(self) -> T { return self.item }
+    func other<U>(self, u: U) -> U { return u }
+}
+
+func main() {}
+
+test "one type param, used at several types" {
+    const u = Util { seed: 1 }
+    assert u.echo(7) == 7
+    assert u.echo("hi") == "hi"
+    assert u.echo(true)
+    const f = u.echo(2.5)
+    assert f > 2.4 && f < 2.6
+}
+
+test "the receiver's own fields are still reachable" {
+    const u = Util { seed: 1 }
+    assert u.uses_field("x") == "x"
+    assert u.uses_field(3) == 3
+}
+
+test "two type params" {
+    const u = Util { seed: 0 }
+    const p = u.both(1, "two")
+    assert p.0 == 1
+    assert p.1 == "two"
+    const q = u.both("a", 9)
+    assert q.0 == "a"
+    assert q.1 == 9
+}
+
+test "an aggregate type argument" {
+    const u = Util { seed: 0 }
+    const p = u.echo(Pair2 { a: 1, b: 2 })
+    assert p.a == 1
+    assert p.b == 2
+}
+
+test "a bounded type param dispatches through the bound" {
+    const u = Util { seed: 0 }
+    assert u.describe(Tag { n: 1 }) == "tag"
+}
+
+test "a method param alongside the receiver's own" {
+    const h = Holder { item: 9 }
+    assert h.mine() == 9
+    assert h.other("s") == "s"
+    assert h.other(4) == 4
+}
