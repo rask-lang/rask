@@ -1990,6 +1990,7 @@ mod tests {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
             instantiated_call_targets: Default::default(),
+            instantiated_error_wraps: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
@@ -2002,6 +2003,7 @@ mod tests {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
             instantiated_call_targets: Default::default(),
+            instantiated_error_wraps: Default::default(),
             functions: vec![],
             struct_layouts: vec![
                 rask_mono::StructLayout {
@@ -2038,6 +2040,7 @@ mod tests {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
             instantiated_call_targets: Default::default(),
+            instantiated_error_wraps: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![

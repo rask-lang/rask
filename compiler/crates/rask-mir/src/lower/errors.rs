@@ -11,6 +11,15 @@ use crate::{
 };
 use rask_ast::expr::{CallArg, Expr, ExprKind, TryElse};
 
+/// ER31a: where a propagated error goes inside the caller's error enum.
+struct ErrorWrapTarget {
+    enum_ty: MirType,
+    tag_offset: u32,
+    tag: i64,
+    /// Byte offset of the variant's single payload field.
+    payload_offset: u32,
+}
+
 impl<'a> MirLowerer<'a> {
     /// The error type of a `try` target's Result, from whichever source
     /// resolved it. The checker's type for the whole `try` expression and the
@@ -50,8 +59,28 @@ impl<'a> MirLowerer<'a> {
             .cloned()
     }
 
+    /// ER31a: where this `try` puts its error inside the caller's error enum.
+    /// The checker picked the variant; this resolves it against the enum layout.
+    /// `None` when the error propagates as-is.
+    fn error_wrap_target(&self, try_id: rask_ast::NodeId) -> Option<ErrorWrapTarget> {
+        let wrap = self.ctx.error_wraps.get(&try_id)?;
+        let (idx, layout) = self.ctx.find_enum(&wrap.enum_name)?;
+        let variant = layout.variants.iter().find(|v| v.name == wrap.variant)?;
+        let field = variant.fields.first();
+        Some(ErrorWrapTarget {
+            enum_ty: MirType::Enum(crate::types::EnumLayoutId::new(idx, layout.size, layout.align)),
+            tag_offset: layout.tag_offset,
+            tag: variant.tag as i64,
+            payload_offset: variant.payload_offset + field.map_or(0, |f| f.offset),
+        })
+    }
+
     /// Try expression lowering (spec L3).
-    pub(super) fn lower_try(&mut self, inner: &Expr) -> Result<TypedOperand, LoweringError> {
+    pub(super) fn lower_try(
+        &mut self,
+        try_id: rask_ast::NodeId,
+        inner: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
         let (result, result_ty) = self.lower_expr(inner)?;
 
         let tag_local = self.builder.alloc_temp(MirType::U8);
@@ -84,9 +113,15 @@ impl<'a> MirLowerer<'a> {
         };
         let err_store_size = if err_ty.size() > 8 { Some(err_ty.size()) } else { None };
         let err_byte_offset = self.payload_byte_offset(&err_ty);
+        // ER31a only applies when the error leaves this function, so a `try`
+        // caught by an enclosing `try { … } else` handler keeps its own type.
+        let wrap = match &handler {
+            Some(_) => None,
+            None => self.error_wrap_target(try_id),
+        };
         let err_val = match &handler {
             Some(frame) => frame.err_val,
-            None => self.builder.alloc_temp(err_ty),
+            None => self.builder.alloc_temp(err_ty.clone()),
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: err_val,
@@ -96,7 +131,12 @@ impl<'a> MirLowerer<'a> {
                 // Explicit offset so a scalar err payload loads its value even when
                 // the ok side is an aggregate (same ambiguity as #389's ok-path fix).
                 byte_offset: err_byte_offset,
-                access: FieldAccess::Word,
+                // Wrapping copies the error into an enum slot, so an aggregate
+                // one has to come back as an address to copy from.
+                access: match &wrap {
+                    Some(_) => aggregate_payload_access(&err_ty),
+                    None => FieldAccess::Word,
+                },
             },
         }));
 
@@ -115,6 +155,30 @@ impl<'a> MirLowerer<'a> {
             }));
             return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
         }
+
+        // ER31a: hand the caller the error type it declared. A `try store.view(id)`
+        // inside `-> TaskView or ApiError` builds `ApiError.Store(e)` right here —
+        // the same value `else |e| ApiError.Store(e)` would have produced by hand.
+        let (err_val, err_store_size) = match wrap {
+            Some(w) => {
+                let wrapped = self.builder.alloc_temp(w.enum_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: wrapped,
+                    offset: w.tag_offset,
+                    value: MirOperand::Constant(MirConst::Int(w.tag)),
+                    store_size: None,
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: wrapped,
+                    offset: w.payload_offset,
+                    value: MirOperand::Local(err_val),
+                    store_size: err_store_size,
+                }));
+                let size = w.enum_ty.size();
+                (wrapped, if size > 8 { Some(size) } else { None })
+            }
+            None => (err_val, err_store_size),
+        };
 
         // Construct full Result.Err with origin (ER15). The slot has to be the
         // *enclosing* function's return type — this value is what `return`

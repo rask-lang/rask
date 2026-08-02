@@ -109,6 +109,24 @@ fn set_error_origin(val: Value, origin: &Arc<str>) -> Value {
     }
 }
 
+/// ER31a: build the boundary-enum variant around a propagated error.
+impl Interpreter {
+    fn wrap_propagated_error(&self, wrap: &rask_types::ErrorWrap, inner: Value) -> Value {
+        let variant_index = self
+            .enums
+            .get(&wrap.enum_name)
+            .and_then(|d| d.variants.iter().position(|v| v.name == wrap.variant))
+            .unwrap_or(0) as u32;
+        Value::Enum {
+            name: wrap.enum_name.clone(),
+            variant: wrap.variant.clone(),
+            fields: vec![inner],
+            variant_index,
+            origin: None,
+        }
+    }
+}
+
 /// Set origin on a Result.Err or Option.None wrapper and its inner error value.
 /// Only sets if not already set (first propagation site wins, per ER15).
 fn set_result_origin(val: Value, origin: &Arc<str>) -> Value {
@@ -1724,6 +1742,22 @@ impl Interpreter {
                                     name: "Result".to_string(),
                                     variant: "Err".to_string(),
                                     fields: vec![set_error_origin(transformed, &origin)],
+                                    variant_index: 0,
+                                    origin: Some(origin),
+                                };
+                                Err(RuntimeDiagnostic::new(RuntimeError::TryError(wrapped), expr.span))
+                            } else if let Some(wrap) = self.error_wraps.get(&expr.id).cloned() {
+                                // ER31a: the caller declared a boundary enum, so
+                                // the error leaves wearing it — the same value
+                                // `else |e| ApiError.Store(e)` would have built.
+                                let inner = fields.first().cloned().unwrap_or(Value::Unit);
+                                let wrapped = Value::Enum {
+                                    name: "Result".to_string(),
+                                    variant: "Err".to_string(),
+                                    fields: vec![set_error_origin(
+                                        self.wrap_propagated_error(&wrap, inner),
+                                        &origin,
+                                    )],
                                     variant_index: 0,
                                     origin: Some(origin),
                                 };

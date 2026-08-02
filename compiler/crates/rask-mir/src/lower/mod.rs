@@ -224,6 +224,9 @@ pub struct MirContext<'a> {
     pub trait_methods: HashMap<String, Vec<String>>,
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     pub trait_coercions: &'a HashMap<NodeId, String>,
+    /// ER31a: `try` sites whose propagated error gets wrapped in a variant of
+    /// the enclosing function's error enum, keyed by the `try` expression.
+    pub error_wraps: &'a HashMap<NodeId, rask_types::ErrorWrap>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: &'a HashMap<NodeId, String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
@@ -267,6 +270,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_COERCIONS: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_ERROR_WRAPS: std::sync::LazyLock<HashMap<NodeId, rask_types::ErrorWrap>> =
+            std::sync::LazyLock::new(HashMap::new);
         static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_types::Callee>> =
@@ -290,6 +295,7 @@ impl<'a> MirContext<'a> {
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &EMPTY_COERCIONS,
+            error_wraps: &EMPTY_ERROR_WRAPS,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
@@ -4142,6 +4148,7 @@ mod tests {
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
+        let empty_error_wraps = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -4161,6 +4168,7 @@ mod tests {
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
+            error_wraps: &empty_error_wraps,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,
@@ -4204,6 +4212,7 @@ mod tests {
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
+        let empty_error_wraps = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -4223,6 +4232,7 @@ mod tests {
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
+            error_wraps: &empty_error_wraps,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,
@@ -4272,6 +4282,7 @@ mod tests {
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
+        let empty_error_wraps = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -4291,6 +4302,7 @@ mod tests {
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
+            error_wraps: &empty_error_wraps,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,

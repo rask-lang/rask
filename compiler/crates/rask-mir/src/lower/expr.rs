@@ -2019,7 +2019,7 @@ impl<'a> MirLowerer<'a> {
                         self.lower_try_else_block(inner, try_else)
                     }
                     (Some(try_else), _) => self.lower_try_else(inner, try_else),
-                    (None, _) => self.lower_try(inner),
+                    (None, _) => self.lower_try(expr.id, inner),
                 }
             }
 
