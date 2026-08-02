@@ -4405,7 +4405,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(less_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(-1))),
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_LESS))),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
@@ -4428,14 +4428,14 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(greater_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_GREATER))),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
         self.builder.switch_to_block(equal_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_EQUAL))),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
@@ -4455,6 +4455,27 @@ impl<'a> MirLowerer<'a> {
         let is_string_obj = matches!(obj_ty, MirType::String) || self.ctx.lookup_raw_type(object.id)
             .map(|ty| matches!(ty, rask_types::Type::String))
             .unwrap_or(false);
+        // `compare` answers with an Ordering, not the C runtime's -1/0/1
+        // (ORD1). The tags run Less, Equal, Greater, so the shift is +1.
+        if is_string_obj && args.len() == 1 && method == "compare" {
+            let (rhs, _) = self.lower_expr(&args[0].expr)?;
+            let raw = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(raw),
+                func: FunctionRef::internal("string_compare".to_string()),
+                args: vec![obj_op.clone(), rhs],
+            }));
+            let tag = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: tag,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Add,
+                    left: MirOperand::Local(raw),
+                    right: MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_EQUAL)),
+                },
+            }));
+            return Ok(Some((MirOperand::Local(tag), MirType::I64)));
+        }
         if is_string_obj && args.len() == 1 {
             let string_cmp_fn = match method.as_str() {
                 "eq" => Some("string_eq"),
@@ -4462,7 +4483,6 @@ impl<'a> MirLowerer<'a> {
                 "gt" => Some("string_gt"),
                 "le" => Some("string_le"),
                 "ge" => Some("string_ge"),
-                "compare" => Some("string_compare"),
                 _ => None,
             };
             if let Some(func_name) = string_cmp_fn {

@@ -87,7 +87,14 @@ impl<'a> MirLowerer<'a> {
         } else {
             false
         };
-        let has_tag = is_enum || is_result_or_option || patterns_imply_enum || is_niche;
+        // An `Ordering` has no boxed form: `compare` hands back the tag itself,
+        // and nothing ever allocates one. Reading a tag out of that would
+        // dereference the value 0, 1 or 2 as an address (#496).
+        let is_ordering_match = arms.iter().any(|arm| {
+            pattern_name(&arm.pattern).is_some_and(|n| n.starts_with("Ordering."))
+        });
+        let has_tag =
+            (is_enum || is_result_or_option || patterns_imply_enum || is_niche) && !is_ordering_match;
 
         let ok_payload_ty = self.extract_payload_type(scrutinee)
             .or_else(|| match &scrutinee_ty {
@@ -914,8 +921,31 @@ impl<'a> MirLowerer<'a> {
         } else {
             return None;
         };
-        let (_, layout) = self.ctx.find_enum(enum_name)?;
-        let variant = layout.variants.iter().find(|v| v.name == variant_name)?;
-        Some(variant.tag)
+        match self.ctx.find_enum(enum_name) {
+            Some((_, layout)) => layout
+                .variants
+                .iter()
+                .find(|v| v.name == variant_name)
+                .map(|v| v.tag),
+            // `Ordering` is compiler-registered and has no layout. Without
+            // this, `match x.compare(y)` built a switch with no cases at all
+            // and every comparison took the last arm (#496).
+            None if enum_name == "Ordering" => {
+                rask_stdlib::ordering_tag(variant_name).map(|t| t as u64)
+            }
+            None => None,
+        }
+    }
+}
+
+/// The type-or-variant name a pattern matches on, if it names one.
+fn pattern_name(pattern: &rask_ast::expr::Pattern) -> Option<&str> {
+    use rask_ast::expr::Pattern;
+    match pattern {
+        Pattern::Ident(name)
+        | Pattern::Constructor { name, .. }
+        | Pattern::Struct { name, .. } => Some(name),
+        Pattern::TypePat { ty_name, .. } => Some(ty_name),
+        _ => None,
     }
 }

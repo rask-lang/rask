@@ -9,7 +9,11 @@ pub mod types;
 pub mod registry;
 pub mod stubs;
 pub mod mir_metadata;
+pub mod ordering;
 
+pub use ordering::{
+    ordering_tag, ORDERING_EQUAL, ORDERING_GREATER, ORDERING_LESS, ORDERING_VARIANTS,
+};
 pub use builtins::{Builtin, BuiltinKind};
 pub use types::{MethodStub, any_builtin_method_mutates, has_method, lookup_method, methods_for};
 pub use stubs::StubRegistry;

@@ -186,10 +186,8 @@ impl Resolver {
 
         self.register_builtin_enum("Option", &["Some", "None"]);
         self.register_builtin_enum("Result", &["Ok", "Err"]);
-        self.register_builtin_enum("Ordering", &[
-            "Less", "Equal", "Greater",                          // comparison
-            "Relaxed", "Acquire", "Release", "AcqRel", "SeqCst", // memory
-        ]);
+        // Comparison results and atomic memory orderings share one enum.
+        self.register_builtin_enum("Ordering", rask_stdlib::ORDERING_VARIANTS);
         // Domain-specific enums (Method, JsonValue, JsonError, HttpError)
         // are registered when their module is imported — see resolve_import().
 
