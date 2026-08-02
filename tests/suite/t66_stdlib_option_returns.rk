@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #398 — stdlib methods that answer with an optional, and Map iteration through
+// `.iter()`. Every one of these used to give a pointer-shaped number on native
+// while the interpreter was right.
+
+test "string.find answers with a position" {
+    assert "hello world".find("world") ?? 999 == 6
+    assert "hello".find("zzz") ?? 999 == 999
+    assert "aaa".find("a") ?? 999 == 0
+}
+
+test "Vec.first and Vec.last answer with an element" {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    assert v.first() ?? -1 == 10
+    assert v.last() ?? -1 == 30
+
+    mut empty = Vec.new()
+    empty.push(1)
+    const only = empty.first() ?? -1
+    assert only == 1
+}
+
+test "Vec.contains compares elements, not addresses" {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    assert v.contains(10)
+    assert v.contains(20)
+    assert v.contains(30) == false
+}
+
+test "Map.remove hands back the value it removed" {
+    mut m = Map.new()
+    m.insert("a", 10)
+    m.insert("b", 20)
+    assert m.remove("a") ?? -1 == 10
+    assert m.len() == 1
+    assert m.remove("zzz") ?? -1 == -1
+}
+
+test "Map iteration through .iter() reads both halves of the pair" {
+    mut m = Map.new()
+    m.insert("x", 1)
+    m.insert("y", 2)
+
+    mut total = 0
+    for pair in m.iter() {
+        total += pair.1
+    }
+    assert total == 3
+
+    mut key_chars = 0
+    for pair in m.iter() {
+        key_chars += pair.0.len()
+    }
+    assert key_chars == 2
+
+    mut destructured = 0
+    for (k, v) in m.iter() {
+        destructured += v
+    }
+    assert destructured == 3
+}
+
+test "iterating the map directly agrees with .iter()" {
+    mut m = Map.new()
+    m.insert("x", 5)
+    m.insert("y", 7)
+
+    mut bare = 0
+    for pair in m {
+        bare += pair.1
+    }
+    mut through_iter = 0
+    for pair in m.iter() {
+        through_iter += pair.1
+    }
+    assert bare == 12
+    assert through_iter == 12
+}
+
+test "iterator adapters still fuse over a Vec" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+
+    mut even = 0
+    for x in v.iter().filter(|n| n % 2 == 0) {
+        even += x
+    }
+    assert even == 6
+
+    mut chained = 0
+    for x in v.iter().filter(|n| n > 1).map(|n| n * 10) {
+        chained += x
+    }
+    assert chained == 90
+}
