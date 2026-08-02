@@ -1737,10 +1737,37 @@ impl<'a> FunctionBuilder<'a> {
                 Self::copy_bytes(builder, val, 0, addr_val, *offset as i32, size);
             } else {
                 let val_ty = builder.func.dfg.value_type(val);
+                let flags = MemFlags::new();
 
-                // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
-                // values to fill the full slot — otherwise a 4-byte f32 store
-                // leaves stale upper bytes that corrupt the f64 read-back.
+                // A field the layout packed into fewer than 8 bytes gets a
+                // store that wide. An 8-byte store into a 4-byte slot walks
+                // into whatever follows: a two-i32 tuple wrote its second
+                // element across the frame's edge and took the return address
+                // with it, so the test binary jumped into nowhere (#548).
+                if let Some(size @ (1 | 2 | 4)) = *store_size {
+                    let narrow = match size {
+                        1 => types::I8,
+                        2 => types::I16,
+                        _ => types::I32,
+                    };
+                    let val = if val_ty.is_float() {
+                        // Only f32 is narrower than a word, and it's already
+                        // the right width — store its bits.
+                        builder.ins().bitcast(types::I32, MemFlags::new(), val)
+                    } else if val_ty.bits() > narrow.bits() {
+                        builder.ins().ireduce(narrow, val)
+                    } else if val_ty.bits() < narrow.bits() {
+                        builder.ins().uextend(narrow, val)
+                    } else {
+                        val
+                    };
+                    builder.ins().store(flags, val, addr_val, *offset as i32);
+                    return Ok(());
+                }
+
+                // Otherwise the slot is a full word. Widen sub-8-byte values to
+                // fill it — a 4-byte f32 store would leave stale upper bytes
+                // that corrupt the f64 read-back.
                 let val = if val_ty == types::F32 {
                     builder.ins().fpromote(types::F64, val)
                 } else if val_ty.is_int() && val_ty.bits() < 64 {
@@ -1750,7 +1777,6 @@ impl<'a> FunctionBuilder<'a> {
                     val
                 };
 
-                let flags = MemFlags::new();
                 builder.ins().store(flags, val, addr_val, *offset as i32);
             }
         }

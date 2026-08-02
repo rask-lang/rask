@@ -1585,15 +1585,19 @@ impl<'a> MirLowerer<'a> {
                     let elem_size = elem_ty.size();
                     let elem_align = elem_ty.align().max(1);
                     offset = (offset + elem_align - 1) & !(elem_align - 1);
-                    // An element wider than a word is a value, not a pointer:
-                    // a string constant lowers to the address of its 16-byte
-                    // blob, so without a size the address landed in the slot
-                    // and reading `t.1` back gave garbage (#442).
+                    // The element's own size, both ways. Wider than a word and
+                    // the operand is a pointer to the data, not the data: a
+                    // string constant lowers to the address of its 16-byte
+                    // blob, and without a size that address landed in the slot,
+                    // so reading `t.1` back gave garbage (#442). Narrower than
+                    // a word and the store has to be narrow too — the offsets
+                    // here are packed, so a full-word store of a 4-byte element
+                    // runs into the next one (#548).
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset,
                         value: elem_op,
-                        store_size: (elem_size > 8).then_some(elem_size),
+                        store_size: Some(elem_size),
                     }));
                     offset += elem_size;
                 }
