@@ -322,6 +322,43 @@ impl ToDiagnostic for rask_types::TypeError {
                      surfacing later as a missing function during codegen"
                 )
             }
+            NotDisplayable { ty, interpolated, span } => {
+                let site = if *interpolated { "this placeholder" } else { "this call" };
+                let mut diag = Diagnostic::error(format!(
+                    "`{}` does not implement `Displayable`",
+                    ty
+                ))
+                .with_code("E0826")
+                .with_primary(*span, format!("`{}` has no `to_string()`", ty))
+                .with_why(
+                    "`{}` renders a value through `Displayable`. Structs and enums opt in, \
+                     so the compiler never invents output that looks intentional but isn't \
+                     [std.fmt/D3, D4]",
+                );
+                // The two cases have genuinely different fixes.
+                if ty.ends_with('?') || ty.contains(" or ") {
+                    diag = diag
+                        .with_help(format!(
+                            "{} holds a `{}`, which may not have a value to show",
+                            site, ty
+                        ))
+                        .with_fix(
+                            "supply the missing case — `{value ?? \"none\"}` — or narrow \
+                             first with `if const v = value { … }`",
+                        );
+                } else {
+                    diag = diag.with_fix(format!(
+                        "give it one: `extend {} with Displayable {{ func to_string(self) -> string {{ … }} }}`",
+                        ty
+                    ))
+                    .with_note(format!(
+                        "an error type only needs `message()` — `extend {} {{ func message(self) -> string }}` \
+                         bridges to Displayable on its own [std.fmt/D5]",
+                        ty
+                    ));
+                }
+                diag
+            }
             UnboundedTypeParamMethod { param, method, bounds, span } => {
                 let bound_list = if bounds.is_empty() {
                     format!("`{}` has no bounds", param)

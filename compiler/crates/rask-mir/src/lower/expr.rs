@@ -2871,7 +2871,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        if let Some(r) = self.try_lower_fmt(object, method, args, &obj_op, &obj_ty)? {
+        if let Some(r) = self.try_lower_fmt(expr, object, method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
 
@@ -4506,6 +4506,7 @@ impl<'a> MirLowerer<'a> {
     /// conversion by receiver type and then pads (std.fmt/CM5).
     fn try_lower_fmt(
         &mut self,
+        expr: &Expr,
         object: &Expr,
         method: &String,
         args: &[CallArg],
@@ -4584,10 +4585,19 @@ impl<'a> MirLowerer<'a> {
             // Everything else renders the ordinary way — including `debug` on
             // a struct or enum, which goes to the type's own to_string.
             _ => {
-                let (op, _) = self
-                    .try_lower_to_string(object, &"to_string".to_string(), &[], obj_op, obj_ty)?
-                    .unwrap_or_else(|| (obj_op.clone(), MirType::String));
-                op
+                // A struct or enum renders through its own body. Which one
+                // that is — `to_string` or a `message` bridged to it — was
+                // settled during reachability; without that name the receiver
+                // would be handed to `string_pad` as if the pointer were text.
+                match self.ctx.call_rewrites.get(&expr.id).cloned() {
+                    Some(renderer) => call(self, &renderer, vec![obj_op.clone()]),
+                    None => {
+                        let (op, _) = self
+                            .try_lower_to_string(object, &"to_string".to_string(), &[], obj_op, obj_ty)?
+                            .unwrap_or_else(|| (obj_op.clone(), MirType::String));
+                        op
+                    }
+                }
             }
         };
 

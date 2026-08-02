@@ -699,7 +699,25 @@ impl<'a> Monomorphizer<'a> {
                     });
 
                 if let Some((type_id, type_name, method_name)) = dispatched {
-                    let qualified = format!("{}_{}", type_name, method_name);
+                    let mut qualified = format!("{}_{}", type_name, method_name);
+                    // A `{x}` and a `{x:>10}` both need the receiver's own
+                    // rendering — `to_string`, or `message` for an error type
+                    // that gets Displayable from it (std.fmt/D5). Neither name
+                    // is what the call says, so resolve it here and record the
+                    // answer for lowering; nothing downstream can see which of
+                    // the two a given type actually defines.
+                    if method_name == "to_string" || method_name == "__fmt" {
+                        let renderer = [
+                            format!("{}_to_string", type_name),
+                            format!("{}_message", type_name),
+                        ]
+                        .into_iter()
+                        .find(|name| self.method_table.contains_key(name));
+                        if let Some(name) = renderer.filter(|n| *n != qualified) {
+                            qualified = name.clone();
+                            self.call_rewrites.insert(expr.id, name);
+                        }
+                    }
                     match self.contested_owner(&qualified) {
                         Some(owner) if owner != type_id => {
                             self.ambiguous_methods.push(AmbiguousMethod {

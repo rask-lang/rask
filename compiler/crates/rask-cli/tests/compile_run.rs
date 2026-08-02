@@ -795,6 +795,23 @@ fn error_bad_interpolation() {
     );
 }
 
+// #539: `{}` needs Displayable (std.fmt/D4). Before this, printing a struct
+// failed in codegen with "Function not found: Point_to_string" and printing an
+// optional printed its address on native and blew up at runtime on interp.
+#[test]
+fn error_not_displayable() {
+    let (failed, out) = compile_error_output("not_displayable.rk");
+    assert!(failed, "printing a non-Displayable type must be rejected: {}", out);
+    assert!(
+        out.contains("E0826") && out.contains("Point"),
+        "should name the struct and the Displayable rule: {}", out,
+    );
+    assert!(
+        out.contains("i64?"),
+        "should catch the optional too, and name it as the user wrote it: {}", out,
+    );
+}
+
 // A bare literal used to bind to whatever type it met first, so
 // `func f() -> string { return 1 }` type-checked. Found chasing #383, where a
 // `T? or E` return silently accepted anything numeric.

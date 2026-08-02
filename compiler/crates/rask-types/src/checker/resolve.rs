@@ -278,6 +278,41 @@ impl TypeChecker {
         }
     }
 
+    /// std.fmt/D2–D5: can `{}` render this on its own?
+    ///
+    /// Primitives can (D2). Structs and enums opt in with `to_string`, or get
+    /// it for free from `message()` (D3, D5). An optional or a result can't —
+    /// there may be nothing to show, and the caller has to say what happens
+    /// then. Anything else keeps rendering the way it does today.
+    fn is_displayable(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Result { .. } => false,
+            Type::Named(_) | Type::Generic { .. } => {
+                let has = |name: &str| {
+                    crate::traits::implements_trait(&self.types, ty, name)
+                };
+                has("Displayable") || has("ErrorMessage")
+            }
+            _ => true,
+        }
+    }
+
+    /// A type as the user wrote it. `Type`'s own Display can't name a
+    /// registered type — it prints `<type#7>`.
+    fn render_type(&self, ty: &Type) -> String {
+        match ty {
+            Type::Result { ok, err } if **err == Type::None => {
+                format!("{}?", self.render_type(ok))
+            }
+            Type::Result { ok, err } => {
+                format!("{} or {}", self.render_type(ok), self.render_type(err))
+            }
+            Type::Named(_) | Type::Generic { .. } => super::receiver_name(ty, &self.types)
+                .unwrap_or_else(|| format!("{}", ty)),
+            _ => format!("{}", ty),
+        }
+    }
+
     pub(super) fn resolve_method(
         &mut self,
         ty: Type,
@@ -325,14 +360,19 @@ impl TypeChecker {
             return self.unify(&ty, &ret, span);
         }
 
-        // to_string() on any type returns string
-        if method == "to_string" && args.is_empty() {
-            return self.unify(&ret, &Type::String, span);
-        }
-
-        // `__fmt(type, width, precision, align, fill)` — what desugaring turns
-        // `{x:spec}` into. Compiler-internal, so it applies to any receiver.
-        if method == "__fmt" && args.len() == 5 {
+        // std.fmt/D1–D5: `to_string()` comes from Displayable. Primitives have
+        // it, aggregates opt in. `{x}` desugars to this call, so both forms are
+        // checked in one place.
+        if (method == "to_string" && args.is_empty())
+            || (method == "__fmt" && args.len() == 5)
+        {
+            if !self.is_displayable(&ty) {
+                return Err(TypeError::NotDisplayable {
+                    ty: self.render_type(&ty),
+                    interpolated: method == "__fmt",
+                    span,
+                });
+            }
             return self.unify(&ret, &Type::String, span);
         }
 
