@@ -93,6 +93,7 @@ The publish-time warning (DT2) is in [build.md](../structure/build.md#publishing
 | **GF2: Private bounds inferred** | Non-public functions may omit constraints; compiler infers from body |
 | **GF3: Caller constraints** | Calling a constrained function requires same or stronger constraints (explicit or inferred) |
 | **GF4: Disjointness travels with the signature** | A signature writing `T or E` with a type parameter on either side carries an implicit "these must stay distinct" obligation, checked at the call site once `T` is known. Not spelled as a bound — the `or` already says it. See [error-types.md](error-types.md) ER3a |
+| **GF5: Methods too** | A method declares type parameters the same way a function does, and they're independent of the receiver's. `Holder<T>` can have `func other<U>(self, u: U) -> U` — `T` is fixed by the receiver, `U` is chosen per call |
 
 ```rask
 // Public: bounds MUST be explicit
@@ -101,7 +102,17 @@ public func process<T: Hashable>(items: []T) { ... }
 // Private: bounds inferred from body
 func helper(item) { item.hash() }
 // Compiler infers: func helper<T: Hashable>(item: T)
+
+// GF5: a method's own parameters, alongside the receiver's
+extend Holder<T> {
+    func mine(self) -> T { return self.item }
+    func other<U>(self, u: U) -> U { return u }
+}
 ```
+
+Each distinct set of type arguments gets its own compiled body, same as a
+generic function (see Code Specialization below) — so a method used at two
+types is two bodies, not one that guesses.
 
 See [Gradual Constraints](gradual-constraints.md) for inference rules, smart error messages, and edge cases.
 
