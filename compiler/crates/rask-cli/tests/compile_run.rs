@@ -809,13 +809,13 @@ fn error_nominal_trait_not_listed() {
 
 // #506: an @unimplemented stdlib *module* function is caught at the call, the
 // way a method on a receiver already was. `json.decode` used to type-check and
-// then segfault.
+// then segfault; it's implemented now, so `json.to_value` stands in.
 #[test]
 fn error_unimplemented_module_fn() {
     let (failed, out) = compile_error_output("unimplemented_module_fn.rk");
     assert!(failed, "an unimplemented module function must be rejected: {}", out);
     assert!(
-        out.contains("E0353") && out.contains("json.decode"),
+        out.contains("E0353") && out.contains("json.to_value"),
         "should name the function and the unimplemented code: {}", out,
     );
 }

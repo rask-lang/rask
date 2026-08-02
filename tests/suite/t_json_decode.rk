@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// json.decode<T> across the types std.json/J7 says are compatible.
+//
+// `{` opens interpolation in a Rask string, so every JSON literal here writes
+// its braces doubled (`{{`) — that's a literal `{` by std.fmt/F4.
+//
+// Native builds these by describing T to the runtime decoder (a "shape") and
+// letting it fill the value in one pass; the interpreter walks the same struct
+// declarations itself. The two have to agree, which is what this file checks.
+
+import json
+
+struct Address {
+    public street: string
+    public zip: u32
+}
+
+struct Tag {
+    public name: string
+    public weight: f64
+}
+
+struct Profile {
+    public id: u64
+    public name: string
+    public active: bool
+    public score: f64
+    public rank: i32
+    public home: Address
+    public nicknames: Vec<string>
+    public counts: Vec<i64>
+    public tags: Vec<Tag>
+    public email: string?
+    public backup: string?
+    public limit: i64?
+}
+
+struct Counts {
+    public totals: Map<string, i64>
+}
+
+struct Point {
+    public x: i32
+    public y: i32
+}
+
+func profile_json() -> string {
+    return "{{\"id\":7,\"name\":\"alice\",\"active\":true,\"score\":0.25,\"rank\":-3,\"home\":{{\"street\":\"Main\",\"zip\":1234}},\"nicknames\":[\"al\",\"ali\"],\"counts\":[1,2,3],\"tags\":[{{\"name\":\"x\",\"weight\":1.5}},{{\"name\":\"y\",\"weight\":2.5}}],\"email\":\"a@b.c\",\"backup\":null,\"extra\":\"ignored\"}}"
+}
+
+test "std.json — scalar fields decode at their declared width" {
+    const p = try json.decode<Profile>(profile_json()) else |e| {
+        assert false
+        return
+    }
+    assert p.id == 7
+    assert p.name == "alice"
+    assert p.active
+    assert p.score == 0.25
+    assert p.rank == -3
+}
+
+test "std.json — a nested struct field decodes into its own fields" {
+    const p = try json.decode<Profile>(profile_json()) else |e| {
+        assert false
+        return
+    }
+    assert p.home.street == "Main"
+    assert p.home.zip == 1234
+}
+
+test "std.json — a Vec field decodes element by element" {
+    const p = try json.decode<Profile>(profile_json()) else |e| {
+        assert false
+        return
+    }
+    assert p.nicknames.len() == 2
+    assert p.nicknames[0] == "al"
+    assert p.nicknames[1] == "ali"
+    assert p.counts.len() == 3
+    assert p.counts[2] == 3
+}
+
+test "std.json — a Vec of structs keeps each element's fields" {
+    const p = try json.decode<Profile>(profile_json()) else |e| {
+        assert false
+        return
+    }
+    assert p.tags.len() == 2
+    assert p.tags[0].name == "x"
+    assert p.tags[0].weight == 1.5
+    assert p.tags[1].name == "y"
+    assert p.tags[1].weight == 2.5
+}
+
+// J9: present is Some, explicit null is none, missing is none.
+test "std.json — optional fields follow presence, null, and absence" {
+    const p = try json.decode<Profile>(profile_json()) else |e| {
+        assert false
+        return
+    }
+    const email = p.email ?? "missing"
+    assert email == "a@b.c"
+    assert p.backup == none
+    assert p.limit == none
+}
+
+// J10
+test "std.json — a key with no matching field is ignored" {
+    const p = try json.decode<Profile>(profile_json()) else |e| {
+        assert false
+        return
+    }
+    assert p.name == "alice"
+}
+
+test "std.json — decoding then encoding round-trips the whole struct" {
+    const p = try json.decode<Profile>(profile_json()) else |e| {
+        assert false
+        return
+    }
+    const out = json.encode(p)
+    assert out.contains("\"id\":7")
+    assert out.contains("\"name\":\"alice\"")
+    assert out.contains("\"home\":{{\"street\":\"Main\",\"zip\":1234}}")
+    assert out.contains("\"nicknames\":[\"al\",\"ali\"]")
+    assert out.contains("\"counts\":[1,2,3]")
+    assert out.contains("\"tags\":[{{\"name\":\"x\",\"weight\":1.5}},{{\"name\":\"y\",\"weight\":2.5}}]")
+    assert out.contains("\"email\":\"a@b.c\"")
+    assert out.contains("\"backup\":null")
+}
+
+test "std.json — a Map<string, V> field decodes to a real map" {
+    const c = try json.decode<Counts>("{{\"totals\":{{\"a\":1,\"b\":2}}}}") else |e| {
+        assert false
+        return
+    }
+    assert c.totals.len() == 2
+    assert c.totals["a"] == 1
+    assert c.totals["b"] == 2
+}
+
+// A Map has no defined iteration order, so only the pieces are checked.
+test "std.json — a decoded Map encodes back to an object" {
+    const c = try json.decode<Counts>("{{\"totals\":{{\"a\":1,\"b\":2}}}}") else |e| {
+        assert false
+        return
+    }
+    const out = json.encode(c)
+    assert out.starts_with("{{\"totals\":{{")
+    assert out.contains("\"a\":1")
+    assert out.contains("\"b\":2")
+}
+
+test "std.json — the target can be a bare scalar" {
+    const n = try json.decode<i64>("42") else |e| {
+        assert false
+        return
+    }
+    assert n == 42
+
+    const s = try json.decode<string>("\"hi\"") else |e| {
+        assert false
+        return
+    }
+    assert s == "hi"
+
+    const f = try json.decode<f64>("0.5") else |e| {
+        assert false
+        return
+    }
+    assert f == 0.5
+
+    const b = try json.decode<bool>("true") else |e| {
+        assert false
+        return
+    }
+    assert b
+}
+
+test "std.json — the target can be a list at the top level" {
+    const pts = try json.decode<Vec<Point>>("[{{\"x\":1,\"y\":2}},{{\"x\":3,\"y\":4}}]") else |e| {
+        assert false
+        return
+    }
+    assert pts.len() == 2
+    assert pts[0].x == 1
+    assert pts[1].y == 4
+}
+
+// The untyped path (std.json/J4) — same verb, JsonValue as the target.
+test "std.json — decoding to JsonValue gives the untyped tree" {
+    const v = try json.decode<JsonValue>("{{\"k\":[1,2]}}") else |e| {
+        assert false
+        return
+    }
+    assert json.stringify(v) == "{{\"k\":[1,2]}}"
+}
+
+test "std.json — escapes and unicode survive a decode" {
+    const s = try json.decode<string>("\"a\\nb\\t\\\"c\\\"\\u0041\"") else |e| {
+        assert false
+        return
+    }
+    assert s.contains("A")
+    assert s.contains("\n")
+    assert s.contains("\t")
+    assert s.contains("\"c\"")
+}
+
+// J5
+test "std.json — a repeated key takes its last value" {
+    const p = try json.decode<Point>("{{\"x\":1,\"y\":2,\"x\":9}}") else |e| {
+        assert false
+        return
+    }
+    assert p.x == 9
+    assert p.y == 2
+}

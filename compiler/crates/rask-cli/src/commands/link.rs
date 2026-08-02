@@ -23,6 +23,7 @@ const PORTABLE_SOURCES: &[&str] = &[
     "ptr.c",
     "path.c",
     "math.c",
+    "json.c",
 ];
 
 /// Sources that require pthreads (Linux, macOS — not Windows/bare-metal).

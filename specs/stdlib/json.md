@@ -41,6 +41,7 @@ One verb pair for both layers: `decode` (string → value) and `encode` (value �
 |------|-------------|
 | **J4: RFC 8259** | `json.decode` accepts any valid RFC 8259 JSON string |
 | **J5: Duplicate keys** | Last value wins (matches JavaScript behavior) |
+| **J11: Nesting limit** | Arrays and objects nest at most 256 deep; past that the input is a `ParseError` |
 
 <!-- test: skip -->
 ```rask
@@ -148,6 +149,9 @@ WHY: Only primitive, collection, optional, and nested-struct types can be encode
 | Duplicate keys in object | Last value wins | J5 |
 | JSON has extra keys not in struct | Ignored | J10 |
 | Struct has extra fields not in JSON | Required fields error; optional fields get `none` | J9 |
+| Number where an integer field is declared | Truncated toward zero | J2 |
+| `@skip` field on decode | Its `@default`, or the type's empty value (`""`, `[]`, `{}`, `none`, 0) | J8 |
+| Nesting past 256 levels | `JsonError.ParseError` | J11 |
 
 ---
 
@@ -161,11 +165,18 @@ WHY: Only primitive, collection, optional, and nested-struct types can be encode
 
 **J8 (field mapping):** `@rename` (`std.encoding/E18`) overrides the serialized key name. Default is the field name (snake_case). Format-agnostic — works for TOML, MessagePack, etc.
 
+**How decode reaches the type:** the native backend has no reflection at runtime, so the call site describes the target instead — a small tree of field names, byte offsets, and kinds handed to the decoder, which fills the value in one pass. Nesting, lists, and maps recurse in the runtime rather than unrolling at the call site. The interpreter walks the same struct declarations directly. Both are compiler-side; nothing in `stdlib/json.rk` implements `decode`.
+
+**J11 (nesting limit):** the parser recurses, so an input of nothing but `[[[[…` would otherwise walk off the stack. 256 is well past anything a real document nests.
+
 ### Deferred
 
 - `json.Parser` — streaming parser for large files
 - `JsonValue.Integer(i64)` — lossless integer round-trips
 - Date/time handling — dates are strings, parse with `time` module
+- `json.to_value` / `json.from_value` — the typed↔`JsonValue` pair; `decode`/`encode` cover the string ends today
+- `@default(expr)` with anything but a literal — an arbitrary comptime expression needs CTFE at the field
+- Enums as JSON — only structs, collections, and scalars decode
 
 ### Resolved (by std.encoding)
 

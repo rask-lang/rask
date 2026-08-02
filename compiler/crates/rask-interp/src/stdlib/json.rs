@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
-use rask_ast::decl::StructDecl;
+use rask_ast::decl::{field_attrs, StructDecl};
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
@@ -28,7 +28,7 @@ impl Interpreter {
                 let input = self.expect_string(&args, 0)?;
                 match parse_json(&input) {
                     Ok(value) => Ok(make_result_ok(value)),
-                    Err(e) => Ok(make_result_err(&e)),
+                    Err(e) => Ok(make_result_err(JsonErrKind::Parse, &e)),
                 }
             }
             "stringify" => {
@@ -53,7 +53,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
-                let json_val = value_to_json(&value)?;
+                let json_val = value_to_json(&value, &self.struct_decls)?;
                 let s = stringify_value(&json_val, false, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
             }
@@ -62,7 +62,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
-                let json_val = value_to_json(&value)?;
+                let json_val = value_to_json(&value, &self.struct_decls)?;
                 let s = stringify_value(&json_val, true, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
             }
@@ -71,7 +71,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
-                value_to_json(&value)
+                value_to_json(&value, &self.struct_decls)
             }
             "decode" => {
                 // decode(type_name, json_string) — type_name injected from type_args
@@ -83,14 +83,13 @@ impl Interpreter {
                 }
                 let type_name = self.expect_string(&args, 0)?;
                 let input = self.expect_string(&args, 1)?;
-                match parse_json(&input) {
-                    Ok(json_val) => {
-                        match json_to_typed(&json_val, &type_name, &self.struct_decls) {
-                            Ok(value) => Ok(make_result_ok(value)),
-                            Err(e) => Ok(make_result_err(&e)),
-                        }
-                    }
-                    Err(e) => Ok(make_result_err(&e)),
+                let parsed = match parse_json(&input) {
+                    Ok(v) => v,
+                    Err(e) => return Ok(make_result_err(JsonErrKind::Parse, &e)),
+                };
+                match json_to_typed(&parsed, &type_name, "", &self.struct_decls) {
+                    Ok(value) => Ok(make_result_ok(value)),
+                    Err(e) => Ok(make_result_err(e.kind, &e.message)),
                 }
             }
             _ => Err(RuntimeError::NoSuchMethod {
@@ -135,6 +134,34 @@ impl Interpreter {
             }),
         }
     }
+
+    /// `extend JsonError` from stdlib/json.rk. The interpreter builds these
+    /// values itself rather than running the stdlib source, so the method has
+    /// to live here too — keep the wording in step with the .rk file.
+    pub(crate) fn call_json_error_method(
+        &self,
+        variant: &str,
+        fields: &[Value],
+        method: &str,
+    ) -> Result<Value, RuntimeError> {
+        if method != "message" {
+            return Err(RuntimeError::NoSuchMethod {
+                ty: "JsonError".to_string(),
+                method: method.to_string(),
+            });
+        }
+        let detail = match fields.first() {
+            Some(Value::String(s)) => s.lock().unwrap().clone(),
+            _ => String::new(),
+        };
+        let msg = match variant {
+            "ParseError" => format!("parse error: {}", detail),
+            "TypeError" => format!("type error: {}", detail),
+            "MissingField" => format!("missing field: {}", detail),
+            other => format!("{}: {}", other, detail),
+        };
+        Ok(Value::String(Arc::new(Mutex::new(msg))))
+    }
 }
 
 // ─── JSON Parser (recursive descent) ───
@@ -175,7 +202,7 @@ impl<'a> JsonParser<'a> {
         match self.advance() {
             Some(c) if c == expected => Ok(()),
             Some(c) => Err(format!(
-                "expected '{}', found '{}' at position {}",
+                "expected '{}', found '{}' at byte {}",
                 expected as char, c as char, self.pos - 1
             )),
             None => Err(format!("unexpected end of input, expected '{}'", expected as char)),
@@ -191,7 +218,7 @@ impl<'a> JsonParser<'a> {
             Some(b't') | Some(b'f') => self.parse_bool(),
             Some(b'n') => self.parse_null(),
             Some(c) if c == b'-' || c.is_ascii_digit() => self.parse_number(),
-            Some(c) => Err(format!("unexpected character '{}' at position {}", c as char, self.pos)),
+            Some(c) => Err(format!("unexpected character '{}' at byte {}", c as char, self.pos)),
             None => Err("unexpected end of input".to_string()),
         }
     }
@@ -220,7 +247,7 @@ impl<'a> JsonParser<'a> {
                                 s.push('\u{FFFD}');
                             }
                         }
-                        Some(c) => return Err(format!("invalid escape '\\{}'", c as char)),
+                        Some(c) => return Err(format!("invalid escape '\\{}' at byte {}", c as char, self.pos)),
                         None => return Err("unexpected end of input in string escape".to_string()),
                     }
                 }
@@ -243,7 +270,7 @@ impl<'a> JsonParser<'a> {
                             _ => unreachable!(),
                         };
                 }
-                _ => return Err("invalid unicode escape".to_string()),
+                _ => return Err(format!("bad \\u escape at byte {}", self.pos)),
             }
         }
         Ok(val)
@@ -265,7 +292,7 @@ impl<'a> JsonParser<'a> {
             self.advance();
         } else {
             if !self.peek().map_or(false, |c| c.is_ascii_digit()) {
-                return Err("expected digit".to_string());
+                return Err(format!("expected a digit at byte {}", self.pos));
             }
             while self.peek().map_or(false, |c| c.is_ascii_digit()) {
                 self.advance();
@@ -304,7 +331,7 @@ impl<'a> JsonParser<'a> {
             self.pos += 5;
             Ok(make_json_bool(false))
         } else {
-            Err(format!("unexpected token at position {}", self.pos))
+            Err(format!("unexpected character '{}' at byte {}", self.peek().unwrap_or(b'?') as char, self.pos))
         }
     }
 
@@ -313,7 +340,7 @@ impl<'a> JsonParser<'a> {
             self.pos += 4;
             Ok(make_json_null())
         } else {
-            Err(format!("unexpected token at position {}", self.pos))
+            Err(format!("unexpected character '{}' at byte {}", self.peek().unwrap_or(b'?') as char, self.pos))
         }
     }
 
@@ -337,7 +364,7 @@ impl<'a> JsonParser<'a> {
                     self.advance();
                     return Ok(make_json_array(items));
                 }
-                _ => return Err(format!("expected ',' or ']' at position {}", self.pos)),
+                _ => return Err(format!("expected ',' or ']' at byte {}", self.pos)),
             }
         }
     }
@@ -366,7 +393,7 @@ impl<'a> JsonParser<'a> {
                     self.advance();
                     return Ok(make_json_object(entries));
                 }
-                _ => return Err(format!("expected ',' or '}}' at position {}", self.pos)),
+                _ => return Err(format!("expected ',' or '}}' at byte {}", self.pos)),
             }
         }
     }
@@ -379,7 +406,7 @@ fn parse_json(input: &str) -> Result<Value, String> {
     parser.skip_whitespace();
     if parser.pos < parser.input.len() {
         return Err(format!(
-            "trailing data at position {}",
+            "trailing content after the JSON value at byte {}",
             parser.pos
         ));
     }
@@ -480,6 +507,38 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
                 format!("{{{}}}", pairs.join(","))
             }
         }
+        Value::Map(m) => {
+            let map = m.lock().unwrap();
+            if map.is_empty() {
+                return "{}".to_string();
+            }
+            let key_of = |k: &Value| match k {
+                Value::String(s) => escape_json_string(&s.lock().unwrap()),
+                other => escape_json_string(&format!("{}", other)),
+            };
+            if pretty {
+                let mut s = "{\n".to_string();
+                for (i, (k, v)) in map.iter().enumerate() {
+                    s.push_str(&"  ".repeat(indent + 1));
+                    s.push_str(&key_of(k));
+                    s.push_str(": ");
+                    s.push_str(&stringify_value(v, true, indent + 1));
+                    if i < map.len() - 1 {
+                        s.push(',');
+                    }
+                    s.push('\n');
+                }
+                s.push_str(&"  ".repeat(indent));
+                s.push('}');
+                s
+            } else {
+                let pairs: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| format!("{}:{}", key_of(k), stringify_value(v, false, 0)))
+                    .collect();
+                format!("{{{}}}", pairs.join(","))
+            }
+        }
         Value::Enum { name, variant, fields, .. } if name == "Option" => {
             match variant.as_str() {
                 "Some" => stringify_value(fields.first().unwrap_or(&Value::Unit), pretty, indent),
@@ -568,7 +627,10 @@ fn escape_json_string(s: &str) -> String {
 // ─── Value Conversion ───
 
 /// Convert a Rask Value (struct, vec, etc.) into a JsonValue enum value.
-fn value_to_json(value: &Value) -> Result<Value, RuntimeError> {
+fn value_to_json(
+    value: &Value,
+    struct_decls: &HashMap<String, StructDecl>,
+) -> Result<Value, RuntimeError> {
     match value {
         Value::Unit => Ok(make_json_null()),
         Value::Bool(b) => Ok(make_json_bool(*b)),
@@ -578,31 +640,58 @@ fn value_to_json(value: &Value) -> Result<Value, RuntimeError> {
         Value::Vec(v) => {
             let vec = v.lock().unwrap();
             let items: Result<Vec<Value>, RuntimeError> =
-                vec.iter().map(|v| value_to_json(v)).collect();
+                vec.iter().map(|v| value_to_json(v, struct_decls)).collect();
             Ok(make_json_array(items?))
         }
         Value::Struct(ref s) => {
             let guard = s.lock().unwrap();
-            let entries: Result<Vec<(String, Value)>, RuntimeError> = guard.fields
-                .iter()
-                .filter(|(k, _)| !k.starts_with('_')) // Skip internal fields
-                .map(|(k, v)| value_to_json(v).map(|jv| (k.clone(), jv)))
-                .collect();
-            Ok(make_json_object(entries?))
+            // The declaration carries @rename/@skip; the value only knows field
+            // names, so the key each field serializes under is looked up here.
+            let decl = struct_decls.get(&guard.name);
+            let mut entries = Vec::with_capacity(guard.fields.len());
+            for (k, v) in guard.fields.iter() {
+                if k.starts_with('_') {
+                    continue; // internal field
+                }
+                let attrs = decl
+                    .and_then(|d| d.fields.iter().find(|f| f.name == *k))
+                    .map(|f| f.attrs.as_slice())
+                    .unwrap_or(&[]);
+                if field_attrs::is_skipped(attrs) {
+                    continue;
+                }
+                entries.push((
+                    field_attrs::serial_name(attrs, k),
+                    value_to_json(v, struct_decls)?,
+                ));
+            }
+            Ok(make_json_object(entries))
+        }
+        Value::Map(m) => {
+            let map = m.lock().unwrap();
+            let mut entries = Vec::with_capacity(map.len());
+            for (k, v) in map.iter() {
+                let key = match k {
+                    Value::String(s) => s.lock().unwrap().clone(),
+                    other => format!("{}", other),
+                };
+                entries.push((key, value_to_json(v, struct_decls)?));
+            }
+            Ok(make_json_object(entries))
         }
         Value::Enum { name, variant, fields, .. } if name == "Option" => {
             match variant.as_str() {
-                "Some" if !fields.is_empty() => value_to_json(&fields[0]),
+                "Some" if !fields.is_empty() => value_to_json(&fields[0], struct_decls),
                 _ => Ok(make_json_null()),
             }
         }
-        Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
+        Value::Enum { name, variant, fields, variant_index, .. } if name == "JsonValue" => {
             // Already a JsonValue, return as-is
             Ok(Value::Enum {
                 name: name.clone(),
                 variant: variant.clone(),
                 fields: fields.clone(),
-                variant_index: 0, origin: None,
+                variant_index: *variant_index, origin: None,
             })
         }
         _ => Err(RuntimeError::TypeError(format!(
@@ -628,7 +717,7 @@ fn make_json_bool(b: bool) -> Value {
         name: "JsonValue".to_string(),
         variant: "Bool".to_string(),
         fields: vec![Value::Bool(b)],
-        variant_index: 0, origin: None,
+        variant_index: 1, origin: None,
     }
 }
 
@@ -637,7 +726,7 @@ fn make_json_number(n: f64) -> Value {
         name: "JsonValue".to_string(),
         variant: "Number".to_string(),
         fields: vec![Value::Float(n)],
-        variant_index: 0, origin: None,
+        variant_index: 2, origin: None,
     }
 }
 
@@ -646,7 +735,7 @@ fn make_json_string(s: &str) -> Value {
         name: "JsonValue".to_string(),
         variant: "String".to_string(),
         fields: vec![Value::String(Arc::new(Mutex::new(s.to_string())))],
-        variant_index: 0, origin: None,
+        variant_index: 3, origin: None,
     }
 }
 
@@ -655,116 +744,314 @@ fn make_json_array(items: Vec<Value>) -> Value {
         name: "JsonValue".to_string(),
         variant: "Array".to_string(),
         fields: vec![Value::Vec(Arc::new(Mutex::new(items)))],
-        variant_index: 0, origin: None,
+        variant_index: 4, origin: None,
     }
 }
 
 fn make_json_object(entries: Vec<(String, Value)>) -> Value {
-    // Store as a struct with string keys (like a Map)
-    let mut map = IndexMap::new();
+    // A real Map, not a struct that looks like one. The struct stand-in meant
+    // `value.as_object()` handed back something with no `get` on it.
+    // Last value wins for a repeated key (J5).
+    let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(entries.len());
     for (k, v) in entries {
-        map.insert(k, v);
+        if let Some(slot) = pairs.iter_mut().find(|(ek, _)| match ek {
+            Value::String(s) => *s.lock().unwrap() == k,
+            _ => false,
+        }) {
+            slot.1 = v;
+            continue;
+        }
+        pairs.push((Value::String(Arc::new(Mutex::new(k))), v));
     }
     Value::Enum {
         name: "JsonValue".to_string(),
         variant: "Object".to_string(),
-        fields: vec![Value::new_struct(
-            "Map".to_string(),
-            map,
-            None,
-        )],
-        variant_index: 0, origin: None,
+        fields: vec![Value::Map(Arc::new(Mutex::new(pairs)))],
+        variant_index: 5, origin: None,
     }
 }
 
 // ─── JSON Decode (typed deserialization) ───
 
-/// Convert a parsed JsonValue into a typed Rask value based on struct declarations.
-fn json_to_typed(
-    json: &Value,
-    type_name: &str,
-    struct_decls: &HashMap<String, StructDecl>,
-) -> Result<Value, String> {
-    // Unwrap JsonValue enum wrapper if present
-    let raw = unwrap_json_value(json);
+/// Which JsonError variant a failure maps to.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum JsonErrKind {
+    Parse,
+    Type,
+    Missing,
+}
 
-    match type_name {
-        "string" => extract_string(raw),
-        "i32" | "i64" => extract_int(raw),
-        "f32" | "f64" => extract_float(raw),
-        "bool" => extract_bool(raw),
-        _ => {
-            // Look up struct declaration
-            let decl = struct_decls
-                .get(type_name)
-                .ok_or_else(|| format!("unknown type: {}", type_name))?;
-            let obj_fields = extract_object_fields(raw)?;
-            let mut struct_fields = IndexMap::new();
-
-            for field in &decl.fields {
-                if let Some(json_field) = obj_fields.get(&field.name) {
-                    let value =
-                        json_field_to_value(json_field, &field.ty, struct_decls)?;
-                    struct_fields.insert(field.name.clone(), value);
-                } else {
-                    // Optional field → None
-                    if field.ty.ends_with('?') {
-                        struct_fields.insert(field.name.clone(), option_none());
-                    } else {
-                        return Err(format!(
-                            "missing field '{}' in JSON for type '{}'",
-                            field.name, type_name
-                        ));
-                    }
-                }
-            }
-
-            Ok(Value::new_struct(
-                type_name.to_string(),
-                struct_fields,
-                None,
-            ))
+impl JsonErrKind {
+    fn variant(self) -> (&'static str, u32) {
+        match self {
+            JsonErrKind::Parse => ("ParseError", 0),
+            JsonErrKind::Type => ("TypeError", 1),
+            JsonErrKind::Missing => ("MissingField", 2),
         }
     }
 }
 
-/// Convert a single JSON value to a typed Rask value based on the field's declared type.
-fn json_field_to_value(
+pub(crate) struct JsonErr {
+    kind: JsonErrKind,
+    message: String,
+}
+
+fn type_err(path: &str, want: &str, got: &Value) -> JsonErr {
+    let where_ = if path.is_empty() { "the value".to_string() } else { path.to_string() };
+    JsonErr {
+        kind: JsonErrKind::Type,
+        message: format!("{} should be {}, found {}", where_, want, json_kind_name(got)),
+    }
+}
+
+fn json_kind_name(v: &Value) -> &'static str {
+    match unwrap_json_value(v) {
+        Value::Unit => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Int(..) | Value::Float(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Vec(_) => "an array",
+        Value::Map(_) => "an object",
+        Value::Struct(_) => "an object",
+        _ if is_json_null(v) => "null",
+        _ => "an unknown value",
+    }
+}
+
+fn child_path(path: &str, name: &str) -> String {
+    if path.is_empty() {
+        format!("field {}", name)
+    } else {
+        format!("{}.{}", path, name)
+    }
+}
+
+/// Convert a parsed JsonValue into a typed Rask value. `ty` is the target's
+/// written type — the same strings struct declarations carry, so `Vec<Tag>`,
+/// `Map<string, i64>` and `string?` all arrive here verbatim.
+fn json_to_typed(
     json: &Value,
     ty: &str,
+    path: &str,
     struct_decls: &HashMap<String, StructDecl>,
-) -> Result<Value, String> {
-    let raw = unwrap_json_value(json);
+) -> Result<Value, JsonErr> {
+    let ty = ty.trim();
 
-    // Handle optional types
-    if let Some(inner_ty) = ty.strip_suffix('?') {
-        if is_json_null(raw) {
+    // `T?` — null or absent becomes none, anything else Some(T).
+    if let Some(inner) = strip_optional(ty) {
+        if is_json_null(json) {
             return Ok(option_none());
         }
-        let inner = json_field_to_value(raw, inner_ty, struct_decls)?;
-        return Ok(option_some(inner));
+        return Ok(option_some(json_to_typed(json, inner, path, struct_decls)?));
+    }
+
+    // The untyped tree, handed back as-is.
+    if ty == "JsonValue" {
+        return Ok(json.clone());
+    }
+
+    let raw = unwrap_json_value(json);
+
+    if let Some(inner) = generic_arg(ty, "Vec") {
+        let Value::Vec(items) = raw else {
+            return Err(type_err(path, "a list", json));
+        };
+        let items = items.lock().unwrap().clone();
+        let mut out = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let base = if path.is_empty() { "the list" } else { path };
+            out.push(json_to_typed(item, &inner, &format!("{}[{}]", base, i), struct_decls)?);
+        }
+        return Ok(Value::Vec(Arc::new(Mutex::new(out))));
+    }
+
+    if let Some(args) = generic_args(ty, "Map") {
+        if args.len() == 2 {
+            if args[0].trim() != "string" {
+                return Err(JsonErr {
+                    kind: JsonErrKind::Type,
+                    message: format!(
+                        "a Map decoded from JSON needs string keys, not `{}` — JSON object keys are always strings",
+                        args[0].trim()
+                    ),
+                });
+            }
+            let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
+            let mut pairs = Vec::with_capacity(entries.len());
+            for (k, v) in entries {
+                let value = json_to_typed(&v, &args[1], &child_path(path, &k), struct_decls)?;
+                pairs.push((Value::String(Arc::new(Mutex::new(k))), value));
+            }
+            return Ok(Value::Map(Arc::new(Mutex::new(pairs))));
+        }
     }
 
     match ty {
-        "string" => extract_string(raw),
-        "i32" | "i64" | "int" => extract_int(raw),
-        "f32" | "f64" | "float" => extract_float(raw),
-        "bool" => extract_bool(raw),
-        _ if ty.starts_with("Vec<") => {
-            // Vec<T> — extract inner type
-            let inner_ty = &ty[4..ty.len() - 1];
-            let items = extract_array(raw)?;
-            let converted: Result<Vec<Value>, String> = items
-                .iter()
-                .map(|item| json_field_to_value(item, inner_ty, struct_decls))
-                .collect();
-            Ok(Value::Vec(Arc::new(Mutex::new(converted?))))
+        "string" => extract_string(raw).map_err(|_| type_err(path, "string", json)),
+        "bool" => extract_bool(raw).map_err(|_| type_err(path, "bool", json)),
+        "f32" | "f64" | "float" => extract_float(raw).map_err(|_| type_err(path, ty, json)),
+        "i8" | "i16" | "i32" | "i64" | "isize" | "int"
+        | "u8" | "u16" | "u32" | "u64" | "usize" => {
+            extract_int(raw, int_kind(ty)).map_err(|_| type_err(path, "an integer", json))
         }
         _ => {
-            // Nested struct
-            json_to_typed(raw, ty, struct_decls)
+            let decl = struct_decls.get(ty).ok_or_else(|| JsonErr {
+                kind: JsonErrKind::Type,
+                message: format!("`{}` isn't a type json.decode knows how to build", ty),
+            })?;
+            let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
+            let mut fields = IndexMap::new();
+            for field in &decl.fields {
+                // `@skip` fields aren't in the serialized form (E19) — they take
+                // their `@default`, or the type's empty value.
+                if field_attrs::is_skipped(&field.attrs) {
+                    fields.insert(
+                        field.name.clone(),
+                        default_value(&field.attrs, &field.ty, struct_decls),
+                    );
+                    continue;
+                }
+                let key = field_attrs::serial_name(&field.attrs, &field.name);
+                match entries.iter().find(|(k, _)| *k == key) {
+                    Some((_, v)) => {
+                        let value = json_to_typed(
+                            v,
+                            &field.ty,
+                            &child_path(path, &key),
+                            struct_decls,
+                        )?;
+                        fields.insert(field.name.clone(), value);
+                    }
+                    // A `T?` field takes `none`; anything else has to be there (J9).
+                    None if strip_optional(&field.ty).is_some() => {
+                        fields.insert(field.name.clone(), option_none());
+                    }
+                    // `@default` covers a missing key too (E20).
+                    None if field_attrs::default_literal(&field.attrs).is_some() => {
+                        fields.insert(
+                            field.name.clone(),
+                            default_value(&field.attrs, &field.ty, struct_decls),
+                        );
+                    }
+                    None => {
+                        return Err(JsonErr {
+                            kind: JsonErrKind::Missing,
+                            message: format!("field \"{}\" not found in the JSON object", key),
+                        })
+                    }
+                }
+            }
+            // Keys the struct doesn't declare are skipped (J10).
+            Ok(Value::new_struct(ty.to_string(), fields, None))
         }
     }
+}
+
+/// The value a field that isn't read from the input starts at: its
+/// `@default(…)` literal when it has one, otherwise the type's empty value.
+fn default_value(
+    attrs: &[String],
+    ty: &str,
+    struct_decls: &HashMap<String, StructDecl>,
+) -> Value {
+    if let Some(literal) = field_attrs::default_literal(attrs) {
+        if let Some(v) = literal_value(literal.trim(), ty) {
+            return v;
+        }
+    }
+    empty_value(ty, struct_decls)
+}
+
+fn literal_value(literal: &str, ty: &str) -> Option<Value> {
+    let ty = ty.trim();
+    match ty {
+        "string" => field_attrs::string_literal(literal)
+            .map(|s| Value::String(Arc::new(Mutex::new(s)))),
+        "bool" => match literal {
+            "true" => Some(Value::Bool(true)),
+            "false" => Some(Value::Bool(false)),
+            _ => None,
+        },
+        "f32" | "f64" | "float" => literal.parse::<f64>().ok().map(Value::Float),
+        _ => literal.parse::<i64>().ok().map(|n| Value::Int(n, int_kind(ty))),
+    }
+}
+
+fn empty_value(ty: &str, struct_decls: &HashMap<String, StructDecl>) -> Value {
+    let ty = ty.trim();
+    if strip_optional(ty).is_some() {
+        return option_none();
+    }
+    if generic_arg(ty, "Vec").is_some() {
+        return Value::Vec(Arc::new(Mutex::new(Vec::new())));
+    }
+    if generic_args(ty, "Map").is_some() {
+        return Value::Map(Arc::new(Mutex::new(Vec::new())));
+    }
+    match ty {
+        "string" => Value::String(Arc::new(Mutex::new(String::new()))),
+        "bool" => Value::Bool(false),
+        "f32" | "f64" | "float" => Value::Float(0.0),
+        "i8" | "i16" | "i32" | "i64" | "isize" | "int"
+        | "u8" | "u16" | "u32" | "u64" | "usize" => Value::Int(0, int_kind(ty)),
+        _ => match struct_decls.get(ty) {
+            Some(decl) => {
+                let mut fields = IndexMap::new();
+                for f in &decl.fields {
+                    fields.insert(f.name.clone(), empty_value(&f.ty, struct_decls));
+                }
+                Value::new_struct(ty.to_string(), fields, None)
+            }
+            None => Value::Unit,
+        },
+    }
+}
+
+fn int_kind(ty: &str) -> crate::value::IntKind {
+    use crate::value::IntKind;
+    match ty {
+        "i8" => IntKind::I8,
+        "i16" => IntKind::I16,
+        "i32" => IntKind::I32,
+        "i64" | "isize" => IntKind::I64,
+        "u8" => IntKind::U8,
+        "u16" => IntKind::U16,
+        "u32" => IntKind::U32,
+        "u64" | "usize" => IntKind::U64,
+        _ => IntKind::Untyped,
+    }
+}
+
+/// `T?` → `T`. Only the trailing `?` counts; `Map<string, i64?>` keeps its own.
+fn strip_optional(ty: &str) -> Option<&str> {
+    ty.trim().strip_suffix('?').map(str::trim)
+}
+
+fn generic_arg(ty: &str, name: &str) -> Option<String> {
+    generic_args(ty, name)?.into_iter().next()
+}
+
+/// The arguments of `Name<…>`, split on commas outside nested angle brackets.
+fn generic_args(ty: &str, name: &str) -> Option<Vec<String>> {
+    let ty = ty.trim();
+    let rest = ty.strip_prefix(name)?.trim_start();
+    let inner = rest.strip_prefix('<')?.strip_suffix('>')?;
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim().to_string());
+    Some(out)
 }
 
 /// Unwrap a JsonValue enum to its inner content for easier inspection.
@@ -792,62 +1079,54 @@ fn is_json_null(v: &Value) -> bool {
     ) || matches!(v, Value::Unit)
 }
 
-fn extract_string(v: &Value) -> Result<Value, String> {
+fn extract_string(v: &Value) -> Result<Value, ()> {
     match v {
         Value::String(_) => Ok(v.clone()),
-        _ => Err(format!("expected string, found {}", v.type_name())),
+        _ => Err(()),
     }
 }
 
-fn extract_int(v: &Value) -> Result<Value, String> {
+fn extract_int(v: &Value, kind: crate::value::IntKind) -> Result<Value, ()> {
     match v {
-        Value::Int(n, _) => Ok(Value::int(*n)),
-        Value::Float(f) => Ok(Value::int(*f as i64)),
-        _ => Err(format!("expected number, found {}", v.type_name())),
+        Value::Int(n, _) => Ok(Value::Int(*n, kind)),
+        Value::Float(f) => Ok(Value::Int(*f as i64, kind)),
+        _ => Err(()),
     }
 }
 
-fn extract_float(v: &Value) -> Result<Value, String> {
+fn extract_float(v: &Value) -> Result<Value, ()> {
     match v {
         Value::Float(f) => Ok(Value::Float(*f)),
         Value::Int(n, _) => Ok(Value::Float(*n as f64)),
-        _ => Err(format!("expected number, found {}", v.type_name())),
+        _ => Err(()),
     }
 }
 
-fn extract_bool(v: &Value) -> Result<Value, String> {
+fn extract_bool(v: &Value) -> Result<Value, ()> {
     match v {
         Value::Bool(b) => Ok(Value::Bool(*b)),
-        _ => Err(format!("expected bool, found {}", v.type_name())),
+        _ => Err(()),
     }
 }
 
-fn extract_array(v: &Value) -> Result<Vec<Value>, String> {
+/// Key/value pairs of a JSON object, in the order they were parsed.
+fn object_entries(v: &Value) -> Option<Vec<(String, Value)>> {
     match v {
-        Value::Vec(vec) => Ok(vec.lock().unwrap().clone()),
-        _ => Err(format!("expected array, found {}", v.type_name())),
-    }
-}
-
-/// Extract fields from a JSON object (either a JsonValue.Object or a Map/Struct).
-fn extract_object_fields(v: &Value) -> Result<IndexMap<String, Value>, String> {
-    match v {
-        // JsonValue.Object wraps a Struct named "Map" with field→value pairs
-        Value::Struct(ref s) => Ok(s.lock().unwrap().fields.clone()),
-        // Direct Map (from parsed JSON)
         Value::Map(m) => {
             let map = m.lock().unwrap();
-            let mut result = IndexMap::new();
-            for (k, v) in map.iter() {
-                let key = match k {
-                    Value::String(s) => s.lock().unwrap().clone(),
-                    _ => continue,
-                };
-                result.insert(key, v.clone());
+            let mut out = Vec::with_capacity(map.len());
+            for (k, val) in map.iter() {
+                let Value::String(s) = k else { continue };
+                out.push((s.lock().unwrap().clone(), val.clone()));
             }
-            Ok(result)
+            Some(out)
         }
-        _ => Err(format!("expected object, found {}", v.type_name())),
+        // A struct read as an object: `json.from_value` on an already-built value.
+        Value::Struct(s) => {
+            let guard = s.lock().unwrap();
+            Some(guard.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        }
+        _ => None,
     }
 }
 
@@ -862,12 +1141,25 @@ fn make_result_ok(value: Value) -> Value {
     }
 }
 
-fn make_result_err(msg: &str) -> Value {
+fn make_result_err(kind: JsonErrKind, msg: &str) -> Value {
     Value::Enum {
         name: "Result".to_string(),
         variant: "Err".to_string(),
+        fields: vec![make_json_error(kind, msg)],
+        variant_index: 1, origin: None,
+    }
+}
+
+/// The `JsonError` a failing decode hands back (J3). A bare string used to go
+/// here, so `e.message()` didn't resolve — the error had no type.
+fn make_json_error(kind: JsonErrKind, msg: &str) -> Value {
+    let (variant, index) = kind.variant();
+    Value::Enum {
+        name: "JsonError".to_string(),
+        variant: variant.to_string(),
         fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
-        variant_index: 0, origin: None,
+        variant_index: index,
+        origin: None,
     }
 }
 
@@ -885,6 +1177,6 @@ fn option_none() -> Value {
         name: "Option".to_string(),
         variant: "None".to_string(),
         fields: vec![],
-        variant_index: 0, origin: None,
+        variant_index: 1, origin: None,
     }
 }

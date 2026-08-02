@@ -1452,6 +1452,13 @@ impl<'a> MirLowerer<'a> {
                                 .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
                         })
                     })
+                    // Last resort: the receiver's own `Vec<T>`. Push tracking
+                    // only sees Vecs built in this function, and the checker
+                    // doesn't type every index node, so a Vec that arrived some
+                    // other way — a field of a struct returned from a call, or of
+                    // a `json.decode` result — fell through to i64 and
+                    // `h.names[0]` printed a string's first bytes as a number.
+                    .or_else(|| self.vec_elem_of_expr(object))
                     .unwrap_or(MirType::I64);
                 let type_prefix = if let ExprKind::Ident(var_name) = &object.kind {
                         self.meta(var_name).and_then(|m| m.type_prefix.clone())
@@ -3205,24 +3212,11 @@ impl<'a> MirLowerer<'a> {
                             return Ok(Some((MirOperand::Local(result_local), MirType::I64)));
                         }
 
-                        // json.decode<T> — expand struct deserialization at MIR level
+                        // json.decode<T> — describe T to the runtime, decode into it
                         if name == "json" && method == "decode" && args.len() == 1 {
                             let (str_op, _) = self.lower_expr(&args[0].expr)?;
-                            if let Some(ta) = type_args {
-                                if let Some(target_name) = ta.first() {
-                                    if let Some((_, layout)) = self.ctx.find_struct(target_name) {
-                                        return self.lower_json_decode_struct(str_op, layout.clone()).map(Some);
-                                    }
-                                }
-                            }
-                            // Fallback: opaque decode
-                            let result_local = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: FunctionRef::internal("json_decode".to_string()),
-                                args: vec![str_op],
-                            }));
-                            return Ok(Some((MirOperand::Local(result_local), MirType::I64)));
+                            let target = self.json_decode_target(expr, type_args)?;
+                            return self.lower_json_decode(str_op, &target).map(Some);
                         }
 
                         // Vec.from([...]) → stack array + rask_vec_from_static(ptr, count)
@@ -3710,6 +3704,12 @@ impl<'a> MirLowerer<'a> {
             Some(MirType::Option(Box::new(payload)))
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
+            //
+            // Push tracking only sees Vecs built in this function, so a Vec that
+            // arrived some other way — a struct field off a returned value, or a
+            // `json.decode` result — fell through to i64 and `h.names[0]` printed
+            // the string's first bytes as a number. The checker knows what the
+            // index expression is; ask it when tracking has nothing.
             tracked_elem
         } else if qualified_name == "Vec_remove" {
             // `.remove(i)` hands back the element itself. The stub says `-> T`,

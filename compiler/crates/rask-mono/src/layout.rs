@@ -27,6 +27,9 @@ pub struct FieldLayout {
     pub offset: u32,
     pub size: u32,
     pub align: u32,
+    /// Field annotations, verbatim (`rename("user_name")`, `skip`, …).
+    /// Serialization reads these — see `rask_ast::decl::field_attrs`.
+    pub attrs: Vec<String>,
 }
 
 /// Enum memory layout
@@ -375,11 +378,11 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     let c_layout = has_c_layout(&struct_decl.attrs);
 
     // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32)> = struct_decl.fields.iter()
+    let mut resolved: Vec<(String, Type, u32, u32, Vec<String>)> = struct_decl.fields.iter()
         .map(|field| {
             let field_ty = resolve_field_type(&field.ty, &subst);
             let (field_size, field_align) = type_size_align(&field_ty, cache);
-            (field.name.clone(), field_ty, field_size, field_align)
+            (field.name.clone(), field_ty, field_size, field_align, field.attrs.clone())
         })
         .collect();
 
@@ -394,7 +397,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     let mut offset = 0u32;
     let mut max_align = 1u32;
 
-    for (name, ty, size, align) in resolved {
+    for (name, ty, size, align, attrs) in resolved {
         max_align = max_align.max(align);
         // S3: Align offset for this field
         offset = align_up(offset, align);
@@ -405,6 +408,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
             offset,
             size,
             align,
+            attrs,
         });
 
         offset += size;
@@ -448,6 +452,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
             offset: 0,
             size: field_size,
             align: field_align,
+            attrs: field.attrs.clone(),
         });
     }
 
@@ -520,6 +525,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
                     offset: field_offset,
                     size,
                     align,
+                    attrs: Vec::new(),
                 });
 
                 field_offset += size;

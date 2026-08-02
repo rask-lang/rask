@@ -297,6 +297,9 @@ impl Interpreter {
             Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
                 self.call_json_value_method(variant, fields, method)
             }
+            Value::Enum { name, variant, fields, .. } if name == "JsonError" => {
+                self.call_json_error_method(variant, fields, method)
+            }
             Value::SimdF32x8(data) => match method {
                 "sum" => {
                     let sum: f32 = data.iter().sum();

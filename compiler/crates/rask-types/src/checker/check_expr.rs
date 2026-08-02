@@ -2258,9 +2258,16 @@ impl TypeChecker {
     }
 
     /// Resolve a type name string to a Type.
+    ///
+    /// Generic spellings have to be parsed, not wrapped whole: `json.decode
+    /// <Vec<Point>>` handed back `UnresolvedNamed("Vec<Point>")`, and nothing
+    /// finds `len` on a type whose name is that string.
     fn resolve_type_name(&self, name: &str, _span: Span) -> Type {
-        let ty = Type::UnresolvedNamed(name.to_string());
-        self.resolve_named(&ty)
+        let parsed = parse_type_arg(name.trim());
+        match &parsed {
+            Type::UnresolvedNamed(_) => self.resolve_named(&parsed),
+            _ => parsed,
+        }
     }
 
     /// Format a type with resolved names (Named(id) → "TypeName").
