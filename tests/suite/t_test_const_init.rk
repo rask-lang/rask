@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A test binary replaces main, and main is where module-level const init
+// thunks used to be called from — so a `const` holding a box stayed a zero
+// slot and the first read through it dereferenced null. The runner runs the
+// thunks itself now.
+
+struct Counter {
+    public hits: u64
+}
+
+const plain = 7
+const guarded = Mutex.new(Counter { hits: 5 })
+const total = Mutex.new(10)
+const derived = plain * 3
+
+test "a folded literal const still works" {
+    assert_eq(plain, 7)
+    assert_eq(derived, 21)
+}
+
+test "a boxed const is initialized before the first test runs" {
+    with guarded as g {
+        assert_eq(g.hits, 5)
+    }
+}
+
+test "and stays initialized for later tests" {
+    with total as t {
+        assert_eq(t, 10)
+    }
+    with guarded as g {
+        assert_eq(g.hits, 5)
+    }
+}

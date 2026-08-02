@@ -1581,6 +1581,30 @@ impl<'a> MirLowerer<'a> {
         *ctx.const_slot_types.borrow_mut() = measured;
     }
 
+    /// Emit the real init thunks for every const that got a slot.
+    ///
+    /// Normally these come out alongside `main`, which is where the calls to
+    /// them are emitted too. The test and benchmark runners skip `main` — its
+    /// only job there is making the test bodies reachable — so the thunks have
+    /// to be produced separately, and their entry point calls them itself.
+    /// Run `compute_const_slot_types` first; a const with no slot is a folded
+    /// literal and needs no thunk.
+    pub fn lower_const_init_thunks(
+        all_decls: &[Decl],
+        ctx: &MirContext,
+    ) -> Result<Vec<MirFunction>, LoweringError> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for d in all_decls {
+            let DeclKind::Const(c) = &d.kind else { continue };
+            if !ctx.const_slot_types.borrow().contains_key(&c.name) || !seen.insert(c.name.clone()) {
+                continue;
+            }
+            out.extend(Self::lower_const_init(c, all_decls, ctx)?);
+        }
+        Ok(out)
+    }
+
     /// Lower one const initializer in isolation and report its MIR type.
     fn measure_const_init_ty(
         c: &ConstDecl,

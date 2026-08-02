@@ -97,10 +97,23 @@ pub trait Backend {
     fn gen_function(&mut self, mir_fn: &MirFunction) -> CodegenResult<()>;
 
     /// Generate benchmark runner entry point.
-    fn gen_benchmark_runner(&mut self, benchmarks: &[(String, String)]) -> CodegenResult<()>;
+    ///
+    /// `const_names` are the module-level constants in declaration order; the
+    /// runner runs each one's init thunk before the first benchmark, the same
+    /// as a normal `main`.
+    fn gen_benchmark_runner(
+        &mut self,
+        benchmarks: &[(String, String)],
+        const_names: &[String],
+    ) -> CodegenResult<()>;
 
-    /// Generate test runner entry point.
-    fn gen_test_runner(&mut self, tests: &[(String, String)]) -> CodegenResult<()>;
+    /// Generate test runner entry point. See `gen_benchmark_runner` for
+    /// `const_names`.
+    fn gen_test_runner(
+        &mut self,
+        tests: &[(String, String)],
+        const_names: &[String],
+    ) -> CodegenResult<()>;
 
     /// Emit the compiled code as an object file.
     fn emit_object(self: Box<Self>, path: &str) -> CodegenResult<()>;

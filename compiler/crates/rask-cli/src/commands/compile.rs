@@ -10,6 +10,17 @@ use rask_diagnostics::formatter::DiagnosticFormatter;
 use rask_mono::MonoProgram;
 use std::collections::HashMap;
 
+/// Module-level constant names in declaration order — the order their init
+/// thunks have to run in, since a later const can read an earlier one.
+fn module_const_names(decls: &[Decl]) -> Vec<String> {
+    decls.iter()
+        .filter_map(|d| match &d.kind {
+            DeclKind::Const(c) => Some(c.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Build the qualified mono decl list used for MIR lowering.
 ///
 /// `include_consts` — regular compile includes DeclKind::Const, benchmarks don't.
@@ -93,6 +104,15 @@ fn lower_to_mir(
 
     // Measure the module-level const slots before anything references them.
     rask_mir::lower::MirLowerer::compute_const_slot_types(all_mono_decls, mir_ctx);
+
+    // Skipping main also skips the init thunks it would have carried, so the
+    // test/benchmark runner gets them here instead — it calls them itself.
+    if skip_main {
+        match rask_mir::lower::MirLowerer::lower_const_init_thunks(all_mono_decls, mir_ctx) {
+            Ok(thunks) => mir_functions.extend(thunks),
+            Err(e) => errors.push(format!("MIR lowering const initializers: {:?}", e)),
+        }
+    }
 
     for mono_fn in &mono.functions {
         if skip_main && mono_fn.name == "main" {
@@ -576,8 +596,9 @@ pub fn compile_tests_to_object(
 
     gen_functions(&mut codegen, &mir_functions)?;
 
-    // Generate the test runner entry point
-    codegen.gen_test_runner(tests)
+    // Generate the test runner entry point. It replaces `main`, so it has to
+    // run the module consts' init thunks itself.
+    codegen.gen_test_runner(tests, &module_const_names(decls))
         .map_err(|e| vec![format!("test runner: {}", e)])?;
 
     codegen.emit_object(obj_path)
@@ -772,8 +793,8 @@ pub fn compile_benchmarks_to_object(
 
     gen_functions(&mut codegen, &mir_functions)?;
 
-    // Generate the benchmark runner entry point
-    codegen.gen_benchmark_runner(benchmarks)
+    // Generate the benchmark runner entry point (same const-init duty as tests)
+    codegen.gen_benchmark_runner(benchmarks, &module_const_names(decls))
         .map_err(|e| vec![format!("benchmark runner: {}", e)])?;
 
     codegen.emit_object(obj_path)
