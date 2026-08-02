@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.aliases/T10–T12 — a nominal newtype inherits the traits its `with (…)`
+// clause lists, and only those, and they delegate to the value it wraps.
+
+type UserId = u64 with (Equal, Hashable, Comparable, Displayable)
+type Weight = f64 with (Equal, Comparable)
+type Tag = string with (Equal, Hashable, Displayable)
+
+// T13: an extend block adds behaviour of the type's own.
+extend UserId {
+    public func is_admin(self) -> bool {
+        return self == UserId(1)
+    }
+}
+
+test "T11 — Equal is inherited when listed" {
+    assert UserId(1) == UserId(1)
+    assert (UserId(1) == UserId(2)) == false
+    assert UserId(1) != UserId(2)
+    assert Tag("a") == Tag("a")
+}
+
+test "T11 — Comparable is inherited when listed" {
+    assert UserId(1) < UserId(2)
+    assert UserId(9) > UserId(2)
+    assert UserId(2) <= UserId(2)
+    assert Weight(1.5) < Weight(2.5)
+    assert UserId(1).compare(UserId(2)) == Ordering.Less
+}
+
+test "T11 — Hashable is inherited, so it works as a Map key" {
+    mut users = Map.new()
+    users.insert(UserId(7), "alice")
+    users.insert(UserId(8), "bob")
+    assert users.get(UserId(7)) ?? "missing" == "alice"
+    assert users.get(UserId(9)) ?? "missing" == "missing"
+
+    mut tags = Map.new()
+    tags.insert(Tag("x"), 1)
+    assert tags.get(Tag("x")) ?? 0 == 1
+}
+
+test "T12 — an inherited trait delegates to the underlying value" {
+    // Not `UserId(42)` — the rendering is the value's, not the wrapper's.
+    assert "{UserId(42)}" == "42"
+    assert format("{}", Tag("hello")) == "hello"
+}
+
+test "T13 — an extend block adds the type's own methods" {
+    assert UserId(1).is_admin()
+    assert UserId(2).is_admin() == false
+}

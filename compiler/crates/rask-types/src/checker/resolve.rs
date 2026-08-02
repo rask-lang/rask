@@ -304,6 +304,37 @@ impl TypeChecker {
         }
     }
 
+    /// The signature `method` gets on a nominal newtype from one of the traits
+    /// its `with (…)` clause lists (type.aliases/T11).
+    ///
+    /// The trait signatures write `Self` as type variable 0, so binding that to
+    /// the newtype is the whole of T12's delegation: `Id`'s `eq` takes an `Id`,
+    /// and its `clone` gives one back. Positions the trait spells out concretely
+    /// — `hash`'s `u64`, `compare`'s `Ordering` — stay as written.
+    fn inherited_trait_method(
+        &self,
+        ty: &Type,
+        with_traits: &[String],
+        method: &str,
+    ) -> Option<MethodSig> {
+        let checker = crate::traits::TraitChecker::new(&self.types);
+        let self_var = Type::Var(TypeVarId(0));
+        for trait_name in with_traits {
+            let Some(mut sig) = checker
+                .get_trait_methods_public(trait_name)
+                .into_iter()
+                .find(|m| m.name == method)
+            else {
+                continue;
+            };
+            let bind_self = |t: &Type| if *t == self_var { ty.clone() } else { t.clone() };
+            sig.params = sig.params.iter().map(|(t, m)| (bind_self(t), *m)).collect();
+            sig.ret = bind_self(&sig.ret);
+            return Some(sig);
+        }
+        None
+    }
+
     /// A type as the user wrote it. `Type`'s own Display can't name a
     /// registered type — it prints `<type#7>`.
     fn render_type(&self, ty: &Type) -> String {
@@ -411,7 +442,21 @@ impl TypeChecker {
                     Some(TypeDef::Enum { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
                     }
-                    Some(TypeDef::NominalAlias { methods, .. }) => (methods.clone(), Vec::new()),
+                    Some(TypeDef::NominalAlias { methods, with_traits, .. }) => {
+                        // T11/T12: a nominal newtype inherits the traits its
+                        // `with (…)` clause lists, and they delegate to the
+                        // value underneath. The list was recorded and never
+                        // read, so `type Id = u64 with (Equal)` gave `Id` no
+                        // `eq` at all and `a == b` didn't compile (#551).
+                        let own = methods.iter().any(|m| m.name == method);
+                        let inherited = (!own)
+                            .then(|| self.inherited_trait_method(&ty, with_traits, &method))
+                            .flatten();
+                        match inherited {
+                            Some(sig) => (vec![sig], Vec::new()),
+                            None => (methods.clone(), Vec::new()),
+                        }
+                    }
                     _ => {
                         return Err(TypeError::NoSuchMethod {
                             ty,

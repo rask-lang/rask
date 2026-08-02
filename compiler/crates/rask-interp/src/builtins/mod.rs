@@ -386,6 +386,16 @@ impl Interpreter {
         // itself to the underlying value, so anything the newtype doesn't
         // answer is asked of what it wraps.
         if let Value::Nominal { inner, .. } = &receiver {
+            // The arguments come down with it. Unwrapping only the receiver
+            // left `a == b` on two `Id`s asking an int to compare itself to a
+            // nominal, which is a type error the program didn't have (T12).
+            let args = args
+                .into_iter()
+                .map(|a| match a {
+                    Value::Nominal { inner, .. } => (*inner).clone(),
+                    other => other,
+                })
+                .collect();
             return self.call_builtin_method((**inner).clone(), method, args);
         }
 

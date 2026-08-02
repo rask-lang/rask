@@ -795,6 +795,18 @@ fn error_bad_interpolation() {
     );
 }
 
+// #551, T10: honouring a nominal newtype's `with (…)` list means the list has
+// to stay a list — an unlisted trait is still not inherited.
+#[test]
+fn error_nominal_trait_not_listed() {
+    let (failed, out) = compile_error_output("nominal_trait_not_listed.rk");
+    assert!(failed, "an unlisted trait must not be inherited: {}", out);
+    assert!(
+        out.contains("no method `lt`") && out.contains("no method `add`"),
+        "should reject both the unlisted ordering and the arithmetic: {}", out,
+    );
+}
+
 // #506: an @unimplemented stdlib *module* function is caught at the call, the
 // way a method on a receiver already was. `json.decode` used to type-check and
 // then segfault.

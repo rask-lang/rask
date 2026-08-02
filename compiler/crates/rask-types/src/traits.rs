@@ -552,8 +552,12 @@ impl<'a> TraitChecker<'a> {
                     name: "compare".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
-                    // Returns Ordering enum — use Var as placeholder (structural check)
-                    ret: Type::Var(crate::types::TypeVarId(0)),
+                    // Type variable 0 is `Self` throughout these signatures,
+                    // so `compare` has to name Ordering outright — as a
+                    // placeholder it read as "returns Self", and a nominal
+                    // newtype inheriting Comparable got a `compare` that
+                    // claimed to answer with itself (#551).
+                    ret: Type::UnresolvedNamed("Ordering".to_string()),
                 },
                 MethodSig {
                     type_params: Vec::new(),
