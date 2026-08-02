@@ -104,11 +104,13 @@ pub enum StmtKind {
     Continue(Option<String>),
     /// While loop
     While {
+        label: Option<String>,
         cond: Expr,
         body: Vec<Stmt>,
     },
     /// While-let pattern matching loop
     WhileLet {
+        label: Option<String>,
         pattern: crate::expr::Pattern,
         expr: Expr,
         body: Vec<Stmt>,

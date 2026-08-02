@@ -2,6 +2,7 @@
 
 //! Match expression lowering: enum/tagged dispatch, string match, tuple match.
 
+use crate::FieldAccess;
 use super::{is_variant_name, LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::MirConst, BlockId, FunctionRef, MirOperand, MirRValue, MirStmt,
@@ -231,7 +232,7 @@ impl<'a> MirLowerer<'a> {
                                     base: scrutinee_op.clone(),
                                     field_index: j as u32,
                                     byte_offset: field_loc.map(|(off, _)| off),
-                                    field_size: field_loc.map(|(_, sz)| sz),
+                                    access: field_loc.map_or(FieldAccess::Word, |(_, sz)| FieldAccess::Sized(sz)),
                                 }
                             };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -287,7 +288,7 @@ impl<'a> MirLowerer<'a> {
                                                 base: scrutinee_op.clone(),
                                                 field_index: field_idx as u32,
                                                 byte_offset: Some(variant.payload_offset + field_layout.offset),
-                                                field_size: Some(field_layout.size),
+                                                access: FieldAccess::Sized(field_layout.size),
                                             };
                                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                                 dst: payload_local,
@@ -337,7 +338,7 @@ impl<'a> MirLowerer<'a> {
                                 } else {
                                     None
                                 },
-                                field_size: None,
+                                access: FieldAccess::Word,
                             };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                 dst: payload_local,
@@ -514,7 +515,7 @@ impl<'a> MirLowerer<'a> {
                             base: op.clone(),
                             field_index: i as u32,
                             byte_offset: None,
-                            field_size: None,
+                            access: FieldAccess::Word,
                         },
                     }));
                     result.push((MirOperand::Local(field_local), field_ty.clone()));

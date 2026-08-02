@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Derived `<`/`<=`/`>`/`>=` on aggregates compares contents, not addresses.
+//
+// Native lowered an aggregate `<` to an integer compare of the two stack-slot
+// addresses, so the answer came out of allocation order — `a < b` was true
+// whenever `a` happened to be declared first. `==` was fixed for this in #399;
+// ordering wasn't (#400). The interpreter also deadlocked on `a <= a`, because
+// the same value was locked twice.
+
+struct Ver {
+    public major: i64
+    public minor: i64
+}
+
+struct Named {
+    public name: string
+    public rank: i64
+}
+
+struct Nested {
+    public head: Ver
+    public tail: i64
+}
+
+enum Step {
+    Start
+    Mid(i64)
+    End
+}
+
+test "struct ordering is lexicographic by field" {
+    const a = Ver { major: 1, minor: 9 }
+    const b = Ver { major: 2, minor: 0 }
+    assert a < b
+    assert (b < a) == false
+    assert b > a
+    assert a <= b
+    assert b >= a
+}
+
+test "the second field decides when the first ties" {
+    const a = Ver { major: 2, minor: 1 }
+    const b = Ver { major: 2, minor: 7 }
+    assert a < b
+    assert (a > b) == false
+}
+
+test "equal structs compare equal both ways" {
+    const a = Ver { major: 3, minor: 3 }
+    const b = Ver { major: 3, minor: 3 }
+    assert a <= b
+    assert a >= b
+    assert (a < b) == false
+    assert (a > b) == false
+}
+
+test "comparing a value with itself terminates" {
+    const a = Ver { major: 4, minor: 2 }
+    assert a <= a
+    assert a >= a
+    assert (a < a) == false
+    assert a == a
+}
+
+test "a string field orders lexicographically" {
+    const a = Named { name: "alice", rank: 9 }
+    const b = Named { name: "bob", rank: 1 }
+    assert a < b
+    assert (b < a) == false
+}
+
+test "a nested struct field orders by its own fields" {
+    const a = Nested { head: Ver { major: 1, minor: 0 }, tail: 99 }
+    const b = Nested { head: Ver { major: 1, minor: 1 }, tail: 0 }
+    assert a < b
+}
+
+test "enum ordering is variant first, then payload" {
+    assert Step.Start < Step.End
+    assert Step.Mid(1) < Step.Mid(2)
+    assert Step.Start < Step.Mid(0)
+    assert Step.Mid(99) < Step.End
+    assert (Step.End < Step.Start) == false
+}

@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `spawn(|| { … })` carries the closure's return type, and `join()` gives it
+// back (conc.async/H2).
+//
+// The stub said `spawn(f: func()) -> TaskHandle<void>`, so every task was
+// typed as returning nothing and `const v: i64 = try h.join()` was a type
+// error. Underneath, the runtime called the closure through a void signature
+// and dropped whatever it returned, so join answered 0 either way.
+
+func double(n: i64) -> i64 {
+    return n * 2
+}
+
+func joined_value() -> i64 or JoinError {
+    using Multitasking {
+        const h = spawn(|| { return 42 })
+        return try h.join()
+    }
+}
+
+func joined_annotated() -> i64 or JoinError {
+    using Multitasking {
+        const h = spawn(|| { return double(21) })
+        const v: i64 = try h.join()
+        return v
+    }
+}
+
+func joined_pair() -> i64 or JoinError {
+    using Multitasking {
+        const a = spawn(|| { return 10 })
+        const b = spawn(|| { return 32 })
+        const x = try a.join()
+        const y = try b.join()
+        return x + y
+    }
+}
+
+func joined_own() -> i64 or JoinError {
+    using Multitasking {
+        const h = spawn(own || { return 7 })
+        return try h.join()
+    }
+}
+
+func detached() -> bool {
+    using Multitasking {
+        const h = spawn(|| { return })
+        h.detach()
+    }
+    return true
+}
+
+test "join returns the task's value" {
+    assert joined_value()! == 42
+}
+
+test "the handle's type follows the closure" {
+    assert joined_annotated()! == 42
+}
+
+test "two tasks keep their own results" {
+    assert joined_pair()! == 42
+}
+
+test "an own closure joins the same way" {
+    assert joined_own()! == 7
+}
+
+test "a task with nothing to return still detaches" {
+    assert detached()
+}
+
+test "a second Multitasking scope starts cleanly" {
+    // Each scope spins up fresh workers. Their ids used to come from a
+    // process-global counter that nothing reset, so the second scope's
+    // workers indexed past the end of their own deque array (#524).
+    assert joined_value()! == 42
+    assert joined_pair()! == 42
+    assert joined_own()! == 7
+}

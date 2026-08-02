@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a `{...}` that isn't an expression.
+//
+// A `{` in a string always starts an interpolation (`{{` is the literal form,
+// fmt/F4). What's inside used to be parsed with whatever the expression parser
+// happened to consume and the rest thrown away — `json.decode("{\"x\":1,\"y\":2}")`
+// reached the decoder as the string "x" and every POST handler failed (#506).
+
+func main() {
+    // ERROR: `{"x":1,"y":2}` is not a valid interpolation
+    const body = "{\"x\":1,\"y\":2}"
+    println(body)
+}

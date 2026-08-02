@@ -9,6 +9,7 @@ pub mod token;
 pub mod expr;
 pub mod stmt;
 pub mod decl;
+pub mod fmt_spec;
 
 pub use span::{Span, LineMap};
 

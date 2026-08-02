@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The shapes a `{...}` interpolation has to keep accepting after #506 tightened
+// what counts as one. A struct literal inside the braces brings its own colons,
+// so the format-spec split only looks at the outer level.
+
+struct Pt { public x: i64, public y: i64 }
+
+func sum(p: Pt) -> i64 { return p.x + p.y }
+
+test "interpolation forms that must keep working" {
+    const n = 7
+    const s = "hi"
+    assert "{n}" == "7"
+    assert "{n:debug}" == "7"
+    assert "{s}" == "hi"
+    assert "{sum(Pt { x: 3, y: 4 })}" == "7"
+    assert "{n} and {s}" == "7 and hi"
+    // an empty placeholder is left alone
+    assert "{}".len() == 2
+    // an unclosed brace is one character
+    assert "{".len() == 1
+    // a map index inside interpolation
+    mut m: Map<string, i64> = Map.new()
+    m.insert("k", 5)
+    assert "{m.get(\"k\") ?? 0}" == "5"
+}

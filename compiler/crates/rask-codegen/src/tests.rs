@@ -5,7 +5,7 @@
 #[cfg(test)]
 mod tests {
     use rask_mir::{
-        BlockId, FunctionRef, LocalId, MirConst, MirFunction, MirLocal, MirBlock,
+        BlockId, FieldAccess, FunctionRef, LocalId, MirConst, MirFunction, MirLocal, MirBlock,
         MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind,
         MirType, BinOp,
     };
@@ -611,7 +611,7 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, field_size: None }),
+                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, access: FieldAccess::Word }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -649,7 +649,7 @@ mod tests {
                 block(0, vec![
                     MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: None }),
                     MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: None }),
-                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, field_size: None }),
+                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, access: FieldAccess::Word }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -735,7 +735,7 @@ mod tests {
                 ], branch(local_op(3), 1, 2)),
                 // bb1: Ok case
                 block(1, vec![
-                    assign(2, MirRValue::Field { base: local_op(0), field_index: 0, byte_offset: None, field_size: None }),
+                    assign(2, MirRValue::Field { base: local_op(0), field_index: 0, byte_offset: None, access: FieldAccess::Word }),
                 ], ret(Some(local_op(2)))),
                 // bb2: Err case
                 block(2, vec![], ret(Some(i32_const(0)))),

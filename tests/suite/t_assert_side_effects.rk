@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `assert` runs its operands once.
+//
+// A comparison assert wants the two sides' values for the failure message, and
+// it got them by lowering each side and then lowering the whole condition —
+// which lowered both sides again. So `assert push(v) == 1` pushed twice, and
+// any assert over a call that did work did that work twice. Native only; the
+// interpreter evaluated the condition once and only re-read the sides when the
+// assert actually failed.
+
+func bump(m: Mutex<i64>) -> i64 {
+    with m.lock() as n {
+        n = n + 1
+    }
+    return 7
+}
+
+test "a call on the left runs once" {
+    const m = Mutex.new(0)
+    assert bump(m) == 7
+    with m.lock() as n {
+        assert n == 1
+    }
+}
+
+test "a call on the right runs once" {
+    const m = Mutex.new(0)
+    assert 7 == bump(m)
+    with m.lock() as n {
+        assert n == 1
+    }
+}
+
+test "an inequality runs its sides once" {
+    const m = Mutex.new(0)
+    assert bump(m) != 0
+    with m.lock() as n {
+        assert n == 1
+    }
+}
+
+test "an ordering comparison runs its sides once" {
+    const m = Mutex.new(0)
+    assert bump(m) > 3
+    with m.lock() as n {
+        assert n == 1
+    }
+}
+
+test "calls on both sides run once each" {
+    const a = Mutex.new(0)
+    const b = Mutex.new(0)
+    assert bump(a) == bump(b)
+    with a.lock() as n {
+        assert n == 1
+    }
+    with b.lock() as n {
+        assert n == 1
+    }
+}
+
+test "string comparison still reports both sides" {
+    const a = "hello"
+    const b = "hello"
+    assert a == b
+}

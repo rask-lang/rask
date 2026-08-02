@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <dirent.h>
 #include <errno.h>
 
@@ -172,24 +173,73 @@ int64_t rask_string_byte_at(const RaskStr *s, int64_t pos) {
     return (int64_t)(uint8_t)str_data(s)[pos];
 }
 
-int64_t rask_string_char_at(const RaskStr *s, int64_t index) {
+// The Unicode scalar at *character* index `index`, or -1 when out of range.
+// Character index, not byte index — `s.char_at(i)` and `s[i]` both count
+// scalars, and `s.len()` counting bytes doesn't change that.
+static int64_t str_scalar_at(const RaskStr *s, int64_t index) {
+    if (index < 0) return -1;
     int64_t len = str_len(s);
-    if (index < 0 || index >= len) return -1;
     const char *d = str_data(s);
-    unsigned char c = (unsigned char)d[index];
-    if (c < 0x80) return c;
-    if ((c & 0xE0) == 0xC0 && index + 1 < len) {
-        return ((c & 0x1F) << 6) | (d[index + 1] & 0x3F);
+    int64_t byte = 0;
+    int64_t seen = 0;
+    while (byte < len) {
+        unsigned char c = (unsigned char)d[byte];
+        int64_t width = c < 0x80 ? 1
+                      : (c & 0xE0) == 0xC0 ? 2
+                      : (c & 0xF0) == 0xE0 ? 3
+                      : (c & 0xF8) == 0xF0 ? 4
+                      : 1;
+        if (byte + width > len) return -1;
+        if (seen == index) {
+            switch (width) {
+                case 2: return ((c & 0x1F) << 6) | (d[byte + 1] & 0x3F);
+                case 3: return ((c & 0x0F) << 12) | ((d[byte + 1] & 0x3F) << 6)
+                             | (d[byte + 2] & 0x3F);
+                case 4: return ((c & 0x07) << 18) | ((d[byte + 1] & 0x3F) << 12)
+                             | ((d[byte + 2] & 0x3F) << 6) | (d[byte + 3] & 0x3F);
+                default: return c;
+            }
+        }
+        byte += width;
+        seen++;
     }
-    if ((c & 0xF0) == 0xE0 && index + 2 < len) {
-        return ((c & 0x0F) << 12) | ((d[index + 1] & 0x3F) << 6)
-             | (d[index + 2] & 0x3F);
+    return -1;
+}
+
+// How many Unicode scalars the string holds (for the index-out-of-bounds message).
+static int64_t str_char_count(const RaskStr *s) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    int64_t byte = 0;
+    int64_t seen = 0;
+    while (byte < len) {
+        unsigned char c = (unsigned char)d[byte];
+        int64_t width = c < 0x80 ? 1
+                      : (c & 0xE0) == 0xC0 ? 2
+                      : (c & 0xF0) == 0xE0 ? 3
+                      : (c & 0xF8) == 0xF0 ? 4
+                      : 1;
+        byte += width;
+        seen++;
     }
-    if ((c & 0xF8) == 0xF0 && index + 3 < len) {
-        return ((c & 0x07) << 18) | ((d[index + 1] & 0x3F) << 12)
-             | ((d[index + 2] & 0x3F) << 6) | (d[index + 3] & 0x3F);
+    return seen;
+}
+
+int64_t rask_string_char_at(const RaskStr *s, int64_t index) {
+    return str_scalar_at(s, index);
+}
+
+// s[i] — indexing, so an out-of-range index panics rather than answering none.
+int64_t rask_string_index(const RaskStr *s, int64_t index) {
+    int64_t scalar = str_scalar_at(s, index);
+    if (scalar < 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "string index out of bounds: index is %lld but length is %lld",
+                 (long long)index, (long long)str_char_count(s));
+        rask_panic(buf);
     }
-    return c;
+    return scalar;
 }
 
 int64_t rask_string_contains(const RaskStr *haystack, const RaskStr *needle) {
@@ -799,13 +849,78 @@ void rask_i64_to_string(RaskStr *out, int64_t val) {
     rask_string_from(out, buf);
 }
 
+void rask_u64_to_string(RaskStr *out, uint64_t val) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%llu", (unsigned long long)val);
+    rask_string_from(out, buf);
+}
+
 void rask_bool_to_string(RaskStr *out, int64_t val) {
     rask_string_from(out, val ? "true" : "false");
 }
 
+// Render a double the way the interpreter does: the shortest digit string
+// that reads back as the same value, never in exponent form. `%g` alone gives
+// 6 significant digits, so 1234567.75 printed as 1.23457e+06 — both a loss of
+// digits and a different shape from the interpreter's output.
+//
+// `buf` should be RASK_F64_BUF_SIZE bytes: a large magnitude in fixed notation
+// needs room for every digit before the decimal point.
+void rask_fmt_double(char *buf, size_t n, double val) {
+    if (isnan(val)) { snprintf(buf, n, "NaN"); return; }
+    if (isinf(val)) { snprintf(buf, n, val < 0 ? "-inf" : "inf"); return; }
+
+    int prec = 1;
+    for (; prec < 17; prec++) {
+        snprintf(buf, n, "%.*g", prec, val);
+        if (strtod(buf, NULL) == val) break;
+    }
+    if (prec >= 17) snprintf(buf, n, "%.17g", val);
+
+    // %g switches to exponent form once the magnitude passes the precision.
+    // Re-render those with the same significant digits, spelled out.
+    if (strchr(buf, 'e')) {
+        int exp10 = (int)floor(log10(fabs(val)));
+        int decimals = prec - 1 - exp10;
+        if (decimals < 0) decimals = 0;
+        if (decimals > 320) decimals = 320;
+        snprintf(buf, n, "%.*f", decimals, val);
+    }
+}
+
+// Same idea for f32. Widening to double first and formatting as a double
+// spells out the f32's exact binary value — 0.1f comes back as
+// 0.10000000149011612 instead of 0.1, because the round-trip is checked
+// against the wrong width.
+void rask_fmt_float(char *buf, size_t n, float val) {
+    if (isnan(val)) { snprintf(buf, n, "NaN"); return; }
+    if (isinf(val)) { snprintf(buf, n, val < 0 ? "-inf" : "inf"); return; }
+
+    int prec = 1;
+    for (; prec < 9; prec++) {
+        snprintf(buf, n, "%.*g", prec, (double)val);
+        if (strtof(buf, NULL) == val) break;
+    }
+    if (prec >= 9) snprintf(buf, n, "%.9g", (double)val);
+
+    if (strchr(buf, 'e')) {
+        int exp10 = (int)floorf(log10f(fabsf(val)));
+        int decimals = prec - 1 - exp10;
+        if (decimals < 0) decimals = 0;
+        if (decimals > 60) decimals = 60;
+        snprintf(buf, n, "%.*f", decimals, (double)val);
+    }
+}
+
 void rask_f64_to_string(RaskStr *out, double val) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%g", val);
+    char buf[RASK_F64_BUF_SIZE];
+    rask_fmt_double(buf, sizeof(buf), val);
+    rask_string_from(out, buf);
+}
+
+void rask_f32_to_string(RaskStr *out, float val) {
+    char buf[RASK_F64_BUF_SIZE];
+    rask_fmt_float(buf, sizeof(buf), val);
     rask_string_from(out, buf);
 }
 

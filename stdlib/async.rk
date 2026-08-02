@@ -6,7 +6,7 @@
 /// Requires an active `using Multitasking { ... }` scope in the process.
 /// Compile error if called outside any scope (directly or transitively);
 /// runtime panic for higher-order/trait-object cases the compiler can't prove.
-public func spawn(f: func()) -> TaskHandle<void> { }
+public func spawn(f: func() -> T) -> TaskHandle<T> { }
 
 /// Check if the current task has been cancelled.
 /// Returns true if cancel was requested. Use in long-running loops.

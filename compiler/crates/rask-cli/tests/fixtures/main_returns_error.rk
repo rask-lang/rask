@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// struct.targets/EX4: an error out of main is exit status 1 (#345).
+
+enum Fail {
+    Bad
+}
+
+extend Fail {
+    func message(self) -> string {
+        return "the thing failed"
+    }
+}
+
+func risky() -> i64 or Fail {
+    return Fail.Bad
+}
+
+func main() -> void or Fail {
+    println("starting")
+    const _v = try risky()
+    println("unreachable")
+}

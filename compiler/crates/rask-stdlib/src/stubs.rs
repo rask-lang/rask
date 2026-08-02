@@ -117,7 +117,7 @@ impl StubRegistry {
                 if !lex_result.is_ok() {
                     continue;
                 }
-                let parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+                let parse_result = rask_parser::Parser::new(lex_result.tokens).allow_keyword_fn_names().parse();
                 for decl in &parse_result.decls {
                     registry.process_decl(decl, filename, source);
                 }
@@ -142,7 +142,8 @@ impl StubRegistry {
             if !lex_result.is_ok() {
                 continue;
             }
-            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
+            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id)
+                .allow_keyword_fn_names();
             let parse_result = parser.parse();
             next_id = parser.next_node_id();
             for decl in parse_result.decls {
@@ -173,7 +174,8 @@ impl StubRegistry {
             if !lex_result.is_ok() {
                 continue;
             }
-            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
+            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id)
+                .allow_keyword_fn_names();
             let parse_result = parser.parse();
             next_id = parser.next_node_id();
             let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
@@ -225,7 +227,8 @@ impl StubRegistry {
             if !lex_result.is_ok() {
                 continue;
             }
-            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
+            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id)
+                .allow_keyword_fn_names();
             let parse_result = parser.parse();
             next_id = parser.next_node_id();
             let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
@@ -257,7 +260,8 @@ impl StubRegistry {
             if !lex_result.is_ok() {
                 continue;
             }
-            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
+            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id)
+                .allow_keyword_fn_names();
             let parse_result = parser.parse();
             next_id = parser.next_node_id();
             for decl in parse_result.decls {

@@ -11,6 +11,7 @@ mod iterators;
 mod match_lower;
 mod stmt;
 
+use crate::FieldAccess;
 use crate::{
     BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType, BlockId, LocalId, operand::{MirConst, FunctionRef},
@@ -770,6 +771,23 @@ pub struct MirLowerer<'a> {
     /// checker leaves `collect()`'s element an inference variable — and a binding
     /// needs it so `for v in page` knows what it is iterating.
     collected_elem_types: HashMap<LocalId, MirType>,
+    /// Stack of enclosing `try { … } else |e| …` handlers (innermost last).
+    /// A `try` inside one of these blocks jumps to the handler instead of
+    /// returning from the function (ER18).
+    try_else_stack: Vec<TryElseFrame>,
+}
+
+/// Where a `try` inside a `try { … } else |e| …` block sends its error.
+#[derive(Clone)]
+pub(crate) struct TryElseFrame {
+    /// Block that binds `e` and runs the handler body.
+    pub(crate) handler_block: BlockId,
+    /// Slot the failing error payload is copied into before the jump.
+    pub(crate) err_val: LocalId,
+    /// Type of that slot — the enclosing function's error type.
+    pub(crate) err_ty: MirType,
+    /// Slot carrying the failing Result's origin line (ER15).
+    pub(crate) origin_line: LocalId,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -909,7 +927,7 @@ impl<'a> MirLowerer<'a> {
                         base: value.clone(),
                         field_index: 0,
                         byte_offset: Some(off),
-                        field_size: Some(8),
+                        access: FieldAccess::Sized(8),
                     },
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -1663,6 +1681,7 @@ impl<'a> MirLowerer<'a> {
             const_init_target: const_init.map(|(n, _)| n.to_string()),
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
+            try_else_stack: Vec::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -1903,7 +1922,8 @@ impl<'a> MirLowerer<'a> {
                         Some(rask_ast::token::IntSuffix::U8) => MirType::U8,
                         Some(rask_ast::token::IntSuffix::U16) => MirType::U16,
                         Some(rask_ast::token::IntSuffix::U32) => MirType::U32,
-                        Some(rask_ast::token::IntSuffix::U64) => MirType::U64,
+                        Some(rask_ast::token::IntSuffix::U64)
+                        | Some(rask_ast::token::IntSuffix::U64ByMagnitude) => MirType::U64,
                         _ => MirType::I64,
                     }
                 };
@@ -2234,6 +2254,35 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or(false)
     }
 
+    /// Same question, with the lowered type as a second opinion. A `Handle?`
+    /// field inside a pool element often has no checker type to read — the
+    /// element's fields aren't typed at the use site — and reading it as a
+    /// tagged option then tested a tag that isn't there (#438).
+    ///
+    /// This is the answer. `is_niche_option_expr` on its own is only right
+    /// where there is no lowered type to consult; three call sites used to
+    /// spell this out inline instead, which is how the checker-only version
+    /// kept getting used where a MIR type was sitting right there.
+    pub(crate) fn option_is_niche(&self, expr: &Expr, ty: &MirType) -> bool {
+        self.is_niche_option_expr(expr)
+            || matches!(ty, MirType::Option(inner) if **inner == MirType::Handle)
+    }
+
+    /// `option_is_niche` for a value that's already lowered — reads the MIR
+    /// type off the operand's local.
+    pub(crate) fn option_operand_is_niche(&self, expr: &Expr, op: &MirOperand) -> bool {
+        if self.is_niche_option_expr(expr) {
+            return true;
+        }
+        match op {
+            MirOperand::Local(id) => self
+                .builder
+                .local_type(*id)
+                .is_some_and(|t| matches!(t, MirType::Option(inner) if *inner == MirType::Handle)),
+            _ => false,
+        }
+    }
+
     /// Emit a tag-equivalent check for an option value.
     ///
     /// Returns a local that is 0 for Some, non-zero for None — matching
@@ -2324,7 +2373,7 @@ impl<'a> MirLowerer<'a> {
             } else {
                 Some(crate::types::RESULT_PAYLOAD_OFFSET)
             };
-            MirRValue::Field { base: value, field_index: 0, byte_offset, field_size: None }
+            MirRValue::Field { base: value, field_index: 0, byte_offset, access: FieldAccess::Word }
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: result, rvalue }));
         result
@@ -2402,7 +2451,7 @@ impl<'a> MirLowerer<'a> {
                                 base: value.clone(),
                                 field_index: i as u32,
                                 byte_offset: field_loc.map(|(off, _)| off),
-                                field_size: field_loc.map(|(_, sz)| sz),
+                                access: field_loc.map_or(FieldAccess::Word, |(_, sz)| FieldAccess::Sized(sz)),
                             }
                         };
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2440,7 +2489,7 @@ impl<'a> MirLowerer<'a> {
                         } else {
                             None
                         },
-                        field_size: None,
+                        access: FieldAccess::Word,
                     }
                 };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2691,11 +2740,11 @@ impl<'a> MirLowerer<'a> {
                 self.walk_free_vars(target, bound, seen, free);
                 self.walk_free_vars(value, bound, seen, free);
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 self.walk_free_vars(cond, bound, seen, free);
                 self.walk_free_vars_block(body, bound, seen, free);
             }
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { pattern, expr, body, .. } => {
                 self.walk_free_vars(expr, bound, seen, free);
                 let mut body_bound = bound.clone();
                 collect_pattern_names(pattern, &mut body_bound);
@@ -2824,6 +2873,11 @@ pub(crate) fn is_integer_type_name(name: &str) -> bool {
         "i8" | "i16" | "i32" | "i64" | "isize"
         | "u8" | "u16" | "u32" | "u64" | "usize"
     )
+}
+
+/// Type arguments `string.parse<T>` accepts — the numeric primitives.
+pub(crate) fn is_parse_target_type_name(name: &str) -> bool {
+    is_integer_type_name(name) || matches!(name, "f32" | "f64")
 }
 
 /// Recognize operator method names produced by desugar (e.g. "add", "sub", "eq")
@@ -3266,7 +3320,7 @@ mod tests {
     fn while_stmt(cond: Expr, body: Vec<Stmt>) -> Stmt {
         Stmt {
             id: NodeId(204),
-            kind: StmtKind::While { cond, body },
+            kind: StmtKind::While { label: None, cond, body },
             span: sp(),
         }
     }

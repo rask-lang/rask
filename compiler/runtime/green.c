@@ -196,8 +196,13 @@ static GreenTask *gq_pop(GlobalQueue *gq) {
 
 // ─── Scheduler ──────────────────────────────────────────────
 
+// One per worker thread — its scheduler plus its own index into the deque
+// array. Lives in the scheduler so it outlives pthread_create.
+typedef struct WorkerArg WorkerArg;
+
 typedef struct {
     pthread_t       *workers;
+    WorkerArg       *worker_args;   // one per worker: scheduler + its own id
     int              worker_count;
     WorkDeque       *local;        // local[worker_id]
     GlobalQueue      global;
@@ -213,6 +218,11 @@ typedef struct {
     pthread_mutex_t  done_lock;
     pthread_cond_t   done_cond;
 } GreenScheduler;
+
+struct WorkerArg {
+    GreenScheduler *sched;
+    int             id;
+};
 
 // Singleton scheduler
 static GreenScheduler *g_sched = NULL;
@@ -381,13 +391,14 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
 // ─── Worker loop ────────────────────────────────────────────
 
 static void *worker_entry(void *arg) {
-    GreenScheduler *s = (GreenScheduler *)arg;
-    // Compute worker_id from thread identity — use global queue push order
-    // Actually, we pack the id into the arg pointer for simplicity.
-    // Re-encode: we store worker_id in upper bits. Nah — use a proper struct.
-    // Simpler: use a static counter.
-    static atomic_int next_id = ATOMIC_VAR_INIT(0);
-    int my_id = atomic_fetch_add_explicit(&next_id, 1, memory_order_relaxed);
+    // The id comes from the caller, one slot per worker. It used to come from
+    // a process-global counter that nothing reset, so the workers of a second
+    // `using Multitasking` scope got ids 4..7 while their scheduler's deque
+    // array still had 4 entries — an out-of-bounds read, and a segfault the
+    // moment a program opened the scope twice.
+    WorkerArg *wa = (WorkerArg *)arg;
+    GreenScheduler *s = wa->sched;
+    int my_id = wa->id;
     tl_worker_id = my_id;
     tl_rng_state = (uint32_t)(my_id + 1) * 2654435761U;
 
@@ -470,7 +481,8 @@ void rask_runtime_init(int64_t worker_count) {
     s->worker_count = (int)worker_count;
     s->workers = (pthread_t *)calloc((size_t)worker_count, sizeof(pthread_t));
     s->local   = (WorkDeque *)calloc((size_t)worker_count, sizeof(WorkDeque));
-    if (!s->workers || !s->local) {
+    s->worker_args = (WorkerArg *)calloc((size_t)worker_count, sizeof(WorkerArg));
+    if (!s->workers || !s->local || !s->worker_args) {
         fprintf(stderr, "rask: scheduler arrays alloc failed\n");
         abort();
     }
@@ -495,7 +507,9 @@ void rask_runtime_init(int64_t worker_count) {
 
     // Spawn worker threads
     for (int i = 0; i < s->worker_count; i++) {
-        int err = pthread_create(&s->workers[i], NULL, worker_entry, s);
+        s->worker_args[i].sched = s;
+        s->worker_args[i].id = i;
+        int err = pthread_create(&s->workers[i], NULL, worker_entry, &s->worker_args[i]);
         if (err != 0) {
             fprintf(stderr, "rask: failed to create worker thread %d: %d\n",
                     i, err);
@@ -542,6 +556,7 @@ void rask_runtime_shutdown(void) {
     pthread_mutex_destroy(&s->done_lock);
     pthread_cond_destroy(&s->done_cond);
     free(s->local);
+    free(s->worker_args);
     free(s->workers);
     free(s);
     g_sched = NULL;
@@ -689,22 +704,27 @@ int rask_green_task_is_cancelled(void) {
 // This is the bridge until the compiler generates state machines (Task 2).
 
 typedef struct {
-    void (*func)(void *env);
+    int64_t (*func)(void *env);
     void *env;
     void *alloc_base; // closure allocation to free after task
 } ClosurePollState;
 
 static int closure_poll_fn(void *state, void *task_ctx) {
-    (void)task_ctx;
     ClosurePollState *s = (ClosurePollState *)state;
-    s->func(s->env);
+    // The closure's return value is the task's result — it's what `h.join()`
+    // hands back. Calling through a void signature dropped it, so every join
+    // on a value-returning task answered 0. A `spawn(|| { … })` with nothing
+    // to return leaves a junk value here, but its handle is TaskHandle<void>
+    // and the payload is never read.
+    int64_t r = s->func(s->env);
+    if (task_ctx) ((GreenTask *)task_ctx)->result = r;
     rask_free(s->alloc_base);
     s->alloc_base = NULL; // prevent double-free in task_release
     return RASK_POLL_READY;
 }
 
 void *rask_green_closure_spawn(void *closure_ptr) {
-    void (*func)(void *) = *(void (**)(void *))(closure_ptr);
+    int64_t (*func)(void *) = *(int64_t (**)(void *))(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
     ClosurePollState *ps = (ClosurePollState *)malloc(sizeof(ClosurePollState));

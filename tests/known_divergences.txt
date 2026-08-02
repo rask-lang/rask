@@ -10,18 +10,12 @@
 # lag both count. See docs/TESTING.md for the full map.
 
 # --- native codegen bugs (interp correct) ---
-t10_generics.rk            # generic method returning string = garbage — #272 (native)
 t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (A|B) codegen — #375, rask#211 (native)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
 
 # --- interpreter lag (native correct) ---
-t27_error_narrowing.rk     # interp && is-pattern binding drops payload bindings — #256 (interp)
 
 # --- shared / both-backend bugs ---
-t20_control_expressions.rk # interp labeled break/continue + native f64 enum payload + && is-pattern — #392, #388, #256 (both)
-t25_iterator_adapters.rk   # fold accumulator type never resolves — #327 (both, check)
 
 # --- new regression witnesses (this session) ---
-t43_widening_regressions.rk # optional widening interp lag — #393 (interp; result T-bind native part fixed in #389)
-t61_nested_optionals_vec.rk # native Vec.first() panics on an empty Vec — #412 (native; the nesting itself is green in t60)

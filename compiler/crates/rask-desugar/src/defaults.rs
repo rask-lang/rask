@@ -384,7 +384,7 @@ impl DefaultDesugarer {
             StmtKind::Return(None) => {}
             StmtKind::Break { value: Some(v), .. } => self.desugar_expr(v),
             StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 self.desugar_expr(cond);
                 for s in body { self.desugar_stmt(s); }
             }

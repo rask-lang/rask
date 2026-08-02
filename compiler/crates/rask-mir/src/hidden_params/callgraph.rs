@@ -163,7 +163,7 @@ fn collect_callees_from_stmt(pass: &HiddenParamPass, stmt: &Stmt, callees: &mut 
             value: Some(v), ..
         } => collect_callees_from_expr(pass, v, callees),
         StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
-        StmtKind::While { cond, body } => {
+        StmtKind::While { cond, body, .. } => {
             collect_callees_from_expr(pass, cond, callees);
             for s in body {
                 collect_callees_from_stmt(pass, s, callees);

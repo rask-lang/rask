@@ -17,7 +17,34 @@ use std::sync::{Arc, Mutex};
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
 
+/// Methods the interpreter derives for every struct and enum. An `extend`
+/// block that defines one of these replaces the derived version.
+const DERIVABLE_METHODS: &[&str] = &[
+    "eq", "ne", "lt", "le", "gt", "ge", "compare", "hash", "debug_string",
+];
+
 impl Interpreter {
+    /// Look up a user-written method on a struct or enum value. Enum struct
+    /// variants store their name as "Shape.Circle", so the type is also tried
+    /// with the variant stripped. Stub registrations have empty bodies and
+    /// don't count.
+    fn user_method(&self, receiver: &Value, method: &str) -> Option<rask_ast::decl::FnDecl> {
+        let type_name = match receiver {
+            Value::Struct(s) => s.lock().unwrap().name.clone(),
+            Value::Enum { name, .. } => name.clone(),
+            Value::Nominal { type_name, .. } => type_name.clone(),
+            _ => return None,
+        };
+        self.methods
+            .get(&type_name)
+            .and_then(|m| m.get(method).cloned())
+            .or_else(|| {
+                let base = type_name.split('.').next()?;
+                self.methods.get(base).and_then(|m| m.get(method).cloned())
+            })
+            .filter(|f| !f.body.is_empty())
+    }
+
     /// Dispatch a method call on a built-in type.
     /// Returns the result, or falls back to user-defined methods.
     pub(crate) fn call_builtin_method(
@@ -35,6 +62,21 @@ impl Interpreter {
                 _ => "<no origin>".to_string(),
             };
             return Ok(Value::String(Arc::new(Mutex::new(origin_str))));
+        }
+
+        // A user `lt`/`compare`/`eq`/… body wins over the derived one (#400).
+        // The derived arms below sit in front of the user-method lookup at the
+        // bottom of this function, so without this an `extend` block that
+        // defines its own ordering was never called — the interpreter answered
+        // from the field-by-field default and disagreed with native.
+        if matches!(receiver, Value::Struct(..) | Value::Enum { .. })
+            && DERIVABLE_METHODS.contains(&method)
+        {
+            if let Some(method_fn) = self.user_method(&receiver, method) {
+                let mut all_args = vec![receiver];
+                all_args.extend(args);
+                return self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
+            }
         }
 
         match &receiver {
@@ -137,6 +179,11 @@ impl Interpreter {
             Value::Struct(..) if method == "eq" => {
                 if let Some(other) = args.first() {
                     if let (Value::Struct(ref s1), Value::Struct(ref s2)) = (&receiver, other) {
+                        // `a == a` passes the same Arc twice — locking it again
+                        // would deadlock the interpreter.
+                        if Arc::ptr_eq(s1, s2) {
+                            return Ok(Value::Bool(true));
+                        }
                         let g1 = s1.lock().unwrap();
                         let g2 = s2.lock().unwrap();
                         if g1.name == g2.name && g1.fields.len() == g2.fields.len() {
@@ -272,6 +319,10 @@ impl Interpreter {
         let type_name = match &receiver {
             Value::Struct(ref s) => s.lock().unwrap().name.clone(),
             Value::Enum { name, .. } => name.clone(),
+            // A nominal newtype's methods are registered under its own name.
+            // Falling back to `type_name()` looked them up under the literal
+            // string "nominal" and never found any (#445).
+            Value::Nominal { type_name, .. } => type_name.clone(),
             _ => receiver.type_name().to_string(),
         };
 
@@ -298,6 +349,13 @@ impl Interpreter {
             let mut all_args = vec![receiver];
             all_args.extend(args);
             return self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
+        }
+
+        // `type Id = u64 with (Hashable)` delegates whatever it doesn't define
+        // itself to the underlying value, so anything the newtype doesn't
+        // answer is asked of what it wraps.
+        if let Value::Nominal { inner, .. } = &receiver {
+            return self.call_builtin_method((**inner).clone(), method, args);
         }
 
         Err(RuntimeError::NoSuchMethod {

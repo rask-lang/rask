@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A trait-bound call forwarded through a second generic resolves (#372).
+//
+// `func outer<T: Show>(x: T) { inner(x) }` instantiated `outer$Tag` but left
+// `inner` generic, so its body mangled `x.show()` to `T_show` — a symbol
+// nothing emits. Monomorphization carries the checker's per-node facts onto an
+// instantiated copy, but not the per-call-site type arguments, so the forwarded
+// call had none to enqueue with. Binding those by parameter *name* matters once
+// there's more than one: `pair<A, B>` calling `level1(a)` records `[A]`, and
+// only the name says which of the two that is.
+
+trait Show {
+    func show(self) -> string
+}
+
+struct Tag {
+    public v: i64
+}
+
+extend Tag with Show {
+    func show(self) -> string {
+        return "tag {self.v}"
+    }
+}
+
+struct Note {
+    public s: string
+}
+
+extend Note with Show {
+    func show(self) -> string {
+        return "note {self.s}"
+    }
+}
+
+func level3<T: Show>(x: T) -> string {
+    return x.show()
+}
+
+func level2<T: Show>(x: T) -> string {
+    return level3(x)
+}
+
+func level1<T: Show>(x: T) -> string {
+    return level2(x)
+}
+
+func pair<A: Show, B: Show>(a: A, b: B) -> string {
+    return "{level1(a)} + {level1(b)}"
+}
+
+test "a bound call one level down resolves" {
+    assert level3(Tag { v: 3 }) == "tag 3"
+}
+
+test "forwarding through three generics resolves" {
+    assert level1(Tag { v: 3 }) == "tag 3"
+    assert level1(Note { s: "hi" }) == "note hi"
+}
+
+test "two type parameters keep their own bindings" {
+    assert pair(Tag { v: 1 }, Note { s: "two" }) == "tag 1 + note two"
+}
+
+test "the same generic serves both argument orders" {
+    assert pair(Note { s: "a" }, Tag { v: 2 }) == "note a + tag 2"
+}

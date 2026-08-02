@@ -258,7 +258,7 @@ fn stmt_accesses_handle_fields(stmt: &Stmt, handle_names: &[&str]) -> bool {
                 || expr_accesses_handle_fields(value, handle_names)
         }
         StmtKind::Return(Some(e)) => expr_accesses_handle_fields(e, handle_names),
-        StmtKind::While { cond, body } => {
+        StmtKind::While { cond, body, .. } => {
             expr_accesses_handle_fields(cond, handle_names)
                 || body_accesses_handle_fields(body, handle_names)
         }

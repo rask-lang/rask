@@ -224,8 +224,9 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                             match output {
                                 Ok(out) => {
                                     let stdout = String::from_utf8_lossy(&out.stdout);
-                                    display_test_results(&stdout, path, format);
-                                    if !out.status.success() {
+                                    let complete =
+                                        display_test_results(&stdout, path, format, tests.len());
+                                    if !out.status.success() || !complete {
                                         process::exit(1);
                                     }
                                 }
@@ -303,7 +304,7 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
             ));
         }
     }
-    display_test_results(&json_lines, path, format);
+    display_test_results(&json_lines, path, format, test_results.len());
 
     if test_results.iter().any(|r| !r.passed && r.skipped.is_none()) {
         process::exit(1);
@@ -415,8 +416,8 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
     match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            display_test_results(&stdout, path, format);
-            out.status.success()
+            let complete = display_test_results(&stdout, path, format, tests.len());
+            out.status.success() && complete
         }
         Err(e) => {
             eprintln!("{}: executing test binary: {}", output::error_label(), e);
@@ -472,11 +473,23 @@ pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) 
 }
 
 /// Parse and display test results from JSON output lines.
-fn display_test_results(stdout: &str, path: &str, format: Format) {
+/// Print the run's results. `expected` is how many tests the binary was built
+/// with; fewer results than that means it died partway and the run is a
+/// failure, not a pass over whatever arrived. Returns false in that case.
+fn display_test_results(stdout: &str, path: &str, format: Format, expected: usize) -> bool {
+    let reported = stdout.lines().filter(|l| l.trim().starts_with('{')).count();
+    let truncated = reported < expected;
+
     if format != Format::Human {
         // JSON mode: pass through raw output
         print!("{}", stdout);
-        return;
+        if truncated {
+            eprintln!(
+                "{}: test run stopped after {} of {} tests — the binary died mid-run",
+                output::error_label(), reported, expected,
+            );
+        }
+        return !truncated;
     }
 
     println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
@@ -539,6 +552,18 @@ fn display_test_results(stdout: &str, path: &str, format: Format) {
     }
     summary.push_str(&format!(" ({}ms)", total_duration.as_millis()));
     println!("{}", summary);
+
+    if truncated {
+        println!(
+            "{}",
+            format!(
+                "stopped after {} of {} tests — the test binary died mid-run, \
+                 so the rest never ran",
+                reported, expected,
+            ).red(),
+        );
+    }
+    !truncated
 }
 
 fn parse_json_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {

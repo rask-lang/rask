@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Vec.from([...]) with elements wider than a word — strings and structs (#508).
+
+struct Point { x: i64, y: i64 }
+
+test "string elements keep their length" {
+    const v = Vec.from(["ab", "cde", ""])
+    assert v[0].len() == 2
+    assert v[1].len() == 3
+    assert v[2].len() == 0
+}
+
+test "string elements keep their bytes" {
+    const v = Vec.from(["ab", "cde"])
+    assert v[0] == "ab"
+    assert v[1] == "cde"
+}
+
+test "iterating string elements" {
+    const v = Vec.from(["ab", "cde"])
+    mut total = 0
+    for s in v {
+        total = total + s.len()
+    }
+    assert total == 5
+}
+
+test "a heap string past the small-string limit" {
+    const v = Vec.from(["0123456789abcdefghij", "x"])
+    assert v[0].len() == 20
+    assert v[1].len() == 1
+}
+
+test "struct elements" {
+    const v = Vec.from([Point { x: 1, y: 2 }, Point { x: 3, y: 4 }])
+    assert v[0].x == 1
+    assert v[1].y == 4
+}
+
+test "int elements still work" {
+    const v = Vec.from([1, 2, 3])
+    mut sum = 0
+    for n in v {
+        sum = sum + n
+    }
+    assert sum == 6
+}

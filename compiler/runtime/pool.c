@@ -336,6 +336,14 @@ int64_t rask_pool_remove_packed(RaskPool *p, int64_t packed) {
     return rask_pool_remove(p, handle_unpack(p, packed), NULL);
 }
 
+// `p.remove(h)` answers `T?`, so codegen needs the element back, not a status.
+// The element is copied into the caller's slot while it's still live; nothing
+// here hands back a pointer into a slot that's already on the free list.
+// Returns 1 if the handle was live (and `out` was written), 0 if it was stale.
+int64_t rask_pool_remove_out(RaskPool *p, int64_t packed, void *out) {
+    return rask_pool_remove(p, handle_unpack(p, packed), out) == 0 ? 1 : 0;
+}
+
 int64_t rask_pool_is_valid_packed(const RaskPool *p, int64_t packed) {
     return rask_pool_is_valid(p, handle_unpack(p, packed));
 }

@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `{` in an `if`/`while` condition starts the body, not a struct literal
+// (CF7b, #342).
+//
+// `if m == Mode.On { … }` read `Mode.On { … }` as a struct literal and
+// swallowed the if-block. There was already a "no brace expressions here" flag
+// for conditions; the qualified `Enum.Variant {` path just didn't check it.
+// Parens now switch it back on, so a literal that really is one can be written.
+
+enum Mode {
+    Off
+    On
+}
+
+enum Shape {
+    Dot
+    Circle { r: i64 }
+}
+
+test "a unit variant in a condition is not a struct literal" {
+    const m = Mode.On
+    mut hit = ""
+    if m == Mode.On {
+        hit = "on"
+    } else {
+        hit = "off"
+    }
+    assert hit == "on"
+}
+
+test "the inline form parses too" {
+    const m = Mode.Off
+    mut n = 0
+    if m == Mode.Off { n = 1 }
+    assert n == 1
+}
+
+test "a while condition works the same way" {
+    mut n = 0
+    while n == 0 && Mode.Off == Mode.Off {
+        n = 1
+    }
+    assert n == 1
+}
+
+test "a parenthesized struct literal is still a literal" {
+    const c = Shape.Circle { r: 4 }
+    mut same = false
+    if (c == Shape.Circle { r: 4 }) {
+        same = true
+    }
+    assert same
+}
+
+test "struct-variant literals outside conditions are untouched" {
+    const c = Shape.Circle { r: 3 }
+    mut area = 0
+    match c {
+        Shape.Circle { r } => area = r * r
+        _ => area = 0
+    }
+    assert area == 9
+}
+
+test "a chain of comparisons against variants parses" {
+    const s = Shape.Dot
+    mut kind = ""
+    if s == Shape.Dot {
+        kind = "dot"
+    } else if s == Shape.Dot {
+        kind = "also dot"
+    } else {
+        kind = "other"
+    }
+    assert kind == "dot"
+}

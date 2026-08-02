@@ -62,6 +62,29 @@ pub enum MirType {
 }
 
 impl MirType {
+    /// Does a value of this type live in its own storage, so it's handed around
+    /// as an address rather than as a register-sized value?
+    ///
+    /// Every place that needs to know this used to spell out its own list, and
+    /// the lists didn't match — `Struct | Enum` in one, plus `Tuple | String` in
+    /// another, plus `Array` in a third. A tuple guard behind a `Mutex` was
+    /// classified as word-sized on the strength of one of the short lists and
+    /// got loaded as a single i64.
+    pub fn passed_by_address(&self) -> bool {
+        matches!(
+            self,
+            MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Tuple(_)
+                | MirType::Array { .. }
+                | MirType::String
+                | MirType::Option(_)
+                | MirType::Result { .. }
+                | MirType::Union(_)
+                | MirType::SimdVector { .. }
+        )
+    }
+
     /// Byte size of this type. Structs/enums use pointer size as fallback.
     pub fn size(&self) -> u32 {
         match self {

@@ -58,7 +58,7 @@ pub enum TypeConstraint {
 }
 
 /// Kind of unsuffixed literal (for deferred defaulting).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiteralKind {
     Integer,
     Float,
@@ -90,6 +90,9 @@ pub struct InferenceContext {
     pub(super) constraints: Vec<TypeConstraint>,
     /// Type vars created for unsuffixed literals. Defaults applied after solving.
     pub(super) literal_vars: HashMap<TypeVarId, LiteralKind>,
+    /// What each unsuffixed integer literal said, so the default can widen when
+    /// i32 is too narrow to hold it.
+    pub(super) literal_int_values: HashMap<TypeVarId, i64>,
 }
 
 impl InferenceContext {
@@ -132,6 +135,12 @@ impl InferenceContext {
         self.substitutions.insert(id, ty);
     }
 
+    /// Remember what an unsuffixed integer literal actually said, so defaulting
+    /// can tell `3` from `3000000000`.
+    pub fn record_literal_int(&mut self, id: TypeVarId, value: i64) {
+        self.literal_int_values.insert(id, value);
+    }
+
     /// Apply defaults for unresolved literal type vars.
     ///
     /// A literal var can be bound to another *variable* rather than a type —
@@ -148,18 +157,30 @@ impl InferenceContext {
             .iter()
             .map(|(&id, &kind)| (id, kind))
             .collect();
+        let mut defaults: HashMap<TypeVarId, Type> = HashMap::new();
         for (var_id, kind) in pending {
             let default = match kind {
-                LiteralKind::Integer => Type::I32,
+                // i32 is the default (type.primitives/L1), but only where the
+                // value fits — `const big = 3000000000` used to keep the low 32
+                // bits and print -1294967296.
+                LiteralKind::Integer => match self.literal_int_values.get(&var_id) {
+                    Some(&v) if i32::try_from(v).is_err() => Type::I64,
+                    _ => Type::I32,
+                },
                 LiteralKind::Float => Type::F64,
             };
-            match self.apply(&Type::Var(var_id)) {
-                Type::Var(tail) => {
-                    self.substitutions.insert(tail, default);
-                }
-                _ => {}
+            // Follow the chain. An unresolved literal var applies to itself, so
+            // this covers the plain case too; a literal already bound to a
+            // concrete type isn't a variable and needs nothing.
+            let Type::Var(tail) = self.apply(&Type::Var(var_id)) else { continue };
+            // Two literals can land on the same variable — a wide one and a
+            // narrow one. Take the wider, so nothing gets truncated.
+            match defaults.get(&tail) {
+                Some(Type::I64) => {}
+                _ => { defaults.insert(tail, default); }
             }
         }
+        self.substitutions.extend(defaults);
     }
 
     /// Add a constraint.

@@ -88,7 +88,7 @@ impl<'a> WarnContext<'a> {
             StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
 
             // CW2: Track loop context
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 self.check_expr(cond, warnings);
                 let was_in_loop = self.in_loop;
                 self.in_loop = true;

@@ -286,17 +286,25 @@ RaskVec *rask_map_values(const RaskMap *m) {
 
 // entries: return Vec of (key, value) pairs for iteration.
 // Each entry is a 16-byte struct { key: i64, value: i64 }.
+// Entries as a Vec of (key, value) pairs laid out the way codegen lays out a
+// tuple: key at 0, value at the next 8-byte boundary past it. The old version
+// copied a fixed 8 bytes of each, which truncated a string key to its first
+// word and handed iteration a corrupt RaskStr.
 RaskVec *rask_map_entries(const RaskMap *m) {
-    RaskVec *v = rask_vec_new(16); // 16 bytes per (key, value) pair
-    if (!m) return v;
+    if (!m) return rask_vec_new(16);
+    int64_t voff = (m->key_size + 7) & ~(int64_t)7;
+    int64_t stride = (voff + m->val_size + 7) & ~(int64_t)7;
+    RaskVec *v = rask_vec_with_capacity(stride, m->len);
+    char *pair = (char *)rask_alloc(stride);
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
-            struct { int64_t key; int64_t val; } pair;
-            memcpy(&pair.key, m->keys + i * m->key_size, m->key_size < 8 ? m->key_size : 8);
-            memcpy(&pair.val, m->vals + i * m->val_size, m->val_size < 8 ? m->val_size : 8);
-            rask_vec_push(v, &pair);
+            memset(pair, 0, (size_t)stride);
+            memcpy(pair, m->keys + i * m->key_size, (size_t)m->key_size);
+            memcpy(pair + voff, m->vals + i * m->val_size, (size_t)m->val_size);
+            rask_vec_push(v, pair);
         }
     }
+    rask_free(pair);
     return v;
 }
 

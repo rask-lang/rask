@@ -769,6 +769,74 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+// #500: a free function named with a keyword can be declared but never called,
+// so the declaration is rejected — and the message says why, instead of the
+// backwards type error the call site used to produce.
+#[test]
+fn error_keyword_fn_name() {
+    let (failed, out) = compile_error_output("keyword_fn_name.rk");
+    assert!(failed, "`func check(...)` must be rejected: {}", out);
+    assert!(
+        out.contains("`check` is a keyword"),
+        "should name the keyword: {}", out,
+    );
+}
+
+// #506: a `{...}` in a string that isn't a single expression (plus an optional
+// format spec) is rejected, instead of parsing whatever fits and dropping the
+// rest — which is how a JSON body reached json.decode as the string "x".
+#[test]
+fn error_bad_interpolation() {
+    let (failed, out) = compile_error_output("bad_interpolation.rk");
+    assert!(failed, "a malformed interpolation must be rejected: {}", out);
+    assert!(
+        out.contains("is not a valid interpolation"),
+        "should name the interpolation as the problem: {}", out,
+    );
+}
+
+// A bare literal used to bind to whatever type it met first, so
+// `func f() -> string { return 1 }` type-checked. Found chasing #383, where a
+// `T? or E` return silently accepted anything numeric.
+#[test]
+fn error_literal_wrong_type() {
+    let (failed, out) = compile_error_output("literal_wrong_type.rk");
+    assert!(failed, "an int literal is not a string: {}", out);
+    assert!(
+        out.contains("expected `string`"),
+        "should name the expected type: {}", out,
+    );
+}
+
+// #345: `func main() -> void or E` that ends up on the error branch exits 1,
+// not 0. Both backends: the interpreter treated the error as an ordinary
+// return value, and native's main always returned void.
+#[test]
+fn main_error_return_exits_1() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_returns_error.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("starting"), "{mode}: should run up to the error: {stdout}");
+        assert!(
+            !stdout.contains("unreachable"),
+            "{mode}: must stop at the propagated error: {stdout}",
+        );
+        assert!(
+            stderr.contains("the thing failed"),
+            "{mode}: should report the error's message: {stderr}",
+        );
+    }
+}
+
+#[test]
+fn main_ok_return_exits_0() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_returns_ok.rk");
+        assert_eq!(code, 0, "{mode}: expected exit 0, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("v=7"), "{mode}: {stdout}");
+    }
+}
+
 #[test]
 fn error_stdlib_renames() {
     // task-2b (#302): the old stdlib names are HARD errors, not aliases. Each

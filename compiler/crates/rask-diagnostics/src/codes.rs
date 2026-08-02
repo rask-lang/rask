@@ -276,6 +276,9 @@ impl Default for ErrorCodeRegistry {
                 "E0824" => ("public duck trait", Type,
                     "A `duck trait` was declared `public`. Duck traits match by shape instead of by declaration, which makes them a versioning trap across a package boundary: an external type could start or stop satisfying the trait because its author added or removed a method, with nothing in either diff to notice. So duck traits stay package-internal (type.generics/DT1) — they're for code you're still sketching. Drop `duck` to harden the trait (the compiler generates the conformance declarations for types that already match), or drop `public`.",
                     "public duck trait Frobber {\n    func frobnicate(self)\n}\n// fix: `public trait Frobber` (nominal), or `duck trait Frobber` (package-internal)"),
+                "E0825" => ("integer literal out of range", Type,
+                    "An integer literal doesn't fit the type it ended up with. Unsuffixed literals are `i32` by default (type.primitives/L1) and widen to `i64` when the value needs it; a literal that reaches a narrower type through an annotation, a suffix, or a parameter has to fit that type. Nothing wraps silently — pick a wider type, or convert at the use site.",
+                    "const b: u8 = 300  // error: 300 doesn't fit u8 (0..=255)\n// fix: `const b: u16 = 300`, or `const b = 300 truncate to u8`"),
             },
         }
     }

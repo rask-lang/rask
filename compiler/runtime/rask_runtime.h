@@ -95,6 +95,7 @@ int64_t  rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem);
 int64_t  rask_vec_remove_at(RaskVec *v, int64_t index, void *out);
 RaskVec *rask_iter_skip(const RaskVec *src, int64_t n);
 RaskVec *rask_vec_clone(const RaskVec *v);
+RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
@@ -138,6 +139,17 @@ int64_t     rask_string_len(const RaskStr *s);
 const char *rask_string_ptr(const RaskStr *s);
 int64_t     rask_string_is_empty(const RaskStr *s);
 int64_t     rask_string_eq(const RaskStr *a, const RaskStr *b);
+
+// struct.targets/EX4: main returned its error branch — print and exit 1.
+_Noreturn void rask_main_error_exit(const RaskStr *msg);
+
+// Shortest round-tripping decimal for a double, never in exponent form.
+// Matches the interpreter's float formatting. Buffers must be this big:
+// a large magnitude spelled out needs every digit before the point.
+#define RASK_F64_BUF_SIZE 350
+void rask_fmt_double(char *buf, size_t n, double val);
+void rask_fmt_float(char *buf, size_t n, float val);
+void rask_f32_to_string(RaskStr *out, float val);
 int64_t     rask_string_compare(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_lt(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_gt(const RaskStr *a, const RaskStr *b);
@@ -145,6 +157,7 @@ int64_t     rask_string_le(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_ge(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_byte_at(const RaskStr *s, int64_t pos);
 int64_t     rask_string_char_at(const RaskStr *s, int64_t index);
+int64_t     rask_string_index(const RaskStr *s, int64_t index);
 int64_t     rask_string_contains(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_starts_with(const RaskStr *s, const RaskStr *prefix);
 int64_t     rask_string_ends_with(const RaskStr *s, const RaskStr *suffix);
@@ -193,6 +206,7 @@ RaskVec    *rask_string_chars(const RaskStr *s);
 
 // Conversion to string (out-param)
 void        rask_i64_to_string(RaskStr *out, int64_t val);
+void        rask_u64_to_string(RaskStr *out, uint64_t val);
 void        rask_bool_to_string(RaskStr *out, int64_t val);
 void        rask_f64_to_string(RaskStr *out, double val);
 void        rask_char_to_string(RaskStr *out, int32_t codepoint);
@@ -241,6 +255,7 @@ int64_t rask_char_eq(int32_t a, int32_t b);
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
+int64_t  rask_vec_contains_str(const RaskVec *v, const RaskStr *needle);
 
 // ─── Map ────────────────────────────────────────────────────
 // Open-addressing hash map with linear probing.
@@ -305,6 +320,7 @@ void       *rask_pool_get_packed(const RaskPool *p, int64_t packed);
 void       *rask_pool_get_checked(const RaskPool *p, int64_t packed,
                                   const char *file, int32_t line, int32_t col);
 int64_t     rask_pool_remove_packed(RaskPool *p, int64_t packed);
+int64_t     rask_pool_remove_out(RaskPool *p, int64_t packed, void *out);
 int64_t     rask_pool_is_valid_packed(const RaskPool *p, int64_t packed);
 RaskVec    *rask_pool_handles_packed(const RaskPool *p);
 RaskVec    *rask_pool_values(const RaskPool *p);
@@ -506,6 +522,9 @@ void rask_assert_fail_msg_at(const char *msg, const char *file,
 void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
+void rask_assert_fail_cmp_char(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col);
 void rask_assert_fail_cmp_str(const char *left, const char *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
@@ -696,6 +715,7 @@ int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size);
 int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_mutex_acquire(int64_t mutex);
 void    rask_mutex_release(int64_t mutex);
+int64_t rask_mutex_data(int64_t mutex);
 int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_shared_read_acquire(int64_t shared);
 int64_t rask_shared_write_acquire(int64_t shared);
@@ -736,6 +756,15 @@ void    rask_shared_drop_i64(int64_t shared);
 
 // Pointer-based wrappers for aggregate types (struct data).
 int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
+
+// Cell — single-owner interior mutability (mem.cell). No lock.
+int64_t rask_os_pid(void);
+RaskVec *rask_os_env_vars(void);
+
+int64_t rask_cell_new(int64_t data_ptr, int64_t data_size);
+int64_t rask_cell_get(int64_t cell);
+void    rask_cell_set(int64_t cell, int64_t data_ptr);
+void    rask_cell_free(int64_t cell);
 int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure);

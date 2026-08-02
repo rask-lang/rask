@@ -29,6 +29,11 @@ pub enum IntKind {
 }
 
 impl IntKind {
+    /// Unsigned widths carry their value as a bit pattern in the signed slot.
+    pub fn is_unsigned(self) -> bool {
+        matches!(self, IntKind::U8 | IntKind::U16 | IntKind::U32 | IntKind::U64)
+    }
+
     /// Map a checker type to an int kind. Non-integers and i128/u128 (their own
     /// `Value` variants) map to `Untyped`.
     pub fn from_type(ty: &rask_types::Type) -> IntKind {
@@ -943,6 +948,10 @@ impl fmt::Display for Value {
         match self {
             Value::Unit => write!(f, "()"),
             Value::Bool(b) => write!(f, "{}", b),
+            // An unsigned value holds its bit pattern in the i64, so the top
+            // half of u64 prints as a negative number unless the width says
+            // otherwise (#517).
+            Value::Int(n, k) if k.is_unsigned() => write!(f, "{}", *n as u64),
             Value::Int(n, _) => write!(f, "{}", n),
             Value::Int128(n) => write!(f, "{}", n),
             Value::Uint128(n) => write!(f, "{}", n),

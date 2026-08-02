@@ -1232,7 +1232,11 @@ impl<'a> Printer<'a> {
                     self.emit(l);
                 }
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { label, cond, body } => {
+                if let Some(l) = label {
+                    self.emit(l);
+                    self.emit(": ");
+                }
                 self.emit("while ");
                 self.format_expr(cond);
                 self.emit(" {");
@@ -1243,7 +1247,11 @@ impl<'a> Printer<'a> {
                 self.emit_indent();
                 self.emit("}");
             }
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { label, pattern, expr, body } => {
+                if let Some(l) = label {
+                    self.emit(l);
+                    self.emit(": ");
+                }
                 self.emit("while ");
                 self.format_expr(expr);
                 self.emit(" is ");
@@ -1820,9 +1828,8 @@ impl<'a> Printer<'a> {
             }
             ExprKind::Loop { label, body } => {
                 if let Some(lbl) = label {
-                    self.emit("'");
                     self.emit(lbl);
-                    self.emit(" ");
+                    self.emit(": ");
                 }
                 self.emit("loop {");
                 self.emit_newline();
