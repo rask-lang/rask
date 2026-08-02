@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A conformance holds or doesn't on its own terms — not on where in the file
+// the types it mentions happen to be declared. A trait method naming a type
+// declared further down used to reject every implementation of it, because the
+// name hadn't been registered when the signature was read.
+
+trait Reporter {
+    func status(self) -> Level
+    func tags(self) -> Vec<Label>
+}
+
+// Both of these are declared *after* the trait that mentions them.
+enum Level { Low, High }
+
+struct Label { public text: string }
+
+struct Probe { public hot: bool }
+
+extend Probe with Reporter {
+    public func status(self) -> Level {
+        if self.hot {
+            return Level.High
+        }
+        return Level.Low
+    }
+
+    public func tags(self) -> Vec<Label> {
+        mut out = Vec.new()
+        out.push(Label { text: "probe" })
+        return out
+    }
+}
+
+func level_name(l: Level) -> string {
+    match l {
+        Level.Low => return "low",
+        Level.High => return "high",
+    }
+}
+
+test "a conformance doesn't depend on declaration order" {
+    const cold = Probe { hot: false }
+    assert level_name(cold.status()) == "low"
+    const hot = Probe { hot: true }
+    assert level_name(hot.status()) == "high"
+}
+
+test "a generic return type declared later also matches" {
+    const p = Probe { hot: false }
+    const tags = p.tags()
+    assert tags.len() == 1
+    assert tags[0].text == "probe"
+}

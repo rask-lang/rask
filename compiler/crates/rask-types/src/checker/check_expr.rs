@@ -99,7 +99,30 @@ impl TypeChecker {
             }
             _ => {}
         }
-        self.infer_expr(expr)
+        let ty = self.infer_expr(expr);
+        self.note_trait_coercion(expr, expected, &ty);
+        ty
+    }
+
+    /// TR5: a concrete value flowing into an `any Trait` position gets boxed
+    /// with a vtable. The site has to be recorded by NodeId or MIR emits the
+    /// bare value and the first method call dispatches through whatever
+    /// happened to be in memory.
+    ///
+    /// This used to be recorded for call arguments only. Every other position
+    /// that knows its expected type — an annotated binding, a struct field, a
+    /// collection element, a return value — type-checked and then segfaulted
+    /// at the first method call (#335, #474, #481).
+    pub(super) fn note_trait_coercion(&mut self, expr: &Expr, expected: &Type, found: &Type) {
+        let Type::TraitObject { trait_name } = expected else { return };
+        // An explicit `x as any Trait` boxes itself.
+        if matches!(&expr.kind, ExprKind::Cast { ty, .. } if ty.starts_with("any ")) {
+            return;
+        }
+        if matches!(self.ctx.apply(found), Type::TraitObject { .. } | Type::Error) {
+            return;
+        }
+        self.trait_coercions.insert(expr.id, trait_name.clone());
     }
 
     fn is_integer_type(ty: &Type) -> bool {

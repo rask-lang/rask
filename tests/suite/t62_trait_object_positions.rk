@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// TR5 — a concrete value gets its vtable wherever it flows into an `any Trait`
+// position, not only as a call argument. Each of these used to compile and then
+// dispatch through whatever was in memory.
+
+trait Handler {
+    func handle(self) -> string
+}
+
+struct Echo { public msg: string }
+struct Fail { public reason: string }
+
+extend Echo with Handler {
+    public func handle(self) -> string { return "echo: {self.msg}" }
+}
+
+extend Fail with Handler {
+    public func handle(self) -> string { return "fail: {self.reason}" }
+}
+
+// A trait object as a struct field — the field is a fat pointer, so the layout
+// has to give it 16 bytes.
+struct Router { public inner: any Handler }
+
+func run(h: any Handler) -> string {
+    return h.handle()
+}
+
+func make(kind: string) -> any Handler {
+    if kind == "echo" {
+        return Echo { msg: "made" }
+    }
+    return Fail { reason: "made" }
+}
+
+test "TR5 — an annotated binding boxes its value" {
+    const h: any Handler = Echo { msg: "one" }
+    assert h.handle() == "echo: one"
+    const f: any Handler = Fail { reason: "two" }
+    assert f.handle() == "fail: two"
+}
+
+test "TR5 — a struct field boxes its value" {
+    const r = Router { inner: Fail { reason: "three" } }
+    assert r.inner.handle() == "fail: three"
+    // And reading it back out and passing it on keeps both halves.
+    assert run(r.inner) == "fail: three"
+}
+
+test "TR5 — a return position boxes its value" {
+    assert make("echo").handle() == "echo: made"
+    assert make("other").handle() == "fail: made"
+}
+
+test "TR5 — a call argument boxes its value" {
+    assert run(Echo { msg: "four" }) == "echo: four"
+    assert run(Fail { reason: "five" }) == "fail: five"
+}
+
+test "TR5 — an explicit `as any` is not boxed twice" {
+    const h = Echo { msg: "six" } as any Handler
+    assert h.handle() == "echo: six"
+    assert run(Echo { msg: "seven" } as any Handler) == "echo: seven"
+}
+
+test "two concrete types behind one trait object keep their own methods" {
+    const a: any Handler = Echo { msg: "a" }
+    const b: any Handler = Fail { reason: "b" }
+    assert a.handle() == "echo: a"
+    assert b.handle() == "fail: b"
+}

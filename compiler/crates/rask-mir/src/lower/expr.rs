@@ -569,6 +569,22 @@ impl<'a> MirLowerer<'a> {
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        let (op, ty) = self.lower_expr_inner(expr)?;
+        // TR5: a concrete value the checker flagged as flowing into an
+        // `any Trait` position gets its vtable here — at the value, so every
+        // use site is covered by one rule. Boxing at the call argument alone
+        // left an annotated binding, a struct field and a collection element
+        // holding a bare struct pointer that the first method call dispatched
+        // through (#335, #474, #481).
+        if !matches!(ty, MirType::TraitObject { .. }) {
+            if let Some(trait_name) = self.ctx.trait_coercions.get(&expr.id).cloned() {
+                return Ok(self.emit_trait_box(op, &ty, &trait_name));
+            }
+        }
+        Ok((op, ty))
+    }
+
+    fn lower_expr_inner(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         self.builder.set_span(expr.span);
         match &expr.kind {
             // Literals
@@ -828,15 +844,9 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         self.lower_call_arg(&a.expr, smut)?
                     };
-                    // TR5: implicit trait coercion — emit TraitBox if type checker flagged this arg
-                    if smut.is_none() {
-                        if let Some(trait_name) = self.ctx.trait_coercions.get(&a.expr.id) {
-                            let (boxed_op, _) = self.emit_trait_box(op, &mir_ty, trait_name);
-                            arg_operands.push(boxed_op);
-                            arg_mir_types.push(mir_ty);
-                            continue;
-                        }
-                    }
+                    // TR5 boxing happens in lower_expr, at the value — doing
+                    // it again here wrapped the box in another box, and the
+                    // outer one had no concrete type to name its vtable after.
                     arg_operands.push(op);
                     arg_mir_types.push(mir_ty);
                 }
