@@ -19,9 +19,9 @@
 
 | Rule | Description |
 |------|-------------|
-| **S1: Grammar** | `{[arg_id][:[[fill]align][width][.precision][type]]}` |
-| **S2: Align** | `<` left, `>` right, `^` center; fill char defaults to space |
-| **S3: Types** | `?` debug, `x`/`X` hex, `b` binary, `o` octal, `e` scientific |
+| **S1: Grammar** | `{[arg_id][:[[fill]align][0][width][.precision][type]]}` |
+| **S2: Align** | `<` left, `>` right, `^` center. Fill defaults to space; a lone `0` before the width fills with zeros and right-aligns. With no align given, numbers go right, text goes left |
+| **S3: Types** | `debug`, `x`/`X` hex, `b` binary, `o` octal, `e` scientific |
 
 | Specifier | Example | Result |
 |-----------|---------|--------|

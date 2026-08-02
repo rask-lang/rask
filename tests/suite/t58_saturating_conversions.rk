@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.primitives — `saturate to` and `try convert` across the signedness
+// boundary, where source and target don't agree on whether values can be
+// negative.
+
+test "CV6 — unsigned source, signed target" {
+    const small: u64 = 42
+    assert small saturate to i64 == 42
+    const huge: u64 = 18446744073709551615
+    assert huge saturate to i64 == 9223372036854775807
+    const zero: u64 = 0
+    assert zero saturate to i64 == 0
+}
+
+test "CV6 — signed source, unsigned target" {
+    const neg: i64 = -5
+    assert neg saturate to u64 == 0
+    assert neg saturate to u8 == 0
+    const pos: i64 = 200
+    assert pos saturate to u64 == 200
+    const big: i64 = 9223372036854775807
+    assert big saturate to u64 == 9223372036854775807
+}
+
+test "CV6 — narrowing within one signedness" {
+    const wide: i64 = 300
+    assert wide saturate to u8 == 255
+    assert wide saturate to i8 == 127
+    const low: i64 = -300
+    assert low saturate to i8 == -128
+    const fits: i64 = 100
+    assert fits saturate to i8 == 100
+}
+
+test "CV6 — an unsigned narrowing keeps its ceiling" {
+    const u: u64 = 70000
+    assert u saturate to u16 == 65535
+    assert u saturate to u32 == 70000
+}
+
+test "CV7 — try convert across the signedness boundary" {
+    // `try x convert to T` gives `T?` — none when it doesn't fit.
+    const small: u64 = 42
+    assert (try small convert to i64) ?? -1 == 42
+
+    const huge: u64 = 18446744073709551615
+    assert (try huge convert to i64) ?? -1 == -1
+
+    const neg: i64 = -1
+    assert (try neg convert to u64) ?? 99 == 99
+
+    const pos: i64 = 7
+    assert (try pos convert to u64) ?? 99 == 7
+
+    const big: i64 = 9223372036854775807
+    assert (try big convert to u64) ?? 0 == 9223372036854775807
+}
+
+test "CV6 — saturating inside a loop accumulator" {
+    mut ids = 0
+    mut vals = Vec.new()
+    vals.push(10)
+    vals.push(20)
+    vals.push(30)
+    for v in vals {
+        ids += v saturate to i64
+    }
+    assert ids == 60
+}

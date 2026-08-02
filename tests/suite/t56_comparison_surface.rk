@@ -1,8 +1,6 @@
-// PENDING type.operators — ordering/equality operators are missing on several
-// types the spec lists as Comparable/Equatable: `char` ordering (`'a' < 'b'` →
-// no method lt), tuple equality (`(1,2) == (1,2)` → no method eq, TU9), and
-// `bool` ordering. #406. Expected RED until built; drives implementation. Do
-// NOT assert current (wrong) behavior.
+// The comparison surface the spec calls Comparable/Equatable: `char` and `bool`
+// ordering, and tuple equality (TU9). Was the TDD backlog for #406; green on
+// both backends since the tuple-store width fix (#548).
 
 func main() {}
 

@@ -1159,7 +1159,11 @@ impl fmt::Display for Value {
             Value::Rng(_) => write!(f, "<Random>"),
             Value::StringBuilder(_) => write!(f, "<StringBuilder>"),
             Value::Iterator(_) => write!(f, "<Iterator>"),
-            Value::Nominal { type_name, inner } => write!(f, "{}({})", type_name, inner),
+            // A nominal newtype's inherited traits delegate to the value it
+            // wraps (type.aliases/T12), so rendering one shows the value. The
+            // wrapper form printed `Id(42)` where native — which carries no
+            // wrapper at runtime — printed `42`.
+            Value::Nominal { inner, .. } => write!(f, "{}", inner),
             Value::NominalConstructor { type_name } => write!(f, "<type {}>", type_name),
         }
     }

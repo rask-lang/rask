@@ -4,7 +4,7 @@
 //! Implements structural trait satisfaction: a type satisfies a trait if it has
 //! all required methods with matching signatures.
 
-use crate::types::{Type, TypeId};
+use crate::types::{GenericArg, Type, TypeId};
 use crate::checker::{TypeTable, TypeDef, MethodSig, SelfParam, ParamMode};
 use rask_ast::Span;
 use std::collections::HashMap;
@@ -552,8 +552,12 @@ impl<'a> TraitChecker<'a> {
                     name: "compare".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
-                    // Returns Ordering enum — use Var as placeholder (structural check)
-                    ret: Type::Var(crate::types::TypeVarId(0)),
+                    // Type variable 0 is `Self` throughout these signatures,
+                    // so `compare` has to name Ordering outright — as a
+                    // placeholder it read as "returns Self", and a nominal
+                    // newtype inheriting Comparable got a `compare` that
+                    // claimed to answer with itself (#551).
+                    ret: Type::UnresolvedNamed("Ordering".to_string()),
                 },
                 MethodSig {
                     type_params: Vec::new(),
@@ -722,7 +726,7 @@ impl<'a> TraitChecker<'a> {
             }
             if !is_self_placeholder(req_ty)
                 && !matches!(found_ty, Type::Var(_))
-                && req_ty != found_ty
+                && !self.types_equivalent(req_ty, found_ty)
             {
                 return false;
             }
@@ -731,12 +735,65 @@ impl<'a> TraitChecker<'a> {
         // Check return type (skip Self placeholders)
         if !is_self_placeholder(&required.ret)
             && !matches!(found.ret, Type::Var(_))
-            && required.ret != found.ret
+            && !self.types_equivalent(&required.ret, &found.ret)
         {
             return false;
         }
 
         true
+    }
+
+    /// Do two written-out types name the same type?
+    ///
+    /// A name that wasn't registered yet when its signature was read stays an
+    /// `UnresolvedNamed`, and comparing that to the registered `Named` it means
+    /// says they differ. So a trait whose method returned a type declared
+    /// further down the file rejected every implementation of it — declaration
+    /// order decided whether a conformance held.
+    fn types_equivalent(&self, a: &Type, b: &Type) -> bool {
+        self.normalize(a) == self.normalize(b)
+    }
+
+    fn normalize(&self, ty: &Type) -> Type {
+        match ty {
+            Type::UnresolvedNamed(name) => {
+                self.types.lookup(name).unwrap_or_else(|| ty.clone())
+            }
+            Type::UnresolvedGeneric { name, args } => match self.types.get_type_id(name) {
+                Some(base) => Type::Generic {
+                    base,
+                    args: args.iter().map(|a| self.normalize_arg(a)).collect(),
+                },
+                None => Type::UnresolvedGeneric {
+                    name: name.clone(),
+                    args: args.iter().map(|a| self.normalize_arg(a)).collect(),
+                },
+            },
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(|a| self.normalize_arg(a)).collect(),
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.normalize(ok)),
+                err: Box::new(self.normalize(err)),
+            },
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.normalize(e)).collect()),
+            Type::Slice(inner) => Type::Slice(Box::new(self.normalize(inner))),
+            Type::RawPtr(inner) => Type::RawPtr(Box::new(self.normalize(inner))),
+            Type::Array { elem, len } => Type::Array {
+                elem: Box::new(self.normalize(elem)),
+                len: *len,
+            },
+            Type::Union(parts) => Type::Union(parts.iter().map(|p| self.normalize(p)).collect()),
+            other => other.clone(),
+        }
+    }
+
+    fn normalize_arg(&self, arg: &GenericArg) -> GenericArg {
+        match arg {
+            GenericArg::Type(t) => GenericArg::Type(Box::new(self.normalize(t))),
+            other => other.clone(),
+        }
     }
 
     /// Format a method signature for error messages.

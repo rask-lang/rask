@@ -139,16 +139,10 @@ impl TypeTable {
         self.register_type(TypeDef::Enum {
             name: "Ordering".to_string(),
             type_params: vec![],
-            variants: vec![
-                ("Less".to_string(), vec![]),
-                ("Equal".to_string(), vec![]),
-                ("Greater".to_string(), vec![]),
-                ("Relaxed".to_string(), vec![]),
-                ("Acquire".to_string(), vec![]),
-                ("Release".to_string(), vec![]),
-                ("AcqRel".to_string(), vec![]),
-                ("SeqCst".to_string(), vec![]),
-            ],
+            variants: rask_stdlib::ORDERING_VARIANTS
+                .iter()
+                .map(|v| (v.to_string(), vec![]))
+                .collect(),
             methods: vec![],
             is_transitive_resource: false,
         });

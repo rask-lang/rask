@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `{}` on a type that can't render itself (std.fmt/D3, D4).
+//
+// Structs and enums opt into Displayable; optionals and results never have it,
+// because there may be nothing to show. This used to slip through to runtime
+// and answer differently on each backend — the interpreter printed a debug
+// rendering or died with "no method to_string on Option", native printed the
+// address of the value's storage (#539).
+
+struct Point { x: i64, y: i64 }
+
+func main() {
+    const p = Point { x: 1, y: 2 }
+    // ERROR: `Point` does not implement `Displayable`
+    println("{p}")
+
+    const maybe: i64? = 5
+    // ERROR: `i64?` does not implement `Displayable`
+    println("{maybe}")
+}

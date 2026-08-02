@@ -944,6 +944,145 @@ void rask_char_to_string(RaskStr *out, int32_t codepoint) {
     }
 }
 
+// ─── Format specs (std.fmt/S1) ──────────────────────────────
+//
+// The spec itself is parsed at compile time; what arrives here is one piece
+// of it at a time. The type token picks a base conversion, then the width /
+// align / fill triple pads the result — the same two stages the interpreter
+// runs, so the two backends render a spec identically.
+
+// Base 2, 8 or 16. Negative values render their two's-complement bit pattern,
+// which is what a hex or binary spec is asking to see.
+void rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper) {
+    char buf[72];
+    const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    uint64_t v = (uint64_t)val;
+    if (base < 2 || base > 16) base = 10;
+
+    int i = (int)sizeof(buf) - 1;
+    buf[i] = '\0';
+    if (v == 0) {
+        buf[--i] = '0';
+    } else {
+        while (v != 0 && i > 0) {
+            buf[--i] = digits[v % (uint64_t)base];
+            v /= (uint64_t)base;
+        }
+    }
+    rask_string_from(out, buf + i);
+}
+
+void rask_u64_to_base(RaskStr *out, uint64_t val, int64_t base, int64_t upper) {
+    rask_i64_to_base(out, (int64_t)val, base, upper);
+}
+
+void rask_f64_to_precision(RaskStr *out, double val, int64_t precision) {
+    if (precision < 0) { rask_f64_to_string(out, val); return; }
+    if (precision > 300) precision = 300;
+    char buf[RASK_F64_BUF_SIZE];
+    snprintf(buf, sizeof(buf), "%.*f", (int)precision, val);
+    rask_string_from(out, buf);
+}
+
+void rask_f64_to_exp(RaskStr *out, double val) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%e", val);
+    rask_string_from(out, buf);
+}
+
+// Keep the first `count` characters — a precision on a string truncates it.
+void rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count) {
+    if (count < 0) { *out = *s; rask_string_clone(out); return; }
+    const char *data = str_data(s);
+    int64_t len = str_len(s);
+    int64_t i = 0, seen = 0;
+    while (i < len && seen < count) {
+        unsigned char c = (unsigned char)data[i];
+        i += (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+        seen++;
+    }
+    if (i > len) i = len;
+    str_make(out, data, i);
+}
+
+// align: 0 left, 1 right, 2 center. Width counts characters, not bytes.
+void rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill) {
+    int64_t count = str_char_count(s);
+    if (width <= 0 || count >= width) {
+        *out = *s;
+        rask_string_clone(out);
+        return;
+    }
+    int64_t padding = width - count;
+    int64_t left = (align == 0) ? 0 : (align == 2) ? padding / 2 : padding;
+    int64_t right = padding - left;
+
+    // Encode the fill character once, then repeat it.
+    char fill_buf[5];
+    int fill_len = 0;
+    uint32_t cp = (uint32_t)fill;
+    if (cp < 0x80) {
+        fill_buf[fill_len++] = (char)cp;
+    } else if (cp < 0x800) {
+        fill_buf[fill_len++] = (char)(0xC0 | (cp >> 6));
+        fill_buf[fill_len++] = (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        fill_buf[fill_len++] = (char)(0xE0 | (cp >> 12));
+        fill_buf[fill_len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        fill_buf[fill_len++] = (char)(0x80 | (cp & 0x3F));
+    } else {
+        fill_buf[fill_len++] = (char)(0xF0 | (cp >> 18));
+        fill_buf[fill_len++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        fill_buf[fill_len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        fill_buf[fill_len++] = (char)(0x80 | (cp & 0x3F));
+    }
+
+    int64_t body = str_len(s);
+    int64_t total = body + (left + right) * fill_len;
+    char *buf = (char *)rask_alloc((size_t)total + 1);
+    if (!buf) { *out = *s; rask_string_clone(out); return; }
+
+    int64_t pos = 0;
+    for (int64_t i = 0; i < left; i++) { memcpy(buf + pos, fill_buf, (size_t)fill_len); pos += fill_len; }
+    memcpy(buf + pos, str_data(s), (size_t)body);
+    pos += body;
+    for (int64_t i = 0; i < right; i++) { memcpy(buf + pos, fill_buf, (size_t)fill_len); pos += fill_len; }
+    buf[pos] = '\0';
+
+    str_make(out, buf, pos);
+    rask_realloc(buf, (size_t)total + 1, 0);
+}
+
+// `{:debug}` on a string quotes it; on anything else debug and display agree
+// for the primitives, so only these two need a runtime of their own.
+void rask_string_debug(RaskStr *out, const RaskStr *s) {
+    int64_t len = str_len(s);
+    const char *data = str_data(s);
+    char *buf = (char *)rask_alloc((size_t)len + 3);
+    if (!buf) { *out = *s; rask_string_clone(out); return; }
+    buf[0] = '"';
+    memcpy(buf + 1, data, (size_t)len);
+    buf[len + 1] = '"';
+    buf[len + 2] = '\0';
+    str_make(out, buf, len + 2);
+    rask_realloc(buf, (size_t)len + 3, 0);
+}
+
+void rask_char_debug(RaskStr *out, int32_t codepoint) {
+    RaskStr inner;
+    rask_char_to_string(&inner, codepoint);
+    int64_t len = str_len(&inner);
+    char *buf = (char *)rask_alloc((size_t)len + 3);
+    if (!buf) { *out = inner; return; }
+    buf[0] = '\'';
+    memcpy(buf + 1, str_data(&inner), (size_t)len);
+    buf[len + 1] = '\'';
+    buf[len + 2] = '\0';
+    str_make(out, buf, len + 2);
+    rask_realloc(buf, (size_t)len + 3, 0);
+    rask_string_free(&inner);
+}
+
 // ─── Char predicates ────────────────────────────────────────
 
 int64_t rask_char_is_digit(int32_t c) {

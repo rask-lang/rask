@@ -569,6 +569,22 @@ impl<'a> MirLowerer<'a> {
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        let (op, ty) = self.lower_expr_inner(expr)?;
+        // TR5: a concrete value the checker flagged as flowing into an
+        // `any Trait` position gets its vtable here — at the value, so every
+        // use site is covered by one rule. Boxing at the call argument alone
+        // left an annotated binding, a struct field and a collection element
+        // holding a bare struct pointer that the first method call dispatched
+        // through (#335, #474, #481).
+        if !matches!(ty, MirType::TraitObject { .. }) {
+            if let Some(trait_name) = self.ctx.trait_coercions.get(&expr.id).cloned() {
+                return Ok(self.emit_trait_box(op, &ty, &trait_name));
+            }
+        }
+        Ok((op, ty))
+    }
+
+    fn lower_expr_inner(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         self.builder.set_span(expr.span);
         match &expr.kind {
             // Literals
@@ -828,15 +844,9 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         self.lower_call_arg(&a.expr, smut)?
                     };
-                    // TR5: implicit trait coercion — emit TraitBox if type checker flagged this arg
-                    if smut.is_none() {
-                        if let Some(trait_name) = self.ctx.trait_coercions.get(&a.expr.id) {
-                            let (boxed_op, _) = self.emit_trait_box(op, &mir_ty, trait_name);
-                            arg_operands.push(boxed_op);
-                            arg_mir_types.push(mir_ty);
-                            continue;
-                        }
-                    }
+                    // TR5 boxing happens in lower_expr, at the value — doing
+                    // it again here wrapped the box in another box, and the
+                    // outer one had no concrete type to name its vtable after.
                     arg_operands.push(op);
                     arg_mir_types.push(mir_ty);
                 }
@@ -1585,15 +1595,19 @@ impl<'a> MirLowerer<'a> {
                     let elem_size = elem_ty.size();
                     let elem_align = elem_ty.align().max(1);
                     offset = (offset + elem_align - 1) & !(elem_align - 1);
-                    // An element wider than a word is a value, not a pointer:
-                    // a string constant lowers to the address of its 16-byte
-                    // blob, so without a size the address landed in the slot
-                    // and reading `t.1` back gave garbage (#442).
+                    // The element's own size, both ways. Wider than a word and
+                    // the operand is a pointer to the data, not the data: a
+                    // string constant lowers to the address of its 16-byte
+                    // blob, and without a size that address landed in the slot,
+                    // so reading `t.1` back gave garbage (#442). Narrower than
+                    // a word and the store has to be narrow too — the offsets
+                    // here are packed, so a full-word store of a 4-byte element
+                    // runs into the next one (#548).
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset,
                         value: elem_op,
-                        store_size: (elem_size > 8).then_some(elem_size),
+                        store_size: Some(elem_size),
                     }));
                     offset += elem_size;
                 }
@@ -2205,6 +2219,46 @@ impl<'a> MirLowerer<'a> {
                         value: obj.clone(),
                         store_size: Some(field_ty.size()),
                     }));
+                } else {
+                    // Payload with no struct layout to find the field in. The
+                    // access can't be performed, so this keeps the older
+                    // "unwrap and pass the payload through" shape rather than
+                    // inventing a field read.
+                    //
+                    // It used to write nothing at all — not even the tag — so
+                    // the result was whatever the slot happened to hold. No
+                    // program in the corpus reaches here and no reduction found
+                    // one either (#367), but an empty branch under a `Some` is
+                    // not something to leave sitting there.
+                    let payload_local = self.builder.alloc_temp(payload_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: payload_local,
+                        rvalue: MirRValue::Field {
+                            base: obj.clone(),
+                            field_index: 0,
+                            byte_offset: None,
+                            access: FieldAccess::Word,
+                        },
+                    }));
+                    if field_is_option {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: result_local,
+                            rvalue: MirRValue::Use(MirOperand::Local(payload_local)),
+                        }));
+                    } else {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: result_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(0)),
+                            store_size: Some(8),
+                        }));
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: result_local,
+                            offset: 8,
+                            value: MirOperand::Local(payload_local),
+                            store_size: Some(payload_ty.size().max(1)),
+                        }));
+                    }
                 }
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -2868,6 +2922,10 @@ impl<'a> MirLowerer<'a> {
         }
 
         if let Some(r) = self.try_lower_string_concat(method, args, &obj_op, &obj_ty)? {
+            return Ok(r);
+        }
+
+        if let Some(r) = self.try_lower_fmt(expr, object, method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
 
@@ -4401,7 +4459,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(less_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(-1))),
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_LESS))),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
@@ -4424,14 +4482,14 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(greater_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_GREATER))),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
         self.builder.switch_to_block(equal_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_EQUAL))),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
@@ -4451,6 +4509,27 @@ impl<'a> MirLowerer<'a> {
         let is_string_obj = matches!(obj_ty, MirType::String) || self.ctx.lookup_raw_type(object.id)
             .map(|ty| matches!(ty, rask_types::Type::String))
             .unwrap_or(false);
+        // `compare` answers with an Ordering, not the C runtime's -1/0/1
+        // (ORD1). The tags run Less, Equal, Greater, so the shift is +1.
+        if is_string_obj && args.len() == 1 && method == "compare" {
+            let (rhs, _) = self.lower_expr(&args[0].expr)?;
+            let raw = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(raw),
+                func: FunctionRef::internal("string_compare".to_string()),
+                args: vec![obj_op.clone(), rhs],
+            }));
+            let tag = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: tag,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Add,
+                    left: MirOperand::Local(raw),
+                    right: MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_EQUAL)),
+                },
+            }));
+            return Ok(Some((MirOperand::Local(tag), MirType::I64)));
+        }
         if is_string_obj && args.len() == 1 {
             let string_cmp_fn = match method.as_str() {
                 "eq" => Some("string_eq"),
@@ -4458,7 +4537,6 @@ impl<'a> MirLowerer<'a> {
                 "gt" => Some("string_gt"),
                 "le" => Some("string_le"),
                 "ge" => Some("string_ge"),
-                "compare" => Some("string_compare"),
                 _ => None,
             };
             if let Some(func_name) = string_cmp_fn {
@@ -4495,6 +4573,124 @@ impl<'a> MirLowerer<'a> {
             return Ok(Some((MirOperand::Local(result_local), MirType::String)));
         }
         Ok(None)
+    }
+
+    /// `x.__fmt(type, width, precision, align, fill)` — what desugaring makes
+    /// of `{x:spec}`. The spec's already parsed, so this picks the base
+    /// conversion by receiver type and then pads (std.fmt/CM5).
+    fn try_lower_fmt(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        method: &String,
+        args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if method != "__fmt" || args.len() != 5 {
+            return Ok(None);
+        }
+
+        // Every argument is a literal the desugar pass put there.
+        let int_arg = |i: usize| match &args[i].expr.kind {
+            ExprKind::Int(n, _) => *n,
+            _ => 0,
+        };
+        let fill = match &args[4].expr.kind {
+            ExprKind::Char(c) => *c,
+            _ => ' ',
+        };
+        let spec = rask_ast::fmt_spec::FormatSpec::decode(
+            int_arg(0), int_arg(1), int_arg(2), int_arg(3), fill,
+        );
+
+        let is_unsigned = matches!(
+            obj_ty,
+            MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8
+        );
+        let is_int = is_unsigned
+            || matches!(obj_ty, MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8);
+        let is_float = matches!(obj_ty, MirType::F64 | MirType::F32);
+        let numeric = is_int || is_float;
+
+        // Stage 1: render the value. An unsupported pairing (a hex spec on a
+        // string, say) falls back to the plain rendering rather than failing —
+        // same as the interpreter.
+        let call = |this: &mut Self, name: &str, args: Vec<MirOperand>| {
+            let dst = this.builder.alloc_temp(MirType::String);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(dst),
+                func: FunctionRef::internal(name.to_string()),
+                args,
+            }));
+            MirOperand::Local(dst)
+        };
+        let int_const = |n: i64| MirOperand::Constant(MirConst::Int(n));
+
+        use rask_ast::fmt_spec::SpecType;
+        let base: MirOperand = match spec.ty {
+            SpecType::Hex { upper } if is_int => {
+                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
+                call(self, name, vec![obj_op.clone(), int_const(16), int_const(upper as i64)])
+            }
+            SpecType::Binary if is_int => {
+                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
+                call(self, name, vec![obj_op.clone(), int_const(2), int_const(0)])
+            }
+            SpecType::Octal if is_int => {
+                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
+                call(self, name, vec![obj_op.clone(), int_const(8), int_const(0)])
+            }
+            SpecType::Exp if is_float => call(self, "f64_to_exp", vec![obj_op.clone()]),
+            SpecType::Debug if matches!(obj_ty, MirType::String) => {
+                call(self, "string_debug", vec![obj_op.clone()])
+            }
+            SpecType::Debug if matches!(obj_ty, MirType::Char) => {
+                call(self, "char_debug", vec![obj_op.clone()])
+            }
+            SpecType::Display if is_float && spec.precision.is_some() => {
+                let prec = spec.precision.unwrap() as i64;
+                call(self, "f64_to_precision", vec![obj_op.clone(), int_const(prec)])
+            }
+            SpecType::Display if matches!(obj_ty, MirType::String) && spec.precision.is_some() => {
+                let prec = spec.precision.unwrap() as i64;
+                call(self, "string_truncate_chars", vec![obj_op.clone(), int_const(prec)])
+            }
+            // Everything else renders the ordinary way — including `debug` on
+            // a struct or enum, which goes to the type's own to_string.
+            _ => {
+                // A struct or enum renders through its own body. Which one
+                // that is — `to_string` or a `message` bridged to it — was
+                // settled during reachability; without that name the receiver
+                // would be handed to `string_pad` as if the pointer were text.
+                match self.ctx.call_rewrites.get(&expr.id).cloned() {
+                    Some(renderer) => call(self, &renderer, vec![obj_op.clone()]),
+                    None => {
+                        let (op, _) = self
+                            .try_lower_to_string(object, &"to_string".to_string(), &[], obj_op, obj_ty)?
+                            .unwrap_or_else(|| (obj_op.clone(), MirType::String));
+                        op
+                    }
+                }
+            }
+        };
+
+        // Stage 2: pad. Text reads left, numbers read right (S2).
+        if spec.width == 0 {
+            return Ok(Some((base, MirType::String)));
+        }
+        let align = spec.effective_align(numeric).as_code();
+        let padded = call(
+            self,
+            "string_pad",
+            vec![
+                base,
+                int_const(spec.width as i64),
+                int_const(align),
+                MirOperand::Constant(MirConst::Char(spec.fill)),
+            ],
+        );
+        Ok(Some((padded, MirType::String)))
     }
 
     /// `.to_string()` on a primitive → type-specific runtime call. Types with

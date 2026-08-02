@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ORD1 — `.compare()` answers with an Ordering, on both backends.
+
+enum Suit { Clubs, Diamonds, Hearts, Spades }
+
+test "ORD1 — compare on integers" {
+    assert 1.compare(2) == Ordering.Less
+    assert 2.compare(1) == Ordering.Greater
+    assert 2.compare(2) == Ordering.Equal
+}
+
+test "ORD1 — compare on floats" {
+    assert 1.5.compare(2.5) == Ordering.Less
+    assert 2.5.compare(1.5) == Ordering.Greater
+    assert 2.5.compare(2.5) == Ordering.Equal
+}
+
+test "ORD1 — compare on strings" {
+    assert "abc".compare("abd") == Ordering.Less
+    assert "abd".compare("abc") == Ordering.Greater
+    assert "abc".compare("abc") == Ordering.Equal
+    // Length breaks a tie on the shared prefix.
+    assert "ab".compare("abc") == Ordering.Less
+}
+
+test "ORD1 — compare on chars and bools" {
+    assert 'a'.compare('b') == Ordering.Less
+    assert false.compare(true) == Ordering.Less
+}
+
+test "type.enums/CO1 — a fieldless enum orders by declaration" {
+    assert Suit.Clubs.compare(Suit.Spades) == Ordering.Less
+    assert Suit.Hearts.compare(Suit.Diamonds) == Ordering.Greater
+    assert Suit.Hearts.compare(Suit.Hearts) == Ordering.Equal
+}
+
+test "ORD1 — matching the result picks the right arm" {
+    mut seen = ""
+    match 1.compare(2) {
+        Ordering.Less => seen = "less",
+        Ordering.Equal => seen = "equal",
+        Ordering.Greater => seen = "greater",
+    }
+    assert seen == "less"
+
+    match 5.compare(5) {
+        Ordering.Less => seen = "less",
+        Ordering.Equal => seen = "equal",
+        Ordering.Greater => seen = "greater",
+    }
+    assert seen == "equal"
+
+    match 9.compare(2) {
+        Ordering.Less => seen = "less",
+        Ordering.Equal => seen = "equal",
+        Ordering.Greater => seen = "greater",
+    }
+    assert seen == "greater"
+}

@@ -244,7 +244,6 @@ impl<'a> FunctionBuilder<'a> {
         // normal paths (e.g. post-cleanup continuation points listed in a
         // chain) must stay in the normal block_map so non-cleanup Gotos can
         // still target them.
-        let preds = rask_mir::analysis::cfg::predecessors(self.mir_fn);
         let chain_members: HashSet<BlockId> = self.mir_fn.blocks.iter()
             .filter_map(|b| {
                 if let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &b.terminator.kind {
@@ -255,40 +254,46 @@ impl<'a> FunctionBuilder<'a> {
             })
             .flatten()
             .collect();
-        let is_cleanup_pred = |pred_id: &BlockId| -> bool {
-            self.mir_fn.blocks.iter()
-                .find(|b| b.id == *pred_id)
-                .map(|b| matches!(b.terminator.kind, MirTerminatorKind::CleanupReturn { .. }))
-                .unwrap_or(false)
-        };
-        let mut cleanup_only: HashSet<BlockId> = HashSet::new();
-        for &bid in &chain_members {
-            // Chain member is cleanup-only only if all non-CleanupReturn
-            // predecessors are absent (i.e. no normal Goto/Branch targets it).
-            let has_normal_pred = preds.get(&bid)
-                .map(|ps| ps.iter().any(|p| !is_cleanup_pred(p)))
-                .unwrap_or(false);
-            if !has_normal_pred {
-                cleanup_only.insert(bid);
-            }
-        }
-        // Transitively include successors whose *all* predecessors are
-        // already cleanup_only — these are blocks reachable only through
-        // cleanup paths (e.g. sub-CFGs in ensure handlers).
-        loop {
-            let mut added = false;
-            for mir_block in &self.mir_fn.blocks {
-                if cleanup_only.contains(&mir_block.id) { continue; }
-                let bid_preds = match preds.get(&mir_block.id) {
-                    Some(p) if !p.is_empty() => p,
-                    _ => continue,
-                };
-                if bid_preds.iter().all(|p| cleanup_only.contains(p)) {
-                    cleanup_only.insert(mir_block.id);
-                    added = true;
+        // Walk forward from the entry over ordinary edges. Anything found this
+        // way is on a normal path and keeps its place in the main block map.
+        let mut normal_reachable: HashSet<BlockId> = HashSet::new();
+        {
+            let mut queue = vec![self.mir_fn.entry_block];
+            while let Some(bid) = queue.pop() {
+                if !normal_reachable.insert(bid) {
+                    continue;
+                }
+                if let Some(b) = self.mir_fn.blocks.iter().find(|b| b.id == bid) {
+                    // A CleanupReturn's chain is the cleanup path, not a normal
+                    // successor — that's the whole distinction being drawn here.
+                    if !matches!(b.terminator.kind, MirTerminatorKind::CleanupReturn { .. }) {
+                        queue.extend(rask_mir::analysis::cfg::successors(&b.terminator));
+                    }
                 }
             }
-            if !added { break; }
+        }
+
+        // Then forward from each cleanup chain member. Everything reachable
+        // that isn't also on a normal path belongs to the cleanup sub-CFG.
+        //
+        // This used to run backwards — a block joined the set once *all* its
+        // predecessors were in it. A loop inside the cleanup path defeats that:
+        // the loop header's back edge comes from a block that can't be admitted
+        // until the header is, so neither ever is. The body stayed in the main
+        // block map while its entry moved to the cleanup map, and the jump
+        // between them was emitted into nothing — leaving a block with no
+        // terminator for Cranelift to reject (#538).
+        let mut cleanup_only: HashSet<BlockId> = HashSet::new();
+        {
+            let mut queue: Vec<BlockId> = chain_members.iter().copied().collect();
+            while let Some(bid) = queue.pop() {
+                if normal_reachable.contains(&bid) || !cleanup_only.insert(bid) {
+                    continue;
+                }
+                if let Some(b) = self.mir_fn.blocks.iter().find(|b| b.id == bid) {
+                    queue.extend(rask_mir::analysis::cfg::successors(&b.terminator));
+                }
+            }
         }
 
         // Deduplicate cleanup chains: map each unique chain to a shared block.
@@ -519,9 +524,18 @@ impl<'a> FunctionBuilder<'a> {
                         builder.ins().brif(cond_final, then_cl, &[], else_cl, &[]);
                     }
                     MirTerminatorKind::Goto { target } => {
-                        if let Some(&tgt) = cleanup_block_map.get(target) {
-                            builder.ins().jump(tgt, &[]);
-                        }
+                        // Cleanup blocks first, then the main map. A target in
+                        // neither would leave this block with no terminator,
+                        // which Cranelift rejects with a message that says
+                        // nothing about where it came from — so say it here.
+                        let tgt = cleanup_block_map.get(target)
+                            .or_else(|| self.block_map.get(target))
+                            .copied()
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(format!(
+                                "cleanup block jumps to {:?}, which has no Cranelift block",
+                                target,
+                            )))?;
+                        builder.ins().jump(tgt, &[]);
                     }
                     _ => {
                         // Other terminators in cleanup blocks: treat as return
@@ -609,9 +623,18 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                     MirTerminatorKind::Goto { target } => {
-                        if let Some(&tgt) = cleanup_block_map.get(target) {
-                            builder.ins().jump(tgt, &[]);
-                        }
+                        // Cleanup blocks first, then the main map. A target in
+                        // neither would leave this block with no terminator,
+                        // which Cranelift rejects with a message that says
+                        // nothing about where it came from — so say it here.
+                        let tgt = cleanup_block_map.get(target)
+                            .or_else(|| self.block_map.get(target))
+                            .copied()
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(format!(
+                                "cleanup block jumps to {:?}, which has no Cranelift block",
+                                target,
+                            )))?;
+                        builder.ins().jump(tgt, &[]);
                     }
                     MirTerminatorKind::Branch { cond, then_block, else_block } => {
                         let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;
@@ -1096,25 +1119,42 @@ impl<'a> FunctionBuilder<'a> {
         source_ty: &MirType,
         target_ty: &MirType,
     ) -> Value {
-        let (min, max) = Self::int_bounds_i64(target_ty);
+        let (min, max) = Self::int_bounds(target_ty);
         // Widen to I64 for the comparison, then reduce.
-        let v64 = Self::widen_i64(builder, val, source_ty);
-        let (gt, lt) = if source_ty.is_unsigned() {
-            (IntCC::UnsignedGreaterThan, IntCC::UnsignedLessThan)
+        let mut v64 = Self::widen_i64(builder, val, source_ty);
+
+        // Source and target don't have to share a signedness, and one
+        // comparison mode for both is wrong whenever they don't. Clamping
+        // `u64` to `i64` compared unsigned against `i64::MIN`, which reads as
+        // 2^63 unsigned — so every value below it, meaning every ordinary
+        // value, "underflowed" and came out as `i64::MIN`. `42 saturate to
+        // i64` was -9223372036854775808 (#495).
+        if source_ty.is_unsigned() {
+            // Nothing unsigned is below a target minimum; every one of those
+            // is zero or negative. Only the ceiling can bite, unsigned.
+            if max < u64::MAX as i128 {
+                let maxc = builder.ins().iconst(types::I64, max as i64);
+                let too_big = builder.ins().icmp(IntCC::UnsignedGreaterThan, v64, maxc);
+                v64 = builder.ins().select(too_big, maxc, v64);
+            }
         } else {
-            (IntCC::SignedGreaterThan, IntCC::SignedLessThan)
-        };
-        let maxc = builder.ins().iconst(types::I64, max);
-        let minc = builder.ins().iconst(types::I64, min);
-        let too_big = builder.ins().icmp(gt, v64, maxc);
-        let clamped = builder.ins().select(too_big, maxc, v64);
-        let too_small = builder.ins().icmp(lt, clamped, minc);
-        let clamped = builder.ins().select(too_small, minc, clamped);
+            let minc = builder.ins().iconst(types::I64, min as i64);
+            let too_small = builder.ins().icmp(IntCC::SignedLessThan, v64, minc);
+            v64 = builder.ins().select(too_small, minc, v64);
+            // A ceiling above `i64::MAX` — only `u64`'s — is out of a signed
+            // value's reach, so there's nothing to clamp against.
+            if max <= i64::MAX as i128 {
+                let maxc = builder.ins().iconst(types::I64, max as i64);
+                let too_big = builder.ins().icmp(IntCC::SignedGreaterThan, v64, maxc);
+                v64 = builder.ins().select(too_big, maxc, v64);
+            }
+        }
+
         let to = mir_to_cranelift_type(target_ty).unwrap_or(types::I64);
         if to.bits() < 64 {
-            builder.ins().ireduce(to, clamped)
+            builder.ins().ireduce(to, v64)
         } else {
-            clamped
+            v64
         }
     }
 
@@ -1125,17 +1165,34 @@ impl<'a> FunctionBuilder<'a> {
         source_ty: &MirType,
         target_ty: &MirType,
     ) -> Value {
-        let (min, max) = Self::int_bounds_i64(target_ty);
+        let (min, max) = Self::int_bounds(target_ty);
         let v64 = Self::widen_i64(builder, val, source_ty);
-        let (ge, le) = if source_ty.is_unsigned() {
-            (IntCC::UnsignedGreaterThanOrEqual, IntCC::UnsignedLessThanOrEqual)
+        let t = builder.func.dfg.value_type(v64);
+        let always = |b: &mut ClifFunctionBuilder| b.ins().iconst(types::I8, 1);
+
+        // Same asymmetry as the saturating form: which comparison is right
+        // depends on the *source*'s signedness, and which bound can bite at
+        // all depends on the target's.
+        let (ge_min, le_max) = if source_ty.is_unsigned() {
+            let ge_min = always(builder); // never below a target minimum
+            let le_max = if max < u64::MAX as i128 {
+                let maxc = builder.ins().iconst(t, max as i64);
+                builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, v64, maxc)
+            } else {
+                always(builder)
+            };
+            (ge_min, le_max)
         } else {
-            (IntCC::SignedGreaterThanOrEqual, IntCC::SignedLessThanOrEqual)
+            let minc = builder.ins().iconst(t, min as i64);
+            let ge_min = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, v64, minc);
+            let le_max = if max <= i64::MAX as i128 {
+                let maxc = builder.ins().iconst(t, max as i64);
+                builder.ins().icmp(IntCC::SignedLessThanOrEqual, v64, maxc)
+            } else {
+                always(builder)
+            };
+            (ge_min, le_max)
         };
-        let minc = builder.ins().iconst(types::I64, min);
-        let maxc = builder.ins().iconst(types::I64, max);
-        let ge_min = builder.ins().icmp(ge, v64, minc);
-        let le_max = builder.ins().icmp(le, v64, maxc);
         builder.ins().band(ge_min, le_max)
     }
 
@@ -1207,16 +1264,24 @@ impl<'a> FunctionBuilder<'a> {
     /// Target integer range as i64 constants. 64-bit unsigned upper bound is
     /// approximated by i64::MAX (saturate/try to u64 from ≤64-bit rarely overflows).
     fn int_bounds_i64(t: &MirType) -> (i64, i64) {
+        let (lo, hi) = Self::int_bounds(t);
+        (lo as i64, hi.min(i64::MAX as i128) as i64)
+    }
+
+    /// A target integer type's true range. `u64`'s maximum doesn't fit in an
+    /// `i64`, so the i64-shaped version above reported `i64::MAX` for it —
+    /// which is a real clamp point rather than the type's actual ceiling.
+    fn int_bounds(t: &MirType) -> (i128, i128) {
         match t {
-            MirType::I8 => (i8::MIN as i64, i8::MAX as i64),
-            MirType::I16 => (i16::MIN as i64, i16::MAX as i64),
-            MirType::I32 => (i32::MIN as i64, i32::MAX as i64),
-            MirType::I64 => (i64::MIN, i64::MAX),
-            MirType::U8 => (0, u8::MAX as i64),
-            MirType::U16 => (0, u16::MAX as i64),
-            MirType::U32 => (0, u32::MAX as i64),
-            MirType::U64 => (0, i64::MAX),
-            _ => (i64::MIN, i64::MAX),
+            MirType::I8 => (i8::MIN as i128, i8::MAX as i128),
+            MirType::I16 => (i16::MIN as i128, i16::MAX as i128),
+            MirType::I32 => (i32::MIN as i128, i32::MAX as i128),
+            MirType::I64 => (i64::MIN as i128, i64::MAX as i128),
+            MirType::U8 => (0, u8::MAX as i128),
+            MirType::U16 => (0, u16::MAX as i128),
+            MirType::U32 => (0, u32::MAX as i128),
+            MirType::U64 => (0, u64::MAX as i128),
+            _ => (i64::MIN as i128, i64::MAX as i128),
         }
     }
 
@@ -1737,10 +1802,37 @@ impl<'a> FunctionBuilder<'a> {
                 Self::copy_bytes(builder, val, 0, addr_val, *offset as i32, size);
             } else {
                 let val_ty = builder.func.dfg.value_type(val);
+                let flags = MemFlags::new();
 
-                // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
-                // values to fill the full slot — otherwise a 4-byte f32 store
-                // leaves stale upper bytes that corrupt the f64 read-back.
+                // A field the layout packed into fewer than 8 bytes gets a
+                // store that wide. An 8-byte store into a 4-byte slot walks
+                // into whatever follows: a two-i32 tuple wrote its second
+                // element across the frame's edge and took the return address
+                // with it, so the test binary jumped into nowhere (#548).
+                if let Some(size @ (1 | 2 | 4)) = *store_size {
+                    let narrow = match size {
+                        1 => types::I8,
+                        2 => types::I16,
+                        _ => types::I32,
+                    };
+                    let val = if val_ty.is_float() {
+                        // Only f32 is narrower than a word, and it's already
+                        // the right width — store its bits.
+                        builder.ins().bitcast(types::I32, MemFlags::new(), val)
+                    } else if val_ty.bits() > narrow.bits() {
+                        builder.ins().ireduce(narrow, val)
+                    } else if val_ty.bits() < narrow.bits() {
+                        builder.ins().uextend(narrow, val)
+                    } else {
+                        val
+                    };
+                    builder.ins().store(flags, val, addr_val, *offset as i32);
+                    return Ok(());
+                }
+
+                // Otherwise the slot is a full word. Widen sub-8-byte values to
+                // fill it — a 4-byte f32 store would leave stale upper bytes
+                // that corrupt the f64 read-back.
                 let val = if val_ty == types::F32 {
                     builder.ins().fpromote(types::F64, val)
                 } else if val_ty.is_int() && val_ty.bits() < 64 {
@@ -1750,7 +1842,6 @@ impl<'a> FunctionBuilder<'a> {
                     val
                 };
 
-                let flags = MemFlags::new();
                 builder.ins().store(flags, val, addr_val, *offset as i32);
             }
         }
@@ -2197,19 +2288,58 @@ impl<'a> FunctionBuilder<'a> {
             types::I64, MemFlags::new(), vtable_ptr, *vtable_offset as i32,
         );
 
-        // Build signature: (data_ptr, args...) -> ret
+        // Build signature: (data_ptr, args...) -> ret.
+        //
+        // From the operands' own types, not I64 for everything. An aggregate
+        // travels as a pointer, but a float travels in a float register — an
+        // `f64`-returning trait method declared as returning I64 put the ABI
+        // and the callee on different registers entirely.
+        let abi_ty = |ty: Option<&MirType>| -> Type {
+            match ty {
+                Some(
+                    MirType::Struct(_)
+                    | MirType::Enum(_)
+                    | MirType::Tuple(_)
+                    | MirType::Array { .. }
+                    | MirType::Result { .. }
+                    | MirType::Option(_)
+                    | MirType::String
+                    | MirType::TraitObject { .. },
+                ) => types::I64,
+                Some(t) => mir_to_cranelift_type(t).unwrap_or(types::I64),
+                None => types::I64,
+            }
+        };
+
         let mut sig = Signature::new(isa::CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64)); // data_ptr (self)
-        for _ in args.iter() {
-            sig.params.push(AbiParam::new(types::I64));
+        let arg_tys: Vec<MirType> = args
+            .iter()
+            .map(|a| Self::operand_mir_type(a, ctx.locals).unwrap_or(MirType::I64))
+            .collect();
+        for ty in &arg_tys {
+            sig.params.push(AbiParam::new(abi_ty(Some(ty))));
         }
-        sig.returns.push(AbiParam::new(types::I64));
+        let ret_mir = dst
+            .as_ref()
+            .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+            .map(|l| l.ty.clone());
+        if !matches!(ret_mir, Some(MirType::Void)) {
+            sig.returns.push(AbiParam::new(abi_ty(ret_mir.as_ref())));
+        }
 
         // Build argument values
         let mut call_args = Vec::with_capacity(1 + args.len());
         call_args.push(data_ptr);
-        for arg in args.iter() {
-            let val = Self::lower_operand(builder, arg, ctx)?;
+        for (arg, want) in args.iter().zip(arg_tys.iter()) {
+            let want_cl = abi_ty(Some(want));
+            let val = Self::lower_operand_typed(builder, arg, Some(want_cl), ctx)?;
+            let val_ty = builder.func.dfg.value_type(val);
+            let val = if val_ty != want_cl {
+                Self::convert_value(builder, val, val_ty, want_cl, Some(want))
+            } else {
+                val
+            };
             call_args.push(val);
         }
 
@@ -2222,11 +2352,18 @@ impl<'a> FunctionBuilder<'a> {
                 .ok_or_else(|| CodegenError::UnsupportedFeature(
                     format!("TraitCall destination for '{}' not found", method_name)
                 ))?;
-            // Aggregate-returning methods (string, struct, ...) hand back a
-            // pointer to data in the callee frame. Copy into the dst's
-            // stack slot before that frame goes away.
+            // Aggregate-returning methods hand back a pointer to data in the
+            // callee frame, so copy into the dst's slot before that frame goes
+            // away — except when the aggregate fits in a word, where a Rask
+            // function returns the value itself (see the Return terminator).
+            // Dereferencing that was the crash: a fieldless enum through a
+            // vtable read address 1 (#474).
             if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst_id) {
-                Self::copy_aggregate(builder, result, *dst_ss, *dst_size);
+                if *dst_size <= 8 {
+                    builder.ins().stack_store(result, *dst_ss, 0);
+                } else {
+                    Self::copy_aggregate(builder, result, *dst_ss, *dst_size);
+                }
                 let addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
                 builder.def_var(*var, addr);
             } else {

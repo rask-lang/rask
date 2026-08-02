@@ -99,7 +99,46 @@ impl TypeChecker {
             }
             _ => {}
         }
-        self.infer_expr(expr)
+        let ty = self.infer_expr(expr);
+        self.note_trait_coercion(expr, expected, &ty);
+        ty
+    }
+
+    /// The `any Trait` type arguments a container was instantiated with.
+    fn trait_object_type_args(ty: &Type) -> Vec<Type> {
+        let args = match ty {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return Vec::new(),
+        };
+        args.iter()
+            .filter_map(|a| match a {
+                GenericArg::Type(t) if matches!(**t, Type::TraitObject { .. }) => {
+                    Some((**t).clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// TR5: a concrete value flowing into an `any Trait` position gets boxed
+    /// with a vtable. The site has to be recorded by NodeId or MIR emits the
+    /// bare value and the first method call dispatches through whatever
+    /// happened to be in memory.
+    ///
+    /// This used to be recorded for call arguments only. Every other position
+    /// that knows its expected type — an annotated binding, a struct field, a
+    /// collection element, a return value — type-checked and then segfaulted
+    /// at the first method call (#335, #474, #481).
+    pub(super) fn note_trait_coercion(&mut self, expr: &Expr, expected: &Type, found: &Type) {
+        let Type::TraitObject { trait_name } = expected else { return };
+        // An explicit `x as any Trait` boxes itself.
+        if matches!(&expr.kind, ExprKind::Cast { ty, .. } if ty.starts_with("any ")) {
+            return;
+        }
+        if matches!(self.ctx.apply(found), Type::TraitObject { .. } | Type::Error) {
+            return;
+        }
+        self.trait_coercions.insert(expr.id, trait_name.clone());
     }
 
     fn is_integer_type(ty: &Type) -> bool {
@@ -933,6 +972,10 @@ impl TypeChecker {
                             Type::Error
                         }
                     }
+                    // The operand's own error was already reported — saying
+                    // `try` needs a Result and found `<error>` on top of it
+                    // just buries the real one.
+                    Type::Error => Type::Error,
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
@@ -953,6 +996,10 @@ impl TypeChecker {
                         // Unresolved scrutinee — leave as bool, let later context constrain.
                         Type::Bool
                     }
+                    // The operand's own error was already reported — saying
+                    // `try` needs a Result and found `<error>` on top of it
+                    // just buries the real one.
+                    Type::Error => Type::Error,
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
@@ -1943,6 +1990,26 @@ impl TypeChecker {
         let obj_ty = self.resolve_named(&obj_ty_raw);
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
 
+        // TR5 for a collection element. `Vec<any Shape>.push(Circle { … })` has
+        // to box, but the parameter type here is the container's element
+        // variable, so the expected type isn't known at the argument. The
+        // receiver's own type argument is: if it's `any Trait`, a concrete
+        // argument can only be that element. Without this, push stored a bare
+        // struct pointer into a 16-byte element slot and every element read
+        // back through whichever vtable was written last (#335).
+        for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+            let applied = self.ctx.apply(arg_ty);
+            for elem in Self::trait_object_type_args(&self.ctx.apply(&obj_ty)) {
+                // Only an argument that satisfies the trait can be the element.
+                // Without this a `Map<string, any Shape>`'s key was flagged too,
+                // and codegen went looking for `string_area`.
+                let Type::TraitObject { ref trait_name } = elem else { continue };
+                if crate::traits::implements_trait(&self.types, &applied, trait_name) {
+                    self.note_trait_coercion(&arg.expr, &elem, arg_ty);
+                }
+            }
+        }
+
         // SP3: zero step on range is a compile error
         // SP1/SP2: step direction mismatch is a warning
         if method == "step" {
@@ -2099,6 +2166,19 @@ impl TypeChecker {
         span: Span,
     ) -> Type {
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+
+        // A signature with nothing behind it. Methods on a receiver are caught
+        // in resolve_method; module functions took a different route and got
+        // no check at all, so `json.decode(body)` type-checked, compiled, and
+        // segfaulted at the call (#506).
+        if rask_stdlib::mir_metadata::is_unimplemented(module, method) {
+            self.errors.push(TypeError::UnimplementedStdlibMethod {
+                ty: module.to_string(),
+                method: method.to_string(),
+                span,
+            });
+            return Type::Error;
+        }
 
         if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
             // Check parameter count — skip for wildcard params (_Any accepts anything)

@@ -553,9 +553,20 @@ impl Hasher {
                             self.feed_tag(0);
                             self.feed_str(s);
                         }
-                        rask_ast::expr::StringSegment::Expr(e) => {
+                        rask_ast::expr::StringSegment::Expr(e, spec) => {
                             self.feed_tag(1);
                             self.hash_expr(e);
+                            // Two placeholders over the same expression render
+                            // differently under different specs.
+                            match spec {
+                                Some(spec) => {
+                                    let (ty, width, precision, align, fill) = spec.encode();
+                                    for n in [ty, width, precision, align, fill as i64] {
+                                        self.feed_tag(n as u8);
+                                    }
+                                }
+                                None => self.feed_tag(0),
+                            }
                         }
                     }
                 }

@@ -279,6 +279,9 @@ impl Default for ErrorCodeRegistry {
                 "E0825" => ("integer literal out of range", Type,
                     "An integer literal doesn't fit the type it ended up with. Unsuffixed literals are `i32` by default (type.primitives/L1) and widen to `i64` when the value needs it; a literal that reaches a narrower type through an annotation, a suffix, or a parameter has to fit that type. Nothing wraps silently — pick a wider type, or convert at the use site.",
                     "const b: u8 = 300  // error: 300 doesn't fit u8 (0..=255)\n// fix: `const b: u16 = 300`, or `const b = 300 truncate to u8`"),
+                "E0826" => ("type does not implement Displayable", Type,
+                    "`{}` in a format template calls `to_string()`, which comes from `Displayable` (std.fmt/D4). Primitives have it; structs and enums opt in with `extend Type with Displayable`, and error types get it for free from `message()` (D5). Optionals and results are never Displayable — an optional may have nothing to show, so the missing case has to be spelled out at the call.",
+                    "const found: User? = lookup(id)\nprintln(\"{found}\")   // error: `User?` has no to_string()\n// fix: `println(\"{found ?? \\\"nobody\\\"}\")`, or narrow first with `if const u = found { … }`"),
             },
         }
     }

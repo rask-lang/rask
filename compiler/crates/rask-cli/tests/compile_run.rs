@@ -795,6 +795,48 @@ fn error_bad_interpolation() {
     );
 }
 
+// #551, T10: honouring a nominal newtype's `with (…)` list means the list has
+// to stay a list — an unlisted trait is still not inherited.
+#[test]
+fn error_nominal_trait_not_listed() {
+    let (failed, out) = compile_error_output("nominal_trait_not_listed.rk");
+    assert!(failed, "an unlisted trait must not be inherited: {}", out);
+    assert!(
+        out.contains("no method `lt`") && out.contains("no method `add`"),
+        "should reject both the unlisted ordering and the arithmetic: {}", out,
+    );
+}
+
+// #506: an @unimplemented stdlib *module* function is caught at the call, the
+// way a method on a receiver already was. `json.decode` used to type-check and
+// then segfault.
+#[test]
+fn error_unimplemented_module_fn() {
+    let (failed, out) = compile_error_output("unimplemented_module_fn.rk");
+    assert!(failed, "an unimplemented module function must be rejected: {}", out);
+    assert!(
+        out.contains("E0353") && out.contains("json.decode"),
+        "should name the function and the unimplemented code: {}", out,
+    );
+}
+
+// #539: `{}` needs Displayable (std.fmt/D4). Before this, printing a struct
+// failed in codegen with "Function not found: Point_to_string" and printing an
+// optional printed its address on native and blew up at runtime on interp.
+#[test]
+fn error_not_displayable() {
+    let (failed, out) = compile_error_output("not_displayable.rk");
+    assert!(failed, "printing a non-Displayable type must be rejected: {}", out);
+    assert!(
+        out.contains("E0826") && out.contains("Point"),
+        "should name the struct and the Displayable rule: {}", out,
+    );
+    assert!(
+        out.contains("i64?"),
+        "should catch the optional too, and name it as the user wrote it: {}", out,
+    );
+}
+
 // A bare literal used to bind to whatever type it met first, so
 // `func f() -> string { return 1 }` type-checked. Found chasing #383, where a
 // `T? or E` return silently accepted anything numeric.

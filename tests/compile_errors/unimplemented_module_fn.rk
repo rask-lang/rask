@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a stdlib module function whose signature has nothing behind it.
+//
+// Methods on a receiver were already caught here; module functions took a
+// different route through the checker and got no check at all. `json.decode`
+// type-checked, compiled, and segfaulted at the call (#506). Typed decoding
+// needs the Decode derivation, which isn't built — `json.parse` is the way in
+// until it is.
+
+import json
+
+func main() {
+    const body = "{{\"name\": \"alice\"}}"
+    // ERROR: `json.decode` is declared but not implemented yet
+    const decoded = json.decode(body)
+    println("unreachable")
+}

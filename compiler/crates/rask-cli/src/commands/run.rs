@@ -411,7 +411,13 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
     let _ = std::fs::remove_file(&obj_path);
 
     let output = process::Command::new(&bin_str).output();
-    let _ = std::fs::remove_file(&bin_path);
+    // A test binary that dies mid-run takes the evidence with it. Keeping it
+    // is the difference between "something crashed" and a backtrace.
+    if std::env::var_os("RASK_KEEP_TEST_BIN").is_some() {
+        eprintln!("{}: test binary kept at {}", output::warning_label(), bin_str);
+    } else {
+        let _ = std::fs::remove_file(&bin_path);
+    }
 
     match output {
         Ok(out) => {

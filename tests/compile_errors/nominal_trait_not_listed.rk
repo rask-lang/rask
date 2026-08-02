@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a nominal newtype inherits nothing it didn't ask for (T10).
+//
+// The other half of #551: the `with (…)` list is now honoured, so it has to
+// stay a list and not become "everything the underlying type can do".
+
+type OnlyEq = u64 with (Equal)
+
+func main() {
+    const a = OnlyEq(1)
+    const b = OnlyEq(2)
+    // Equal was listed, so this is fine.
+    println("eq={a == b}")
+
+    // ERROR: no method `lt` found for type `OnlyEq`
+    println("lt={a < b}")
+
+    // ERROR: no method `add` found for type `OnlyEq`
+    const sum = a + b
+    println("sum={sum}")
+}

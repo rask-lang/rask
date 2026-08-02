@@ -10,9 +10,6 @@
 # Format: one suite basename per line, trailing `# <spec-id> — #<issue>`.
 # The differential harness treats both files as expected-red (non-fatal).
 
-# --- language surface not implemented (red on BOTH backends) ---
-p03_comparison_surface.rk  # green on interp; native dies on `assert (1,2) == (1,2)` inside a test — #548
-
 # --- spec-heavy pending features ---
 p07_owned.rk               # mem.owned Owned<T> / `own` linear heap pointer — unimplemented
 p08_sequence.rk            # type.sequence function-valued iteration protocol — unimplemented

@@ -139,6 +139,11 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             );
             (8, 8)
         }
+        // A field written `any Trait` reaches here as a name, not a parsed
+        // TraitObject. It's still a fat pointer, and sizing it at 8 gave a
+        // struct field half the room for one — the vtable half landed in
+        // whatever followed (#474).
+        Type::UnresolvedNamed(name) if name.starts_with("any ") => (16, 8),
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
                 "string" | "Path" => (16, 8),

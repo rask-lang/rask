@@ -40,6 +40,16 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
+    /// std.fmt/D4: `{}` (and a bare `to_string()`) needs `Displayable`, and
+    /// structs opt in (D3). Optionals and results never render on their own.
+    #[error("`{ty}` does not implement `Displayable`")]
+    NotDisplayable {
+        ty: String,
+        /// `Some` when it came from an interpolation, so the message can name
+        /// the placeholder instead of a `to_string()` the user never wrote.
+        interpolated: bool,
+        span: Span,
+    },
     /// #314: method called on a type param whose bounds don't provide it.
     #[error("no method '{method}' provided by the bounds on `{param}`")]
     UnboundedTypeParamMethod {

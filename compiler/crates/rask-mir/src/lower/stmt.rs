@@ -1435,6 +1435,21 @@ impl<'a> MirLowerer<'a> {
         // changes went into a local copy and the collection never saw them
         // (LP11-LP12). A bare `for mutate x in v` parses as a trivial chain, so
         // it was landing here.
+        // A bare `.iter()` with nothing chained onto it iterates exactly what
+        // its receiver does, so unwrap it and let the checks below see the
+        // collection. The fused-chain path assumes a Vec-shaped source: on a
+        // Map it ran `Vec_len` and `Vec_get` against the map pointer, and
+        // reading a field off what came back gave "unresolved field `1`" and
+        // then a segfault (#398).
+        let iter_expr = match &iter_expr.kind {
+            ExprKind::MethodCall { object, method, args, .. }
+                if method == "iter" && args.is_empty() =>
+            {
+                object.as_ref()
+            }
+            _ => iter_expr,
+        };
+
         if !mutate {
             if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
                 return self.lower_for_iter_chain(label, single_name, &chain, body, binding);

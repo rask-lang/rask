@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #335 — a Vec holding trait objects. Elements are 16-byte fat pointers, so
+// pushing one has to box it; pushing the bare struct left every element to be
+// read back through whichever vtable was written last, so a heterogeneous
+// vector reported all of its elements as the last type pushed.
+
+trait Shape {
+    func area(self) -> i64
+    func name(self) -> string
+}
+
+struct Circle { public r: i64 }
+struct Square { public s: i64 }
+
+extend Circle with Shape {
+    public func area(self) -> i64 { return self.r * self.r * 3 }
+    public func name(self) -> string { return "circle" }
+}
+
+extend Square with Shape {
+    public func area(self) -> i64 { return self.s * self.s }
+    public func name(self) -> string { return "square" }
+}
+
+func total(shapes: Vec<any Shape>) -> i64 {
+    mut sum = 0
+    for s in shapes {
+        sum += s.area()
+    }
+    return sum
+}
+
+test "each element keeps its own type — implicit push" {
+    mut shapes: Vec<any Shape> = Vec.new()
+    shapes.push(Circle { r: 2 })
+    shapes.push(Square { s: 3 })
+    assert shapes.len() == 2
+
+    mut names = Vec.new()
+    mut areas = Vec.new()
+    for s in shapes {
+        names.push(s.name())
+        areas.push(s.area())
+    }
+    assert names[0] == "circle"
+    assert names[1] == "square"
+    assert areas[0] == 12
+    assert areas[1] == 9
+}
+
+test "each element keeps its own type — explicit `as any` push" {
+    mut shapes: Vec<any Shape> = Vec.new()
+    shapes.push(Circle { r: 2 } as any Shape)
+    shapes.push(Square { s: 3 } as any Shape)
+    mut names = Vec.new()
+    for s in shapes {
+        names.push(s.name())
+    }
+    assert names[0] == "circle"
+    assert names[1] == "square"
+}
+
+test "Vec.from with casts, and indexed reads" {
+    const shapes = Vec.from([
+        Circle { r: 1 } as any Shape,
+        Square { s: 4 } as any Shape,
+    ])
+    assert shapes[0].area() == 3
+    assert shapes[1].area() == 16
+    assert shapes[0].name() == "circle"
+    assert shapes[1].name() == "square"
+}
+
+test "a Vec of trait objects passed to a function" {
+    mut shapes: Vec<any Shape> = Vec.new()
+    shapes.push(Circle { r: 2 })
+    shapes.push(Square { s: 3 })
+    assert total(shapes) == 21
+}
+
+test "same concrete type twice still reads as itself" {
+    mut shapes: Vec<any Shape> = Vec.new()
+    shapes.push(Circle { r: 1 })
+    shapes.push(Circle { r: 2 })
+    mut areas = Vec.new()
+    for s in shapes {
+        areas.push(s.area())
+    }
+    assert areas[0] == 3
+    assert areas[1] == 12
+}

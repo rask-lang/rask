@@ -2232,6 +2232,13 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
                     }
+                    // `Ordering` is registered by the compiler, not declared,
+                    // so it has no layout to read tags from.
+                    if enum_name == "Ordering" {
+                        if let Some(tag) = rask_stdlib::ordering_tag(bare) {
+                            return tag;
+                        }
+                    }
                 }
                 // Unqualified, or the qualifier named no known enum: first
                 // layout that declares the variant.
@@ -2242,7 +2249,10 @@ impl<'a> MirLowerer<'a> {
                         }
                     }
                 }
-                0
+                // A declared enum wins the bare name; `Ordering` picks up what's
+                // left, which is what `Ordering.Less` arrives as — the qualifier
+                // is dropped before it gets here.
+                rask_stdlib::ordering_tag(bare).unwrap_or(0)
             }
         }
     }

@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A trait method's return value survives the vtable call, whatever its shape.
+//
+// A Rask function returning an aggregate that fits in a word returns the value;
+// a bigger one returns a pointer into its own frame for the caller to copy.
+// The vtable path assumed the pointer form for both, so a fieldless enum came
+// back as an address to dereference and the caller read address 1 (#474).
+
+enum Status { Ok, NotFound, Error }
+
+struct Pair { public a: i64, public b: i64 }
+
+struct Big { public one: i64, public two: i64, public three: i64, public four: i64 }
+
+trait Handler {
+    func code(self) -> Status
+    func pair(self) -> Pair
+    func big(self) -> Big
+    func text(self) -> string
+    func count(self) -> i64
+    func ratio(self) -> f64
+    func maybe(self) -> i64?
+}
+
+struct Echo { public n: i64 }
+
+extend Echo with Handler {
+    public func code(self) -> Status { return Status.NotFound }
+    public func pair(self) -> Pair { return Pair { a: self.n, b: self.n * 2 } }
+    public func big(self) -> Big {
+        return Big { one: 1, two: 2, three: 3, four: 4 }
+    }
+    public func text(self) -> string { return "echo" }
+    public func count(self) -> i64 { return self.n }
+    public func ratio(self) -> f64 { return 1.5 }
+    public func maybe(self) -> i64? { return self.n }
+}
+
+func status_name(s: Status) -> string {
+    match s {
+        Status.Ok => return "ok",
+        Status.NotFound => return "notfound",
+        Status.Error => return "error",
+    }
+}
+
+test "an enum comes back through a vtable call" {
+    const h = Echo { n: 5 } as any Handler
+    assert status_name(h.code()) == "notfound"
+    // And directly in a match, which is where the bad tag showed up.
+    const picked = match h.code() {
+        Status.Ok => 0
+        Status.NotFound => 1
+        Status.Error => 2
+    }
+    assert picked == 1
+}
+
+test "a word-sized and an oversized struct both come back" {
+    const h = Echo { n: 5 } as any Handler
+    const p = h.pair()
+    assert p.a == 5
+    assert p.b == 10
+    const b = h.big()
+    assert b.one == 1
+    assert b.four == 4
+}
+
+test "a string comes back through a vtable call" {
+    const h = Echo { n: 5 } as any Handler
+    assert h.text() == "echo"
+    assert h.text().len() == 4
+}
+
+test "scalars and an optional come back through a vtable call" {
+    const h = Echo { n: 7 } as any Handler
+    assert h.count() == 7
+    assert h.ratio() == 1.5
+    assert h.maybe() ?? 0 == 7
+}
+
+test "the same method dispatches the same statically and dynamically" {
+    const e = Echo { n: 3 }
+    const h = e as any Handler
+    assert status_name(e.code()) == status_name(h.code())
+    assert e.pair().b == h.pair().b
+    assert e.text() == h.text()
+}

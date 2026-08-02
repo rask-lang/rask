@@ -278,6 +278,79 @@ impl TypeChecker {
         }
     }
 
+    /// std.fmt/D2–D5: can `{}` render this on its own?
+    ///
+    /// Primitives can (D2). Structs and enums opt in with `to_string`, or get
+    /// it for free from `message()` (D3, D5). An optional or a result can't —
+    /// there may be nothing to show, and the caller has to say what happens
+    /// then. Anything else keeps rendering the way it does today.
+    fn is_displayable(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Result { .. } => false,
+            Type::Named(id) | Type::Generic { base: id, .. } => {
+                // A nominal newtype inherits nothing it didn't ask for
+                // (type.aliases/T10), so its `with (…)` list is the answer —
+                // and an `extend` block that writes `to_string` counts too.
+                if let Some(TypeDef::NominalAlias { with_traits, methods, .. }) = self.types.get(*id) {
+                    return with_traits.iter().any(|t| t == "Displayable")
+                        || methods.iter().any(|m| m.name == "to_string" || m.name == "message");
+                }
+                let has = |name: &str| {
+                    crate::traits::implements_trait(&self.types, ty, name)
+                };
+                has("Displayable") || has("ErrorMessage")
+            }
+            _ => true,
+        }
+    }
+
+    /// The signature `method` gets on a nominal newtype from one of the traits
+    /// its `with (…)` clause lists (type.aliases/T11).
+    ///
+    /// The trait signatures write `Self` as type variable 0, so binding that to
+    /// the newtype is the whole of T12's delegation: `Id`'s `eq` takes an `Id`,
+    /// and its `clone` gives one back. Positions the trait spells out concretely
+    /// — `hash`'s `u64`, `compare`'s `Ordering` — stay as written.
+    fn inherited_trait_method(
+        &self,
+        ty: &Type,
+        with_traits: &[String],
+        method: &str,
+    ) -> Option<MethodSig> {
+        let checker = crate::traits::TraitChecker::new(&self.types);
+        let self_var = Type::Var(TypeVarId(0));
+        for trait_name in with_traits {
+            let Some(mut sig) = checker
+                .get_trait_methods_public(trait_name)
+                .into_iter()
+                .find(|m| m.name == method)
+            else {
+                continue;
+            };
+            let bind_self = |t: &Type| if *t == self_var { ty.clone() } else { t.clone() };
+            sig.params = sig.params.iter().map(|(t, m)| (bind_self(t), *m)).collect();
+            sig.ret = bind_self(&sig.ret);
+            return Some(sig);
+        }
+        None
+    }
+
+    /// A type as the user wrote it. `Type`'s own Display can't name a
+    /// registered type — it prints `<type#7>`.
+    fn render_type(&self, ty: &Type) -> String {
+        match ty {
+            Type::Result { ok, err } if **err == Type::None => {
+                format!("{}?", self.render_type(ok))
+            }
+            Type::Result { ok, err } => {
+                format!("{} or {}", self.render_type(ok), self.render_type(err))
+            }
+            Type::Named(_) | Type::Generic { .. } => super::receiver_name(ty, &self.types)
+                .unwrap_or_else(|| format!("{}", ty)),
+            _ => format!("{}", ty),
+        }
+    }
+
     pub(super) fn resolve_method(
         &mut self,
         ty: Type,
@@ -325,8 +398,19 @@ impl TypeChecker {
             return self.unify(&ty, &ret, span);
         }
 
-        // to_string() on any type returns string
-        if method == "to_string" && args.is_empty() {
+        // std.fmt/D1–D5: `to_string()` comes from Displayable. Primitives have
+        // it, aggregates opt in. `{x}` desugars to this call, so both forms are
+        // checked in one place.
+        if (method == "to_string" && args.is_empty())
+            || (method == "__fmt" && args.len() == 5)
+        {
+            if !self.is_displayable(&ty) {
+                return Err(TypeError::NotDisplayable {
+                    ty: self.render_type(&ty),
+                    interpolated: method == "__fmt",
+                    span,
+                });
+            }
             return self.unify(&ret, &Type::String, span);
         }
 
@@ -358,7 +442,21 @@ impl TypeChecker {
                     Some(TypeDef::Enum { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
                     }
-                    Some(TypeDef::NominalAlias { methods, .. }) => (methods.clone(), Vec::new()),
+                    Some(TypeDef::NominalAlias { methods, with_traits, .. }) => {
+                        // T11/T12: a nominal newtype inherits the traits its
+                        // `with (…)` clause lists, and they delegate to the
+                        // value underneath. The list was recorded and never
+                        // read, so `type Id = u64 with (Equal)` gave `Id` no
+                        // `eq` at all and `a == b` didn't compile (#551).
+                        let own = methods.iter().any(|m| m.name == method);
+                        let inherited = (!own)
+                            .then(|| self.inherited_trait_method(&ty, with_traits, &method))
+                            .flatten();
+                        match inherited {
+                            Some(sig) => (vec![sig], Vec::new()),
+                            None => (methods.clone(), Vec::new()),
+                        }
+                    }
                     _ => {
                         return Err(TypeError::NoSuchMethod {
                             ty,

@@ -3875,7 +3875,13 @@ impl Parser {
         match self.current_kind() {
             TokenKind::LParen => {
                 self.advance();
-                let args = self.parse_args()?;
+                // std.fmt/CM2: the desugar pass parses `format`'s template at
+                // compile time, so the literal has to reach it whole. Splitting
+                // it here read `{0}` as the integer zero and turned `{{x}}`
+                // back into a placeholder.
+                let raw_template = matches!(&lhs.kind, ExprKind::Ident(n) if n == "format")
+                    && matches!(self.current_kind(), TokenKind::String(_));
+                let args = self.parse_args_with(raw_template)?;
                 self.expect(&TokenKind::RParen)?;
                 let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Call { func: Box::new(lhs), args }, span: self.span(start, end) })
@@ -4055,11 +4061,35 @@ impl Parser {
     }
 
     fn parse_args(&mut self) -> Result<Vec<CallArg>, ParseError> {
+        self.parse_args_with(false)
+    }
+
+    /// `raw_first_string`: take the first argument's string literal verbatim,
+    /// without splitting it into interpolation segments. Only `format` wants
+    /// this — its template is a compile-time input, not a string to render.
+    fn parse_args_with(&mut self, raw_first_string: bool) -> Result<Vec<CallArg>, ParseError> {
         let mut args = Vec::new();
         self.skip_newlines();
         if self.check(&TokenKind::RParen) { return Ok(args); }
 
         loop {
+            if raw_first_string && args.is_empty() {
+                if let TokenKind::String(s) = self.current_kind().clone() {
+                    let start = self.current().span.start;
+                    self.advance();
+                    let span = self.span(start, self.tokens[self.pos - 1].span.end);
+                    args.push(CallArg {
+                        name: None,
+                        mode: ArgMode::Default,
+                        expr: Expr { id: self.next_id(), kind: ExprKind::String(s), span },
+                    });
+                    self.skip_newlines();
+                    if !self.match_token(&TokenKind::Comma) { break; }
+                    self.skip_newlines();
+                    if self.check(&TokenKind::RParen) { break; }
+                    continue;
+                }
+            }
             // Capture named argument labels (name: expr)
             let arg_name = if let TokenKind::Ident(_) = self.current_kind().clone() {
                 if self.peek(1) == &TokenKind::Colon {
@@ -4695,8 +4725,9 @@ impl Parser {
                 // A character-class guess accepted ` 1`, so a one-pair JSON
                 // body `{"k": 1}` parsed as the expression `"k"` with ` 1` as
                 // its spec and printed `k` (#506).
-                let spec_is_plausible =
-                    spec.is_none_or(rask_ast::fmt_spec::is_valid_spec);
+                let parsed_spec = spec.map(rask_ast::fmt_spec::parse_spec);
+                let spec_is_plausible = !matches!(parsed_spec, Some(None));
+                let parsed_spec = parsed_spec.flatten();
 
                 let bad_expr = |parser: &mut Self, detail: &str| {
                     parser.errors.push(ParseError {
@@ -4741,12 +4772,21 @@ impl Parser {
                     bad_expr(self, "there's more here than one expression");
                     return None;
                 }
+                // `{"x"}` renders the literal it already is, so nobody writes
+                // one on purpose — but a JSON body starts with exactly that
+                // shape. `"{\"x\":1}"` splits into the expression `"x"` with
+                // `1` as a width spec, and prints `x` (#506). The spec grammar
+                // can't tell those apart; the string literal can.
+                if matches!(parsed.kind, ExprKind::String(_)) {
+                    bad_expr(self, "a string literal on its own isn't something to interpolate");
+                    return None;
+                }
 
                 // Remap spans from 0-based (within expr_str) to absolute file position.
                 // str_span.start is the opening quote, +1 for content start, +byte_offset for position.
                 Self::offset_spans(&mut parsed, abs_offset);
 
-                segments.push(StringSegment::Expr(Box::new(parsed)));
+                segments.push(StringSegment::Expr(Box::new(parsed), parsed_spec));
             } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
                 // Escaped brace: }} → }
                 literal.push('}');
@@ -4764,7 +4804,7 @@ impl Parser {
 
         // Segments are worth returning when there's an expression to evaluate,
         // or an escape whose unescaping would otherwise be lost.
-        if escaped_any || segments.iter().any(|s| matches!(s, StringSegment::Expr(_))) {
+        if escaped_any || segments.iter().any(|s| matches!(s, StringSegment::Expr(..))) {
             Some(segments)
         } else {
             None
