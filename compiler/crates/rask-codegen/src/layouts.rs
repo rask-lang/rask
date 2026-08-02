@@ -25,6 +25,7 @@ pub const PAYLOAD_OFFSET: i32 = rask_mono::abi::OPTION_PAYLOAD_OFFSET as i32;
 pub const ORIGIN_FILE_OFFSET: i32 = rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET as i32;
 pub const ORIGIN_LINE_OFFSET: i32 = rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET as i32;
 pub const RESULT_PAYLOAD_OFFSET: i32 = rask_mono::abi::RESULT_PAYLOAD_OFFSET as i32;
+pub const HANDLE_NONE_SENTINEL: i64 = rask_mono::abi::HANDLE_NONE_SENTINEL;
 
 // ── String SSO (string.c) ────────────────────────────────────────
 // Empty string: 16 zero bytes except byte 15 = 0x0F (remaining capacity = 15).

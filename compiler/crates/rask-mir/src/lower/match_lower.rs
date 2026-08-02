@@ -239,7 +239,9 @@ impl<'a> MirLowerer<'a> {
                                     base: scrutinee_op.clone(),
                                     field_index: j as u32,
                                     byte_offset: field_loc.map(|(off, _)| off),
-                                    access: field_loc.map_or(FieldAccess::Word, |(_, sz)| FieldAccess::Sized(sz)),
+                                    access: field_loc.map_or(FieldAccess::Word, |(_, sz)| {
+                                        FieldAccess::for_field(&field_ty, sz)
+                                    }),
                                 }
                             };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -295,7 +297,7 @@ impl<'a> MirLowerer<'a> {
                                                 base: scrutinee_op.clone(),
                                                 field_index: field_idx as u32,
                                                 byte_offset: Some(variant.payload_offset + field_layout.offset),
-                                                access: FieldAccess::Sized(field_layout.size),
+                                                access: FieldAccess::for_field(&field_ty, field_layout.size),
                                             };
                                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                                 dst: payload_local,

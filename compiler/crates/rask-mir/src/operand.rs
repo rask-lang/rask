@@ -44,6 +44,18 @@ pub enum FieldAccess {
 }
 
 impl FieldAccess {
+    /// How a field of this type comes back. Aggregates live in their own
+    /// storage, so the address is the answer even for the small ones — a
+    /// fieldless enum is one byte, and loading that byte as a value handed
+    /// codegen a tag where it expected a pointer (#561).
+    pub fn for_field(ty: &MirType, size: u32) -> FieldAccess {
+        if ty.passed_by_address() {
+            FieldAccess::InPlace(size)
+        } else {
+            FieldAccess::Sized(size)
+        }
+    }
+
     /// Does reading this field yield an address rather than a loaded value?
     pub fn is_address(&self) -> bool {
         match self {

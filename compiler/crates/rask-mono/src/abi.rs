@@ -17,3 +17,8 @@ pub const RESULT_PAYLOAD_OFFSET: u32 = 24;
 
 pub const OPTION_TAG_OFFSET: u32 = 0;
 pub const OPTION_PAYLOAD_OFFSET: u32 = 8;
+
+/// `none` for a niche-optimized `Handle<T>?`. That option carries no tag — the
+/// handle itself is the value — so `none` is an all-bits-set handle
+/// (index=UINT32_MAX, gen=UINT32_MAX), which no live slot can ever produce.
+pub const HANDLE_NONE_SENTINEL: i64 = -1;

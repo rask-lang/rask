@@ -3939,8 +3939,33 @@ impl<'a> FunctionBuilder<'a> {
                         // Return dummy value — real data is in the stack slot
                         builder.ins().iconst(types::I64, 0)
                     } else {
-                        // No stack slot — just deref like DerefResult
-                        builder.ins().load(types::I64, MemFlags::new(), ptr, 0)
+                        // No slot means a niche `Handle?`: the handle itself is
+                        // the value and `none` is the all-ones sentinel. A miss
+                        // still comes back NULL, so answer with the sentinel
+                        // instead of loading through it — `Map<K, Handle<T>>`
+                        // segfaulted on every lookup that found nothing (#561).
+                        let miss_block = builder.create_block();
+                        let hit_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+
+                        let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
+                        builder.ins().brif(is_null, miss_block, &[], hit_block, &[]);
+
+                        builder.switch_to_block(miss_block);
+                        builder.seal_block(miss_block);
+                        let sentinel = builder.ins()
+                            .iconst(types::I64, crate::layouts::HANDLE_NONE_SENTINEL);
+                        builder.ins().jump(merge_block, &[sentinel]);
+
+                        builder.switch_to_block(hit_block);
+                        builder.seal_block(hit_block);
+                        let loaded = builder.ins().load(types::I64, MemFlags::new(), ptr, 0);
+                        builder.ins().jump(merge_block, &[loaded]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     }
                 }
                 CallAdapt::PopOutParam(ss) => {

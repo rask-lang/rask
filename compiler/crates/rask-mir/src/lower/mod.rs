@@ -32,7 +32,7 @@ type TypedOperand = (MirOperand, MirType);
 
 /// Sentinel value representing None for niche-optimized Option<Handle<T>>.
 /// All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
-pub(crate) const HANDLE_NONE_SENTINEL: i64 = -1;
+pub(crate) const HANDLE_NONE_SENTINEL: i64 = rask_mono::abi::HANDLE_NONE_SENTINEL;
 
 /// Check if a raw Type is Option<Handle<T>> (eligible for niche optimization).
 pub(crate) fn is_niche_option_handle(ty: &Type) -> bool {
@@ -2538,7 +2538,9 @@ impl<'a> MirLowerer<'a> {
                                 base: value.clone(),
                                 field_index: i as u32,
                                 byte_offset: field_loc.map(|(off, _)| off),
-                                access: field_loc.map_or(FieldAccess::Word, |(_, sz)| FieldAccess::Sized(sz)),
+                                access: field_loc.map_or(FieldAccess::Word, |(_, sz)| {
+                                    FieldAccess::for_field(&field_ty, sz)
+                                }),
                             }
                         };
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
