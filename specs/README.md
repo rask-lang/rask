@@ -6,6 +6,7 @@ Organized by what each category does.
 
 **New to Rask?** Start here. If you hit unfamiliar terms, check the [Glossary](GLOSSARY.md).
 
+0. [DAY_ONE.md](DAY_ONE.md) — The reading set: the twelve concepts on one page
 1. [memory/ownership.md](memory/ownership.md) — Single ownership, move semantics
 2. [memory/value-semantics.md](memory/value-semantics.md) — Copy vs move, 16-byte threshold
 3. [memory/borrowing.md](memory/borrowing.md) — One rule: views last as long as source is stable
@@ -156,6 +157,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | Spec | Description |
 |------|-------------|
 | [README.md](stdlib/README.md) | **Overview**: 24 modules, batteries-included philosophy |
+| [api-design.md](stdlib/api-design.md) | **API rules**: one screen per module, guess test, no Rust legacy (SD1–SD5) |
 | [collections.md](stdlib/collections.md) | Vec, Map (indexed and keyed collections) |
 | [strings.md](stdlib/strings.md) | String types, encoding |
 | [iteration.md](stdlib/iteration.md) | Collection iteration patterns |

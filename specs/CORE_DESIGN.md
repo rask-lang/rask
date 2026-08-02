@@ -185,6 +185,8 @@ Fail 1 → the checker guards it; a marker may exist for emphasis but stays opti
 
 The one candidate that passed all three after the fact: `mutate` at call sites — a legal wrong reading, one non-viral word, on the minority case — which is why `mem.parameters/PM4` flipped from the original design. Run future candidates through the same three questions before adding syntax *or* before assuming tooling can carry something it can't.
 
+The ceremony test guards syntax; [DAY_ONE.md](DAY_ONE.md) guards concept count — the reading set is a one-page budget, and additions to it get the same scrutiny (`spec.metrics` RS tracks it against the validation programs).
+
 ---
 
 ## Why Not X?
