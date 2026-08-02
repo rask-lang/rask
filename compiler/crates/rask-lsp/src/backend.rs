@@ -221,7 +221,6 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
 
     // --- Desugar (operators + default/named args) ---
     let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut parse_result.decls);
-    rask_desugar::desugar_default_args(&mut parse_result.decls);
     for e in &desugar_errors {
         diags.push(
             rask_diagnostics::Diagnostic::error(e.message.clone())
@@ -273,7 +272,6 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
             })
             .unwrap_or_default();
         rask_desugar::desugar_with_diagnostics(&mut sibling_decls);
-        rask_desugar::desugar_default_args(&mut sibling_decls);
         parse_result.decls.extend(sibling_decls);
 
         match rask_resolve::resolve_package_with_cfg(

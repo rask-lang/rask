@@ -21,7 +21,7 @@ fn base_type_name(name: &str) -> &str {
 /// Builds a lookup table of function signatures, then rewrites call sites
 /// so that missing arguments with defaults are filled in and named
 /// arguments are resolved to positional form.
-pub fn desugar_default_args(decls: &mut [Decl]) {
+pub(crate) fn desugar_default_args(decls: &mut [Decl]) {
     let lookup = FunctionLookup::build(decls);
     let mut ctx = DefaultDesugarer {
         lookup,

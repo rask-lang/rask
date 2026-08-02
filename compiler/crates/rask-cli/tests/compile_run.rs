@@ -1963,3 +1963,79 @@ test "b uses its own Point" {
         "both files' tests should run: {}", combined,
     );
 }
+
+// ─── Regression: issue #549 ─────────────────────────────────
+//
+// `rask test <pkg>` used to run only the operator half of the desugar phase,
+// so struct field defaults and default arguments were never filled in and
+// `Config {}` failed with E0822 "missing fields" — code `rask build` accepts.
+
+#[test]
+fn test_package_applies_field_defaults() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir().join(format!("rask_test_pkg_defaults_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    std::fs::write(dir.join("build.rk"), r#"
+package "fd" "0.1.0" {
+    description: "field defaults under rask test"
+}
+"#).unwrap();
+
+    std::fs::write(dir.join("main.rk"), r#"
+struct Config {
+    public port: u16 = 8080
+    public host: string = "localhost"
+}
+
+func scaled(n: i32, by: i32 = 3) -> i32 {
+    return n * by
+}
+
+func main() {
+    const c = Config {}
+    println("{c.port}")
+}
+
+test "all fields defaulted" {
+    const c = Config {}
+    assert c.port == 8080
+    assert c.host == "localhost"
+}
+
+test "explicit value wins over the default" {
+    const c = Config { port: 9090 }
+    assert c.port == 9090
+    assert c.host == "localhost"
+}
+
+test "default argument fills in" {
+    assert scaled(2) == 6
+    assert scaled(2, 5) == 10
+}
+"#).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("test")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask test");
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        !combined.contains("E0822"),
+        "field defaults must be filled in before type checking: {}", combined,
+    );
+    assert!(
+        out.status.success() && combined.contains("3 passed"),
+        "rask test must honor field defaults and default args\nstdout: {}\nstderr: {}",
+        stdout, stderr,
+    );
+}
