@@ -345,6 +345,31 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail_cmp_i64".to_string(), id);
         }
 
+        // assert_fail_cmp_char(left: i64, right: i64, op: ptr, file: ptr, line: i32, col: i32)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // left codepoint
+            sig.params.push(AbiParam::new(types::I64)); // right codepoint
+            sig.params.push(AbiParam::new(types::I64)); // op str ptr
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_assert_fail_cmp_char", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("assert_fail_cmp_char".to_string(), id);
+        }
+
+        // main_error_exit(msg: *RaskStr | null) — prints and exits 1 (EX4)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // message str ptr (may be null)
+            let id = self.module
+                .declare_function("rask_main_error_exit", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("main_error_exit".to_string(), id);
+        }
+
         // assert_fail_cmp_str(left: ptr, right: ptr, op: ptr, file: ptr, line: i32, col: i32)
         {
             let mut sig = self.module.make_signature();
@@ -606,6 +631,17 @@ impl CodeGenerator {
                 .declare_function("rask_f64_to_string", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("rask_f64_to_string".to_string(), id);
+        }
+
+        // rask_f32_to_string(out: *RaskStr, val: f32) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // out ptr
+            sig.params.push(AbiParam::new(types::F32)); // val
+            let id = self.module
+                .declare_function("rask_f32_to_string", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_f32_to_string".to_string(), id);
         }
 
         // rask_char_to_string(out: *RaskStr, codepoint: i32) -> void

@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `T? or E` — "not found" and "failed" as separate answers (ER9, #383).
+//
+// No success return type-checked: `return none` was matched against the error
+// branch, and `return v` against `T?` without the layer that makes it one.
+// Once those passed, three more things were wrong underneath — the interpreter
+// wrapped Ok without the optional layer, MIR's `try` built its error Result at
+// the callee's type instead of the caller's, and the inliner treated a bare
+// `T?` returned from a `T? or E` function as already wrapped.
+
+enum Fault {
+    Missing
+    Broken(string)
+}
+
+extend Fault {
+    func message(self) -> string {
+        if self is Fault.Missing {
+            return "missing"
+        }
+        return "broken"
+    }
+}
+
+struct Row {
+    public id: i64
+}
+
+func absent() -> Row? or Fault {
+    return none
+}
+
+func present(id: i64) -> Row? or Fault {
+    return Row { id: id }
+}
+
+func failing() -> Row? or Fault {
+    return Fault.Broken("db down")
+}
+
+func lookup(which: i64) -> string or Fault {
+    const row = try if which == 0 { absent() } else { present(which) }
+    if row? as r {
+        return "row {r.id}"
+    }
+    return "not found"
+}
+
+test "none is the success branch, not an error" {
+    assert lookup(0)! == "not found"
+}
+
+test "a bare value fills the present side" {
+    assert lookup(7)! == "row 7"
+}
+
+test "the error branch still works" {
+    const r = failing()
+    assert (r? == false)
+}
+
+test "a value survives the round trip" {
+    const p = present(3)
+    assert p?
+}

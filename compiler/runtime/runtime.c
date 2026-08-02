@@ -26,11 +26,15 @@ void rask_print_bool(int8_t val) {
 }
 
 void rask_print_f64(double val) {
-    printf("%g", val);
+    char buf[RASK_F64_BUF_SIZE];
+    rask_fmt_double(buf, sizeof(buf), val);
+    fputs(buf, stdout);
 }
 
 void rask_print_f32(float val) {
-    printf("%g", (double)val);
+    char buf[RASK_F64_BUF_SIZE];
+    rask_fmt_float(buf, sizeof(buf), val);
+    fputs(buf, stdout);
 }
 
 void rask_print_char(int32_t codepoint) {
@@ -69,6 +73,19 @@ void rask_exit(int64_t code) {
     exit((int)code);
 }
 
+// struct.targets/EX4: an error returned from main is a failed run — status 1.
+// A panic is 101 and goes through rask_panic instead. `msg` is optional; when
+// the error type has no message() there's nothing to print but the fact.
+_Noreturn void rask_main_error_exit(const RaskStr *msg) {
+    fflush(stdout);
+    if (msg && rask_string_len(msg) > 0) {
+        fprintf(stderr, "error: %.*s\n", (int)rask_string_len(msg), rask_string_ptr(msg));
+    } else {
+        fprintf(stderr, "error: main returned an error\n");
+    }
+    exit(1);
+}
+
 void rask_panic_unwrap(void) {
     rask_panic("called unwrap on None/Err value");
 }
@@ -102,6 +119,23 @@ void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
              "assertion failed: %lld %s %lld (left: %lld, right: %lld)",
              (long long)left, op ? op : "?",
              (long long)right, (long long)left, (long long)right);
+    rask_panic_at(file, line, col, buf);
+}
+
+// Chars reach here as scalars, same as integers — but reporting `120 == 121`
+// for `'x' == 'y'` tells the reader nothing. Print the characters.
+void rask_assert_fail_cmp_char(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col) {
+    RaskStr ls, rs;
+    rask_char_to_string(&ls, (int32_t)left);
+    rask_char_to_string(&rs, (int32_t)right);
+    const char *lbuf = rask_string_ptr(&ls);
+    const char *rbuf = rask_string_ptr(&rs);
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assertion failed: '%s' %s '%s' (left: '%s', right: '%s')",
+             lbuf, op ? op : "?", rbuf, lbuf, rbuf);
     rask_panic_at(file, line, col, buf);
 }
 
@@ -1299,8 +1333,9 @@ void rask_json_buf_add_i64(RaskJsonBuf *buf, const RaskStr *key, int64_t val) {
 void rask_json_buf_add_f64(RaskJsonBuf *buf, const RaskStr *key, double val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
     json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
-    char num[64];
-    snprintf(num, sizeof(num), ":%g", val);
+    char num[RASK_F64_BUF_SIZE + 1];
+    num[0] = ':';
+    rask_fmt_double(num + 1, sizeof(num) - 1, val);
     json_buf_append_cstr(buf, num);
     buf->field_count++;
 }
@@ -1361,8 +1396,8 @@ void rask_json_buf_array_add_i64(RaskJsonBuf *buf, int64_t val) {
 
 void rask_json_buf_array_add_f64(RaskJsonBuf *buf, double val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
-    char num[64];
-    snprintf(num, sizeof(num), "%g", val);
+    char num[RASK_F64_BUF_SIZE];
+    rask_fmt_double(num, sizeof(num), val);
     json_buf_append_cstr(buf, num);
     buf->field_count++;
 }

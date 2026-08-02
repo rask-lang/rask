@@ -4,7 +4,7 @@
 use rask_ast::decl::{BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, ConvertKind, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
-use rask_ast::token::{Token, TokenKind};
+use rask_ast::token::{IntSuffix, Token, TokenKind};
 use rask_ast::{NodeId, Span};
 
 /// Maximum number of errors to collect before stopping.
@@ -28,6 +28,10 @@ pub struct Parser {
     doc_buffer: Vec<String>,
     /// File index for multi-file packages (0 for single-file).
     file_id: u16,
+    /// Stub files declare `func assert(...)` and friends so the checker knows
+    /// their signatures. Real source can't — the call would parse as the
+    /// keyword form — so only stub parsing sets this.
+    allow_keyword_fn_names: bool,
 }
 
 impl Parser {
@@ -43,7 +47,14 @@ impl Parser {
 
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false }
+    }
+
+    /// Let top-level `func` declarations use keyword names. Only stub files
+    /// need this — see `allow_keyword_fn_names`.
+    pub fn allow_keyword_fn_names(mut self) -> Self {
+        self.allow_keyword_fn_names = true;
+        self
     }
 
     /// Return the next available NodeId (for chaining across files).
@@ -235,78 +246,16 @@ impl Parser {
     /// Allow keywords as field/method names.
     /// After `.` or `?.`, any keyword can be used as an identifier.
     fn expect_ident_or_keyword(&mut self) -> Result<String, ParseError> {
-        let name = match self.current_kind().clone() {
-            TokenKind::Ident(name) => name,
-            // Control flow
-            TokenKind::If => "if".to_string(),
-            TokenKind::Else => "else".to_string(),
-            TokenKind::Match => "match".to_string(),
-            TokenKind::For => "for".to_string(),
-            TokenKind::In => "in".to_string(),
-            TokenKind::While => "while".to_string(),
-            TokenKind::Loop => "loop".to_string(),
-            TokenKind::Break => "break".to_string(),
-            TokenKind::Continue => "continue".to_string(),
-            TokenKind::Return => "return".to_string(),
-            // Declarations
-            TokenKind::Func => "func".to_string(),
-            TokenKind::Let => "let".to_string(),
-            TokenKind::Mut => "mut".to_string(),
-            TokenKind::Const => "const".to_string(),
-            TokenKind::Struct => "struct".to_string(),
-            TokenKind::Enum => "enum".to_string(),
-            TokenKind::Trait => "trait".to_string(),
-            TokenKind::Extend => "extend".to_string(),
-            TokenKind::Import => "import".to_string(),
-            TokenKind::Type => "type".to_string(),
-            // Modifiers
-            TokenKind::Public => "public".to_string(),
-            TokenKind::Private => "private".to_string(),
-            TokenKind::Take => "take".to_string(),
-            TokenKind::Own => "own".to_string(),
-            TokenKind::ReadKw => "read".to_string(),
-            TokenKind::MutateKw => "mutate".to_string(),
-            TokenKind::Unsafe => "unsafe".to_string(),
-            TokenKind::Comptime => "comptime".to_string(),
-            TokenKind::Native => "native".to_string(),
-            TokenKind::Export => "export".to_string(),
-            TokenKind::Using => "using".to_string(),
-            TokenKind::Lazy => "lazy".to_string(),
-            // Concurrency
-            TokenKind::Select => "select".to_string(),
-            TokenKind::With => "with".to_string(),
-            // Error handling
-            TokenKind::Ensure => "ensure".to_string(),
-            TokenKind::Try => "try".to_string(),
-            // Testing
-            TokenKind::Test => "test".to_string(),
-            TokenKind::Benchmark => "benchmark".to_string(),
-            TokenKind::Assert => "assert".to_string(),
-            TokenKind::Check => "check".to_string(),
-            // Operators/keywords
-            TokenKind::As => "as".to_string(),
-            TokenKind::Is => "is".to_string(),
-            TokenKind::Where => "where".to_string(),
-            TokenKind::Or => "or".to_string(),
-            // Literals/constants
-            TokenKind::Bool(true) => "true".to_string(),
-            TokenKind::Bool(false) => "false".to_string(),
-            TokenKind::None => "none".to_string(),
-            TokenKind::Null => "null".to_string(),
-            // Other
-            TokenKind::Extern => "extern".to_string(),
-            TokenKind::Asm => "asm".to_string(),
-            TokenKind::Discard => "discard".to_string(),
-            // Build system
-            TokenKind::Package => "package".to_string(),
-            TokenKind::Scope => "scope".to_string(),
-            TokenKind::Feature => "feature".to_string(),
-            TokenKind::Profile => "profile".to_string(),
-            _ => return Err(ParseError::expected(
-                "a name",
-                self.current_kind(),
-                self.current().span,
-            ).with_hint("Names start with a letter or '_'")),
+        let name = match self.current_kind() {
+            TokenKind::Ident(name) => name.clone(),
+            other => match keyword_spelling(other) {
+                Some(kw) => kw.to_string(),
+                None => return Err(ParseError::expected(
+                    "a name",
+                    self.current_kind(),
+                    self.current().span,
+                ).with_hint("Names start with a letter or '_'")),
+            },
         };
         self.advance();
         Ok(name)
@@ -495,6 +444,7 @@ impl Parser {
                             span: self.current().span,
                             message: "rebindable 'mut' bindings are not allowed at the top level".to_string(),
                             hint: Some("use 'const' for permanent bindings, or move into a function".to_string()),
+                            why: None,
                         };
                         if !self.record_error(err) { break; }
                         self.synchronize();
@@ -504,6 +454,7 @@ impl Parser {
                             span: self.current().span,
                             message: "'let' is not a keyword in Rask".to_string(),
                             hint: Some("use 'const' for permanent bindings at the top level, or 'mut' inside a function for rebindable".to_string()),
+                            why: None,
                         };
                         if !self.record_error(err) { break; }
                         self.synchronize();
@@ -512,6 +463,7 @@ impl Parser {
                             span: self.current().span,
                             message: "unknown keyword 'pub'".to_string(),
                             hint: Some("use 'public' instead of 'pub'".to_string()),
+                            why: None,
                         };
                         if !self.record_error(err) { break; }
                         self.synchronize();
@@ -520,6 +472,7 @@ impl Parser {
                             span: self.current().span,
                             message: "unknown keyword 'fn'".to_string(),
                             hint: Some("use 'func' instead of 'fn'".to_string()),
+                            why: None,
                         };
                         if !self.record_error(err) { break; }
                         self.synchronize();
@@ -578,6 +531,7 @@ impl Parser {
                     span: top_level_stmts[0].span,
                     message: "top-level statements cannot coexist with an explicit main function".to_string(),
                     hint: Some("move statements into main() or remove the main function".to_string()),
+                    why: None,
                 });
             } else {
                 let span = self.span(
@@ -652,18 +606,23 @@ impl Parser {
                     span: self.current().span,
                     message: "unknown keyword 'pub'".to_string(),
                     hint: Some("use 'public' instead of 'pub'".to_string()),
+                    why: None,
                 });
             } else if s == "fn" {
                 return Err(ParseError {
                     span: self.current().span,
                     message: "unknown keyword 'fn'".to_string(),
                     hint: Some("use 'func' instead of 'fn'".to_string()),
+                    why: None,
                 });
             }
         }
 
         let kind = match self.current_kind() {
-            TokenKind::Func => self.parse_fn_decl(is_pub, false, is_comptime, is_unsafe, attrs, doc)?,
+            TokenKind::Func => {
+                self.reject_keyword_fn_name()?;
+                self.parse_fn_decl(is_pub, false, is_comptime, is_unsafe, attrs, doc)?
+            }
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
@@ -692,6 +651,7 @@ impl Parser {
                         span: self.current().span,
                         message: "package declarations cannot have modifiers".to_string(),
                         hint: Some("remove 'public', 'comptime', 'unsafe', or attributes".to_string()),
+                        why: None,
                     });
                 }
                 self.parse_package_decl()?
@@ -755,6 +715,52 @@ impl Parser {
     // Declaration Parsing
     // =========================================================================
 
+    /// A free function named with a keyword can be declared but never called
+    /// (#500). Say so at the declaration, where the name is, instead of leaving
+    /// a type error pointing at some argument. Methods are exempt: `x.check()`
+    /// is unambiguous, and that's how `Option.or` is spelled.
+    ///
+    /// There are two ways it goes wrong and the reason has to match, or the
+    /// message claims something that isn't true. `check(r)` parses as the
+    /// check-expression — the call is read as something else. `func struct()`
+    /// doesn't get that far: `struct` opens a declaration, so the name is never
+    /// read as a name at all.
+    fn reject_keyword_fn_name(&mut self) -> Result<(), ParseError> {
+        if self.allow_keyword_fn_names {
+            return Ok(());
+        }
+        let name_tok = &self.tokens[(self.pos + 1).min(self.tokens.len() - 1)];
+        let keyword = match &name_tok.kind {
+            TokenKind::Ident(_) => return Ok(()),
+            other => keyword_spelling(other),
+        };
+        let Some(keyword) = keyword else { return Ok(()) };
+        let (why, hint) = if starts_an_expression(&name_tok.kind) {
+            (
+                format!(
+                    "`{0}(…)` at a call site parses as the `{0}` expression, so this function could never be called",
+                    keyword
+                ),
+                format!("pick another name, or make it a method so the call reads `x.{}()`", keyword),
+            )
+        } else {
+            (
+                format!(
+                    "`{0}` only ever starts a declaration, so the parser never reads it as a name",
+                    keyword
+                ),
+                "pick another name".to_string(),
+            )
+        };
+        Err(ParseError {
+            span: name_tok.span,
+            message: format!("`{}` is a keyword, so it can't name a function", keyword),
+            hint: Some(hint),
+            why: None,
+        }
+        .with_why(why))
+    }
+
     fn parse_fn_decl(&mut self, is_pub: bool, is_private: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         let fn_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
@@ -789,6 +795,7 @@ impl Parser {
                     span: or_span,
                     message: "`or` must follow an explicit return type".to_string(),
                     hint: Some("write `-> void or E` (or pick the concrete success type)".to_string()),
+                    why: None,
                 });
             }
             None
@@ -1038,6 +1045,7 @@ impl Parser {
                     span,
                     message: "`()` is not a type".to_string(),
                     hint: Some("use `void` for the zero-sized type".to_string()),
+                    why: None,
                 });
             }
             let first_ty = self.parse_type_name()?;
@@ -1057,6 +1065,7 @@ impl Parser {
                         span,
                         message: "1-tuples are not supported".to_string(),
                         hint: Some(format!("tuples have arity >= 2; use `{}` directly", types[0])),
+                        why: None,
                     });
                 }
                 return Ok(format!("({})", types.join(", ")));
@@ -1489,6 +1498,7 @@ impl Parser {
                     span: self.current().span,
                     message: "unions cannot have methods".to_string(),
                     hint: Some("define methods separately with extend".to_string()),
+                    why: None,
                 });
             }
 
@@ -2545,6 +2555,7 @@ impl Parser {
                     span: self.current().span,
                     message: "'let' is not a keyword in Rask".to_string(),
                     hint: Some("use 'mut' for rebindable bindings or 'const' for permanent bindings".to_string()),
+                    why: None,
                 };
                 self.advance(); // consume 'let' so recovery doesn't loop
                 return Err(err);
@@ -2874,8 +2885,7 @@ impl Parser {
                 self.skip_newlines();
                 self.parse_block_body()?
             };
-            let _ = label;
-            return Ok(StmtKind::WhileLet { pattern, expr: *scrutinee, body });
+            return Ok(StmtKind::WhileLet { label, pattern, expr: *scrutinee, body });
         }
 
         let body = if self.match_token(&TokenKind::Colon) {
@@ -2884,8 +2894,7 @@ impl Parser {
             self.skip_newlines();
             self.parse_block_body()?
         };
-        let _ = label;
-        Ok(StmtKind::While { cond, body })
+        Ok(StmtKind::While { label, cond, body })
     }
 
     fn parse_loop_stmt(&mut self, label: Option<String>) -> Result<StmtKind, ParseError> {
@@ -3212,7 +3221,9 @@ impl Parser {
             TokenKind::String(s) => {
                 self.advance();
                 let str_span = self.span(start, self.tokens[self.pos - 1].span.end);
-                if s.contains('{') {
+                // `}` alone matters too: `"}}"` is an escaped brace with no
+                // `{` anywhere in it (fmt/F4).
+                if s.contains('{') || s.contains('}') {
                     match self.parse_string_interpolation(&s, str_span) {
                         Some(segments) => Ok(Expr { id: self.next_id(), kind: ExprKind::StringInterp(segments), span: str_span }),
                         None => Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span }),
@@ -3335,6 +3346,40 @@ impl Parser {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let end = operand.span.end;
+                // `-N` is one literal, not a negation of `N`. Folding the sign
+                // in here is what lets `i64::MIN` be written: the lexer sees
+                // 9223372036854775808 on its own, which only fits `u64`, so
+                // leaving the `-` as an operator asked for `neg` on a `u64`.
+                if let ExprKind::Int(v, suffix) = operand.kind {
+                    match suffix {
+                        None => {
+                            let kind = ExprKind::Int(-v, None);
+                            return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                        }
+                        // Only the lexer's "too big for i64" marker folds; an
+                        // explicitly written `u64` keeps meaning `u64`.
+                        Some(IntSuffix::U64ByMagnitude) => {
+                            if v == i64::MIN {
+                                let kind = ExprKind::Int(i64::MIN, None);
+                                return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                            }
+                            return Err(ParseError {
+                                span: self.span(start, end),
+                                message: format!("integer literal `-{}` is too small for `i64`", v as u64),
+                                hint: Some(format!("the smallest `i64` is {}", i64::MIN)),
+                                why: Some(
+                                    "integer literals are `i64` unless a suffix says otherwise, and \
+                                     there is no wider signed type to hold this one"
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                        Some(_) => {}
+                    }
+                    let operand = Expr { id: self.next_id(), kind: ExprKind::Int(v, suffix), span: operand.span };
+                    let kind = ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(operand) };
+                    return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                }
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Bang => {
@@ -3349,6 +3394,7 @@ impl Parser {
                         span: self.span(start, end),
                         message: "cannot negate `?` with prefix `!`".to_string(),
                         hint: Some("use `x == none` for Option or `r is E` for Result".to_string()),
+                        why: None,
                     });
                 }
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Not, operand: Box::new(operand) }, span: self.span(start, end) })
@@ -3646,6 +3692,17 @@ impl Parser {
         let start = self.current().span.start;
         self.expect(&TokenKind::LParen)?;
 
+        // Parens close the ambiguity a condition opens: inside them a `{` can
+        // only start a struct literal, never the body of the `if`. So this is
+        // the way to write one there — `if (c == Shape.Circle { r: 4 }) { … }`.
+        let outer_braces = self.allow_brace_expr;
+        self.allow_brace_expr = true;
+        let result = self.parse_paren_or_tuple_inner(start);
+        self.allow_brace_expr = outer_braces;
+        result
+    }
+
+    fn parse_paren_or_tuple_inner(&mut self, start: usize) -> Result<Expr, ParseError> {
         if self.check(&TokenKind::RParen) {
             self.advance();
             let end = self.tokens[self.pos - 1].span.end;
@@ -3733,6 +3790,7 @@ impl Parser {
                         name
                     ),
                     hint: Some(format!("write it as |mutate {}: T|", name)),
+                    why: None,
                 });
             } else {
                 None
@@ -3872,9 +3930,13 @@ impl Parser {
                         self.current_kind(),
                         self.current().span,
                     ).with_hint("Generic type arguments must be followed by ()"))
-                } else if self.check(&TokenKind::LBrace) {
+                } else if self.check(&TokenKind::LBrace) && self.allow_brace_expr {
                     // Struct variant constructor: Enum.Variant { field: value }
-                    // Only when base is a type name (uppercase) to avoid ambiguity with blocks
+                    // Only when base is a type name (uppercase) to avoid ambiguity
+                    // with blocks — and never in a condition, where the brace
+                    // starts the body. Without that second guard,
+                    // `if m == Mode.On { … }` read `Mode.On { … }` as a struct
+                    // literal and swallowed the if-block (#342).
                     if let ExprKind::Ident(base) = &lhs.kind {
                         if base.starts_with(|c: char| c.is_uppercase()) && field.starts_with(|c: char| c.is_uppercase()) {
                             let full_name = format!("{}.{}", base, field);
@@ -3970,6 +4032,7 @@ impl Parser {
                     span: self.current().span,
                     message: "unexpected '::'".to_string(),
                     hint: Some("use '.' for paths (e.g., Result.Ok) instead of '::'".to_string()),
+                    why: None,
                 });
             }
 
@@ -4482,6 +4545,7 @@ impl Parser {
                 span: self.span(start, end),
                 message: "select requires at least one arm".to_string(),
                 hint: None,
+                why: None,
             });
         }
 
@@ -4552,12 +4616,18 @@ impl Parser {
         let mut literal = String::new();
         let chars: Vec<char> = s.chars().collect();
         let mut i = 0;
+        // A string with escapes but no expressions still has to come back as
+        // segments — returning None handed the raw text on with the `{{` still
+        // in it, and the next scanner down read `{braces}` as an expression
+        // (#521, fmt/F4).
+        let mut escaped_any = false;
 
         while i < chars.len() {
             if chars[i] == '{' {
                 if i + 1 < chars.len() && chars[i + 1] == '{' {
                     // Escaped brace: {{ → {
                     literal.push('{');
+                    escaped_any = true;
                     i += 2;
                     continue;
                 }
@@ -4583,14 +4653,55 @@ impl Parser {
                 i += 1; // skip '}'
 
                 // Calculate byte offset of this expression within the string content
-                let byte_offset = s.char_indices()
+                let abs_offset = str_span.start + 1 + s.char_indices()
                     .nth(expr_start)
                     .map(|(pos, _)| pos)
                     .unwrap_or(0);
+                // `{}` and `{:spec}` are placeholders the runtime formatter
+                // fills in — nothing to parse here.
+                if expr_str.is_empty() || expr_str.starts_with(':') {
+                    literal.push('{');
+                    literal.push_str(&expr_str);
+                    literal.push('}');
+                    continue;
+                }
+
+                // `{expr}` or `{expr:spec}` (fmt/F1–F4). Split the same way the
+                // formatter does, then sanity-check the spec: a real one is a
+                // short run of spec characters. Anything with quotes or commas
+                // in it means these braces were never an interpolation —
+                // `"{\"x\":1,\"y\":2}"` used to parse as the expression `"x"`
+                // with `1,"y":2` as its "format spec", and the rest of the JSON
+                // vanished without a word (#506).
+                let (expr_part, spec) = match rask_ast::fmt_spec::split_spec(&expr_str) {
+                    Some(pos) => (&expr_str[..pos], Some(&expr_str[pos + 1..])),
+                    None => (expr_str.as_str(), None),
+                };
+                // The spec has to be one the formatters actually understand.
+                // A character-class guess accepted ` 1`, so a one-pair JSON
+                // body `{"k": 1}` parsed as the expression `"k"` with ` 1` as
+                // its spec and printed `k` (#506).
+                let spec_is_plausible =
+                    spec.is_none_or(rask_ast::fmt_spec::is_valid_spec);
+
+                let bad_expr = |parser: &mut Self, detail: &str| {
+                    parser.errors.push(ParseError {
+                        span: Span::new(abs_offset, abs_offset + expr_str.len()),
+                        message: format!("`{{{}}}` is not a valid interpolation: {}", expr_str, detail),
+                        hint: Some("write `{{` for a literal `{` — a lone `{` starts an interpolation".to_string()),
+                        why: None,
+                    }.with_why("a `{` in a string always starts an interpolation, so what follows has to be an expression"));
+                };
+
+                if !spec_is_plausible {
+                    bad_expr(self, "there's more here than an expression and a format spec");
+                    return None;
+                }
 
                 // Parse the expression using the lexer/parser with correct context
-                let lex = rask_lexer::Lexer::new(&expr_str).tokenize();
+                let lex = rask_lexer::Lexer::new(expr_part).tokenize();
                 if !lex.errors.is_empty() {
+                    bad_expr(self, "the text inside doesn't lex");
                     return None;
                 }
                 // Reuse this parser's file_id and get sequential NodeIds
@@ -4598,24 +4709,34 @@ impl Parser {
                 let saved_pos = std::mem::replace(&mut self.pos, 0);
 
                 let result = self.parse_expr();
+                // The whole expression part belongs to the interpolation.
+                let leftover = !self.at_end()
+                    && !matches!(self.current_kind(), TokenKind::Newline);
 
                 self.tokens = saved_tokens;
                 self.pos = saved_pos;
 
                 let mut parsed = match result {
                     Ok(expr) => expr,
-                    Err(_) => return None,
+                    Err(e) => {
+                        bad_expr(self, &e.message);
+                        return None;
+                    }
                 };
+                if leftover {
+                    bad_expr(self, "there's more here than one expression");
+                    return None;
+                }
 
                 // Remap spans from 0-based (within expr_str) to absolute file position.
                 // str_span.start is the opening quote, +1 for content start, +byte_offset for position.
-                let abs_offset = str_span.start + 1 + byte_offset;
                 Self::offset_spans(&mut parsed, abs_offset);
 
                 segments.push(StringSegment::Expr(Box::new(parsed)));
             } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
                 // Escaped brace: }} → }
                 literal.push('}');
+                escaped_any = true;
                 i += 2;
             } else {
                 literal.push(chars[i]);
@@ -4627,8 +4748,9 @@ impl Parser {
             segments.push(StringSegment::Literal(literal));
         }
 
-        // Only return segments if there was at least one expression
-        if segments.iter().any(|s| matches!(s, StringSegment::Expr(_))) {
+        // Segments are worth returning when there's an expression to evaluate,
+        // or an escape whose unescaping would otherwise be lost.
+        if escaped_any || segments.iter().any(|s| matches!(s, StringSegment::Expr(_))) {
             Some(segments)
         } else {
             None
@@ -4915,6 +5037,10 @@ pub struct ParseError {
     pub span: Span,
     pub message: String,
     pub hint: Option<String>,
+    /// Why this is a rule, in the reader's terms. Most parse errors share the
+    /// generic "expected valid syntax" line; set this when there's something
+    /// more useful to say.
+    pub why: Option<String>,
 }
 
 impl std::fmt::Display for ParseError {
@@ -4929,11 +5055,18 @@ impl ParseError {
     fn expected(expected: &str, found: &TokenKind, span: Span) -> Self {
         let message = format_expected_message(expected, found);
         let hint = crate::hints::for_expected(expected, found).map(String::from);
-        Self { span, message, hint }
+        Self { span, message, hint, why: None }
     }
 
     fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+        self
+    }
+
+    /// Replace the generic "expected valid syntax" explanation with one that
+    /// says what the actual rule is.
+    fn with_why(mut self, why: impl Into<String>) -> Self {
+        self.why = Some(why.into());
         self
     }
 
@@ -4942,6 +5075,7 @@ impl ParseError {
             span,
             message: format!("{} are not yet implemented", feature),
             hint: Some(hint.to_string()),
+            why: None,
         }
     }
 }
@@ -4982,3 +5116,108 @@ fn format_expected_message(expected: &str, found: &TokenKind) -> String {
         _ => format!("Expected {}, found {}", expected, found.display_name()),
     }
 }
+
+/// How a keyword token is spelled in source. `None` for anything that isn't a
+/// keyword. Used where keywords are allowed as names (field and method
+/// Keywords the expression parser accepts in prefix position. A function named
+/// with one of these is shadowed at every call site; a function named with any
+/// other keyword doesn't parse at all. The two need different explanations.
+fn starts_an_expression(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Assert
+            | TokenKind::Check
+            | TokenKind::Comptime
+            | TokenKind::If
+            | TokenKind::Loop
+            | TokenKind::Match
+            | TokenKind::None
+            | TokenKind::Null
+            | TokenKind::Own
+            | TokenKind::ReadKw
+            | TokenKind::Select
+            | TokenKind::SelectPriority
+            | TokenKind::Try
+            | TokenKind::Unsafe
+            | TokenKind::Using
+            | TokenKind::With
+            | TokenKind::For
+            | TokenKind::While
+            | TokenKind::Return
+            | TokenKind::Break
+            | TokenKind::Continue
+    )
+}
+
+/// positions) and to name one in a diagnostic.
+fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
+    Some(match kind {
+        // Control flow
+        TokenKind::If => "if",
+        TokenKind::Else => "else",
+        TokenKind::Match => "match",
+        TokenKind::For => "for",
+        TokenKind::In => "in",
+        TokenKind::While => "while",
+        TokenKind::Loop => "loop",
+        TokenKind::Break => "break",
+        TokenKind::Continue => "continue",
+        TokenKind::Return => "return",
+        // Declarations
+        TokenKind::Func => "func",
+        TokenKind::Let => "let",
+        TokenKind::Mut => "mut",
+        TokenKind::Const => "const",
+        TokenKind::Struct => "struct",
+        TokenKind::Enum => "enum",
+        TokenKind::Trait => "trait",
+        TokenKind::Extend => "extend",
+        TokenKind::Import => "import",
+        TokenKind::Type => "type",
+        // Modifiers
+        TokenKind::Public => "public",
+        TokenKind::Private => "private",
+        TokenKind::Take => "take",
+        TokenKind::Own => "own",
+        TokenKind::ReadKw => "read",
+        TokenKind::MutateKw => "mutate",
+        TokenKind::Unsafe => "unsafe",
+        TokenKind::Comptime => "comptime",
+        TokenKind::Native => "native",
+        TokenKind::Export => "export",
+        TokenKind::Using => "using",
+        TokenKind::Lazy => "lazy",
+        // Concurrency
+        TokenKind::Select => "select",
+        TokenKind::With => "with",
+        // Error handling
+        TokenKind::Ensure => "ensure",
+        TokenKind::Try => "try",
+        // Testing
+        TokenKind::Test => "test",
+        TokenKind::Benchmark => "benchmark",
+        TokenKind::Assert => "assert",
+        TokenKind::Check => "check",
+        // Operators/keywords
+        TokenKind::As => "as",
+        TokenKind::Is => "is",
+        TokenKind::Where => "where",
+        TokenKind::Or => "or",
+        // Literals/constants
+        TokenKind::Bool(true) => "true",
+        TokenKind::Bool(false) => "false",
+        TokenKind::None => "none",
+        TokenKind::Null => "null",
+        // Other
+        TokenKind::Extern => "extern",
+        TokenKind::Asm => "asm",
+        TokenKind::Discard => "discard",
+        // Build system
+        TokenKind::Package => "package",
+        TokenKind::Scope => "scope",
+        TokenKind::Feature => "feature",
+        TokenKind::Profile => "profile",
+        _ => return None,
+    })
+}
+

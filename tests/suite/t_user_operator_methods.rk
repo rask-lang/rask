@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A user `lt`/`gt`/`eq` body wins over the derived one (#400).
+//
+// The interpreter derived these field-by-field before it ever looked for an
+// `extend` block, so `a < b` answered from the default lexicographic order and
+// disagreed with native. Calling a method straight on an enum variant literal
+// (`Level.Low.label()`) is here too — native flattened it to `Low_label()` and
+// dropped the receiver.
+
+struct Tag {
+    public id: i64
+}
+
+extend Tag {
+    // Reversed on purpose: the derived order would say the opposite.
+    func lt(self, other: Tag) -> bool {
+        return self.id > other.id
+    }
+
+    func gt(self, other: Tag) -> bool {
+        return self.id < other.id
+    }
+
+    func eq(self, other: Tag) -> bool {
+        return self.id % 2 == other.id % 2
+    }
+}
+
+enum Level {
+    Low
+    High
+}
+
+extend Level {
+    func label(self) -> string {
+        if self is Level.Low {
+            return "low"
+        }
+        return "high"
+    }
+
+    func eq(self, other: Level) -> bool {
+        return true
+    }
+}
+
+test "a user lt body wins over the derived order" {
+    const a = Tag { id: 5 }
+    const b = Tag { id: 3 }
+    assert a < b
+    assert (b < a) == false
+}
+
+test "a user gt body wins too" {
+    const a = Tag { id: 5 }
+    const b = Tag { id: 3 }
+    assert (a > b) == false
+    assert b > a
+}
+
+test "a user eq body wins, and ne follows it" {
+    const a = Tag { id: 5 }
+    const b = Tag { id: 7 }
+    const c = Tag { id: 4 }
+    assert a == b
+    assert (a == c) == false
+    assert a != c
+}
+
+test "a user eq on an enum wins" {
+    assert Level.Low == Level.High
+}
+
+test "a method call on a variant literal keeps its receiver" {
+    assert Level.Low.label() == "low"
+    assert Level.High.label() == "high"
+}
+
+test "a struct without an eq body still compares field by field" {
+    const p = Pair { a: 1, b: 2 }
+    const q = Pair { a: 1, b: 2 }
+    const r = Pair { a: 1, b: 3 }
+    assert p == q
+    assert p != r
+}
+
+struct Pair {
+    public a: i64
+    public b: i64
+}

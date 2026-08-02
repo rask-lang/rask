@@ -291,6 +291,13 @@ impl Interpreter {
                         b.fields.get(name).is_some_and(|bv| Self::value_eq(av, bv))
                     })
             }
+            // A nominal newtype is its underlying value plus a name (T9), so
+            // two of the same type compare by what they wrap. Without this a
+            // `Map<UserId, …>` could be inserted into but never read back.
+            (Value::Nominal { type_name: n1, inner: i1 },
+             Value::Nominal { type_name: n2, inner: i2 }) => {
+                n1 == n2 && Self::value_eq(i1, i2)
+            }
             _ => false,
         }
     }
@@ -323,6 +330,10 @@ impl Interpreter {
                     Self::value_hash(v).hash(&mut hasher);
                 }
             }
+            Value::Nominal { type_name, inner } => {
+                type_name.hash(&mut hasher);
+                Self::value_hash(inner).hash(&mut hasher);
+            }
             _ => 0u8.hash(&mut hasher),
         }
         hasher.finish()
@@ -336,7 +347,12 @@ impl Interpreter {
             (Value::Int128(a), Value::Int128(b)) => Some(a.cmp(b)),
             (Value::Uint128(a), Value::Uint128(b)) => Some(a.cmp(b)),
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+            // `s <= s` hands the same Arc in twice; locking it a second time
+            // deadlocks, so answer from identity first.
             (Value::String(a), Value::String(b)) => {
+                if Arc::ptr_eq(a, b) {
+                    return Some(std::cmp::Ordering::Equal);
+                }
                 Some(a.lock().unwrap().cmp(&*b.lock().unwrap()))
             }
             (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)), // false < true
@@ -344,6 +360,9 @@ impl Interpreter {
             // CO3: structs — lexicographic by field declaration order
             // (IndexMap preserves insertion order = declaration order)
             (Value::Struct(ref s1), Value::Struct(ref s2)) => {
+                if Arc::ptr_eq(s1, s2) {
+                    return Some(std::cmp::Ordering::Equal);
+                }
                 let g1 = s1.lock().unwrap();
                 let g2 = s2.lock().unwrap();
                 for ((_, v1), (_, v2)) in g1.fields.iter().zip(g2.fields.iter()) {

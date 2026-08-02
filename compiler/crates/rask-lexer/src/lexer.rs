@@ -573,25 +573,29 @@ impl<'a> Lexer<'a> {
                     .chars()
                     .filter(|c| *c != '_')
                     .collect();
-                let value = cleaned.parse::<i64>().map_err(|_| LexError::invalid_number(start, end))?;
+                let (value, suffix) = int_value(&cleaned, 10, suffix)
+                    .ok_or_else(|| LexError::invalid_number(start, end))?;
                 TokenKind::Int(value, suffix)
             }
             RawToken::HexInt => {
                 let (stripped, suffix) = parse_int_suffix(slice);
                 let cleaned: String = stripped[2..].chars().filter(|c| *c != '_').collect();
-                let value = i64::from_str_radix(&cleaned, 16).map_err(|_| LexError::invalid_number(start, end))?;
+                let (value, suffix) = int_value(&cleaned, 16, suffix)
+                    .ok_or_else(|| LexError::invalid_number(start, end))?;
                 TokenKind::Int(value, suffix)
             }
             RawToken::BinInt => {
                 let (stripped, suffix) = parse_int_suffix(slice);
                 let cleaned: String = stripped[2..].chars().filter(|c| *c != '_').collect();
-                let value = i64::from_str_radix(&cleaned, 2).map_err(|_| LexError::invalid_number(start, end))?;
+                let (value, suffix) = int_value(&cleaned, 2, suffix)
+                    .ok_or_else(|| LexError::invalid_number(start, end))?;
                 TokenKind::Int(value, suffix)
             }
             RawToken::OctInt => {
                 let (stripped, suffix) = parse_int_suffix(slice);
                 let cleaned: String = stripped[2..].chars().filter(|c| *c != '_').collect();
-                let value = i64::from_str_radix(&cleaned, 8).map_err(|_| LexError::invalid_number(start, end))?;
+                let (value, suffix) = int_value(&cleaned, 8, suffix)
+                    .ok_or_else(|| LexError::invalid_number(start, end))?;
                 TokenKind::Int(value, suffix)
             }
             RawToken::Float => {
@@ -680,6 +684,23 @@ impl<'a> Lexer<'a> {
             }
         })
     }
+}
+
+/// The value of an integer literal, plus the suffix it ends up with.
+///
+/// Tokens carry an `i64`, so the top half of `u64` had nowhere to go and every
+/// literal above `i64::MAX` was rejected outright — `18446744073709551615`
+/// couldn't be written at all (#517). Such a literal can only be a `u64`, so it
+/// gets that suffix and its bit pattern; everything unsigned reads it back the
+/// same way.
+fn int_value(cleaned: &str, radix: u32, suffix: Option<IntSuffix>) -> Option<(i64, Option<IntSuffix>)> {
+    if let Ok(v) = i64::from_str_radix(cleaned, radix) {
+        return Some((v, suffix));
+    }
+    let v = u64::from_str_radix(cleaned, radix).ok()?;
+    // An explicit suffix stays as written; without one the magnitude is the
+    // only evidence, and the parser still gets to fold a `-` into it.
+    Some((v as i64, suffix.or(Some(IntSuffix::U64ByMagnitude))))
 }
 
 /// Parse integer type suffix from a number literal.

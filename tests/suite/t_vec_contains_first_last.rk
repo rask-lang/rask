@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Vec.contains / Vec.first / Vec.last on native (#413, #412).
+//
+// contains compares element bytes through a pointer, so the needle has to be
+// spilled — passed as a raw value it was read as an address. String elements
+// need a real compare on top of that: two equal heap strings hold different
+// pointers. first/last answer `T?`, so an empty Vec is `none`, not a panic.
+
+struct Point { public x: i64, public y: i64 }
+
+test "contains on integers" {
+    const v = Vec.from([1, 2, 3])
+    assert v.contains(2)
+    assert v.contains(9) == false
+}
+
+test "contains on small strings" {
+    const v = Vec.from(["a", "b"])
+    assert v.contains("a")
+    assert v.contains("z") == false
+}
+
+test "contains on heap strings" {
+    const v = Vec.from(["a fairly long string one", "another long string here"])
+    assert v.contains("another long string here")
+    assert v.contains("nope nope nope nope nope") == false
+}
+
+test "contains on a pushed heap string" {
+    mut v: Vec<string> = Vec.new()
+    v.push("pushed long string value")
+    assert v.contains("pushed long string value")
+}
+
+test "contains on floats and structs" {
+    const f = Vec.from([1.5, 2.5])
+    assert f.contains(2.5)
+    assert f.contains(9.0) == false
+    const s = Vec.from([Point { x: 1, y: 2 }, Point { x: 3, y: 4 }])
+    assert s.contains(Point { x: 3, y: 4 })
+    assert s.contains(Point { x: 9, y: 9 }) == false
+}
+
+test "contains on an empty vec" {
+    const e: Vec<i64> = Vec.new()
+    assert e.contains(1) == false
+}
+
+test "first and last" {
+    const v = Vec.from([10, 20, 30])
+    assert (v.first() ?? -1) == 10
+    assert (v.last() ?? -1) == 30
+}
+
+test "first and last on an empty vec are none" {
+    const e: Vec<i64> = Vec.new()
+    assert (e.first() ?? -1) == -1
+    assert (e.last() ?? -1) == -1
+    assert e.first()? == false
+}
+
+test "first and last on string elements" {
+    const v = Vec.from(["a fairly long string one", "b"])
+    assert (v.first() ?? "MISSING") == "a fairly long string one"
+    assert (v.last() ?? "MISSING") == "b"
+}

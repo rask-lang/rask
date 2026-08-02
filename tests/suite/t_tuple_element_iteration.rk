@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `for (a, b) in vec_of_pairs` reads both fields where they actually are (#535).
+//
+// The loop took its element type from the fused iterator-chain path, which
+// typed it as a bare word. So field 1 was read 8 bytes in whatever the first
+// field's width really is, and a `string` binding had no type to dispatch
+// `.len()` on at all — the file didn't compile natively.
+
+test "a pair of mixed widths destructures" {
+    mut rows: Vec<(string, i64)> = Vec.new()
+    rows.push(("aa", 1))
+    rows.push(("bbb", 2))
+
+    mut total = 0
+    mut chars = 0
+    for (name, n) in rows {
+        total = total + n
+        chars = chars + name.len()
+    }
+    assert total == 3
+    assert chars == 5
+}
+
+test "a pair of two strings destructures" {
+    mut pairs: Vec<(string, string)> = Vec.new()
+    pairs.push(("k", "value"))
+    pairs.push(("kk", "v"))
+
+    mut keys = 0
+    mut vals = 0
+    for (k, v) in pairs {
+        keys = keys + k.len()
+        vals = vals + v.len()
+    }
+    assert keys == 3
+    assert vals == 6
+}
+
+test "a pair of two words still works" {
+    mut nums: Vec<(i64, i64)> = Vec.new()
+    nums.push((1, 10))
+    nums.push((2, 20))
+
+    mut sum = 0
+    for (a, b) in nums {
+        sum = sum + a + b
+    }
+    assert sum == 33
+}
+
+test "a single binding over the same vec is untouched" {
+    mut nums: Vec<i64> = Vec.new()
+    nums.push(4)
+    nums.push(5)
+    mut sum = 0
+    for n in nums {
+        sum = sum + n
+    }
+    assert sum == 9
+}

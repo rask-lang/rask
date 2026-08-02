@@ -461,6 +461,20 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// An integer literal whose value doesn't fit the type it ended up with.
+    /// Codegen would keep the low bits, so `const b: u8 = 300` printed 300 in
+    /// the interpreter and 44 natively.
+    #[error("integer literal {literal} is out of range for `{ty}`")]
+    IntLiteralOutOfRange {
+        /// The literal as written (already signed, with `-` folded in).
+        literal: String,
+        ty: Type,
+        /// Inclusive bounds of `ty`, for the message.
+        min: String,
+        max: String,
+        span: Span,
+    },
+
     /// mem.resource-types/RC1, RC3: a `Vec<T>` or `Map<K, V>` element (or key)
     /// is a linear value (`@resource`, transitively-linear, or an optional/
     /// tuple/array built from one). Vec/Map drop can't consume linear elements,

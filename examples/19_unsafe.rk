@@ -141,7 +141,7 @@ func main() {
 
     print("\n=== Example: Safe Wrapper ===\n")
     print("Instead of exposing raw pointers:\n")
-    print("  unsafe { ptr.offset(5) }  // Caller must ensure safety\n")
+    print("  unsafe {{ ptr.offset(5) }}  // Caller must ensure safety\n")
     print("\n")
     print("Create a safe API:\n")
     print("  vec.get(5)  // Returns T?, bounds-checked\n")

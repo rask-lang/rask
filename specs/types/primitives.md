@@ -33,6 +33,15 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need e
 | **L3: Suffixed** | Type suffix | `42u8`, `3.14f32` | As specified |
 | **L4: Float default** | Decimal with `.` | `3.14` | `f64` |
 | **L5: Char literal** | Quoted | `'a'`, `'\n'`, `'\u{1F600}'` | `char` |
+| **L6: Default widens** | Decimal/hex too big for `i32` | `3000000000` | `i64`, then `u64` |
+| **L7: Must fit** | Any literal | `const b: u8 = 300` | Compile error |
+
+L6 only moves the *default*. Context still wins: `const x: i64 = 5` is an `i64`.
+A literal above `i64::MAX` can only be a `u64`, so that's where it lands.
+
+L7 is the reason L6 exists. A literal that doesn't fit its type has to wrap, and
+nothing wraps silently here — `const b: u8 = 300` is an error, not `44`. Say
+what you mean with `truncate to`, `saturate to`, or `try convert to` (CV5–CV7).
 
 ## Type Conversions
 

@@ -15,7 +15,9 @@
 use crate::analysis::dominators::DominatorTree;
 use crate::analysis::liveness;
 use crate::analysis::uses;
-use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirType};
+use crate::{
+    LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
+};
 
 /// Insert explicit RcInc/RcDec for all string-typed locals in a function.
 pub fn insert_rc_ops(func: &mut MirFunction) {
@@ -77,6 +79,21 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
                     )));
                 }
 
+                // Stored into memory — a struct field, a Result payload. That
+                // location now holds its own reference, so it needs its own
+                // count. Without the inc, the dec at the local's last use freed
+                // a buffer the field still points at: `Body { error: "no route
+                // for {path}" }` printed whatever the next allocation put
+                // there (#501).
+                MirStmtKind::Store { value: MirOperand::Local(src), .. }
+                    if string_set.contains(src) =>
+                {
+                    insertions.push((si, MirStmt::new(
+                        MirStmtKind::RcInc { local: *src },
+                        stmt.span,
+                    )));
+                }
+
                 _ => {}
             }
         }
@@ -119,6 +136,21 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
 
             // Check terminator
             let term_reads = uses::terminator_reads(&func.blocks[block_idx].terminator, *local);
+
+            // A returned string is handed to the caller, not dropped. Decrementing
+            // it here freed the buffer while the caller still held the only
+            // reference — `return json.encode(v)` from a `string or E` function
+            // came back with its first eight bytes overwritten by whatever the
+            // caller allocated next (#499).
+            let returned = matches!(
+                &func.blocks[block_idx].terminator.kind,
+                MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+                | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. }
+                    if *id == *local
+            );
+            if returned {
+                continue;
+            }
 
             // If the local is live at block exit, it's used downstream — no dec here
             if live.live_at_exit(block_id, *local) {

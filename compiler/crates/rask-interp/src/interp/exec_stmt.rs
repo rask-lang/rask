@@ -7,6 +7,18 @@ use crate::value::Value;
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
+/// Does this break stop at a loop labeled `label` (CF23)? An unlabeled break
+/// stops at the nearest loop; a labeled one only at the loop it names, so
+/// `break outer` from an inner loop keeps unwinding.
+fn breaks_here(err: &RuntimeError, label: Option<&str>) -> bool {
+    matches!(err, RuntimeError::Break(_, target) if target.is_none() || target.as_deref() == label)
+}
+
+/// Same question for `continue` (CF24).
+fn continues_here(err: &RuntimeError, label: Option<&str>) -> bool {
+    matches!(err, RuntimeError::Continue(target) if target.is_none() || target.as_deref() == label)
+}
+
 impl Interpreter {
     pub(super) fn exec_stmt(&mut self, stmt: &Stmt) -> Result<Value, RuntimeDiagnostic> {
         match &stmt.kind {
@@ -76,20 +88,40 @@ impl Interpreter {
                 Err(RuntimeDiagnostic::new(RuntimeError::Return(value), stmt.span))
             }
 
-            StmtKind::While { cond, body } => {
+            StmtKind::While { label, cond, body } => {
+                let loop_label = label.as_deref();
+                // `while x is Pat(v) && …` binds v for the rest of the condition
+                // and for the body, so the condition is evaluated inside the same
+                // scope the body runs in (#256).
+                let binds = super::eval_expr::cond_binds_pattern(cond);
                 loop {
-                    let cond_val = self.eval_expr(cond)?;
-                    if !self.is_truthy(&cond_val) {
-                        break;
-                    }
-                    self.env.push_scope();
-                    match self.exec_stmts(body) {
-                        Ok(_) => {}
-                        Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                    if binds {
+                        self.env.push_scope();
+                        let taken = match self.eval_cond_bindings(cond) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                self.env.pop_scope();
+                                return Err(e);
+                            }
+                        };
+                        if !taken {
                             self.env.pop_scope();
                             break;
                         }
-                        Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                    } else {
+                        let cond_val = self.eval_expr(cond)?;
+                        if !self.is_truthy(&cond_val) {
+                            break;
+                        }
+                        self.env.push_scope();
+                    }
+                    match self.exec_stmts(body) {
+                        Ok(_) => {}
+                        Err(diag) if breaks_here(&diag.error, loop_label) => {
+                            self.env.pop_scope();
+                            break;
+                        }
+                        Err(diag) if continues_here(&diag.error, loop_label) => {
                             self.env.pop_scope();
                             continue;
                         }
@@ -104,10 +136,12 @@ impl Interpreter {
             }
 
             StmtKind::WhileLet {
+                label,
                 pattern,
                 expr,
                 body,
             } => {
+                let loop_label = label.as_deref();
                 loop {
                     let value = self.eval_expr(expr)?;
 
@@ -118,11 +152,11 @@ impl Interpreter {
                         }
                         match self.exec_stmts(body) {
                             Ok(_) => {}
-                            Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                            Err(diag) if breaks_here(&diag.error, loop_label) => {
                                 self.env.pop_scope();
                                 break;
                             }
-                            Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                            Err(diag) if continues_here(&diag.error, loop_label) => {
                                 self.env.pop_scope();
                                 continue;
                             }
@@ -139,55 +173,61 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            StmtKind::Loop { body, .. } => loop {
-                self.env.push_scope();
-                match self.exec_stmts(body) {
-                    Ok(_) => {}
-                    Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
-                        self.env.pop_scope();
-                        break Ok(Value::Unit);
+            StmtKind::Loop { body, label } => {
+                let loop_label = label.as_deref();
+                loop {
+                    self.env.push_scope();
+                    match self.exec_stmts(body) {
+                        Ok(_) => {}
+                        Err(diag) if breaks_here(&diag.error, loop_label) => {
+                            self.env.pop_scope();
+                            break Ok(Value::Unit);
+                        }
+                        Err(diag) if continues_here(&diag.error, loop_label) => {
+                            self.env.pop_scope();
+                            continue;
+                        }
+                        Err(e) => {
+                            self.env.pop_scope();
+                            break Err(e);
+                        }
                     }
-                    Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
-                        self.env.pop_scope();
-                        continue;
-                    }
-                    Err(e) => {
-                        self.env.pop_scope();
-                        break Err(e);
-                    }
+                    self.env.pop_scope();
                 }
-                self.env.pop_scope();
-            },
+            }
 
             StmtKind::Break { label, value } => {
+                let mut target = label.clone();
                 let val = match value {
                     Some(expr) => self.eval_expr(expr)?,
                     None => {
                         // Ambiguity: `break ident` parsed as label — if the label
-                        // is actually a variable name, evaluate it as a value.
-                        if let Some(name) = label {
-                            if let Some(v) = self.env.get(name) {
-                                v.clone()
-                            } else {
-                                Value::Unit
+                        // is actually a variable name, it's a break value.
+                        match label.as_ref().and_then(|n| self.env.get(n)).cloned() {
+                            Some(v) => {
+                                target = None;
+                                v
                             }
-                        } else {
-                            Value::Unit
+                            None => Value::Unit,
                         }
                     }
                 };
-                Err(RuntimeDiagnostic::new(RuntimeError::Break(val), stmt.span))
+                Err(RuntimeDiagnostic::new(RuntimeError::Break(val, target), stmt.span))
             }
 
-            StmtKind::Continue(_) => Err(RuntimeDiagnostic::new(RuntimeError::Continue, stmt.span)),
+            StmtKind::Continue(label) => Err(RuntimeDiagnostic::new(
+                RuntimeError::Continue(label.clone()),
+                stmt.span,
+            )),
 
             StmtKind::For {
+                label,
                 binding,
                 mutate,
                 iter,
                 body,
-                ..
             } => {
+                let loop_label = label.as_deref();
                 let iter_val = self.eval_expr(iter)?;
 
                 match iter_val {
@@ -202,11 +242,11 @@ impl Interpreter {
                             self.define_for_binding(binding, Value::int(i));
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                Err(diag) if breaks_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                Err(diag) if continues_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     continue;
                                 }
@@ -227,7 +267,7 @@ impl Interpreter {
                             self.define_for_binding(binding, item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                Err(diag) if breaks_here(&diag.error, loop_label) => {
                                     // Write back before breaking
                                     if let ForBinding::Single(name) = binding {
                                         if let Some(val) = self.env.get(name) {
@@ -238,7 +278,7 @@ impl Interpreter {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                Err(diag) if continues_here(&diag.error, loop_label) => {
                                     // Write back before continuing
                                     if let ForBinding::Single(name) = binding {
                                         if let Some(val) = self.env.get(name) {
@@ -283,7 +323,7 @@ impl Interpreter {
                             }
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                Err(diag) if breaks_here(&diag.error, loop_label) => {
                                     // Write back before breaking
                                     if let ForBinding::Tuple(names) = binding {
                                         if names.len() >= 2 {
@@ -298,7 +338,7 @@ impl Interpreter {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                Err(diag) if continues_here(&diag.error, loop_label) => {
                                     if let ForBinding::Tuple(names) = binding {
                                         if names.len() >= 2 {
                                             if let Some(v) = self.env.get(&names[1]).cloned() {
@@ -362,7 +402,7 @@ impl Interpreter {
                             }
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                Err(diag) if breaks_here(&diag.error, loop_label) => {
                                     if let ForBinding::Tuple(names) = binding {
                                         if names.len() >= 2 {
                                             if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]).cloned(), &handle) {
@@ -376,7 +416,7 @@ impl Interpreter {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                Err(diag) if continues_here(&diag.error, loop_label) => {
                                     if let ForBinding::Tuple(names) = binding {
                                         if names.len() >= 2 {
                                             if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]).cloned(), &handle) {
@@ -429,11 +469,11 @@ impl Interpreter {
                             }
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                Err(diag) if breaks_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                Err(diag) if continues_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     continue;
                                 }
@@ -453,11 +493,11 @@ impl Interpreter {
                             self.define_for_binding(binding, item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                Err(diag) if breaks_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                Err(diag) if continues_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     continue;
                                 }
@@ -493,11 +533,11 @@ impl Interpreter {
                             self.define_for_binding(binding, item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                Err(diag) if breaks_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                Err(diag) if continues_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     continue;
                                 }
@@ -519,11 +559,11 @@ impl Interpreter {
                                     self.define_for_binding(binding, item);
                                     match self.exec_stmts(body) {
                                         Ok(_) => {}
-                                        Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                        Err(diag) if breaks_here(&diag.error, loop_label) => {
                                             self.env.pop_scope();
                                             break;
                                         }
-                                        Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                        Err(diag) if continues_here(&diag.error, loop_label) => {
                                             self.env.pop_scope();
                                             continue;
                                         }
@@ -566,6 +606,7 @@ impl Interpreter {
 
             // CT48: comptime for — in the interpreter, runs like a regular for loop
             StmtKind::ComptimeFor { binding, iter, body, .. } => {
+                let loop_label: Option<&str> = None;
                 let iter_val = self.eval_expr(iter)?;
                 match iter_val {
                     Value::Vec(v) => {
@@ -575,11 +616,11 @@ impl Interpreter {
                             self.define_for_binding(binding, item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
+                                Err(diag) if breaks_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                Err(diag) if continues_here(&diag.error, loop_label) => {
                                     self.env.pop_scope();
                                     continue;
                                 }
@@ -640,7 +681,7 @@ impl Interpreter {
 /// the *outermost* absent, so it never gains a layer no matter how deep the
 /// annotation is — `const x: T?? = none` means "nothing at all", not "an empty
 /// inner slot" (OPT29).
-fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_literal: bool) -> Value {
+pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_literal: bool) -> Value {
     let ty = ty.trim();
     if ty.ends_with('?') && !ty.starts_with('(') {
         if rhs_is_none_literal {
@@ -684,7 +725,7 @@ fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_literal: bool) -
 }
 
 /// OPT29: is this expression a bare `none` literal?
-fn is_none_literal(expr: &rask_ast::expr::Expr) -> bool {
+pub(crate) fn is_none_literal(expr: &rask_ast::expr::Expr) -> bool {
     matches!(expr.kind, rask_ast::expr::ExprKind::None)
 }
 

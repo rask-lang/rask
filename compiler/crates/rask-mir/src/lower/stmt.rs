@@ -2,6 +2,7 @@
 
 //! Statement lowering.
 
+use crate::FieldAccess;
 use super::{LoopContext, LoweringError, MirLowerer};
 use crate::{
     operand::{BinOp, MirConst},
@@ -11,10 +12,59 @@ use crate::{
 };
 use rask_ast::{
     expr::{Expr, ExprKind, UnaryOp},
-    stmt::{ForBinding, Stmt, StmtKind},
+    stmt::{ForBinding, Stmt, StmtKind, TuplePat},
 };
 
 impl<'a> MirLowerer<'a> {
+    /// A `Vec<(A, B)>`'s element as a MIR tuple, for `for (a, b) in v`.
+    fn vec_tuple_elem_type(&self, iter_expr: &Expr) -> Option<MirType> {
+        use rask_types::{GenericArg, Type};
+        let ty = self.ctx.lookup_raw_type(iter_expr.id)?;
+        let args = match ty {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        let GenericArg::Type(elem) = args.first()? else { return None };
+        let Type::Tuple(parts) = elem.as_ref() else { return None };
+        Some(MirType::Tuple(
+            parts.iter().map(|p| self.ctx.type_to_mir(p)).collect(),
+        ))
+    }
+
+    /// The element type of `m.keys()` / `m.values()` — the map's key or value
+    /// type. Nothing downstream of the call knows it otherwise.
+    fn map_projection_elem_type(&self, iter_expr: &Expr) -> Option<MirType> {
+        let ExprKind::MethodCall { object, method, .. } = &iter_expr.kind else {
+            return None;
+        };
+        let index = match method.as_str() {
+            "keys" => 0,
+            "values" => 1,
+            _ => return None,
+        };
+        let pair = self.map_entry_pair_types(object);
+        pair.get(index).cloned().filter(|t| !matches!(t, MirType::I64))
+    }
+
+    /// The MIR types of a map's (key, value) pair, for iterating its entries.
+    /// Falls back to two words when the checker didn't resolve `Map<K, V>`.
+    fn map_entry_pair_types(&self, iter_expr: &Expr) -> Vec<MirType> {
+        use rask_types::{GenericArg, Type};
+        let pair = self.ctx.lookup_raw_type(iter_expr.id).and_then(|ty| {
+            let args = match ty {
+                Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+                _ => return None,
+            };
+            let mut out = Vec::new();
+            for a in args.iter().take(2) {
+                let GenericArg::Type(t) = a else { return None };
+                out.push(self.ctx.type_to_mir(t));
+            }
+            (out.len() == 2).then_some(out)
+        });
+        pair.unwrap_or_else(|| vec![MirType::I64, MirType::I64])
+    }
+
     /// OPT6/#380: wrap a bare `T` operand into `Some(T)` when it's stored into an
     /// `Option<T>` place. Same two-store construction the return-path auto-wrap
     /// uses (tag 0 at offset 0, payload at offset 8). Returns the value unchanged
@@ -184,7 +234,56 @@ impl<'a> MirLowerer<'a> {
                     let ret_ty = self.builder.ret_ty().clone();
                     let needs_wrap = matches!(&ret_ty, MirType::Option(inner)
                         if !matches!(op_ty, MirType::Option(_)) && **inner == op_ty);
-                    let final_op = if needs_wrap {
+                    // ER9: `func -> T? or E { return t }` needs two layers, not
+                    // one. The single wrap above and codegen's Ok-wrap each add
+                    // only one, so a bare T came back with the caller reading
+                    // its first field as the Result tag (#383).
+                    let needs_double_wrap = matches!(&ret_ty, MirType::Result { ok, .. }
+                        if matches!(&**ok, MirType::Option(inner)
+                            if **inner == op_ty
+                                && !matches!(op_ty, MirType::Option(_) | MirType::Result { .. })));
+
+                    let final_op = if needs_double_wrap {
+                        let MirType::Result { ok, .. } = &ret_ty else { unreachable!() };
+                        let opt_ty = (**ok).clone();
+                        let some_local = self.builder.alloc_temp(opt_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: some_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(0)),
+                            store_size: Some(8),
+                        }));
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: some_local,
+                            offset: 8,
+                            value: op,
+                            store_size: Some(op_ty.size()),
+                        }));
+
+                        let res_local = self.builder.alloc_temp(ret_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: res_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(0)),
+                            store_size: Some(8),
+                        }));
+                        // ER15 origin slots stay zero for a success return.
+                        for offset in [8u32, 16] {
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                addr: res_local,
+                                offset,
+                                value: MirOperand::Constant(MirConst::Int(0)),
+                                store_size: Some(8),
+                            }));
+                        }
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: res_local,
+                            offset: crate::types::RESULT_PAYLOAD_OFFSET,
+                            value: MirOperand::Local(some_local),
+                            store_size: Some(opt_ty.size()),
+                        }));
+                        MirOperand::Local(res_local)
+                    } else if needs_wrap {
                         let wrap_local = self.builder.alloc_temp(ret_ty.clone());
                         // tag = 0 (Some)
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -432,7 +531,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // While loop (spec L5)
-            StmtKind::While { cond, body } => self.lower_while(cond, body),
+            StmtKind::While { label, cond, body } => self.lower_while(label.as_deref(), cond, body),
 
             // For loop - desugar to while with iterator
             StmtKind::For {
@@ -455,13 +554,24 @@ impl<'a> MirLowerer<'a> {
             // Tuple destructuring
             StmtKind::MutTuple { patterns, init }
             | StmtKind::ConstTuple { patterns, init } => {
-                let names: Vec<String> = rask_ast::stmt::tuple_pats_flat_names(patterns)
-                    .into_iter().map(|s| s.to_string()).collect();
-                self.lower_tuple_destructure(&names, init)
+                // Flattening the pattern to a name list loses the shape: a
+                // nested `((a, b), c)` then read a, b and c off the *outer*
+                // tuple at flat positions 0, 1, 2, and a wildcard shifted
+                // everything after it up one (#442). Only a pattern that's
+                // already flat can use the name-list path — which is also where
+                // channel handles and type-prefix tracking live.
+                if patterns.iter().all(|p| matches!(p, TuplePat::Name(_))) {
+                    let names: Vec<String> = rask_ast::stmt::tuple_pats_flat_names(patterns)
+                        .into_iter().map(|s| s.to_string()).collect();
+                    self.lower_tuple_destructure(&names, init)
+                } else {
+                    let (init_op, init_ty) = self.lower_expr(init)?;
+                    self.destructure_tuple_pattern(patterns, &init_op, &init_ty)
+                }
             }
 
             // While-let pattern loop
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { label, pattern, expr, body } => {
                 let check_block = self.builder.create_block();
                 let body_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
@@ -502,7 +612,7 @@ impl<'a> MirLowerer<'a> {
                 self.bind_pattern_payload(pattern, val, payload_ty, &val_ty);
                 let ensure_depth = self.ensure_stack.len();
                 self.loop_stack.push(LoopContext {
-                    label: None,
+                    label: label.clone(),
                     continue_block: check_block,
                     exit_block,
                     result_local: None,
@@ -641,7 +751,7 @@ impl<'a> MirLowerer<'a> {
                                 base: MirOperand::Local(call_dst),
                                 field_index: 0,
                                 byte_offset: None,
-                                field_size: None,
+                                access: FieldAccess::Word,
                             },
                         }));
                         self.locals.insert(param_name.clone(), (err_local, err_ty));
@@ -1078,6 +1188,50 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Lower tuple destructuring: evaluate init, extract each element by field index.
+    /// Bind a tuple pattern against `base`, following the pattern's shape.
+    /// A nested pattern reads its own sub-tuple out first, so element indices
+    /// always match the tuple they're read from.
+    fn destructure_tuple_pattern(
+        &mut self,
+        pats: &[TuplePat],
+        base: &MirOperand,
+        base_ty: &MirType,
+    ) -> Result<(), LoweringError> {
+        let elem_types = match base_ty {
+            MirType::Tuple(fields) => Some(fields.clone()),
+            _ => None,
+        };
+        for (i, pat) in pats.iter().enumerate() {
+            if matches!(pat, TuplePat::Wildcard) {
+                continue;
+            }
+            let elem_ty = elem_types.as_ref()
+                .and_then(|f| f.get(i).cloned())
+                .unwrap_or(MirType::I64);
+            let dst = match pat {
+                TuplePat::Name(name) => {
+                    let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
+                    self.locals.insert(name.clone(), (local_id, elem_ty.clone()));
+                    local_id
+                }
+                _ => self.builder.alloc_temp(elem_ty.clone()),
+            };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::Field {
+                    base: base.clone(),
+                    field_index: i as u32,
+                    byte_offset: None,
+                    access: FieldAccess::Word,
+                },
+            }));
+            if let TuplePat::Nested(inner) = pat {
+                self.destructure_tuple_pattern(inner, &MirOperand::Local(dst), &elem_ty)?;
+            }
+        }
+        Ok(())
+    }
+
     fn lower_tuple_destructure(&mut self, names: &[String], init: &Expr) -> Result<(), LoweringError> {
         // Channel.buffered()/unbuffered() returns a raw channel pointer in
         // codegen, not a (Sender, Receiver) tuple. Emit channel_tx/channel_rx
@@ -1138,7 +1292,7 @@ impl<'a> MirLowerer<'a> {
                         base: init_op.clone(),
                         field_index: i as u32,
                         byte_offset: None,
-                        field_size: None,
+                        access: FieldAccess::Word,
                     },
                 }));
             }
@@ -1196,7 +1350,7 @@ impl<'a> MirLowerer<'a> {
     // =================================================================
 
     /// While loop (spec L5).
-    fn lower_while(&mut self, cond: &Expr, body: &[Stmt]) -> Result<(), LoweringError> {
+    fn lower_while(&mut self, label: Option<&str>, cond: &Expr, body: &[Stmt]) -> Result<(), LoweringError> {
         let check_block = self.builder.create_block();
         let body_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
@@ -1216,7 +1370,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(body_block);
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
-            label: None,
+            label: label.map(|s| s.to_string()),
             continue_block: check_block,
             exit_block,
             result_local: None,
@@ -1260,8 +1414,15 @@ impl<'a> MirLowerer<'a> {
 
         // Iterator chain: for x in vec.iter().filter(...).map(...) { ... }
         // Fuse into index loop with inlined adapter closures.
-        if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
-            return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
+        //
+        // Not for `for mutate`: the fused loop has no writeback, so the body's
+        // changes went into a local copy and the collection never saw them
+        // (LP11-LP12). A bare `for mutate x in v` parses as a trivial chain, so
+        // it was landing here.
+        if !mutate {
+            if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
+                return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
+            }
         }
 
         // pool.entries(): for (h, val) in pool.entries() { ... }
@@ -1289,18 +1450,18 @@ impl<'a> MirLowerer<'a> {
             ) || matches!(
                 ty,
                 rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool"
-            )
+            ) || super::MirContext::type_prefix(ty, self.ctx.type_names)
+                .is_some_and(|p| p.split('<').next() == Some("Pool"))
         });
 
         // LP13: Detect Map iteration for correct writeback target.
+        // The name has to come from `type_prefix`, not a match on the
+        // Unresolved shapes alone: once the checker resolves the receiver it's
+        // a `Type::Generic { base: TypeId, .. }` and the literal-name test
+        // missed it entirely.
         let is_map = self.ctx.lookup_raw_type(iter_expr.id).map_or(false, |ty| {
-            matches!(
-                ty,
-                rask_types::Type::UnresolvedNamed(n) if n == "Map"
-            ) || matches!(
-                ty,
-                rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map"
-            )
+            super::MirContext::type_prefix(ty, self.ctx.type_names)
+                .is_some_and(|p| p.split('<').next() == Some("Map"))
         });
 
         // Index-based iteration: for item in collection { ... }
@@ -1321,6 +1482,24 @@ impl<'a> MirLowerer<'a> {
                 args: vec![MirOperand::Local(pool_tmp)],
             }));
             (MirOperand::Local(handles_vec), MirType::I64)
+        } else if is_map {
+            // LP13: a map iterates over its entries. Without this the loop ran
+            // `Vec_len`/`Vec_get` straight on the map pointer, and reading a
+            // field off whatever came back segfaulted. `Map_entries` snapshots
+            // it as a Vec of 16-byte (key, value) pairs, which the tuple
+            // destructuring below already knows how to read.
+            let map_tmp = self.builder.alloc_temp(iter_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: map_tmp,
+                rvalue: MirRValue::Use(iter_op),
+            }));
+            let entries_vec = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(entries_vec),
+                func: FunctionRef::internal("Map_entries".to_string()),
+                args: vec![MirOperand::Local(map_tmp)],
+            }));
+            (MirOperand::Local(entries_vec), MirType::I64)
         } else {
             (iter_op, iter_ty)
         };
@@ -1401,9 +1580,28 @@ impl<'a> MirLowerer<'a> {
 
         // body: item = collection[_i]
         self.builder.switch_to_block(body_block);
-        let elem_ty = self.extract_iterator_elem_type(iter_expr)
-            .unwrap_or(MirType::I64);
-        let binding_local = self.builder.alloc_local(single_name.to_string(), elem_ty.clone());
+        let elem_ty = if is_map {
+            // A map entry is a (key, value) pair, laid out like a tuple. Typed
+            // as a bare i64 the element load came back as just the key, and
+            // reading field 1 off it dereferenced that value as a pointer.
+            MirType::Tuple(self.map_entry_pair_types(iter_expr))
+        } else {
+            self.extract_iterator_elem_type(iter_expr)
+                // `m.keys()` / `m.values()` hand back a Vec of the map's own key
+                // or value type; nothing else in the chain says what that is.
+                .or_else(|| self.map_projection_elem_type(iter_expr))
+                .filter(|t| !matches!(binding, ForBinding::Tuple(_))
+                    || matches!(t, MirType::Tuple(_)))
+                // Destructuring needs the element's real shape: a `Vec<(string,
+                // string)>` element is 32 bytes, and typed as a word the second
+                // field was read 8 bytes in instead of 16.
+                .or_else(|| matches!(binding, ForBinding::Tuple(_))
+                    .then(|| self.vec_tuple_elem_type(iter_expr))
+                    .flatten())
+                .unwrap_or(MirType::I64)
+        };
+        let (pair_tys, binding_ty, binding_local, elem_slot) =
+            self.alloc_destructure_slots(&elem_ty, binding, single_name);
         if let Some(prefix) = self.mir_type_name(&elem_ty) {
             self.meta_mut(single_name).type_prefix = Some(prefix);
         } else {
@@ -1421,11 +1619,10 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        self.locals.insert(single_name.to_string(), (binding_local, elem_ty));
         if is_array {
             // Fixed-size array: direct memory load
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: binding_local,
+                dst: elem_slot,
                 rvalue: MirRValue::ArrayIndex {
                     base: MirOperand::Local(collection),
                     index: MirOperand::Local(idx),
@@ -1434,7 +1631,7 @@ impl<'a> MirLowerer<'a> {
             }));
         } else {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(binding_local),
+                dst: Some(elem_slot),
                 func: FunctionRef::internal("Vec_get".to_string()),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
@@ -1445,39 +1642,13 @@ impl<'a> MirLowerer<'a> {
         // LP13: Track value local for Map writeback (key=field0, value=field1).
         let mut map_value_local = None;
         if let ForBinding::Tuple(names) = binding {
-            for (i, name) in names.iter().enumerate() {
-                if i == 0 { continue; }
-                let field_local = self.builder.alloc_local(name.clone(), MirType::I64);
-                self.locals.insert(name.clone(), (field_local, MirType::I64));
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: field_local,
-                    rvalue: MirRValue::Field {
-                        base: MirOperand::Local(binding_local),
-                        field_index: i as u32,
-                        byte_offset: None,
-                        field_size: None,
-                    },
-                }));
-                // Track value local (field 1) for Map writeback
-                if i == 1 && is_map {
-                    map_value_local = Some(field_local);
-                }
+            if let Some(prefix) = self.mir_type_name(&binding_ty) {
+                self.meta_mut(single_name).type_prefix = Some(prefix);
             }
-            // Re-extract field 0 into the first binding (was whole tuple)
-            let first_field = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: first_field,
-                rvalue: MirRValue::Field {
-                    base: MirOperand::Local(binding_local),
-                    field_index: 0,
-                    byte_offset: None,
-                    field_size: None,
-                },
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: binding_local,
-                rvalue: MirRValue::Use(MirOperand::Local(first_field)),
-            }));
+            let second = self.split_destructured_element(names, &pair_tys, elem_slot, binding_local);
+            if is_map {
+                map_value_local = second;
+            }
         }
 
         let ensure_depth = self.ensure_stack.len();
@@ -1576,6 +1747,84 @@ impl<'a> MirLowerer<'a> {
 
     /// Pool entries iteration: `for (h, val) in pool.entries()`
     /// Desugars to snapshot handle iteration with Pool_get for each handle.
+    /// Work out where a `for` loop's element and its destructured pieces live.
+    ///
+    /// Destructuring reads the whole element, then splits it. The binding named
+    /// first carries the *first field's* type, so it can't double as the slot
+    /// holding the pair — codegen reads a local's declared type, and a `string`
+    /// key binding would make the field-1 read offset into a RaskStr instead of
+    /// the pair. So a destructuring loop gets a separate slot for the element.
+    ///
+    /// Returns the field types (empty when there's nothing to destructure), the
+    /// first binding's local, and the slot the element itself goes in.
+    fn alloc_destructure_slots(
+        &mut self,
+        elem_ty: &MirType,
+        binding: &ForBinding,
+        first_name: &str,
+    ) -> (Vec<MirType>, MirType, crate::LocalId, crate::LocalId) {
+        let pair_tys: Vec<MirType> = match (elem_ty, binding) {
+            (MirType::Tuple(tys), ForBinding::Tuple(_)) => tys.clone(),
+            _ => Vec::new(),
+        };
+        let binding_ty = pair_tys.first().cloned().unwrap_or_else(|| elem_ty.clone());
+        let binding_local = self.builder.alloc_local(first_name.to_string(), binding_ty.clone());
+        let elem_slot = if pair_tys.is_empty() {
+            binding_local
+        } else {
+            self.builder.alloc_temp(elem_ty.clone())
+        };
+        if let Some(prefix) = self.mir_type_name(&binding_ty) {
+            self.meta_mut(first_name).type_prefix = Some(prefix);
+        }
+        self.locals.insert(first_name.to_string(), (binding_local, binding_ty.clone()));
+        (pair_tys, binding_ty, binding_local, elem_slot)
+    }
+
+    /// Copy each field of the element in `elem_slot` into its own binding.
+    /// Field 0 goes to the binding named first, which already has a local.
+    /// Returns the local field 1 landed in — Map iteration writes back through it.
+    fn split_destructured_element(
+        &mut self,
+        names: &[String],
+        pair_tys: &[MirType],
+        elem_slot: crate::LocalId,
+        binding_local: crate::LocalId,
+    ) -> Option<crate::LocalId> {
+        let mut second = None;
+        for (i, name) in names.iter().enumerate() {
+            if i == 0 { continue; }
+            let field_ty = pair_tys.get(i).cloned().unwrap_or(MirType::I64);
+            let field_local = self.builder.alloc_local(name.clone(), field_ty.clone());
+            self.locals.insert(name.clone(), (field_local, field_ty.clone()));
+            if let Some(prefix) = self.mir_type_name(&field_ty) {
+                self.meta_mut(name).type_prefix = Some(prefix);
+            }
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: field_local,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(elem_slot),
+                    field_index: i as u32,
+                    byte_offset: None,
+                    access: FieldAccess::Word,
+                },
+            }));
+            if i == 1 {
+                second = Some(field_local);
+            }
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: binding_local,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(elem_slot),
+                field_index: 0,
+                byte_offset: None,
+                access: FieldAccess::Word,
+            },
+        }));
+        second
+    }
+
     /// LP11-LP13: `for mutate` adds Pool_set writeback.
     fn lower_for_pool_entries(
         &mut self,
@@ -2004,48 +2253,25 @@ impl<'a> MirLowerer<'a> {
             setup.inc_block, setup.idx,
         )?;
 
-        // Bind final value to the loop variable
-        let binding_local = self.builder.alloc_local(binding_name.to_string(), final_ty.clone());
-        if let Some(prefix) = self.mir_type_name(&final_ty) {
-            self.meta_mut(binding_name).type_prefix = Some(prefix);
-        }
-        self.locals.insert(binding_name.to_string(), (binding_local, final_ty));
+        // Destructuring needs the element's real shape. A `Vec<(string, i64)>`
+        // element is 24 bytes; typed as a word, field 1 was read 8 bytes in and
+        // the string binding had no type to dispatch `.len()` on (#535).
+        let final_ty = match (for_binding, &final_ty) {
+            (ForBinding::Tuple(_), MirType::Tuple(_)) => final_ty,
+            (ForBinding::Tuple(_), _) => self
+                .vec_tuple_elem_type(chain.source)
+                .unwrap_or(final_ty),
+            _ => final_ty,
+        };
+        let (pair_tys, _binding_ty, binding_local, elem_slot) =
+            self.alloc_destructure_slots(&final_ty, for_binding, binding_name);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: binding_local,
+            dst: elem_slot,
             rvalue: MirRValue::Use(final_op),
         }));
 
-        // Tuple destructuring for iter chains
         if let ForBinding::Tuple(names) = for_binding {
-            for (i, name) in names.iter().enumerate() {
-                if i == 0 { continue; }
-                let field_local = self.builder.alloc_local(name.clone(), MirType::I64);
-                self.locals.insert(name.clone(), (field_local, MirType::I64));
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: field_local,
-                    rvalue: MirRValue::Field {
-                        base: MirOperand::Local(binding_local),
-                        field_index: i as u32,
-                        byte_offset: None,
-                        field_size: None,
-                    },
-                }));
-            }
-            // Re-extract field 0 into the first binding
-            let first_field = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: first_field,
-                rvalue: MirRValue::Field {
-                    base: MirOperand::Local(binding_local),
-                    field_index: 0,
-                    byte_offset: None,
-                    field_size: None,
-                },
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: binding_local,
-                rvalue: MirRValue::Use(MirOperand::Local(first_field)),
-            }));
+            self.split_destructured_element(names, &pair_tys, elem_slot, binding_local);
         }
 
         let ensure_depth = self.ensure_stack.len();

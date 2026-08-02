@@ -170,7 +170,7 @@ fn eliminate_in_stmt(stmt: &mut Stmt, cfg_values: &HashMap<String, String>) {
             eliminate_in_expr(value, cfg_values);
         }
         StmtKind::Return(Some(e)) => eliminate_in_expr(e, cfg_values),
-        StmtKind::While { cond, body } => {
+        StmtKind::While { cond, body, .. } => {
             eliminate_in_expr(cond, cfg_values);
             eliminate_in_stmts(body, cfg_values);
         }
@@ -1335,7 +1335,7 @@ impl ComptimeInterpreter {
                 Ok(ControlFlow::Continue)
             }
 
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 loop {
                     self.env.count_branch()?;
 

@@ -3,6 +3,7 @@
 //! Collection construction and cloning lowering:
 //! Vec.from, Map.from, JSON encode/decode, enum clone.
 
+use crate::FieldAccess;
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::MirConst, types::{EnumLayoutId, StructLayoutId}, FunctionRef, MirOperand, MirRValue,
@@ -42,12 +43,18 @@ impl<'a> MirLowerer<'a> {
             len: elems.len() as u32,
         };
         let arr_local = self.builder.alloc_temp(array_ty);
+        // Elements wider than a word are values, not pointers: a string
+        // constant lowers to the address of its 16-byte blob, so without a
+        // store size codegen drops the address into the slot and the reader
+        // sees the pointer's bytes as a string. `Vec.from(["ab", "cde"])`
+        // reported len 15 for every element that way (#508).
+        let store_size = (elem_size > 8).then_some(elem_size);
         for (i, op) in lowered.into_iter().enumerate() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: arr_local,
                 offset: i as u32 * elem_size,
                 value: op,
-                store_size: None,
+                store_size,
             }));
         }
 
@@ -135,7 +142,7 @@ impl<'a> MirLowerer<'a> {
                     base: struct_op.clone(),
                     field_index: idx as u32,
                     byte_offset: None,
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
 
@@ -648,6 +655,22 @@ impl<'a> MirLowerer<'a> {
         size.unwrap_or(8)
     }
 
+    /// How wide one channel element is, for the receive buffer.
+    ///
+    /// The tracked size comes from the `Channel.buffered()` call site, which
+    /// only reaches a variable bound directly to it. A receiver pulled out of
+    /// the returned pair (`const rx = ch.1`) has no such record, so fall back
+    /// to its own `Receiver<T>` type — otherwise a 24-byte struct was received
+    /// into an 8-byte buffer and smashed the stack (#360).
+    pub(super) fn channel_elem_size(&self, object: &rask_ast::expr::Expr) -> i64 {
+        if let rask_ast::expr::ExprKind::Ident(var_name) = &object.kind {
+            if let Some(size) = self.meta(var_name).and_then(|m| m.channel_elem_size) {
+                return size;
+            }
+        }
+        self.generic_arg_slot_size(object.id, 0)
+    }
+
     /// Clone function name for a type, or None if the type is Copy.
     pub(super) fn clone_fn_for_type(ty: &rask_types::Type) -> Option<&'static str> {
         match ty {
@@ -680,7 +703,7 @@ impl<'a> MirLowerer<'a> {
                     base: src.clone(),
                     field_index: offset,
                     byte_offset: None,
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -703,7 +726,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(result),
                     field_index: layout.tag_offset,
                     byte_offset: None,
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
 
@@ -729,7 +752,7 @@ impl<'a> MirLowerer<'a> {
                                 base: MirOperand::Local(result),
                                 field_index: abs_offset,
                                 byte_offset: None,
-                                field_size: None,
+                                access: FieldAccess::Word,
                             },
                         }));
                         let cloned = self.builder.alloc_temp(MirType::I64);

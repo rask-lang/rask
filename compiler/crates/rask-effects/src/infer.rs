@@ -252,7 +252,7 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
         StmtKind::Break { value: Some(v), .. } => classify_expr(v, effects, callees),
         StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
         StmtKind::Discard { .. } => {}
-        StmtKind::While { cond, body } => {
+        StmtKind::While { cond, body, .. } => {
             classify_expr(cond, effects, callees);
             classify_body(body, effects, callees);
         }
@@ -500,7 +500,7 @@ fn rt_scan_stmt(stmt: &Stmt, depth: u32, unguarded: &mut HashSet<String>) -> boo
         StmtKind::Return(None) | StmtKind::Break { value: None, .. }
         | StmtKind::Continue(_) | StmtKind::Discard { .. } => false,
         StmtKind::Break { value: Some(v), .. } => rt_scan_expr(v, depth, unguarded),
-        StmtKind::While { cond, body } => {
+        StmtKind::While { cond, body, .. } => {
             rt_scan_expr(cond, depth, unguarded) | rt_scan_stmts(body, depth, unguarded)
         }
         StmtKind::WhileLet { expr, body, .. } => {

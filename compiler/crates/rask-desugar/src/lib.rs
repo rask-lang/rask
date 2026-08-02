@@ -329,7 +329,7 @@ impl Desugarer {
             StmtKind::Return(None) => {}
             StmtKind::Break { value: Some(value), .. } => self.desugar_expr(value),
             StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 self.desugar_expr(cond);
                 for s in body {
                     self.desugar_stmt(s);
@@ -622,6 +622,10 @@ impl Desugarer {
                 Some(desugared) => desugared,
                 None => ExprKind::String(String::new()),
             };
+            // Already handled. The legacy scan below must not see the result:
+            // `"{{braces}}"` desugars to the literal `{braces}`, which that
+            // scanner would happily read as an interpolation (#521).
+            return;
         }
         // Legacy: raw strings with { that weren't parsed as StringInterp (shouldn't happen,
         // but kept for safety during transition)
@@ -950,6 +954,23 @@ fn parse_interpolation_segments(s: &str) -> Option<Vec<InterpSegment>> {
 
     while let Some(c) = chars.next() {
         byte_pos += c.len_utf8();
+        // fmt/F4: `{{` and `}}` are literal braces, not an interpolation. This
+        // scanner runs on strings the parser handed on untouched (the spec test
+        // runner, mainly), so it needs the same rule.
+        if c == '{' && chars.peek() == Some(&'{') {
+            chars.next();
+            byte_pos += 1;
+            literal.push('{');
+            has_interp = true;
+            continue;
+        }
+        if c == '}' && chars.peek() == Some(&'}') {
+            chars.next();
+            byte_pos += 1;
+            literal.push('}');
+            has_interp = true;
+            continue;
+        }
         if c == '{' {
             has_interp = true;
             if !literal.is_empty() {

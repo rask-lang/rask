@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `p.remove(h)` hands back the element it took out (#356).
+//
+// Natively it answered a status code, not the element: the runtime entry point
+// passed NULL for the out-param and returned 0/-1, which codegen then wrapped
+// as the option payload. MIR also typed the result `i64?` no matter what the
+// pool held, so reading a struct back out of it offset into a scalar and
+// segfaulted.
+
+struct Node {
+    public v: i64
+    public tag: string
+}
+
+test "remove answers a present optional" {
+    mut p: Pool<Node> = Pool.new()
+    const a = p.insert(Node { v: 5, tag: "first" })
+    const r = p.remove(a)
+    assert r?
+}
+
+test "a struct element comes back whole" {
+    mut p: Pool<Node> = Pool.new()
+    const a = p.insert(Node { v: 5, tag: "first" })
+    mut got = 0
+    mut label = ""
+    if p.remove(a)? as n {
+        got = n.v
+        label = n.tag
+    }
+    assert got == 5
+    assert label == "first"
+}
+
+test "a scalar element comes back too" {
+    mut q: Pool<i64> = Pool.new()
+    const h = q.insert(42)
+    mut got = 0
+    if q.remove(h)? as x {
+        got = x
+    }
+    assert got == 42
+}
+
+test "removing twice answers none the second time" {
+    mut p: Pool<Node> = Pool.new()
+    const a = p.insert(Node { v: 1, tag: "x" })
+    assert p.remove(a)?
+    assert (p.remove(a)? == false)
+}
+
+// The element used to come back as a pointer into the slot the pool had just
+// put on its free list. Whether that pointer still named the right bytes
+// depended on nothing else touching the pool first — so a second remove, or an
+// insert that reused the slot, could rewrite the value out from under it. The
+// element is copied out now, while it's still live.
+test "an earlier removal survives a later one" {
+    mut p: Pool<Node> = Pool.new()
+    const a = p.insert(Node { v: 5, tag: "first" })
+    const b = p.insert(Node { v: 9, tag: "second" })
+    const ra = p.remove(a)
+    const rb = p.remove(b)
+    mut first = 0
+    mut second = 0
+    if ra? as n {
+        first = n.v
+    }
+    if rb? as n {
+        second = n.v
+    }
+    assert first == 5
+    assert second == 9
+}
+
+test "a reused slot doesn't rewrite what was removed" {
+    mut p: Pool<Node> = Pool.new()
+    const a = p.insert(Node { v: 5, tag: "first" })
+    const taken = p.remove(a)
+    const b = p.insert(Node { v: 77, tag: "reused" })
+    assert p[b].v == 77
+    if taken? as n {
+        assert n.v == 5
+        assert n.tag == "first"
+    }
+}
+
+test "the other entries survive" {
+    mut p: Pool<Node> = Pool.new()
+    const a = p.insert(Node { v: 5, tag: "first" })
+    const b = p.insert(Node { v: 9, tag: "second" })
+    const _ = p.remove(a)
+    assert p[b].v == 9
+    assert p[b].tag == "second"
+    assert p.len() == 1
+}

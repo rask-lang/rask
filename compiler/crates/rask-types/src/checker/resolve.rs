@@ -620,15 +620,24 @@ impl TypeChecker {
                         self.note_disjointness_obligations(&method, param_ty, &subst, span);
                     }
 
+                    // PC3: names the *method* declares, not the type — the `U`
+                    // of `Vec<T>.map(f: func(T) -> U) -> Vec<U>`. One fresh var
+                    // per name, shared across params and return so they line up.
+                    let mut method_params: HashMap<String, Type> = HashMap::new();
+
                     let mut progress = false;
                     for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
                         let substituted = Self::substitute_type_params(param_ty, &subst);
+                        let substituted =
+                            self.freshen_free_type_params(&substituted, &mut method_params);
                         if self.unify(&substituted, arg, span)? {
                             progress = true;
                         }
                     }
 
                     let ret_substituted = Self::substitute_type_params(&method_sig.ret, &subst);
+                    let ret_substituted =
+                        self.freshen_free_type_params(&ret_substituted, &mut method_params);
                     if self.unify(&ret_substituted, &ret, span)? {
                         progress = true;
                     }
@@ -1107,7 +1116,16 @@ impl TypeChecker {
                     span,
                 });
             }
-            let ret_ty = super::builtins::parse_stub_type(&method_def.ret_ty);
+            // `string` is not generic, so a bare single-uppercase name in its
+            // stub signature is the method's own type parameter (PC3) — as in
+            // `parse<T>(self) -> T or ParseError`. Left as a named type it made
+            // every parse yield the literal type `T`, so `const x: f64 =
+            // s.parse()` never learned the target and ran the integer parse
+            // (#480). A fresh var lets the call site decide.
+            let ret_ty = self.freshen_free_type_params(
+                &super::builtins::parse_stub_type(&method_def.ret_ty),
+                &mut std::collections::HashMap::new(),
+            );
             return self.unify(ret, &ret_ty, span);
         }
 
@@ -2092,18 +2110,35 @@ impl TypeChecker {
             "filter" if args.len() == 1 => {
                 self.unify(ret, &self_ty, span)
             }
-            // vec.map(transform) -> Vec<U>
+            // vec.map(transform) -> Vec<U>. U is the closure's return type —
+            // without tying the two together the element stayed an unbound var
+            // and `doubled[0] == 2` reported "no method eq for type U" (#327).
             "map" if args.len() == 1 => {
                 let fresh = self.ctx.fresh_var();
+                let expected_fn = Type::Fn {
+                    params: vec![inner_type],
+                    ret: Box::new(fresh.clone()),
+                };
+                let _ = self.unify(&args[0], &expected_fn, span);
                 let result_ty = Type::UnresolvedGeneric {
                     name: "Vec".to_string(),
                     args: vec![GenericArg::Type(Box::new(fresh))],
                 };
                 self.unify(ret, &result_ty, span)
             }
-            // vec.flat_map(transform) -> Vec<U>
+            // vec.flat_map(transform) -> Vec<U>, where the closure hands back a
+            // Vec<U> per element.
             "flat_map" if args.len() == 1 => {
                 let fresh = self.ctx.fresh_var();
+                let inner_vec = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(fresh.clone()))],
+                };
+                let expected_fn = Type::Fn {
+                    params: vec![inner_type],
+                    ret: Box::new(inner_vec),
+                };
+                let _ = self.unify(&args[0], &expected_fn, span);
                 let result_ty = Type::UnresolvedGeneric {
                     name: "Vec".to_string(),
                     args: vec![GenericArg::Type(Box::new(fresh))],
@@ -2119,9 +2154,15 @@ impl TypeChecker {
                 };
                 self.unify(ret, &result_ty, span)
             }
-            // vec.fold(init, f) -> U
+            // vec.fold(init, f) -> U, with f: func(U, T) -> U
             "fold" if args.len() == 2 => {
-                let _ = self.unify(ret, &args[0], span);
+                let acc = args[0].clone();
+                let expected_fn = Type::Fn {
+                    params: vec![acc.clone(), inner_type],
+                    ret: Box::new(acc.clone()),
+                };
+                let _ = self.unify(&args[1], &expected_fn, span);
+                let _ = self.unify(ret, &acc, span);
                 Ok(true)
             }
             // vec.reduce(f) -> Option<T>

@@ -202,6 +202,12 @@ impl Resolver {
                 true,
             );
             let _ = self.scopes.define(f.name.clone(), sym_id, Span::new(0, 0));
+            // These come from the stubs, so a stdlib file importing one of them
+            // (`import async.spawn` in http.rk) is replacing its own symbol, not
+            // shadowing a user import. Without this, `rask test` — the one entry
+            // point that resolves stdlib bodies — reported `spawn` shadowing an
+            // import that doesn't exist (#507).
+            self.stdlib_symbols.insert(sym_id);
         }
 
         // Register null constant for unsafe pointer comparisons
@@ -1718,17 +1724,17 @@ impl Resolver {
                     self.errors.push(ResolveError::invalid_continue(None, stmt.span));
                 }
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { label, cond, body } => {
                 self.resolve_expr(cond);
-                self.scopes.push(ScopeKind::Loop { label: None });
+                self.scopes.push(ScopeKind::Loop { label: label.clone() });
                 for s in body {
                     self.resolve_stmt(s);
                 }
                 self.scopes.pop();
             }
-            StmtKind::WhileLet { pattern, expr, body } => {
+            StmtKind::WhileLet { label, pattern, expr, body } => {
                 self.resolve_expr(expr);
-                self.scopes.push(ScopeKind::Loop { label: None });
+                self.scopes.push(ScopeKind::Loop { label: label.clone() });
                 self.resolve_pattern(pattern);
                 for s in body {
                     self.resolve_stmt(s);

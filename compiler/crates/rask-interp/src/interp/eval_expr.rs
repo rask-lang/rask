@@ -36,6 +36,19 @@ fn value_is_copy_scalar(v: &Value) -> bool {
     )
 }
 
+/// True when a condition contains an `is` pattern whose bindings the rest of
+/// the condition and the taken branch need to see. Only `&&` chains qualify:
+/// under `||` or `!` a match on one side says nothing about the other.
+pub(super) fn cond_binds_pattern(cond: &Expr) -> bool {
+    match &cond.kind {
+        ExprKind::IsPattern { .. } => true,
+        ExprKind::Binary { op: BinOp::And, left, right } => {
+            cond_binds_pattern(left) || cond_binds_pattern(right)
+        }
+        _ => false,
+    }
+}
+
 /// Set origin on an error value (the inner payload of Err). Only sets if not already set (ER15).
 fn set_error_origin(val: Value, origin: &Arc<str>) -> Value {
     match val {
@@ -166,6 +179,60 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
 }
 
 impl Interpreter {
+    /// Evaluate a condition, defining each `is` pattern's bindings in the
+    /// current scope as it matches, so later `&&` operands can use them.
+    /// Callers push the scope that holds them.
+    pub(super) fn eval_cond_bindings(&mut self, cond: &Expr) -> Result<bool, RuntimeDiagnostic> {
+        match &cond.kind {
+            ExprKind::Binary { op: BinOp::And, left, right } => {
+                if !self.eval_cond_bindings(left)? {
+                    return Ok(false);
+                }
+                self.eval_cond_bindings(right)
+            }
+            ExprKind::IsPattern { expr: inner, pattern } => {
+                let value = self.eval_expr(inner)?;
+                match self.match_pattern(pattern, &value) {
+                    Some(bindings) => {
+                        for (name, val) in bindings {
+                            self.env.define(name, val);
+                        }
+                        Ok(true)
+                    }
+                    None => Ok(false),
+                }
+            }
+            _ => {
+                let value = self.eval_expr(cond)?;
+                Ok(self.is_truthy(&value))
+            }
+        }
+    }
+
+    /// Pick which string parse a `parse` call wants. An explicit
+    /// `parse<f64>()` names the target; `const x: f64 = s.parse()` leaves it to
+    /// inference, so fall back to the checker's type for the call node. Names
+    /// other than `parse` pass through untouched.
+    fn parse_target_method(
+        &self,
+        method: &str,
+        type_args: &Option<Vec<std::string::String>>,
+        node_id: rask_ast::NodeId,
+    ) -> std::string::String {
+        if method != "parse" {
+            return method.to_string();
+        }
+        let float_target = match type_args.as_ref().and_then(|ta| ta.first()) {
+            Some(name) => matches!(name.as_str(), "f32" | "f64"),
+            None => matches!(
+                self.node_types.get(&node_id),
+                Some(rask_types::Type::Result { ok, .. })
+                    if matches!(**ok, rask_types::Type::F32 | rask_types::Type::F64)
+            ),
+        };
+        if float_target { "parse_float".to_string() } else { method.to_string() }
+    }
+
     /// Find the `Pool` backing a handle by its pool id. Handle auto-deref
     /// (mem.context/CC1) resolves the element through whichever `Pool<T>` is in
     /// scope; the handle's pool id names it unambiguously, so a match by id
@@ -263,20 +330,34 @@ impl Interpreter {
                     Some(IntSuffix::U8) => IntKind::U8,
                     Some(IntSuffix::U16) => IntKind::U16,
                     Some(IntSuffix::U32) => IntKind::U32,
-                    Some(IntSuffix::U64) | Some(IntSuffix::Usize) => IntKind::U64,
+                    Some(IntSuffix::U64) | Some(IntSuffix::Usize)
+                    | Some(IntSuffix::U64ByMagnitude) => IntKind::U64,
                     None => self.node_types.get(&expr.id).map(IntKind::from_type).unwrap_or(IntKind::Untyped),
                 };
                 Ok(Value::Int(*n, kind))
             }
             ExprKind::Float(n, _) => Ok(Value::Float(*n)),
-            ExprKind::String(s) => {
-                if s.contains('{') {
-                    let interpolated = self.interpolate_string(s)
-                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                    Ok(Value::String(Arc::new(Mutex::new(interpolated))))
-                } else {
-                    Ok(Value::String(Arc::new(Mutex::new(s.clone()))))
+            // A plain string is literal text. It used to be re-scanned for
+            // `{...}` at runtime, which broke escapes: `"{{braces}}"` desugars
+            // to the literal `{braces}`, and the re-scan read that back as an
+            // interpolation and went looking for a variable (#521).
+            ExprKind::String(s) => Ok(Value::String(Arc::new(Mutex::new(s.clone())))),
+
+            // Parsed segments, for the paths that skip desugar (the spec test
+            // runner). Desugar turns these into a concat chain instead.
+            ExprKind::StringInterp(segments) => {
+                use rask_ast::expr::StringSegment;
+                let mut out = String::new();
+                for seg in segments {
+                    match seg {
+                        StringSegment::Literal(text) => out.push_str(text),
+                        StringSegment::Expr(inner) => {
+                            let v = self.eval_expr(inner)?;
+                            out.push_str(&format!("{}", v));
+                        }
+                    }
                 }
+                Ok(Value::String(Arc::new(Mutex::new(out))))
             }
             ExprKind::Char(c) => Ok(Value::Char(*c)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
@@ -661,7 +742,14 @@ impl Interpreter {
                     return result.map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
-                self.call_method(receiver, method, arg_vals)
+                // `parse` picks its runtime by target type. An explicit
+                // `parse<f64>()` carries it in type_args; `const x: f64 =
+                // s.parse()` infers it, so fall back to the checker's type for
+                // the call. Without this every parse ran the integer path and
+                // "3.5" came back as an error (#480).
+                let method = self.parse_target_method(method, type_args, expr.id);
+
+                self.call_method(receiver, &method, arg_vals)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 
@@ -737,29 +825,34 @@ impl Interpreter {
                 result
             }
 
-            ExprKind::Loop { body, .. } => loop {
-                self.env.push_scope();
-                match self.exec_stmts(body) {
-                    Ok(_) => {}
-                    Err(diag) if matches!(diag.error, RuntimeError::Break(_)) => {
-                        let val = match diag.error {
-                            RuntimeError::Break(v) => v,
-                            _ => unreachable!(),
-                        };
-                        self.env.pop_scope();
-                        break Ok(val);
+            ExprKind::Loop { body, label } => {
+                let loop_label = label.as_deref();
+                loop {
+                    self.env.push_scope();
+                    match self.exec_stmts(body) {
+                        Ok(_) => {}
+                        Err(diag) => {
+                            self.env.pop_scope();
+                            match diag.error {
+                                // `break search i` from inside a nested loop
+                                // lands here, at the loop that owns the label.
+                                RuntimeError::Break(v, ref target)
+                                    if target.is_none() || target.as_deref() == loop_label =>
+                                {
+                                    break Ok(v);
+                                }
+                                RuntimeError::Continue(ref target)
+                                    if target.is_none() || target.as_deref() == loop_label =>
+                                {
+                                    continue;
+                                }
+                                _ => break Err(diag),
+                            }
+                        }
                     }
-                    Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
-                        self.env.pop_scope();
-                        continue;
-                    }
-                    Err(e) => {
-                        self.env.pop_scope();
-                        break Err(e);
-                    }
+                    self.env.pop_scope();
                 }
-                self.env.pop_scope();
-            },
+            }
 
             ExprKind::If {
                 cond,
@@ -867,6 +960,29 @@ impl Interpreter {
                     }
                 }
 
+                // `if x is Pat(v) && …` — the payload has to be in scope for the
+                // rest of the condition and for the then-branch (#256).
+                if cond_binds_pattern(cond) {
+                    self.env.push_scope();
+                    let taken = match self.eval_cond_bindings(cond) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            self.env.pop_scope();
+                            return Err(e);
+                        }
+                    };
+                    if taken {
+                        let result = self.eval_expr(then_branch);
+                        self.env.pop_scope();
+                        return result;
+                    }
+                    self.env.pop_scope();
+                    return match else_branch {
+                        Some(else_br) => self.eval_expr(else_br),
+                        None => Ok(Value::Unit),
+                    };
+                }
+
                 let cond_val = self.eval_expr(cond)?;
                 if self.is_truthy(&cond_val) {
                     self.eval_expr(then_branch)
@@ -947,8 +1063,25 @@ impl Interpreter {
                     }
                 }
 
+                // A field declared `T?` or `T or E` given a bare `T` has to be
+                // wrapped here, the same way an annotated binding is — without
+                // it `Holder { slot: 77 }` stored a raw 77 and `h.slot?` then
+                // complained the value wasn't an optional at all (#376).
+                let field_types = self.struct_decls.get(&concrete_name).map(|d| {
+                    d.fields.iter()
+                        .map(|f| (f.name.clone(), f.ty.clone()))
+                        .collect::<Vec<_>>()
+                });
                 for field in fields {
                     let value = self.eval_owned(&field.value)?;
+                    let value = match field_types.as_ref()
+                        .and_then(|ts| ts.iter().find(|(n, _)| *n == field.name))
+                    {
+                        Some((_, ty)) => super::exec_stmt::auto_wrap_for_annotation(
+                            value, ty, super::exec_stmt::is_none_literal(&field.value),
+                        ),
+                        None => value,
+                    };
                     field_values.insert(field.name.clone(), value);
                 }
 
@@ -1458,6 +1591,7 @@ impl Interpreter {
                 Ok(Value::Bool(matched))
             }
 
+
             // Guard pattern: const v = expr is Ok(v) else { diverge }
             ExprKind::GuardPattern { expr: inner, pattern, else_branch } => {
                 let value = self.eval_expr(inner)?;
@@ -1646,7 +1780,12 @@ impl Interpreter {
             ExprKind::Cast { expr, ty } => {
                 let val = self.eval_expr(expr)?;
                 match (val, ty.as_str()) {
-                    (Value::Int(n, _), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    // CV1/CV4: int→float rounds. f32 rounds at 24 bits, so the
+                    // result has to go through f32 — keeping full i64 precision
+                    // here made the interpreter answer 16777217 where native
+                    // (which really has an f32) answered 16777216 (#334).
+                    (Value::Int(n, _), "f32") => Ok(Value::Float(n as f32 as f64)),
+                    (Value::Int(n, _), "f64" | "float") => Ok(Value::Float(n as f64)),
                     (Value::Float(n), t @ ("i64" | "i32" | "int" | "i16" | "i8"
                         | "u64" | "u32" | "u16" | "u8" | "usize")) => {
                         let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
@@ -1674,14 +1813,16 @@ impl Interpreter {
                     (Value::Int(n, _), "u128") => Ok(Value::Uint128(n as u128)),
                     (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Int128(n), "u64" | "u32" | "u16" | "u8" | "usize" | "u128") => Ok(Value::Uint128(n as u128)),
-                    (Value::Int128(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Int128(n), "f32") => Ok(Value::Float(n as f32 as f64)),
+                    (Value::Int128(n), "f64" | "float") => Ok(Value::Float(n as f64)),
                     (Value::Int128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     // u128 conversions
                     (Value::Uint128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Uint128(n), "i128") => Ok(Value::Int128(n as i128)),
-                    (Value::Uint128(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Uint128(n), "f32") => Ok(Value::Float(n as f32 as f64)),
+                    (Value::Uint128(n), "f64" | "float") => Ok(Value::Float(n as f64)),
                     (Value::Uint128(n), "u128" | "u64" | "u32" | "u16" | "u8" | "usize") => Ok(Value::Uint128(n)),
                     (Value::Uint128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))

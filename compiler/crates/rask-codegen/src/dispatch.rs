@@ -55,6 +55,12 @@ pub enum ArgAdapt {
     /// parse: append an out-param for the value; the call returns 0/1 status,
     /// which becomes the `T or ParseError` tag.
     ParseOutParam,
+    /// Append the destination `T?`'s payload address as an out-param. The call
+    /// returns 1 (wrote a value) or 0 (nothing there), which becomes the tag.
+    /// For anything that hands an element back out of a container it's about to
+    /// free — the runtime copies while the element is still live, instead of
+    /// returning a pointer into freed storage.
+    OptionOutParam,
     /// Complex case handled by hand-written code
     Custom,
 }
@@ -234,17 +240,30 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Vec_sort", "rask_vec_sort", &[types::I64], None, false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
-        StdlibEntry::simple("Vec_contains", "rask_vec_contains", &[types::I64, types::I64], Some(types::I64), false),
+        // The runtime compares the element bytes through a pointer, so the
+        // needle has to be spilled and passed by address — as a raw value it
+        // was read as an address and the compare walked off into memory (#413).
+        StdlibEntry {
+            mir_name: "Vec_contains", c_name: "rask_vec_contains",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        // String elements need a real string compare: a heap RaskStr holds a
+        // pointer, so equal strings don't match byte-for-byte.
+        StdlibEntry::simple("Vec_contains_str", "rask_vec_contains_str", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_dedup", "rask_vec_dedup", &[types::I64], None, false),
+        // Both return `Option<T>` — NULL for an empty Vec — so the result is
+        // wrapped, not dereferenced. `DerefOrString` read through the NULL and
+        // handed back a bare value for a destination expecting an option (#412).
         StdlibEntry {
             mir_name: "Vec_first", c_name: "rask_vec_first",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
         StdlibEntry {
             mir_name: "Vec_last", c_name: "rask_vec_last",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
 
         // ── Iterator runtime support ──────────────────────────────
@@ -316,7 +335,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::neg_none("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_index_of", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
+        // `char_at` answers `char?`; the runtime signals out-of-range with -1,
+        // which is never a valid scalar.
+        StdlibEntry::neg_none("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
+        // `s[i]` — indexing panics on an out-of-range index, so it needs its own
+        // entry point rather than `char_at`'s none-on-miss (#353).
+        StdlibEntry::simple("string_index", "rask_string_index", &[types::I64, types::I64], Some(types::I64), true),
         StdlibEntry::simple("string_starts_with", "rask_string_starts_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_ends_with", "rask_string_ends_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_contains", "rask_string_contains", &[types::I64, types::I64], Some(types::I64), false),
@@ -410,6 +434,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // Interpolation lowers `a.concat(b)` unqualified, but a call on a
+        // receiver the lowerer typed as a string mangles to `string_concat` —
+        // same function, and nothing answered to the qualified name.
+        StdlibEntry {
+            mir_name: "string_concat", c_name: "rask_string_concat",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry {
             mir_name: "string_substr", c_name: "rask_string_substr",
             params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
@@ -486,6 +518,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
+            mir_name: "u64_to_string", c_name: "rask_u64_to_string",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
             mir_name: "bool_to_string", c_name: "rask_bool_to_string",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
@@ -493,6 +530,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "f64_to_string", c_name: "rask_f64_to_string",
             params: &[types::I64, types::F64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        // f32 round-trips against its own width — formatting it as a double
+        // spells out the exact binary value (0.1f → 0.10000000149011612).
+        StdlibEntry {
+            mir_name: "f32_to_string", c_name: "rask_f32_to_string",
+            params: &[types::I64, types::F32], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
@@ -594,7 +638,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // the runtime.
         StdlibEntry::simple("Pool_with_capacity", "rask_pool_with_capacity", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_alloc", "rask_pool_alloc_packed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_remove", "rask_pool_remove_packed", &[types::I64, types::I64], Some(types::I64), false),
+        // `remove` answers `T?` — DerefOption turns the returned slot pointer
+        // into some(elem), and NULL (stale handle) into none.
+        StdlibEntry {
+            mir_name: "Pool_remove", c_name: "rask_pool_remove_out",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::OptionOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry {
             mir_name: "Pool_get", c_name: "rask_pool_get_packed",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -761,6 +811,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
+        StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
+        StdlibEntry::simple("os_env_vars", "rask_os_env_vars", &[], Some(types::I64), false),
         StdlibEntry {
             mir_name: "os_env_or", c_name: "rask_os_env_or",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
@@ -837,6 +889,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Clone ────────────────────────────────────────────────────
         StdlibEntry::simple("clone", "rask_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_clone", "rask_vec_clone", &[types::I64], Some(types::I64), false),
+        // I3: hands the elements over and leaves the source empty.
+        StdlibEntry::simple("Vec_take_all", "rask_vec_take_all", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Map_clone", "rask_map_clone", &[types::I64], Some(types::I64), false),
 
         // ── ThreadPool ─────────────────────────────────────────────
@@ -950,6 +1004,24 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Shared_read", "rask_shared_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_write", "rask_shared_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
+        // Cell — single-owner interior mutability (mem.cell/CE6). `new` takes
+        // the value by pointer plus its size, the same way Shared does; `get`
+        // hands back the slot address for codegen to load or copy from.
+        StdlibEntry {
+            mir_name: "Cell_new", c_name: "rask_cell_new",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Cell_get", c_name: "rask_cell_get",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Cell_set", c_name: "rask_cell_set",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Shared_read_acquire", "rask_shared_read_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_write_acquire", "rask_shared_write_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_release", "rask_shared_release", &[types::I64], None, false),
@@ -967,6 +1039,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Mutex_lock", "rask_mutex_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_acquire", "rask_mutex_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_release", "rask_mutex_release", &[types::I64], None, false),
+        StdlibEntry::simple("Mutex_data", "rask_mutex_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_try_lock", "rask_mutex_try_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_clone", "rask_mutex_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_drop", "rask_mutex_drop", &[types::I64], None, false),

@@ -2,6 +2,7 @@
 
 //! Expression lowering.
 
+use crate::FieldAccess;
 use super::{
     binop_result_type, is_type_constructor_name, lower_binop, lower_unaryop,
     operator_method_to_binop, operator_method_to_unaryop, LoopContext, LoweringError,
@@ -52,6 +53,64 @@ fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static
             None
         }
         _ => None,
+    }
+}
+
+/// Could evaluating this twice do something the second run would notice?
+///
+/// Only used to decide whether an assert operand needs parking in a temp, so it
+/// leans the safe way: anything not obviously a read of something already there
+/// counts as work. Reads stay as they were written, which matters — lowering
+/// special-cases whole shapes like `x == none`, and swapping a side for a
+/// temporary would step past them.
+fn expr_may_do_work(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Ident(_)
+        | ExprKind::Int(..)
+        | ExprKind::Float(..)
+        | ExprKind::String(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Char(_)
+        | ExprKind::None
+        | ExprKind::Null => false,
+        ExprKind::Field { object, .. } => expr_may_do_work(object),
+        ExprKind::Index { object, index } => expr_may_do_work(object) || expr_may_do_work(index),
+        ExprKind::Unary { operand, .. } => expr_may_do_work(operand),
+        _ => true,
+    }
+}
+
+/// Rebuild `a.eq(b)` (or `!a.eq(b)`) with the two sides swapped for expressions
+/// that just read an already-computed value. The node ids are carried over, so
+/// method dispatch still sees the same checker types it would have.
+fn rebuild_assert_condition(condition: &Expr, left: Expr, right: Expr) -> Expr {
+    let rebuild_call = |call: &Expr, left: Expr, right: Expr| -> Expr {
+        let ExprKind::MethodCall { method, args, type_args, .. } = &call.kind else {
+            return call.clone();
+        };
+        let mut args = args.clone();
+        args[0].expr = right;
+        Expr {
+            id: call.id,
+            span: call.span,
+            kind: ExprKind::MethodCall {
+                object: Box::new(left),
+                method: method.clone(),
+                args,
+                type_args: type_args.clone(),
+            },
+        }
+    };
+    match &condition.kind {
+        ExprKind::Unary { op: UnaryOp::Not, operand } => Expr {
+            id: condition.id,
+            span: condition.span,
+            kind: ExprKind::Unary {
+                op: UnaryOp::Not,
+                operand: Box::new(rebuild_call(operand, left, right)),
+            },
+        },
+        _ => rebuild_call(condition, left, right),
     }
 }
 
@@ -117,6 +176,172 @@ fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static st
 }
 
 impl<'a> MirLowerer<'a> {
+    /// Does this Vec receiver hold string elements? Drives the dispatch choice
+    /// for the runtime entry points that need a real string compare.
+    fn vec_elem_is_string(&self, object: &Expr) -> bool {
+        Self::vec_tracking_key(object)
+            .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
+                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+            .map_or(false, |ty| matches!(ty, MirType::String))
+    }
+
+    /// Wrap a plain value for a struct field declared `T?` or `T or E`.
+    /// Returns the operand unchanged when no wrapping is needed — the field
+    /// isn't a sum type, the value already has the sum shape, or the option
+    /// uses a niche (a `Handle?` is a sentinel, not a tag plus payload).
+    fn wrap_sum_field_value(
+        &mut self,
+        field_ty: Option<&MirType>,
+        val_ty: &MirType,
+        val: MirOperand,
+    ) -> MirOperand {
+        let Some(field_ty) = field_ty else { return val };
+        let (tag_offset, payload_offset, inner) = match field_ty {
+            // A `Handle?` is a sentinel, not a tag plus payload. A handle
+            // stores as itself; `none` has to become the sentinel, because the
+            // generic `none` lowering builds a tagged option and storing that
+            // into the field left a tag where the handle belongs (#438).
+            MirType::Option(inner) if matches!(**inner, MirType::Handle) => {
+                if matches!(val_ty, MirType::Option(_)) {
+                    return MirOperand::Constant(MirConst::Int(
+                        crate::lower::HANDLE_NONE_SENTINEL,
+                    ));
+                }
+                return val;
+            }
+            MirType::Option(inner) => {
+                if matches!(val_ty, MirType::Option(_)) {
+                    return val;
+                }
+                (
+                    rask_mono::abi::OPTION_TAG_OFFSET,
+                    rask_mono::abi::OPTION_PAYLOAD_OFFSET,
+                    (**inner).clone(),
+                )
+            }
+            MirType::Result { ok, err } => {
+                // Only the ok side gets wrapped implicitly; an error value at a
+                // field position isn't allowed (ER11).
+                if matches!(val_ty, MirType::Result { .. }) || val_ty == &**err {
+                    return val;
+                }
+                (
+                    rask_mono::abi::RESULT_TAG_OFFSET,
+                    rask_mono::abi::RESULT_PAYLOAD_OFFSET,
+                    (**ok).clone(),
+                )
+            }
+            _ => return val,
+        };
+
+        let slot = self.builder.alloc_temp(field_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: tag_offset,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: Some(8),
+        }));
+        if payload_offset == rask_mono::abi::RESULT_PAYLOAD_OFFSET {
+            for off in [
+                rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET,
+                rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET,
+            ] {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: slot,
+                    offset: off,
+                    value: MirOperand::Constant(MirConst::Int(0)),
+                    store_size: Some(8),
+                }));
+            }
+        }
+        let payload_size = inner.size();
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: payload_offset,
+            value: val,
+            store_size: (payload_size > 8).then_some(payload_size),
+        }));
+        MirOperand::Local(slot)
+    }
+
+    /// Lower an absent optional. `none` and `None` are the same value written
+    /// two ways, and both land here.
+    ///
+    /// A `Handle?` is a niche — the sentinel *is* the none, with no tag beside
+    /// it. The checker's type is the primary signal for that, but at a bare
+    /// `none` it's usually still unresolved, so the lowered type gets a look
+    /// too; without the second check this built a tagged option for a slotless
+    /// niche and stored its tag through a null address (#438).
+    fn lower_none(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        let option_ty = self.lookup_expr_type(expr)
+            .filter(|t| matches!(t, MirType::Option(_)))
+            .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
+        if self.option_is_niche(expr, &option_ty) {
+            return Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle));
+        }
+        let result_local = self.builder.alloc_temp(option_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)), // tag = None
+            store_size: None,
+        }));
+        Ok((MirOperand::Local(result_local), option_ty))
+    }
+
+    /// Park an assert operand in a named local and hand back an expression that
+    /// reads it. Keeps the original node id so the comparison built around it
+    /// still resolves to the same type. A plain ident needs no parking — it's
+    /// already a name, and re-reading it costs nothing.
+    fn bind_assert_operand(&mut self, src: &Expr, op: &MirOperand, ty: &MirType) -> Expr {
+        if !expr_may_do_work(src) {
+            return src.clone();
+        }
+        let name = format!("__assert_operand_{}", self.closure_counter);
+        self.closure_counter += 1;
+        let local = match op {
+            MirOperand::Local(id) => *id,
+            other => {
+                let local = self.builder.alloc_local(name.clone(), ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: local,
+                    rvalue: MirRValue::Use(other.clone()),
+                }));
+                local
+            }
+        };
+        self.locals.insert(name.clone(), (local, ty.clone()));
+        Expr { id: src.id, span: src.span, kind: ExprKind::Ident(name) }
+    }
+
+    /// Widen a scalar operand to the width an assert-failure helper takes.
+    /// Aggregates and strings pass through — they reach the helper as pointers,
+    /// which is what it already expects.
+    fn widen_for_assert_helper(
+        &mut self,
+        op: MirOperand,
+        from: &MirType,
+        want: &MirType,
+    ) -> MirOperand {
+        let needs_widening = match want {
+            MirType::F64 => matches!(from, MirType::F32),
+            MirType::I64 => matches!(from,
+                MirType::I8 | MirType::I16 | MirType::I32
+                | MirType::U8 | MirType::U16 | MirType::U32
+                | MirType::Bool | MirType::Char),
+            _ => false,
+        };
+        if !needs_widening {
+            return op;
+        }
+        let dst = self.builder.alloc_temp(want.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::Cast { value: op, target_ty: want.clone() },
+        }));
+        MirOperand::Local(dst)
+    }
+
     /// Resolve a MirType to its named type prefix using struct/enum layouts.
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
         match ty {
@@ -323,7 +548,7 @@ impl<'a> MirLowerer<'a> {
                     Some(IntSuffix::U8) => MirType::U8,
                     Some(IntSuffix::U16) => MirType::U16,
                     Some(IntSuffix::U32) => MirType::U32,
-                    Some(IntSuffix::U64) => MirType::U64,
+                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => MirType::U64,
                     Some(IntSuffix::I128 | IntSuffix::U128 | IntSuffix::Isize | IntSuffix::Usize) => MirType::I64,
                     None => self
                         .ctx
@@ -354,26 +579,7 @@ impl<'a> MirLowerer<'a> {
                 // Null pointer literal — zero value
                 Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Ptr))
             }
-            ExprKind::None => {
-                // OPT3: `none` — identical lowering to bare `None`.
-                // Niche Option<Handle<T>> uses a sentinel; otherwise tag = 1.
-                if self.is_niche_option_expr(expr) {
-                    Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle))
-                } else {
-                    let option_ty = self.lookup_expr_type(expr)
-                        .filter(|t| matches!(t, MirType::Option(_)))
-                        .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
-                    let result_local = self.builder.alloc_temp(option_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: 0,
-                        value: MirOperand::Constant(MirConst::Int(1)), // tag = None
-                        store_size: None,
-                    }));
-                    Ok((MirOperand::Local(result_local), option_ty))
-                }
-            }
-
+            ExprKind::None => self.lower_none(expr),
             // Variable reference (or bare enum variant like None)
             ExprKind::Ident(name) => {
                 // A module-level const with a non-literal initializer is emitted
@@ -391,7 +597,7 @@ impl<'a> MirLowerer<'a> {
                                 base: MirOperand::Local(id),
                                 field_index: 0,
                                 byte_offset: Some(0),
-                                field_size: Some(sty.size()),
+                                access: FieldAccess::Sized(sty.size()),
                             },
                         }));
                         return Ok((MirOperand::Local(tmp), sty));
@@ -424,30 +630,14 @@ impl<'a> MirLowerer<'a> {
                                 base: MirOperand::Local(id),
                                 field_index: 0,
                                 byte_offset: None,
-                                field_size: None,
+                                access: FieldAccess::Word,
                             },
                         }));
                         return Ok((MirOperand::Local(inner_local), inner_ty));
                     }
                     Ok((MirOperand::Local(id), ty))
                 } else if name == "None" {
-                    // Niche: Option<Handle<T>> uses sentinel instead of tag
-                    if self.is_niche_option_expr(expr) {
-                        Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle))
-                    } else {
-                        // Allocate a proper tagged union with tag=1 (None)
-                        let option_ty = self.lookup_expr_type(expr)
-                            .filter(|t| matches!(t, MirType::Option(_)))
-                            .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
-                        let result_local = self.builder.alloc_temp(option_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: result_local,
-                            offset: 0,
-                            value: MirOperand::Constant(MirConst::Int(1)), // tag = None
-                            store_size: None,
-                        }));
-                        Ok((MirOperand::Local(result_local), option_ty))
-                    }
+                    self.lower_none(expr)
                 } else if let Some(meta) = self.ctx.comptime_globals.get(name) {
                     // Module-level comptime global reference
                     let global_local = self.builder.alloc_temp(MirType::Ptr);
@@ -1024,7 +1214,7 @@ impl<'a> MirLowerer<'a> {
                                         base: obj_op,
                                         field_index: ti,
                                         byte_offset: tbo,
-                                        field_size: tfs,
+                                        access: tfs.map_or(FieldAccess::Word, FieldAccess::Sized),
                                     },
                                 }));
                                 Ok((MirOperand::Local(result_local), trt))
@@ -1100,7 +1290,7 @@ impl<'a> MirLowerer<'a> {
                         base: obj_op,
                         field_index,
                         byte_offset,
-                        field_size,
+                        access: field_size.map_or(FieldAccess::Word, FieldAccess::Sized),
                     },
                 }));
                 Ok((MirOperand::Local(result_local), result_ty))
@@ -1360,11 +1550,15 @@ impl<'a> MirLowerer<'a> {
                     let elem_size = elem_ty.size();
                     let elem_align = elem_ty.align().max(1);
                     offset = (offset + elem_align - 1) & !(elem_align - 1);
+                    // An element wider than a word is a value, not a pointer:
+                    // a string constant lowers to the address of its 16-byte
+                    // blob, so without a size the address landed in the slot
+                    // and reading `t.1` back gave garbage (#442).
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset,
                         value: elem_op,
-                        store_size: None,
+                        store_size: (elem_size > 8).then_some(elem_size),
                     }));
                     offset += elem_size;
                 }
@@ -1435,12 +1629,30 @@ impl<'a> MirLowerer<'a> {
                         .map(|f| format!("{}", f.ty));
                     let lowered = self.lower_expr(&field.value);
                     self.field_type_hint = saved_hint;
-                    let (val_op, _) = lowered?;
+                    let (val_op, val_ty) = lowered?;
                     // Look up field offset and size from layout
                     let field_layout = layout
                         .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name));
                     let offset = field_layout.map(|f| f.offset).unwrap_or(0);
                     let store_size = field_layout.map(|f| f.size);
+                    // A `T?` or `T or E` field given a plain `T` has to be
+                    // wrapped here. Stored bare, the value landed where the tag
+                    // belongs — `Row { name: "bo" }` for a `string?` field put
+                    // the string's first word in the tag slot and left the
+                    // payload unwritten, so reading it back crashed (#376).
+                    let field_mir_ty = field_layout.map(|f| {
+                        // A `Handle?` field is a niche — the sentinel stands in
+                        // for `none`. `type_to_mir` doesn't always keep the
+                        // Handle inside the option, so read the declared type.
+                        if super::is_niche_option_handle(&f.ty) {
+                            MirType::Option(Box::new(MirType::Handle))
+                        } else {
+                            self.ctx.type_to_mir(&f.ty)
+                        }
+                    });
+                    let val_op = self.wrap_sum_field_value(
+                        field_mir_ty.as_ref(), &val_ty, val_op,
+                    );
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset,
@@ -1486,7 +1698,7 @@ impl<'a> MirLowerer<'a> {
                                     base: base_op.clone(),
                                     field_index: idx as u32,
                                     byte_offset: Some(offset),
-                                    field_size: Some(size),
+                                    access: FieldAccess::Sized(size),
                                 },
                             }));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -1509,8 +1721,8 @@ impl<'a> MirLowerer<'a> {
                 then_branch,
                 else_branch,
             } => {
-                let is_niche = self.is_niche_option_expr(expr);
                 let (val, val_ty) = self.lower_expr(expr)?;
+                let is_niche = self.option_is_niche(expr, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
 
                 // Compare tag against expected variant. Use type-context
@@ -1597,8 +1809,8 @@ impl<'a> MirLowerer<'a> {
                 pattern,
                 else_branch,
             } => {
-                let is_niche = self.is_niche_option_expr(expr);
                 let (val, val_ty) = self.lower_expr(expr)?;
+                let is_niche = self.option_is_niche(expr, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
 
                 let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
@@ -1646,8 +1858,8 @@ impl<'a> MirLowerer<'a> {
 
             // Pattern test (expr is Pattern) — evaluates to bool
             ExprKind::IsPattern { expr: inner, pattern } => {
-                let is_niche = self.is_niche_option_expr(inner);
                 let (val, val_ty) = self.lower_expr(inner)?;
+                let is_niche = self.option_is_niche(inner, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
                 let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
                 let result = self.builder.alloc_temp(MirType::Bool);
@@ -1664,18 +1876,22 @@ impl<'a> MirLowerer<'a> {
 
             // Try expression (spec L3)
             ExprKind::Try { expr: inner, ref else_clause } => {
-                if let Some(try_else) = else_clause {
-                    self.lower_try_else(inner, try_else)
-                } else {
-                    self.lower_try(inner)
+                match (else_clause, &inner.kind) {
+                    // ER18 block form: the block's own value is the result, and
+                    // any `try` inside it lands in the handler.
+                    (Some(try_else), ExprKind::Block(_)) => {
+                        self.lower_try_else_block(inner, try_else)
+                    }
+                    (Some(try_else), _) => self.lower_try_else(inner, try_else),
+                    (None, _) => self.lower_try(inner),
                 }
             }
 
             // Presence predicate (postfix ?) — evaluates to bool.
             // Some/Ok tag is 0 (present/ok); None/Err tag is 1.
             ExprKind::IsPresent { expr: inner, .. } => {
-                let is_niche = self.is_niche_option_expr(inner);
                 let (val, _ty) = self.lower_expr(inner)?;
+                let is_niche = self.option_is_niche(inner, &_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
                 let result = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1691,8 +1907,8 @@ impl<'a> MirLowerer<'a> {
 
             // Unwrap (postfix !) - panic on None/Err
             ExprKind::Unwrap { expr: inner, message: _ } => {
-                let is_niche = self.is_niche_option_expr(inner);
                 let (val, _inner_ty) = self.lower_expr(inner)?;
+                let is_niche = self.option_is_niche(inner, &_inner_ty);
                 let tag_local = self.emit_option_tag(&val, is_niche);
 
                 let ok_block = self.builder.create_block();
@@ -1721,8 +1937,8 @@ impl<'a> MirLowerer<'a> {
 
             // Null coalescing (a ?? b)
             ExprKind::NullCoalesce { value, default } => {
-                let is_niche = self.is_niche_option_expr(value);
-                let (val, _) = self.lower_expr(value)?;
+                let (val, val_ty) = self.lower_expr(value)?;
+                let is_niche = self.option_is_niche(value, &val_ty);
                 let tag_local = self.emit_option_tag(&val, is_niche);
 
                 let some_block = self.builder.create_block();
@@ -1736,8 +1952,19 @@ impl<'a> MirLowerer<'a> {
                 }));
 
                 self.builder.switch_to_block(some_block);
-                let payload_ty = self.extract_payload_type(value)
-                    .unwrap_or(MirType::I64);
+                // The checker often leaves this node's type an unresolved var,
+                // and reading the payload as an opaque pointer hands back the
+                // slot's address instead of the value. The lowered receiver
+                // knows its own ok type — take that when the checker has
+                // nothing better.
+                let payload_ty = Self::better_payload_ty(
+                    self.extract_payload_type(value),
+                    match &val_ty {
+                        MirType::Result { ok, .. } => Some((**ok).clone()),
+                        MirType::Option(inner) => Some((**inner).clone()),
+                        _ => None,
+                    },
+                ).unwrap_or(MirType::I64);
                 let result_local = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -1823,8 +2050,8 @@ impl<'a> MirLowerer<'a> {
                 // type. Earlier lowering ignored the field name and just
                 // unwrapped the Option, which collapsed the chain to garbage
                 // for any non-leaf access (#271).
-                let is_niche = self.is_niche_option_expr(object);
-                let (obj, _) = self.lower_expr(object)?;
+                let (obj, obj_opt_ty) = self.lower_expr(object)?;
+                let is_niche = self.option_is_niche(object, &obj_opt_ty);
                 let tag_local = self.emit_option_tag(&obj, is_niche);
 
                 // Resolve the payload struct's layout to find the field's
@@ -1893,7 +2120,7 @@ impl<'a> MirLowerer<'a> {
                             base: obj.clone(),
                             field_index: 0,
                             byte_offset: None,
-                            field_size: None,
+                            access: FieldAccess::Word,
                         },
                     }));
                     let field_local = self.builder.alloc_temp(field_ty.clone());
@@ -1903,7 +2130,7 @@ impl<'a> MirLowerer<'a> {
                             base: MirOperand::Local(payload_local),
                             field_index,
                             byte_offset,
-                            field_size,
+                            access: field_size.map_or(FieldAccess::Word, FieldAccess::Sized),
                         },
                     }));
                     if field_is_option {
@@ -2382,8 +2609,17 @@ impl<'a> MirLowerer<'a> {
                     let (left_op, left_ty) = self.lower_expr(left_expr)?;
                     let (right_op, right_ty) = self.lower_expr(right_expr)?;
 
-                    // Now lower the full condition
-                    let (cond_op, _) = self.lower_expr(condition)?;
+                    // Then compare the values we already have. Lowering the whole
+                    // condition here instead would run both sides a second time,
+                    // so `assert push(v) == 1` pushed twice.
+                    let (cond_op, _) = if expr_may_do_work(left_expr) || expr_may_do_work(right_expr) {
+                        let left_ref = self.bind_assert_operand(left_expr, &left_op, &left_ty);
+                        let right_ref = self.bind_assert_operand(right_expr, &right_op, &right_ty);
+                        let rebuilt = rebuild_assert_condition(condition, left_ref, right_ref);
+                        self.lower_expr(&rebuilt)?
+                    } else {
+                        self.lower_expr(condition)?
+                    };
                     let ok_block = self.builder.create_block();
                     let fail_block = self.builder.create_block();
 
@@ -2400,12 +2636,29 @@ impl<'a> MirLowerer<'a> {
                     // helper, strings to the str helper, everything else i64.
                     let is_float = matches!(left_ty, MirType::F32 | MirType::F64)
                         || matches!(right_ty, MirType::F32 | MirType::F64);
+                    let is_char = matches!(left_ty, MirType::Char)
+                        && matches!(right_ty, MirType::Char);
                     let fail_fn = if is_string {
                         "assert_fail_cmp_str"
                     } else if is_float {
                         "assert_fail_cmp_f64"
+                    } else if is_char {
+                        "assert_fail_cmp_char"
                     } else {
                         "assert_fail_cmp_i64"
+                    };
+                    // Each fail helper has one fixed signature, so a narrower
+                    // operand has to be widened to it. An f32 or a char reached
+                    // the f64/i64 helper at its own width and Cranelift
+                    // rejected the call outright (#332).
+                    let (left_op, right_op) = if is_string {
+                        (left_op, right_op)
+                    } else {
+                        let want = if is_float { MirType::F64 } else { MirType::I64 };
+                        (
+                            self.widen_for_assert_helper(left_op, &left_ty, &want),
+                            self.widen_for_assert_helper(right_op, &right_ty, &want),
+                        )
                     };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
@@ -3106,6 +3359,19 @@ impl<'a> MirLowerer<'a> {
             method.clone()
         };
 
+        // `const x: f64 = "3.5".parse()` infers the target from context, so
+        // there's no type argument to mangle and the name stays plain `parse`
+        // — which dispatches to the integer runtime and fails on "3.5" (#480).
+        // Recover the target from the checker's type for the call.
+        let method = match (method.as_str(), self.ctx.lookup_node_type(expr.id)) {
+            ("parse", Some(MirType::Result { ok, .. })) => match *ok {
+                MirType::F32 => "parse_f32".to_string(),
+                MirType::F64 => "parse_f64".to_string(),
+                _ => method,
+            },
+            _ => method,
+        };
+
         // Regular method call. Clone the receiver operand so obj_op stays
         // available for the inline Result/Option dispatch below (which
         // must reuse it rather than re-lower `object` — see #349).
@@ -3152,6 +3418,12 @@ impl<'a> MirLowerer<'a> {
                 let base = prefix.split('<').next().unwrap_or(prefix);
                 self.ctx.find_struct(base).is_some()
                     || self.ctx.find_enum(base).is_some()
+                    // A nominal newtype has no layout of its own, but its
+                    // `extend` methods are registered under its own name. Left
+                    // out, `Label("hey").shout()` on a `type Label = string`
+                    // mangled to `string_shout`, which doesn't exist (#445).
+                    || (self.is_transparent_newtype(base)
+                        && self.func_sigs.contains_key(&format!("{}_{}", base, method)))
             });
 
         // CALL6: what dispatch actually resolved to, when MIR can confirm the
@@ -3292,11 +3564,7 @@ impl<'a> MirLowerer<'a> {
         // Channel recv with struct elements: switch to struct variant
         // and inject elem_size so the builder can allocate the right buffer.
         let qualified_name = if qualified_name == "Receiver_receive" {
-            let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
-                self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
-            } else {
-                8
-            };
+            let elem_size = self.channel_elem_size(object);
             if elem_size > 8 {
                 all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
                 "Receiver_receive_struct".to_string()
@@ -3306,11 +3574,7 @@ impl<'a> MirLowerer<'a> {
         } else if qualified_name == "Receiver_try_receive" {
             // try_receive recvs into a buffer of the element's real size and
             // maps status→Result in codegen. Pass elem_size for the buffer.
-            let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
-                self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
-            } else {
-                8
-            };
+            let elem_size = self.channel_elem_size(object);
             all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
             qualified_name
         } else {
@@ -3338,6 +3602,21 @@ impl<'a> MirLowerer<'a> {
                 .or(tracked_elem)
                 .unwrap_or(MirType::I64);
             Some(MirType::Option(Box::new(elem)))
+        } else if matches!(qualified_name.as_str(), "Vec_first" | "Vec_last") {
+            // Same reasoning as Vec_get: these answer `T?`, and the payload type
+            // sizes the result slot. From the stub metadata the result came back
+            // as a bare `T`, so a `Vec<i64?>` got a 16-byte slot for a 24-byte
+            // answer and the tag was read off the wrong bytes.
+            let tracked = Self::vec_tracking_key(object).and_then(|key| {
+                self.meta(&key).and_then(|m| m.elem_type.clone())
+                    .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+            });
+            // In a generic body the checker's payload is still the unresolved
+            // type parameter; the receiver's tracked element type is the
+            // concrete one after monomorphization.
+            let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
+                .unwrap_or(MirType::I64);
+            Some(MirType::Option(Box::new(elem)))
         } else if qualified_name == "Map_get" {
             // Same reasoning as Vec_get: `Map.get` returns `V?`, and the payload
             // type sizes the result slot. The DerefOption adapter copies
@@ -3352,8 +3631,11 @@ impl<'a> MirLowerer<'a> {
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
             tracked_elem
-        } else if qualified_name == "Pool_get" {
-            // Pool.get returns Option<T> — extract T from tracked element type
+        } else if qualified_name == "Pool_get" || qualified_name == "Pool_remove" {
+            // Both return T? — extract T from the tracked element type. Without
+            // this `remove` answered `i64?` regardless of what the pool held,
+            // so reading a struct back out of it dereferenced a field offset
+            // into a scalar (#356).
             let elem_ty = Self::vec_tracking_key(object)
                 .and_then(|key| {
                     self.meta(&key).and_then(|m| m.elem_type.clone())
@@ -3376,6 +3658,10 @@ impl<'a> MirLowerer<'a> {
                 })
                 .unwrap_or(MirType::I64);
             Some(MirType::Option(Box::new(elem_ty)))
+        } else if qualified_name == "Cell_get" {
+            // What the cell holds. The stub's return type is a bare word, so a
+            // `Cell<string>` read came back as an i64 and printed as a pointer.
+            self.ctx.lookup_node_type(expr.id).filter(|t| !matches!(t, MirType::Ptr))
         } else if qualified_name == "Receiver_receive_struct" {
             // Renamed from Receiver_receive above for struct elements. Only the
             // original name is in the stub metadata, so the fallback typed the
@@ -3385,26 +3671,21 @@ impl<'a> MirLowerer<'a> {
                 .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
                 .or_else(|| self.func_sigs.get("Receiver_receive").map(|s| s.ret_ty.clone()))
                 .or_else(|| Some(super::stdlib_return_mir_type("Receiver_receive")))
-        } else if let Some(target) = qualified_name.strip_prefix("string_parse_")
-            .filter(|t| super::is_integer_type_name(t))
+        } else if qualified_name == "string_parse"
+            || qualified_name.strip_prefix("string_parse_")
+                .is_some_and(super::is_parse_target_type_name)
         {
-            // `parse<T>` yields `T or ParseError`, but the type argument is
-            // mangled into the call name, so there's no `string_parse_<T>` entry
-            // in the stub metadata and the fallback below lands on plain i64.
-            // The local then gets no Result slot, while the caller still reads a
-            // tag and payload off it — garbage, and a segfault on the `??`.
-            // Prefer the checker's type; rebuild it from the mangled type
-            // argument when node types aren't available (instantiated bodies).
-            //
-            // Integer targets only. The runtime shape is the same for floats
-            // (status return, value through an out-param) and the codegen
-            // adapter already handles a float writer, so this looks liftable —
-            // it isn't. Giving `parse<f64>` a Result type makes something
-            // downstream treat the f64 payload as a pointer, and stdlib
-            // `JsonParser_parse_number` stops compiling on a Cranelift verifier
-            // error. Tried it, reverted it; see #480.
+            // `parse<T>` yields `T or ParseError`. The stub's signature still
+            // says the literal `T`, which maps to i64, and a mangled
+            // `string_parse_<T>` isn't in the stub metadata at all — either way
+            // the fallback below lands on a bare i64. The local then gets no
+            // Result slot while the caller still reads a tag and payload off it
+            // — garbage, and a segfault on the `??`. Prefer the checker's type;
+            // rebuild it from the mangled type argument when node types aren't
+            // available (instantiated bodies).
+            let target = qualified_name.strip_prefix("string_parse_").unwrap_or("i64");
             Some(self.ctx.lookup_node_type(expr.id)
-                .filter(|t| matches!(t, MirType::Result { .. }))
+                .filter(|t| matches!(t, MirType::Result { ok, .. } if !matches!(**ok, MirType::Ptr)))
                 .unwrap_or_else(|| MirType::Result {
                     ok: Box::new(self.ctx.resolve_type_str(target)),
                     err: Box::new(self.ctx.resolve_type_str("ParseError")),
@@ -3417,6 +3698,18 @@ impl<'a> MirLowerer<'a> {
             .or_else(|| self.func_sigs.get(&qualified_name))
             .map(|s| s.ret_ty.clone())
             .unwrap_or_else(|| super::stdlib_return_mir_type(&qualified_name)));
+
+        // A method on a generic type is lowered once, so its signature says `T`
+        // — which reaches MIR as a bare `Ptr`. The call site knows what `T`
+        // became: `Box<string>.get()` returning `Ptr` meant the caller printed
+        // the string's address as a number (#272).
+        let ret_ty = if matches!(ret_ty, MirType::Ptr) {
+            self.ctx.lookup_node_type(expr.id)
+                .filter(|t| !matches!(t, MirType::Ptr | MirType::Void))
+                .unwrap_or(ret_ty)
+        } else {
+            ret_ty
+        };
 
         // Struct clone: inline field-by-field copy with deep clone for
         // heap fields (string, Vec, Map). Avoids needing a generated
@@ -3458,7 +3751,7 @@ impl<'a> MirLowerer<'a> {
                                 base: src.clone(),
                                 field_index: idx as u32,
                                 byte_offset: None,
-                                field_size: None,
+                                access: FieldAccess::Word,
                             },
                         }));
                         // Deep clone heap types
@@ -3507,15 +3800,15 @@ impl<'a> MirLowerer<'a> {
             ("Vec_get_opt".to_string(), all_args)
         } else if qualified_name == "Vec_join" {
             // Vec_join assumes Vec<string>; use Vec_join_i64 for non-string elements
-            let is_string = Self::vec_tracking_key(object)
-                .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
-                    .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
-                .map_or(false, |ty| matches!(ty, MirType::String));
-            if is_string {
+            if self.vec_elem_is_string(object) {
                 (qualified_name.clone(), all_args)
             } else {
                 ("Vec_join_i64".to_string(), all_args)
             }
+        } else if qualified_name == "Vec_contains" && self.vec_elem_is_string(object) {
+            // The byte-compare runtime can't match two equal heap strings —
+            // they hold different pointers. Route strings to a real compare.
+            ("Vec_contains_str".to_string(), all_args)
         } else {
             (qualified_name.clone(), all_args)
         };
@@ -3639,7 +3932,16 @@ impl<'a> MirLowerer<'a> {
         // Detect field access on a module name and flatten to a qualified call.
         if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
             if let ExprKind::Ident(module_name) = &inner_obj.kind {
+                // `Level.Low.label()` looks like the same shape but isn't:
+                // `Level.Low` is an enum *value*, so flattening it to
+                // `Low_label()` threw the receiver away and mangled the call
+                // under the variant name instead of the enum's (#400).
+                let is_enum_variant = self
+                    .ctx
+                    .find_enum(module_name)
+                    .is_some_and(|(_, layout)| layout.variants.iter().any(|v| v.name == *type_name));
                 if !self.locals.contains_key(module_name)
+                    && !is_enum_variant
                     && is_type_constructor_name(module_name)
                 {
                     let func_name = format!("{}_{}", type_name, method);
@@ -3762,7 +4064,7 @@ impl<'a> MirLowerer<'a> {
             && self.ctx.lookup_raw_type(object.id)
                 .map_or(false, |ty| ty.is_option());
         if is_option_none_cmp {
-            let is_niche = self.is_niche_option_expr(object);
+            let is_niche = self.option_operand_is_niche(object, obj_op);
             let tag_local = self.emit_option_tag(obj_op, is_niche);
             let result = self.builder.alloc_temp(MirType::Bool);
             // tag == 1 means None; tag == 0 means Some.
@@ -4186,9 +4488,12 @@ impl<'a> MirLowerer<'a> {
                     MirType::String => {
                         return Ok(Some((obj_op.clone(), MirType::String)));
                     }
-                    MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8
-                    | MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "i64_to_string",
-                    MirType::F64 | MirType::F32 => "f64_to_string",
+                    MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => "i64_to_string",
+                    // Unsigned values print unsigned. Shared with the signed
+                    // helper, `u8` 200 came out as -56 (#326).
+                    MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "u64_to_string",
+                    MirType::F64 => "f64_to_string",
+                    MirType::F32 => "f32_to_string",
                     MirType::Bool => "bool_to_string",
                     MirType::Char => "char_to_string",
                     _ => "i64_to_string",
@@ -4296,7 +4601,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         if method == "unwrap" && args.is_empty() {
-            let is_niche = self.is_niche_option_expr(object);
+            let is_niche = self.option_is_niche(object, &obj_ty);
             let tag_local = self.emit_option_tag(obj_op, is_niche);
 
             let ok_block = self.builder.create_block();
@@ -4474,17 +4779,11 @@ impl<'a> MirLowerer<'a> {
         left: &Expr,
         right: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
-        // Special case `&& with IsPattern lhs`: the pattern test must bind its
-        // payload locals before the rhs is evaluated, so `s is Rectangle(w, h)
-        // && w > h` can reference w and h on the matched path. The bare
-        // IsPattern lowering only emits a tag comparison and drops bindings.
-        if matches!(op, BinOp::And) {
-            if let ExprKind::IsPattern { expr: scrutinee, pattern } = &left.kind {
-                return self.lower_and_with_pattern(scrutinee, pattern, right);
-            }
-        }
-
-        let (left_op, _) = self.lower_expr(left)?;
+        let (left_op, _) = if matches!(op, BinOp::And) {
+            self.lower_and_operand(left)?
+        } else {
+            self.lower_expr(left)?
+        };
 
         let rhs_block = self.builder.create_block();
         let short_block = self.builder.create_block();
@@ -4521,7 +4820,11 @@ impl<'a> MirLowerer<'a> {
 
         // Long branch: evaluate rhs, yield rhs.
         self.builder.switch_to_block(rhs_block);
-        let (right_op, _) = self.lower_expr(right)?;
+        let (right_op, _) = if matches!(op, BinOp::And) {
+            self.lower_and_operand(right)?
+        } else {
+            self.lower_expr(right)?
+        };
         if self.builder.current_block_unterminated() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result_local,
@@ -4537,17 +4840,29 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), MirType::Bool))
     }
 
-    /// Lower `(scrutinee is Pattern) && rhs` so payload bindings from the
-    /// pattern are in scope while rhs is evaluated. Falls back to a plain
-    /// tag-test value on the no-match path.
-    fn lower_and_with_pattern(
+    /// Lower one operand of an `&&` chain. An `is` pattern anywhere in the
+    /// chain has to bind its payload, because everything to its right — and the
+    /// branch the chain guards — only runs when it matched (#256).
+    fn lower_and_operand(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        match &expr.kind {
+            ExprKind::IsPattern { expr: scrutinee, pattern } => {
+                self.lower_is_pattern_binding(scrutinee, pattern)
+            }
+            _ => self.lower_expr(expr),
+        }
+    }
+
+    /// Lower `scrutinee is Pattern` as a bool, binding the payload on the
+    /// matched path. The bare `IsPattern` lowering is just a tag comparison and
+    /// drops the bindings; extracting the payload unconditionally isn't an
+    /// option either, since a wrong-variant read can produce a bogus string.
+    fn lower_is_pattern_binding(
         &mut self,
         scrutinee: &Expr,
         pattern: &rask_ast::expr::Pattern,
-        right: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
-        let is_niche = self.is_niche_option_expr(scrutinee);
         let (val, val_ty) = self.lower_expr(scrutinee)?;
+        let is_niche = self.option_is_niche(scrutinee, &val_ty);
         let tag = self.emit_option_tag(&val, is_niche);
         let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
 
@@ -4583,22 +4898,19 @@ impl<'a> MirLowerer<'a> {
             target: merge_block,
         }));
 
-        // Match path: bind payload, then evaluate rhs.
+        // Match path: bind the payload, yield true.
         self.builder.switch_to_block(bind_block);
         let payload_ty = self
             .extract_payload_type(scrutinee)
             .unwrap_or(MirType::I64);
         self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche, &val_ty);
-        let (right_op, _) = self.lower_expr(right)?;
-        if self.builder.current_block_unterminated() {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: result_local,
-                rvalue: MirRValue::Use(right_op),
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-                target: merge_block,
-            }));
-        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
 
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), MirType::Bool))
@@ -4615,8 +4927,8 @@ impl<'a> MirLowerer<'a> {
         then_name: Option<String>,
         else_name: Option<String>,
     ) -> Result<TypedOperand, LoweringError> {
-        let is_niche = self.is_niche_option_expr(inner);
         let (val, scrutinee_ty) = self.lower_expr(inner)?;
+        let is_niche = self.option_is_niche(inner, &scrutinee_ty);
         let tag = self.emit_option_tag(&val, is_niche);
 
         // Branch on tag: 0 = present (Some/Ok), nonzero = absent (None/Err).
@@ -4658,7 +4970,7 @@ impl<'a> MirLowerer<'a> {
                     base: val.clone(),
                     field_index: 0,
                     byte_offset: self.payload_byte_offset(&payload_ty),
-                    field_size: None,
+                    access: FieldAccess::Word,
                 }
             };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
@@ -4695,7 +5007,7 @@ impl<'a> MirLowerer<'a> {
                     base: val.clone(),
                     field_index: 0,
                     byte_offset: self.payload_byte_offset(&err_ty),
-                    field_size: None,
+                    access: FieldAccess::Word,
                 },
             }));
             self.locals.insert(name.clone(), (local, err_ty.clone()));

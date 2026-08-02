@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a free function can't be named with a keyword.
+//
+// `check(r)` at a call site parses as the check-expression, so the function
+// could never be called. The declaration used to be accepted and the failure
+// showed up as a backwards type error at the call (#500).
+
+struct Req {
+    public n: i64
+}
+
+// ERROR: `check` is a keyword, so it can't name a function
+func check(req: Req) -> i64 {
+    return req.n
+}
+
+func main() {
+    const r = Req { n: 1 }
+    const got = check(r)
+    println("got={got}")
+}

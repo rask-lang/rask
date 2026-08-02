@@ -86,9 +86,10 @@ impl TypeChecker {
     /// Falls through to normal inference for non-literal or suffixed expressions.
     pub(super) fn infer_expr_expecting(&mut self, expr: &Expr, expected: &Type) -> Type {
         match &expr.kind {
-            ExprKind::Int(_, None) if Self::is_integer_type(expected) => {
+            ExprKind::Int(value, None) if Self::is_integer_type(expected) => {
                 let ty = expected.clone();
                 self.node_types.insert(expr.id, ty.clone());
+                self.pending_int_literals.push((*value, false, ty.clone(), expr.span));
                 return ty;
             }
             ExprKind::Float(_, None) if Self::is_float_type(expected) => {
@@ -113,9 +114,9 @@ impl TypeChecker {
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Type {
         let ty = match &expr.kind {
             // Literals
-            ExprKind::Int(_, suffix) => {
+            ExprKind::Int(value, suffix) => {
                 use rask_ast::token::IntSuffix;
-                match suffix {
+                let ty = match suffix {
                     Some(IntSuffix::I8) => Type::I8,
                     Some(IntSuffix::I16) => Type::I16,
                     Some(IntSuffix::I32) => Type::I32,
@@ -125,11 +126,28 @@ impl TypeChecker {
                     Some(IntSuffix::U8) => Type::U8,
                     Some(IntSuffix::U16) => Type::U16,
                     Some(IntSuffix::U32) => Type::U32,
-                    Some(IntSuffix::U64) => Type::U64,
+                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => Type::U64,
                     Some(IntSuffix::U128) => Type::U128,
                     Some(IntSuffix::Usize) => Type::U64,
-                    None => self.ctx.fresh_literal_var(LiteralKind::Integer),
-                }
+                    None => {
+                        let var = self.ctx.fresh_literal_var(LiteralKind::Integer);
+                        // The default is i32 (type.primitives/L1), but a literal
+                        // too big for i32 has to land somewhere it fits, or
+                        // codegen silently keeps the low 32 bits.
+                        if let Type::Var(id) = var {
+                            self.ctx.record_literal_int(id, *value);
+                        }
+                        var
+                    }
+                };
+                // Tokens carry an `i64`, so a literal above `i64::MAX` arrives
+                // as its bit pattern. That only ever shows up as a negative
+                // value under an unsigned suffix — `-1u64` parses as `neg(1)`,
+                // never as `Int(-1, u64)` — so the two cases don't collide.
+                let above_i64 = matches!(suffix, Some(IntSuffix::U64ByMagnitude))
+                    || (*value < 0 && matches!(ty, Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128));
+                self.pending_int_literals.push((*value, above_i64, ty.clone(), expr.span));
+                ty
             }
             ExprKind::Float(_, suffix) => {
                 use rask_ast::token::FloatSuffix;
@@ -727,12 +745,17 @@ impl TypeChecker {
                         }
                         let handler_ty = self.infer_expr(&ec.body);
                         self.pop_scope();
-                        // Block and handler must produce the same type.
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            block_ty.clone(),
-                            handler_ty,
-                            expr.span,
-                        ));
+                        // Block and handler must produce the same type — unless
+                        // the handler diverges (`else |e| return …`), which
+                        // produces nothing and would otherwise drag the whole
+                        // expression's type down to `!`.
+                        if !matches!(self.ctx.apply(&handler_ty), Type::Never) {
+                            self.ctx.add_constraint(TypeConstraint::Equal(
+                                block_ty.clone(),
+                                handler_ty,
+                                expr.span,
+                            ));
+                        }
                     }
                     return block_ty;
                 }
@@ -1291,20 +1314,30 @@ impl TypeChecker {
                 let resolved_def = self.ctx.apply(&def_ty);
                 // OPT13: diverging default (`?? return y`, `?? break`, `?? continue`,
                 // `?? panic(…)`) unwraps the scrutinee and yields the inner type.
+                // ER14: the fallback replaces the *success* value, so only the
+                // ok side has to match it. Forcing the whole scrutinee to be
+                // `Option<default>` demanded `E == none` and rejected every
+                // `T or E` — `divide(10, 0) ?? -1` reported "expected DivError,
+                // found none" (#394).
+                // The error side stays a free var so both shapes fit: `T?`
+                // binds it to `none`, `T or E` binds it to E.
+                let constrain_ok = |checker: &mut Self, want: &Type| {
+                    let free_err = checker.ctx.fresh_var();
+                    checker.ctx.add_constraint(TypeConstraint::Equal(
+                        val_ty.clone(),
+                        Type::Result {
+                            ok: Box::new(want.clone()),
+                            err: Box::new(free_err),
+                        },
+                        expr.span,
+                    ));
+                };
                 if matches!(resolved_def, Type::Never) {
                     let inner = self.ctx.fresh_var();
-                    self.ctx.add_constraint(TypeConstraint::Equal(
-                        val_ty,
-                        Type::option(inner.clone()),
-                        expr.span,
-                    ));
+                    constrain_ok(self, &inner);
                     inner
                 } else {
-                    self.ctx.add_constraint(TypeConstraint::Equal(
-                        val_ty,
-                        Type::option(def_ty.clone()),
-                        expr.span,
-                    ));
+                    constrain_ok(self, &def_ty);
                     def_ty
                 }
             }
@@ -2712,6 +2745,34 @@ impl TypeChecker {
         }
     }
 
+    /// Check every integer literal against the type it ended up with. Deferred
+    /// to here because at the literal itself the type is usually still a var.
+    ///
+    /// Without this `const b: u8 = 300` type-checked, and the backends then
+    /// disagreed about what it meant — the interpreter kept 300, codegen kept
+    /// the low byte.
+    pub(super) fn validate_pending_int_literals(&mut self) {
+        let pending = std::mem::take(&mut self.pending_int_literals);
+        for (value, above_i64, ty, span) in pending {
+            let ty = self.ctx.apply(&ty);
+            let Some((min, max)) = int_range(&ty) else { continue };
+            // Above i64::MAX the value is a bit pattern, not a number: read the
+            // magnitude back out before comparing.
+            let v = if above_i64 { i128::from(value as u64) } else { i128::from(value) };
+            let fits = v >= min && v <= max;
+            if fits {
+                continue;
+            }
+            self.errors.push(TypeError::IntLiteralOutOfRange {
+                literal: v.to_string(),
+                ty,
+                min: min.to_string(),
+                max: max.to_string(),
+                span,
+            });
+        }
+    }
+
     /// CV1–CV10: validate deferred cast/convert sites. Source types are now
     /// concrete (literal defaults applied), so `1 as bool` sees `i32`.
     pub(super) fn validate_pending_casts(&mut self) {
@@ -3094,6 +3155,20 @@ fn prim_of(ty: &Type) -> Option<Prim> {
         Type::F64 => Prim::Float { bits: 64 },
         Type::Bool => Prim::Bool,
         Type::Char => Prim::Char,
+        _ => return None,
+    })
+}
+
+/// Inclusive range of an integer type. `None` for anything that isn't one —
+/// a float target takes any literal, and an unresolved type has nothing to say.
+/// i128/u128 are checked as i128, which can't represent all of u128; the top of
+/// that range needs 128-bit literals to reach anyway.
+fn int_range(ty: &Type) -> Option<(i128, i128)> {
+    Some(match prim_of(ty)? {
+        Prim::Int { bits: 128, signed: false } => (0, i128::MAX),
+        Prim::Int { bits: 128, signed: true } => (i128::MIN, i128::MAX),
+        Prim::Int { bits, signed: true } => (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1),
+        Prim::Int { bits, signed: false } => (0, (1i128 << bits) - 1),
         _ => return None,
     })
 }

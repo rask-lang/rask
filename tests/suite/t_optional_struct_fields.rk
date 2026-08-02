@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A struct field declared `T?` or `T or E` given a bare `T` has to be wrapped at
+// the literal. Native stored the raw value where the tag belongs and crashed on
+// read-back; the interpreter reported "? requires Option or Result" (#376, #498).
+
+struct Inner { public n: i64 }
+
+struct Row {
+    public id: u64
+    public name: string?
+    public who: u64?
+    public flag: bool?
+    public score: f64?
+    public nested: Inner?
+}
+
+struct Nested { public inner: Row }
+
+func filled() -> Row {
+    return Row { id: 1, name: "bo", who: 7, flag: true, score: 2.5, nested: Inner { n: 3 } }
+}
+
+func blank() -> Row {
+    return Row { id: 2, name: none, who: none, flag: none, score: none, nested: none }
+}
+
+test "optional fields set to a value" {
+    const r = filled()
+    assert (r.name ?? "MISSING") == "bo"
+    assert (r.who ?? 0) == 7
+    assert (r.flag ?? false) == true
+    assert (r.score ?? 0.0) == 2.5
+    assert r.nested!.n == 3
+}
+
+test "optional fields set to none" {
+    const r = blank()
+    assert (r.name ?? "MISSING") == "MISSING"
+    assert (r.who ?? 0) == 0
+    assert (r.flag ?? false) == false
+    assert (r.score ?? 0.0) == 0.0
+    assert r.nested? == false
+}
+
+test "presence predicate on a filled optional field" {
+    const r = filled()
+    assert r.name?
+    assert r.who?
+    assert r.nested?
+}
+
+test "an optional field inside another struct" {
+    const n = Nested { inner: filled() }
+    assert (n.inner.name ?? "MISSING") == "bo"
+    assert (n.inner.who ?? 0) == 7
+}
+
+// A heap string past the small-string limit — the payload is a real pointer.
+test "a long string in an optional field" {
+    const r = Row {
+        id: 3,
+        name: "a fairly long string here",
+        who: none,
+        flag: none,
+        score: none,
+        nested: none,
+    }
+    assert (r.name ?? "MISSING") == "a fairly long string here"
+    assert r.name!.len() == 25
+}

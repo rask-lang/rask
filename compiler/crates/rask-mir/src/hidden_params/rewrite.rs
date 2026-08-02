@@ -146,7 +146,7 @@ fn rewrite_stmt(pass: &mut HiddenParamPass, caller: &str, stmt: &mut Stmt) {
             value: Some(v), ..
         } => rewrite_expr(pass, caller, v),
         StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
-        StmtKind::While { cond, body } => {
+        StmtKind::While { cond, body, .. } => {
             rewrite_expr(pass, caller, cond);
             rewrite_stmts(pass, caller, body);
         }
