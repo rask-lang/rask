@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// string.hash() — declared in the stdlib but implemented in neither backend
+// until now, so a custom Hashable that delegated to it failed to compile.
+
+test "equal strings hash equal" {
+    assert_eq("hei".hash(), "hei".hash())
+    const a = "bo@example.io"
+    const b = "bo@example.io"
+    assert_eq(a.hash(), b.hash())
+}
+
+test "different strings hash differently" {
+    assert "hei".hash() != "hallo".hash()
+}
+
+test "the empty string hashes" {
+    // FNV-1a offset basis, untouched.
+    assert_eq("".hash(), "".hash())
+}
+
+test "a heap string past the small-string limit" {
+    const long = "en ganske lang streng som ikke passer i sso-bufferen"
+    const same = "en ganske lang streng som ikke passer i sso-bufferen"
+    assert_eq(long.hash(), same.hash())
+}
+
+struct EmailAddress {
+    public raw: string
+}
+
+extend EmailAddress with Equal {
+    func eq(self, other: EmailAddress) -> bool {
+        return self.raw.to_lowercase() == other.raw.to_lowercase()
+    }
+}
+
+// OC1: overriding Equal cancels the derived Hashable, so it's redeclared to
+// agree with the case-insensitive equality.
+extend EmailAddress with Hashable {
+    func hash(self) -> u64 { return self.raw.to_lowercase().hash() }
+}
+
+test "a custom Hashable can delegate to string.hash()" {
+    const a = EmailAddress { raw: "Bo@Example.IO" }
+    const b = EmailAddress { raw: "bo@example.io" }
+    assert a == b
+    assert_eq(a.hash(), b.hash())
+}

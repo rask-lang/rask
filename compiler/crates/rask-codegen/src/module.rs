@@ -551,15 +551,28 @@ impl CodeGenerator {
             self.func_ids.insert("rask_test_run".to_string(), id);
         }
 
-        // rask_assert_eq(got: i64, expected: i64) -> void (panics on mismatch)
-        {
+        // assert_eq failure reporters — the comparison is generated inline, so
+        // these only format. One per operand shape (i64/char/f64/str/none).
+        for (internal, symbol, value_ty) in [
+            ("assert_eq_fail_i64", "rask_assert_eq_fail_i64", Some(types::I64)),
+            ("assert_eq_fail_bool", "rask_assert_eq_fail_bool", Some(types::I64)),
+            ("assert_eq_fail_char", "rask_assert_eq_fail_char", Some(types::I64)),
+            ("assert_eq_fail_f64", "rask_assert_eq_fail_f64", Some(types::F64)),
+            ("assert_eq_fail_str", "rask_assert_eq_fail_str", Some(types::I64)),
+            ("assert_eq_fail", "rask_assert_eq_fail", None),
+        ] {
             let mut sig = self.module.make_signature();
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
+            if let Some(ty) = value_ty {
+                sig.params.push(AbiParam::new(ty)); // got
+                sig.params.push(AbiParam::new(ty)); // expected
+            }
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
             let id = self.module
-                .declare_function("rask_assert_eq", Linkage::Import, &sig)
+                .declare_function(symbol, Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("rask_assert_eq".to_string(), id);
+            self.func_ids.insert(internal.to_string(), id);
         }
 
         // rask_test_skip(reason: ptr) -> noreturn (unwinds via panic)
@@ -1253,7 +1266,30 @@ impl CodeGenerator {
     ///
     /// `benchmarks` is a list of (display_name, function_name) pairs.
     /// Each function_name must already be declared via `declare_functions`.
-    pub fn gen_benchmark_runner(&mut self, benchmarks: &[(String, String)]) -> CodegenResult<()> {
+    /// Run each module-level constant's init thunk, in declaration order.
+    ///
+    /// A normal program does this at the top of `main`. The test and benchmark
+    /// runners replace `main`, so without this a `const store = Mutex.new(…)`
+    /// stayed a zero slot and the first `with store as s` dereferenced null.
+    /// Names without a thunk (plain literals, folded at compile time) are
+    /// skipped.
+    fn emit_const_inits(
+        fn_builder: &mut cranelift::prelude::FunctionBuilder,
+        func_refs: &HashMap<String, cranelift::codegen::ir::FuncRef>,
+        const_names: &[String],
+    ) {
+        for name in const_names {
+            if let Some(func_ref) = func_refs.get(&rask_mir::lower::const_init_fn_name(name)) {
+                fn_builder.ins().call(*func_ref, &[]);
+            }
+        }
+    }
+
+    pub fn gen_benchmark_runner(
+        &mut self,
+        benchmarks: &[(String, String)],
+        const_names: &[String],
+    ) -> CodegenResult<()> {
         use cranelift::prelude::*;
 
         // Register benchmark name strings as data
@@ -1295,6 +1331,8 @@ impl CodeGenerator {
         fn_builder.switch_to_block(entry_block);
         fn_builder.seal_block(entry_block);
 
+        Self::emit_const_inits(&mut fn_builder, &func_refs, const_names);
+
         let bench_run_ref = func_refs.get("rask_bench_run")
             .ok_or_else(|| CodegenError::FunctionNotFound("rask_bench_run".to_string()))?;
 
@@ -1330,7 +1368,11 @@ impl CodeGenerator {
     /// For each test, calls `rask_test_run(fn_addr, name_ptr)` which returns
     /// 0 on pass, 1 on fail. Accumulates failures and calls `rask_exit(1)` if
     /// any test failed.
-    pub fn gen_test_runner(&mut self, tests: &[(String, String)]) -> CodegenResult<()> {
+    pub fn gen_test_runner(
+        &mut self,
+        tests: &[(String, String)],
+        const_names: &[String],
+    ) -> CodegenResult<()> {
         use cranelift::prelude::*;
 
         // Register test name strings as data
@@ -1371,6 +1413,8 @@ impl CodeGenerator {
         let entry_block = fn_builder.create_block();
         fn_builder.switch_to_block(entry_block);
         fn_builder.seal_block(entry_block);
+
+        Self::emit_const_inits(&mut fn_builder, &func_refs, const_names);
 
         let test_run_ref = func_refs.get("rask_test_run")
             .ok_or_else(|| CodegenError::FunctionNotFound("rask_test_run".to_string()))?;
@@ -1492,12 +1536,20 @@ impl crate::Backend for CodeGenerator {
         self.gen_function(mir_fn)
     }
 
-    fn gen_benchmark_runner(&mut self, benchmarks: &[(String, String)]) -> CodegenResult<()> {
-        self.gen_benchmark_runner(benchmarks)
+    fn gen_benchmark_runner(
+        &mut self,
+        benchmarks: &[(String, String)],
+        const_names: &[String],
+    ) -> CodegenResult<()> {
+        self.gen_benchmark_runner(benchmarks, const_names)
     }
 
-    fn gen_test_runner(&mut self, tests: &[(String, String)]) -> CodegenResult<()> {
-        self.gen_test_runner(tests)
+    fn gen_test_runner(
+        &mut self,
+        tests: &[(String, String)],
+        const_names: &[String],
+    ) -> CodegenResult<()> {
+        self.gen_test_runner(tests, const_names)
     }
 
     fn emit_object(self: Box<Self>, path: &str) -> CodegenResult<()> {

@@ -139,6 +139,7 @@ int64_t     rask_string_len(const RaskStr *s);
 const char *rask_string_ptr(const RaskStr *s);
 int64_t     rask_string_is_empty(const RaskStr *s);
 int64_t     rask_string_eq(const RaskStr *a, const RaskStr *b);
+int64_t     rask_string_hash(const RaskStr *s);
 
 // struct.targets/EX4: main returned its error branch — print and exit 1.
 _Noreturn void rask_main_error_exit(const RaskStr *msg);
@@ -299,6 +300,8 @@ RaskMap *rask_map_clone(const RaskMap *m);
 // Built-in hash/eq functions
 uint64_t rask_hash_bytes(const void *key, int64_t key_size);
 int      rask_eq_bytes(const void *a, const void *b, int64_t key_size);
+// Hashes a RaskStr by content — what string-keyed maps and string.hash() use.
+uint64_t rask_hash_string_key(const void *key, int64_t key_size);
 
 // ─── Pool ───────────────────────────────────────────────────
 // Handle-based sparse storage with generation counters.
@@ -610,6 +613,21 @@ void rask_assert_fail_cmp_str(const char *left, const char *right,
 void rask_assert_fail_cmp_f64(double left, double right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
+
+// assert_eq failure reporting — got/expected wording (testing A4).
+// Generated code does the comparison and calls the variant matching the
+// operand type; the last one covers aggregates, which have no value diff.
+void rask_assert_eq_fail_i64(int64_t got, int64_t expected,
+                             const char *file, int32_t line, int32_t col);
+void rask_assert_eq_fail_bool(int64_t got, int64_t expected,
+                              const char *file, int32_t line, int32_t col);
+void rask_assert_eq_fail_char(int64_t got, int64_t expected,
+                              const char *file, int32_t line, int32_t col);
+void rask_assert_eq_fail_f64(double got, double expected,
+                             const char *file, int32_t line, int32_t col);
+void rask_assert_eq_fail_str(const char *got, const char *expected,
+                             const char *file, int32_t line, int32_t col);
+void rask_assert_eq_fail(const char *file, int32_t line, int32_t col);
 
 // Install/remove panic handler for the current thread.
 // Used internally by rask_spawn — not part of the public API.

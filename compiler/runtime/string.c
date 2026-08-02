@@ -129,6 +129,12 @@ int64_t rask_string_is_empty(const RaskStr *s) {
     return str_len(s) == 0 ? 1 : 0;
 }
 
+// FNV-1a over the contents, matching what string-keyed maps hash with — a
+// string and the same string used as a Map key must agree.
+int64_t rask_string_hash(const RaskStr *s) {
+    return (int64_t)rask_hash_string_key(s, 0);
+}
+
 // ─── Equality and comparison ────────────────────────────────
 
 int64_t rask_string_eq(const RaskStr *a, const RaskStr *b) {

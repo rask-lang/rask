@@ -232,7 +232,6 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
 
     // --- Desugar (accumulate errors, continue) ---
     let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut parse_result.decls);
-    rask_desugar::desugar_default_args(&mut parse_result.decls);
     for e in &desugar_errors {
         diags.push(
             Diagnostic::error(e.message.clone())
@@ -324,7 +323,6 @@ pub fn check_package(
 
     // --- Desugar ---
     let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut pkg_ctx.all_decls);
-    rask_desugar::desugar_default_args(&mut pkg_ctx.all_decls);
     for e in &desugar_errors {
         diags.push(
             Diagnostic::error(e.message.clone())

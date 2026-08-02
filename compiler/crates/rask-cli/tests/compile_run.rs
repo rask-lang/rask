@@ -782,6 +782,21 @@ fn error_keyword_fn_name() {
     );
 }
 
+// A struct or enum name in call position used to type-check silently and then
+// die in MIR lowering as "method `next` on receiver of unresolved type".
+// `Name(value)` is the nominal-type constructor (T7); structs have no tuple
+// form (S1).
+#[test]
+fn error_type_called_as_function() {
+    let (failed, out) = compile_error_output("type_called_as_function.rk");
+    assert!(failed, "`TaskId(1)` on a struct must be rejected: {}", out);
+    assert!(
+        out.contains("E0345") && out.contains("TaskId { value: …")
+            && out.contains("Color.Variant"),
+        "should name both cases with their fix: {}", out,
+    );
+}
+
 // #506: a `{...}` in a string that isn't a single expression (plus an optional
 // format spec) is rejected, instead of parsing whatever fits and dropping the
 // rest — which is how a JSON body reached json.decode as the string "x".
@@ -1961,5 +1976,144 @@ test "b uses its own Point" {
     assert!(
         combined.contains("a uses its own Point") && combined.contains("b uses its own Point"),
         "both files' tests should run: {}", combined,
+    );
+}
+
+// ─── Regression: issue #549 ─────────────────────────────────
+//
+// `rask test <pkg>` used to run only the operator half of the desugar phase,
+// so struct field defaults and default arguments were never filled in and
+// `Config {}` failed with E0822 "missing fields" — code `rask build` accepts.
+
+#[test]
+fn test_package_applies_field_defaults() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir().join(format!("rask_test_pkg_defaults_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    std::fs::write(dir.join("build.rk"), r#"
+package "fd" "0.1.0" {
+    description: "field defaults under rask test"
+}
+"#).unwrap();
+
+    std::fs::write(dir.join("main.rk"), r#"
+struct Config {
+    public port: u16 = 8080
+    public host: string = "localhost"
+}
+
+func scaled(n: i32, by: i32 = 3) -> i32 {
+    return n * by
+}
+
+func main() {
+    const c = Config {}
+    println("{c.port}")
+}
+
+test "all fields defaulted" {
+    const c = Config {}
+    assert c.port == 8080
+    assert c.host == "localhost"
+}
+
+test "explicit value wins over the default" {
+    const c = Config { port: 9090 }
+    assert c.port == 9090
+    assert c.host == "localhost"
+}
+
+test "default argument fills in" {
+    assert scaled(2) == 6
+    assert scaled(2, 5) == 10
+}
+"#).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("test")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask test");
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        !combined.contains("E0822"),
+        "field defaults must be filled in before type checking: {}", combined,
+    );
+    assert!(
+        out.status.success() && combined.contains("3 passed"),
+        "rask test must honor field defaults and default args\nstdout: {}\nstderr: {}",
+        stdout, stderr,
+    );
+}
+
+// ─── assert_eq compares values, not addresses ───────────────
+//
+// Native lowering handed both sides to a runtime function typed (i64, i64):
+// two strings arrived as their addresses and never matched, and a float or a
+// char didn't fit the signature at all, so Cranelift rejected the whole test
+// function. The interpreter had it right all along.
+
+fn rask_test_output(args: &[&str]) -> (bool, String) {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("test")
+        .args(args)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask test");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    (out.status.success(), combined)
+}
+
+#[test]
+fn assert_eq_compares_by_value_on_both_backends() {
+    let path = fixture("assert_eq_types.rk");
+    let path = path.to_str().unwrap();
+
+    for args in [vec![path], vec!["--interp", path]] {
+        let (ok, combined) = rask_test_output(&args);
+        assert!(
+            ok && combined.contains("8 passed"),
+            "assert_eq must compare by value ({:?}): {}", args, combined,
+        );
+    }
+}
+
+#[test]
+fn assert_eq_failure_reports_got_and_expected() {
+    let dir = std::env::temp_dir().join(format!("rask_assert_eq_diff_{}", next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("mismatch.rk");
+    std::fs::write(&file, r#"
+func main() { println("x") }
+
+test "strings differ" {
+    const a = "hei"
+    assert_eq(a, "hallo")
+}
+"#).unwrap();
+
+    let (ok, combined) = rask_test_output(&[file.to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(!ok, "a mismatched assert_eq must fail the test: {}", combined);
+    assert!(
+        combined.contains("got:") && combined.contains("hei")
+            && combined.contains("expected:") && combined.contains("hallo"),
+        "failure must name both values: {}", combined,
     );
 }

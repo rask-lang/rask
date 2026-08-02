@@ -32,7 +32,9 @@ test "email equality is case-insensitive (custom Equal)" {
 }
 
 test "ids are distinct values, stepped through .value" {
-    const a = TaskId(1)
+    // TaskId is a struct, so it's built field-by-field — `TaskId(1)` is the
+    // nominal-type constructor (T7), and structs have no tuple form (S1).
+    const a = TaskId { value: 1 }
     const b = a.next()
     assert_eq(b.value, 2)
     assert a != b

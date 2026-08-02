@@ -13,7 +13,7 @@
 //! These passes run before type checking.
 
 mod defaults;
-pub use defaults::{desugar_default_args, is_valid_default_expr};
+pub use defaults::is_valid_default_expr;
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, TraitDecl, ImplDecl};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern, UnaryOp};
@@ -36,22 +36,15 @@ pub const DESUGAR_ID_BASE: u32 = 10_000_000;
 /// stdlib's. See [`DESUGAR_ID_BASE`].
 pub const DEFAULT_ARGS_ID_BASE: u32 = 20_000_000;
 
-/// Desugar all operators in a list of declarations.
+/// Run the whole desugar phase over a list of declarations.
+///
+/// Both sub-passes always run together. Splitting them was a trap: every
+/// pipeline that called only the operator pass silently lost default
+/// arguments and struct field defaults, so `Config {}` type-checked as a
+/// missing-fields error under `rask test` while `rask build` accepted it
+/// (#549).
 pub fn desugar(decls: &mut [Decl]) {
-    let mut desugarer = Desugarer::new(DESUGAR_ID_BASE);
-    desugarer.scan_error_message_types(decls);
-    for decl in decls {
-        desugarer.desugar_decl(decl);
-    }
-}
-
-/// Desugar with a custom starting NodeId to avoid collisions.
-pub fn desugar_with_start_id(decls: &mut [Decl], start_id: u32) {
-    let mut desugarer = Desugarer::new(start_id);
-    desugarer.scan_error_message_types(decls);
-    for decl in decls {
-        desugarer.desugar_decl(decl);
-    }
+    desugar_with_diagnostics(decls);
 }
 
 /// ER26 coverage error from @message desugaring.
@@ -61,14 +54,20 @@ pub struct DesugarError {
     pub span: Span,
 }
 
-/// Desugar all operators, returning any ER26 coverage errors.
+/// Desugar phase, returning any ER26 coverage errors.
 pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
     let mut desugarer = Desugarer::new(DESUGAR_ID_BASE);
     desugarer.scan_error_message_types(decls);
-    for decl in decls {
+    for decl in decls.iter_mut() {
         desugarer.desugar_decl(decl);
     }
-    desugarer.errors
+    let errors = std::mem::take(&mut desugarer.errors);
+
+    // Defaults need the full declaration list to build their lookup table,
+    // so they run as a second sweep rather than inline with the operators.
+    defaults::desugar_default_args(decls);
+
+    errors
 }
 
 /// One piece of a parsed `format` template.

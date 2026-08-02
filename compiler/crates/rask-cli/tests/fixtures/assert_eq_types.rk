@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// assert_eq compares by value on every type, on both backends (testing A4).
+
+struct Point {
+    public x: i32
+    public y: i32
+}
+
+enum Color { Red, Green }
+
+func main() {
+    println("assert_eq_types")
+}
+
+test "strings compare by content" {
+    const a = "hei"
+    const b = "hei"
+    assert_eq(a, b)
+    assert_eq(a, "hei")
+}
+
+test "a heap string past the small-string limit" {
+    const a = "en ganske lang streng som ikke passer i sso-bufferen"
+    const b = "en ganske lang streng som ikke passer i sso-bufferen"
+    assert_eq(a, b)
+}
+
+test "floats" {
+    assert_eq(1.5, 1.5)
+    const f: f32 = 2.25
+    assert_eq(f, 2.25)
+}
+
+test "chars" {
+    assert_eq('a', 'a')
+}
+
+test "bools" {
+    assert_eq(true, true)
+    assert_eq(false, false)
+}
+
+test "narrow integers" {
+    const n: u16 = 8080
+    assert_eq(n, 8080)
+    const m: i32 = -7
+    assert_eq(m, -7)
+}
+
+test "structs" {
+    const a = Point { x: 1, y: 2 }
+    const b = Point { x: 1, y: 2 }
+    assert_eq(a, b)
+}
+
+test "enums" {
+    assert_eq(Color.Red, Color.Red)
+}

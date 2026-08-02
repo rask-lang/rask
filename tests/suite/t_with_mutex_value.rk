@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `with` block is an expression (mem.borrowing) — its value has to survive
+// the guard being released. On native it was thrown away: a scalar came out 0
+// and an aggregate came out a null pointer, so reading a field segfaulted.
+
+struct Counter {
+    public hits: u64
+    public misses: u64
+}
+
+struct Snapshot {
+    public hits: u64
+    public misses: u64
+}
+
+extend Counter {
+    func snapshot(self) -> Snapshot {
+        return Snapshot { hits: self.hits, misses: self.misses }
+    }
+}
+
+const counter = Mutex.new(Counter { hits: 3, misses: 4 })
+const total = Mutex.new(10)
+
+test "a scalar read comes out of the block" {
+    const n = with counter as c { c.hits }
+    assert_eq(n, 3)
+}
+
+test "a word-sized payload comes out of the block" {
+    const n = with total as t { t + 5 }
+    assert_eq(n, 15)
+}
+
+test "a struct literal comes out of the block" {
+    const s = with counter as c { Counter { hits: c.hits, misses: c.misses } }
+    assert_eq(s.hits, 3)
+    assert_eq(s.misses, 4)
+}
+
+test "an aggregate returned by a method comes out of the block" {
+    const s = with counter as c { c.snapshot() }
+    assert_eq(s.hits, 3)
+    assert_eq(s.misses, 4)
+}
+
+test "a statement-position with still runs its body" {
+    with counter as c {
+        assert_eq(c.hits, 3)
+    }
+}

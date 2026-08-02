@@ -160,6 +160,65 @@ void rask_assert_fail_cmp_f64(double left, double right,
     rask_panic_at(file, line, col, buf);
 }
 
+// assert_eq reports got/expected rather than left/right (testing A4): the
+// first argument is what the code produced, the second what the test wants.
+// The comparison itself happens in generated code — these only format.
+static _Noreturn void assert_eq_fail_fmt(const char *got, const char *expected,
+                                         const char *file, int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assert_eq failed\n  got:      %s\n  expected: %s", got, expected);
+    rask_panic_at(file, line, col, buf);
+}
+
+void rask_assert_eq_fail_i64(int64_t got, int64_t expected,
+                             const char *file, int32_t line, int32_t col) {
+    char g[32], e[32];
+    snprintf(g, sizeof(g), "%lld", (long long)got);
+    snprintf(e, sizeof(e), "%lld", (long long)expected);
+    assert_eq_fail_fmt(g, e, file, line, col);
+}
+
+void rask_assert_eq_fail_bool(int64_t got, int64_t expected,
+                              const char *file, int32_t line, int32_t col) {
+    assert_eq_fail_fmt(got ? "true" : "false", expected ? "true" : "false",
+                       file, line, col);
+}
+
+void rask_assert_eq_fail_char(int64_t got, int64_t expected,
+                              const char *file, int32_t line, int32_t col) {
+    RaskStr gs, es;
+    rask_char_to_string(&gs, (int32_t)got);
+    rask_char_to_string(&es, (int32_t)expected);
+    char g[16], e[16];
+    snprintf(g, sizeof(g), "'%s'", rask_string_ptr(&gs));
+    snprintf(e, sizeof(e), "'%s'", rask_string_ptr(&es));
+    assert_eq_fail_fmt(g, e, file, line, col);
+}
+
+void rask_assert_eq_fail_f64(double got, double expected,
+                             const char *file, int32_t line, int32_t col) {
+    char g[RASK_F64_BUF_SIZE], e[RASK_F64_BUF_SIZE];
+    rask_fmt_double(g, sizeof(g), got);
+    rask_fmt_double(e, sizeof(e), expected);
+    assert_eq_fail_fmt(g, e, file, line, col);
+}
+
+void rask_assert_eq_fail_str(const char *got, const char *expected,
+                             const char *file, int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assert_eq failed\n  got:      \"%s\"\n  expected: \"%s\"",
+             got ? got : "(null)", expected ? expected : "(null)");
+    rask_panic_at(file, line, col, buf);
+}
+
+// Aggregates (structs, enums, tuples) compare fine but have no one-line
+// rendering here, so the message names the failure without a value diff.
+void rask_assert_eq_fail(const char *file, int32_t line, int32_t col) {
+    rask_panic_at(file, line, col, "assert_eq failed: values differ");
+}
+
 // ─── I/O primitives ──────────────────────────────────────────────
 // Thin wrappers around POSIX syscalls. Return values match POSIX
 // conventions: bytes transferred on success, -1 on error.
