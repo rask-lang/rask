@@ -2288,19 +2288,58 @@ impl<'a> FunctionBuilder<'a> {
             types::I64, MemFlags::new(), vtable_ptr, *vtable_offset as i32,
         );
 
-        // Build signature: (data_ptr, args...) -> ret
+        // Build signature: (data_ptr, args...) -> ret.
+        //
+        // From the operands' own types, not I64 for everything. An aggregate
+        // travels as a pointer, but a float travels in a float register — an
+        // `f64`-returning trait method declared as returning I64 put the ABI
+        // and the callee on different registers entirely.
+        let abi_ty = |ty: Option<&MirType>| -> Type {
+            match ty {
+                Some(
+                    MirType::Struct(_)
+                    | MirType::Enum(_)
+                    | MirType::Tuple(_)
+                    | MirType::Array { .. }
+                    | MirType::Result { .. }
+                    | MirType::Option(_)
+                    | MirType::String
+                    | MirType::TraitObject { .. },
+                ) => types::I64,
+                Some(t) => mir_to_cranelift_type(t).unwrap_or(types::I64),
+                None => types::I64,
+            }
+        };
+
         let mut sig = Signature::new(isa::CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64)); // data_ptr (self)
-        for _ in args.iter() {
-            sig.params.push(AbiParam::new(types::I64));
+        let arg_tys: Vec<MirType> = args
+            .iter()
+            .map(|a| Self::operand_mir_type(a, ctx.locals).unwrap_or(MirType::I64))
+            .collect();
+        for ty in &arg_tys {
+            sig.params.push(AbiParam::new(abi_ty(Some(ty))));
         }
-        sig.returns.push(AbiParam::new(types::I64));
+        let ret_mir = dst
+            .as_ref()
+            .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+            .map(|l| l.ty.clone());
+        if !matches!(ret_mir, Some(MirType::Void)) {
+            sig.returns.push(AbiParam::new(abi_ty(ret_mir.as_ref())));
+        }
 
         // Build argument values
         let mut call_args = Vec::with_capacity(1 + args.len());
         call_args.push(data_ptr);
-        for arg in args.iter() {
-            let val = Self::lower_operand(builder, arg, ctx)?;
+        for (arg, want) in args.iter().zip(arg_tys.iter()) {
+            let want_cl = abi_ty(Some(want));
+            let val = Self::lower_operand_typed(builder, arg, Some(want_cl), ctx)?;
+            let val_ty = builder.func.dfg.value_type(val);
+            let val = if val_ty != want_cl {
+                Self::convert_value(builder, val, val_ty, want_cl, Some(want))
+            } else {
+                val
+            };
             call_args.push(val);
         }
 
@@ -2313,11 +2352,18 @@ impl<'a> FunctionBuilder<'a> {
                 .ok_or_else(|| CodegenError::UnsupportedFeature(
                     format!("TraitCall destination for '{}' not found", method_name)
                 ))?;
-            // Aggregate-returning methods (string, struct, ...) hand back a
-            // pointer to data in the callee frame. Copy into the dst's
-            // stack slot before that frame goes away.
+            // Aggregate-returning methods hand back a pointer to data in the
+            // callee frame, so copy into the dst's slot before that frame goes
+            // away — except when the aggregate fits in a word, where a Rask
+            // function returns the value itself (see the Return terminator).
+            // Dereferencing that was the crash: a fieldless enum through a
+            // vtable read address 1 (#474).
             if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst_id) {
-                Self::copy_aggregate(builder, result, *dst_ss, *dst_size);
+                if *dst_size <= 8 {
+                    builder.ins().stack_store(result, *dst_ss, 0);
+                } else {
+                    Self::copy_aggregate(builder, result, *dst_ss, *dst_size);
+                }
                 let addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
                 builder.def_var(*var, addr);
             } else {
