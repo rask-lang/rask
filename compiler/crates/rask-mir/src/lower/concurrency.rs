@@ -266,6 +266,22 @@ impl<'a> MirLowerer<'a> {
 
         let result = self.lower_block(body);
 
+        // Park the block's value in a local of its own before the guard is
+        // released. A `with` block is an expression (mem.borrowing, the
+        // `const name = with pool[h] as entity { entity.name }` form), and the
+        // value has to be read out while the lock is still held.
+        let result = result.map(|(op, ty)| {
+            if matches!(ty, MirType::Void) || !self.builder.current_block_unterminated() {
+                return (op, ty);
+            }
+            let out = self.builder.alloc_temp(ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: out,
+                rvalue: crate::MirRValue::Use(op),
+            }));
+            (MirOperand::Local(out), ty)
+        });
+
         // Fall-through exit runs the same cleanup inline. Early exits already
         // chained through the block on the ensure stack — but they left the
         // current block terminated, and whatever follows the `with` still has to
@@ -283,10 +299,7 @@ impl<'a> MirLowerer<'a> {
             None => { self.locals.remove(binding_name); }
         }
 
-        let (_, _) = result?;
-        // `with` on a mutex is a statement in practice; the block's own value
-        // isn't observable once the guard is gone.
-        Ok((MirOperand::Constant(crate::MirConst::Int(0)), MirType::I64))
+        result
     }
 
     /// Schedule "write the guard back, then unlock" as a scope cleanup, the same
