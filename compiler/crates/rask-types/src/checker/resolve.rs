@@ -287,7 +287,14 @@ impl TypeChecker {
     fn is_displayable(&self, ty: &Type) -> bool {
         match ty {
             Type::Result { .. } => false,
-            Type::Named(_) | Type::Generic { .. } => {
+            Type::Named(id) | Type::Generic { base: id, .. } => {
+                // A nominal newtype inherits nothing it didn't ask for
+                // (type.aliases/T10), so its `with (…)` list is the answer —
+                // and an `extend` block that writes `to_string` counts too.
+                if let Some(TypeDef::NominalAlias { with_traits, methods, .. }) = self.types.get(*id) {
+                    return with_traits.iter().any(|t| t == "Displayable")
+                        || methods.iter().any(|m| m.name == "to_string" || m.name == "message");
+                }
                 let has = |name: &str| {
                     crate::traits::implements_trait(&self.types, ty, name)
                 };

@@ -2209,6 +2209,46 @@ impl<'a> MirLowerer<'a> {
                         value: obj.clone(),
                         store_size: Some(field_ty.size()),
                     }));
+                } else {
+                    // Payload with no struct layout to find the field in. The
+                    // access can't be performed, so this keeps the older
+                    // "unwrap and pass the payload through" shape rather than
+                    // inventing a field read.
+                    //
+                    // It used to write nothing at all — not even the tag — so
+                    // the result was whatever the slot happened to hold. No
+                    // program in the corpus reaches here and no reduction found
+                    // one either (#367), but an empty branch under a `Some` is
+                    // not something to leave sitting there.
+                    let payload_local = self.builder.alloc_temp(payload_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: payload_local,
+                        rvalue: MirRValue::Field {
+                            base: obj.clone(),
+                            field_index: 0,
+                            byte_offset: None,
+                            access: FieldAccess::Word,
+                        },
+                    }));
+                    if field_is_option {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: result_local,
+                            rvalue: MirRValue::Use(MirOperand::Local(payload_local)),
+                        }));
+                    } else {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: result_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(0)),
+                            store_size: Some(8),
+                        }));
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: result_local,
+                            offset: 8,
+                            value: MirOperand::Local(payload_local),
+                            store_size: Some(payload_ty.size().max(1)),
+                        }));
+                    }
                 }
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 

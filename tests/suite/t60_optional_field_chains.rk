@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `obj?.field` across the payload shapes it has to handle, plus what a nominal
+// newtype renders as (type.aliases/T10, T12).
+
+struct Deep { public leaf: i64 }
+struct Mid { public deep: Deep? }
+struct Top { public mid: Mid? }
+
+struct Wrapper<T> { public item: T }
+struct Pair<A, B> { public left: A, public right: B }
+
+type Id = u64 with (Equal, Hashable, Displayable)
+
+struct Holder { public id: Id }
+
+func top_opt(present: bool) -> Top? {
+    if present {
+        return Top { mid: Mid { deep: Deep { leaf: 11 } } }
+    }
+    return none
+}
+
+func gen_opt(present: bool) -> Wrapper<i64>? {
+    if present { return Wrapper { item: 9 } }
+    return none
+}
+
+func gen_str(present: bool) -> Wrapper<string>? {
+    if present { return Wrapper { item: "hi" } }
+    return none
+}
+
+func pair_opt(present: bool) -> Pair<i64, string>? {
+    if present { return Pair { left: 3, right: "x" } }
+    return none
+}
+
+func holder_opt(present: bool) -> Holder? {
+    if present { return Holder { id: Id(42) } }
+    return none
+}
+
+test "a three-deep optional chain reaches the leaf" {
+    assert top_opt(true)?.mid?.deep?.leaf ?? -1 == 11
+    assert top_opt(false)?.mid?.deep?.leaf ?? -1 == -1
+}
+
+test "an intermediate none short-circuits the chain" {
+    const partial = Top { mid: Mid { deep: none } }
+    assert partial.mid?.deep?.leaf ?? -1 == -1
+}
+
+test "optional field on a generic struct" {
+    assert gen_opt(true)?.item ?? -1 == 9
+    assert gen_opt(false)?.item ?? -1 == -1
+    assert gen_str(true)?.item ?? "none" == "hi"
+    assert pair_opt(true)?.left ?? -1 == 3
+    assert pair_opt(true)?.right ?? "none" == "x"
+}
+
+test "type.aliases/T12 — a nominal newtype renders as the value it wraps" {
+    const h = holder_opt(true)
+    const id = h?.id ?? Id(0)
+    assert "{id}" == "42"
+    const missing = holder_opt(false)?.id ?? Id(0)
+    assert "{missing}" == "0"
+}
