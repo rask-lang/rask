@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ensure — an ensure body is a real sub-CFG, loops and all.
+
+func triangle(n: i64) -> i64 {
+    mut sum = 0
+    mut i = 1
+    while i <= n {
+        sum = sum + i
+        i = i + 1
+    }
+    return sum
+}
+
+func plain(n: i64) -> i64 {
+    return n + 1
+}
+
+func loop_in_callee() -> i64 {
+    ensure triangle(5) == 15
+    return 1
+}
+
+func loop_free_callee() -> i64 {
+    ensure plain(5) == 6
+    return 2
+}
+
+func loop_in_caller() -> i64 {
+    mut i = 0
+    ensure i == 0
+    while i < 3 {
+        i = i + 1
+    }
+    return i
+}
+
+func loop_inside_the_ensure_body() -> i64 {
+    mut total = 0
+    ensure {
+        mut k = 0
+        while k < 4 {
+            total = total + k
+            k = k + 1
+        }
+    }
+    return 7
+}
+
+func two_ensures_with_loops() -> i64 {
+    ensure triangle(3) == 6
+    ensure triangle(4) == 10
+    return 3
+}
+
+test "ctrl.ensure — a loop inside the ensure's callee compiles and runs" {
+    assert loop_in_callee() == 1
+    assert loop_free_callee() == 2
+}
+
+test "ctrl.ensure — a loop in the enclosing function still works" {
+    assert loop_in_caller() == 3
+}
+
+test "ctrl.ensure — a loop written directly in the ensure body" {
+    assert loop_inside_the_ensure_body() == 7
+}
+
+test "ctrl.ensure — two ensures, each with a looping callee" {
+    assert two_ensures_with_loops() == 3
+}

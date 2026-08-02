@@ -244,7 +244,6 @@ impl<'a> FunctionBuilder<'a> {
         // normal paths (e.g. post-cleanup continuation points listed in a
         // chain) must stay in the normal block_map so non-cleanup Gotos can
         // still target them.
-        let preds = rask_mir::analysis::cfg::predecessors(self.mir_fn);
         let chain_members: HashSet<BlockId> = self.mir_fn.blocks.iter()
             .filter_map(|b| {
                 if let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &b.terminator.kind {
@@ -255,40 +254,46 @@ impl<'a> FunctionBuilder<'a> {
             })
             .flatten()
             .collect();
-        let is_cleanup_pred = |pred_id: &BlockId| -> bool {
-            self.mir_fn.blocks.iter()
-                .find(|b| b.id == *pred_id)
-                .map(|b| matches!(b.terminator.kind, MirTerminatorKind::CleanupReturn { .. }))
-                .unwrap_or(false)
-        };
-        let mut cleanup_only: HashSet<BlockId> = HashSet::new();
-        for &bid in &chain_members {
-            // Chain member is cleanup-only only if all non-CleanupReturn
-            // predecessors are absent (i.e. no normal Goto/Branch targets it).
-            let has_normal_pred = preds.get(&bid)
-                .map(|ps| ps.iter().any(|p| !is_cleanup_pred(p)))
-                .unwrap_or(false);
-            if !has_normal_pred {
-                cleanup_only.insert(bid);
-            }
-        }
-        // Transitively include successors whose *all* predecessors are
-        // already cleanup_only — these are blocks reachable only through
-        // cleanup paths (e.g. sub-CFGs in ensure handlers).
-        loop {
-            let mut added = false;
-            for mir_block in &self.mir_fn.blocks {
-                if cleanup_only.contains(&mir_block.id) { continue; }
-                let bid_preds = match preds.get(&mir_block.id) {
-                    Some(p) if !p.is_empty() => p,
-                    _ => continue,
-                };
-                if bid_preds.iter().all(|p| cleanup_only.contains(p)) {
-                    cleanup_only.insert(mir_block.id);
-                    added = true;
+        // Walk forward from the entry over ordinary edges. Anything found this
+        // way is on a normal path and keeps its place in the main block map.
+        let mut normal_reachable: HashSet<BlockId> = HashSet::new();
+        {
+            let mut queue = vec![self.mir_fn.entry_block];
+            while let Some(bid) = queue.pop() {
+                if !normal_reachable.insert(bid) {
+                    continue;
+                }
+                if let Some(b) = self.mir_fn.blocks.iter().find(|b| b.id == bid) {
+                    // A CleanupReturn's chain is the cleanup path, not a normal
+                    // successor — that's the whole distinction being drawn here.
+                    if !matches!(b.terminator.kind, MirTerminatorKind::CleanupReturn { .. }) {
+                        queue.extend(rask_mir::analysis::cfg::successors(&b.terminator));
+                    }
                 }
             }
-            if !added { break; }
+        }
+
+        // Then forward from each cleanup chain member. Everything reachable
+        // that isn't also on a normal path belongs to the cleanup sub-CFG.
+        //
+        // This used to run backwards — a block joined the set once *all* its
+        // predecessors were in it. A loop inside the cleanup path defeats that:
+        // the loop header's back edge comes from a block that can't be admitted
+        // until the header is, so neither ever is. The body stayed in the main
+        // block map while its entry moved to the cleanup map, and the jump
+        // between them was emitted into nothing — leaving a block with no
+        // terminator for Cranelift to reject (#538).
+        let mut cleanup_only: HashSet<BlockId> = HashSet::new();
+        {
+            let mut queue: Vec<BlockId> = chain_members.iter().copied().collect();
+            while let Some(bid) = queue.pop() {
+                if normal_reachable.contains(&bid) || !cleanup_only.insert(bid) {
+                    continue;
+                }
+                if let Some(b) = self.mir_fn.blocks.iter().find(|b| b.id == bid) {
+                    queue.extend(rask_mir::analysis::cfg::successors(&b.terminator));
+                }
+            }
         }
 
         // Deduplicate cleanup chains: map each unique chain to a shared block.
@@ -519,9 +524,18 @@ impl<'a> FunctionBuilder<'a> {
                         builder.ins().brif(cond_final, then_cl, &[], else_cl, &[]);
                     }
                     MirTerminatorKind::Goto { target } => {
-                        if let Some(&tgt) = cleanup_block_map.get(target) {
-                            builder.ins().jump(tgt, &[]);
-                        }
+                        // Cleanup blocks first, then the main map. A target in
+                        // neither would leave this block with no terminator,
+                        // which Cranelift rejects with a message that says
+                        // nothing about where it came from — so say it here.
+                        let tgt = cleanup_block_map.get(target)
+                            .or_else(|| self.block_map.get(target))
+                            .copied()
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(format!(
+                                "cleanup block jumps to {:?}, which has no Cranelift block",
+                                target,
+                            )))?;
+                        builder.ins().jump(tgt, &[]);
                     }
                     _ => {
                         // Other terminators in cleanup blocks: treat as return
@@ -609,9 +623,18 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                     MirTerminatorKind::Goto { target } => {
-                        if let Some(&tgt) = cleanup_block_map.get(target) {
-                            builder.ins().jump(tgt, &[]);
-                        }
+                        // Cleanup blocks first, then the main map. A target in
+                        // neither would leave this block with no terminator,
+                        // which Cranelift rejects with a message that says
+                        // nothing about where it came from — so say it here.
+                        let tgt = cleanup_block_map.get(target)
+                            .or_else(|| self.block_map.get(target))
+                            .copied()
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(format!(
+                                "cleanup block jumps to {:?}, which has no Cranelift block",
+                                target,
+                            )))?;
+                        builder.ins().jump(tgt, &[]);
                     }
                     MirTerminatorKind::Branch { cond, then_block, else_block } => {
                         let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;

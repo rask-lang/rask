@@ -62,10 +62,26 @@ impl PassManager {
     }
 
     /// Run all passes in order. Returns the accumulated context.
+    ///
+    /// `RASK_DUMP_PASS=<name>` prints the MIR after that pass — `--dump-mir`
+    /// shows the lowering's output, which is before any of this ran, so a pass
+    /// that breaks the CFG leaves no trace anywhere. `RASK_DUMP_PASS=all`
+    /// prints after every pass. Restrict to one function with
+    /// `RASK_DUMP_FN=<function name>`.
     pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
         let mut ctx = PassContext::default();
+        let dump_after = std::env::var("RASK_DUMP_PASS").ok();
+        let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
             pass.run(fns, &mut ctx);
+            if dump_after.as_deref().is_some_and(|w| w == "all" || w == pass.name()) {
+                eprintln!("──── after {} ────", pass.name());
+                for func in fns.iter() {
+                    if dump_fn.as_deref().is_none_or(|want| func.name == want) {
+                        eprintln!("{}", func);
+                    }
+                }
+            }
         }
         ctx
     }
