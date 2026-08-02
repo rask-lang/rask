@@ -340,20 +340,18 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
 
 **Non-encodable field [E12]:**
 ```
-ERROR [std.encoding/E12]: struct `Connection` is not Encode
+ERROR [E0333]: `Connection` cannot be decoded
    |
-5  |  json.encode(conn)
-   |               ^^^^ field `socket` has type `Socket` which is not Encode
-   |
-3  |  struct Connection {
-4  |      public socket: Socket    ← Socket is not Encode
-   |
+5  |  json.decode<Connection>(body)
+   |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ field `socket` has type `Socket`, which can't be decoded
 
-WHY: Auto-derive requires all public fields to be Encode types.
+FIX: mark `socket` with `@skip`, or hold it in a serializable type
 
-FIX: Mark the field @skip, mark the struct @no_encode and implement custom
-     encoding, or make Socket implement Encode.
+WHY: `Decode` isn't implemented by hand — a type has it when its fields do,
+     all the way down (std.encoding/E12)
 ```
+
+The field is named through nesting, so a struct-in-a-struct reports `inner.socket`. `@skip` really does resolve it: a skipped field is out of the wire form, so it gets no say in whether the type qualifies (E19).
 
 **Opted-out type used as Encode [E16]:**
 ```

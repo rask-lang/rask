@@ -147,6 +147,11 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // struct field half the room for one — the vtable half landed in
         // whatever followed (#474).
         Type::UnresolvedNamed(name) if name.starts_with("any ") => (16, 8),
+        // A raw pointer field written `*u8` arrives as a name too. It's a
+        // pointer, so the fallback size was right — but it went through the
+        // unknown-type branch and warned about a program with nothing wrong
+        // with it.
+        Type::UnresolvedNamed(name) if name.starts_with('*') => (8, 8),
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
                 "string" | "Path" => (16, 8),

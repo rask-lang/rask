@@ -31,6 +31,7 @@ impl BuiltinModules {
                     name: m.name.clone(),
                     params: m.params.iter().map(|(_, ty)| parse_stub_type(ty)).collect(),
                     ret: parse_stub_type(&m.ret_ty),
+                    type_param_bounds: m.type_param_bounds.clone(),
                 }
             }).collect();
             modules.insert(module_name.to_string(), sigs);

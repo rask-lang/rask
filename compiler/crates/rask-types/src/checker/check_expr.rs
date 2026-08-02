@@ -2208,9 +2208,17 @@ impl TypeChecker {
             // If explicit type args provided (e.g., json.decode<Foo>),
             // substitute them directly instead of using unconstrained fresh vars
             let ret = sig.ret.clone();
+            let bounds = sig.type_param_bounds.clone();
             if let Some(ta) = type_args {
                 if ta.len() == 1 {
                     let explicit_ty = self.resolve_type_name(&ta[0], span);
+                    // The stub's bound is the whole check on this path — there's
+                    // no body to infer from. `json.decode<T: Decode>` with a T
+                    // that isn't Decode used to type-check clean and then fail in
+                    // MIR lowering on native, or blame a missing field on interp.
+                    if let Some((_, bound)) = bounds.first() {
+                        self.check_type_arg_bound(&explicit_ty, bound, span);
+                    }
                     return self.freshen_module_return_type_with(&ret, &explicit_ty);
                 }
             }
@@ -2254,6 +2262,33 @@ impl TypeChecker {
                 err: Box::new(self.freshen_module_return_type_with(err, explicit)),
             },
             _ => ty.clone(),
+        }
+    }
+
+    /// Check a written type argument against the bound the stub declared for it.
+    ///
+    /// Unresolved names are skipped — a bare type parameter forwarded from an
+    /// enclosing generic isn't concrete yet, and reporting it here would blame
+    /// the wrong call site.
+    fn check_type_arg_bound(&mut self, ty: &Type, bound: &str, span: Span) {
+        let resolved = self.resolve_named(ty);
+        match &resolved {
+            Type::Var(_) | Type::Error => return,
+            Type::UnresolvedNamed(_) => return,
+            _ => {}
+        }
+        let trait_bound = crate::traits::TraitBound::new("_", vec![bound.to_string()]);
+        if let Err(errs) = crate::traits::verify_instantiation(
+            &self.types,
+            &resolved,
+            std::slice::from_ref(&trait_bound),
+            span,
+        ) {
+            for e in errs {
+                let (ty_name, trait_name) = super::validate::trait_error_parts(&e);
+                let err = self.bound_error(&resolved, ty_name, trait_name, span);
+                self.errors.push(err);
+            }
         }
     }
 

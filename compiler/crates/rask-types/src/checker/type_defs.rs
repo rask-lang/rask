@@ -93,6 +93,9 @@ pub enum TypeDef {
         is_binary: bool,
         /// V5: fields marked `private` — accessible only inside extend blocks
         private_fields: Vec<String>,
+        /// E19: fields marked `@skip` — left out of every serialized form, so
+        /// they don't get a say in whether the type is Encode/Decode either.
+        skipped_fields: Vec<String>,
         /// ER42/L1 transitive linearity: true if `is_resource` is true OR any
         /// field type is itself transitively linear. Computed by a fixed-point
         /// pass after declaration collection.
@@ -204,6 +207,10 @@ pub struct ModuleMethodSig {
     pub name: String,
     pub params: Vec<Type>,
     pub ret: Type,
+    /// Trait bounds on the method's own type parameters, as the stub wrote them
+    /// (`decode<T: Decode>` → `[("T", "Decode")]`). Checked against the written
+    /// type argument at the call site.
+    pub type_param_bounds: Vec<(String, String)>,
 }
 
 /// Endianness for multi-byte binary fields.
