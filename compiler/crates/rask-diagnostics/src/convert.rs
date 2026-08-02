@@ -162,6 +162,27 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("built-in types and functions are reserved — redefining them would break language semantics")
             }
 
+            NoSuchStdlibExport { module, symbol, suggestion } => {
+                let d = Diagnostic::error(format!(
+                    "`{}` has no `{}` to import", module, symbol
+                ))
+                .with_code("E0212")
+                .with_primary(self.span, "not part of this module")
+                .with_why(
+                    "a selective import names one symbol out of a module; importing a name \
+                     the module doesn't have used to be accepted here and only failed later, \
+                     at code generation",
+                );
+                match suggestion {
+                    Some(name) => d
+                        .with_help(format!("did you mean `import {}.{}`?", module, name))
+                        .with_fix(format!("import {}.{}", module, name)),
+                    None => d
+                        .with_help(format!("import the whole module with `import {}`", module))
+                        .with_fix(format!("import {}", module)),
+                }
+            }
+
             CHeaderNotFound { header, detail } => {
                 Diagnostic::error(format!("C header not found: `{}`", header))
                     .with_code("E0210")

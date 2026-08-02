@@ -203,7 +203,18 @@ pub struct MirContext<'a> {
     /// Cross-function Vec element types inferred from push/set calls.
     /// Key: tracking path (e.g. "v", "self.history"), Value: element MirType.
     /// Shared across function lowerings via RefCell.
+    ///
+    /// The key is just the path, so two functions with a local of the same name
+    /// hash to the same entry. A name used for a `Vec<string>` in one function
+    /// and a `Vec<i64>` in another is a conflict, and guessing either way
+    /// miscompiles the other — so a conflicting name is dropped from the map
+    /// and never re-added, leaving those functions on their own per-function
+    /// tracking. Two `test` blocks that both call their vector `v` used to make
+    /// the second one fail codegen and vanish from the run.
     pub shared_elem_types: std::cell::RefCell<HashMap<String, MirType>>,
+    /// Tracking paths seen with more than one element type. Kept out of
+    /// `shared_elem_types` for good.
+    pub shared_elem_conflicts: std::cell::RefCell<std::collections::HashSet<String>>,
     /// Comptime interpreter for evaluating `comptime if` during lowering.
     /// None in tests or when cfg is unavailable.
     pub comptime_interp: Option<std::cell::RefCell<rask_comptime::ComptimeInterpreter>>,
@@ -274,6 +285,7 @@ impl<'a> MirContext<'a> {
             line_map: None,
             source_file: None,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &EMPTY_COERCIONS,
@@ -328,6 +340,26 @@ impl<'a> MirContext<'a> {
                 // "any TraitName" → TraitObject
                 if let Some(trait_name) = name.strip_prefix("any ") {
                     return MirType::TraitObject { trait_name: trait_name.to_string() };
+                }
+                // "[T; N]" → fixed-size array, "[]T" / "[T]" → slice. Without
+                // these an annotated `const a: [i32; 5]` fell through to the
+                // pointer default, and the array's length was gone by the time
+                // `a.len()` looked for it — the call failed dispatch outright
+                // while the same code without the annotation worked.
+                if let Some(inner) = name.strip_prefix("[]") {
+                    return MirType::Slice(Box::new(self.resolve_type_str(inner)));
+                }
+                if name.starts_with('[') && name.ends_with(']') {
+                    let inner = &name[1..name.len() - 1];
+                    if let Some(semi) = inner.rfind(';') {
+                        let elem = self.resolve_type_str(inner[..semi].trim());
+                        // A symbolic length (a comptime parameter) has no value
+                        // here; 0 keeps the element type intact, which is what
+                        // the checker does with the same shape.
+                        let len = inner[semi + 1..].trim().parse::<u32>().unwrap_or(0);
+                        return MirType::Array { elem: Box::new(elem), len };
+                    }
+                    return MirType::Slice(Box::new(self.resolve_type_str(inner)));
                 }
                 // "(T1, T2, ...)" → Tuple
                 if name.starts_with('(') && name.ends_with(')') {
@@ -583,6 +615,29 @@ impl<'a> MirContext<'a> {
     /// binding of a stdlib type. `None` means nothing was recorded (a call node
     /// synthesized after checking) or the receiver is a primitive, which
     /// qualifies through the MIR type instead.
+    /// Record a tracking path's element type across function lowerings.
+    ///
+    /// A path already recorded with a *different* type is a name collision
+    /// between two functions, not new information: the entry is dropped and the
+    /// path blacklisted, so both functions fall back to their own tracking
+    /// instead of one of them getting the other's element width.
+    pub fn record_shared_elem(&self, key: String, ty: MirType) {
+        if self.shared_elem_conflicts.borrow().contains(&key) {
+            return;
+        }
+        let mut shared = self.shared_elem_types.borrow_mut();
+        match shared.get(&key) {
+            Some(existing) if *existing != ty => {
+                shared.remove(&key);
+                self.shared_elem_conflicts.borrow_mut().insert(key);
+            }
+            Some(_) => {}
+            None => {
+                shared.insert(key, ty);
+            }
+        }
+    }
+
     pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
         match self.call_targets.get(&node)? {
             rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names),
@@ -746,6 +801,16 @@ impl<'a> MirLowerer<'a> {
     /// Get the metadata entry for a variable (read-only).
     pub(crate) fn meta(&self, name: &str) -> Option<&LocalMeta> {
         self.local_meta.get(name)
+    }
+
+    /// True when this name refers to a value here — a local, a module-level
+    /// const (materialised or still pending), or a comptime global. Used to
+    /// stop a capitalised value name from being read as a type.
+    pub(crate) fn name_holds_a_value(&self, name: &str) -> bool {
+        self.locals.contains_key(name)
+            || self.const_slots.contains_key(name)
+            || self.pending_module_consts.contains_key(name)
+            || self.ctx.comptime_globals.contains_key(name)
     }
 
     /// Record a module-level const's box type from its initializer, e.g.
@@ -1283,12 +1348,19 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Lower the body expression into the thunk (reuses method resolution).
+        // The pending module consts are saved along with the locals: the thunk
+        // is its own MIR function and materialises its own copy of any const it
+        // touches, but that must not consume the outer function's entry — the
+        // cleanup path lowers this same expression again, and with the entry
+        // gone the reference compiled to a call named after the const (#403).
         let saved_builder = std::mem::replace(&mut self.builder, thunk_builder);
         let saved_locals = std::mem::replace(&mut self.locals, thunk_locals);
+        let saved_pending = self.pending_module_consts.clone();
         let saved_loop_stack = std::mem::take(&mut self.loop_stack);
         let body_result = self.lower_expr(expr);
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
+        self.pending_module_consts = saved_pending;
         self.loop_stack = saved_loop_stack;
 
         if body_result.is_err() {
@@ -3994,6 +4066,7 @@ mod tests {
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
             comptime_interp: None,
@@ -4055,6 +4128,7 @@ mod tests {
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
             comptime_interp: None,
@@ -4122,6 +4196,7 @@ mod tests {
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
             comptime_interp: None,

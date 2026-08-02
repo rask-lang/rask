@@ -61,6 +61,12 @@ impl BlockBuilder {
         self.current_block = block;
     }
 
+    /// How many locals this function has so far. Used to mint unique synthetic
+    /// binding names.
+    pub fn local_count(&self) -> u32 {
+        self.next_local_id
+    }
+
     pub fn alloc_temp(&mut self, ty: MirType) -> LocalId {
         let id = LocalId(self.next_local_id);
         self.next_local_id += 1;

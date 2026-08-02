@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ranges RV1/RV2 and SP1–SP4 — the `.rev()` and `.step()` adapters,
+// against the value tables in specs/control/ranges.md. Both backends run the
+// same count-then-index shape, so a divergence here means one of them drifted.
+
+func main() {}
+
+func collect(r: Vec<i64>) -> string {
+    return r.join(",")
+}
+
+test "RV1 — (0..10).rev() counts down from 9" {
+    mut out = Vec.new()
+    for i in (0..10).rev() { out.push(i) }
+    assert collect(out) == "9,8,7,6,5,4,3,2,1,0"
+}
+
+test "RV1 — inclusive rev includes the end" {
+    mut out = Vec.new()
+    for i in (0..=3).rev() { out.push(i) }
+    assert collect(out) == "3,2,1,0"
+}
+
+test "RV2 — a backwards range is empty, not reversed" {
+    mut n = 0
+    for i in 10..0 { n += 1 }
+    assert n == 0
+}
+
+test "SP1 — (0..10).step(3) stops before the bound" {
+    mut out = Vec.new()
+    for i in (0..10).step(3) { out.push(i) }
+    assert collect(out) == "0,3,6,9"
+}
+
+test "SP4 — inclusive step lands the same way" {
+    mut out = Vec.new()
+    for i in (0..=10).step(3) { out.push(i) }
+    assert collect(out) == "0,3,6,9"
+}
+
+test "SP2 — a negative step walks down" {
+    mut out = Vec.new()
+    for i in (10..0).step(-2) { out.push(i) }
+    assert collect(out) == "10,8,6,4,2"
+}
+
+test "SP2 — inclusive negative step reaches the end" {
+    mut out = Vec.new()
+    for i in (10..=0).step(-2) { out.push(i) }
+    assert collect(out) == "10,8,6,4,2,0"
+}
+
+test "SP1 — a step pointing the wrong way yields nothing" {
+    mut n = 0
+    for i in (0..10).step(-1) { n += 1 }
+    assert n == 0
+    for i in (10..0).step(1) { n += 1 }
+    assert n == 0
+}
+
+test "step and rev compose" {
+    mut out = Vec.new()
+    for i in (0..10).step(2).rev() { out.push(i) }
+    assert collect(out) == "8,6,4,2,0"
+}
+
+test "an empty range reverses to nothing" {
+    mut n = 0
+    for i in (5..5).rev() { n += 1 }
+    assert n == 0
+}
+
+test "rev over a computed bound" {
+    const v = Vec.from([10, 20, 30])
+    mut out = Vec.new()
+    for i in (0..v.len()).rev() { out.push(v[i]) }
+    assert collect(out) == "30,20,10"
+}

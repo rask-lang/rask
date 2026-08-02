@@ -69,6 +69,18 @@ impl ResolveError {
         }
     }
 
+    pub fn no_such_stdlib_export(
+        module: String,
+        symbol: String,
+        suggestion: Option<String>,
+        span: Span,
+    ) -> Self {
+        Self {
+            kind: ResolveErrorKind::NoSuchStdlibExport { module, symbol, suggestion },
+            span,
+        }
+    }
+
     pub fn circular_dependency(path: Vec<String>, span: Span) -> Self {
         Self {
             kind: ResolveErrorKind::CircularDependency { path },
@@ -136,4 +148,11 @@ pub enum ResolveErrorKind {
 
     #[error("C header parse error in `{header}`: {detail}")]
     CParseError { header: String, detail: String },
+
+    #[error("`{module}` has no `{symbol}` to import{}", suggestion.as_ref().map(|s| format!(" — did you mean `{}`?", s)).unwrap_or_default())]
+    NoSuchStdlibExport {
+        module: String,
+        symbol: String,
+        suggestion: Option<String>,
+    },
 }

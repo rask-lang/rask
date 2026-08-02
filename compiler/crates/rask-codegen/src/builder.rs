@@ -4892,6 +4892,22 @@ impl<'a> FunctionBuilder<'a> {
             .unwrap_or(false)
     }
 
+    /// Destination that owns storage the callee should write into directly —
+    /// anything wider than a word, or with its own layout.
+    fn is_aggregate_dst(dst: Option<&LocalId>, ctx: &CodegenCtx) -> bool {
+        dst.and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+            .map(|l| matches!(l.ty,
+                MirType::String
+                | MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Tuple(_)
+                | MirType::Option(_)
+                | MirType::Result { .. }
+                | MirType::Union(_)
+                | MirType::TraitObject { .. }))
+            .unwrap_or(false)
+    }
+
     /// Wrap args[index] as a pointer unless it's already a pointer to data
     /// (string, struct, enum, tuple, option, result, etc.).
     fn wrap_arg_as_ptr(
@@ -4915,12 +4931,21 @@ impl<'a> FunctionBuilder<'a> {
         dst: Option<&LocalId>,
         ctx: &CodegenCtx,
     ) -> CallAdapt {
-        if Self::is_string_dst(dst, ctx) {
+        // Any aggregate destination, not just a string: `Vec.remove` on a
+        // `Vec<Pair>` was handed an 8-byte scratch slot, so the struct came back
+        // with only its first word and every field after that read as zero.
+        // The destination's own slot is the right target — it's already the
+        // right size, and writing into it directly skips a copy.
+        if Self::is_aggregate_dst(dst, ctx) {
+            let fallback_size = dst
+                .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                .map(|l| l.ty.size().max(16))
+                .unwrap_or(16);
             let ss = dst
                 .and_then(|id| ctx.stack_slot_map.get(id))
                 .map(|(ss, _)| *ss)
                 .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, 16, 0,
+                    StackSlotKind::ExplicitSlot, fallback_size, 0,
                 )));
             let addr = builder.ins().stack_addr(types::I64, ss, 0);
             args.push(addr);
@@ -5215,7 +5240,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Pool insert: wrap value as pointer, append elem_size
-            "Pool_insert" => {
+            "Pool_insert" | "Pool_try_insert" => {
                 let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
                 if args.len() >= 2 && !is_struct {
                     let val = args[1];

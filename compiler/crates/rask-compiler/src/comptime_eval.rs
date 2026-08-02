@@ -227,6 +227,7 @@ fn try_eval_comptime_mir(
         line_map: None,
         source_file: None,
         shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+        shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
         comptime_interp: None,
         trait_coercions: &empty_coercions,
         call_rewrites: &empty_rewrites,

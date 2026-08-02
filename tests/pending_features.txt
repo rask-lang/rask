@@ -11,12 +11,7 @@
 # The differential harness treats both files as expected-red (non-fatal).
 
 # --- language surface not implemented (red on BOTH backends) ---
-p02_numeric_limits.rk      # type.primitives/NT1 numeric constants (i32.MAX…) — #406
-p03_comparison_surface.rk  # char/tuple/bool ordering + equality operators — #406
-p04_ranges_rev_step.rk     # ctrl.ranges .rev()/.step() adapters — RV/SP (PLAN)
-
-# --- works on interp, native backend not built (native RED) ---
-p06_select.rk              # conc.select no native MIR lowering — #405
+p03_comparison_surface.rk  # green on interp; native dies on `assert (1,2) == (1,2)` inside a test — #548
 
 # --- spec-heavy pending features ---
 p07_owned.rk               # mem.owned Owned<T> / `own` linear heap pointer — unimplemented

@@ -131,22 +131,57 @@ fn extract_assert_is_pattern(condition: &Expr) -> Option<String> {
     }
 }
 
-/// Resolve primitive type associated constants (e.g. i64.MAX, i32.MIN).
+/// The width a Vec element actually occupies. Scalars live in 8-byte slots, so
+/// a narrower type on the reading side sees half a value; aggregates keep their
+/// own size.
+fn vec_slot_type(ty: MirType) -> MirType {
+    match ty {
+        MirType::Struct(_) | MirType::Enum(_) => ty,
+        _ if ty.size() < 8 => MirType::I64,
+        _ => ty,
+    }
+}
+
+/// Resolve primitive type associated constants (type.primitives/NT1):
+/// `ZERO`, `ONE`, `MIN`, `MAX` on every numeric type.
 fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand> {
-    let (val, ty) = match (type_name, field) {
-        ("i8", "MAX") => (i8::MAX as i64, MirType::I8),
-        ("i8", "MIN") => (i8::MIN as i64, MirType::I8),
-        ("i16", "MAX") => (i16::MAX as i64, MirType::I16),
-        ("i16", "MIN") => (i16::MIN as i64, MirType::I16),
-        ("i32", "MAX") => (i32::MAX as i64, MirType::I32),
-        ("i32", "MIN") => (i32::MIN as i64, MirType::I32),
-        ("i64", "MAX") => (i64::MAX, MirType::I64),
-        ("i64", "MIN") => (i64::MIN, MirType::I64),
-        ("u8", "MAX") => (u8::MAX as i64, MirType::U8),
-        ("u16", "MAX") => (u16::MAX as i64, MirType::U16),
-        ("u32", "MAX") => (u32::MAX as i64, MirType::U32),
-        ("u64", "MAX") => (u64::MAX as i64, MirType::U64),
-        ("u8" | "u16" | "u32" | "u64", "MIN") => (0, MirType::U64),
+    if matches!(type_name, "f32" | "f64") {
+        let val = match field {
+            "ZERO" => 0.0,
+            "ONE" => 1.0,
+            "MIN" if type_name == "f32" => f32::MIN as f64,
+            "MIN" => f64::MIN,
+            "MAX" if type_name == "f32" => f32::MAX as f64,
+            "MAX" => f64::MAX,
+            "EPSILON" if type_name == "f32" => f32::EPSILON as f64,
+            "EPSILON" => f64::EPSILON,
+            "INFINITY" => f64::INFINITY,
+            "NAN" => f64::NAN,
+            _ => return None,
+        };
+        let ty = if type_name == "f32" { MirType::F32 } else { MirType::F64 };
+        return Some((MirOperand::Constant(MirConst::Float(val)), ty));
+    }
+
+    // `MIN`/`MAX` per width; `ZERO`/`ONE` are the same everywhere. u64::MAX
+    // rides in an i64 constant as its two's-complement bit pattern — the
+    // width in `ty` is what tells codegen to read it unsigned.
+    let (min, max, ty) = match type_name {
+        "i8" => (i8::MIN as i64, i8::MAX as i64, MirType::I8),
+        "i16" => (i16::MIN as i64, i16::MAX as i64, MirType::I16),
+        "i32" => (i32::MIN as i64, i32::MAX as i64, MirType::I32),
+        "i64" | "isize" => (i64::MIN, i64::MAX, MirType::I64),
+        "u8" => (0, u8::MAX as i64, MirType::U8),
+        "u16" => (0, u16::MAX as i64, MirType::U16),
+        "u32" => (0, u32::MAX as i64, MirType::U32),
+        "u64" | "usize" => (0, u64::MAX as i64, MirType::U64),
+        _ => return None,
+    };
+    let val = match field {
+        "MIN" => min,
+        "MAX" => max,
+        "ZERO" => 0,
+        "ONE" => 1,
         _ => return None,
     };
     Some((MirOperand::Constant(MirConst::Int(val)), ty))
@@ -1669,7 +1704,7 @@ impl<'a> MirLowerer<'a> {
                         {
                             let field_key = format!("self.{}", field.name);
                             self.meta_mut(&field_key).elem_type = Some(elem_ty.clone());
-                            self.ctx.shared_elem_types.borrow_mut().insert(field_key, elem_ty);
+                            self.ctx.record_shared_elem(field_key, elem_ty);
                         }
                     }
                 }
@@ -2565,34 +2600,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Select (channel multiplexing)
-            ExprKind::Select { arms, .. } => {
-                let merge_block = self.builder.create_block();
-                let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
-
-                if let Some(&first) = arm_blocks.first() {
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: first }));
-                } else {
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-                }
-
-                let mut result_ty = MirType::Void;
-                let result_local = self.builder.alloc_temp(MirType::I32);
-                for (i, arm) in arms.iter().enumerate() {
-                    self.builder.switch_to_block(arm_blocks[i]);
-                    let (arm_val, arm_ty) = self.lower_expr(&arm.body)?;
-                    if i == 0 {
-                        result_ty = arm_ty;
-                    }
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: result_local,
-                        rvalue: MirRValue::Use(arm_val),
-                    }));
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-                }
-
-                self.builder.switch_to_block(merge_block);
-                Ok((MirOperand::Local(result_local), result_ty))
-            }
+            ExprKind::Select { arms, .. } => self.lower_select(arms),
 
             // Assert
             ExprKind::Assert { condition, message } => {
@@ -3175,10 +3183,17 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
 
-                        // Static method on a type: Vec.new(), string.new()
-                        let is_known_type = self.ctx.find_struct(name).is_some()
-                            || self.ctx.find_enum(name).is_some()
-                            || is_type_constructor_name(name);
+                        // Static method on a type: Vec.new(), string.new().
+                        // A name that holds a value isn't a type, whatever its
+                        // capitalisation — `is_type_constructor_name` says yes to
+                        // anything starting with a capital, so a SCREAMING_CASE
+                        // module const was read as a type and `CT.to_string()`
+                        // compiled to a call to a function named `CT_to_string`
+                        // that doesn't exist (#403).
+                        let is_known_type = !self.name_holds_a_value(name)
+                            && (self.ctx.find_struct(name).is_some()
+                                || self.ctx.find_enum(name).is_some()
+                                || is_type_constructor_name(name));
 
                         // CH3: char.from_u32(n) → char?. Reuse the Convert→Option
                         // codegen path (same as `try convert`) with a Char target.
@@ -3547,6 +3562,13 @@ impl<'a> MirLowerer<'a> {
             ))),
         };
 
+        // A method with its own type parameters was monomorphized per call, so
+        // dispatch has to name the copy rather than the generic body.
+        let qualified_name = self.ctx.call_rewrites
+            .get(&expr.id)
+            .cloned()
+            .unwrap_or(qualified_name);
+
         // Track collection element types from push/insert so get returns the right type.
         // Handles both `v.push(x)` and `self.field.push(x)`.
         // Writes to both per-function and shared cross-function maps.
@@ -3555,7 +3577,7 @@ impl<'a> MirLowerer<'a> {
                 if !matches!(arg_ty, MirType::I64) {
                     if let Some(key) = Self::vec_tracking_key(object) {
                         self.meta_mut(&key).elem_type = Some(arg_ty.clone());
-                        self.ctx.shared_elem_types.borrow_mut().insert(key, arg_ty.clone());
+                        self.ctx.record_shared_elem(key, arg_ty.clone());
                     }
                 }
             }
@@ -3631,6 +3653,28 @@ impl<'a> MirLowerer<'a> {
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
             tracked_elem
+        } else if qualified_name == "Vec_remove" {
+            // `.remove(i)` hands back the element itself. The stub says `-> T`,
+            // which the metadata fallback reads as a bare i64 — so a
+            // `Vec<string>` element came back through an 8-byte out-param and
+            // `positional.remove(0)` produced half a string's bytes as a number
+            // (#203's grep_clone entry).
+            //
+            // Tracking first, like `v[i]`; the checker's type second, because a
+            // `test` body doesn't carry the push tracking. Either way the width
+            // is rounded up to a word: a Vec keeps scalars in 8-byte slots, and
+            // an i32-typed destination read back only half of what the
+            // out-param wrote.
+            tracked_elem
+                .or_else(|| self.ctx.lookup_node_type(expr.id))
+                .map(vec_slot_type)
+        } else if qualified_name == "Vec_pop" {
+            // Same, one level in: `.pop()` is `T?`, and the payload type sizes
+            // the slot the DerefOption adapter copies into. A bare `i64?` slot
+            // took 8 of a string's 16 bytes and reading it segfaulted.
+            tracked_elem
+                .or_else(|| self.extract_payload_type(expr))
+                .map(|elem| MirType::Option(Box::new(vec_slot_type(elem))))
         } else if qualified_name == "Pool_get" || qualified_name == "Pool_remove" {
             // Both return T? — extract T from the tracked element type. Without
             // this `remove` answered `i64?` regardless of what the pool held,

@@ -121,6 +121,37 @@ impl Interpreter {
                 return self.call_string_builder_method(&Arc::clone(buf), method, args)
             }
             Value::Iterator(iter) => return self.call_iterator_method(&Arc::clone(iter), method, args),
+            // ctrl.ranges RV1 / SP1–SP4 — the two range adapters. Both hand
+            // back a range, so they chain in either order.
+            Value::Range { start, end, inclusive, step, rev } => {
+                return match method {
+                    "rev" => Ok(Value::Range {
+                        start: *start, end: *end, inclusive: *inclusive,
+                        step: *step, rev: !*rev,
+                    }),
+                    "step" => {
+                        let n = match args.first() {
+                            Some(Value::Int(n, _)) => *n,
+                            _ => return Err(RuntimeError::TypeError(
+                                "step() takes an integer stride".to_string(),
+                            )),
+                        };
+                        if n == 0 {
+                            return Err(RuntimeError::Panic(
+                                "ctrl.ranges/SP3: step must be non-zero".to_string(),
+                            ));
+                        }
+                        Ok(Value::Range {
+                            start: *start, end: *end, inclusive: *inclusive,
+                            step: n, rev: *rev,
+                        })
+                    }
+                    _ => Err(RuntimeError::NoSuchMethod {
+                        ty: "Range".to_string(),
+                        method: method.to_string(),
+                    }),
+                };
+            }
             #[cfg(not(target_arch = "wasm32"))]
             Value::TcpListener(l) => return self.call_tcp_listener_method(&Arc::clone(l), method, args),
             #[cfg(not(target_arch = "wasm32"))]

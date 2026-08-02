@@ -36,6 +36,50 @@ fn value_is_copy_scalar(v: &Value) -> bool {
     )
 }
 
+/// type.primitives/NT1 — associated constants on the numeric types.
+/// `MIN`/`MAX` carry the receiver's own width so overflow checks see the right
+/// bounds; `ZERO`/`ONE` are the same value everywhere.
+fn primitive_type_constant(type_name: &str, field: &str) -> Option<Value> {
+    use crate::value::IntKind;
+    if matches!(type_name, "f32" | "f64") {
+        let v = match field {
+            "ZERO" => 0.0,
+            "ONE" => 1.0,
+            "MIN" if type_name == "f32" => f32::MIN as f64,
+            "MIN" => f64::MIN,
+            "MAX" if type_name == "f32" => f32::MAX as f64,
+            "MAX" => f64::MAX,
+            "EPSILON" if type_name == "f32" => f32::EPSILON as f64,
+            "EPSILON" => f64::EPSILON,
+            "INFINITY" => f64::INFINITY,
+            "NAN" => f64::NAN,
+            _ => return None,
+        };
+        return Some(Value::Float(v));
+    }
+    let (min, max, kind) = match type_name {
+        "i8" => (i8::MIN as i64, i8::MAX as i64, IntKind::I8),
+        "i16" => (i16::MIN as i64, i16::MAX as i64, IntKind::I16),
+        "i32" => (i32::MIN as i64, i32::MAX as i64, IntKind::I32),
+        "i64" | "isize" => (i64::MIN, i64::MAX, IntKind::I64),
+        "u8" => (0, u8::MAX as i64, IntKind::U8),
+        "u16" => (0, u16::MAX as i64, IntKind::U16),
+        "u32" => (0, u32::MAX as i64, IntKind::U32),
+        // u64::MAX doesn't fit an i64; it's carried as the same bit pattern and
+        // read back unsigned because the kind says U64.
+        "u64" | "usize" => (0, u64::MAX as i64, IntKind::U64),
+        _ => return None,
+    };
+    let n = match field {
+        "MIN" => min,
+        "MAX" => max,
+        "ZERO" => 0,
+        "ONE" => 1,
+        _ => return None,
+    };
+    Some(Value::Int(n, kind))
+}
+
 /// True when a condition contains an `is` pattern whose bindings the rest of
 /// the condition and the taken branch need to see. Only `&&` chains qualify:
 /// under `||` or `!` a match on one side says nothing about the other.
@@ -1034,6 +1078,8 @@ impl Interpreter {
                     start: start_val,
                     end: end_val,
                     inclusive: *inclusive,
+                    step: 1,
+                    rev: false,
                 })
             }
 
@@ -1095,6 +1141,13 @@ impl Interpreter {
             }
 
             ExprKind::Field { object, field } => {
+                // type.primitives/NT1 — `i32.MAX`, `u8.MIN`, `f64.EPSILON`, …
+                // The interpreter had no answer for these at all; only MIR did.
+                if let ExprKind::Ident(type_name) = &object.kind {
+                    if let Some(v) = primitive_type_constant(type_name, field) {
+                        return Ok(v);
+                    }
+                }
                 if let ExprKind::Ident(enum_name) = &object.kind {
                     if let Some(enum_decl) = self.enums.get(enum_name).cloned() {
                         if let Some((vidx, variant)) =
@@ -1412,7 +1465,7 @@ impl Interpreter {
                             )),
                         }
                     }
-                    (Value::Vec(v), Value::Range { start, end, inclusive }) => {
+                    (Value::Vec(v), Value::Range { start, end, inclusive, .. }) => {
                         let vec = v.lock().unwrap();
                         let len = vec.len() as i64;
                         let start_idx = (*start).max(0).min(len) as usize;
@@ -1438,7 +1491,7 @@ impl Interpreter {
                             )),
                         }
                     }
-                    (Value::String(s), Value::Range { start, end, inclusive }) => {
+                    (Value::String(s), Value::Range { start, end, inclusive, .. }) => {
                         let str_val = s.lock().unwrap();
                         let len = str_val.len() as i64;
                         let start_idx = (*start).max(0).min(len) as usize;
@@ -2563,16 +2616,18 @@ impl Interpreter {
                         }
                     }
 
-                    // All channels closed (CL1)
+                    // All channels closed (CL1). This used to hand back an
+                    // `Err(...)` — but a select's type is its arms' type, so a
+                    // Result appearing there is a value nothing can use:
+                    // `const got: i64 = select { … }` would be holding an enum.
+                    // Native panics here, and now so does this.
                     if all_closed && default_idx.is_none() {
-                        return Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(
-                                "all channels closed".to_string(),
-                            )))],
-                            variant_index: 0, origin: None,
-                        });
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic(
+                                "select: every channel is closed [conc.select/CL1]".to_string(),
+                            ),
+                            expr.span,
+                        ));
                     }
 
                     // Default arm fires if nothing ready (A3)

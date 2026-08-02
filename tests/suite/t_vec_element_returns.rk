@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Vec.remove(i)` and `Vec.pop()` hand back the element, so the destination has
+// to be the element's own width. The stub says `-> T`, which the metadata
+// fallback read as a bare i64: a `Vec<string>` element came back as half a
+// string's bytes (remove) or segfaulted on read-back (pop) — which is what made
+// examples/grep_clone match every line natively (#203).
+
+struct Pair { a: i64, b: i64 }
+
+func main() {}
+
+test "Vec.remove gives back a string element" {
+    mut v = Vec.new()
+    v.push("alpha")
+    v.push("beta")
+    const first = v.remove(0)
+    assert first == "alpha"
+    assert v.len() == 1
+    assert v[0] == "beta"
+}
+
+test "Vec.pop gives back a string element" {
+    mut v = Vec.new()
+    v.push("alpha")
+    v.push("beta")
+    const last = v.pop()
+    if last? as s {
+        assert s == "beta"
+    } else {
+        assert false, "pop on a non-empty vec returned none"
+    }
+    assert v.len() == 1
+}
+
+test "Vec.pop on an empty vec is none" {
+    mut v: Vec<string> = Vec.new()
+    const gone = v.pop()
+    if gone? as s {
+        assert false, "pop on an empty vec returned a value"
+    } else {
+        assert v.len() == 0
+    }
+}
+
+test "Vec.remove gives back a struct element" {
+    mut v = Vec.new()
+    v.push(Pair { a: 1, b: 2 })
+    v.push(Pair { a: 3, b: 4 })
+    const p = v.remove(0)
+    assert p.a == 1
+    assert p.b == 2
+    assert v.len() == 1
+    assert v[0].a == 3
+}
+
+test "Vec.remove still works on scalars" {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    assert v.remove(1) == 20
+    assert v.len() == 2
+    assert v[1] == 30
+}
+
+test "the string a Vec gives back survives a later allocation" {
+    mut v = Vec.new()
+    v.push("a fairly long string here")
+    const taken = v.remove(0)
+    mut junk = ""
+    for i in 0..8 {
+        junk = "filler string number {i} padded out"
+    }
+    assert junk.len() > 0
+    assert taken == "a fairly long string here"
+}

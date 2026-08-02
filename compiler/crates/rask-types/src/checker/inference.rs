@@ -142,13 +142,23 @@ impl InferenceContext {
     }
 
     /// Apply defaults for unresolved literal type vars.
+    ///
+    /// A literal var can be bound to another *variable* rather than a type —
+    /// `echo(7)` unifies the literal with the fresh variable standing for the
+    /// method's `E`, and which of the two ends up pointing at the other depends
+    /// on unification order. Defaulting only the literal var itself then leaves
+    /// the other one free forever, and a type argument that stays a variable
+    /// mangles to `_`. So follow the chain: whatever a literal ultimately
+    /// resolves to, if it's still an unbound variable, that's what needs the
+    /// default.
     pub fn apply_literal_defaults(&mut self) {
-        let mut defaults = Vec::new();
-        for (&var_id, &kind) in self.literal_vars.iter() {
-            // Only default if not yet resolved
-            if self.substitutions.contains_key(&var_id) {
-                continue;
-            }
+        let pending: Vec<(TypeVarId, LiteralKind)> = self
+            .literal_vars
+            .iter()
+            .map(|(&id, &kind)| (id, kind))
+            .collect();
+        let mut defaults: HashMap<TypeVarId, Type> = HashMap::new();
+        for (var_id, kind) in pending {
             let default = match kind {
                 // i32 is the default (type.primitives/L1), but only where the
                 // value fits — `const big = 3000000000` used to keep the low 32
@@ -159,7 +169,16 @@ impl InferenceContext {
                 },
                 LiteralKind::Float => Type::F64,
             };
-            defaults.push((var_id, default));
+            // Follow the chain. An unresolved literal var applies to itself, so
+            // this covers the plain case too; a literal already bound to a
+            // concrete type isn't a variable and needs nothing.
+            let Type::Var(tail) = self.apply(&Type::Var(var_id)) else { continue };
+            // Two literals can land on the same variable — a wide one and a
+            // narrow one. Take the wider, so nothing gets truncated.
+            match defaults.get(&tail) {
+                Some(Type::I64) => {}
+                _ => { defaults.insert(tail, default); }
+            }
         }
         self.substitutions.extend(defaults);
     }

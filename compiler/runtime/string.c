@@ -527,6 +527,95 @@ void rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, co
     rask_realloc(buf, new_len, 0);
 }
 
+// Replace the first `n` occurrences (S: replacen). n <= 0 leaves the string
+// alone; a larger n than there are matches just replaces them all.
+void rask_string_replacen(RaskStr *out, const RaskStr *s, const RaskStr *from,
+                          const RaskStr *to, int64_t n) {
+    int64_t slen = str_len(s);
+    int64_t flen = str_len(from);
+    if (slen == 0) { rask_string_new(out); return; }
+    if (flen == 0 || n <= 0) { str_make(out, str_data(s), slen); return; }
+
+    int64_t tlen = str_len(to);
+    const char *sd = str_data(s);
+    const char *fd = str_data(from);
+    const char *td = str_data(to);
+    const char *end = sd + slen;
+
+    int64_t count = 0;
+    const char *p = sd;
+    while (p + flen <= end && count < n) {
+        if (memcmp(p, fd, (size_t)flen) == 0) { count++; p += flen; }
+        else p++;
+    }
+
+    int64_t new_len = rask_safe_add(slen, rask_safe_mul(count, tlen - flen));
+    char *buf = (char *)rask_alloc(new_len);
+    char *dst = buf;
+    int64_t done = 0;
+    p = sd;
+    while (p < end) {
+        if (done < n && p + flen <= end && memcmp(p, fd, (size_t)flen) == 0) {
+            if (tlen > 0) memcpy(dst, td, (size_t)tlen);
+            dst += tlen;
+            p += flen;
+            done++;
+        } else {
+            *dst++ = *p++;
+        }
+    }
+    str_make(out, buf, new_len);
+    rask_realloc(buf, new_len, 0);
+}
+
+// Number of Unicode scalars, not bytes (S: char_count). Counts the bytes that
+// aren't UTF-8 continuation bytes.
+int64_t rask_string_char_count(const RaskStr *s) {
+    int64_t len = str_len(s);
+    const unsigned char *p = (const unsigned char *)str_data(s);
+    int64_t n = 0;
+    for (int64_t i = 0; i < len; i++) {
+        if ((p[i] & 0xC0) != 0x80) n++;
+    }
+    return n;
+}
+
+// True when every byte is ASCII (0x00–0x7F).
+int64_t rask_string_str_is_ascii(const RaskStr *s) {
+    int64_t len = str_len(s);
+    const unsigned char *p = (const unsigned char *)str_data(s);
+    for (int64_t i = 0; i < len; i++) {
+        if (p[i] > 0x7F) return 0;
+    }
+    return 1;
+}
+
+// A one-character string from a Unicode scalar (S: from_char).
+void rask_string_from_char(RaskStr *out, int64_t cp) {
+    char buf[4];
+    int64_t n;
+    uint32_t c = (uint32_t)cp;
+    if (c < 0x80) {
+        buf[0] = (char)c; n = 1;
+    } else if (c < 0x800) {
+        buf[0] = (char)(0xC0 | (c >> 6));
+        buf[1] = (char)(0x80 | (c & 0x3F));
+        n = 2;
+    } else if (c < 0x10000) {
+        buf[0] = (char)(0xE0 | (c >> 12));
+        buf[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (c & 0x3F));
+        n = 3;
+    } else {
+        buf[0] = (char)(0xF0 | (c >> 18));
+        buf[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((c >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (c & 0x3F));
+        n = 4;
+    }
+    str_make(out, buf, n);
+}
+
 // ─── Split / lines / chars → Vec ────────────────────────────
 
 RaskVec *rask_string_lines(const RaskStr *s) {

@@ -174,6 +174,11 @@ pub struct MethodSig {
     pub self_param: SelfParam,
     pub params: Vec<(Type, ParamMode)>,
     pub ret: Type,
+    /// Type parameters the method declares for itself, as (name, bounds) —
+    /// e.g. the `E` in `func tag<E>(self, e: E) -> E`, or `T: Named`. Separate
+    /// from the receiver type's own parameters: these get a fresh variable per
+    /// *call*, not per receiver.
+    pub type_params: Vec<(String, Vec<String>)>,
 }
 
 /// How self is passed to a method.

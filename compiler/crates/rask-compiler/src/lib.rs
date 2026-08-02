@@ -381,10 +381,18 @@ pub fn check_package(
     }
 
     // --- Resolve ---
-    let resolved = match rask_resolve::resolve_package_with_cfg(
+    // With the stdlib's own bodies, same as the single-file path. The type
+    // check below always includes them, so leaving them out here meant every
+    // name inside them arrived unresolved: a package — any package, even an
+    // empty one — reported 161 "undefined name" errors for the stdlib's
+    // internals (`fopen`, `rask_alloc`, …), pinned to spans in the user's file
+    // (#203).
+    let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+    let resolved = match rask_resolve::resolve_package_with_stdlib_and_cfg(
         &pkg_ctx.all_decls,
         &pkg_ctx.registry,
         pkg_ctx.root_id,
+        &stdlib_bodies,
         config.cfg.to_cfg_values(),
     ) {
         Ok(r) => r,

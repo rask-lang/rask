@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a method's own type parameter must satisfy its bound
+//
+// Spec: type.generics (#314 bound checking, applied to method type params)
+
+trait Named {
+    func label(self) -> string
+}
+
+struct Tag { n: i64 }
+extend Tag with Named {
+    func label(self) -> string { return "tag" }
+}
+
+// `Plain` has no `label`, so it does not satisfy `Named`.
+struct Plain { n: i64 }
+
+struct Util { }
+extend Util {
+    func describe<T: Named>(self, x: T) -> string { return x.label() }
+}
+
+func main() {
+    const u = Util { }
+    // ERROR[E0333]: `Plain` does not implement `Named`
+    println("{u.describe(Plain { n: 1 })}")
+}

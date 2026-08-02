@@ -80,7 +80,6 @@ extend Vec<T> {
     public func modify(mutate self, index: i64, f: func(T) -> R) -> Option<R> { }
 
     /// Swap elements at two indices.
-    @unimplemented
     public func swap(mutate self, i: i64, j: i64) { }
 
     /// Iterate over elements by reference.

@@ -100,13 +100,13 @@ const F64_METHODS: &[&str] = &[
     "ln", "log10", "log2", "exp",
 ];
 
-const BOOL_METHODS: &[&str] = &["eq"];
+const BOOL_METHODS: &[&str] = &["eq", "lt", "le", "gt", "ge", "compare", "to_string"];
 
 const CHAR_METHODS: &[&str] = &[
     "is_whitespace", "is_ascii", "is_alphabetic", "is_numeric",
     "is_alphanumeric", "is_digit", "is_uppercase", "is_lowercase",
     "to_uppercase", "to_lowercase", "len_utf8",
-    "to_string", "eq",
+    "to_string", "eq", "lt", "le", "gt", "ge", "compare",
 ];
 
 const STRING_METHODS: &[&str] = &[
@@ -117,12 +117,13 @@ const STRING_METHODS: &[&str] = &[
     "replace", "substring", "parse_int", "parse",
     "char_at", "byte_at", "parse_float", "find", "index_of", "rfind",
     "repeat", "reverse", "eq", "ne",
+    "char_count", "is_ascii", "replacen",
 ];
 
 const VEC_METHODS: &[&str] = &[
     "push", "pop", "len", "get", "is_empty", "clear",
     "iter", "skip", "take", "first", "last", "contains",
-    "reverse", "join", "eq", "ne", "clone", "to_vec",
+    "reverse", "swap", "join", "eq", "ne", "clone", "to_vec",
     "insert", "remove", "collect", "chunks",
     "filter", "map", "flat_map", "fold", "reduce",
     "enumerate", "zip", "limit", "flatten",

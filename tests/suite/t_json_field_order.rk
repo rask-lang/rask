@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// json.encode writes fields in declaration order. The interpreter used to sort
+// them alphabetically, so the same struct encoded two different ways depending
+// on which backend ran it (#540).
+//
+// The assertions compare field positions rather than the whole JSON string: a
+// literal `{` opens an interpolation, so spelling the expected output inline
+// would need brace escaping that isn't on this branch yet.
+
+import json
+
+struct Person {
+    public name: string
+    public age: i64
+}
+
+struct Reversed {
+    public zeta: i64
+    public alpha: i64
+}
+
+func main() {}
+
+test "fields come out in declaration order, not alphabetical" {
+    const out = json.encode(Person { name: "ann", age: 3 })
+    if out.find("name")? as name_at {
+        if out.find("age")? as age_at {
+            assert name_at < age_at
+        } else {
+            assert false, "age missing from the encoding"
+        }
+    } else {
+        assert false, "name missing from the encoding"
+    }
+}
+
+test "declaration order wins even when it is reverse-alphabetical" {
+    const out = json.encode(Reversed { zeta: 1, alpha: 2 })
+    if out.find("zeta")? as zeta_at {
+        if out.find("alpha")? as alpha_at {
+            assert zeta_at < alpha_at
+        } else {
+            assert false, "alpha missing from the encoding"
+        }
+    } else {
+        assert false, "zeta missing from the encoding"
+    }
+}

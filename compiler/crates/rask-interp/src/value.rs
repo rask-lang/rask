@@ -432,11 +432,15 @@ pub enum Value {
     },
     /// Built-in function
     Builtin(BuiltinKind),
-    /// Range value (for iteration)
+    /// Range value (for iteration). `step` and `rev` carry the ctrl.ranges
+    /// adapters: `(0..10).step(2)` sets step, `.rev()` walks the same element
+    /// set backwards. A plain range is step 1, not reversed.
     Range {
         start: i64,
         end: i64,
         inclusive: bool,
+        step: i64,
+        rev: bool,
     },
     /// Vec (growable array) with interior mutability
     Vec(Arc<Mutex<Vec<Value>>>),
@@ -981,12 +985,19 @@ impl fmt::Display for Value {
             }
             Value::Function { name } => write!(f, "<func {}>", name),
             Value::Builtin(kind) => write!(f, "<builtin {:?}>", kind),
-            Value::Range { start, end, inclusive } => {
+            Value::Range { start, end, inclusive, step, rev } => {
                 if *inclusive {
-                    write!(f, "{}..={}", start, end)
+                    write!(f, "{}..={}", start, end)?;
                 } else {
-                    write!(f, "{}..{}", start, end)
+                    write!(f, "{}..{}", start, end)?;
                 }
+                if *step != 1 {
+                    write!(f, ".step({})", step)?;
+                }
+                if *rev {
+                    write!(f, ".rev()")?;
+                }
+                Ok(())
             }
             Value::Vec(v) => {
                 let vec = v.lock().unwrap();
@@ -1152,4 +1163,30 @@ impl fmt::Display for Value {
             Value::NominalConstructor { type_name } => write!(f, "<type {}>", type_name),
         }
     }
+}
+
+/// How many values a range yields (ctrl.ranges R1/R2/R4, SP1–SP4).
+///
+/// One formula for every combination of direction, step, and inclusivity:
+/// truncating division of the span by the step, rounded up when the span
+/// doesn't divide evenly, and floored at zero. A step pointing the wrong way
+/// makes the quotient negative, which is exactly the empty range the spec asks
+/// for — `(0..10).step(-1)` yields nothing rather than looping forever.
+///
+/// Codegen builds the same expression in MIR, so the two backends agree by
+/// construction rather than by two hand-written loops happening to match.
+pub fn range_count(start: i64, end: i64, inclusive: bool, step: i64) -> i64 {
+    if step == 0 {
+        return 0;
+    }
+    let diff = end.wrapping_sub(start);
+    let q = diff / step;
+    let n = if inclusive {
+        q + 1
+    } else if q * step != diff {
+        q + 1
+    } else {
+        q
+    };
+    n.max(0)
 }

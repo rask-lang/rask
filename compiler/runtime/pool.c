@@ -9,6 +9,7 @@
 // next_free == -2 means "occupied" (sentinel).
 
 #include "rask_runtime.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -176,7 +177,16 @@ RaskHandle rask_pool_insert(RaskPool *p, const void *elem) {
 #endif
     // PL8: a bounded pool at capacity panics on insert.
     if (pool_is_full(p)) {
-        rask_panic("pool at capacity: insert into a full bounded pool (use try_insert)");
+        // Keep this wording in step with the interpreter's (see
+        // rask-interp builtins/collections.rs) — the differential harness
+        // compares the two backends' output verbatim.
+        {
+            char msg[128];
+            snprintf(msg, sizeof msg,
+                     "pool at capacity: cannot insert into a bounded pool of capacity %d (use try_insert)",
+                     (int)p->max_cap);
+            rask_panic(msg);
+        }
     }
 
     // Grow if no free slots

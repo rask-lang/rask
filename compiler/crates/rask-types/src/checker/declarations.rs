@@ -483,10 +483,17 @@ impl TypeChecker {
             .unwrap_or(Type::Unit);
 
         MethodSig {
-            name: m.name.clone(),
+            // The parser folds `<E>` into the declared name for display, so the
+            // stored name is `tag<E>`. Method lookup compares against what the
+            // call site writes — `tag` — so strip it back off and keep the
+            // parameters where they can be instantiated.
+            name: m.name.split('<').next().unwrap_or(&m.name).to_string(),
             self_param,
             params,
             ret,
+            type_params: m.type_params.iter()
+                .map(|tp| (tp.name.clone(), tp.bounds.clone()))
+                .collect(),
         }
     }
 
@@ -596,6 +603,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "eq".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![(Type::Named(id), ParamMode::Default)],
@@ -609,6 +617,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "hash".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
@@ -621,6 +630,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "default"))
                     {
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "default".to_string(),
                             self_param: SelfParam::None,
                             params: vec![],
@@ -634,6 +644,7 @@ impl TypeChecker {
                         && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
                     {
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "clone".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
@@ -649,6 +660,7 @@ impl TypeChecker {
                     {
                         let ordering_ty = Type::UnresolvedNamed("Ordering".to_string());
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "compare".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![(Type::Named(id), ParamMode::Default)],
@@ -658,6 +670,7 @@ impl TypeChecker {
                         for op in &["lt", "le", "gt", "ge"] {
                             if !methods.iter().any(|m| m.name == *op) {
                                 new_methods.push(MethodSig {
+                                    type_params: Vec::new(),
                                     name: op.to_string(),
                                     self_param: SelfParam::Value,
                                     params: vec![(Type::Named(id), ParamMode::Default)],
@@ -670,6 +683,7 @@ impl TypeChecker {
                     // G2: auto-derive debug_string for all types
                     if !methods.iter().any(|m| m.name == "debug_string") {
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "debug_string".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
@@ -707,6 +721,7 @@ impl TypeChecker {
                         && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "eq".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![(Type::Named(id), ParamMode::Default)],
@@ -720,6 +735,7 @@ impl TypeChecker {
                         && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "hash".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
@@ -735,6 +751,7 @@ impl TypeChecker {
                         && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
                     {
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "clone".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
@@ -748,6 +765,7 @@ impl TypeChecker {
                     {
                         let ordering_ty = Type::UnresolvedNamed("Ordering".to_string());
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "compare".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![(Type::Named(id), ParamMode::Default)],
@@ -757,6 +775,7 @@ impl TypeChecker {
                         for op in &["lt", "le", "gt", "ge"] {
                             if !methods.iter().any(|m| m.name == *op) {
                                 new_methods.push(MethodSig {
+                                    type_params: Vec::new(),
                                     name: op.to_string(),
                                     self_param: SelfParam::Value,
                                     params: vec![(Type::Named(id), ParamMode::Default)],
@@ -769,6 +788,7 @@ impl TypeChecker {
                     // G2: auto-derive debug_string for all types
                     if !methods.iter().any(|m| m.name == "debug_string") {
                         new_methods.push(MethodSig {
+                            type_params: Vec::new(),
                             name: "debug_string".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
@@ -1055,18 +1075,21 @@ impl TypeChecker {
 
             let mut methods = vec![
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "parse".to_string(),
                     self_param: SelfParam::None,
                     params: vec![(Type::Slice(Box::new(Type::U8)), ParamMode::Default)],
                     ret: parse_result,
                 },
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "build".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![],
                     ret: vec_u8,
                 },
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "build_into".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Slice(Box::new(Type::U8)), ParamMode::Mutate)],

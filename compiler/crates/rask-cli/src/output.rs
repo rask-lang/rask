@@ -24,6 +24,21 @@ pub fn error_label() -> ColoredString {
     "error".red().bold()
 }
 
+pub fn warning_label() -> ColoredString {
+    "warning".yellow().bold()
+}
+
+/// The label matching a diagnostic's own severity. The bare-message fallback
+/// used to hardcode "error", so a warning with no source snippet to point at
+/// announced itself as an error — `rask compile` printed two lines starting
+/// with `error:` and then said OK.
+pub fn severity_label(severity: rask_diagnostics::Severity) -> ColoredString {
+    match severity {
+        rask_diagnostics::Severity::Error => error_label(),
+        _ => warning_label(),
+    }
+}
+
 // === Success Output ===
 
 pub fn banner_ok(phase: &str) -> String {

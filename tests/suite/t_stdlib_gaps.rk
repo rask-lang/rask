@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Stdlib methods that had a signature and nothing behind it (#408), plus
+// `Map.remove` handing back the value it removed instead of a status (#398).
+
+func main() {}
+
+test "Vec.swap exchanges two elements" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.swap(0, 2)
+    assert v[0] == 3
+    assert v[1] == 2
+    assert v[2] == 1
+}
+
+test "Vec.swap with i == j leaves the vector alone" {
+    mut v = Vec.new()
+    v.push(4)
+    v.push(5)
+    v.swap(1, 1)
+    assert v[0] == 4
+    assert v[1] == 5
+}
+
+test "string.char_count counts scalars, len counts bytes" {
+    const s = "héllo"
+    assert s.char_count() == 5
+    assert s.len() == 6
+    assert "".char_count() == 0
+}
+
+test "string.is_ascii" {
+    assert "abc123".is_ascii()
+    assert "héllo".is_ascii() == false
+    assert "".is_ascii()
+}
+
+test "string.replacen stops after n" {
+    assert "a-a-a".replacen("a", "b", 2) == "b-b-a"
+    assert "a-a-a".replacen("a", "b", 0) == "a-a-a"
+    assert "a-a-a".replacen("a", "b", 99) == "b-b-b"
+    assert "aaa".replacen("a", "xy", 1) == "xyaa"
+}
+
+test "string.from_char builds a one-character string" {
+    assert string.from_char('Z') == "Z"
+    assert string.from_char('é') == "é"
+    assert string.from_char('Z').len() == 1
+}
+
+test "Map.remove returns the value it removed" {
+    mut m = Map.new()
+    m.insert("a", 10)
+    m.insert("b", 20)
+    const gone = m.remove("a")
+    if gone? as v {
+        assert v == 10
+    } else {
+        assert false, "expected the removed value"
+    }
+    assert m.len() == 1
+    assert m.contains_key("a") == false
+}
+
+test "Map.remove on a missing key is none" {
+    mut m = Map.new()
+    m.insert("a", 10)
+    const gone = m.remove("zzz")
+    if gone? as v {
+        assert false, "nothing should have been removed"
+    } else {
+        assert m.len() == 1
+    }
+}

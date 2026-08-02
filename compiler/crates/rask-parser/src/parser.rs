@@ -715,6 +715,20 @@ impl Parser {
     // Declaration Parsing
     // =========================================================================
 
+
+    /// A method's own type parameters stay in `type_params`; they don't belong
+    /// in its name. `parse_fn_decl` folds them into the name for display, which
+    /// is what a free function wants — but a method is looked up by the name the
+    /// call site writes, and `w.tag(7)` writes `tag`, not `tag<E>`.
+    fn as_method(mut fn_decl: FnDecl) -> FnDecl {
+        if let Some(base) = fn_decl.name.split('<').next() {
+            if base.len() != fn_decl.name.len() {
+                fn_decl.name = base.to_string();
+            }
+        }
+        fn_decl
+    }
+
     /// A free function named with a keyword can be declared but never called
     /// (#500). Say so at the declaration, where the name is, instead of leaving
     /// a type error pointing at some argument. Methods are exempt: `x.check()`
@@ -1438,7 +1452,7 @@ impl Parser {
 
             if self.check(&TokenKind::Func) {
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, field_private, false, false, field_attrs, method_doc)? {
-                    methods.push(fn_decl);
+                    methods.push(Self::as_method(fn_decl));
                 }
             } else {
                 let visibility = if field_private {
@@ -1567,7 +1581,7 @@ impl Parser {
                 let m_private = self.match_token(&TokenKind::Private);
                 let m_pub = if !m_private { self.match_token(&TokenKind::Public) } else { false };
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, m_private, false, false, vec![], item_doc)? {
-                    methods.push(fn_decl);
+                    methods.push(Self::as_method(fn_decl));
                 }
             } else {
                 let _variant_doc = item_doc;
@@ -1691,7 +1705,7 @@ impl Parser {
             let method_doc = self.take_doc();
             if self.check(&TokenKind::Func) {
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, false, vec![], method_doc)? {
-                    methods.push(fn_decl);
+                    methods.push(Self::as_method(fn_decl));
                 }
             } else if let TokenKind::Ident(_) = self.current_kind() {
                 let mut fn_decl = self.parse_trait_method_shorthand()?;
@@ -1808,7 +1822,7 @@ impl Parser {
             let m_comptime = self.match_token(&TokenKind::Comptime);
             let m_unsafe = if !m_comptime { self.match_token(&TokenKind::Unsafe) } else { false };
             match self.parse_fn_decl(m_pub, m_private, m_comptime, m_unsafe, method_attrs, method_doc) {
-                Ok(DeclKind::Fn(fn_decl)) => methods.push(fn_decl),
+                Ok(DeclKind::Fn(fn_decl)) => methods.push(Self::as_method(fn_decl)),
                 Ok(_) => {}
                 Err(e) => {
                     self.record_error(e);

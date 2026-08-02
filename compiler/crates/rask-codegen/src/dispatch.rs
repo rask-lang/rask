@@ -240,6 +240,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Vec_sort", "rask_vec_sort", &[types::I64], None, false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
+        StdlibEntry::simple("Vec_swap", "rask_vec_swap", &[types::I64, types::I64, types::I64], None, true),
         // The runtime compares the element bytes through a pointer, so the
         // needle has to be spilled and passed by address — as a raw value it
         // was read as an address and the compare walked off into memory (#413).
@@ -496,6 +497,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
+            mir_name: "string_replacen", c_name: "rask_string_replacen",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "string_from_char", c_name: "rask_string_from_char",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("string_char_count", "rask_string_char_count", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_is_ascii", "rask_string_str_is_ascii", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
             mir_name: "string_append", c_name: "rask_string_append",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
@@ -618,9 +631,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::DerefOrString,
         },
         StdlibEntry {
-            mir_name: "Map_remove", c_name: "rask_map_remove",
+            // Declared `-> Option<V>`: hand back the removed value, not a
+            // 0/-1 status. NULL → none, otherwise some(the value).
+            mir_name: "Map_remove", c_name: "rask_map_take",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::DerefOption,
         },
         StdlibEntry::simple("Map_len", "rask_map_len", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Map_is_empty", "rask_map_is_empty", &[types::I64], Some(types::I64), false),
@@ -668,11 +683,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        // NOTE: `Pool_try_insert` is intentionally not dispatched yet. Its result
-        // is a niche `Option<Handle>`, but inference records pool insert/try_insert
-        // results as bare `i64`, so codegen reads the return as a tagged `i64?` and
-        // misinterprets the runtime's niche sentinel. Tracked with the handle-repr
-        // issue (#438); the runtime helper exists for when that lands.
+        // try_insert on a bounded pool: the handle, or `none` when it's full
+        // (PL8). The runtime signals "full" with -1, which is what NegNone
+        // expects; MIR types the result as a plain tagged `i64?` rather than a
+        // niche `Option<Handle>`, so the tag has to be written out.
+        StdlibEntry {
+            mir_name: "Pool_try_insert", c_name: "rask_pool_try_insert_packed_sized",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::NegNone,
+        },
         StdlibEntry::simple("Pool_drain", "rask_pool_drain", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_checked_access", "rask_pool_get_packed", &[types::I64, types::I64], Some(types::I64), false),
 
