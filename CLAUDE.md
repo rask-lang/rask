@@ -19,7 +19,7 @@ Chat is my interface. Reading diffs and files on a phone is painful — never po
 
 - Bring code to me, don't send me to it: quote the 10–20 relevant lines in chat with your commentary when a decision needs my eyes.
 - End every substantial piece of work with a **judgment digest**: the 2–4 most questionable calls you made, each with the few lines of code that embody it, framed so I can react in one word ("keep / wrong / show me more"). Put decisions you need from me first, not buried after the summary.
-- PR descriptions and issues must stand alone in prose — write them assuming the reader never opens the diff. (They usually don't.)
+- The durable record lives in **commit messages and issues** — write those to stand alone, they're what future sessions read. PR bodies get one sentence plus the closing keywords (`Closes #N`); nobody reads more than that there.
 
 Prefer long term proper fixes over quick-fixes.
 
