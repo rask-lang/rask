@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::StmtKind;
-use rask_ast::Span;
+use rask_ast::{NodeId, Span};
 
 use crate::types::Type;
 
@@ -30,6 +30,30 @@ pub(crate) struct ActiveBorrow {
     pub(crate) var_name: String,
     pub(crate) mode: BorrowMode,
     pub(crate) span: Span,
+}
+
+/// A detected view-creating expression. `root` is the variable whose mutation
+/// would invalidate the view; `viewed_id` is the expression the view reads from,
+/// which is the one whose *type* decides whether storing it is legal. They
+/// differ whenever the source is reached through fields: `self.url[i..]` has
+/// root `self` but views a string.
+pub(crate) struct ViewCreation {
+    pub(crate) root: String,
+    /// Path as written, for diagnostics (`self.url`).
+    pub(crate) display: String,
+    pub(crate) mode: BorrowMode,
+    pub(crate) viewed_id: NodeId,
+}
+
+/// A view binding whose source type was still a type variable during the walk
+/// (a field, a loop variable, an inferred local). Re-checked after solving —
+/// otherwise `const q = self.url[i..]` escapes the slice rules entirely.
+pub(crate) struct PendingViewBinding {
+    pub(crate) binding: String,
+    pub(crate) display: String,
+    pub(crate) source_ty: Type,
+    pub(crate) slice_span: Span,
+    pub(crate) store_span: Span,
 }
 
 /// A persistent borrow that lasts until block scope exit (ESAD Phase 2).
@@ -261,14 +285,27 @@ impl TypeChecker {
 
     /// Check if an expression creates a view (borrow) from a source variable.
     /// Returns (source_var_name, borrow_mode) if it does.
-    pub(super) fn detect_view_creation(expr: &Expr) -> Option<(String, BorrowMode)> {
+    /// Render an lvalue path for diagnostics: `self.url`, `cfg.parts[0]`.
+    /// Indices collapse to `[..]` — the message only needs to name the source.
+    fn view_source_path(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, field } => {
+                Some(format!("{}.{}", Self::view_source_path(object)?, field))
+            }
+            ExprKind::Index { object, .. } => {
+                Some(format!("{}[..]", Self::view_source_path(object)?))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn detect_view_creation(expr: &Expr) -> Option<ViewCreation> {
         match &expr.kind {
             // Range indexing: source[start..end]
             ExprKind::Index { object, index } => {
                 if matches!(&index.kind, ExprKind::Range { .. }) {
-                    if let Some(source_name) = Self::root_ident_name(object) {
-                        return Some((source_name, BorrowMode::Shared));
-                    }
+                    return Self::viewed(object, BorrowMode::Shared);
                 }
                 None
             }
@@ -279,14 +316,22 @@ impl TypeChecker {
                     "split", "split_whitespace", "lines", "chars",
                 ];
                 if view_methods.contains(&method.as_str()) {
-                    if let Some(source_name) = Self::root_ident_name(object) {
-                        return Some((source_name, BorrowMode::Shared));
-                    }
+                    return Self::viewed(object, BorrowMode::Shared);
                 }
                 None
             }
             _ => None,
         }
+    }
+
+    fn viewed(object: &Expr, mode: BorrowMode) -> Option<ViewCreation> {
+        let root = Self::root_ident_name(object)?;
+        Some(ViewCreation {
+            display: Self::view_source_path(object).unwrap_or_else(|| root.clone()),
+            root,
+            mode,
+            viewed_id: object.id,
+        })
     }
 
     /// Check if mutating a variable conflicts with active persistent borrows.
@@ -382,32 +427,54 @@ impl TypeChecker {
     /// String sources → error (S2: string slices are temporary views).
     /// Fixed sources → register persistent borrow.
     pub(super) fn check_view_at_binding(&mut self, binding_name: &str, init: &Expr, stmt_span: Span) {
-        if let Some((source_name, mode)) = Self::detect_view_creation(init) {
-            if let Some(source_ty) = self.lookup_local(&source_name) {
+        if let Some(view) = Self::detect_view_creation(init) {
+            // The viewed expression's own type, not the root variable's: for
+            // `self.url[i..]` the root is a struct while the slice source is a
+            // string field. Falling back to the root keeps plain `s[i..]` working
+            // when inference hasn't recorded the node.
+            let viewed_ty = self
+                .node_types
+                .get(&view.viewed_id)
+                .cloned()
+                .or_else(|| self.lookup_local(&view.root));
+            if let Some(source_ty) = viewed_ty {
                 let resolved = self.ctx.apply(&source_ty);
+                // Inference hasn't reached this source yet (field, loop variable,
+                // inferred local). Re-check once constraints are solved instead of
+                // waving it through.
+                if matches!(resolved, Type::Var(_)) {
+                    self.pending_view_bindings.push(PendingViewBinding {
+                        binding: binding_name.to_string(),
+                        display: view.display,
+                        source_ty: resolved,
+                        slice_span: init.span,
+                        store_span: stmt_span,
+                    });
+                    return;
+                }
                 // S2: string slices are temporary — can't be stored
                 if matches!(resolved, Type::String) {
                     self.errors.push(TypeError::StringSliceStored {
-                        source_var: source_name,
+                        source_var: view.display,
                         view_var: binding_name.to_string(),
                         slice_span: init.span,
                         store_span: stmt_span,
                     });
                     return;
                 }
-                match self.classify_source(&source_ty) {
+                match self.classify_source(&resolved) {
                     SourceStability::Fixed => {
                         self.persistent_borrows.push(PersistentBorrow {
-                            source_var: source_name,
+                            source_var: view.root,
                             view_var: binding_name.to_string(),
-                            mode,
+                            mode: view.mode,
                             borrow_span: init.span,
                             scope_depth: self.local_types.len(),
                         });
                     }
                     SourceStability::Growable => {
                         self.errors.push(TypeError::VolatileViewStored {
-                            source_var: source_name,
+                            source_var: view.display,
                             view_var: binding_name.to_string(),
                             source_span: init.span,
                             store_span: stmt_span,
@@ -415,6 +482,30 @@ impl TypeChecker {
                     }
                     SourceStability::Unknown => {}
                 }
+            }
+        }
+    }
+
+    /// Re-check view bindings whose source type was unresolved during the walk.
+    /// Only the "can't store this" errors are reported here — a persistent borrow
+    /// can't be registered after the fact, since the scope it guarded is gone.
+    pub(super) fn validate_pending_view_bindings(&mut self) {
+        for pending in std::mem::take(&mut self.pending_view_bindings) {
+            let resolved = self.ctx.apply(&pending.source_ty);
+            if matches!(resolved, Type::String) {
+                self.errors.push(TypeError::StringSliceStored {
+                    source_var: pending.display,
+                    view_var: pending.binding,
+                    slice_span: pending.slice_span,
+                    store_span: pending.store_span,
+                });
+            } else if matches!(self.classify_source(&resolved), SourceStability::Growable) {
+                self.errors.push(TypeError::VolatileViewStored {
+                    source_var: pending.display,
+                    view_var: pending.binding,
+                    source_span: pending.slice_span,
+                    store_span: pending.store_span,
+                });
             }
         }
     }

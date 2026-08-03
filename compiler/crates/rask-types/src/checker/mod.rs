@@ -175,6 +175,10 @@ pub struct TypeChecker {
     /// (insert/remove/clear on the named binding) are caught by the effects
     /// analysis (`rask-effects`), so they aren't re-checked here.
     pub(super) frozen_context_elems: Vec<Type>,
+    /// S2: view bindings (`s[i..]`, `s.trim()`) whose source type was still a
+    /// variable during the walk — a field, a loop variable, an inferred local.
+    /// Validated after solving, so `const q = self.url[i..]` is caught too.
+    pub(super) pending_view_bindings: Vec<borrow::PendingViewBinding>,
 }
 
 impl TypeChecker {
@@ -216,6 +220,7 @@ impl TypeChecker {
             pending_int_literals: Vec::new(),
             pending_index: Vec::new(),
             pending_linear_containers: Vec::new(),
+            pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
             pending_result_validations: Vec::new(),
             frozen_context_elems: Vec::new(),
@@ -308,6 +313,11 @@ impl TypeChecker {
         // element types (`Vec.new()` + `push`, `collect`, generic returns) are
         // concrete.
         self.validate_pending_linear_containers();
+
+        // S2: view bindings whose source was a field or loop variable — the type
+        // is concrete now, so "is this a string slice / a growable view" has an
+        // answer it didn't have during the walk.
+        self.validate_pending_view_bindings();
 
         let node_types: HashMap<_, _> = self
             .node_types

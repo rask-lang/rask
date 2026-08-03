@@ -24,6 +24,41 @@ fn make_string(s: &str) -> Value {
     Value::String(Arc::new(Mutex::new(s.to_string())))
 }
 
+fn make_some(value: Value) -> Value {
+    Value::Enum {
+        name: "Option".to_string(),
+        variant: "Some".to_string(),
+        fields: vec![value],
+        variant_index: 0,
+        origin: None,
+    }
+}
+
+fn make_none() -> Value {
+    Value::Enum {
+        name: "Option".to_string(),
+        variant: "None".to_string(),
+        fields: vec![],
+        variant_index: 0,
+        origin: None,
+    }
+}
+
+/// Split a URL's query string into key/value pairs. A segment with no `=` is a
+/// bare flag and maps to `""`; empty segments (`?a=1&&b=2`) are dropped. Mirrors
+/// `Request.query_params` in stdlib/http.rk — both back ends must agree.
+fn parse_query(url: &str) -> Vec<(String, String)> {
+    let Some(pos) = url.find('?') else { return vec![] };
+    url[pos + 1..]
+        .split('&')
+        .filter(|seg| !seg.is_empty())
+        .map(|seg| match seg.find('=') {
+            Some(eq) => (seg[..eq].to_string(), seg[eq + 1..].to_string()),
+            None => (seg.to_string(), String::new()),
+        })
+        .collect()
+}
+
 fn make_response(status: i64, body: &str) -> Value {
     let mut fields = IndexMap::new();
     fields.insert("status".to_string(), Value::int(status));
@@ -160,21 +195,27 @@ impl Interpreter {
                     Some(Value::String(s)) => s.lock().unwrap().clone(),
                     _ => String::new(),
                 };
-                let mut params: Vec<(Value, Value)> = vec![];
-                if let Some(pos) = url.find('?') {
-                    let query = &url[pos + 1..];
-                    for pair in query.split('&') {
-                        if let Some(eq) = pair.find('=') {
-                            params.push((
-                                make_string(&pair[..eq]),
-                                make_string(&pair[eq + 1..]),
-                            ));
-                        } else {
-                            params.push((make_string(pair), make_string("")));
-                        }
-                    }
-                }
+                let params: Vec<(Value, Value)> = parse_query(&url)
+                    .iter()
+                    .map(|(k, v)| (make_string(k), make_string(v)))
+                    .collect();
                 Ok(Value::Map(Arc::new(Mutex::new(params))))
+            }
+            "query_param" => {
+                let url = match fields.get("url") {
+                    Some(Value::String(s)) => s.lock().unwrap().clone(),
+                    _ => String::new(),
+                };
+                let Some(Value::String(key)) = _args.first() else {
+                    return Err(RuntimeError::TypeError(
+                        "query_param() expects the parameter name as a string".to_string(),
+                    ));
+                };
+                let key = key.lock().unwrap().clone();
+                match parse_query(&url).into_iter().find(|(k, _)| *k == key) {
+                    Some((_, v)) => Ok(make_some(make_string(&v))),
+                    None => Ok(make_none()),
+                }
             }
             "clone" => {
                 let mut new_fields = IndexMap::new();

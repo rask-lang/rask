@@ -382,7 +382,7 @@ extend JsonParser {
             }
         }
 
-        const num_str = self.input[start..self.pos]
+        const num_str = self.input[start..self.pos].to_string()
         const n = try {
             try num_str.parse<f64>()
         } else |_e| {
