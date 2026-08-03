@@ -66,12 +66,22 @@ impl Interpreter {
                         _ => None,
                     };
                 }
-                // Check if this ident is a known enum variant — match tag only
-                if let Value::Enum { variant, .. } = value {
-                    let is_known_variant = self.enums.values().any(|e| {
-                        e.variants.iter().any(|v| v.name == *name)
-                    });
-                    if is_known_variant {
+                // A variant of the scrutinee's own enum — match on the tag.
+                //
+                // Scoped to that enum on purpose. Asking whether *any* declared
+                // enum has a variant by this name makes the answer depend on what
+                // else the program happens to declare: `is ParseError` against a
+                // `T or ParseError` stopped matching once the stdlib's `JsonError`
+                // (which has a `ParseError` variant) was in the table, because
+                // the name looked like a variant and the arm compared it against
+                // `Err`. The scrutinee's own enum is the only one that can
+                // legitimately answer this.
+                if let Value::Enum { name: sc_name, variant, .. } = value {
+                    let is_own_variant = self
+                        .enums
+                        .get(sc_name)
+                        .is_some_and(|e| e.variants.iter().any(|v| v.name == *name));
+                    if is_own_variant {
                         if variant == name {
                             return Some(HashMap::new());
                         } else {

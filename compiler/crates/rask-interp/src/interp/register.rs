@@ -80,6 +80,26 @@ impl Interpreter {
     }
 
 
+    /// The stdlib's own enums, so `Method.Post` and `match e { NotFound(_) => … }`
+    /// work on them the same way they do on a program's enums.
+    ///
+    /// Registered before the program's declarations, so a program enum of the
+    /// same name shadows the stdlib's rather than the other way round — the same
+    /// order the resolver and checker use.
+    ///
+    /// Only the variants, not the methods: a stub's method bodies are empty
+    /// because the interpreter implements them natively, and registering them
+    /// would shadow those implementations with `{ }`.
+    fn register_stdlib_enums(&mut self) {
+        for (name, decl) in rask_stdlib::modules::enum_decls() {
+            self.enums.entry(name.clone()).or_insert_with(|| {
+                let mut without_methods = decl.clone();
+                without_methods.methods.clear();
+                without_methods
+            });
+        }
+    }
+
     pub(super) fn register_declarations(&mut self, decls: &[Decl]) -> Result<RegisteredProgram, RuntimeError> {
         let mut entry_fn: Option<FnDecl> = None;
         let mut imports: Vec<(String, ModuleKind)> = Vec::new();
@@ -87,6 +107,8 @@ impl Interpreter {
         let mut benchmarks: Vec<BenchmarkDecl> = Vec::new();
         let mut test_fns: Vec<FnDecl> = Vec::new();
         let mut top_level_consts: Vec<ConstDecl> = Vec::new();
+
+        self.register_stdlib_enums();
 
         for decl in decls {
             match &decl.kind {

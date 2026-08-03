@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A stdlib enum's variants have to work the same as a program's. The
+// interpreter built its enum table from the program's own declarations only, so
+// a stdlib enum arrived as a bare name: `Method.Post` was "type 'Method' has no
+// field 'Post'". Native was always fine, so this is a both-backends test.
+
+import http
+import os
+import json
+import io
+
+func describe_method(m: Method) -> string {
+    match m {
+        Get => return "get",
+        Post => return "post",
+        _ => return "other",
+    }
+}
+
+// Payload arity comes from the declaration, not from a list of variant names.
+func describe_io(e: IoError) -> string {
+    match e {
+        NotFound(path) => return "nf:{path}",
+        BrokenPipe => return "pipe",
+        _ => return "other",
+    }
+}
+
+// A user enum whose variant name collides with a stdlib one (`JsonError` also
+// has `ParseError`). Matching must go by the scrutinee's own enum, not by
+// "some enum somewhere has a variant with this name".
+struct ParseError { detail: string }
+
+extend ParseError {
+    func message(self) -> string { return self.detail }
+}
+
+func parse_it(s: string) -> i32 or ParseError {
+    if s == "42" { return 42 }
+    return ParseError { detail: "nope" }
+}
+
+test "a fieldless stdlib variant constructs and matches" {
+    assert_eq(describe_method(Method.Get), "get")
+    assert_eq(describe_method(Method.Post), "post")
+    assert_eq(describe_method(Method.Patch), "other")
+}
+
+test "a stdlib variant with a payload carries it" {
+    assert_eq(describe_io(IoError.NotFound("/tmp/x")), "nf:/tmp/x")
+    assert_eq(describe_io(IoError.BrokenPipe), "pipe")
+}
+
+test "stdlib variants compare by tag" {
+    assert Stdio.Piped == Stdio.Piped
+    assert Stdio.Piped != Stdio.Inherit
+    assert Signal.Interrupt == Signal.Interrupt
+}
+
+func json_flag(v: JsonValue) -> bool {
+    match v {
+        Bool(b) => return b,
+        _ => return false,
+    }
+}
+
+test "a payload variant destructures in a match" {
+    assert json_flag(JsonValue.Bool(true))
+    assert !json_flag(JsonValue.Bool(false))
+    assert !json_flag(JsonValue.Null)
+}
+
+test "a type name shared with a stdlib variant still matches by payload type" {
+    // `ParseError` is also a JsonError variant. This must resolve against the
+    // Result's payload, not against JsonError's tags.
+    assert parse_it("bad") is ParseError
+    assert parse_it("42")! == 42
+}
+
+test "Option and Result keep their built-in behaviour" {
+    const some: i64? = 7
+    if some? as s {
+        assert_eq(s, 7)
+    } else {
+        assert false
+    }
+    const missing: i64? = none
+    assert missing == none
+}

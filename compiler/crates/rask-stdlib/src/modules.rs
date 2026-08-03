@@ -115,6 +115,26 @@ fn build() -> HashMap<String, ModuleExports> {
     out
 }
 
+static ENUM_DECLS: OnceLock<HashMap<String, rask_ast::decl::EnumDecl>> = OnceLock::new();
+
+/// Every enum the stdlib declares, by name — variants, payload types and all.
+///
+/// The interpreter needs these to evaluate `Method.Post`: it builds its enum
+/// table from the program's own declarations, so a stdlib enum arrived as a name
+/// with nothing behind it. Cached, because parsing the stub set per test run is
+/// not free.
+pub fn enum_decls() -> &'static HashMap<String, rask_ast::decl::EnumDecl> {
+    ENUM_DECLS.get_or_init(|| {
+        StubRegistry::all_type_decls()
+            .into_iter()
+            .filter_map(|decl| match decl.kind {
+                DeclKind::Enum(e) => Some((base_name(&e.name), e)),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
 /// Exports read straight off the stub sources, before the extras are added.
 ///
 /// The name set comes from the registry, which attributes a type to the file it
