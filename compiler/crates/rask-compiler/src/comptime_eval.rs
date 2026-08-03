@@ -236,6 +236,7 @@ fn try_eval_comptime_mir(
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        inferred_fn_ret: &typed.inferred_fn_ret,
     };
 
     let mir_fn = rask_mir::lower::MirLowerer::lower_function(&synth_decl, decls, &mir_ctx)

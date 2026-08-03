@@ -146,7 +146,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     for decl in &all_decls {
         if let rask_ast::decl::DeclKind::Import(import) = &decl.kind {
             if let Some(first) = import.path.first() {
-                if rask_resolve::BUILTIN_MODULE_NAMES.contains(&first.as_str()) {
+                if rask_resolve::is_builtin_module(first) {
                     package_modules.insert(first.clone());
                 }
             }

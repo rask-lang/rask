@@ -37,11 +37,13 @@ use rask_ast::decl::Decl;
 use rask_ast::NodeId;
 use std::collections::HashMap;
 
-/// Names of all builtin stdlib modules available via `import`.
-pub const BUILTIN_MODULE_NAMES: &[&str] = &[
-    "io", "fs", "cli", "std", "json", "random", "time", "math",
-    "path", "os", "net", "core", "async", "cfg", "http",
-];
+/// True when `name` names a builtin stdlib module.
+///
+/// Asks `BuiltinModuleKind` rather than consulting a second list of names — the
+/// list this replaced had drifted, missing `env` and `thread`.
+pub fn is_builtin_module(name: &str) -> bool {
+    symbol::BuiltinModuleKind::from_name(name).is_some()
+}
 
 /// The result of name resolution.
 #[derive(Debug, Default)]

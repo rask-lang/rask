@@ -1241,70 +1241,25 @@ impl Interpreter {
                         let vec = v.lock().unwrap();
                         Ok(vec.get(idx).cloned().unwrap_or(Value::Unit))
                     }
-                    Value::Module(ModuleKind::Time) => {
-                        match field.as_str() {
-                            "Instant" => Ok(Value::Type("Instant".to_string())),
-                            "Duration" => Ok(Value::Type("Duration".to_string())),
-                            _ => Err(RuntimeDiagnostic::new(
-                                RuntimeError::TypeError(format!(
-                                    "time module has no member '{}'",
-                                    field
-                                )),
-                                expr.span
-                            )),
+                    // `time.Instant`, `http.Response`, `json.JsonValue` — an
+                    // exported type name resolves to the type, so the qualified
+                    // and unqualified spellings mean the same thing. `math` is the
+                    // one module whose members are values rather than types.
+                    Value::Module(kind) => {
+                        if kind.exports_type(field) {
+                            return Ok(Value::Type(field.clone()));
                         }
-                    }
-                    Value::Module(ModuleKind::Math) => {
-                        self.get_math_field(field)
-                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
-                    }
-                    Value::Module(ModuleKind::Path) => {
-                        match field.as_str() {
-                            "Path" => Ok(Value::Type("Path".to_string())),
-                            _ => Err(RuntimeDiagnostic::new(
-                                RuntimeError::TypeError(format!(
-                                    "path module has no member '{}'",
-                                    field
-                                )),
-                                expr.span
-                            )),
+                        if kind == ModuleKind::Math {
+                            return self.get_math_field(field)
+                                .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                         }
-                    }
-                    Value::Module(ModuleKind::Random) => {
-                        match field.as_str() {
-                            "Random" => Ok(Value::Type("Random".to_string())),
-                            _ => Err(RuntimeDiagnostic::new(
-                                RuntimeError::TypeError(format!(
-                                    "random module has no member '{}'",
-                                    field
-                                )),
-                                expr.span
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "module has no member '{}'",
+                                field
                             )),
-                        }
-                    }
-                    Value::Module(ModuleKind::Json) => {
-                        match field.as_str() {
-                            "JsonValue" => Ok(Value::Type("JsonValue".to_string())),
-                            _ => Err(RuntimeDiagnostic::new(
-                                RuntimeError::TypeError(format!(
-                                    "json module has no member '{}'",
-                                    field
-                                )),
-                                expr.span
-                            )),
-                        }
-                    }
-                    Value::Module(ModuleKind::Cli) => {
-                        match field.as_str() {
-                            "Parser" => Ok(Value::Type("Parser".to_string())),
-                            _ => Err(RuntimeDiagnostic::new(
-                                RuntimeError::TypeError(format!(
-                                    "cli module has no member '{}'",
-                                    field
-                                )),
-                                expr.span
-                            )),
-                        }
+                            expr.span
+                        ))
                     }
                     // Package field access: lib.Color → look up lib$Color
                     Value::Package(pkg_name) => {
@@ -1923,8 +1878,8 @@ impl Interpreter {
                     // E18: fieldless enum to integer cast
                     (Value::Enum { name, variant, fields, variant_index, .. }, target)
                         if fields.is_empty()
-                        && matches!(target, "i8" | "i16" | "i32" | "i64" | "int"
-                            | "u8" | "u16" | "u32" | "u64" | "usize" | "isize") =>
+                        && (rask_ast::primitives::is_machine_integer(target)
+                            || rask_ast::primitives::INT_ALIASES.contains(&target)) =>
                     {
                         let disc = if let Some(enum_decl) = self.enums.get(&name) {
                             enum_decl.variants.iter()

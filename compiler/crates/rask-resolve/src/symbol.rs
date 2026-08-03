@@ -210,7 +210,62 @@ pub enum BuiltinModuleKind {
     Cfg,
     /// http - HTTP client and server
     Http,
+    /// thread - OS threads and thread pools
+    Thread,
 }
+
+impl BuiltinModuleKind {
+    /// The name this module is imported under. Also the stem of its stdlib
+    /// file, which is what `rask_stdlib::modules` keys its exports by.
+    pub fn name(self) -> &'static str {
+        match self {
+            BuiltinModuleKind::Io => "io",
+            BuiltinModuleKind::Fs => "fs",
+            BuiltinModuleKind::Env => "env",
+            BuiltinModuleKind::Cli => "cli",
+            BuiltinModuleKind::Std => "std",
+            BuiltinModuleKind::Json => "json",
+            BuiltinModuleKind::Random => "random",
+            BuiltinModuleKind::Time => "time",
+            BuiltinModuleKind::Math => "math",
+            BuiltinModuleKind::Path => "path",
+            BuiltinModuleKind::Os => "os",
+            BuiltinModuleKind::Net => "net",
+            BuiltinModuleKind::Core => "core",
+            BuiltinModuleKind::Async => "async",
+            BuiltinModuleKind::Cfg => "cfg",
+            BuiltinModuleKind::Http => "http",
+            BuiltinModuleKind::Thread => "thread",
+        }
+    }
+
+    /// The module a name imports, if it's a stdlib module.
+    pub fn from_name(name: &str) -> Option<BuiltinModuleKind> {
+        ALL_BUILTIN_MODULES.iter().copied().find(|m| m.name() == name)
+    }
+}
+
+/// Every stdlib module. `from_name` walks this, so a new variant is reachable
+/// as soon as it has a name — there's no second list to update.
+pub const ALL_BUILTIN_MODULES: &[BuiltinModuleKind] = &[
+    BuiltinModuleKind::Io,
+    BuiltinModuleKind::Fs,
+    BuiltinModuleKind::Env,
+    BuiltinModuleKind::Cli,
+    BuiltinModuleKind::Std,
+    BuiltinModuleKind::Json,
+    BuiltinModuleKind::Random,
+    BuiltinModuleKind::Time,
+    BuiltinModuleKind::Math,
+    BuiltinModuleKind::Path,
+    BuiltinModuleKind::Os,
+    BuiltinModuleKind::Net,
+    BuiltinModuleKind::Core,
+    BuiltinModuleKind::Async,
+    BuiltinModuleKind::Cfg,
+    BuiltinModuleKind::Http,
+    BuiltinModuleKind::Thread,
+];
 
 /// A declared symbol.
 #[derive(Debug, Clone)]

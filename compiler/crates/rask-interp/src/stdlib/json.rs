@@ -890,8 +890,8 @@ fn json_to_typed(
         "string" => extract_string(raw).map_err(|_| type_err(path, "string", json)),
         "bool" => extract_bool(raw).map_err(|_| type_err(path, "bool", json)),
         "f32" | "f64" | "float" => extract_float(raw).map_err(|_| type_err(path, ty, json)),
-        "i8" | "i16" | "i32" | "i64" | "isize" | "int"
-        | "u8" | "u16" | "u32" | "u64" | "usize" => {
+        _ if rask_ast::primitives::is_machine_integer(ty)
+            || rask_ast::primitives::INT_ALIASES.contains(&ty) => {
             extract_int(raw, int_kind(ty)).map_err(|_| type_err(path, "an integer", json))
         }
         _ => {
@@ -992,8 +992,8 @@ fn empty_value(ty: &str, struct_decls: &HashMap<String, StructDecl>) -> Value {
         "string" => Value::String(Arc::new(Mutex::new(String::new()))),
         "bool" => Value::Bool(false),
         "f32" | "f64" | "float" => Value::Float(0.0),
-        "i8" | "i16" | "i32" | "i64" | "isize" | "int"
-        | "u8" | "u16" | "u32" | "u64" | "usize" => Value::Int(0, int_kind(ty)),
+        _ if rask_ast::primitives::is_machine_integer(ty)
+            || rask_ast::primitives::INT_ALIASES.contains(&ty) => Value::Int(0, int_kind(ty)),
         _ => match struct_decls.get(ty) {
             Some(decl) => {
                 let mut fields = IndexMap::new();

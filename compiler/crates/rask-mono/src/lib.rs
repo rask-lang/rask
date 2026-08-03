@@ -529,6 +529,7 @@ mod tests {
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),
             channel_send_sites: std::collections::HashSet::new(),
+            inferred_fn_ret: std::collections::HashMap::new(),
         }
     }
 

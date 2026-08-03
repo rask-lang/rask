@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a stdlib module exports came from five hand-written tables across three
+// crates, and they'd drifted from the stdlib itself: `import time.Timer` was
+// rejected as "not part of this module" even though time.rk declares `Timer`.
+// The table is read off each module's own `.rk` file now, so a type is
+// importable as soon as the stdlib declares it.
+
+import time.Timer
+import os.SysError
+import json.JsonParser
+import async.TaskGroup
+import time
+import http
+
+test "a plain import registers the module's structs" {
+    const d = Duration.from_millis(3)
+    assert_eq(d.as_millis(), 3)
+}
+
+test "qualified and unqualified spellings name the same type" {
+    const via_module = http.Response.ok("x")
+    const via_bare = Response.ok("x")
+    assert_eq(via_module.status, via_bare.status)
+    assert_eq(via_module.status, 200)
+}
+
+test "a module's namespace struct still carries its functions" {
+    // `struct http { }` exists to hang qualified calls off, and isn't itself
+    // an exported type — `http.Response` resolves through it either way.
+    const r = http.Response.ok("y")
+    assert_eq(r.status, 200)
+}

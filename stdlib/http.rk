@@ -147,19 +147,25 @@ extend Request {
     }
 
     // All query parameters as a map.
+    // Keys and values are copied out: the map outlives the slices `split`
+    // hands back, which are views into `self.url`.
     public func query_params(self) -> Map<string, string> {
         mut result = Map<string, string>.new()
         const qpos = self.url.find("?")
         if qpos? as qp {
-            const query = self.url[qp + 1..]
+            const query = self.url[qp + 1..].to_string()
             for pair in query.split("&") {
-                const eq = pair.find("=")
+                const item = pair.to_string()
+                if item.is_empty() {
+                    continue
+                }
+                const eq = item.find("=")
                 if eq? as eqpos {
-                    const key = pair[0..eqpos]
-                    const value = pair[eqpos + 1..]
+                    const key = item[0..eqpos].to_string()
+                    const value = item[eqpos + 1..].to_string()
                     result.insert(key, value)
                 } else {
-                    result.insert(pair, "")
+                    result.insert(item, "")
                 }
             }
         }

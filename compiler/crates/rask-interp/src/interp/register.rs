@@ -62,18 +62,9 @@ impl Interpreter {
                     type_param: None,
                 });
             }
-            // Module type exports
-            (ModuleKind::Random, "Random") => {
-                self.env.define(alias.to_string(), Value::Type("Random".to_string()));
-            }
-            (ModuleKind::Time, "Instant") => {
-                self.env.define(alias.to_string(), Value::Type("Instant".to_string()));
-            }
-            (ModuleKind::Time, "Duration") => {
-                self.env.define(alias.to_string(), Value::Type("Duration".to_string()));
-            }
-            (ModuleKind::Path, "Path") => {
-                self.env.define(alias.to_string(), Value::Type("Path".to_string()));
+            // Any exported type: `import http.Response`, `import time.Instant`.
+            _ if module.exports_type(member) => {
+                self.env.define(alias.to_string(), Value::Type(member.to_string()));
             }
             _ => {
                 // Unknown member - ignore
@@ -83,20 +74,29 @@ impl Interpreter {
 
     /// Register companion types for glob imports (`import module.*`).
     fn register_glob_companions(env: &mut crate::env::Environment, module: ModuleKind) {
-        let types: &[&str] = match module {
-            ModuleKind::Http => &["Request", "Response", "Method", "Headers", "HttpServer", "Responder", "HttpClient"],
-            ModuleKind::Time => &["Instant", "Duration"],
-            ModuleKind::Path => &["Path"],
-            ModuleKind::Fs => &["File", "Metadata"],
-            ModuleKind::Io => &["Stdin", "Stdout", "Stderr", "Buffer", "IoError"],
-            ModuleKind::Os => &["Command", "Process", "Output", "Stdio", "Signal"],
-            ModuleKind::Cli => &["Args"],
-            ModuleKind::Net => &["TcpListener", "TcpConnection"],
-            ModuleKind::Random => &["Random"],
-            _ => &[],
-        };
-        for name in types {
+        for name in module.exported_types() {
             env.define(name.to_string(), Value::Type(name.to_string()));
+        }
+    }
+
+
+    /// The stdlib's own enums, so `Method.Post` and `match e { NotFound(_) => … }`
+    /// work on them the same way they do on a program's enums.
+    ///
+    /// Registered before the program's declarations, so a program enum of the
+    /// same name shadows the stdlib's rather than the other way round — the same
+    /// order the resolver and checker use.
+    ///
+    /// Only the variants, not the methods: a stub's method bodies are empty
+    /// because the interpreter implements them natively, and registering them
+    /// would shadow those implementations with `{ }`.
+    fn register_stdlib_enums(&mut self) {
+        for (name, decl) in rask_stdlib::modules::enum_decls() {
+            self.enums.entry(name.clone()).or_insert_with(|| {
+                let mut without_methods = decl.clone();
+                without_methods.methods.clear();
+                without_methods
+            });
         }
     }
 
@@ -107,6 +107,8 @@ impl Interpreter {
         let mut benchmarks: Vec<BenchmarkDecl> = Vec::new();
         let mut test_fns: Vec<FnDecl> = Vec::new();
         let mut top_level_consts: Vec<ConstDecl> = Vec::new();
+
+        self.register_stdlib_enums();
 
         for decl in decls {
             match &decl.kind {
@@ -152,24 +154,9 @@ impl Interpreter {
                             continue;
                         }
 
-                        let module_kind = match module_name.as_str() {
-                            "fs" => Some(ModuleKind::Fs),
-                            "io" => Some(ModuleKind::Io),
-                            "cli" => Some(ModuleKind::Cli),
-                            "std" => Some(ModuleKind::Std),
-                            "env" => Some(ModuleKind::Env),
-                            "time" => Some(ModuleKind::Time),
-                            "random" => Some(ModuleKind::Random),
-                            "math" => Some(ModuleKind::Math),
-                            "os" => Some(ModuleKind::Os),
-                            "json" => Some(ModuleKind::Json),
-                            "path" => Some(ModuleKind::Path),
-                            "net" => Some(ModuleKind::Net),
-                            "async" => Some(ModuleKind::Async),
-                            "thread" => Some(ModuleKind::Thread),
-                            "http" => Some(ModuleKind::Http),
-                            _ => None,
-                        };
+                        // `reflect` is reached as `std.reflect`, handled above.
+                        let module_kind = ModuleKind::from_name(module_name)
+                            .filter(|k| *k != ModuleKind::Reflect);
 
                         if let Some(kind) = module_kind {
                             if import.path.len() == 1 && import.is_glob {

@@ -175,6 +175,10 @@ pub struct TypeChecker {
     /// (insert/remove/clear on the named binding) are caught by the effects
     /// analysis (`rask-effects`), so they aren't re-checked here.
     pub(super) frozen_context_elems: Vec<Type>,
+    /// S2: view bindings (`s[i..]`, `s.trim()`) whose source type was still a
+    /// variable during the walk — a field, a loop variable, an inferred local.
+    /// Validated after solving, so `const q = self.url[i..]` is caught too.
+    pub(super) pending_view_bindings: Vec<borrow::PendingViewBinding>,
 }
 
 impl TypeChecker {
@@ -216,6 +220,7 @@ impl TypeChecker {
             pending_int_literals: Vec::new(),
             pending_index: Vec::new(),
             pending_linear_containers: Vec::new(),
+            pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
             pending_result_validations: Vec::new(),
             frozen_context_elems: Vec::new(),
@@ -229,6 +234,17 @@ impl TypeChecker {
         } else {
             Err(errors)
         }
+    }
+
+    /// Declarations that carry a body to check, as opposed to ones that only
+    /// introduce a name or a value. Bodies are checked in a second pass so
+    /// they see module-level consts already typed.
+    fn is_body_decl(decl: &Decl) -> bool {
+        use rask_ast::decl::DeclKind;
+        matches!(
+            decl.kind,
+            DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Test(_) | DeclKind::Benchmark(_)
+        )
     }
 
     /// Lenient variant: always returns the (partial) TypedProgram plus any errors.
@@ -263,6 +279,7 @@ impl TypeChecker {
 
         // Global scope for module-level bindings (imports, etc.)
         self.push_scope();
+
         if !stdlib_decls.is_empty() {
             self.types.stdlib_mode = true;
             for decl in stdlib_decls {
@@ -270,8 +287,25 @@ impl TypeChecker {
             }
             self.types.stdlib_mode = false;
         }
+
+        // Everything that isn't a body first — imports, module-level consts, type
+        // aliases — then the bodies. A body that reads a module-level const needs
+        // its type, and files arrive in whatever order the package lists them:
+        // `main.rk` before `store.rk` meant a body was checked while
+        // `const store = Mutex.new(Store.new())` was still an inference variable,
+        // so `store.lock()` had no receiver type to dispatch on and the method's
+        // result type was lost — silently, and only for consts without an
+        // annotation (#566, #569). Imports keep their place ahead of the consts
+        // that use them (`const started = time.Instant.now()`).
         for decl in decls {
-            self.check_decl(decl);
+            if !Self::is_body_decl(decl) {
+                self.check_decl(decl);
+            }
+        }
+        for decl in decls {
+            if Self::is_body_decl(decl) {
+                self.check_decl(decl);
+            }
         }
         self.pop_scope();
 
@@ -309,6 +343,11 @@ impl TypeChecker {
         // concrete.
         self.validate_pending_linear_containers();
 
+        // S2: view bindings whose source was a field or loop variable — the type
+        // is concrete now, so "is this a string slice / a growable view" has an
+        // answer it didn't have during the walk.
+        self.validate_pending_view_bindings();
+
         let node_types: HashMap<_, _> = self
             .node_types
             .iter()
@@ -341,6 +380,20 @@ impl TypeChecker {
                 _ => { call_type_args.insert(*node_id, resolved); }
             }
         }
+
+        // Return types the checker inferred for functions that don't declare one.
+        // Normalized like call type args so lowering sees names, not TypeIds.
+        // Unresolved ones are dropped — "still a variable" is no better an answer
+        // than the declaration gave.
+        let inferred_fn_ret: HashMap<String, Type> = self
+            .inferred_fn_types
+            .iter()
+            .map(|(name, (_, ret))| {
+                let applied = Self::normalize_named_types(&self.ctx.apply(ret), &id_to_name);
+                (name.clone(), applied)
+            })
+            .filter(|(_, ty)| !Self::contains_type_var(ty))
+            .collect();
 
         let trait_coercions = self.trait_coercions.clone();
         let error_wraps = self.error_wraps.clone();
@@ -380,6 +433,7 @@ impl TypeChecker {
             unsafe_ops,
             span_types,
             channel_send_sites: self.channel_send_sites,
+            inferred_fn_ret,
         };
 
         (program, errors)

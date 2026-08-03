@@ -17,13 +17,10 @@ impl Interpreter {
     /// only the former should fail the arm outright on a mismatch instead of
     /// falling through to bind.
     fn is_known_type_name(&self, name: &str) -> bool {
-        const PRIMITIVES: &[&str] = &[
-            "i8", "i16", "i32", "i64", "i128", "isize",
-            "u8", "u16", "u32", "u64", "u128", "usize",
-            "int", "uint", "f32", "f64", "bool", "char", "string",
-        ];
         let base = name.split('<').next().unwrap_or(name);
-        PRIMITIVES.contains(&base)
+        // The wide set here on purpose: a match arm can name `string`, and the
+        // interpreter still accepts the `int`/`uint` spellings.
+        rask_ast::primitives::is_builtin_scalar_or_string(base)
             || self.enums.contains_key(base)
             || self.struct_decls.contains_key(base)
             || matches!(base, "Vec" | "Map")
@@ -66,12 +63,22 @@ impl Interpreter {
                         _ => None,
                     };
                 }
-                // Check if this ident is a known enum variant — match tag only
-                if let Value::Enum { variant, .. } = value {
-                    let is_known_variant = self.enums.values().any(|e| {
-                        e.variants.iter().any(|v| v.name == *name)
-                    });
-                    if is_known_variant {
+                // A variant of the scrutinee's own enum — match on the tag.
+                //
+                // Scoped to that enum on purpose. Asking whether *any* declared
+                // enum has a variant by this name makes the answer depend on what
+                // else the program happens to declare: `is ParseError` against a
+                // `T or ParseError` stopped matching once the stdlib's `JsonError`
+                // (which has a `ParseError` variant) was in the table, because
+                // the name looked like a variant and the arm compared it against
+                // `Err`. The scrutinee's own enum is the only one that can
+                // legitimately answer this.
+                if let Value::Enum { name: sc_name, variant, .. } = value {
+                    let is_own_variant = self
+                        .enums
+                        .get(sc_name)
+                        .is_some_and(|e| e.variants.iter().any(|v| v.name == *name));
+                    if is_own_variant {
                         if variant == name {
                             return Some(HashMap::new());
                         } else {
@@ -401,12 +408,13 @@ fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
         Value::Bool(_) => ty_name == "bool",
         Value::Char(_) => ty_name == "char",
         Value::String(_) => ty_name == "string",
-        Value::Int(_, _) => matches!(
-            ty_name,
-            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
-                | "int" | "uint" | "isize" | "usize"
-        ),
-        Value::Float(_) => matches!(ty_name, "f32" | "f64"),
+        // `Value::Int` holds the register-width integers; 128-bit ones are
+        // `Int128`/`Uint128` and match their own arms.
+        Value::Int(_, _) => {
+            rask_ast::primitives::is_machine_integer(ty_name)
+                || rask_ast::primitives::INT_ALIASES.contains(&ty_name)
+        }
+        Value::Float(_) => rask_ast::primitives::is_float(ty_name),
         Value::Enum { name, .. } => name == ty_name,
         Value::Struct(s) => {
             let guard = s.lock().unwrap();

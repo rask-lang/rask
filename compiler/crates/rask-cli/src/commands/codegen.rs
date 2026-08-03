@@ -293,6 +293,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        inferred_fn_ret: &typed.inferred_fn_ret,
     };
 
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
@@ -377,6 +378,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        inferred_fn_ret: &typed.inferred_fn_ret,
     };
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);

@@ -2131,3 +2131,276 @@ test "strings differ" {
         "failure must name both values: {}", combined,
     );
 }
+
+// ─── Regression: issues #566, #569 ──────────────────────────
+//
+// A module-level `const` without a type annotation was typed in the same pass
+// as function bodies, so a body in an earlier-sorting file was checked while the
+// const was still an inference variable. `store.lock()` then had no receiver
+// type to dispatch on, and the type of whatever the guard's method returned was
+// lost: reading a newtype's `.value` segfaulted (#566) and inspecting the error
+// side of a `T or E` trapped (#569). Both need the const's file to sort *after*
+// the file that reads it, which is what `main.rk` / `store.rk` gives.
+
+/// Build a package from (filename, source) pairs, run it, return (ok, output).
+fn build_and_run_package(tag: &str, files: &[(&str, &str)]) -> (bool, String) {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir().join(format!("rask_{}_{}", tag, next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, src) in files {
+        std::fs::write(dir.join(name), src).unwrap();
+    }
+
+    let build = Command::new(&rask)
+        .arg("build")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask build");
+    let build_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr),
+    );
+    if !build.status.success() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return (false, format!("build failed: {}", build_out));
+    }
+
+    let run = Command::new(dir.join("build").join("debug").join(tag))
+        .output()
+        .expect("failed to run built binary");
+    let run_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    let ok = run.status.success();
+    let _ = std::fs::remove_dir_all(&dir);
+    (ok, format!("{}\n{}", build_out, run_out))
+}
+
+#[test]
+fn newtype_value_survives_cross_module_mutex_method() {
+    let (ok, out) = build_and_run_package("nt", &[
+        ("build.rk", r#"
+package "nt" "0.1.0" { description: "newtype through a mutex global" }
+"#),
+        ("ids.rk", r#"
+type UserId = u64 with (Equal, Hashable, Comparable, Debug)
+"#),
+        // `main.rk` sorts before `store.rk`, so the body is reached first.
+        ("main.rk", r#"
+func run() -> string or StoreError {
+    const id = try store.lock().make()
+    return "value={id.value}"
+}
+
+func main() {
+    const s = try run() else |_e| { println("recovered"); return }
+    println(s)
+}
+"#),
+        ("store.rk", r#"
+@message
+enum StoreError { Boom }
+
+struct Store { next: UserId }
+
+extend Store {
+    func new() -> Store { return Store { next: UserId(7) } }
+    func make(self) -> UserId or StoreError { return self.next }
+}
+
+const store = Mutex.new(Store.new())
+"#),
+    ]);
+
+    assert!(ok, "reading `.value` off a mutex guard's result must not crash: {}", out);
+    assert!(
+        !out.contains("unresolved field"),
+        "the field's type must resolve, not fall back to i64: {}", out,
+    );
+    assert!(out.contains("value=7"), "expected `value=7`: {}", out);
+}
+
+#[test]
+fn error_payload_survives_cross_module_mutex_method() {
+    let (ok, out) = build_and_run_package("ep", &[
+        ("build.rk", r#"
+package "ep" "0.1.0" { description: "T or E error side through a mutex global" }
+"#),
+        ("errs.rk", r#"
+@message
+enum StoreError {
+    @message("nf {0}") NotFound(u64)
+    @message("cap {0}") Cap(u64)
+}
+
+@message
+enum ApiError {
+    Store(StoreError)
+    @message("bad {0}") Bad(string)
+}
+
+func code(e: ApiError) -> string {
+    match e { Store(inner) => return store_code(inner), Bad(_) => return "b" }
+}
+
+func store_code(e: StoreError) -> string {
+    match e { NotFound(_) => return "nf", Cap(_) => return "cap" }
+}
+"#),
+        ("main.rk", r#"
+struct View { public id: u64 }
+
+func handle(id: u64) -> View or ApiError {
+    const v = try store.lock().view(id)
+    return v
+}
+
+func main() {
+    // Error side: a deep read of the wrapped payload used to trap.
+    const bad = try handle(999) else |e| {
+        println("code={code(e)}")
+        println("message={e.message()}")
+        ok_side()
+        return
+    }
+    println("unexpected ok {bad.id}")
+}
+
+func ok_side() {
+    const v = try handle(3) else |_e| { println("unexpected error"); return }
+    println("ok={v.id}")
+}
+"#),
+        ("store.rk", r#"
+struct Store { n: u64 }
+
+extend Store {
+    func new() -> Store { return Store { n: 0 } }
+    func view(self, id: u64) -> View or StoreError {
+        if id > 100 { return StoreError.NotFound(id) }
+        return View { id: id }
+    }
+}
+
+const store = Mutex.new(Store.new())
+"#),
+    ]);
+
+    assert!(ok, "inspecting the error from a mutex guard's method must not trap: {}", out);
+    // The outer tag always survived; the inner payload is what was corrupt.
+    assert!(out.contains("code=nf"), "inner error variant must match: {}", out);
+    assert!(
+        out.contains("message=nf 999"),
+        "the payload must reach `message()` intact: {}", out,
+    );
+    assert!(out.contains("ok=3"), "the happy path must still work: {}", out);
+}
+
+// ─── Regression: issue #570 ─────────────────────────────────
+//
+// The interpreter kept three separate lists of which types each stdlib module
+// exports: one for `import m.*`, one for `import m.Type`, and one per module in
+// the qualified-field path. They disagreed — `http`'s types were only in the
+// glob list — so `http.Response.ok(…)` failed with "cannot access field on
+// module" while a bare `Response.ok(…)` worked. One table now serves all three.
+
+fn interp_output(src: &str) -> String {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir().join(format!("rask_interp_{}", next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("m.rk");
+    std::fs::write(&file, src).unwrap();
+    let out = Command::new(&rask)
+        .arg("run")
+        .arg("--interp")
+        .arg(&file)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run --interp");
+    let _ = std::fs::remove_dir_all(&dir);
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    )
+}
+
+#[test]
+fn interp_resolves_qualified_module_types() {
+    // `http.Response` is the case from #570; the others went through
+    // per-module tables that the shared one replaced.
+    let out = interp_output(r#"
+import http
+import time
+import json
+
+func main() {
+    const r = http.Response.ok("body")
+    println("status={r.status}")
+
+    const d = time.Duration.from_millis(5)
+    println("ms={d.as_millis()}")
+
+    println("json={json.encode(true)}")
+}
+"#);
+
+    assert!(
+        !out.contains("cannot access field on module") && !out.contains("has no member"),
+        "qualified module types must resolve: {}", out,
+    );
+    assert!(out.contains("status=200"), "http.Response.ok must build a 200: {}", out);
+    assert!(out.contains("ms=5"), "time.Duration must still resolve: {}", out);
+    assert!(out.contains("json=true"), "json module must still work: {}", out);
+}
+
+#[test]
+fn interp_qualified_and_bare_module_types_agree() {
+    // The two spellings name the same type, so they must behave the same.
+    let out = interp_output(r#"
+import http
+
+func main() {
+    const viaModule = http.Response.ok("x")
+    const viaBare = Response.ok("x")
+    println("same={viaModule.status == viaBare.status}")
+}
+"#);
+    assert!(out.contains("same=true"), "both spellings must agree: {}", out);
+}
+
+#[test]
+fn interp_single_member_import_covers_every_exported_type() {
+    // `import http.Response` used to be silently ignored — the single-member
+    // table only knew about time/path/random.
+    let out = interp_output(r#"
+import http.Response
+
+func main() {
+    const r = Response.ok("x")
+    println("status={r.status}")
+}
+"#);
+    assert!(out.contains("status=200"), "a single-member import must bind the type: {}", out);
+}
+
+#[test]
+fn interp_reports_an_unknown_module_member() {
+    let out = interp_output(r#"
+import http
+
+func main() {
+    println("{http.Nonexistent}")
+}
+"#);
+    assert!(
+        out.contains("Nonexistent"),
+        "an unknown member must still be reported by name: {}", out,
+    );
+}

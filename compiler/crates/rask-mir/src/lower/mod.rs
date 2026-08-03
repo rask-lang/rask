@@ -255,9 +255,34 @@ pub struct MirContext<'a> {
     /// guessed the struct would deref a timestamp as a pointer. Left empty,
     /// consts keep the old re-evaluate-per-function behaviour.
     pub const_slot_types: std::cell::RefCell<HashMap<String, MirType>>,
+    /// Function name → return type the checker inferred, for the ones that don't
+    /// declare it. Only consulted when there's no annotation to read.
+    pub inferred_fn_ret: &'a HashMap<String, Type>,
 }
 
+/// For contexts built without checker data (tests, comptime): no function has an
+/// inferred return type, so every signature comes from its annotation.
+pub static EMPTY_INFERRED_RET: std::sync::LazyLock<HashMap<String, Type>> =
+    std::sync::LazyLock::new(HashMap::new);
+
 impl<'a> MirContext<'a> {
+    /// A function's MIR return type: the declared one, else the type the checker
+    /// inferred for it, else void.
+    ///
+    /// The last step is a real answer only for a function with no `return` value
+    /// — `func f() { }`. A missing annotation on `func f() { return 41 }` used to
+    /// land there too, so the signature said void while the body returned an i64
+    /// and Cranelift rejected the function (#571).
+    pub fn fn_ret_ty(&self, name: &str, declared: Option<&str>) -> MirType {
+        if let Some(s) = declared {
+            return self.resolve_type_str(s);
+        }
+        match self.inferred_fn_ret.get(name) {
+            Some(ty) => self.type_to_mir(ty),
+            None => MirType::Void,
+        }
+    }
+
     /// Empty context for tests that don't need layouts or type information.
     pub fn empty_with_map(map: &'a HashMap<NodeId, Type>) -> MirContext<'a> {
         static EMPTY_COMPTIME: std::sync::LazyLock<HashMap<String, ComptimeGlobalMeta>> =
@@ -301,6 +326,7 @@ impl<'a> MirContext<'a> {
             resource_types: &EMPTY_RESOURCE_TYPES,
             nominal_underlying: &EMPTY_NOMINAL,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
+            inferred_fn_ret: &EMPTY_INFERRED_RET,
         }
     }
 
@@ -1048,6 +1074,33 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Base type name of an indexed object — `"Pool"` for both `tasks[h]` and
+    /// `self.tasks[h]`. Generics are stripped: `Pool<Task>` → `Pool`.
+    ///
+    /// A variable's tracked prefix first (it survives cases the checker leaves as
+    /// an inference variable), then the checker's type, which is the only source
+    /// for a field or any other non-`Ident` object.
+    pub(crate) fn index_object_base(&self, object: &Expr) -> Option<String> {
+        let prefix = if let ExprKind::Ident(var_name) = &object.kind {
+            self.meta(var_name).and_then(|m| m.type_prefix.clone())
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.ctx
+                .lookup_raw_type(object.id)
+                .and_then(|ty| MirContext::type_prefix(ty, self.ctx.type_names))
+        })?;
+        Some(prefix.split('<').next().unwrap_or(&prefix).trim().to_string())
+    }
+
+    /// True when `object[..]` indexes a `Pool`. Decides both the
+    /// `PoolCheckedAccess` lowering and whether a `with` binding aliases the slot
+    /// — they have to agree, so they read the same answer.
+    pub(crate) fn index_object_is_pool(&self, object: &Expr) -> bool {
+        self.index_object_base(object).as_deref() == Some("Pool")
+    }
+
     /// Element type of an expression that evaluates to a `Vec<T>`, or None when
     /// it isn't one (or the type can't be recovered).
     ///
@@ -1644,22 +1697,14 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
-        let ret_ty = fn_decl
-            .ret_ty
-            .as_deref()
-            .map(|s| ctx.resolve_type_str(s))
-            .unwrap_or(MirType::Void);
+        let ret_ty = ctx.fn_ret_ty(&fn_decl.name, fn_decl.ret_ty.as_deref());
 
         // Build function signature table from all declarations
         let mut func_sigs = HashMap::new();
         for d in all_decls {
             match &d.kind {
                 DeclKind::Fn(f) => {
-                    let sig_ret = f
-                        .ret_ty
-                        .as_deref()
-                        .map(|s| ctx.resolve_type_str(s))
-                        .unwrap_or(MirType::Void);
+                    let sig_ret = ctx.fn_ret_ty(&f.name, f.ret_ty.as_deref());
                     func_sigs.insert(f.name.clone(), FuncSig {
                         ret_ty: sig_ret,
                         scalar_mutate_params: scalar_mutate_params(&f.params, ctx),
@@ -2963,11 +3008,9 @@ fn vec_elem_of_type_str(ret_ty: Option<&str>, ctx: &MirContext) -> Option<MirTyp
 }
 
 /// Is `name` one of the integer primitives (as spelled in source)?
+/// Register-width only — `string.parse<i128>` isn't supported.
 pub(crate) fn is_integer_type_name(name: &str) -> bool {
-    matches!(name,
-        "i8" | "i16" | "i32" | "i64" | "isize"
-        | "u8" | "u16" | "u32" | "u64" | "usize"
-    )
+    rask_ast::primitives::is_machine_integer(name)
 }
 
 /// Type arguments `string.parse<T>` accepts — the numeric primitives.
@@ -3233,10 +3276,7 @@ pub fn type_prefix_from_str(s: &str) -> Option<String> {
     // Reject primitives and empty
     if name.is_empty() { return None; }
     match name {
-        "i8" | "i16" | "i32" | "i64" | "i128"
-        | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "f32" | "f64" | "bool" | "char" | "string"
-        | "usize" | "isize" | "()" => None,
+        _ if rask_ast::primitives::is_builtin_scalar_or_string(name) || name == "()" => None,
         _ if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
             Some(name.to_string())
         }
@@ -4176,6 +4216,7 @@ mod tests {
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
+            inferred_fn_ret: &EMPTY_INFERRED_RET,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -4240,6 +4281,7 @@ mod tests {
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
+            inferred_fn_ret: &EMPTY_INFERRED_RET,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -4310,6 +4352,7 @@ mod tests {
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
+            inferred_fn_ret: &EMPTY_INFERRED_RET,
         };
 
         let decl = make_fn("f", vec![], None, vec![

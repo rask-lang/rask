@@ -489,7 +489,7 @@ pub fn compile_package(
     for decl in &pkg_ctx.all_decls {
         if let DeclKind::Import(import) = &decl.kind {
             if let Some(first) = import.path.first() {
-                if rask_resolve::BUILTIN_MODULE_NAMES.contains(&first.as_str()) {
+                if rask_resolve::is_builtin_module(first) {
                     package_modules.insert(first.clone());
                 }
             }
@@ -606,7 +606,7 @@ fn collect_builtin_imports(decls: &[Decl]) -> Vec<String> {
     for decl in decls {
         if let DeclKind::Import(import) = &decl.kind {
             if let Some(first) = import.path.first() {
-                if rask_resolve::BUILTIN_MODULE_NAMES.contains(&first.as_str())
+                if rask_resolve::is_builtin_module(first)
                     && !names.contains(first)
                 {
                     names.push(first.clone());

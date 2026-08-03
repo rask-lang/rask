@@ -285,4 +285,10 @@ pub struct TypedProgram {
     /// the ownership checker to transfer ownership of the sent value even when
     /// inference leaves the receiver as a type variable in `node_types`.
     pub channel_send_sites: std::collections::HashSet<rask_ast::Span>,
+    /// Function name → inferred return type, for functions that don't declare one
+    /// (`func f() { return 41 }`). An absent annotation is not the same as
+    /// returning nothing, and the declaration string is the only thing lowering
+    /// can otherwise see — so without this the signature came out `void` while
+    /// the body returned a value.
+    pub inferred_fn_ret: HashMap<String, Type>,
 }
