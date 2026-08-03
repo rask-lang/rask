@@ -1048,6 +1048,33 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Base type name of an indexed object — `"Pool"` for both `tasks[h]` and
+    /// `self.tasks[h]`. Generics are stripped: `Pool<Task>` → `Pool`.
+    ///
+    /// A variable's tracked prefix first (it survives cases the checker leaves as
+    /// an inference variable), then the checker's type, which is the only source
+    /// for a field or any other non-`Ident` object.
+    pub(crate) fn index_object_base(&self, object: &Expr) -> Option<String> {
+        let prefix = if let ExprKind::Ident(var_name) = &object.kind {
+            self.meta(var_name).and_then(|m| m.type_prefix.clone())
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.ctx
+                .lookup_raw_type(object.id)
+                .and_then(|ty| MirContext::type_prefix(ty, self.ctx.type_names))
+        })?;
+        Some(prefix.split('<').next().unwrap_or(&prefix).trim().to_string())
+    }
+
+    /// True when `object[..]` indexes a `Pool`. Decides both the
+    /// `PoolCheckedAccess` lowering and whether a `with` binding aliases the slot
+    /// — they have to agree, so they read the same answer.
+    pub(crate) fn index_object_is_pool(&self, object: &Expr) -> bool {
+        self.index_object_base(object).as_deref() == Some("Pool")
+    }
+
     /// Element type of an expression that evaluates to a `Vec<T>`, or None when
     /// it isn't one (or the type can't be recovered).
     ///

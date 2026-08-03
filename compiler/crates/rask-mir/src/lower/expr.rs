@@ -1558,10 +1558,7 @@ impl<'a> MirLowerer<'a> {
                     });
 
                 // Pool index: emit PoolCheckedAccess for generation checking.
-                // The prefix carries generics ("Pool<T>"); compare on the base.
-                let prefix_base = type_prefix.as_deref()
-                    .map(|p| p.split('<').next().unwrap_or(p).trim());
-                if prefix_base == Some("Pool") {
+                if self.index_object_is_pool(object) {
                     // If result_ty is I64 (default), try to extract the element type
                     // from the pool's generic parameter (Pool<Entity> → Entity)
                     let result_ty = if matches!(result_ty, MirType::I64) {
@@ -2543,14 +2540,19 @@ impl<'a> MirLowerer<'a> {
                 // Captured per binding so we can emit Vec_set / Map_set after the body runs.
                 let mut coll_writebacks: Vec<(MirOperand, MirOperand, LocalId, &'static str)> = Vec::new();
                 for binding in bindings {
+                    // Does the binding read a pool slot? Decides aliasing below, and
+                    // unlike `pool_info` it holds for `self.tasks[h]` as well as a
+                    // plain `tasks[h]` — the pool's type is what matters, not whether
+                    // it happens to be reachable by bare name.
+                    let source_is_pool = match &binding.source.kind {
+                        ExprKind::Index { object, .. } => self.index_object_is_pool(object),
+                        _ => false,
+                    };
+
                     // Before lowering, extract pool/handle info for re-resolution tracking
                     let pool_info = if let ExprKind::Index { object, index } = &binding.source.kind {
                         if let ExprKind::Ident(coll_name) = &object.kind {
-                            let is_pool = self.meta(coll_name)
-                                .and_then(|m| m.type_prefix.as_deref())
-                                .map(|p| p == "Pool")
-                                .unwrap_or(false);
-                            if is_pool {
+                            if source_is_pool {
                                 let pool_local = self.locals.get(coll_name).map(|(id, _)| *id);
                                 let handle_local = if let ExprKind::Ident(h) = &index.kind {
                                     self.locals.get(h).map(|(id, _)| *id)
@@ -2571,23 +2573,18 @@ impl<'a> MirLowerer<'a> {
                     // Detect `with vec[i] as item` / `with map[k] as item` so we
                     // can write `item` back to the collection once the body
                     // finishes. Without this, mutations through `item` are lost.
+                    // Reached through a field (`self.items[0]`) just as much as by
+                    // bare name — the element is copied out either way.
                     let coll_writeback_info = if let ExprKind::Index { object, index } = &binding.source.kind {
-                        if let ExprKind::Ident(coll_name) = &object.kind {
-                            let prefix = self.meta(coll_name)
-                                .and_then(|m| m.type_prefix.as_deref())
-                                .map(|s| s.to_string());
-                            let setter = match prefix.as_deref() {
-                                Some("Vec") => Some("Vec_set"),
-                                Some("Map") => Some("Map_set"),
-                                _ => None,
-                            };
-                            if let Some(setter_name) = setter {
-                                let (obj_op, _) = self.lower_expr(object)?;
-                                let (idx_op, _) = self.lower_expr(index)?;
-                                Some((obj_op, idx_op, setter_name))
-                            } else {
-                                None
-                            }
+                        let setter = match self.index_object_base(object).as_deref() {
+                            Some("Vec") => Some("Vec_set"),
+                            Some("Map") => Some("Map_set"),
+                            _ => None,
+                        };
+                        if let Some(setter_name) = setter {
+                            let (obj_op, _) = self.lower_expr(object)?;
+                            let (idx_op, _) = self.lower_expr(index)?;
+                            Some((obj_op, idx_op, setter_name))
                         } else {
                             None
                         }
@@ -2603,8 +2600,8 @@ impl<'a> MirLowerer<'a> {
                     // Reuse the access result local directly as the binding. Vec/
                     // Map bindings still copy + write back below (their element
                     // isn't a stable pointer).
-                    let local = match (&pool_info, &val) {
-                        (Some(_), MirOperand::Local(id)) => {
+                    let local = match (source_is_pool, &val) {
+                        (true, MirOperand::Local(id)) => {
                             self.locals.insert(binding.name.clone(), (*id, val_ty.clone()));
                             *id
                         }
