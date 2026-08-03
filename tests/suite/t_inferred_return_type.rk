@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A function that returns a value without declaring a return type. MIR built the
+// signature from the annotation string alone and treated "no annotation" as
+// "returns nothing", so the function came out `-> void` with a value in its
+// `return` and Cranelift rejected it. The checker knew the type all along; it
+// just wasn't reachable from lowering.
+
+struct Wrapped { public n: i64 }
+
+enum Flag { Off, On }
+
+func plain_int() { return 41 }
+
+func text() { return "hi" }
+
+func floating() { return 2.5 }
+
+func truthy() { return true }
+
+func aggregate() { return Wrapped { n: 7 } }
+
+func variant() { return Flag.On }
+
+// Declared after the consts that call it — the signature can't depend on order.
+const from_late = late()
+
+func late() { return 5 }
+
+const from_int = plain_int()
+const derived = from_int + 1
+
+// A genuine void function still has to stay void — no `return` value to infer.
+func no_value(mutate seen: Vec<i64>) { seen.push(1) }
+
+test "an unannotated int return works" {
+    assert_eq(plain_int(), 41)
+}
+
+test "unannotated returns keep their real type" {
+    assert_eq(text(), "hi")
+    assert_eq(floating(), 2.5)
+    assert truthy()
+}
+
+test "an aggregate return survives" {
+    assert_eq(aggregate().n, 7)
+}
+
+test "an enum return survives" {
+    assert Flag.On == variant()
+}
+
+test "a module const can call an unannotated function" {
+    assert_eq(from_int, 41)
+    assert_eq(derived, 42)
+    assert_eq(from_late, 5)
+}
+
+test "a function with no return value stays void" {
+    mut seen = Vec<i64>.new()
+    no_value(seen)
+    assert_eq(seen.len(), 1)
+}
+
+test "the inferred type is usable in arithmetic" {
+    const doubled = plain_int() * 2
+    assert_eq(doubled, 82)
+}

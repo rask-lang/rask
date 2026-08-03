@@ -381,6 +381,20 @@ impl TypeChecker {
             }
         }
 
+        // Return types the checker inferred for functions that don't declare one.
+        // Normalized like call type args so lowering sees names, not TypeIds.
+        // Unresolved ones are dropped — "still a variable" is no better an answer
+        // than the declaration gave.
+        let inferred_fn_ret: HashMap<String, Type> = self
+            .inferred_fn_types
+            .iter()
+            .map(|(name, (_, ret))| {
+                let applied = Self::normalize_named_types(&self.ctx.apply(ret), &id_to_name);
+                (name.clone(), applied)
+            })
+            .filter(|(_, ty)| !Self::contains_type_var(ty))
+            .collect();
+
         let trait_coercions = self.trait_coercions.clone();
         let error_wraps = self.error_wraps.clone();
 
@@ -419,6 +433,7 @@ impl TypeChecker {
             unsafe_ops,
             span_types,
             channel_send_sites: self.channel_send_sites,
+            inferred_fn_ret,
         };
 
         (program, errors)

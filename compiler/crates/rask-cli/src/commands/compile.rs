@@ -301,6 +301,7 @@ pub fn compile_to_object(
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        inferred_fn_ret: &typed.inferred_fn_ret,
     };
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
@@ -564,6 +565,7 @@ pub fn compile_tests_to_object(
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        inferred_fn_ret: &typed.inferred_fn_ret,
     };
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
@@ -768,6 +770,7 @@ pub fn compile_benchmarks_to_object(
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        inferred_fn_ret: &typed.inferred_fn_ret,
     };
 
     let (mut mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;

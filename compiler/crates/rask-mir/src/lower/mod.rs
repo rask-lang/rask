@@ -255,9 +255,34 @@ pub struct MirContext<'a> {
     /// guessed the struct would deref a timestamp as a pointer. Left empty,
     /// consts keep the old re-evaluate-per-function behaviour.
     pub const_slot_types: std::cell::RefCell<HashMap<String, MirType>>,
+    /// Function name → return type the checker inferred, for the ones that don't
+    /// declare it. Only consulted when there's no annotation to read.
+    pub inferred_fn_ret: &'a HashMap<String, Type>,
 }
 
+/// For contexts built without checker data (tests, comptime): no function has an
+/// inferred return type, so every signature comes from its annotation.
+pub static EMPTY_INFERRED_RET: std::sync::LazyLock<HashMap<String, Type>> =
+    std::sync::LazyLock::new(HashMap::new);
+
 impl<'a> MirContext<'a> {
+    /// A function's MIR return type: the declared one, else the type the checker
+    /// inferred for it, else void.
+    ///
+    /// The last step is a real answer only for a function with no `return` value
+    /// — `func f() { }`. A missing annotation on `func f() { return 41 }` used to
+    /// land there too, so the signature said void while the body returned an i64
+    /// and Cranelift rejected the function (#571).
+    pub fn fn_ret_ty(&self, name: &str, declared: Option<&str>) -> MirType {
+        if let Some(s) = declared {
+            return self.resolve_type_str(s);
+        }
+        match self.inferred_fn_ret.get(name) {
+            Some(ty) => self.type_to_mir(ty),
+            None => MirType::Void,
+        }
+    }
+
     /// Empty context for tests that don't need layouts or type information.
     pub fn empty_with_map(map: &'a HashMap<NodeId, Type>) -> MirContext<'a> {
         static EMPTY_COMPTIME: std::sync::LazyLock<HashMap<String, ComptimeGlobalMeta>> =
@@ -301,6 +326,7 @@ impl<'a> MirContext<'a> {
             resource_types: &EMPTY_RESOURCE_TYPES,
             nominal_underlying: &EMPTY_NOMINAL,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
+            inferred_fn_ret: &EMPTY_INFERRED_RET,
         }
     }
 
@@ -1671,22 +1697,14 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
-        let ret_ty = fn_decl
-            .ret_ty
-            .as_deref()
-            .map(|s| ctx.resolve_type_str(s))
-            .unwrap_or(MirType::Void);
+        let ret_ty = ctx.fn_ret_ty(&fn_decl.name, fn_decl.ret_ty.as_deref());
 
         // Build function signature table from all declarations
         let mut func_sigs = HashMap::new();
         for d in all_decls {
             match &d.kind {
                 DeclKind::Fn(f) => {
-                    let sig_ret = f
-                        .ret_ty
-                        .as_deref()
-                        .map(|s| ctx.resolve_type_str(s))
-                        .unwrap_or(MirType::Void);
+                    let sig_ret = ctx.fn_ret_ty(&f.name, f.ret_ty.as_deref());
                     func_sigs.insert(f.name.clone(), FuncSig {
                         ret_ty: sig_ret,
                         scalar_mutate_params: scalar_mutate_params(&f.params, ctx),
@@ -4203,6 +4221,7 @@ mod tests {
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
+            inferred_fn_ret: &EMPTY_INFERRED_RET,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -4267,6 +4286,7 @@ mod tests {
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
+            inferred_fn_ret: &EMPTY_INFERRED_RET,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -4337,6 +4357,7 @@ mod tests {
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
+            inferred_fn_ret: &EMPTY_INFERRED_RET,
         };
 
         let decl = make_fn("f", vec![], None, vec![
