@@ -50,9 +50,29 @@ impl<'a> MirLowerer<'a> {
             .cloned()
     }
 
+    /// True when `inner` is a `comptime` expression whose evaluation already
+    /// unwrapped a `T or E`/`T?` down to its bare ok payload (CT45, #403).
+    /// `ExprKind::Comptime` lowering returns a raw scalar for `ComptimeValue::
+    /// Bool/I64/String` and only falls back to normal (Result-shaped) lowering
+    /// for everything else, so a scalar `result_ty` here means the wrapper is
+    /// already gone — there's no tag byte left to read.
+    fn is_collapsed_comptime_ok(inner: &Expr, result_ty: &MirType) -> bool {
+        matches!(inner.kind, ExprKind::Comptime { .. })
+            && !matches!(result_ty, MirType::Result { .. } | MirType::Option(_))
+    }
+
     /// Try expression lowering (spec L3).
     pub(super) fn lower_try(&mut self, inner: &Expr) -> Result<TypedOperand, LoweringError> {
         let (result, result_ty) = self.lower_expr(inner)?;
+
+        // `try comptime f()`: comptime evaluation already collapsed the `T or E`
+        // to its known-success payload — a plain scalar, not the tagged union
+        // `try` normally reads a byte from. There's no runtime tag to check, and
+        // treating the scalar as if it were a pointer to that union reads
+        // whatever memory the value happens to look like (CT45, #403).
+        if Self::is_collapsed_comptime_ok(inner, &result_ty) {
+            return Ok((result, result_ty));
+        }
 
         let tag_local = self.builder.alloc_temp(MirType::U8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -377,6 +397,12 @@ impl<'a> MirLowerer<'a> {
 
     pub(super) fn lower_try_else(&mut self, inner: &Expr, try_else: &TryElse) -> Result<TypedOperand, LoweringError> {
         let (result, result_ty) = self.lower_expr(inner)?;
+
+        // Same comptime short-circuit as `lower_try` — a collapsed scalar can't
+        // take the error branch, so there's no tag to check (CT45, #403).
+        if Self::is_collapsed_comptime_ok(inner, &result_ty) {
+            return Ok((result, result_ty));
+        }
 
         let tag_local = self.builder.alloc_temp(MirType::U8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
