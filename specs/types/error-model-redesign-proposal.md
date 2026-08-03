@@ -5,6 +5,8 @@
 
 > **Status: Accepted (2026-04-26).** The chosen design. Normative rules now live in [error-types.md](error-types.md), [optionals.md](optionals.md), [union-types.md](union-types.md), and [primitives.md](primitives.md). One amendment from this proposal: per the [optional-unification proposal](optional-unification-proposal.md), `T?` is sugar for `T or none` rather than a separate "status type" kind, and `match` on `T or none` is a style lint rather than a hard error. This file is retained as the design rationale and the decision record.
 
+> **Superseded in part (2026-08-03, issues #565/#573/#574): `??` is gone.** The operator surface below shares `?` and `??` across both shapes. It no longer does. `?` marks absence only; `or` — the union keyword from the type level, since `T?` *is* `T or none` — supplies the other branch on both shapes, and `try` marks that an error may leave the function. `r?` as a success test and the `if r?` narrowing family are removed from results (use `is`), `try` on an optional must name the error it becomes (`try opt or MyError`), and `.to_result` is retired because that form replaces it. Normative rules: [error-types.md](error-types.md) ER12–ER18, ER44–ER48. Read everything below as history. Translating: plain `x ?? v` is now `x or v`; `x ?? return …` is now an early-exit `if` on the narrow, or `try x or MyError` when absence should leave as an error; `try … else |e|` is `try … or |e|`. One entry below was wrong even when written and is corrected in place — `.unwrap_or_else` was mapped to the `try { … } else |e| f(e)` block form, which early-returns and therefore cannot produce a value (issue #574).
+
 
 # Rask Error Model Redesign
 
@@ -64,7 +66,7 @@ try user                              // propagate (current fn must return U?)
 | Early-exit narrow | `if x == none { return } … use(x)` (x: T after) |
 | Chain | `x?.field` |
 | Fallback value | `x ?? default` |
-| Presence guard | `const v = x else { return none }` / `else { break }` (`type.errors/ER45`) |
+| Diverging fallback | `x ?? return none` / `?? break` / `?? panic("…")` |
 | Force | `x!` (panics with "none" or `x! "custom {ctx}"` override) |
 | Propagate | `try x` / `try { … }` |
 
@@ -163,8 +165,8 @@ Match earns its keep on types with multiple shapes, guards, complex destructure,
 |------------|---------------|
 | `match x { none => a, v => f(v) }` | `if x? { f(x) } else { a }` |
 | `match x { none => default, u => u.name }` | `x?.name ?? default` |
-| `match x { none => return, v => v }` | `const v = x else { return none }` (or `try x`) |
-| `match x { none => panic("…"), v => v }` | `x! "…"` |
+| `match x { none => return, v => v }` | `x ?? return none` (or `try x`) |
+| `match x { none => panic("…"), v => v }` | `x!` (or `x ?? panic("…")`) |
 
 Match on `T or E` is kept because multi-error unions (`T or (A | B | C)`) genuinely need multi-arm dispatch. Two-branch `T or E` matches are still written with operators.
 
@@ -358,7 +360,7 @@ func load_config(path: string) -> Config or (IoError | ParseError) {
     const text = try read_file(path)    // IoError widens to (IoError | ParseError)
     const json = try parse_json(text)   // ParseError widens
 
-    const user = json.get("user") else { return ParseError.MissingField("user") }
+    const user = json.get("user") ?? return ParseError.MissingField("user")
 
     return Config {
         user: user,

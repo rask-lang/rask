@@ -748,28 +748,29 @@ if state is Connected(sock) && sock.is_ready() {
 
 `is` is non-exhaustive — unmatched patterns skip the block. Use `match` when you need to handle all cases.
 
-**Guard pattern with early-exit narrow:**
+**Early-exit narrow:**
 
-For optionals and results, the guard binds the payload and the `else` block bails out:
+Bind, then check. The binding keeps its name, so nothing needs renaming after the guard:
 
 ```rask
-const value = result else { return }          // divert on absent/error, value: T after
-
+const opt = load()
 if opt == none { return }
-use(opt)                                       // opt: T here (early-exit narrow)
-```
-
-`try` propagates instead of diverting; a type-pattern narrow handles a specific error:
-
-```rask
-const data = try read_file(path)             // propagates the error
+use(opt)                                       // opt: T here
 
 const conn = connect()
 if conn is ConnectError as e { return e }
-use(conn!)                                    // conn: Connection after
+use(conn)                                      // conn: Connection here
 ```
 
-The `else` block of a guard must diverge (`return`, `break`, `panic`). `??` is for fallback *values* only — `x ?? return` is a compile error pointing at the guard (`type.errors/ER48`).
+One-liners cover the common cases — `try` propagates, `or` supplies the other branch:
+
+```rask
+const data = try read_file(path)                              // propagate the error
+const ms = try raw.parse() or BadRequest("not a number")      // absence → a named error
+const port = config.port or 8080                              // a value instead
+```
+
+`or` always produces a value; leaving is `try`'s job or an ordinary `if` (`type.errors/ER48`).
 
 ### Loops
 
@@ -870,7 +871,7 @@ Pool access, `ensure` cleanup, and `@resource` types are shown in the sections a
 // Optional shorthand — bare value auto-wraps
 const x: i32? = 42
 const name = user?.profile?.name    // `none` if any step is `none`
-const port = config.port ?? 8080
+const port = config.port or 8080
 const must_exist = optional!
 
 // Error union
@@ -881,22 +882,24 @@ func load_config() -> Config or (IoError | ParseError) {
 }
 ```
 
-**The `else` family.** `try` says the error may leave this function; `else` says the other branch is handled right here. What follows `else` says how:
+**The `or` family.** `or` supplies the other branch — the same keyword as the type (`T or E`, and `T?` is `T or none`). `try` says an error may leave this function, and that one bit decides what the value after `or` is:
 
-| Form | Meaning |
-|------|---------|
-| `x ?? fallback` | fold with a constant |
-| `x else \|e\| f(e)` | fold using the error — produces a `T` |
-| `const v = x else { … }` | bind, or run a diverging block |
-| `try x` | propagate |
-| `try x else \|e\| f(e)` | transform the error, then propagate |
-| `try x else err_expr` | replace the error, then propagate |
+| Form | The value after `or` is | Result |
+|------|------------------------|--------|
+| `x or v` | a `T` | folds — nothing leaves |
+| `x or \|e\| f(e)` | a `T` from the error | folds — nothing leaves |
+| `try x or e_val` | an `E` | that error leaves |
+| `try x or \|e\| f(e)` | an `E` from the old one | that error leaves |
 
 ```rask
-return dispatch(req) else |e| error_response(e)              // fold at the boundary
-const ms = raw.parse() else { return BadRequest("bad ms") }  // guard
-const dto = try json.decode(body) else BadRequest("bad JSON") // replace + propagate
+const port = config.port or 8080                              // a value instead
+return dispatch(req) or |e| error_response(e)                 // fold at a boundary
+const ms = try raw.parse() or BadRequest("bad ms")            // absence → named error
+const dto = try json.decode(body) or BadRequest("bad JSON")   // replace + propagate
+const text = try fs.read_text(p) or |e| context("reading {p}", e)
 ```
+
+`?` marks absence, `or` and `try` mark errors — so a line says which kind of failure it handles. `?.`, `!` and `match` are shared, because those operations don't care which branch went bad.
 
 See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
@@ -1191,10 +1194,10 @@ println("{sum}")
 | Optional | `T?` | Sugar for `T or none`; bare value + `none` literal, no `Some`/`None` |
 | Error union | `T or E` | No `Ok`/`Err` — bare T auto-wraps at return; E is its own type |
 | Error prop | `try expr` | Prefix keyword |
-| Error fold | `expr else \|e\| f(e)` | Produces a `T`; nothing propagates |
+| Other branch | `expr or v` / `or \|e\| f(e)` | Produces a `T`; nothing propagates |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
-| Guard extraction | `const v = x is P else { }` | Binds to outer scope; `is P` omitted for `T?` / `T or E` |
+| Guard extraction | `const v = x is P else { }` | Enum patterns only; binds to outer scope |
 | Loops | `for x in xs: ...` | Inline or braced |
 | Loop value | `break expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |

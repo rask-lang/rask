@@ -6,6 +6,8 @@
 > **Status: Accepted (2026-04-26).** This proposal is the chosen design. The normative rules now live in [optionals.md](optionals.md) (the operator surface and narrowing), [primitives.md](primitives.md) (`none` as P7), and [union-types.md](union-types.md) (U5 duplicate-variant, U6 disjointness). This file is retained as the design rationale and the decision record.
 >
 > **One part superseded (2026-07-30, issue #488).** This proposal deleted OPT4 by folding "`T??` is forbidden" into the duplicate-variant rule. That didn't survive generics: `func head<T>(v: Vec<T>) -> T?` produced `T??` for every optional `T`. Optionals now nest, with the layers kept distinct — see `type.optionals/OPT28`–OPT31. The rest of the proposal stands.
+>
+> **A second part superseded (2026-08-03, issues #565/#573/#574).** The `?`-family here spans both shapes, `??` included. It no longer does: `?` marks absence only, and `or` — the same keyword as the type, since `T?` *is* `T or none` — supplies the other branch on both shapes. `??` is gone, `try` on an optional must name the error it becomes (`try opt or MyError`), and `.to_result` is retired. See `type.errors/ER12`–ER18 and ER44–ER48. The unification argument itself is unaffected — it's what made one value-level keyword possible for both shapes.
 
 
 # Option Unification

@@ -1,13 +1,15 @@
 <!-- id: type.optionals -->
 <!-- status: decided -->
-<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family operators (?, ?., ??, !, try, == none) apply to any two-variant union where one variant is none. No Some/None constructors. Narrowing rides on const. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
+<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family (?, ?., !, == none) marks absence and applies to any two-variant union where one variant is none; `or` supplies the other branch. No Some/None constructors, no try on optionals. Narrowing rides on const. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
 <!-- depends: types/types.md, types/union-types.md, types/error-types.md, control/control-flow.md -->
 
 # Optionals
 
 `T?` is shorthand for `T or none`. `none` is a built-in zero-field type — lowercase, like `void`. There is no `Option<T>` enum and no `Some`/`None` constructors; present values are bare, `none` is the absent sentinel.
 
-Optionals aren't a separate kind of type. They're a particular union shape with dedicated operator surface. The `?`-family covers the absent-or-present case; everything else (auto-wrap, linearity, equality) falls out of the general union rules.
+Optionals aren't a separate kind of type. They're a particular union shape with dedicated operator surface. The `?`-family marks absence, `or` supplies the other branch, and everything else (auto-wrap, linearity, equality) falls out of the general union rules.
+
+`?` means absence and nothing else — it never appears on a result's success test. Errors are handled by `or`, `try`, and `is`, so a line tells you which kind of failure it deals with ([error-types.md](error-types.md) ER12).
 
 ## The Type
 
@@ -15,7 +17,7 @@ Optionals aren't a separate kind of type. They're a particular union shape with 
 |------|-------------|
 | **OPT1: `T?` is sugar for `T or none`** | The parser desugars `T?` to `T or none` before type checking; the rest of the compiler sees a regular union |
 | **OPT2: `none` is a built-in zero-field type** | Lowercase, follows the primitive convention. One inhabitant, also spelled `none`. Not user-definable |
-| **OPT3: `?`-family restricted to `T or none`** | `?`, `?.`, `??`, `!`, `try`, `== none` apply only when the operand is a two-variant union with one variant `none`. Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
+| **OPT3: `?`-family restricted to `T or none`** | `?`, `!`, `== none` apply only when the operand is a two-variant union with one variant `none`. `?.` and `or` also work on `T or E` (short-circuit projection and the other branch don't care why the good branch is missing). Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
 | **OPT4: No user wrapper** | No `Some` keyword, constructor, or pattern. Bare values on the present path |
 
 <!-- test: skip -->
@@ -32,7 +34,7 @@ Construction follows the general union widening rule: a value of type `A` widens
 
 | Rule | Description |
 |------|-------------|
-| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x ?? default`, or `try x` |
+| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x or default`, or `try x or MyError` |
 | **OPT6: `none` widens at use** | `none` has type `none` on its own; widens to `T or none` at any position with a target union type |
 
 <!-- test: skip -->
@@ -50,36 +52,35 @@ cache = get_current_user()               // User widens at assignment
 | **OPT8: Absent literal** | `none` | absent value; type widens at use |
 | **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
 | **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
-| **OPT11: Value fallback** | `x ?? default` | unwraps `x` if present, else yields `default`. `??` is strict-extract — `default`'s type must match the inner `T`, and may not diverge (OPT12) |
-| **OPT12: Presence guard** | `const v = x else { return }` (or `break`, `continue`, `panic(…)`) | binds the payload, or runs a diverging `else` block. `??` covers the value fallback; bailing out is the guard's job. See [error-types.md](error-types.md) ER45/ER48 |
+| **OPT11: Other branch** | `x or default` | unwraps `x` if present, else yields `default`. `default`'s type must match the inner `T`, and may not diverge. `or` is the union keyword at the value level — see [error-types.md](error-types.md) ER14 |
+| **OPT12: Absence is not an error** | `try x` | compile error. `none` is the absent sentinel, so propagating it would invent an error. Say what it becomes: `try x or MyError` (ER45/ER47) |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
-| **OPT14: Propagate** | `try x` | in a `T?`-returning function, unwraps if present, else returns `none` |
 | **OPT15: Absent check** | `x == none` / `x != none` | plain equality; `x?` and `x == none` narrow identically |
 | **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x == none` |
-| **OPT17: Propagate block** | `try { … }` | each `try` inside propagates `none` on the first absent scrutinee |
 
-`??` chains while the left side stays wrapped:
+`or` chains while the left side stays wrapped:
 
 <!-- test: skip -->
 ```rask
 const name = user?.display_name
-    ?? user?.email
-    ?? "anon"
+    or user?.email
+    or "anon"
 ```
 
-As soon as an RHS is bare `T`, the chain collapses to `T` and further `??` is a type error.
+As soon as a right side is bare `T`, the chain collapses to `T` and a further `or` is a type error.
 
-The right side of `??` is always a value. When the fallback is control flow, the guard form binds instead:
+The right side of `or` is always a value — it never leaves the function. Two things follow:
 
 <!-- test: skip -->
 ```rask
-const theme = config.theme ?? "default"          // fallback value
-const user = load_user(id) else { return }        // bail out — binds user: User after
+const theme = config.theme or "default"                    // a value instead
+
+const user = load_user(id)
+if user == none { return }                                  // leaving is an `if`
+greet(user)                                                 // user: User here
 ```
 
-The guard's `else` block must diverge and the binding escapes to the enclosing scope — the same rule as the pattern guard `const v = x is P else { … }` ([control-flow.md](../control/control-flow.md) CF13–CF15). Full rules in [error-types.md](error-types.md) ER45.
-
-The binding form `else |e|` is an *error* fold (ER44) and doesn't apply to optionals — `none` carries no payload to bind. On an optional it's a compile error pointing at `??` or the guard.
+The binding form `or |e|` is an *error* fold (ER44) and doesn't apply to optionals — `none` carries no payload to bind. On an optional it's a compile error pointing at plain `or`.
 
 ## Conditions and Narrowing
 
@@ -150,7 +151,7 @@ Collapsing the layers would throw the distinction away — an empty vec and an e
 |------|-------------|
 | **OPT28: Layers stay distinct** | `T?` where `T` is itself `U or none` is a two-layer optional. `none` is exempt from the duplicate-variant rule ([union-types.md](union-types.md) U5) for this reason: it carries no payload, so the layers are told apart by position, not by type |
 | **OPT29: `none` binds outermost** | A bare `none` literal at a `T??` position means the *outer* absent. To produce an inner absent, widen a value that already has the inner optional type |
-| **OPT30: Operators act on the outer layer** | `?`, `??`, `!`, `try`, `== none` and `match` all see the outer layer only. `if x? as v` binds `v` at the inner type; unwrap again to reach the value. `??`'s fallback must therefore have the inner *optional* type, not the payload type |
+| **OPT30: Operators act on the outer layer** | `?`, `or`, `!`, `== none` and `match` all see the outer layer only. `if x? as v` binds `v` at the inner type; unwrap again to reach the value. `or`'s right side must therefore have the inner *optional* type, not the payload type |
 | **OPT31: Depth is part of the type** | `T?`, `T??` and `T???` are three different types. Widening adds layers (a `T` reaches a `T??` position, an inner absent stays inner); nothing ever removes one implicitly |
 
 <!-- test: skip -->
@@ -163,7 +164,7 @@ const inner_absent: Config?? = empty_slot      // slot was empty       [OPT29]
 const present: Config?? = load_config()        // widens through both layers
 ```
 
-**Spelling.** Write `T??` for two layers. Rask reads `??` in type position as two optional markers — there's no coalescing operator inside a type, so nothing is ambiguous.
+**Spelling.** Write `T??` for two layers — two optional markers. There is no `??` operator in the language at all, so nothing is ambiguous.
 
 **Linear payloads.** Each layer narrows separately, so a linear `T` is consumed on the innermost present path (OPT24 applies at that layer). `?.` still can't reach through a linear payload (OPT25).
 
@@ -171,14 +172,13 @@ const present: Config?? = load_config()        // widens through both layers
 
 ## Methods
 
-Four compiler-provided methods on `T or none`. Each preserves the wrapper for chaining; operators always extract or panic.
+Three compiler-provided methods on `T or none`. Each preserves the wrapper for chaining; operators always extract or panic. Lifting absence into an error is `try x or MyError` (ER45), not a method — `.to_result` is gone.
 
 | Method | Signature | Behavior |
 |--------|-----------|----------|
 | `map` | `func<U>(take self, f: \|T\| -> U) -> U?` | Transform if present; absent stays absent |
 | `filter` | `func(take self, pred: \|T\| -> bool) -> T?` | Keep if predicate true; else absent |
 | `and_then` | `func<U>(take self, f: \|T\| -> U?) -> U?` | Chain Option-returning operations |
-| `to_result` | `func<E>(take self, err: E) -> T or E` | Lift to Result; absent becomes `err`. Required because `??` does not widen |
 
 <!-- test: skip -->
 ```rask
@@ -197,7 +197,7 @@ A union is linear if any variant is linear (general union rule). For `T or none`
 |------|-------------|
 | **OPT24: Narrow consumes on present path** | `if x?` / `if x? as v` treats the present path as a resource site — the payload must be consumed on that branch |
 | **OPT25: `?.` forbidden on linear** | Optional chaining cannot partially move out of a linear `T`. Use `if x? as v { … v.field … }` |
-| **OPT26: `??` consumes one branch** | Short-circuits; exactly one `T` is produced and must be consumed |
+| **OPT26: `or` consumes one branch** | Short-circuits; exactly one `T` is produced and must be consumed |
 
 <!-- test: skip -->
 ```rask
@@ -226,14 +226,14 @@ match user {
 }
 
 // Preferred — operators are shorter
-user?.name ?? "guest"
+user?.name or "guest"
 ```
 
 | Match form | Operator form |
 |------------|---------------|
 | `match x { none => a, v => f(v) }` | `if x? { f(x) } else { a }` |
-| `match x { none => default, u => u.name }` | `x?.name ?? default` |
-| `match x { none => return, v => v }` | `const v = x else { return }` (or `try x`) |
+| `match x { none => default, u => u.name }` | `x?.name or default` |
+| `match x { none => return, v => v }` | `if x == none { return }` then use `x` |
 | `match x { none => panic("…"), v => v }` | `x! "…"` |
 
 The lint is non-fatal. Match earns its keep on multi-error unions where the dispatch genuinely has more than two outcomes.
@@ -253,18 +253,18 @@ No optional-specific equality rule.
 |------|------|----------|
 | Nested optionals (`T??`) | OPT28 | Legal — layers stay distinct |
 | Bare `none` at a `T??` position | OPT29 | Outer absent |
-| `x ?? default` on `T??` | OPT30 | `default` must be `T?`, not `T` |
+| `x or default` on `T??` | OPT30 | `default` must be `T?`, not `T` |
 | `x?.field` on `T??` | OPT3/OPT30 | Compile error — the outer payload is `T?`, not a struct. Narrow first |
 | `Vec<T?>.first()` | OPT28 | `T??` — outer says "vec empty", inner says "slot empty" |
 | `?.` on `T or E or none` | OPT3 | Compile error suggesting layering: `(T or E)?` or `T or (E?)` |
-| `x ?? return` / `?? break` / `?? panic(…)` | OPT12 | Compile error — use `const v = x else { … }` |
-| `const v = x else { … }` where the block falls through | OPT12/CF13 | Compile error — the `else` block must diverge |
-| `x else \|e\| f(e)` on an optional | OPT12 | Compile error — no payload to bind. Use `??` or the guard |
+| `x or return` / `or break` / `or panic(…)` | OPT11/ER48 | Compile error — `or` produces a value. Use `try x or MyError`, or an `if` |
+| `x or \|e\| f(e)` on an optional | OPT11 | Compile error — no payload to bind. Use plain `or` |
+| `try x` with no `or` | OPT12 | Compile error naming the fix: `try x or MyError` |
 | `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
 | Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
 | `!x?` syntax | OPT16 | Parse error suggesting `x == none` |
 | Linear `?.field` | OPT25 | Compile error — cannot partially move |
-| `try x` outside a `T?`-returning function | OPT14 | Compile error — propagation target mismatch |
+| `try x or MyError` in a function whose error union excludes `MyError` | OPT12/ER31 | Compile error — the named error must reach the function's error type |
 | `match` on `T?` with two arms | OPT27 | Legal; style lint suggests operators |
 | `const x = none` | OPT8 | Legal. `x: none`. Widens at later use site |
 | `none == none` | equality | `true`. Standard equality on a zero-field type |
@@ -323,7 +323,7 @@ LINT [type.optionals/lint-match]: prefer operators over `match` on optional
 7  |      u    => u.name,
 8  |  }
 
-SUGGEST: user?.name ?? default_name()
+SUGGEST: user?.name or default_name()
 ```
 
 ---
@@ -354,26 +354,30 @@ The reason nesting works here and not for `T or E` is that branch selection stay
 
 ### Patterns & Guidance
 
-**Absent as default input.** For an Option-valued field with a sensible default, read with `??`:
+**Absent as default input.** For an Option-valued field with a sensible default, read with `or`:
 
 <!-- test: skip -->
 ```rask
-const theme = config.theme ?? "default"
+const theme = config.theme or "default"
 ```
 
-**Guard-style early exit.** Two spellings, depending on whether you want the narrow or the binding:
+**Early exit on absence.** Bind, then narrow. The binding keeps its name, so nothing has to be renamed after the check:
 
 <!-- test: skip -->
 ```rask
-// Narrow in place — the name stays the same
-func greet(user: User?) -> string {
-    if user == none { return "Hello, guest" }
-    return "Hello, {user.name}"
-}
-
-// Guard — works on an anonymous expression, which the narrow can't
 func greet(id: UserId) -> string {
-    const user = load_user(id) else { return "Hello, guest" }
+    const user = load_user(id)
+    if user == none { return "Hello, guest" }
+    return "Hello, {user.name}"          // user: User here
+}
+```
+
+When absence should leave as an *error* rather than as a different value, that's one line:
+
+<!-- test: skip -->
+```rask
+func greet(id: UserId) -> string or ApiError {
+    const user = try load_user(id) or ApiError.NotFound(id)
     return "Hello, {user.name}"
 }
 ```
@@ -402,8 +406,8 @@ func find(id: UserId) -> (User or DatabaseError)? {
 
 - Ghost text shows the narrowed type on hover inside `if x?` blocks.
 - Quick action "Convert `match` to operator form" for the two-arm none/value case.
-- Ghost text on a presence guard shows the bound type (`const user` → `: User`).
-- Quick action "Convert `?? return` to a guard" for code written against the older rule.
+- Quick action "Convert `?? return` to an early-exit `if`" for code written against the older rule.
+- Quick action "Convert `??` to `or`".
 
 ### See Also
 

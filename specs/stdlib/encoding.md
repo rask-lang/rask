@@ -27,7 +27,7 @@ func print_fields<T>(value: T) {
     }
 }
 
-struct Point { public x: f64, public y: f64 }
+struct Point { x: f64, y: f64 }
 
 // print_fields(Point { x: 1.0, y: 2.0 }) unrolls to:
 //   print("x = {value.x}")
@@ -136,7 +136,7 @@ extend DateTime {
     }
 
     public func from_json(value: JsonValue) -> DateTime or JsonError {
-        const s = value.as_string() else { return JsonError.TypeError("expected string for DateTime") }
+        const s = try value.as_string() or JsonError.TypeError("expected string for DateTime")
         return try DateTime.parse_iso8601(s)
     }
 }
@@ -336,9 +336,9 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
                         field.default_value
                     }
                 } else {
-                    try decode_from_value(
-                        fields.get(field.serial_name) ?? return JsonError.MissingField(field.serial_name)
-                    )
+                    const raw = try fields.get(field.serial_name)
+                        or JsonError.MissingField(field.serial_name)
+                    try decode_from_value(raw)
                 },
             }
         }
@@ -567,7 +567,8 @@ struct UserResponse {
 
 func handle_create_user(req: http.Request) -> http.Response {
     if req.body.is_empty() { return http.Response.bad_request("missing body") }
-    const input = json.decode<CreateUserRequest>(req.body) else { return http.Response.bad_request("invalid JSON") }
+    const input = json.decode<CreateUserRequest>(req.body)
+    if input is JsonError: return http.Response.bad_request("invalid JSON")
     const user = create_user(input.name, input.email, input.age)
     const response = UserResponse { id: user.id, name: user.name, email: user.email }
     return http.Response.ok(json.encode(response))

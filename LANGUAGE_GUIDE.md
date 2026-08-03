@@ -172,24 +172,27 @@ func read_config(path: string) -> Config or (IoError | ParseError) {
 }
 ```
 
-Operator surface (works on both `T?` and `T or E`):
+Operator surface — `?` for absence, `or`/`try` for errors:
 
 | Form | Meaning |
 |---|---|
-| `r?` | `bool` — success/present test; narrows a `const` scrutinee inside the block |
-| `r? as v` | test and bind `v` |
-| `r?.field` | chain — projects on success, propagates absence/error |
-| `r ?? fallback` | extract or fallback; `fallback` must be a `T` (never widens, never diverges) |
+| `x?` | `bool` — present test on an optional; narrows a `const` scrutinee inside the block |
+| `x? as v` | test and bind `v` |
+| `x?.field` | chain — projects on the good branch, short-circuits otherwise (both shapes) |
+| `x or v` | the other branch: a value instead. `v` must be a `T`, and never diverges |
+| `x or \|e\| f(e)` | the other branch, computed from the error — results only |
+| `try r` | extract, or return the error (widened into the function's error union) |
+| `try x or e_val` | replace the other branch with an error, then propagate |
+| `try x or \|e\| f(e)` | transform the error, then propagate |
 | `r!` / `r! "msg"` | extract or panic |
-| `r else \|e\| f(e)` | fold: handle the error, produce a `T` — nothing propagates |
-| `const v = r else { return }` | guard: bind or diverge (`ctrl.flow/CF13`) |
-| `try r` | extract or return the error (widened into the function's error union) |
-| `try r else \|e\| f(e)` | transform the error, then propagate |
-| `try r else err_expr` | replace the error, then propagate (binding omitted when unused) |
-| `const v = x is Pattern else { return }` | pattern guard: bind or diverge |
 | `if r is IoError as e { }` | error-side type test and bind |
+| `const v = x is Pattern else { return }` | pattern guard, enum patterns only |
 
-The `else` family divides on one question: **`try` present means the error may leave this function.** With `try`, the payload after `else` is an error (transform or replace, then propagate). Without it, the payload is either a `T` (fold) or a diverging block (guard). Writing the wrong one is a type error on that line, since `T ≠ E`.
+`or` is the union keyword at the value level, matching the type (`T or E`; `T?` is `T or none`). One question decides what follows it: **is there a `try`?** With `try`, an error leaves this function, so the value after `or` is an `E`. Without, nothing leaves, so it's a `T`. Writing the wrong one is a type error on that line, since `T ≠ E`.
+
+`or` never diverges. To leave with something that isn't an error — `break`, `continue`, a plain `return` — use an `if` on the early-exit narrow.
+
+`?` marks absence, `or` and `try` mark errors, so a line says which kind of failure it handles. There is no `r?` success test and no `if r?` narrowing on results — use `is`. Shared across both shapes: `?.` (short-circuit projection), `!`, and `match`.
 
 - Auto-wrap for `T or E` fires **only at `return`**; optionals widen at any position (ER9–ER11).
 - Every error type satisfies `ErrorMessage` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.

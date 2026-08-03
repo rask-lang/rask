@@ -96,9 +96,14 @@ if event is Tick {
     process(event)  // event unwrapped, same name
 }
 
-// Status types use `?` predicate + `as` binding
+// Optionals use the `?` predicate + `as` binding
 if user? as u {
     process(u)
+}
+
+// Results use a type pattern — `?` is absence, not failure
+if load() is Config as c {
+    apply(c)
 }
 
 // Loop while status holds a value
@@ -112,32 +117,31 @@ if state is Connected(sock) && sock.is_ready() {
 }
 ```
 
-## Guard Pattern: const...else
-
-A guard binds on the good path and diverges on the bad one. Two scrutinee shapes, one rule set.
+## Guard Pattern: const...is...else
 
 | Rule | Description |
 |------|-------------|
 | **CF13: Diverging else** | `else` block must diverge (`return`, `break`, `panic`, etc.) |
 | **CF14: Binding escapes** | Successful match binds value to outer scope |
 | **CF33: Linear in else** | Pattern fails, value available in `else` for cleanup |
-| **CF34: Presence guard** | With no `is` clause, the initialiser must be a `T?` or a `T or E`; the guard binds the success payload. Same CF13/CF14 rules. See [error-types.md](../types/error-types.md) ER45 |
 
 ```rask
-// Pattern guard — early return on non-matching variant
+// Early return on non-matching variant
 const sock = state is Connected else { return }
 // sock available here
 
 // Break from loop when task missing
 const task = event is Ready else { break }
 // task available here
-
-// Presence guard — optional or result initialiser, no `is` clause
-const ms = raw.parse() else { return BadRequest("not a number") }
-// ms: i32 available here
 ```
 
-The `else` keyword after an initialiser expression is otherwise invalid, so there's no ambiguity with `if`/`try`. The three forms are told apart by what precedes and what follows: `is P` before the `else` is a pattern guard, a `try` prefix makes it error transformation, and a bare initialiser with a diverging block is a presence guard.
+The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `or` supplies the other branch, `try` propagates the error, and leaving on absence or failure is an ordinary `if` on the early-exit narrow (`type.optionals/OPT21`, `type.errors/ER24`):
+
+```rask
+const item = queue.pop()
+if item == none: break
+process(item)                  // item: Task here
+```
 
 ## Infinite Loop: loop
 
@@ -447,11 +451,9 @@ FIX: Match the number of bindings, use _ to discard:
 
 The diverging `else` requirement (CF13) ensures the binding is always valid after the statement.
 
-**CF34 (the guard covers optionals and results too).** Bailing out on an absent optional used to be spelled `x ?? return` — the fallback operator with a diverging right side. That gave `??` two readings, one of which was control flow (`type.errors/ER48`). The guard was already the language's "bind or bail" form for enum variants, so extending it to the two-branch builtins reuses the rule instead of adding one: no new keyword, no new grammar, CF13 and CF14 unchanged.
+**Why the guard stayed enum-only.** An earlier draft dropped the `is` clause so the guard covered `T?` and `T or E` too, replacing the `x ?? return` idiom. It was cut: `const v = x else { … }` doesn't say whether `x` was absent or failed, which is exactly the distinction the operator surface otherwise marks (`?` for absence, `or`/`try` for errors). The two-branch builtins didn't need a construct anyway — early-exit narrowing already binds and bails in two lines, and the `if` names the condition.
 
-The `is` clause becoming optional is what makes them one construct rather than two that look alike. A pattern guard asks "is it this variant?"; a presence guard asks "is it there?" — the same question about a builtin two-branch type, so it gets the same shape.
-
-**CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Status types (`T?`, `T or E`) use dedicated operators (`?`, `? as v`, `??`, `try`), not `is`.
+**CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Optionals use dedicated operators (`?`, `? as v`, `or`); results use `or`, `try`, and `is` with a type pattern.
 
 **CF22-25 (labels):** Labels enable breaking/continuing outer loops without extra flags or state. The `label:` syntax is clear and unambiguous.
 

@@ -41,6 +41,7 @@ Rask uses words where other languages use symbols:
 | Concept | Rask | Alternative |
 |---------|------|------------|
 | Error propagation | `try expr` | `expr?` |
+| Other branch | `x or v` | `x ?? v` |
 | Ownership transfer | `own value` | implicit move |
 | Pattern check | `if x? as v { … }` | `let Some(v) = x` |
 | Result type | `T or E` | `Result<T, E>` |
@@ -154,7 +155,7 @@ Future stdlib additions must follow these patterns; `rask lint` enforces them. S
 
 ## Error Handling
 
-Propagate with `try`, handle with `match`, add context with `try...else`.
+Propagate with `try`, handle with `match`, add context with `try ... or`.
 
 ```rask
 // Propagation — pass the error up as-is
@@ -180,24 +181,24 @@ func get_user(id: i64) -> User or NotFound {
 
 ### Error context
 
-Use `try...else` to add context when propagating errors. Stdlib provides `ContextError` and `context()` for human-readable chains. Two tiers depending on who consumes the error:
+Use `try ... or` to add context when propagating errors. Stdlib provides `ContextError` and `context()` for human-readable chains. Two tiers depending on who consumes the error:
 
 ```rask
 // Application code — human-readable context chains
 func load_config(path: string) -> Config or ContextError {
-    const text = try fs.read_text(path) else |e| context("reading {path}", e)
-    return try Config.parse(text) else |e| context("parsing {path}", e)
+    const text = try fs.read_text(path) or |e| context("reading {path}", e)
+    return try Config.parse(text) or |e| context("parsing {path}", e)
 }
 // Output: "reading /app.toml: file not found"
 
 // Library code — typed domain errors (callers can match)
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_text(path) else |e| ConfigError.Io { path, source: e }
-    return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
+    const text = try fs.read_text(path) or |e| ConfigError.Io { path, source: e }
+    return try Config.parse(text) or |e| ConfigError.Parse { path, source: e }
 }
 
 // Block form — when you need side effects before propagating
-const text = try fs.read_text(path) else |e| {
+const text = try fs.read_text(path) or |e| {
     log("failed to read {path}: {e.message()}")
     context("reading {path}", e)
 }
@@ -213,18 +214,18 @@ The outermost boundary — a router, `main`, a task body — has nothing above i
 ```rask
 // Router: every handler's error becomes a response
 func route(req: Request) -> Response {
-    return dispatch(req) else |e| error_response(e)
+    return dispatch(req) or |e| error_response(e)
 }
 ```
 
-`??` is the same fold when the error value isn't needed: `const port = read_port() ?? 8080`.
+Plain `or` is the same fold when the error value isn't needed: `const port = read_port() or 8080`.
 
 **Anti-patterns:**
 - `x!` in production code — crashes on error. Use `try` or `match`.
 - Long `if result is E as e` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
-- Using `context()` in library code where callers need to match on error types — use typed domain errors with `try...else` instead.
-- `if r? as v { return v } else as e { return f(e) }` at a boundary — that's the fold, write `r else |e| f(e)`.
+- Using `context()` in library code where callers need to match on error types — use typed domain errors with `try ... or` instead.
+- `if r is T as v { return v } else as e { return f(e) }` at a boundary — that's the fold, write `r or |e| f(e)`.
 
 See [types/error-types.md](types/error-types.md).
 
@@ -273,15 +274,14 @@ if opt? as v {
 }
 
 // Fallback — provide a default
-const name = opt ?? "anonymous"
+const name = opt or "anonymous"
 
-// Guard — early return if absent, binding the payload
-const v = opt else { return none }
-use(v)
-
-// Guard by narrowing — when the name should stay the same
+// Early exit if absent — the binding keeps its name
 if opt == none { return none }
 use(opt)   // opt: T here (early-exit narrow)
+
+// Absence should leave as an error — one line
+const v = try opt or MyError.NotFound
 
 // Full handling — both branches matter, use if/else (not match)
 if opt? {
@@ -666,9 +666,9 @@ why: `own` transfers ownership — the caller can no longer access the value.
 |-----------|------------------|
 | Construct | Struct literal, `from_*`, `.new()`, `.with_*` |
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
-| Handle errors | `try` (propagate), `try...else` (propagate with context), `else \|e\|` (fold), `match` (handle) |
+| Handle errors | `try` (propagate), `try ... or` (propagate with context), `or \|e\|` (fold), `match` (handle) |
 | Clean up resources | `ensure` |
-| Handle optionals | `if x?`, `??`, guard, `match` |
+| Handle optionals | `if x?`, `or`, early-exit `if`, `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `StringBuilder` |
 | Share state | `Shared<T>`, channels |

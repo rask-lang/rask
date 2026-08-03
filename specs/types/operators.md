@@ -28,7 +28,7 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 | 5 | `&&` | Logical AND | Left |
 | 4 | `\|\|` | Logical OR | Left |
 | 3 | `..` `..=` | Range | None |
-| 2 | `try` (prefix) `??` `!` (postfix) | Propagation, optional ops | Left |
+| 2 | `try` (prefix) `or` `!` (postfix) | Propagation, other-branch, force | Left |
 | 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | Assignment | Right |
 
 ## Indexing

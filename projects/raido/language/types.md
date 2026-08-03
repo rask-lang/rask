@@ -161,7 +161,7 @@ Simple enums (no payloads) are stored inline as a u32 discriminant in the regist
 const shield: Shield? = find_shield(inventory)
 
 // Null coalescing
-const defense = shield ?? default_shield
+const defense = shield or default_shield
 
 // Force unwrap -- panics on None
 const order = orders.get(ship.id)!
@@ -302,7 +302,7 @@ Promotion is widening (lossless for ints within +/-2.1B). If the int exceeds num
 - No generics beyond built-in `array<T>`, `map<K, V>`, `T?`, tuples, and function types
 - No traits or interfaces
 - Exhaustive `match` on enums -- compiler error if a variant is missing
-- `??` unwraps optionals with a default: `value ?? fallback` (both sides same type)
+- `or` supplies the other branch: `value or fallback` (both sides same type)
 - Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on `let` l-values including chained access (`ships[i].health -= damage`)
 - Force unwrap: `value!` panics if `None`
 - Sort stability is required -- `array.sort()` uses a stable sort algorithm

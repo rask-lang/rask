@@ -85,7 +85,7 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 - **Immutable refcounted strings** — `string` is Copy (16 bytes), immutable, atomically refcounted. Copies like a primitive. The compiler elides refcount ops in most cases (`comp.string-refcount-elision`). Go's string ergonomics without GC
 - **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly. Same mechanism for custom allocators: `using Allocator` threads an arena or fixed-buffer allocator without polluting every function signature
 - **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
-- **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `try ... else |e|` chains transformation with propagation. See below
+- **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `try ... or |e|` chains transformation with propagation. See below
 - **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `== none`, `try`). Match on `T?` is a compile error. Flow narrowing on `const` bindings. Kotlin/TypeScript nullable typing, not Rust Option
 - **Must-use task handles** — `spawn(|| { work() })` returns a handle that must be joined or detached. Forgetting is a compile error
 - **No call-site coloring** — I/O pauses green tasks transparently. No `async`/`await` at call sites. But `using Multitasking` propagates through signatures (scope-level coloring) — you don't write `.await`, but you do declare the capability. This is a deliberate tradeoff: uncolored calls, colored signatures
@@ -108,7 +108,7 @@ The disjointness rule (T ≠ E) is the price — enforced via Rask's nominal-vs-
 **Option isn't an enum.** Rust's `Option<T>` is literally `enum { Some(T), None }` — you `match` or `if let`. In Rask, `T?` is a builtin status type with an operator-only surface. `match` on `T?` is a compile error.
 
 ```rask
-const name = user?.profile?.display_name ?? "Anonymous"
+const name = user?.profile?.display_name or "Anonymous"
 if user == none { return default() }
 if user? as u { greet(u) }
 ```
@@ -131,10 +131,10 @@ enum FetchError {
 
 No `thiserror` macro, no hand-written match.
 
-**`try ... else |e|` block form.** Propagate and transform in one step:
+**`try ... or |e|` block form.** Propagate and transform in one step:
 
 ```rask
-const data = try fs.read(path) else |e| context("reading {path}", e)
+const data = try fs.read(path) or |e| context("reading {path}", e)
 ```
 
 Rust needs `fs::read(path).map_err(|e| ...)?`.
@@ -326,8 +326,8 @@ The catch: functions that spawn tasks need `using Multitasking` in their signatu
 
 ```rask
 func load_config(path: string) -> Config or _ {
-    const text = try fs.read(path) else |e| context("reading {path}", e)
-    const config = try parse(text) else |e| context("parsing {path}", e)
+    const text = try fs.read(path) or |e| context("reading {path}", e)
+    const config = try parse(text) or |e| context("parsing {path}", e)
     return config
 }
 ```
@@ -357,12 +357,12 @@ Importing users from a CSV file. Same task, same structure, different languages.
 ```rask
 func import_users(path: string, mutate db: Database) -> i64 or ImportError {
     const file = try fs.open(path)
-        else |e| ImportError.FileError(path, e)
+        or |e| ImportError.FileError(path, e)
     ensure file.close()
 
     let imported = 0
     for line in file.lines() {
-        const text = try line else |e| ImportError.ReadError(e)
+        const text = try line or |e| ImportError.ReadError(e)
         const parts = text.split(",")
         if parts.len() != 2 {
             return ImportError.BadFormat("expected name,email on line {imported + 1}")
@@ -400,7 +400,7 @@ fn import_users(path: &str, db: &mut Database) -> Result<i64, ImportError> {
 
 No single line is revolutionary. The differences are incremental:
 
-- `try ... else |e|` vs `.map_err(|e| ...)?` — same idea, less nesting
+- `try ... or |e|` vs `.map_err(|e| ...)?` — same idea, less nesting
 - `return ImportError.BadFormat(...)` vs `return Err(ImportError::BadFormat(...))` — no wrapper
 - `return imported` vs `Ok(imported)` — no wrapper
 - `parts[0].trim()` vs `parts[0].trim().to_string()` — Copy strings
