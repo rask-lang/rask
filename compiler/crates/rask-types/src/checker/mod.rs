@@ -236,6 +236,17 @@ impl TypeChecker {
         }
     }
 
+    /// Declarations that carry a body to check, as opposed to ones that only
+    /// introduce a name or a value. Bodies are checked in a second pass so
+    /// they see module-level consts already typed.
+    fn is_body_decl(decl: &Decl) -> bool {
+        use rask_ast::decl::DeclKind;
+        matches!(
+            decl.kind,
+            DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Test(_) | DeclKind::Benchmark(_)
+        )
+    }
+
     /// Lenient variant: always returns the (partial) TypedProgram plus any errors.
     ///
     /// The TypedProgram is usable even when errors exist — node_types contains
@@ -268,6 +279,7 @@ impl TypeChecker {
 
         // Global scope for module-level bindings (imports, etc.)
         self.push_scope();
+
         if !stdlib_decls.is_empty() {
             self.types.stdlib_mode = true;
             for decl in stdlib_decls {
@@ -275,8 +287,25 @@ impl TypeChecker {
             }
             self.types.stdlib_mode = false;
         }
+
+        // Everything that isn't a body first — imports, module-level consts, type
+        // aliases — then the bodies. A body that reads a module-level const needs
+        // its type, and files arrive in whatever order the package lists them:
+        // `main.rk` before `store.rk` meant a body was checked while
+        // `const store = Mutex.new(Store.new())` was still an inference variable,
+        // so `store.lock()` had no receiver type to dispatch on and the method's
+        // result type was lost — silently, and only for consts without an
+        // annotation (#566, #569). Imports keep their place ahead of the consts
+        // that use them (`const started = time.Instant.now()`).
         for decl in decls {
-            self.check_decl(decl);
+            if !Self::is_body_decl(decl) {
+                self.check_decl(decl);
+            }
+        }
+        for decl in decls {
+            if Self::is_body_decl(decl) {
+                self.check_decl(decl);
+            }
         }
         self.pop_scope();
 
