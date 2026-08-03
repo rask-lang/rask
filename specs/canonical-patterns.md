@@ -201,13 +201,30 @@ const text = try fs.read_text(path) else |e| {
     log("failed to read {path}: {e.message()}")
     context("reading {path}", e)
 }
+
+// Binding omitted — the original error carries nothing worth keeping
+const dto = try json.decode(req.body) else ApiError.BadRequest("invalid JSON")
 ```
+
+### The terminal fold
+
+The outermost boundary — a router, `main`, a task body — has nothing above it to propagate to, so it folds `T or E` into `T`:
+
+```rask
+// Router: every handler's error becomes a response
+func route(req: Request) -> Response {
+    return dispatch(req) else |e| error_response(e)
+}
+```
+
+`??` is the same fold when the error value isn't needed: `const port = read_port() ?? 8080`.
 
 **Anti-patterns:**
 - `x!` in production code — crashes on error. Use `try` or `match`.
 - Long `if result is E as e` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
 - Using `context()` in library code where callers need to match on error types — use typed domain errors with `try...else` instead.
+- `if r? as v { return v } else as e { return f(e) }` at a boundary — that's the fold, write `r else |e| f(e)`.
 
 See [types/error-types.md](types/error-types.md).
 
@@ -258,7 +275,11 @@ if opt? as v {
 // Fallback — provide a default
 const name = opt ?? "anonymous"
 
-// Guard — early return if absent
+// Guard — early return if absent, binding the payload
+const v = opt else { return none }
+use(v)
+
+// Guard by narrowing — when the name should stay the same
 if opt == none { return none }
 use(opt)   // opt: T here (early-exit narrow)
 
@@ -645,7 +666,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 |-----------|------------------|
 | Construct | Struct literal, `from_*`, `.new()`, `.with_*` |
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
-| Handle errors | `try` (propagate), `try...else` (propagate with context), `match` (handle) |
+| Handle errors | `try` (propagate), `try...else` (propagate with context), `else \|e\|` (fold), `match` (handle) |
 | Clean up resources | `ensure` |
 | Handle optionals | `if x?`, `??`, guard, `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |

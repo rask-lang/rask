@@ -50,8 +50,8 @@ cache = get_current_user()               // User widens at assignment
 | **OPT8: Absent literal** | `none` | absent value; type widens at use |
 | **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
 | **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
-| **OPT11: Value fallback** | `x ?? default` | unwraps `x` if present, else yields `default`. `??` is strict-extract — `default`'s type must match the inner `T` |
-| **OPT12: Diverging fallback** | `x ?? return none` (or `break`, `continue`, `panic(…)`) | unwraps if present, else diverges |
+| **OPT11: Value fallback** | `x ?? default` | unwraps `x` if present, else yields `default`. `??` is strict-extract — `default`'s type must match the inner `T`, and may not diverge (OPT12) |
+| **OPT12: Presence guard** | `const v = x else { return }` (or `break`, `continue`, `panic(…)`) | binds the payload, or runs a diverging `else` block. `??` covers the value fallback; bailing out is the guard's job. See [error-types.md](error-types.md) ER45/ER48 |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
 | **OPT14: Propagate** | `try x` | in a `T?`-returning function, unwraps if present, else returns `none` |
 | **OPT15: Absent check** | `x == none` / `x != none` | plain equality; `x?` and `x == none` narrow identically |
@@ -68,6 +68,18 @@ const name = user?.display_name
 ```
 
 As soon as an RHS is bare `T`, the chain collapses to `T` and further `??` is a type error.
+
+The right side of `??` is always a value. When the fallback is control flow, the guard form binds instead:
+
+<!-- test: skip -->
+```rask
+const theme = config.theme ?? "default"          // fallback value
+const user = load_user(id) else { return }        // bail out — binds user: User after
+```
+
+The guard's `else` block must diverge and the binding escapes to the enclosing scope — the same rule as the pattern guard `const v = x is P else { … }` ([control-flow.md](../control/control-flow.md) CF13–CF15). Full rules in [error-types.md](error-types.md) ER45.
+
+The binding form `else |e|` is an *error* fold (ER44) and doesn't apply to optionals — `none` carries no payload to bind. On an optional it's a compile error pointing at `??` or the guard.
 
 ## Conditions and Narrowing
 
@@ -221,8 +233,8 @@ user?.name ?? "guest"
 |------------|---------------|
 | `match x { none => a, v => f(v) }` | `if x? { f(x) } else { a }` |
 | `match x { none => default, u => u.name }` | `x?.name ?? default` |
-| `match x { none => return, v => v }` | `x ?? return none` (or `try x`) |
-| `match x { none => panic("…"), v => v }` | `x!` (or `x ?? panic("…")`) |
+| `match x { none => return, v => v }` | `const v = x else { return }` (or `try x`) |
+| `match x { none => panic("…"), v => v }` | `x! "…"` |
 
 The lint is non-fatal. Match earns its keep on multi-error unions where the dispatch genuinely has more than two outcomes.
 
@@ -245,6 +257,9 @@ No optional-specific equality rule.
 | `x?.field` on `T??` | OPT3/OPT30 | Compile error — the outer payload is `T?`, not a struct. Narrow first |
 | `Vec<T?>.first()` | OPT28 | `T??` — outer says "vec empty", inner says "slot empty" |
 | `?.` on `T or E or none` | OPT3 | Compile error suggesting layering: `(T or E)?` or `T or (E?)` |
+| `x ?? return` / `?? break` / `?? panic(…)` | OPT12 | Compile error — use `const v = x else { … }` |
+| `const v = x else { … }` where the block falls through | OPT12/CF13 | Compile error — the `else` block must diverge |
+| `x else \|e\| f(e)` on an optional | OPT12 | Compile error — no payload to bind. Use `??` or the guard |
 | `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
 | Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
 | `!x?` syntax | OPT16 | Parse error suggesting `x == none` |
@@ -346,12 +361,19 @@ The reason nesting works here and not for `T or E` is that branch selection stay
 const theme = config.theme ?? "default"
 ```
 
-**Guard-style early exit.** Common for top-of-function absent checks:
+**Guard-style early exit.** Two spellings, depending on whether you want the narrow or the binding:
 
 <!-- test: skip -->
 ```rask
+// Narrow in place — the name stays the same
 func greet(user: User?) -> string {
     if user == none { return "Hello, guest" }
+    return "Hello, {user.name}"
+}
+
+// Guard — works on an anonymous expression, which the narrow can't
+func greet(id: UserId) -> string {
+    const user = load_user(id) else { return "Hello, guest" }
     return "Hello, {user.name}"
 }
 ```
@@ -380,7 +402,8 @@ func find(id: UserId) -> (User or DatabaseError)? {
 
 - Ghost text shows the narrowed type on hover inside `if x?` blocks.
 - Quick action "Convert `match` to operator form" for the two-arm none/value case.
-- Ghost text for the diverging `??` fallback shows the return type of the enclosing function.
+- Ghost text on a presence guard shows the bound type (`const user` → `: User`).
+- Quick action "Convert `?? return` to a guard" for code written against the older rule.
 
 ### See Also
 

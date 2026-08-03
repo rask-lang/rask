@@ -15,7 +15,7 @@ Named product types with value semantics, structural Copy, `extend` blocks for m
 | **S1: Named fields** | All fields MUST have names (no tuple structs) |
 | **S2: Explicit types** | All fields MUST have explicit types (no inference) |
 | **S3: Field ordering** | Default layout (`@layout(Rask)`): compiler reorders fields for optimal alignment. `@layout(C)`: declaration order preserved. Field *access* is always by name — reordering doesn't change semantics |
-| **S4: Visibility** | Default: package-visible. `private` restricts to `extend` blocks only. `public` for external |
+| **S4: Visibility** | Default: package-visible. `private` restricts to `extend` blocks only. `public` for external. Visibility governs code access only — the one place it carries a second meaning is serialization, where `private` means "off the wire" (`std.encoding/E13`) |
 
 <!-- test: parse -->
 ```rask
@@ -190,7 +190,7 @@ const p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
 | **FD3: Zero-field construction** | If every field has a default, `Config {}` constructs the default value. There is no `Default` trait and no `.default()` method — this is it |
 | **FD4: Missing field is an error** | A field with no default and no value is a compile error naming the field. Never silently zero |
 | **FD5: Spread wins** | `Config { x: v, ..base }` — explicit fields, then spread, then defaults for anything neither covers |
-| **FD6: Decode unification** | The declared default is the decode-missing-field default (`std.encoding/E20`); `@default(expr)` remains for decode-only overrides |
+| **FD6: Decode unification** | The declared default is the decode-missing-field default (`std.encoding/E20`); `@default(expr)` remains for decode-only overrides. It is also the value a field excluded from the wire form takes on decode (`std.encoding/E13a`) — a `private` or `@no_serialize` field with no default means the type is not auto-`Decode` |
 
 <!-- test: skip -->
 ```rask

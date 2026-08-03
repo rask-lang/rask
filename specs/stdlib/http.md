@@ -253,7 +253,7 @@ func handle_users(req: Request) -> Response {
         return Response.json(json.encode(users))
     }
     if req.method is Method.Post {
-        const user = json.decode<User>(req.body) ?? return Response.bad_request("invalid json")
+        const user = json.decode<User>(req.body) else { return Response.bad_request("invalid json") }
         save_user(user)
         return Response.json(json.encode(user)).with_status(201)
     }
@@ -365,7 +365,7 @@ func handle(req: Request) -> Response {
                 Response.json(json.encode(users))
             },
             Method.Post => {
-                const user = json.decode<User>(req.body) ?? return Response.bad_request("invalid json")
+                const user = json.decode<User>(req.body) else { return Response.bad_request("invalid json") }
                 const saved = db_create_user(user)
                 Response.json(json.encode(saved)).with_status(201)
             },

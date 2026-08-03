@@ -750,16 +750,16 @@ if state is Connected(sock) && sock.is_ready() {
 
 **Guard pattern with early-exit narrow:**
 
-For optionals, use `?? return` or the early-exit absent check:
+For optionals and results, the guard binds the payload and the `else` block bails out:
 
 ```rask
-const value = result ?? return  // optional: divert on absent, value: T after
+const value = result else { return }          // divert on absent/error, value: T after
 
 if opt == none { return }
-use(opt)                         // opt: T here (early-exit narrow)
+use(opt)                                       // opt: T here (early-exit narrow)
 ```
 
-For results (`T or E`), use `try` for propagation, or type-pattern narrow with divergence:
+`try` propagates instead of diverting; a type-pattern narrow handles a specific error:
 
 ```rask
 const data = try read_file(path)             // propagates the error
@@ -769,7 +769,7 @@ if conn is ConnectError as e { return e }
 use(conn!)                                    // conn: Connection after
 ```
 
-The `else` block of a guard must diverge (`return`, `break`, `panic`).
+The `else` block of a guard must diverge (`return`, `break`, `panic`). `??` is for fallback *values* only — `x ?? return` is a compile error pointing at the guard (`type.errors/ER48`).
 
 ### Loops
 
@@ -881,6 +881,23 @@ func load_config() -> Config or (IoError | ParseError) {
 }
 ```
 
+**The `else` family.** `try` says the error may leave this function; `else` says the other branch is handled right here. What follows `else` says how:
+
+| Form | Meaning |
+|------|---------|
+| `x ?? fallback` | fold with a constant |
+| `x else \|e\| f(e)` | fold using the error — produces a `T` |
+| `const v = x else { … }` | bind, or run a diverging block |
+| `try x` | propagate |
+| `try x else \|e\| f(e)` | transform the error, then propagate |
+| `try x else err_expr` | replace the error, then propagate |
+
+```rask
+return dispatch(req) else |e| error_response(e)              // fold at the boundary
+const ms = raw.parse() else { return BadRequest("bad ms") }  // guard
+const dto = try json.decode(body) else BadRequest("bad JSON") // replace + propagate
+```
+
 See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
 ### Development Panics
@@ -985,7 +1002,7 @@ test "addition" {
 | `@no_decode` | Struct | Prevent auto-derive of `Decode` (`std.encoding/E16`) |
 | `@tag("field")` | Enum | Internally tagged serialization (`std.encoding/E24`) |
 | `@rename("name")` | Field, Variant | Override serialized name (`std.encoding/E18`) |
-| `@skip` | Field | Exclude from serialization (`std.encoding/E19`) |
+| `@no_serialize` | Field | Exclude from the wire form, both directions (`std.encoding/E19`) |
 | `@default(expr)` | Field | Default value when field missing during decode (`std.encoding/E20`) |
 
 ### Comptime Field Access
@@ -1174,9 +1191,10 @@ println("{sum}")
 | Optional | `T?` | Sugar for `T or none`; bare value + `none` literal, no `Some`/`None` |
 | Error union | `T or E` | No `Ok`/`Err` — bare T auto-wraps at return; E is its own type |
 | Error prop | `try expr` | Prefix keyword |
+| Error fold | `expr else \|e\| f(e)` | Produces a `T`; nothing propagates |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
-| Guard extraction | `const v = x is P else { }` | Binds to outer scope |
+| Guard extraction | `const v = x is P else { }` | Binds to outer scope; `is P` omitted for `T?` / `T or E` |
 | Loops | `for x in xs: ...` | Inline or braced |
 | Loop value | `break expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |

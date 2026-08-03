@@ -64,7 +64,7 @@ try user                              // propagate (current fn must return U?)
 | Early-exit narrow | `if x == none { return } … use(x)` (x: T after) |
 | Chain | `x?.field` |
 | Fallback value | `x ?? default` |
-| Diverging fallback | `x ?? return none` / `?? break` / `?? panic("…")` |
+| Presence guard | `const v = x else { return none }` / `else { break }` (`type.errors/ER45`) |
 | Force | `x!` (panics with "none" or `x! "custom {ctx}"` override) |
 | Propagate | `try x` / `try { … }` |
 
@@ -127,10 +127,10 @@ Eight methods total. Compiler-provided on the builtin types — no `impl` blocks
 | `.is_ok()` / `.is_err()` | `r?` / `r is E` |
 | `.unwrap()` | `x!` / `r!` |
 | `.unwrap_or(default)` | `x ?? default` |
-| `.unwrap_or_else(f)` | `try { … } else \|e\| f(e)` block form |
+| `.unwrap_or_else(f)` | `r else \|e\| f(e)` — the bare fold (`type.errors/ER44`) |
 | `.to_option()` | `.ok()` (single survivor) |
 | `.or(other)` | `x ?? other` already returns `T?` |
-| `.or_else(f)` | `try { … } else \|e\| …` or `match` |
+| `.or_else(f)` | `r else \|e\| f(e)`, or `try { … } else \|e\| …` when it should propagate |
 
 Each removed method either duplicated an operator or can be reconstructed trivially. The retained eight are precisely the ones that keep a value in wrapper-land for the next chain step, plus the two explicit conversion paths (`.ok()`, `.to_result(err)`).
 
@@ -163,8 +163,8 @@ Match earns its keep on types with multiple shapes, guards, complex destructure,
 |------------|---------------|
 | `match x { none => a, v => f(v) }` | `if x? { f(x) } else { a }` |
 | `match x { none => default, u => u.name }` | `x?.name ?? default` |
-| `match x { none => return, v => v }` | `x ?? return none` (or `try x`) |
-| `match x { none => panic("…"), v => v }` | `x!` (or `x ?? panic("…")`) |
+| `match x { none => return, v => v }` | `const v = x else { return none }` (or `try x`) |
+| `match x { none => panic("…"), v => v }` | `x! "…"` |
 
 Match on `T or E` is kept because multi-error unions (`T or (A | B | C)`) genuinely need multi-arm dispatch. Two-branch `T or E` matches are still written with operators.
 
@@ -358,7 +358,7 @@ func load_config(path: string) -> Config or (IoError | ParseError) {
     const text = try read_file(path)    // IoError widens to (IoError | ParseError)
     const json = try parse_json(text)   // ParseError widens
 
-    const user = json.get("user") ?? return ParseError.MissingField("user")
+    const user = json.get("user") else { return ParseError.MissingField("user") }
 
     return Config {
         user: user,

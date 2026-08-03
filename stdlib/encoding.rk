@@ -17,7 +17,7 @@
 //
 // Field annotations:
 //   @rename("name")      — override serialized key name (E18)
-//   @skip                — exclude from serialization (E19)
+//   @no_serialize        — exclude from the wire form, both directions (E19)
 //   @default(expr)       — comptime fallback for missing fields on decode (E20)
 //   @no_encode           — opt out of auto-derive for Encode (E16)
 //   @no_decode           — opt out of auto-derive for Decode (E16)

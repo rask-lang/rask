@@ -47,7 +47,7 @@ Last pass, five spec constructs didn't parse. Now:
 | `scoped extend` | ✗ | **✓ parses + checks** |
 | comma-list `extend T with A, B` | ✗ | **✓ parses + checks** |
 | struct field defaults `f: T = expr` | ✗ | ✗ still unimplemented (#311) |
-| field annotations `@rename/@skip/@default` | ✗ | ✗ still unimplemented |
+| field annotations `@rename/@no_serialize/@default` | ✗ | ✗ still unimplemented |
 
 Nominal trait conformance is now **enforced** (G1) — a good change; the program
 relies on it. The two remaining parser gaps (field defaults, field annotations)
@@ -57,7 +57,7 @@ forced the only spec-shaped code I had to abandon:
   every field is written at construction. `Config {}`-as-default-value (the
   "No Default trait" design) can't be shown.
 - **Field annotations** → DTOs use plain field names; "optional on the wire" is
-  a `T?` field plus a handler fallback. No `@rename`/`@skip`/`@default` demo.
+  a `T?` field plus a handler fallback. No `@rename`/`@no_serialize`/`@default` demo.
 
 ---
 

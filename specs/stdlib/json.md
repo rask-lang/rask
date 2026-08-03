@@ -71,7 +71,7 @@ json.encode_pretty(value)
 | **J7: Compatible types** | `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `string`, `Vec<T>`, `Map<string, T>`, `T?`, nested structs |
 | **J8: Field mapping** | Struct field `serial_name` = JSON key. Defaults to field name (snake_case). Override with `@rename` (`std.encoding/E18`) |
 | **J9: Optional fields** | `T?` fields decode `null` or missing as `none`; missing required fields produce `MissingField`. `@default` fields (`std.encoding/E20`) also tolerate missing keys |
-| **J10: Extra keys ignored** | JSON keys not matching any struct field are silently skipped |
+| **J10: Extra keys ignored** | JSON keys not matching a serialized struct field are silently skipped. This includes a key naming a field that is excluded from the wire form (`std.encoding/E13b`) — the field is never filled from input |
 
 <!-- test: skip -->
 ```rask
@@ -87,9 +87,9 @@ json.from_value<T>(value: JsonValue) -> T or JsonError
 import json
 
 struct User {
-    public name: string
-    public age: i64
-    public email: string?
+    name: string
+    age: i64
+    email: string?
 }
 
 const user = try json.decode<User>(input)
@@ -102,15 +102,15 @@ With field annotations:
 ```rask
 struct ApiUser {
     @rename("user_name")
-    public name: string
+    name: string
 
-    public age: i64
+    age: i64
 
     @default("user")
-    public role: string
+    role: string
 
-    @skip
-    public cache_key: string
+    @no_serialize
+    cache_key: string = ""
 }
 // encode → {"user_name": "alice", "age": 30, "role": "admin"}
 // decode with missing role → role defaults to "user"
@@ -150,7 +150,10 @@ WHY: Only primitive, collection, optional, and nested-struct types can be encode
 | JSON has extra keys not in struct | Ignored | J10 |
 | Struct has extra fields not in JSON | Required fields error; optional fields get `none` | J9 |
 | Number where an integer field is declared | Truncated toward zero | J2 |
-| `@skip` field on decode | Its `@default`, or the type's empty value (`""`, `[]`, `{}`, `none`, 0) | J8 |
+| Excluded field on decode | Its declared default, or `@default` | `std.encoding/E13a` |
+| Excluded field with no default | Compile error — the type is not `Decode` | `std.encoding/E13a` |
+| JSON key naming an excluded field | Ignored, like any unknown key | J10, `std.encoding/E13b` |
+| `private` field on encode | Never emitted | `std.encoding/E13` |
 | Nesting past 256 levels | `JsonError.ParseError` | J11 |
 
 ---

@@ -14,7 +14,7 @@ Compile-time type introspection through `std.reflect`. All reflection resolves a
 | **R1: Comptime only** | All `std.reflect` functions require `comptime` context. Runtime use is a compile error |
 | **R2: Local analysis** | Reflection operates on types already in scope. No whole-program type discovery |
 | **R3: No mutation** | Cannot add fields or methods to existing types through reflection |
-| **R4: Visibility respected** | Reflection shows private fields exist (name, type, size) but generated code respects visibility |
+| **R4: Visibility respected** | Reflection shows private fields exist (name, type, size) but generated code respects visibility. Auto-derived conformances act as if generated in the defining module — see [below](#reflection-and-auto-derived-conformances-r4) |
 | **R5: Concrete types** | Reflection on generic types reflects the monomorphized type, not the generic template |
 
 <!-- test: skip -->
@@ -76,13 +76,29 @@ struct FieldInfo {
     offset: usize
     size: usize
     is_public: bool
+    is_private: bool
     serial_name: string       // @rename value, or same as name
-    is_skipped: bool          // @skip present
-    has_default: bool         // @default present
+    serialized: bool          // part of the wire form (std.encoding/E13)
+    has_default: bool         // @default or a declared default present
 }
 ```
 
 `serial_name` equals `name` unless the field has `@rename("...")`. See `std.encoding` for field annotation semantics.
+
+`serialized` is the **inclusion decision, already made** — false for a `private` field or one marked `@no_serialize`, true otherwise. Format libraries read the one flag instead of re-deriving the rule from `is_private` and the annotations; when `std.encoding`'s policy changes, they don't.
+
+### Reflection and Auto-Derived Conformances [R4]
+
+A format library is an external package, so `reflect.fields<T>()` called from inside it would see less than `Encode` covers — the package-default fields of someone else's type aren't visible to it as *code*.
+
+The rule that resolves this: **an auto-derived conformance acts as if it were generated in the module that defines the type.** `Encode`/`Decode` are the compiler's own derivation, not library code reaching in, so they see the full `serialized` field set (`std.encoding/E13`) and the `FieldInfo` list handed to a format library reflects that set. What the format library cannot do is reach *past* it: a `private` field has `serialized == false`, and no amount of reflection from outside makes it readable.
+
+So there are two different questions and they have different answers:
+
+| Question | Answer |
+|---|---|
+| Can this package's code read the field? | Normal visibility rules (R4) |
+| Is the field on the wire? | `FieldInfo.serialized` (`std.encoding/E13`) |
 
 ## Methods
 
@@ -157,7 +173,8 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 |------|------|----------|
 | Reflect on non-struct with `fields<T>()` | — | Compile error |
 | Reflect on non-enum with `variants<T>()` | — | Compile error |
-| Private fields in `fields<T>()` | R4 | Visible in metadata, access respects visibility |
+| Private fields in `fields<T>()` | R4 | Visible in metadata, access respects visibility; `serialized == false` |
+| `fields<T>()` from an external format library | R4 | Sees the full `serialized` set — auto-derive acts as-if in the defining module |
 | Generic type `T` in comptime func | R5 | Reflects concrete monomorphized type |
 | `implements<T, Trait>()` | R2 | Checks T's methods, not codebase-wide |
 

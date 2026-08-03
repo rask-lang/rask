@@ -179,12 +179,17 @@ Operator surface (works on both `T?` and `T or E`):
 | `r?` | `bool` — success/present test; narrows a `const` scrutinee inside the block |
 | `r? as v` | test and bind `v` |
 | `r?.field` | chain — projects on success, propagates absence/error |
-| `r ?? fallback` | extract or fallback; `fallback` must be `T` (never widens); `?? return`/`?? continue` diverge |
+| `r ?? fallback` | extract or fallback; `fallback` must be a `T` (never widens, never diverges) |
 | `r!` / `r! "msg"` | extract or panic |
+| `r else \|e\| f(e)` | fold: handle the error, produce a `T` — nothing propagates |
+| `const v = r else { return }` | guard: bind or diverge (`ctrl.flow/CF13`) |
 | `try r` | extract or return the error (widened into the function's error union) |
-| `try r else \|e\| f(e)` | transform the error while propagating |
-| `const v = x is Pattern else { return }` | guard: bind or diverge (`ctrl.flow/CF13`) |
+| `try r else \|e\| f(e)` | transform the error, then propagate |
+| `try r else err_expr` | replace the error, then propagate (binding omitted when unused) |
+| `const v = x is Pattern else { return }` | pattern guard: bind or diverge |
 | `if r is IoError as e { }` | error-side type test and bind |
+
+The `else` family divides on one question: **`try` present means the error may leave this function.** With `try`, the payload after `else` is an error (transform or replace, then propagate). Without it, the payload is either a `T` (fold) or a diverging block (guard). Writing the wrong one is a type error on that line, since `T ≠ E`.
 
 - Auto-wrap for `T or E` fires **only at `return`**; optionals widen at any position (ER9–ER11).
 - Every error type satisfies `ErrorMessage` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.
@@ -277,7 +282,7 @@ func encode<T: Encode>(value: T, mutate w: Writer) -> void or Error {
 }
 ```
 
-No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `comptime if cfg.os == "linux"` for conditional compilation — discarded branches are only syntax-checked. Serialization is built on this plus `@rename`/`@skip`/`@default` field annotations (`std.encoding`) — there are no macros.
+No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `comptime if cfg.os == "linux"` for conditional compilation — discarded branches are only syntax-checked. Serialization is built on this plus `@rename`/`@no_serialize`/`@default` field annotations (`std.encoding`) — there are no macros. Auto-derive covers every non-`private` field; `private` means off the wire.
 
 ## Modules, build, unsafe
 
