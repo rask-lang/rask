@@ -2300,3 +2300,107 @@ const store = Mutex.new(Store.new())
     );
     assert!(out.contains("ok=3"), "the happy path must still work: {}", out);
 }
+
+// ─── Regression: issue #570 ─────────────────────────────────
+//
+// The interpreter kept three separate lists of which types each stdlib module
+// exports: one for `import m.*`, one for `import m.Type`, and one per module in
+// the qualified-field path. They disagreed — `http`'s types were only in the
+// glob list — so `http.Response.ok(…)` failed with "cannot access field on
+// module" while a bare `Response.ok(…)` worked. One table now serves all three.
+
+fn interp_output(src: &str) -> String {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir().join(format!("rask_interp_{}", next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("m.rk");
+    std::fs::write(&file, src).unwrap();
+    let out = Command::new(&rask)
+        .arg("run")
+        .arg("--interp")
+        .arg(&file)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run --interp");
+    let _ = std::fs::remove_dir_all(&dir);
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    )
+}
+
+#[test]
+fn interp_resolves_qualified_module_types() {
+    // `http.Response` is the case from #570; the others went through
+    // per-module tables that the shared one replaced.
+    let out = interp_output(r#"
+import http
+import time
+import json
+
+func main() {
+    const r = http.Response.ok("body")
+    println("status={r.status}")
+
+    const d = time.Duration.from_millis(5)
+    println("ms={d.as_millis()}")
+
+    println("json={json.encode(true)}")
+}
+"#);
+
+    assert!(
+        !out.contains("cannot access field on module") && !out.contains("has no member"),
+        "qualified module types must resolve: {}", out,
+    );
+    assert!(out.contains("status=200"), "http.Response.ok must build a 200: {}", out);
+    assert!(out.contains("ms=5"), "time.Duration must still resolve: {}", out);
+    assert!(out.contains("json=true"), "json module must still work: {}", out);
+}
+
+#[test]
+fn interp_qualified_and_bare_module_types_agree() {
+    // The two spellings name the same type, so they must behave the same.
+    let out = interp_output(r#"
+import http
+
+func main() {
+    const viaModule = http.Response.ok("x")
+    const viaBare = Response.ok("x")
+    println("same={viaModule.status == viaBare.status}")
+}
+"#);
+    assert!(out.contains("same=true"), "both spellings must agree: {}", out);
+}
+
+#[test]
+fn interp_single_member_import_covers_every_exported_type() {
+    // `import http.Response` used to be silently ignored — the single-member
+    // table only knew about time/path/random.
+    let out = interp_output(r#"
+import http.Response
+
+func main() {
+    const r = Response.ok("x")
+    println("status={r.status}")
+}
+"#);
+    assert!(out.contains("status=200"), "a single-member import must bind the type: {}", out);
+}
+
+#[test]
+fn interp_reports_an_unknown_module_member() {
+    let out = interp_output(r#"
+import http
+
+func main() {
+    println("{http.Nonexistent}")
+}
+"#);
+    assert!(
+        out.contains("Nonexistent"),
+        "an unknown member must still be reported by name: {}", out,
+    );
+}

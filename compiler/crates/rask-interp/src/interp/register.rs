@@ -62,18 +62,9 @@ impl Interpreter {
                     type_param: None,
                 });
             }
-            // Module type exports
-            (ModuleKind::Random, "Random") => {
-                self.env.define(alias.to_string(), Value::Type("Random".to_string()));
-            }
-            (ModuleKind::Time, "Instant") => {
-                self.env.define(alias.to_string(), Value::Type("Instant".to_string()));
-            }
-            (ModuleKind::Time, "Duration") => {
-                self.env.define(alias.to_string(), Value::Type("Duration".to_string()));
-            }
-            (ModuleKind::Path, "Path") => {
-                self.env.define(alias.to_string(), Value::Type("Path".to_string()));
+            // Any exported type: `import http.Response`, `import time.Instant`.
+            _ if module.exports_type(member) => {
+                self.env.define(alias.to_string(), Value::Type(member.to_string()));
             }
             _ => {
                 // Unknown member - ignore
@@ -83,19 +74,7 @@ impl Interpreter {
 
     /// Register companion types for glob imports (`import module.*`).
     fn register_glob_companions(env: &mut crate::env::Environment, module: ModuleKind) {
-        let types: &[&str] = match module {
-            ModuleKind::Http => &["Request", "Response", "Method", "Headers", "HttpServer", "Responder", "HttpClient"],
-            ModuleKind::Time => &["Instant", "Duration"],
-            ModuleKind::Path => &["Path"],
-            ModuleKind::Fs => &["File", "Metadata"],
-            ModuleKind::Io => &["Stdin", "Stdout", "Stderr", "Buffer", "IoError"],
-            ModuleKind::Os => &["Command", "Process", "Output", "Stdio", "Signal"],
-            ModuleKind::Cli => &["Args"],
-            ModuleKind::Net => &["TcpListener", "TcpConnection"],
-            ModuleKind::Random => &["Random"],
-            _ => &[],
-        };
-        for name in types {
+        for name in module.exported_types() {
             env.define(name.to_string(), Value::Type(name.to_string()));
         }
     }

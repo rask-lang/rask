@@ -304,6 +304,41 @@ pub enum ModuleKind {
     Reflect, // std.reflect — compile-time type introspection
 }
 
+impl ModuleKind {
+    /// Types this module exports.
+    ///
+    /// One table, three readers: `import http.*`, `import http.Response`, and
+    /// qualified `http.Response`. They each used to carry their own list, so a
+    /// type could be reachable one way and not another — `http`'s types were
+    /// only in the glob list, which is why `http.Response.ok(…)` failed while a
+    /// bare `Response.ok(…)` worked.
+    pub fn exported_types(self) -> &'static [&'static str] {
+        match self {
+            ModuleKind::Http => &[
+                "Request", "Response", "Method", "Headers",
+                "HttpServer", "Responder", "HttpClient",
+            ],
+            ModuleKind::Time => &["Instant", "Duration"],
+            ModuleKind::Path => &["Path"],
+            ModuleKind::Fs => &["File", "Metadata"],
+            ModuleKind::Io => &["Stdin", "Stdout", "Stderr", "Buffer", "IoError"],
+            ModuleKind::Os => &["Command", "Process", "Output", "Stdio", "Signal"],
+            ModuleKind::Cli => &["Args", "Parser"],
+            ModuleKind::Net => &["TcpListener", "TcpConnection"],
+            ModuleKind::Random => &["Random"],
+            ModuleKind::Json => &["JsonValue"],
+            ModuleKind::Thread => &["Thread", "ThreadPool"],
+            ModuleKind::Std | ModuleKind::Env | ModuleKind::Math
+            | ModuleKind::Async | ModuleKind::Reflect => &[],
+        }
+    }
+
+    /// True when `name` is one of this module's exported types.
+    pub fn exports_type(self, name: &str) -> bool {
+        self.exported_types().contains(&name)
+    }
+}
+
 /// Inner state for a spawned thread/task handle.
 pub struct ThreadHandleInner {
     /// OS thread join handle (used for raw thread::spawn)
