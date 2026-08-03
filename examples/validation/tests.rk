@@ -3,11 +3,11 @@
 // `rask test` runs these.
 
 test "priority order follows variant order" {
-    // Compared with the operators — `Ordering` can't be named in user code
-    // yet (FINDINGS), so no `== Ordering.Less`.
     assert Priority.Low < Priority.Urgent
     assert Priority.Urgent > Priority.Low
     assert !(Priority.High < Priority.High)
+    // Ordering is nameable now, so the tie case can be asserted directly.
+    assert Priority.High.compare(Priority.High) == Ordering.Equal
 }
 
 test "priority parses known labels and rejects the rest" {
@@ -32,19 +32,24 @@ test "email equality is case-insensitive (custom Equal)" {
 }
 
 test "ids are distinct values, stepped through .value" {
-    // TaskId is a struct, so it's built field-by-field — `TaskId(1)` is the
-    // nominal-type constructor (T7), and structs have no tuple form (S1).
-    const a = TaskId { value: 1 }
+    // TaskId is a nominal newtype (`type TaskId = u64 with (...)`): construct
+    // with `TaskId(n)` (T7), unwrap with `.value` (T8).
+    const a = TaskId(1)
     const b = a.next()
     assert_eq(b.value, 2)
     assert a != b
 }
 
 test "config carries its defaults" {
-    const c = Config.new()
+    // `Config {}` is the fully-defaulted value (FD3).
+    const c = Config {}
     assert_eq(c.port, 8080)
     assert_eq(c.host, "0.0.0.0")
     assert c.request_log
+    // A subset override leaves the rest at their declared defaults.
+    const c2 = Config { port: 9090 }
+    assert_eq(c2.port, 9090)
+    assert_eq(c2.host, "0.0.0.0")
 }
 
 test "validation catches an empty title" {

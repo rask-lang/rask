@@ -1,27 +1,25 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Id newtypes and the two closed enums (Priority, Status).
 //
-// The ids are struct wrappers, not `type X = u64` nominal newtypes. On the
-// spec that's a valid choice ("Custom data + behavior" in type.aliases), and
-// it's the only one the current checker supports: a nominal newtype can't be
-// extended with methods yet, and its `with (...)` traits don't resolve. As a
-// struct, TaskId gets the auto-derived Equal/Hashable/Comparable for free and
-// can carry `next()` — see FINDINGS.
+// The ids are `type X = u64 with (...)` nominal newtypes: distinct types (a
+// TaskId can't be passed where a ProjectId is expected) that inherit
+// Equal/Hashable/Comparable through the `with` clause (T11) and carry `next()`
+// via `extend` (T13). Construction is `TaskId(n)`, extraction `.value` (T7/T8).
 
-struct TaskId { public value: u64 }
-struct ProjectId { public value: u64 }
-struct UserId { public value: u64 }
+type TaskId = u64 with (Equal, Hashable, Comparable, Debug)
+type ProjectId = u64 with (Equal, Hashable, Comparable, Debug)
+type UserId = u64 with (Equal, Hashable, Comparable, Debug)
 
 extend TaskId {
-    func next(self) -> TaskId { return TaskId { value: self.value + 1 } }
+    func next(self) -> TaskId { return TaskId(self.value + 1) }
 }
 
 extend ProjectId {
-    func next(self) -> ProjectId { return ProjectId { value: self.value + 1 } }
+    func next(self) -> ProjectId { return ProjectId(self.value + 1) }
 }
 
 extend UserId {
-    func next(self) -> UserId { return UserId { value: self.value + 1 } }
+    func next(self) -> UserId { return UserId(self.value + 1) }
 }
 
 // ─── Email ───────────────────────────────────────────────────────────
@@ -46,10 +44,10 @@ extend EmailAddress with Equal {
 
 // OC1: the Equal override cancels the auto-derived Hashable (and Comparable).
 // Hashable is redeclared here, consistent with the case-insensitive equality,
-// so a Map keyed by EmailAddress stays correct. Comparable would also need
-// redeclaring, but its signature returns `Ordering`, which the checker can't
-// name yet — so EmailAddress stays non-Comparable (it's never sorted). See
-// FINDINGS.
+// so a Map keyed by EmailAddress stays correct. Comparable isn't redeclared:
+// a hand-written conformance must supply all five of compare/lt/le/gt/ge (the
+// trait doesn't derive the four booleans from compare), and EmailAddress is
+// never sorted, so it stays non-Comparable. See FINDINGS.
 extend EmailAddress with Hashable {
     func hash(self) -> u64 { return self.raw.to_lowercase().hash() }
 }

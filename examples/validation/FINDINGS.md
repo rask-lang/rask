@@ -1,246 +1,226 @@
 # Validation findings — HTTP JSON API server
 
-Program: `examples/validation/` — an in-memory work-item tracker (16 files,
-~1600 lines), written to the **spec**. This pass was redone against `main`
-after ~112 compiler commits landed.
+Program: `examples/validation/` — an in-memory work-item tracker (15 files,
+~1560 lines), written to the **spec**. This pass was redone against `main`
+after the codegen work landed.
 
-**Status on current `main`:**
+**The big change since the last pass:** it builds and runs — every path. Last
+time the program type-checked but the MIR→Cranelift layer couldn't lower most
+of it. Now `rask build` produces a native binary that serves real traffic:
+full CRUD, transactions, the seed pipeline, metrics, filtering, pagination, and
+the whole error surface.
+
+## Status
 
 | Stage | Result |
 |-------|--------|
-| `rask parse` (every file) | **clean — 0 errors** |
-| `rask build` type-check phase | **clean — 0 type errors** |
-| `rask build` MIR/codegen phase | fails — native codegen still broadly incomplete (see §D) |
+| `rask parse` / `rask build` type-check | clean — 0 errors |
+| `rask build` → native binary | **builds** |
+| `rask test` | **8/8 pass** |
+| Native server, CRUD + errors + filtering | **works** |
+| Native server, batch transaction under load | **flaky crash — [#577]** |
 
-So the program is **spec-valid and fully type-checks**. It does not yet produce
-a native binary, because the MIR→Cranelift layer can't lower large parts of it
-— including stdlib functions the program only touches indirectly (`IoError.message`,
-`http.listen_and_serve`). That's a compiler-maturity axis separate from the
-language, and it's where the remaining work is.
-
-The parser is the big win since last pass: three of the five constructs that
-didn't parse before now do. The friction moved down a layer — into the type
-checker (worked around, §B), the stdlib surface (§C), and codegen (§D).
-
----
+Four native/runtime codegen bugs turned up mid-pass (§B). All four were filed
+with minimal repros **and fixed on `main` within this pass**, so the program
+runs them the idiomatic way — the workarounds are gone. A fifth, harder one is
+still open: a heap-state-dependent flaky crash during the batch transaction
+([#577], §B4). None is a language problem; all are backend.
 
 ## How to verify
 
 ```
-rask parse examples/validation/<file>.rk     # 0 errors, every file
-rask build examples/validation               # 0 error[E…] type errors; MIR errors remain
+rask test examples/validation                       # 8/8
+rask build examples/validation --release            # builds
+./examples/validation/build/release/tracker &       # serves on :8080
+curl -H 'Authorization: Bearer dev-secret' localhost:8080/tasks
+curl -X POST -H 'Authorization: Bearer dev-secret' \
+     -d '{"title":"x","project_id":1,"priority":"high"}' localhost:8080/tasks
 ```
 
-`rask build` runs type-check then MIR lowering. Grep its output: there are no
-`error[E####]` (type) diagnostics; every `error:` is a `MIR lowering` / `codegen`
-line (§D).
+---
+
+## §A What works, natively
+
+Everything the design leans on now compiles and runs:
+
+- **Full CRUD** — create/get/list/update/delete for tasks, plus users and
+  projects. POST returns 201 with the created view; the writes stick.
+- **`PATCH` actually mutates** — status/priority/tags all persist through a
+  plain `with self.tasks[h] as t { t.status = s }` block.
+- **Pools + handles** — `Pool<Task>`, `Handle<Task>`, `with pool[h] as t`,
+  `using [frozen] Pool<T>` context clauses, and handle-field auto-deref
+  (`h.priority`, `dep.status`). The dependency graph is `Vec<Handle<Task>>`;
+  `blocked` walks it. Reads beautifully.
+- **`@resource` + `ensure`** — the batch transaction stages ops, validates,
+  commits, and `ensure tx.rollback()` covers every early exit (C3–C5). It
+  type-checks and runs, but flaky-crashes under a mixed load (B4/#577).
+- **`spawn(own || …)` + channel `send`/`receive` + `join`** — the startup seed
+  streams specs over a channel into the store.
+- **`Mutex` / `Shared` via `with`** and inline `.lock()`/`.read()` — the store
+  is a module-level `Mutex`, config a `Shared`.
+- **Nominal newtypes** — `type TaskId = u64 with (Equal, Hashable, Comparable,
+  Debug)`, constructed `TaskId(n)`, unwrapped `.value`, stepped via an `extend`
+  method. Distinct types: a `TaskId` can't be passed for a `ProjectId`.
+- **Struct field defaults** — `Config {}` is the fully-defaulted value; `Task`,
+  `TaskPatch`, `ListFilter` name only the fields that vary (FD1/FD3).
+- **`T or E` + `try` + auto-wrap + `try…else` + `??` + guards** — the whole
+  error surface, no `if err != nil`. `try` places a domain error into the
+  boundary enum by itself (see §C).
+- **Encoding** — request DTOs auto-derive Decode, response views auto-derive
+  Encode, no declarations.
+- **Duck trait + `as any Trait`** — the dev-only `/debug/inspect` uses a
+  `duck trait Inspectable` and heterogeneous `as any Inspectable` dispatch.
+- **Full error responses** — 401 (auth), 400 (bad JSON), 422 (validation), 404
+  (store not-found), 503 (capacity) all render the right message + code +
+  status. The store-originated ones ride back through the mutex; that used to
+  crash (B/#569) and doesn't now.
+- **Filtering + pagination** — `GET /tasks?status=open&priority=high&limit=10`
+  reads its filter through `query_param` and pages with `.skip().take()`.
 
 ---
 
-## §A Parser — now essentially up to spec
+## §B Bugs found this pass — native codegen / runtime (all fixed on `main`)
 
-Last pass, five spec constructs didn't parse. Now:
+Restoring the spec-idiomatic forms surfaced four backend bugs. Each got a
+minimal repro and an issue, and each was fixed on `main` during this pass — so
+the program now runs the direct form with no workaround. The value here is the
+repros; they're the record of what a program-scale test caught that the unit
+tests didn't.
 
-| Construct | Before | Now |
-|-----------|--------|-----|
-| `duck trait` | ✗ | **✓ parses + checks** |
-| `scoped extend` | ✗ | **✓ parses + checks** |
-| comma-list `extend T with A, B` | ✗ | **✓ parses + checks** |
-| struct field defaults `f: T = expr` | ✗ | ✗ still unimplemented (#311) |
-| field annotations `@rename/@skip/@default` | ✗ | ✗ still unimplemented |
+### B1 — a value returned from a cross-module `Mutex.lock().method()` was corrupt — [#566] (Ok side), [#569] (Err side), fixed in #575
+The big one. When a handler called `try store.lock().op()` and `op` lived in
+`store.rk` while the caller was in `handlers.rk`, the returned value lost its
+type identity across the module boundary:
 
-Nominal trait conformance is now **enforced** (G1) — a good change; the program
-relies on it. The two remaining parser gaps (field defaults, field annotations)
-forced the only spec-shaped code I had to abandon:
+- **Ok side (#566):** reading a returned newtype's `.value` read a wrong offset
+  — MIR printed `unresolved field 'value', defaulting to I64` and the deref
+  segfaulted (`POST /projects`).
+- **Err side (#569):** the returned error's inner payload was garbage. The outer
+  tag survived — a shallow `match` was fine — but `e.message()` or a `match` on
+  the inner error trapped (SIGILL). Every store error crosses the mutex, so a
+  plain `GET /tasks/<nonexistent>` (→ 404) crashed the server.
 
-- **Field defaults** → explicit `.new()` constructors carry the defaults, and
-  every field is written at construction. `Config {}`-as-default-value (the
-  "No Default trait" design) can't be shown.
-- **Field annotations** → DTOs use plain field names; "optional on the wire" is
-  a `T?` field plus a handler fallback. No `@rename`/`@skip`/`@default` demo.
+Both vanished in a single file or with a local (non-mutex) receiver — same
+mechanism as [#545] (MIR carrying the type as a string). Now the handler builds
+`ProjectView` inline with `id.value`, and 404s return clean JSON.
 
----
+### B2 — a scalar field write in `with self.pool[h] as t { t.f = x }` was lost — [#567], fixed
+Native codegen didn't flush a **scalar** field write back to the pool slot when
+the `Pool` was reached through a struct field (`self.tasks[h]`). Inside the block
+it read back fine; after, the slot was unchanged. A Vec push in the same block
+*did* persist (shared buffer, not the slot), which is what made `PATCH` look
+half-broken — tags stuck, status didn't. The interpreter got it right. Now
+`update_task` writes `t.status = s` inline and it sticks.
 
-## §B Type-checker gaps (worked around to keep it checking)
+### B3 — `Request.query_param` segfaulted on any query string — [#568], fixed
+`req.query_param(key)` crashed the native server the moment a request carried a
+query string (no query → `none`, so it looked healthy). Now the filter/pagination
+endpoint (`GET /tasks?status=open&limit=10`) serves.
 
-Each of these type-checks fine in the spec form I *wanted* to write, but the
-checker rejects it, so the program uses the noted workaround. These are the
-highest-value findings — they're where writing spec-correct Rask hits a wall.
-
-### B1 — `extend` on a nominal newtype resolves no methods — [#445]
-`type TaskId = u64 with (...)` then `extend TaskId { func next(...) }` →
-`no method next found for type TaskId`, even for a plain method. `type.aliases/T13`
-says extend works on nominal types; it doesn't. **Workaround:** ids are
-`struct TaskId { public value: u64 }` (the "full struct wrapper" option). This
-also mooted the previous OC1-on-nominal question (#340) — EmailAddress is a struct.
-
-### B2 — `Ordering` can't be named in user code — [#406]
-`func compare(self, o) -> Ordering` and `x == Ordering.Equal` both fail with
-`unknown type Ordering` — the checker carries it as an unresolved placeholder.
-**Workaround:** never name it. Comparators return `a.compare(b)` directly and
-tie-break by falling through; tests use `<`/`>`. Consequence: a hand-written
-`Comparable` conformance is impossible (its signature must name `Ordering`), so
-the EmailAddress `Comparable` override from the OC1 demo had to be dropped —
-only `Equal` + `Hashable` remain.
-
-### B3 — `ErrorMessage` auto-derive (ER6) is unimplemented — [#378]
-A bare error enum gets no `message()` and can't be used as an error type
-(`does not implement ErrorMessage`). **Workaround:** every error enum needs
-`@message` or a manual `extend … with ErrorMessage`. AuthError became `@message`
-(losing the pure-auto-derive demo).
-
-### B4 — `@message` auto-delegation (ER37) is unimplemented — [#446]
-A wrapper variant `Store(StoreError)` with no template →
-`has no message template and cannot auto-delegate`. **Workaround:** ApiError
-drops `@message` and hand-writes `message()`, delegating to `e.message()` per arm.
-
-### B5 — `try` union widening (ER31) fails for explicit unions — [#447]
-`func f() -> T or (JsonError | ValidationError)` with `try json.decode(...)`
-inside → `try propagates JsonError, but function returns … JsonError | ValidationError`,
-even though JsonError ∈ the union. **Workaround:** no union-returning helper;
-handlers decode + validate inline with explicit `else |e|` maps.
-
-### B6 — `with <module-level const sync-box> as v` doesn't unwrap — [#448] (follow-up to #268)
-`const store = Mutex.new(...)` then `with store as s { s.method() }` →
-`no method … for Mutex<Store>`. A **local** `const` unwraps fine; module-level
-doesn't. **Workaround:** inline `store.lock().op()` / `config.read().field`
-everywhere. (This one also bites at codegen — §D.)
-
-### B7 — generic `<T: Encode>` bound rejected at the call site — [#449]
-`json_response<T: Encode>(status, v)` called with a concrete struct →
-`_ does not implement Encode`. **Workaround:** response helper takes a `string`;
-handlers call `json.encode(value)` directly (it accepts any encodable value).
-
-### B8 — an adapter closure can't capture a local — [#450]
-`v.iter().filter(|ms| ms >= budget_ms).count()` → `closure captures scoped
-borrow and cannot escape`. With a literal (`ms >= 250.0`) it's fine.
-**Workaround:** `slow_count` is a plain `for` loop. (Non-capturing chains —
-`.iter().skip(o).take(n).map(|r| r.view.clone()).collect()` — are fine.)
+### B4 — flaky crash in the batch transaction under a mixed load — [#577], open
+The one still open. Once the deterministic mutex bugs (B1) were fixed, a flaky
+one surfaced underneath: run a realistic sequence (create a user/project/task,
+PATCH it, hit a 404) and then `POST /tasks/batch`, and the server dies during
+the batch ~40% of the time — SIGSEGV or SIGILL (a Cranelift `unreachable`, i.e.
+a match on a corrupted tag). It's heap-state-dependent: batch alone is fine,
+PATCH-then-batch alone is fine, the seed pipeline alone is fine — it takes the
+accumulated allocation history to trip it. The batch path is the linear
+`@resource` commit writing through pool handles with a `using Pool<Task>`
+context; the PATCH path mutates the same pool via a `with` block. Couldn't
+reduce below "a realistic mix, then batch" — it needs an ASAN build of the
+runtime to pin. Pre-existing on `main`, independent of the example's code shape.
 
 ---
 
-## §C Stdlib surface gaps
+## §C Spec forms that were workarounds two passes ago — now idiomatic
 
-- **C1 `SystemTime` is missing** ([#451]) — only `Instant`/`Duration`/`Timer` exist in
-  the stub (time.md specs `SystemTime` + `unix_millis`). Timestamps use
-  `started.elapsed().as_millis()` (monotonic-since-boot).
-- **C2 `Duration.as_millis()` returns `i64`** ([#451]), but time.md/D says `u64`. Every
-  timestamp field is `i64` to match the stub.
-- **C3 HTTP server API absent** ([#452]) — only `http.listen_and_serve` and the client
-  functions resolve. `http.listen`, `HttpServer`, `Responder`, `http.serve`
-  (http.md S1–S3) don't. So the **linear-Responder + `ensure` accept loop —
-  a flagship http.md feature — can't be written**; the program uses the
-  convenience server, and that whole demo is gone.
-- **C4 `StringBuilder` is unreachable from user code** ([#453]) — it's `public struct` in
-  `stdlib/string.rk`, but no import path resolves it and it's not in the prelude.
-  canonical-patterns recommends it "for loops or many concatenations".
-  **Workaround:** `Vec<string>` + `join`.
-- **C5 `Channel.buffered` returns a tuple `(Sender, Receiver)`** ([#359]), not an object
-  with `.sender`/`.receiver` — canonical-patterns' `ch.sender.send(...)` is wrong;
-  async.md's `mut (tx, rx) = …` is right. Also: module-level tuple-destructure
-  (`const (tx, rx) = …` at file scope) is rejected as a "top-level statement",
-  so the channel is created inside `main`.
+Each of these was a documented workaround before. They now work, so the program
+uses the real form:
 
----
-
-## §D Codegen — native build does not complete — [#454] (umbrella #203)
-
-Type-check passes; MIR lowering then fails across the board. Representative:
-
-```
-error: MIR lowering 'handle_create_task': InvalidConstruct("method `create_task`
-  on receiver of unresolved type — dispatch could not determine a stdlib type prefix")
-error: MIR lowering 'Store_update_task': InvalidConstruct("method `has_tag` …")
-error: MIR lowering 'task_is_blocked': InvalidConstruct("method `is_terminal` …")
-error: MIR lowering 'http_listen_and_serve': InvalidConstruct("method `close` …")
-error: MIR lowering 'IoError_message': UnresolvedVariable("msg")
-```
-
-Three distinct codegen problems, none fixable from the program:
-
-- **D1** Method dispatch can't resolve the receiver type for calls on `.lock()`
-  results, pool-element bindings, `Handle` context derefs, and even `self`-typed
-  receivers inside methods (`t.has_tag`). This is the bulk of the errors.
-- **D2** A module-level `Mutex<UserStruct>` + a `mutate self` method also
-  produces a Cranelift `mismatched argument count` verifier error in isolation.
-- **D3** Passing a function by name as a value (`listen_and_serve(addr, route)`)
-  → `UnresolvedVariable("route")`. Fixed in-program with a closure
-  (`|req| { route(req) }`), but `http.listen_and_serve`'s own stub still fails
-  to lower (`.close()` on unresolved type), as does `IoError.message`.
-
-Net: the codegen layer is where "up to spec" is still furthest off. The language
-as the type checker sees it is in good shape; the backend can't yet emit it.
+- **Nominal `extend` on newtypes** ([#445] fixed) — ids are `type X = u64 with
+  (...)` again, not struct wrappers.
+- **`try` → boundary enum auto-wrap** ([#341] fixed, ER31a) — `try store.lock().op()`
+  places a `StoreError` into `ApiError.Store` by itself. Deleted ~20 `else |e|`
+  maps and 3 hand-written `to_api()` lifters; the 6 `else |e|` left each carry
+  real information (a JSON error becoming a `BadRequest` message).
+- **Struct field defaults** (FD1/FD3) — see §A.
+- **`Ordering` is nameable** ([#406] fixed) — `list_views` tie-breaks with
+  `by_priority == Ordering.Equal`; the priority test asserts it directly.
+- **`@message` auto-delegation** (ER37) — `ApiError`'s wrapper variants
+  (`Store(StoreError)`, …) delegate `message()` to the inner error with no
+  hand-written match; prose variants carry their own `@message` template. The
+  hand-written `extend ApiError with ErrorMessage` is gone.
+- **`with <module-level Mutex> as v`** (was #448) — now unwraps to the inner
+  type. The program keeps inline `.lock()` in handlers (both are valid — MX1 /
+  MX3 — and inline is terser), but the `with` form is no longer blocked.
+- **Field annotations parse** (`@rename`/`@skip`/`@default`) — no longer a parse
+  error. Not exercised in the DTOs yet (would need a decode round-trip check),
+  so the wire names still match the field names; noted for completeness.
 
 ---
 
-## §E Spec findings that persist (filed last pass)
+## §D Gaps that persist
 
-Still valid against `main`:
+Still worked around, still worth fixing:
 
-- **#336** `json.encode` return type — json.md (`-> string`, infallible) vs
-  encoding.md (`-> string or JsonError`). The infallible signature is the real
-  one (used it directly); encoding.md remains wrong.
-- **#337** `using` clause vs return-type ordering — pools.md and
-  canonical-patterns still disagree; program uses `-> Ret using Pool<T>`.
-- **#338** LANGUAGE_GUIDE omits `with (...)` on nominal newtypes. Compounded now
-  that nominal `extend` is broken (B1): the card points at a form that neither
-  carries traits nor takes methods.
-- **#340** OC1 × nominal `with (...)` delegation — unspecified. Sidestepped by
-  using a struct (B1), but the ambiguity stands.
-- **#341** typed domain error → boundary enum has no `try` sugar — **fixed**
-  (ER31a). `try` now places the error in the one ApiError variant that takes it.
-  20 maps and 3 `to_api()` lifters deleted; the 6 `else |e|` maps left all say
-  something the enum doesn't (a JSON error becomes a `BadRequest` message).
-- **#342** block vs struct-literal ambiguity in `if`/`while` — confirmed still
-  reproduces (`if x == Ord.Equal { }` fails to parse).
+- **ErrorMessage pure auto-derive (ER6)** ([#378]) — a bare error enum with no
+  `@message` still gets no `message()` and can't be used as an error type. So
+  `AuthError`/`StoreError` carry `@message`; a zero-annotation error enum can't
+  be shown.
+- **Manual `Comparable` needs all five methods** — a hand-written conformance
+  must supply `compare` *and* `lt`/`le`/`gt`/`ge`; the four booleans aren't
+  derived from `compare`. `EmailAddress` (custom case-insensitive `Equal`) stays
+  non-`Comparable` rather than hand-writing five methods for a type that's never
+  sorted. (This is the real reason now, not the old "Ordering unnameable".)
+- **`SystemTime` missing** ([#451]) — only `Instant`/`Duration`/`Timer` in the
+  stub. Timestamps are monotonic-since-boot. `Duration.as_millis()` returns
+  `i64`, not `u64` per time.md.
+- **`StringBuilder` unreachable from user code** ([#453]) — `/debug/inspect`
+  uses `Vec<string>` + `join`.
+- **Manual accept loop absent** ([#452]) — only `http.listen_and_serve` resolves;
+  `http.listen` + linear `Responder` + `ensure` (the flagship http.md loop)
+  can't be written. The program uses the convenience server.
+- **`<T: Encode>` bound rejected at the call site** ([#449]) — the response
+  helper takes a `string`; handlers call `json.encode(v)` directly.
+- **Adapter closure can't capture a local** ([#450]) — `slow_count` is a plain
+  loop; non-capturing chains (`.skip().take().map().collect()`) are fine.
 
-(#339, multi-producer `Sender` clone: not exercised this pass — the seed
-pipeline is single-producer — but the async.md doc gap stands.)
+---
+
+## §E Spec-doc findings that persist
+
+- **[#336]** `json.encode` return type — json.md (`-> string`) vs encoding.md
+  (`-> string or JsonError`). The infallible signature is the real one.
+- **[#337]** `using` clause vs return-type ordering — pools.md and
+  canonical-patterns disagree; program uses `-> Ret using Pool<T>`.
+- **[#342]** block vs struct-literal ambiguity in `if`/`while` — `if x ==
+  Ord.Equal { }` still fails to parse (worked around with a bound const where it
+  bit).
 
 ---
 
 ## Metrics
 
-### Ergonomic Delta (Rask vs Go), core handlers, body lines only
+### Ergonomic delta (Rask vs Go), core handlers, body lines only
 
 | Handler | Rask | Go | ED |
 |---------|------|----|----|
 | get_task | 2 | ~8 | 0.25 |
 | list_tasks | 3 | ~7 | 0.43 |
-| create_task | ~14 | ~27 | 0.52 |
+| create_task | ~9 | ~27 | 0.33 |
 
-Still well under the 1.2 target. `try store.lock().op()` is one line where Go
-needs lock/call/unlock/`if err`. The delta is Go's `if err != nil` tax, removed
-by `T or E` + `try`.
+Under the 1.2 target. `try store.lock().op()` is one line where Go needs
+lock/call/unlock/`if err`.
 
 ### Ceremony lines
 
 | Kind | Count |
 |------|-------|
-| conformance declarations (`extend … with`) | 11 |
+| conformance declarations (`extend … with`) | 13 |
 | `else \|e\| …` error mapping | 6 |
 | `as any Trait` casts | 6 |
 | `ensure` | 1 |
 
-Everything the design makes deliberately visible (conformances, casts, `ensure`)
-stays cheap. Error mapping used to dominate at 26; ER31a took out the 20 that
-only restated the enum declaration, and the 6 that are left each carry real
-information.
-
----
-
-## What worked well on `main`
-
-- **Nominal conformance enforcement + comma-lists + `duck trait`** all parse and
-  check — the trait surface is solid now.
-- **Pools**: `Pool<T>` + `Handle<T>`, `with pool[h] as e`, `using [frozen] Pool<T>`
-  context clauses, and handle-field auto-deref (`h.priority`, `h.deps`,
-  `dep.status`) all type-check. The store reads beautifully.
-- **`@resource` + `ensure`** with the commit/rollback transaction pattern
-  type-checks (C3–C5 shape).
-- **`spawn(own || …)` + channel `send`/`receive` + `join`** type-check (startup
-  seed pipeline).
-- **Inline sync access** (`store.lock().op()`, `config.read().field`) type-checks
-  and is terse.
-- **`T or E` + `try` + `try…else` + `??` + guards** cover the whole error surface
-  with no `if err != nil` equivalents.
+Everything the design makes deliberately visible stays cheap. Error mapping was
+26 before ER31a; auto-wrap removed the 20 that only restated the enum, and the 6
+left each say something the enum doesn't.
