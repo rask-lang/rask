@@ -305,39 +305,73 @@ pub enum ModuleKind {
 }
 
 impl ModuleKind {
-    /// Types this module exports.
-    ///
-    /// One table, three readers: `import http.*`, `import http.Response`, and
-    /// qualified `http.Response`. They each used to carry their own list, so a
-    /// type could be reachable one way and not another — `http`'s types were
-    /// only in the glob list, which is why `http.Response.ok(…)` failed while a
-    /// bare `Response.ok(…)` worked.
-    pub fn exported_types(self) -> &'static [&'static str] {
+    /// The name this module is imported under, and the stem of its stdlib file.
+    pub fn name(self) -> &'static str {
         match self {
-            ModuleKind::Http => &[
-                "Request", "Response", "Method", "Headers",
-                "HttpServer", "Responder", "HttpClient",
-            ],
-            ModuleKind::Time => &["Instant", "Duration"],
-            ModuleKind::Path => &["Path"],
-            ModuleKind::Fs => &["File", "Metadata"],
-            ModuleKind::Io => &["Stdin", "Stdout", "Stderr", "Buffer", "IoError"],
-            ModuleKind::Os => &["Command", "Process", "Output", "Stdio", "Signal"],
-            ModuleKind::Cli => &["Args", "Parser"],
-            ModuleKind::Net => &["TcpListener", "TcpConnection"],
-            ModuleKind::Random => &["Random"],
-            ModuleKind::Json => &["JsonValue"],
-            ModuleKind::Thread => &["Thread", "ThreadPool"],
-            ModuleKind::Std | ModuleKind::Env | ModuleKind::Math
-            | ModuleKind::Async | ModuleKind::Reflect => &[],
+            ModuleKind::Fs => "fs",
+            ModuleKind::Io => "io",
+            ModuleKind::Cli => "cli",
+            ModuleKind::Std => "std",
+            ModuleKind::Env => "env",
+            ModuleKind::Time => "time",
+            ModuleKind::Random => "random",
+            ModuleKind::Math => "math",
+            ModuleKind::Os => "os",
+            ModuleKind::Json => "json",
+            ModuleKind::Path => "path",
+            ModuleKind::Net => "net",
+            ModuleKind::Async => "async",
+            ModuleKind::Thread => "thread",
+            ModuleKind::Http => "http",
+            ModuleKind::Reflect => "reflect",
         }
+    }
+
+    /// The module a name imports, if it's a stdlib module.
+    pub fn from_name(name: &str) -> Option<ModuleKind> {
+        ALL_MODULE_KINDS.iter().copied().find(|m| m.name() == name)
+    }
+
+    /// Types and enums this module brings into scope.
+    ///
+    /// Comes from `rask_stdlib::modules`, which reads the module's own `.rk`
+    /// file — the same table the resolver uses. The interpreter used to keep
+    /// three lists of its own for the three import spellings, and they
+    /// disagreed: `http`'s types were reachable only through a glob import.
+    pub fn exported_types(self) -> impl Iterator<Item = &'static str> {
+        let e = rask_stdlib::modules::exports(self.name());
+        e.types
+            .iter()
+            .map(String::as_str)
+            .chain(e.enums.iter().map(|(n, _): &(String, Vec<String>)| n.as_str()))
     }
 
     /// True when `name` is one of this module's exported types.
     pub fn exports_type(self, name: &str) -> bool {
-        self.exported_types().contains(&name)
+        rask_stdlib::modules::exports_type(self.name(), name)
     }
 }
+
+/// Every module kind. `from_name` walks this, so a new variant is reachable as
+/// soon as it has a name.
+pub const ALL_MODULE_KINDS: &[ModuleKind] = &[
+    ModuleKind::Fs,
+    ModuleKind::Io,
+    ModuleKind::Cli,
+    ModuleKind::Std,
+    ModuleKind::Env,
+    ModuleKind::Time,
+    ModuleKind::Random,
+    ModuleKind::Math,
+    ModuleKind::Os,
+    ModuleKind::Json,
+    ModuleKind::Path,
+    ModuleKind::Net,
+    ModuleKind::Async,
+    ModuleKind::Thread,
+    ModuleKind::Http,
+    ModuleKind::Reflect,
+];
 
 /// Inner state for a spawned thread/task handle.
 pub struct ThreadHandleInner {
@@ -1074,24 +1108,7 @@ impl fmt::Display for Value {
             } => {
                 write!(f, "{}.{}", enum_name, variant_name)
             }
-            Value::Module(kind) => match kind {
-                ModuleKind::Fs => write!(f, "<module fs>"),
-                ModuleKind::Io => write!(f, "<module io>"),
-                ModuleKind::Cli => write!(f, "<module cli>"),
-                ModuleKind::Std => write!(f, "<module std>"),
-                ModuleKind::Env => write!(f, "<module env>"),
-                ModuleKind::Time => write!(f, "<module time>"),
-                ModuleKind::Random => write!(f, "<module random>"),
-                ModuleKind::Math => write!(f, "<module math>"),
-                ModuleKind::Os => write!(f, "<module os>"),
-                ModuleKind::Json => write!(f, "<module json>"),
-                ModuleKind::Path => write!(f, "<module path>"),
-                ModuleKind::Net => write!(f, "<module net>"),
-                ModuleKind::Async => write!(f, "<module async>"),
-                ModuleKind::Thread => write!(f, "<module thread>"),
-                ModuleKind::Http => write!(f, "<module http>"),
-                ModuleKind::Reflect => write!(f, "<module reflect>"),
-            },
+            Value::Module(kind) => write!(f, "<module {}>", kind.name()),
             Value::Package(name) => write!(f, "<package {}>", name),
             Value::File(file) => {
                 if file.lock().unwrap().is_some() {

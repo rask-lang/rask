@@ -297,45 +297,14 @@ impl Resolver {
             let _ = self.scopes.define(name.to_string(), sym_id, span);
         }
 
-        let types: &[&str] = match module {
-            BuiltinModuleKind::Net => &["TcpListener", "TcpConnection"],
-            BuiltinModuleKind::Http => &[
-                "Request", "Response", "Headers",
-                "HttpServer", "Responder", "HttpClient",
-            ],
-            BuiltinModuleKind::Fs => &["File", "Metadata"],
-            BuiltinModuleKind::Random => &["Random"],
-            BuiltinModuleKind::Path => &["Path"],
-            BuiltinModuleKind::Cli => &["Args"],
-            BuiltinModuleKind::Os => &["Command", "Process", "Output"],
-            BuiltinModuleKind::Io => &["Stdin", "Stdout", "Stderr", "Buffer"],
-            _ => &[],
-        };
-
-        let enums: &[(&str, &[&str])] = match module {
-            BuiltinModuleKind::Http => &[
-                ("Method", &["Get", "Head", "Post", "Put", "Delete", "Patch", "Options"]),
-                ("HttpError", &[
-                    "ConnectionFailed", "Timeout", "InvalidUrl", "InvalidResponse",
-                    "TooManyRedirects", "Io",
-                ]),
-            ],
-            BuiltinModuleKind::Json => &[
-                ("JsonValue", &["Null", "Bool", "Number", "String", "Array", "Object"]),
-                ("JsonError", &["ParseError", "TypeError", "MissingField"]),
-            ],
-            BuiltinModuleKind::Os => &[
-                ("Stdio", &["Inherit", "Piped", "Null"]),
-                ("Signal", &["Interrupt", "Terminate", "Hangup", "User1", "User2"]),
-            ],
-            BuiltinModuleKind::Io => &[
-                ("IoError", &[
-                    "NotFound", "PermissionDenied", "AlreadyExists", "BrokenPipe",
-                    "ConnectionReset", "TimedOut", "UnexpectedEof", "Other",
-                ]),
-            ],
-            _ => &[],
-        };
+        // The module's own `.rk` file says what it exports, types and enum
+        // variants alike — see `rask_stdlib::modules`. `stdlib_module_exports`
+        // reads the same table, so the two can no longer disagree about what a
+        // module has; this list used to be the shorter of the two (`os` was
+        // missing `Stdio` and `Signal`, `io` was missing `IoError`).
+        let exports = rask_stdlib::modules::exports(module.name());
+        let types = &exports.types;
+        let enums = &exports.enums;
 
         let builtin_types: &[(&str, BuiltinTypeKind)] = match module {
             BuiltinModuleKind::Fs => &[("File", BuiltinTypeKind::File)],
@@ -414,10 +383,11 @@ impl Resolver {
             if self.scopes.lookup(enum_name).is_some() {
                 continue;
             }
-            self.register_builtin_enum(enum_name, variants);
-            self.imported_symbols.insert(enum_name.to_string());
-            for v in *variants {
-                self.imported_symbols.insert(v.to_string());
+            let variant_refs: Vec<&str> = variants.iter().map(String::as_str).collect();
+            self.register_builtin_enum(enum_name, &variant_refs);
+            self.imported_symbols.insert(enum_name.clone());
+            for v in variants {
+                self.imported_symbols.insert(v.clone());
             }
         }
     }
@@ -426,32 +396,11 @@ impl Resolver {
     /// its enums, and any function that comes into scope with it. Module
     /// functions (`fs.read_text`) are added separately from the stdlib registry.
     ///
-    /// Kept next to `register_module_companions`, which registers the same
-    /// names when the whole module is imported; the two must agree.
-    fn stdlib_module_exports(module: &str) -> &'static [&'static str] {
-        match module {
-            "net" => &["TcpListener", "TcpConnection"],
-            "http" => &[
-                "Request", "Response", "Headers", "HttpServer", "Responder",
-                "HttpClient", "Method", "HttpError",
-            ],
-            "fs" => &["File", "Metadata"],
-            "random" => &["Random"],
-            "path" => &["Path"],
-            "cli" => &["Args"],
-            "os" => &["Command", "Process", "Output", "Stdio", "Signal"],
-            "io" => &["Stdin", "Stdout", "Stderr", "Buffer", "IoError"],
-            "json" => &["JsonValue", "JsonError"],
-            "math" => &["f32x4", "f32x8", "f64x2", "f64x4", "i32x4", "i32x8"],
-            "async" => &["spawn", "Channel", "Sender", "Receiver", "TaskHandle"],
-            "core" => &["transmute"],
-            // `std` re-exports the reflection module (`import std.reflect`).
-            // reflect.rk isn't in the stub set, so nothing else knows the name.
-            "std" => &["reflect", "exit"],
-            "thread" => &["Thread", "ThreadPool", "ThreadHandle"],
-            "time" => &["Duration", "Instant", "SystemTime"],
-            _ => &[],
-        }
+    /// Read off the module's own `.rk` file by `rask_stdlib::modules`, which is
+    /// also what `register_module_companions` registers from. They have to agree,
+    /// and now they can't disagree.
+    fn stdlib_module_exports(module: &str) -> Vec<&'static str> {
+        rask_stdlib::modules::exports(module).names().collect()
     }
 
     /// Closest export by name, for the "did you mean" on a bad import. Only
@@ -465,10 +414,8 @@ impl Resolver {
             .iter()
             .map(|m| m.name.as_str())
             .collect();
-        let candidates = Self::stdlib_module_exports(module)
-            .iter()
-            .copied()
-            .chain(stub_fns.iter().copied());
+        let exports = Self::stdlib_module_exports(module);
+        let candidates = exports.iter().copied().chain(stub_fns.iter().copied());
         for cand in candidates {
             // A renamed symbol often keeps its start (`Rng` → `Random`), which
             // edit distance alone scores badly on short names.
@@ -1143,24 +1090,7 @@ impl Resolver {
             let pkg_name = &path[0];
             let binding_name = import_decl.alias.as_ref().unwrap_or(pkg_name).clone();
 
-            let stdlib_module = match pkg_name.as_str() {
-                "io" => Some(BuiltinModuleKind::Io),
-                "fs" => Some(BuiltinModuleKind::Fs),
-                "env" => Some(BuiltinModuleKind::Env),
-                "cli" => Some(BuiltinModuleKind::Cli),
-                "std" => Some(BuiltinModuleKind::Std),
-                "json" => Some(BuiltinModuleKind::Json),
-                "random" => Some(BuiltinModuleKind::Random),
-                "time" => Some(BuiltinModuleKind::Time),
-                "math" => Some(BuiltinModuleKind::Math),
-                "path" => Some(BuiltinModuleKind::Path),
-                "os" => Some(BuiltinModuleKind::Os),
-                "net" => Some(BuiltinModuleKind::Net),
-                "core" => Some(BuiltinModuleKind::Core),
-                "async" => Some(BuiltinModuleKind::Async),
-                "http" => Some(BuiltinModuleKind::Http),
-                _ => None,
-            };
+            let stdlib_module = BuiltinModuleKind::from_name(pkg_name.as_str());
 
             if let Some(module_kind) = stdlib_module {
                 let sym_id = self.symbols.insert(

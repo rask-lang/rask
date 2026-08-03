@@ -79,6 +79,7 @@ impl Interpreter {
         }
     }
 
+
     pub(super) fn register_declarations(&mut self, decls: &[Decl]) -> Result<RegisteredProgram, RuntimeError> {
         let mut entry_fn: Option<FnDecl> = None;
         let mut imports: Vec<(String, ModuleKind)> = Vec::new();
@@ -131,24 +132,9 @@ impl Interpreter {
                             continue;
                         }
 
-                        let module_kind = match module_name.as_str() {
-                            "fs" => Some(ModuleKind::Fs),
-                            "io" => Some(ModuleKind::Io),
-                            "cli" => Some(ModuleKind::Cli),
-                            "std" => Some(ModuleKind::Std),
-                            "env" => Some(ModuleKind::Env),
-                            "time" => Some(ModuleKind::Time),
-                            "random" => Some(ModuleKind::Random),
-                            "math" => Some(ModuleKind::Math),
-                            "os" => Some(ModuleKind::Os),
-                            "json" => Some(ModuleKind::Json),
-                            "path" => Some(ModuleKind::Path),
-                            "net" => Some(ModuleKind::Net),
-                            "async" => Some(ModuleKind::Async),
-                            "thread" => Some(ModuleKind::Thread),
-                            "http" => Some(ModuleKind::Http),
-                            _ => None,
-                        };
+                        // `reflect` is reached as `std.reflect`, handled above.
+                        let module_kind = ModuleKind::from_name(module_name)
+                            .filter(|k| *k != ModuleKind::Reflect);
 
                         if let Some(kind) = module_kind {
                             if import.path.len() == 1 && import.is_glob {
