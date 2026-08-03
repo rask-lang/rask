@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `Handle<T>?` is a niche: the handle IS the value and `none` is the
+// all-ones sentinel, so there's no tag and no payload slot. Two places on
+// native forgot that (#561):
+//   - `Map<K, Handle<T>>.get(missing)` — the runtime answers NULL on a miss,
+//     and codegen loaded through it instead of answering `none`.
+//   - reading a `Handle?` binding whose use-site type is the narrowed
+//     `Handle` — that extracted "field 0", which meant loading through the
+//     handle value.
+
+struct Task {
+    public title: string
+    public done: bool
+}
+
+struct Index {
+    pool: Pool<Task>
+    by_id: Map<u64, Handle<Task>>
+}
+
+extend Index {
+    func new() -> Index {
+        mut idx = Index { pool: Pool.new(), by_id: Map.new() }
+        const h = idx.pool.insert(Task { title: "write it", done: false })
+        idx.by_id.insert(1, h)
+        return idx
+    }
+
+    func title_of(self, id: u64) -> string {
+        if self.by_id.get(id)? as found {
+            with self.pool[found] as t { return t.title }
+        }
+        return "missing"
+    }
+}
+
+test "a map lookup that misses answers none instead of crashing" {
+    const idx = Index.new()
+    assert_eq(idx.title_of(1), "write it")
+    assert_eq(idx.title_of(99), "missing")
+}
+
+test "a handle option compares against none through a binding" {
+    const idx = Index.new()
+    const hit = idx.by_id.get(1)
+    const miss = idx.by_id.get(99)
+    assert hit != none
+    assert !(hit == none)
+    assert miss == none
+    assert !(miss != none)
+}
+
+test "`??` on a missed lookup falls through to the default" {
+    const idx = Index.new()
+    const known = idx.by_id.get(1)!
+    const fallback = idx.by_id.get(99) ?? known
+    with idx.pool[fallback] as t {
+        assert_eq(t.title, "write it")
+    }
+}
+
+test "a handle option built directly still compares the same way" {
+    mut pool = Pool<Task>.new()
+    const h = pool.insert(Task { title: "direct", done: true })
+    const direct: Handle<Task>? = h
+    assert direct != none
+    const empty: Handle<Task>? = none
+    assert empty == none
+}
