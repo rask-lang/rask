@@ -72,12 +72,12 @@ func dispatch(req: Request) -> Response or ApiError {
 
 func task_id(path: string) -> TaskId or ApiError {
     const n = try segment_id(path, "/tasks/")
-    return TaskId { value: n }
+    return TaskId(n)
 }
 
 func user_id(path: string) -> UserId or ApiError {
     const n = try segment_id(path, "/users/")
-    return UserId { value: n }
+    return UserId(n)
 }
 
 func segment_id(path: string, prefix: string) -> u64 or ApiError {

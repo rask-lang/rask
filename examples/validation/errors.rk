@@ -2,12 +2,13 @@
 // Error surface for the tracker service.
 //
 // ErrorMessage is delivered two ways here:
-//   StoreError / AuthError — @message templates (ER35/ER36)
-//   ValidationError / ApiError — hand-written `extend … with ErrorMessage`
+//   StoreError / AuthError / ApiError — @message (templates, plus ApiError's
+//     wrapper variants auto-delegating to the inner error, ER37)
+//   ValidationError — hand-written `extend … with ErrorMessage`, because its
+//     messages weave the payloads into prose
 //
-// Not shown: pure auto-derive (ER6) and @message auto-delegation (ER37) — the
-// checker doesn't implement either yet, so a bare error enum needs @message or
-// a manual impl, and ApiError's wrapper variants delegate by hand. See FINDINGS.
+// Not shown: pure auto-derive (ER6) — a bare error enum with no @message still
+// gets no message() and can't be an error type. See FINDINGS.
 
 import os
 
@@ -67,28 +68,24 @@ extend ValidationError with ErrorMessage {
 // variants delegate to the inner message() by hand (ER37 would do this
 // automatically).
 
+@message
 enum ApiError {
+    // Wrapper variants carry one error type and no template — `@message`
+    // auto-delegates their message() to the inner error (ER37). The prose
+    // variants below carry their own template.
     Validation(ValidationError)
     Store(StoreError)
     Auth(AuthError)
     System(SysError)
-    BadRequest(string)
-    RateLimited(u64)
-    Internal(string)
-}
 
-extend ApiError with ErrorMessage {
-    func message(self) -> string {
-        match self {
-            Validation(e)  => return e.message(),
-            Store(e)       => return e.message(),
-            Auth(e)        => return e.message(),
-            System(e)      => return e.message(),
-            BadRequest(m)  => return "bad request: {m}",
-            RateLimited(s) => return "rate limited; retry after {s}s",
-            Internal(m)    => return "internal error: {m}",
-        }
-    }
+    @message("bad request: {0}")
+    BadRequest(string)
+
+    @message("rate limited; retry after {0}s")
+    RateLimited(u64)
+
+    @message("internal error: {0}")
+    Internal(string)
 }
 
 extend ApiError {
