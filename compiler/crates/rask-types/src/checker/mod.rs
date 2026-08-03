@@ -26,7 +26,7 @@ mod generics;
 mod resolve;
 mod validate;
 
-pub use type_defs::{Callee, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, InvalidCastClass, IndexErrorKind};
@@ -128,6 +128,14 @@ pub struct TypeChecker {
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     /// MIR lowering uses this to emit TraitBox instructions at coercion sites.
     pub(super) trait_coercions: HashMap<NodeId, String>,
+    /// ER31a: `try` sites where the propagated error gets wrapped in a variant
+    /// of the enclosing function's error enum. NodeId of the `try` expression →
+    /// the wrapping variant. Both backends read this to build the enum value.
+    pub(super) error_wraps: HashMap<NodeId, type_defs::ErrorWrap>,
+    /// ER31a: `try` sites whose source error type wasn't known yet and whose
+    /// target error enum could wrap it. Settled after constraint solving.
+    /// (`try` node, source error, target error, span).
+    pub(super) pending_try_errors: Vec<(NodeId, Type, Type, rask_ast::Span)>,
     /// ER20: Collected error types from `try` calls in error-accumulation mode.
     pub(super) inferred_errors: Vec<Type>,
     /// ER20: Whether we're collecting errors instead of unifying them.
@@ -197,6 +205,8 @@ impl TypeChecker {
             in_assign_target: false,
             in_stmt_expr: false,
             trait_coercions: HashMap::new(),
+            error_wraps: HashMap::new(),
+            pending_try_errors: Vec::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
             accumulate_errors: false,
@@ -267,6 +277,11 @@ impl TypeChecker {
 
         self.solve_constraints();
 
+        // ER31a: `try` sites whose source error type only became concrete here
+        // (a method call's signature, say) pick widen-or-wrap now.
+        self.resolve_pending_try_wraps();
+        self.solve_constraints();
+
         // #310: validate index expression types (integer for Vec/slice/string,
         // K for Map, Handle<T> for Pool) BEFORE literal defaults land, so a
         // literal index can adapt to an integer Map key instead of forcing i32.
@@ -328,6 +343,7 @@ impl TypeChecker {
         }
 
         let trait_coercions = self.trait_coercions.clone();
+        let error_wraps = self.error_wraps.clone();
 
         let unsafe_ops = self.unsafe_ops;
 
@@ -360,6 +376,7 @@ impl TypeChecker {
             call_type_args,
             call_targets: self.call_targets,
             trait_coercions,
+            error_wraps,
             unsafe_ops,
             span_types,
             channel_send_sites: self.channel_send_sites,

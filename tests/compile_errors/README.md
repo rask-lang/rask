@@ -24,6 +24,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
 | [error_mismatch.rk](error_mismatch.rk) | Incompatible error types with `try` |
+| [ambiguous_error_wrap.rk](ambiguous_error_wrap.rk) | Two variants of the error enum wrap the same error (ER31a, E0359) — `try` asks which instead of picking |
 | [unknown_type_name.rk](unknown_type_name.rk) | Typo'd type name in signature (PC2) — errors instead of becoming a generic |
 | [type_called_as_function.rk](type_called_as_function.rk) | A struct or enum name in call position (E0345) — `Name(value)` is the nominal-type constructor (T7), structs have no tuple form (S1) |
 | [single_letter_type_name.rk](single_letter_type_name.rk) | Single-letter concrete type names are reserved for type parameters (PC3) |

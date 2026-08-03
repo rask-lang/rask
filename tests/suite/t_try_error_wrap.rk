@@ -1,0 +1,204 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ER31a: `try` wraps a propagated error in the one variant of the caller's
+// error enum that takes it, so a boundary enum costs nothing at the call site.
+//
+// Before this, every hop across a layer boundary needed a hand-written map —
+// `try store.view(id) else |e| ApiError.Store(e)` — and a `to_api()` lifter per
+// source type. examples/validation carried 19 of them (#341).
+//
+// What's covered: a free-function source, a method-call source (whose error type
+// only resolves after the checker picks the method), a two-layer chain where each
+// hop wraps once, an aggregate error payload (string) surviving the copy, an
+// explicit `else` still winning where it's written, and same-type propagation
+// staying plain.
+//
+// Spec: type.errors (ER31a)
+
+enum StoreError {
+    NotFound(string)
+    Duplicate(string)
+}
+
+extend StoreError {
+    func message(self) -> string {
+        match self {
+            NotFound(k)  => return "not found: {k}",
+            Duplicate(k) => return "duplicate: {k}",
+        }
+    }
+}
+
+enum ValidationError {
+    Empty(string)
+}
+
+extend ValidationError {
+    func message(self) -> string {
+        match self {
+            Empty(f) => return "{f} must not be empty",
+        }
+    }
+}
+
+// One variant per source error type — that's all ER31a needs.
+enum ApiError {
+    Store(StoreError)
+    Validation(ValidationError)
+    BadRequest(string)
+}
+
+extend ApiError {
+    func message(self) -> string {
+        match self {
+            Store(e)      => return e.message(),
+            Validation(e) => return e.message(),
+            BadRequest(m) => return "bad request: {m}",
+        }
+    }
+}
+
+enum TopError {
+    Api(ApiError)
+    Fatal(string)
+}
+
+extend TopError {
+    func message(self) -> string {
+        match self {
+            Api(e)   => return "api: {e.message()}",
+            Fatal(m) => return "fatal: {m}",
+        }
+    }
+}
+
+struct Dto {
+    public title: string
+}
+
+extend Dto {
+    func validate(self) -> void or ValidationError {
+        if self.title.is_empty() {
+            return ValidationError.Empty("title")
+        }
+        return
+    }
+}
+
+func lookup(key: string) -> string or StoreError {
+    if key == "a" { return "alpha" }
+    return StoreError.NotFound(key)
+}
+
+// Free-function source: StoreError → ApiError.Store
+func fetch(key: string) -> string or ApiError {
+    const v = try lookup(key)
+    return "got {v}"
+}
+
+// Method-call source: the checker only learns `validate`'s error type after it
+// resolves the method, so the wrap decision has to wait for it.
+func accept(dto: Dto) -> string or ApiError {
+    try dto.validate()
+    return "accepted {dto.title}"
+}
+
+// Second hop from the layer above: ApiError → TopError.Api
+func serve(key: string) -> string or TopError {
+    const v = try fetch(key)
+    return "served {v}"
+}
+
+// An explicit handler still wins where it's written.
+func explicit(key: string) -> string or ApiError {
+    const v = try lookup(key) else |e| ApiError.BadRequest(e.message())
+    return "got {v}"
+}
+
+// Same error type in and out — plain propagation, nothing wrapped.
+func passthrough(key: string) -> string or StoreError {
+    return try lookup(key)
+}
+
+// A generic body's nodes are copied per instantiation, so the wrap has to be
+// carried onto the copies — otherwise native lowers the raw StoreError into an
+// ApiError slot and the caller's match reads a tag that isn't there.
+func tagged<T>(tag: T, key: string) -> string or ApiError {
+    const v = try lookup(key)
+    return "{tag}:{v}"
+}
+
+func describe_api(r: string or ApiError) -> string {
+    match r {
+        string as s   => return s,
+        ApiError as e => return "err: {e.message()}",
+    }
+}
+
+func describe_top(r: string or TopError) -> string {
+    match r {
+        string as s   => return s,
+        TopError as e => return "err: {e.message()}",
+    }
+}
+
+test "free-function error lands in its variant" {
+    assert_eq(describe_api(fetch("a")), "got alpha")
+    assert_eq(describe_api(fetch("z")), "err: not found: z")
+}
+
+// Which variant of the boundary enum a result actually holds.
+func variant_of(r: string or ApiError) -> string {
+    match r {
+        string as s   => return "ok:{s}",
+        ApiError as e => match e {
+            Store(inner)  => return "Store:{inner.message()}",
+            Validation(_) => return "Validation",
+            BadRequest(_) => return "BadRequest",
+        },
+    }
+}
+
+test "the wrapped value is the boundary variant, not the source" {
+    assert_eq(variant_of(fetch("z")), "Store:not found: z")
+    assert_eq(variant_of(accept(Dto { title: "" })), "Validation")
+    assert_eq(variant_of(explicit("z")), "BadRequest")
+}
+
+test "method-call source resolves before the wrap is decided" {
+    assert_eq(describe_api(accept(Dto { title: "write it up" })), "accepted write it up")
+    assert_eq(describe_api(accept(Dto { title: "" })), "err: title must not be empty")
+}
+
+test "each hop wraps once" {
+    assert_eq(describe_top(serve("a")), "served got alpha")
+    assert_eq(describe_top(serve("z")), "err: api: not found: z")
+}
+
+test "the wrap carries onto generic instantiations" {
+    assert_eq(describe_api(tagged(1, "a")), "1:alpha")
+    assert_eq(variant_of(tagged("x", "z")), "Store:not found: z")
+}
+
+test "an explicit else still wins" {
+    assert_eq(describe_api(explicit("z")), "err: bad request: not found: z")
+}
+
+func describe_store(r: string or StoreError) -> string {
+    match r {
+        string as s     => return s,
+        StoreError as e => return "err: {e.message()}",
+    }
+}
+
+test "same type in and out stays plain" {
+    assert_eq(describe_store(passthrough("a")), "alpha")
+    assert_eq(describe_store(passthrough("z")), "err: not found: z")
+}
+
+func main() {
+    println(describe_api(fetch("a")))
+    println(describe_api(fetch("z")))
+    println(describe_api(accept(Dto { title: "" })))
+    println(describe_top(serve("z")))
+    println(describe_api(explicit("z")))
+}

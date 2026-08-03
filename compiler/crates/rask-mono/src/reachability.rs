@@ -91,6 +91,9 @@ pub struct Monomorphizer<'a> {
     pub instantiated_node_types: HashMap<NodeId, rask_types::Type>,
     /// Dispatch targets for the copies, same idea as `instantiated_node_types`.
     pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
+    /// ER31a error wraps for the copies, same idea. The wrapping variant names a
+    /// concrete enum, so it carries over unchanged.
+    pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// Per-call-site type arguments for the copies. A generic calling another
     /// generic (`func outer<T>(x: T) { inner(x) }`) records `[T]` at the inner
     /// call; substituting this instantiation's arguments turns that into the
@@ -240,6 +243,7 @@ impl<'a> Monomorphizer<'a> {
             next_instantiated_id: 0,
             instantiated_node_types: HashMap::new(),
             instantiated_call_targets: HashMap::new(),
+            instantiated_error_wraps: HashMap::new(),
             instantiated_call_type_args: HashMap::new(),
             trait_methods,
             trait_coercions: HashMap::new(),
@@ -324,6 +328,11 @@ impl<'a> Monomorphizer<'a> {
                 if let Some(c) = carried {
                     self.instantiated_call_targets.insert(new_id, c);
                 }
+            }
+            // ER31a: the wrapping variant names a concrete enum, so it carries
+            // over as-is — no substitution to do.
+            if let Some(wrap) = typed.error_wraps.get(&old_id) {
+                self.instantiated_error_wraps.insert(new_id, wrap.clone());
             }
         }
     }

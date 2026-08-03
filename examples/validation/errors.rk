@@ -62,8 +62,10 @@ extend ValidationError with ErrorMessage {
 }
 
 // ─── Boundary error ──────────────────────────────────────────────────
-// What handlers return. Wrapper variants delegate to the inner message() by
-// hand (ER37 would do this automatically).
+// What handlers return. One variant per wrapped error type, which is what lets
+// `try` place a propagated error without a hand-written map (ER31a). Wrapper
+// variants delegate to the inner message() by hand (ER37 would do this
+// automatically).
 
 enum ApiError {
     Validation(ValidationError)
@@ -113,18 +115,7 @@ func store_status(e: StoreError) -> u16 {
     }
 }
 
-// Lift the typed domain errors into the boundary enum. `try` won't do this
-// automatically for an enum wrapper (only for unions, ER31, or `any Error`
-// boxing, ER32), so handlers spell it out: `try s.op() else |e| e.to_api()`.
-
-extend StoreError {
-    func to_api(self) -> ApiError { return ApiError.Store(self) }
-}
-
-extend ValidationError {
-    func to_api(self) -> ApiError { return ApiError.Validation(self) }
-}
-
-extend AuthError {
-    func to_api(self) -> ApiError { return ApiError.Auth(self) }
-}
+// No lifters needed. Each wrapper variant above takes exactly one payload of
+// exactly one error type, which is all `try` needs to place a propagated error
+// on its own (ER31a) — `try s.view_task(id)` in a handler becomes
+// `ApiError.Store(e)` without the call site saying so.

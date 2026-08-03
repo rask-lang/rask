@@ -850,16 +850,8 @@ impl TypeChecker {
                                     // ER20: Collect instead of unifying
                                     self.inferred_errors.push(*err.clone());
                                 } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
-                                    // CROSS_SHAPE: report a clear error when error types don't match
-                                    if let Err(_) = self.unify(err, ret_err, expr.span) {
-                                        let inner_err = self.fmt_ty(&self.ctx.apply(err));
-                                        let outer_err = self.fmt_ty(&self.ctx.apply(ret_err));
-                                        self.errors.push(TypeError::TryErrorMismatch {
-                                            inner_err,
-                                            outer_err,
-                                            span: expr.span,
-                                        });
-                                    }
+                                    let (err, ret_err) = (err.clone(), ret_err.clone());
+                                    self.propagate_try_error(expr.id, &err, &ret_err, expr.span);
                                 } else if matches!(resolved_ret, Type::Var(_)) {
                                     // GC7/ER20: Return type is inferred — make it Result
                                     let ret_ok = self.ctx.fresh_var();
@@ -908,14 +900,9 @@ impl TypeChecker {
                                     } else if self.accumulate_errors {
                                         // ER20: Collect instead of unifying with return
                                         self.inferred_errors.push(err_ty);
-                                    } else if let Err(_) = self.unify(&err_ty, ret_err, expr.span) {
-                                        let inner_err = self.fmt_ty(&self.ctx.apply(&err_ty));
-                                        let outer_err = self.fmt_ty(&self.ctx.apply(ret_err));
-                                        self.errors.push(TypeError::TryErrorMismatch {
-                                            inner_err,
-                                            outer_err,
-                                            span: expr.span,
-                                        });
+                                    } else {
+                                        let ret_err = ret_err.clone();
+                                        self.propagate_try_error(expr.id, &err_ty, &ret_err, expr.span);
                                     }
                                     ok_ty
                                 }
@@ -2341,6 +2328,101 @@ impl TypeChecker {
     /// Format a type with resolved names (Named(id) → "TypeName").
     pub(super) fn fmt_ty(&self, ty: &Type) -> String {
         format!("{}", self.types.resolve_type_names(ty))
+    }
+
+    /// Hand a plain `try`'s error to the enclosing function: the same type, a
+    /// member of its error union (ER31), or a variant of its error enum (ER31a).
+    ///
+    /// When the source error is still an unresolved variable and the target is
+    /// an enum that could wrap it, the decision waits for
+    /// `resolve_pending_try_wraps`. Unifying now would answer the question by
+    /// force: `try dto.validate()` inside a `-> Response or ApiError` handler
+    /// would pin `validate`'s own error type to `ApiError` before method
+    /// resolution ever ran, and the real signature then looks like the mistake.
+    pub(super) fn propagate_try_error(
+        &mut self,
+        node: rask_ast::NodeId,
+        err: &Type,
+        ret_err: &Type,
+        span: Span,
+    ) {
+        let src = self.ctx.apply(err);
+        let target = self.ctx.apply(ret_err);
+        if matches!(src, Type::Var(_)) && self.wrap_candidate(&target) {
+            self.pending_try_errors.push((node, src, target, span));
+            return;
+        }
+        self.settle_try_error(node, &src, &target, span);
+    }
+
+    /// Decide one `try` site's error propagation, source type in hand.
+    fn settle_try_error(&mut self, node: rask_ast::NodeId, src: &Type, target: &Type, span: Span) {
+        if self.try_wrap_error(node, src, target, span) {
+            return;
+        }
+        if self.unify(src, target, span).is_err() {
+            let inner_err = self.fmt_ty(&self.ctx.apply(src));
+            let outer_err = self.fmt_ty(&self.ctx.apply(target));
+            self.errors.push(TypeError::TryErrorMismatch { inner_err, outer_err, span });
+        }
+    }
+
+    /// Could this error type wrap something? True for an enum with at least one
+    /// single-payload variant — the only shape ER31a can target.
+    fn wrap_candidate(&self, ty: &Type) -> bool {
+        let Type::Named(id) = ty else { return false };
+        matches!(self.types.get(*id), Some(super::TypeDef::Enum { variants, .. })
+            if variants.iter().any(|(_, payload)| payload.len() == 1))
+    }
+
+    /// Settle the `try` sites that were waiting on their source error type.
+    /// Runs after constraint solving, so a method call's real error type is in.
+    pub(super) fn resolve_pending_try_wraps(&mut self) {
+        for (node, src, target, span) in std::mem::take(&mut self.pending_try_errors) {
+            let src = self.ctx.apply(&src);
+            let target = self.ctx.apply(&target);
+            self.settle_try_error(node, &src, &target, span);
+        }
+    }
+
+    /// ER31a: can this `try` hand its error to the enclosing function by wrapping
+    /// it in a variant of the function's error enum? The enum analogue of ER31's
+    /// subset check — `StoreError` reaches an `ApiError` return because
+    /// `ApiError.Store(StoreError)` is the one variant shaped to hold it.
+    ///
+    /// Records the variant for both backends and returns true when it applies.
+    /// Two candidate variants is a compile error, not a coin flip.
+    fn try_wrap_error(
+        &mut self,
+        node: rask_ast::NodeId,
+        src: &Type,
+        target: &Type,
+        span: Span,
+    ) -> bool {
+        let src = self.ctx.apply(src);
+        let target = self.ctx.apply(target);
+        let variants = self.types.error_wrap_variants(&src, &target);
+        match variants.len() {
+            0 => false,
+            1 => {
+                let enum_name = self.fmt_ty(&target);
+                self.error_wraps.insert(
+                    node,
+                    super::ErrorWrap { enum_name, variant: variants[0].clone() },
+                );
+                true
+            }
+            _ => {
+                self.errors.push(TypeError::AmbiguousErrorWrap {
+                    inner_err: self.fmt_ty(&src),
+                    outer_err: self.fmt_ty(&target),
+                    variants,
+                    span,
+                });
+                // Reported — don't also report a plain mismatch on the same site.
+                true
+            }
+        }
     }
 
     pub(super) fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {

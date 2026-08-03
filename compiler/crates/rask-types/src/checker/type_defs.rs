@@ -170,6 +170,15 @@ impl TypeDef {
     }
 }
 
+/// ER31a: the variant `try` wraps a propagated error in on its way out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorWrap {
+    /// The boundary enum the enclosing function returns as its error.
+    pub enum_name: String,
+    /// The variant that carries the source error as its only payload.
+    pub variant: String,
+}
+
 /// Method signature.
 #[derive(Debug, Clone)]
 pub struct MethodSig {
@@ -264,6 +273,9 @@ pub struct TypedProgram {
     pub call_targets: HashMap<NodeId, Callee>,
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     pub trait_coercions: HashMap<NodeId, String>,
+    /// ER31a: `try` sites whose error is wrapped in a variant of the enclosing
+    /// function's error enum. NodeId of the `try` expression → the variant.
+    pub error_wraps: HashMap<NodeId, ErrorWrap>,
     /// Unsafe operations recorded during type checking (span + category).
     pub unsafe_ops: Vec<(rask_ast::Span, super::UnsafeCategory)>,
     /// Types for binding names and parameters, keyed by (span.start, span.end, file_id).

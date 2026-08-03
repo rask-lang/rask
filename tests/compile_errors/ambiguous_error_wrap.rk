@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `try` can't pick between two variants that wrap the same error
+// ERROR: `try` can't tell which variant of `ApiError` should wrap `StoreError`
+//
+// ER31a lets `try` place a propagated error in the caller's error enum, but only
+// when exactly one variant takes it. Two candidates and the compiler says so
+// instead of guessing — the choice is a real one, and getting it wrong changes
+// the HTTP status the boundary hands back.
+
+enum StoreError {
+    NotFound(string)
+}
+
+extend StoreError {
+    func message(self) -> string {
+        match self {
+            NotFound(k) => return "not found: {k}",
+        }
+    }
+}
+
+// Both variants take a single StoreError.
+enum ApiError {
+    Store(StoreError)
+    Fatal(StoreError)
+}
+
+extend ApiError {
+    func message(self) -> string {
+        match self {
+            Store(e) => return e.message(),
+            Fatal(e) => return "fatal: {e.message()}",
+        }
+    }
+}
+
+func lookup(key: string) -> string or StoreError {
+    return StoreError.NotFound(key)
+}
+
+// ERROR: Store or Fatal? Say which.
+func ambiguous(key: string) -> string or ApiError {
+    return try lookup(key)
+}
+
+// THE FIX: name the variant at the call.
+func explicit(key: string) -> string or ApiError {
+    return try lookup(key) else |e| ApiError.Store(e)
+}
+
+func main() {
+    println(explicit("a"))
+}

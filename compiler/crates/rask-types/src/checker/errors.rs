@@ -83,6 +83,15 @@ pub enum TypeError {
     TryInNonPropagatingContext { return_ty: Type, span: Span },
     #[error("error type mismatch in `try`: propagating `{inner_err}`, but function returns `_ or {outer_err}`")]
     TryErrorMismatch { inner_err: String, outer_err: String, span: Span },
+    /// ER31a: more than one variant of the boundary enum wraps the same error
+    /// type, so `try` can't pick one on its own.
+    #[error("`try` can't tell which variant of `{outer_err}` should wrap `{inner_err}`")]
+    AmbiguousErrorWrap {
+        inner_err: String,
+        outer_err: String,
+        variants: Vec<String>,
+        span: Span,
+    },
     #[error("try can only be used within a function")]
     TryOutsideFunction { span: Span },
     #[error("missing return statement")]
