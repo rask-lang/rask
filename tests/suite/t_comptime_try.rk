@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `try comptime f()` folds the call at compile time and hands back the bare
+// ok payload — a plain scalar, not a tagged `T or E`. Native still ran the
+// normal `try` tag check on it, which read a byte at whatever address the
+// scalar happened to equal (a wild pointer read, since `try comptime parse()`
+// evaluated to the literal 42). #403 (CT45).
+
+struct Bad { }
+
+extend Bad {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+comptime func parse_ok() -> i64 or Bad {
+    return 42
+}
+
+comptime func parse_fail() -> i64 or Bad {
+    return Bad { }
+}
+
+func run_ok() -> i64 or Bad {
+    const v = try comptime parse_ok()
+    return v
+}
+
+func run_fail() -> i64 or Bad {
+    const v = try comptime parse_fail()
+    return v
+}
+
+test "try comptime on a known-success value returns the payload" {
+    match run_ok() {
+        i64 as v => assert v == 42
+        Bad as _b => assert false, "expected a value"
+    }
+}
+
+test "try comptime on a known-failure value still takes the error path" {
+    match run_fail() {
+        i64 as _v => assert false, "expected the error"
+        Bad as b => assert b.message() == "bad"
+    }
+}

@@ -10,10 +10,6 @@
 // were folded to constants during compilation. An unfolded/deferred call would
 // fail to link ("Function not found"). So a passing native run here IS the
 // compile-time-evaluation witness.
-//
-// Uses marked `comptime func` throughout: an UNMARKED function called only at
-// comptime breaks native codegen (see report). Array-repeat `[T; N]` also breaks
-// native, so comptime consts are exercised as loop bounds, not array sizes.
 
 func main() {}
 
@@ -124,4 +120,28 @@ test "ctrl.comptime/CT2 — comptime const drives loop bound" {
         count += 1
     }
     assert count == 7
+}
+
+// CT6 (#403): an unmarked function referenced only from a top-level
+// `const = comptime f()` used to get dropped from native codegen entirely —
+// `triangular` above is `comptime func` and dodges this; this one isn't marked.
+func doubled(n: i64) -> i64 {
+    return n * 2
+}
+
+const DOUBLED: i64 = comptime doubled(21)
+
+test "ctrl.comptime/CT6 — unmarked func called only at comptime" {
+    assert DOUBLED == 42
+}
+
+// Typed array-repeat `[T; N]` (#403): the explicit element-type annotation used
+// to leave `.len()` unresolved on native (`[mir] method len has no type prefix`).
+func array_len() -> u64 {
+    const a: [i32; 5] = [0; 5]
+    return a.len()
+}
+
+test "types.arrays — typed array-repeat resolves .len()" {
+    assert array_len() == 5
 }
