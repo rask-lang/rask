@@ -13,6 +13,14 @@ I know the compiler pipeline — MIR, lowering, codegen, and the rest aren't the
 
 (This is about explaining to me. Code comments still follow the style guide below.)
 
+## I work from my phone
+
+Chat is my interface. Reading diffs and files on a phone is painful — never point me at a diff as the explanation. The explanation in chat IS the deliverable.
+
+- Bring code to me, don't send me to it: quote the 10–20 relevant lines in chat with your commentary when a decision needs my eyes.
+- End every substantial piece of work with a **judgment digest**: the 2–4 most questionable calls you made, each with the few lines of code that embody it, framed so I can react in one word ("keep / wrong / show me more"). Put decisions you need from me first, not buried after the summary.
+- PR descriptions and issues must stand alone in prose — write them assuming the reader never opens the diff. (They usually don't.)
+
 Prefer long term proper fixes over quick-fixes.
 
 Choose simple over easy.
