@@ -187,8 +187,10 @@ Still valid against `main`:
   carries traits nor takes methods.
 - **#340** OC1 × nominal `with (...)` delegation — unspecified. Sidestepped by
   using a struct (B1), but the ambiguity stands.
-- **#341** typed domain error → boundary enum has no `try` sugar — still the
-  single largest ceremony: **27** `else |e| e.to_api()` maps.
+- **#341** typed domain error → boundary enum has no `try` sugar — **fixed**
+  (ER31a). `try` now places the error in the one ApiError variant that takes it.
+  20 maps and 3 `to_api()` lifters deleted; the 6 `else |e|` maps left all say
+  something the enum doesn't (a JSON error becomes a `BadRequest` message).
 - **#342** block vs struct-literal ambiguity in `if`/`while` — confirmed still
   reproduces (`if x == Ord.Equal { }` fails to parse).
 
@@ -207,22 +209,23 @@ pipeline is single-producer — but the async.md doc gap stands.)
 | list_tasks | 3 | ~7 | 0.43 |
 | create_task | ~14 | ~27 | 0.52 |
 
-Still well under the 1.2 target. `try store.lock().op() else \|e\| e.to_api()`
-is one line where Go needs lock/call/unlock/`if err`. The delta is Go's
-`if err != nil` tax, removed by `T or E` + `try`.
+Still well under the 1.2 target. `try store.lock().op()` is one line where Go
+needs lock/call/unlock/`if err`. The delta is Go's `if err != nil` tax, removed
+by `T or E` + `try`.
 
 ### Ceremony lines
 
 | Kind | Count |
 |------|-------|
-| `else \|e\| …` error mapping | **27** |
 | conformance declarations (`extend … with`) | 11 |
+| `else \|e\| …` error mapping | 6 |
 | `as any Trait` casts | 6 |
 | `ensure` | 1 |
 
-The typed-error→enum mapping (#341) dominates. Everything the design makes
-deliberately visible (conformances, casts, `ensure`) stays cheap; the unplanned
-cost is still that one missing propagation form.
+Everything the design makes deliberately visible (conformances, casts, `ensure`)
+stays cheap. Error mapping used to dominate at 26; ER31a took out the 20 that
+only restated the enum declaration, and the 6 that are left each carry real
+information.
 
 ---
 

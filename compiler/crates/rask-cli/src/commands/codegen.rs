@@ -271,6 +271,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     // carried its records onto them. Lowering wants one map for both.
     let all_node_types = mono.all_node_types(&typed);
     let all_call_targets = mono.all_call_targets(&typed);
+    let all_error_wraps = mono.all_error_wraps(&typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -288,6 +289,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         call_targets: &all_call_targets,
+        error_wraps: &all_error_wraps,
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -353,6 +355,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     // carried its records onto them. Lowering wants one map for both.
     let all_node_types = mono.all_node_types(&typed);
     let all_call_targets = mono.all_call_targets(&typed);
+    let all_error_wraps = mono.all_error_wraps(&typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -370,6 +373,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
         call_targets: &all_call_targets,
+        error_wraps: &all_error_wraps,
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),

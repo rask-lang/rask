@@ -455,11 +455,31 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
                 .with_code("E0355")
                 .with_primary(*span, format!("propagates `{}`", inner_err))
-                .with_help(format!(
-                    "use `try expr else |e| {}::from(e)` to convert, or change the function return type",
-                    outer_err
+                .with_fix(format!(
+                    "map it here — `try expr else |e| {}.SomeVariant(e)` — or give `{}` a variant taking a single `{}`, which `try` then fills in on its own",
+                    outer_err, outer_err, inner_err
                 ))
                 .with_why("try propagates errors to the enclosing function — the error types must be compatible [error-types/ER9]")
+            }
+
+            AmbiguousErrorWrap { inner_err, outer_err, variants, span } => {
+                Diagnostic::error(format!(
+                    "`try` can't tell which variant of `{}` should wrap `{}`",
+                    outer_err, inner_err
+                ))
+                .with_code("E0359")
+                .with_primary(*span, format!("propagates `{}`", inner_err))
+                .with_note(format!(
+                    "{} each take a single `{}`",
+                    variants.iter().map(|v| format!("`{}`", v)).collect::<Vec<_>>().join(" and "),
+                    inner_err,
+                ))
+                .with_fix(format!(
+                    "name the one you want: `try expr else |e| {}.{}(e)`",
+                    outer_err,
+                    variants.first().map(String::as_str).unwrap_or("Variant"),
+                ))
+                .with_why("`try` only wraps on its own when exactly one variant of the boundary enum takes the error [error-types/ER31a]")
             }
 
             TryOutsideFunction { span } => {

@@ -230,6 +230,7 @@ fn try_eval_comptime_mir(
         shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
         comptime_interp: None,
         trait_coercions: &empty_coercions,
+        error_wraps: &typed.error_wraps,
         call_rewrites: &empty_rewrites,
         call_targets: &empty_targets,
         resource_types: &empty_resource_types,

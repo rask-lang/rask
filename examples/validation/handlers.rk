@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Request handlers. Each returns `Response or ApiError`; the router turns the
 // error side into an HTTP response once, at the top. Handlers propagate with
-// `try`, map typed store errors with `else |e| e.to_api()`, and reach shared
-// state through the module-level `store`/`metrics`/`config`.
+// `try` — a typed error lands in its ApiError variant on its own (ER31a) —
+// and reach shared state through the module-level `store`/`metrics`/`config`.
 //
 // Store/metrics are reached with inline `.lock()` (MX3) rather than a `with`
 // block: `with <module-level-const mutex> as v` doesn't unwrap to the inner
@@ -74,54 +74,54 @@ func handle_metrics() -> Response or ApiError {
 func handle_sleep(req: Request) -> Response or ApiError {
     const raw = req.query_param("ms") ?? "50"
     const ms = raw.parse<u64>() ?? return ApiError.BadRequest("ms must be a non-negative integer")
-    try time.sleep(time.Duration.millis(ms)) else |e| ApiError.System(e)
+    try time.sleep(time.Duration.millis(ms))
     return json_response(200, json.encode(OkBody { ok: true }))
 }
 
 // ─── Tasks ───────────────────────────────────────────────────────────
 
 func handle_list_tasks(req: Request) -> Response or ApiError {
-    const filter = try build_filter(req) else |e| e.to_api()
+    const filter = try build_filter(req)
     const page = store.lock().list_views(filter)
     return json_response(200, json.encode(page))
 }
 
 func handle_create_task(req: Request) -> Response or ApiError {
     const dto = try json.decode<CreateTaskRequest>(req.body) else |e| ApiError.BadRequest("invalid JSON")
-    try dto.validate() else |e| e.to_api()
+    try dto.validate()
 
     const label = dto.priority ?? "medium"
-    const priority = try Priority.from_label(label) else |e| e.to_api()
+    const priority = try Priority.from_label(label)
     const project = ProjectId { value: dto.project_id }
 
-    const id = try store.lock().create_task(dto.title, project, priority) else |e| e.to_api()
-    const view = try store.lock().view_task(id) else |e| e.to_api()
+    const id = try store.lock().create_task(dto.title, project, priority)
+    const view = try store.lock().view_task(id)
     return json_response(201, json.encode(view))
 }
 
 func handle_get_task(id: TaskId) -> Response or ApiError {
-    const view = try store.lock().view_task(id) else |e| e.to_api()
+    const view = try store.lock().view_task(id)
     return json_response(200, json.encode(view))
 }
 
 func handle_update_task(id: TaskId, req: Request) -> Response or ApiError {
     const dto = try json.decode<UpdateTaskRequest>(req.body) else |e| ApiError.BadRequest("invalid JSON")
-    try dto.validate() else |e| e.to_api()
-    const patch = try build_patch(dto) else |e| e.to_api()
+    try dto.validate()
+    const patch = try build_patch(dto)
 
-    const view = try store.lock().update_task(id, patch) else |e| e.to_api()
+    const view = try store.lock().update_task(id, patch)
     return json_response(200, json.encode(view))
 }
 
 func handle_delete_task(id: TaskId) -> Response or ApiError {
-    try store.lock().delete_task(id) else |e| e.to_api()
+    try store.lock().delete_task(id)
     return json_response(200, json.encode(OkBody { ok: true }))
 }
 
 func handle_add_dep(id: TaskId, req: Request) -> Response or ApiError {
     const dto = try json.decode<AddDepRequest>(req.body) else |e| ApiError.BadRequest("invalid JSON")
     const dep = TaskId { value: dto.dep_id }
-    try store.lock().add_dependency(id, dep) else |e| e.to_api()
+    try store.lock().add_dependency(id, dep)
     return json_response(200, json.encode(OkBody { ok: true }))
 }
 
@@ -130,11 +130,11 @@ func handle_batch(req: Request) -> Response or ApiError {
 
     mut ops = Vec.new()
     for raw in dto.ops {
-        ops.push(try to_txop(raw) else |e| e.to_api())
+        ops.push(try to_txop(raw))
     }
 
     const applied = ops.len()
-    try store.lock().apply_batch(ops) else |e| e.to_api()
+    try store.lock().apply_batch(ops)
     return json_response(200, json.encode(BatchResult { applied: applied }))
 }
 
@@ -142,16 +142,16 @@ func handle_batch(req: Request) -> Response or ApiError {
 
 func handle_create_user(req: Request) -> Response or ApiError {
     const dto = try json.decode<CreateUserRequest>(req.body) else |e| ApiError.BadRequest("invalid JSON")
-    try dto.validate() else |e| e.to_api()
+    try dto.validate()
 
     const email = EmailAddress { raw: dto.email }
-    const id = try store.lock().create_user(dto.name, email) else |e| e.to_api()
-    const view = try store.lock().view_user(id) else |e| e.to_api()
+    const id = try store.lock().create_user(dto.name, email)
+    const view = try store.lock().view_user(id)
     return json_response(201, json.encode(view))
 }
 
 func handle_get_user(id: UserId) -> Response or ApiError {
-    const view = try store.lock().view_user(id) else |e| e.to_api()
+    const view = try store.lock().view_user(id)
     return json_response(200, json.encode(view))
 }
 
@@ -160,7 +160,7 @@ func handle_create_project(req: Request) -> Response or ApiError {
     if dto.name.is_empty() { return ApiError.BadRequest("project name required") }
 
     const owner = UserId { value: dto.owner }
-    const id = try store.lock().create_project(dto.name, owner) else |e| e.to_api()
+    const id = try store.lock().create_project(dto.name, owner)
     return json_response(201, json.encode(ProjectView {
         id: id.value,
         name: dto.name,

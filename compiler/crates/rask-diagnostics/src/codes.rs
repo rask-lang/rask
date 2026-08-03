@@ -204,8 +204,11 @@ impl Default for ErrorCodeRegistry {
                     "Single uppercase letters are reserved for type parameters. A struct, enum, trait, or union named `T` would be shadowed by the type-parameter convention in every signature.",
                     "struct T { }  // error: reserved for type parameters\n// fix: struct Token { }"),
                 "E0355" => ("error type mismatch in try", Type,
-                    "`try` propagates the inner error to the enclosing function, so both must use the same error type. If the error types differ, transform with `try expr else |e| OuterErr::from(e)`.",
-                    "struct IoError { msg: string }\nstruct ParseError { msg: string }\n\nfunc inner() -> i32 or ParseError { return 42 }\nfunc outer() -> i32 or IoError {\n    const x = try inner()  // error: ParseError != IoError\n    return x\n}"),
+                    "`try` propagates the inner error to the enclosing function, so the two error types have to line up. They line up three ways: the same type, a member of the function's error union, or a single-payload variant of the function's error enum. Anything else needs an explicit map at the call — `try expr else |e| …`.",
+                    "enum ParseError { Syntax(string) }\nenum ApiError { Parse(ParseError), BadRequest(string) }\n\nfunc inner() -> i32 or ParseError { return 42 }\n\nfunc outer() -> i32 or ApiError {\n    const x = try inner()  // ok: ApiError.Parse takes a single ParseError\n    return x\n}"),
+                "E0359" => ("ambiguous error wrap in try", Type,
+                    "Two or more variants of the function's error enum take the propagated error as their only payload, so `try` has no way to choose. Name the variant at the call site.",
+                    "enum StoreError { NotFound(string) }\nenum ApiError { Store(StoreError), Fatal(StoreError) }\n\nfunc outer() -> i32 or ApiError {\n    const x = try lookup()  // error: Store or Fatal?\n\n    // Fix: say which\n    const y = try lookup() else |e| ApiError.Store(e)\n    return y\n}"),
 
                 // Trait errors (E07xx)
                 "E0700" => ("trait bound not satisfied", Trait,

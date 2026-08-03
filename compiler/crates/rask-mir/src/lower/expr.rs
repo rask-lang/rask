@@ -672,6 +672,13 @@ impl<'a> MirLowerer<'a> {
                         (&ty, &narrow_ty),
                         (MirType::Option(_), Some(n)) if !matches!(n, MirType::Option(_))
                     );
+                    // A niche `Handle?` keeps the handle as its whole value, so
+                    // narrowing it is a rename, not an extraction. Reading
+                    // field 0 loaded through the handle and crashed (#438's
+                    // rule, missed on this path).
+                    if needs_narrow && matches!(&ty, MirType::Option(inner) if **inner == MirType::Handle) {
+                        return Ok((MirOperand::Local(id), narrow_ty.unwrap()));
+                    }
                     if needs_narrow {
                         let inner_ty = narrow_ty.unwrap();
                         let inner_local = self.builder.alloc_temp(inner_ty.clone());
@@ -2019,7 +2026,7 @@ impl<'a> MirLowerer<'a> {
                         self.lower_try_else_block(inner, try_else)
                     }
                     (Some(try_else), _) => self.lower_try_else(inner, try_else),
-                    (None, _) => self.lower_try(inner),
+                    (None, _) => self.lower_try(expr.id, inner),
                 }
             }
 

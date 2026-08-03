@@ -94,6 +94,9 @@ pub struct Interpreter {
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
     pub(crate) node_types: HashMap<rask_ast::NodeId, rask_types::Type>,
+    /// ER31a: `try` sites whose error the checker decided to wrap in a variant
+    /// of the enclosing function's error enum, keyed by the `try` expression.
+    pub(crate) error_wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
     /// Final values of `mutate` parameters from the most recent user-function
     /// call, keyed by parameter index (mem.parameters/PM2). The call site reads
     /// this to write each value back to its argument place. Cleared before every
@@ -124,6 +127,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            error_wraps: HashMap::new(),
             mutate_writebacks: Vec::new(),
         }
     }
@@ -141,6 +145,7 @@ impl Interpreter {
             cli_args: args,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            error_wraps: HashMap::new(),
             build_state: None,
             source_info: None,
             mutate_writebacks: Vec::new(),
@@ -164,6 +169,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            error_wraps: HashMap::new(),
             mutate_writebacks: Vec::new(),
         };
         (interp, buffer)
@@ -195,6 +201,16 @@ impl Interpreter {
         self.node_types = node_types;
     }
 
+    /// ER31a: supply the `try` sites whose error gets wrapped in the enclosing
+    /// function's error enum. Without this, those errors propagate unwrapped and
+    /// the caller's `match` on the boundary enum finds a variant it doesn't know.
+    pub fn set_error_wraps(
+        &mut self,
+        wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
+    ) {
+        self.error_wraps = wraps;
+    }
+
     pub fn inject_cfg(&mut self, cfg: &rask_comptime::CfgConfig) {
         let mut fields = IndexMap::new();
         fields.insert("os".to_string(), Value::String(Arc::new(Mutex::new(cfg.os.clone()))));
@@ -220,6 +236,7 @@ impl Interpreter {
         child.struct_decls = self.struct_decls.clone();
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
+        child.error_wraps = self.error_wraps.clone();
         for (name, value) in captured_vars {
             child.env.define(name, value);
         }

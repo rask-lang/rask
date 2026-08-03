@@ -11,7 +11,7 @@ pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{
     typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, TypeTable, TypeDef,
     TypeError, InvalidCastClass, IndexErrorKind, InferenceContext, TypeConstraint, MethodSig, SelfParam,
-    ParamMode, Callee, receiver_name,
+    ParamMode, Callee, ErrorWrap, receiver_name,
     parse_type_string, signature_type_param_names, UnsafeCategory,
 };
 pub use traits::{

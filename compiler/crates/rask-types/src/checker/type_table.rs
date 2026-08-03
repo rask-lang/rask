@@ -588,6 +588,49 @@ impl TypeTable {
         }
     }
 
+    /// ER31a: variants of the error enum `target` that carry `source` as their
+    /// only payload — the shape `try` can wrap into on the way out.
+    ///
+    /// Returns every match so the caller can tell "no wrap" from "more than one
+    /// variant would fit, say which". Both sides must be nominal: a union or
+    /// generic payload isn't a boundary-enum wrapper.
+    pub fn error_wrap_variants(&self, source: &Type, target: &Type) -> Vec<String> {
+        let variants = match target {
+            Type::Named(id) => match self.get(*id) {
+                Some(TypeDef::Enum { variants, .. }) => variants,
+                _ => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
+        let want = match self.nominal_key(source) {
+            Some(k) => k,
+            None => return Vec::new(),
+        };
+        // Wrapping a type in itself isn't a widening — plain unification covers it.
+        if self.nominal_key(target).as_deref() == Some(want.as_str()) {
+            return Vec::new();
+        }
+        variants
+            .iter()
+            .filter(|(_, payload)| {
+                payload.len() == 1 && self.nominal_key(&payload[0]).as_deref() == Some(want.as_str())
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// The bare type name behind a nominal type, however the declaration order
+    /// left it spelled. `None` for anything structural.
+    fn nominal_key(&self, ty: &Type) -> Option<String> {
+        match ty {
+            Type::Named(id) => Some(self.type_name(*id)),
+            Type::UnresolvedNamed(name) => {
+                Some(name.split('<').next().unwrap_or(name).trim().to_string())
+            }
+            _ => None,
+        }
+    }
+
     /// Check if a TypeId refers to a `@unique` struct.
     pub fn is_unique_type_by_id(&self, id: TypeId) -> bool {
         if let Some(TypeDef::Struct { is_unique, .. }) = self.types.get(id.0 as usize) {

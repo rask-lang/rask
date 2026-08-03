@@ -38,6 +38,8 @@ pub struct MonoProgram {
     /// and lowering falls back to guessing from AST shape.
     pub instantiated_node_types: HashMap<NodeId, Type>,
     pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
+    /// ER31a: `try` sites in instantiated bodies that wrap their error, same idea.
+    pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
 }
 
 impl MonoProgram {
@@ -60,6 +62,16 @@ impl MonoProgram {
     ) -> HashMap<NodeId, rask_types::Callee> {
         let mut merged = typed.call_targets.clone();
         merged.extend(self.instantiated_call_targets.iter().map(|(k, v)| (*k, v.clone())));
+        merged
+    }
+
+    /// ER31a error wraps for the whole program, merged the same way.
+    pub fn all_error_wraps(
+        &self,
+        typed: &TypedProgram,
+    ) -> HashMap<NodeId, rask_types::ErrorWrap> {
+        let mut merged = typed.error_wraps.clone();
+        merged.extend(self.instantiated_error_wraps.iter().map(|(k, v)| (*k, v.clone())));
         merged
     }
 }
@@ -316,6 +328,7 @@ pub fn monomorphize_with_packages(
         call_rewrites: mono.call_rewrites,
         instantiated_node_types: mono.instantiated_node_types,
         instantiated_call_targets: mono.instantiated_call_targets,
+        instantiated_error_wraps: mono.instantiated_error_wraps,
     })
 }
 
@@ -512,6 +525,7 @@ mod tests {
             call_type_args: std::collections::HashMap::new(),
             call_targets: std::collections::HashMap::new(),
             trait_coercions: std::collections::HashMap::new(),
+            error_wraps: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),
             channel_send_sites: std::collections::HashSet::new(),

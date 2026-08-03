@@ -797,6 +797,20 @@ fn error_type_called_as_function() {
     );
 }
 
+// #341, ER31a: `try` wraps a propagated error into the caller's error enum, but
+// only when one variant fits. Two that fit is a question for the author, and the
+// answer changes behaviour — so the compiler asks instead of picking.
+#[test]
+fn error_ambiguous_error_wrap() {
+    let (failed, out) = compile_error_output("ambiguous_error_wrap.rk");
+    assert!(failed, "two variants wrapping the same error must be rejected: {}", out);
+    assert!(
+        out.contains("E0359") && out.contains("`Store` and `Fatal`")
+            && out.contains("else |e| ApiError.Store(e)"),
+        "should name both candidates and how to choose: {}", out,
+    );
+}
+
 // #506: a `{...}` in a string that isn't a single expression (plus an optional
 // format spec) is rejected, instead of parsing whatever fits and dropping the
 // rest — which is how a JSON body reached json.decode as the string "x".

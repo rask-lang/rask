@@ -251,11 +251,12 @@ const maybe_v = compute().ok()
 
 Methods removed from the old spec: `.unwrap_or`, `.unwrap_or_else`, `.is_ok`, `.is_err`, `.to_option`, `.to_error`, `.on_err`. Operators and the four surviving methods cover every case; see the [redesign proposal](error-model-redesign-proposal.md) for the full migration map.
 
-## Union Widening and Boxing
+## Union Widening, Wrapping, and Boxing
 
 | Rule | Description |
 |------|-------------|
 | **ER31: Auto-widen** | `try` succeeds when the expression's error type is a subset of the current function's error union |
+| **ER31a: Auto-wrap into a boundary enum** | `try` succeeds when the current function's error type is an enum with **exactly one** variant whose only payload is the propagated error type. `try f()` then means `try f() else \|e\| Outer.Variant(e)`. Two candidate variants is a compile error naming both — the wrap has to be unambiguous |
 | **ER32: Auto-box to `any Error`** | `try` auto-boxes when the current function's error type is `any Error` — any `E` satisfying `ErrorMessage` widens by boxing |
 
 <!-- test: skip -->
@@ -267,15 +268,24 @@ func load() -> Config or (IoError | ParseError) {
     return config
 }
 
-// Application: boxed any Error
-func start_app() -> App or any Error {
-    const config = try read_config(path)  // IoError | ParseError → boxed
-    const db = try connect(config.db_url) // DbError → boxed
-    return App.new(config, db)
+// Service boundary: one enum, one variant per wrapped error
+enum ApiError {
+    Store(StoreError),
+    Validation(ValidationError),
+    BadRequest(string),
+}
+
+func view(id: TaskId) -> TaskView or ApiError {
+    const task = try store.view_task(id)  // → ApiError.Store(e)
+    return task
 }
 ```
 
 Libraries use union errors (precise, matchable). Applications use `any Error` (ergonomic, sufficient for logging). Downcast with `if r is IoError as e` for recovery.
+
+ER31a is the enum spelling of ER31's subset check. The union form composes error types structurally; the enum form gives the composition a name and a `match` at the boundary. Both should propagate without ceremony — writing `else |e| ApiError.Store(e)` at every call restates what the enum already says. The wrap is one hop: `StoreError` reaching an `ApiError` return is automatic, `StoreError` reaching a `TopError` that wraps `ApiError` is not.
+
+Only a variant with a single payload of exactly the source type counts. `Store(StoreError, Context)` doesn't — the second field has no value to fill in. Neither does a variant whose payload is a union or a generic; those aren't boundary-enum wrappers.
 
 ## Error Origin Tracking
 
@@ -460,6 +470,9 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `try r` in `fn -> T?` | — | Cross-shape, ill-typed. Use `r.ok()` then `try` |
 | `try o` in `fn -> T or E` | — | Cross-shape, ill-typed. Use `o.to_result(err)` then `try` |
 | `try` on narrower E into wider union | ER31 | Auto-widen succeeds |
+| `try` on `E` into an enum with one `Variant(E)` | ER31a | Auto-wrap succeeds |
+| `try` on `E` into an enum with two `Variant(E)`s | ER31a | Compile error — name the variant with `else \|e\|` |
+| `try` on `E` into an enum with a `Variant(E, Context)` | ER31a | No wrap; falls through to the plain mismatch |
 | `try` into `any Error` | ER32 | Auto-box succeeds |
 | `r ?? err_value` where `err_value: E` | ER14 | Type error — `??` does not widen. Use `.to_result(err)` or match |
 | `!r?` | ER26 | Parse error suggesting `r is E` |
@@ -613,6 +626,8 @@ The honest cost: `func cached<T>(…) -> T or CacheError` is not total over `T`,
 
 **ER31/ER32 (libraries vs applications).** Libraries should expose precise union errors so callers can match and recover. Application code calling 5 libraries shouldn't re-declare every error on every function — `any Error` is the escape hatch, type-erased, with `is` downcast for recovery. Same split as Rust's thiserror + anyhow, built into the language.
 
+**ER31a (the third shape).** Between the union and `any Error` sits the boundary enum: one variant per wrapped error, so the caller still gets a typed `match`. Before this rule that shape paid for itself at every call — the validation example carried 23 hand-written `else |e| e.to_api()` maps, the single most-repeated thing in a 1600-line program. The maps carried no information: the enum declaration already says `Store` is where a `StoreError` goes. The one-variant restriction is what makes the inference safe — where the enum is ambiguous the compiler says so instead of guessing.
+
 **ER33/ER34 (origin opt-in).** Forcing 16 bytes of origin metadata on every error value violates transparency of cost — an error as small as `enum DivError { ByZero }` (1 byte) would become 17 bytes with always-on tracking. The overhead is paid on the error path, but also shows up in the size of any `T or E` union, cache lines, and return ABI. Making `@traced` opt-in means library authors decide per-type. `any Error` is already heap-boxed, so tracking origin there is marginal and the ergonomic payoff (application-level diagnostics) is highest.
 
 **No `match` on Option.** See [optionals.md Appendix](optionals.md). Match for `T or E` is kept because multi-error unions genuinely need multi-arm dispatch; Option doesn't.
@@ -640,13 +655,28 @@ func load_config(path: string) -> Config or ContextError {
 }
 ```
 
-**Typed domain errors.** For library-level errors, wrap in domain-specific types:
+**Typed domain errors.** For library-level errors, wrap in domain-specific types. A variant that adds context beyond the error needs the explicit map:
 
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ConfigError {
     const text = try fs.read_text(path) else |e| ConfigError.Io { path, source: e }
     return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
+}
+```
+
+A variant that carries nothing but the error doesn't — ER31a fills it in:
+
+<!-- test: skip -->
+```rask
+enum ConfigError {
+    Io(IoError),
+    Parse(ParseError),
+}
+
+func load_config(path: string) -> Config or ConfigError {
+    const text = try fs.read_text(path)   // → ConfigError.Io(e)
+    return try Config.parse(text)         // → ConfigError.Parse(e)
 }
 ```
 
