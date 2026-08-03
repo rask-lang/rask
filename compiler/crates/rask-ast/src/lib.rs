@@ -10,6 +10,7 @@ pub mod expr;
 pub mod stmt;
 pub mod decl;
 pub mod fmt_spec;
+pub mod primitives;
 
 pub use span::{Span, LineMap};
 

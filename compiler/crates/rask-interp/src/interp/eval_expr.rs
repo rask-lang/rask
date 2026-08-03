@@ -1878,8 +1878,8 @@ impl Interpreter {
                     // E18: fieldless enum to integer cast
                     (Value::Enum { name, variant, fields, variant_index, .. }, target)
                         if fields.is_empty()
-                        && matches!(target, "i8" | "i16" | "i32" | "i64" | "int"
-                            | "u8" | "u16" | "u32" | "u64" | "usize" | "isize") =>
+                        && (rask_ast::primitives::is_machine_integer(target)
+                            || rask_ast::primitives::INT_ALIASES.contains(&target)) =>
                     {
                         let disc = if let Some(enum_decl) = self.enums.get(&name) {
                             enum_decl.variants.iter()

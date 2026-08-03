@@ -485,12 +485,9 @@ impl Resolver {
         SymbolKind::Variable { mutable: false }
     }
 
+    /// The spec's primitive set — no `string`, no `int`/`uint` aliases.
     fn is_primitive_type(name: &str) -> bool {
-        matches!(name,
-            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
-            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" |
-            "f32" | "f64" | "bool" | "char"
-        )
+        rask_ast::primitives::is_scalar(name)
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {
@@ -1210,7 +1207,7 @@ impl Resolver {
                     // `import std.reflect` names a submodule, not a symbol.
                     || rask_stdlib::mir_metadata::stdlib_module_names()
                         .contains(symbol_name.as_str())
-                    || crate::BUILTIN_MODULE_NAMES.contains(&symbol_name.as_str());
+                    || crate::is_builtin_module(symbol_name);
                 if !known && !self.stdlib_mode {
                     self.errors.push(ResolveError::no_such_stdlib_export(
                         pkg_name.clone(),

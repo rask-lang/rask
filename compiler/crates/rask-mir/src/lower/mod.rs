@@ -3008,11 +3008,9 @@ fn vec_elem_of_type_str(ret_ty: Option<&str>, ctx: &MirContext) -> Option<MirTyp
 }
 
 /// Is `name` one of the integer primitives (as spelled in source)?
+/// Register-width only — `string.parse<i128>` isn't supported.
 pub(crate) fn is_integer_type_name(name: &str) -> bool {
-    matches!(name,
-        "i8" | "i16" | "i32" | "i64" | "isize"
-        | "u8" | "u16" | "u32" | "u64" | "usize"
-    )
+    rask_ast::primitives::is_machine_integer(name)
 }
 
 /// Type arguments `string.parse<T>` accepts — the numeric primitives.
@@ -3278,10 +3276,7 @@ pub fn type_prefix_from_str(s: &str) -> Option<String> {
     // Reject primitives and empty
     if name.is_empty() { return None; }
     match name {
-        "i8" | "i16" | "i32" | "i64" | "i128"
-        | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "f32" | "f64" | "bool" | "char" | "string"
-        | "usize" | "isize" | "()" => None,
+        _ if rask_ast::primitives::is_builtin_scalar_or_string(name) || name == "()" => None,
         _ if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
             Some(name.to_string())
         }
