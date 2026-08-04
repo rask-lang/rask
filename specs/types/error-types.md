@@ -221,6 +221,18 @@ Discarding the earlier errors is the same information loss as `r or v`, and the 
 
 **Reading a line.** `or` introduces the other branch; what follows says what that branch does. A value means the expression produces it. A `return`, `break` or `continue` means control leaves, and the keyword is right there in the line saying so. There is no rule about which one the type system expects — `Never` coerces, exactly as it does in an `if` branch or a match arm.
 
+**In statement position** — a `void or E` call whose result you aren't binding — the same forms apply, and the fold is the one that reads best: the success type is `void`, so a void-returning handler needs no ceremony.
+
+<!-- test: skip -->
+```rask
+try save(d)                          // propagate — the usual one
+save(d) or return IoError.Full       // replace and leave
+save(d) or |e| log(e.message())      // handle here: `log` returns void, so this typechecks
+save(d)                              // W2: unused result of type `void or IoError`
+```
+
+`save(d) or IoError.Full` is a type error — without a `return`, the right side must be the success type, and that's `void`. Deliberately ignoring the error is `const _ = save(d)`, which silences W2 the same way any other unused binding does (`tool.warnings/W3`).
+
 **The `|e|` is not a closure.** It looks like one — Rask closures are `|x| expr` — but the right side of `or` is an ordinary expression in the enclosing scope, with `e` bound in it. So `return` there exits the function, which is the whole point of ER45/ER46:
 
 <!-- test: skip -->
@@ -643,6 +655,9 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `a or b` where `a: T??` and `b: T?` | ER14a/OPT30 | Collapses to `T?` — success types differ, so it isn't the chaining case |
 | `x or v` where `x` is neither `T?` nor `T or E` | ER14 | Type error — `or` needs a two-branch left side |
 | `a or b` on two bools | ER14 | Type error suggesting `\|\|` |
+| `void_call() or E` with no `return` | ER14 | Type error — the success type is `void`. Add `return`, or handle it: `or \|e\| log(e)` |
+| `void_call() or \|e\| log(e)` | ER44 | Legal — `log` returns `void`, which is the success type |
+| bare `void_call()` on a `void or E` | `tool.warnings/W2` | Warning, not an error. `const _ = void_call()` to silence it deliberately |
 | `r or v` where `E` carries a linear payload | ER43 | Compile error — the error is discarded, and a linear payload may not be. Use `r or \|e\| …` and consume it, or `match` |
 | `r?` as a bool | ER12 | Parse error — `?` is absence. Use `if r is E`, or `match` |
 | `r? && s?` in condition | ER25 | Legal bool; neither narrows |
