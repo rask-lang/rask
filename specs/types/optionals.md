@@ -17,7 +17,7 @@ Optionals aren't a separate kind of type. They're a particular union shape with 
 |------|-------------|
 | **OPT1: `T?` is sugar for `T or none`** | The parser desugars `T?` to `T or none` before type checking; the rest of the compiler sees a regular union |
 | **OPT2: `none` is a built-in zero-field type** | Lowercase, follows the primitive convention. One inhabitant, also spelled `none`. Not user-definable |
-| **OPT3: `?`-family restricted to `T or none`** | `?`, `!`, `== none` apply only when the operand is a two-variant union with one variant `none`. `?.` and `or` also work on `T or E` (short-circuit projection and the other branch don't care why the good branch is missing). Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
+| **OPT3: `?`-family restricted to `T or none`** | `?`, `?.`, `== none` apply only when the operand is a two-variant union with one variant `none` — never on a `T or E` (`type.errors/ER12`). `or` and `!` work on both shapes. Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
 | **OPT4: No user wrapper** | No `Some` keyword, constructor, or pattern. Bare values on the present path |
 
 <!-- test: skip -->

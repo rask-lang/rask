@@ -178,7 +178,7 @@ Operator surface — `?` for absence, `or`/`try` for errors:
 |---|---|
 | `x?` | `bool` — present test on an optional; narrows a `const` scrutinee inside the block |
 | `x? as v` | test and bind `v` |
-| `x?.field` | chain — projects on the good branch, short-circuits otherwise (both shapes) |
+| `x?.field` | optional chain — projects when present, `none` otherwise. Optionals only |
 | `x or v` | the other branch: a value instead. `v` must be a `T`, and never diverges |
 | `x or \|e\| f(e)` | the other branch, computed from the error — results only |
 | `try r` | extract, or return the error (widened into the function's error union) |
@@ -192,7 +192,7 @@ Operator surface — `?` for absence, `or`/`try` for errors:
 
 `or` never diverges. To leave with something that isn't an error — `break`, `continue`, a plain `return` — use an `if` on the early-exit narrow.
 
-`?` marks absence, `or` and `try` mark errors, so a line says which kind of failure it handles. There is no `r?` success test and no `if r?` narrowing on results — use `is`. Shared across both shapes: `?.` (short-circuit projection), `!`, and `match`.
+`?` marks absence, `or` and `try` mark errors, so a line says which kind of failure it handles. Nothing with a `?` in it applies to a result: no `r?` success test, no `if r?` narrowing, no `r?.field` chain — use `is`, and extract before projecting (`(try r).field`). Shared across both shapes: only `!` and `match`.
 
 - Auto-wrap for `T or E` fires **only at `return`**; optionals widen at any position (ER9–ER11).
 - Every error type satisfies `ErrorMessage` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.

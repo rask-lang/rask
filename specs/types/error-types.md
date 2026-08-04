@@ -113,8 +113,7 @@ Why return-only for errors? Construction in assignment/field positions makes the
 
 | Rule | Syntax | Meaning |
 |------|--------|---------|
-| **ER12: No `?` success test** | `r?` | Compile error. `?` marks absence; a result's other branch is an error. Use `is` (ER23) or `match` |
-| **ER13: Chain** | `r?.field` | Projects `field` when T; short-circuits the E branch otherwise. The `?` binds to the dot, not to the value — see [Absence and Error Are Spelled Differently](#absence-and-error-are-spelled-differently) |
+| **ER12: No `?` on a result** | `r?` / `r?.field` | Compile error, both forms. `?` marks absence; a result's other branch is an error. Test with `is` (ER23) or `match`; to project, extract first |
 | **ER14: Other branch** | `r or v` | Yields T when present, else `v`. `v` must have type T — see the `or` family below |
 | **ER15: Force** | `r!` | Extracts T, or panics using `E.message()`; `r! "msg"` overrides with a custom message |
 | **ER16: Propagate** | `try r` | Extracts T, or returns early with E widened to the current function's error type |
@@ -126,8 +125,8 @@ Why return-only for errors? Construction in assignment/field positions makes the
 // Single-call propagation
 const data = try read_file(path)
 
-// Chain with propagation
-const size = try read_file(path)?.len()
+// Extract, then use — `try` binds loosely, so parenthesise to keep it on one line
+const size = (try read_file(path)).len()
 
 // Force
 const config = load_config()!
@@ -138,7 +137,7 @@ const content = try {
 } or |e| context("reading {path}", e)
 ```
 
-ER19–ER22 and ER26 are retired: they were the `if r?` narrowing family and the `!r?` parse error, both of which assumed `?` worked on results. Narrowing a result is `is` (ER23).
+ER13, ER19–ER22 and ER26 are retired — the `?.` chain on results, the `if r?` narrowing family, and the `!r?` parse error, all of which assumed `?` worked on results. Narrowing a result is `is` (ER23).
 
 ## The `or` Family
 
@@ -179,7 +178,15 @@ const dto = try json.decode(req.body) or ApiError.BadRequest("invalid JSON")
 
 // Transform and propagate — the original error carries context
 const text = try fs.read_text(path) or |e| context("reading {path}", e)
+
+// Braces when the handler needs more than one expression
+const text = try fs.read_text(path) or |e| {
+    log("failed to read {path}: {e.message()}")
+    context("reading {path}", e)
+}
 ```
+
+The right side of `or` is an expression; a block is an expression, so braces are available whenever they help and never required for a single one.
 
 **Reading a line.** Look for `try` first. Present: an error leaves here, so what follows `or` is an error. Absent: nothing leaves, so what follows `or` is a `T`. Getting it backwards is a type error on that line — `T ≠ E` by disjointness (ER3) — never a silent change of behavior.
 
@@ -194,15 +201,26 @@ const text = try fs.read_text(path) or |e| context("reading {path}", e)
 | test / bind | `x?`, `x? as v`, `x == none` | `r is T as v`, `r is E as e` |
 | other branch | `x or v` | `r or v`, `r or \|e\| f(e)` |
 | propagate | `try x or e_val` (names the error) | `try r`, `try r or \|e\| f(e)` |
-| project | `x?.field` | `r?.field` |
+| project | `x?.field` | extract first: `(try r).field` |
 | assert | `x!` | `r!` |
 | dispatch | `match` | `match` |
 
-Three operators are shared, and each is shared because the operation genuinely doesn't care which branch went bad:
+Only two operators are shared, and each is shared because the operation genuinely doesn't care which branch went bad:
 
-- **`?.`** is short-circuit projection. The `?` attaches to the dot, not to the value — "stop here if this went bad". It can't be spelled with `try`, because `try` has to bind loosely: were it tighter, `try store.get(id)` would read as `(try store).get(id)`.
 - **`!`** asserts the good branch and panics otherwise. It never claims *which* branch failed; only the panic message differs (`"none"` versus `e.message()`).
 - **`match`** is multi-arm dispatch, shape-neutral by construction.
+
+`?.` is **not** among them. Chaining a projection through a result — `r?.field` yielding `Field or E` — threads a wrapped value through a pipeline, which is the shape this design deliberately doesn't have (see the extract-early argument in the appendix; it's why there's no `map` or `and_then` either). `?.` on a result would be `map` with punctuation, and it would borrow Rust's reading of `?` as propagation on top of that. Extract first, then project:
+
+<!-- test: skip -->
+```rask
+const size = (try read_file(path)).len()      // extract, then use
+
+const text = try read_file(path)              // or bind it — usually clearer
+const size = text.len()
+```
+
+Optional chaining is a different animal and stays: `user?.profile?.name` asks one question — is the whole path there? — and lands in `or`, `?`, or `!` immediately, rather than carrying a wrapper onward.
 
 ### Leaving Without an Error [ER48]
 
@@ -211,15 +229,18 @@ Three operators are shared, and each is shared because the operation genuinely d
 <!-- test: skip -->
 ```rask
 const item = queue.pop()
-if item == none: break
-process(item)                  // item: Task from here
+if item == none: break                    // inline form
+process(item)                             // item: Task from here
 
 const dto = json.decode(body)
-if dto is JsonError: return Response.bad_request("invalid JSON")
-save(dto)                      // dto: Dto from here
+if dto is JsonError {                     // braces when the branch earns them
+    log("bad body from {req.peer}")
+    return Response.bad_request("invalid JSON")
+}
+save(dto)                                 // dto: Dto from here
 ```
 
-Two lines rather than one, and the condition names what went wrong. Most cases don't reach for this: loops use `while x? as v`, and a handler that can fail returns `T or E` and lets its router fold (`return dispatch(req) or |e| error_response(e)`).
+Either form works — `:` for a single expression, braces when you want more (CF5). Two lines rather than one, and the condition names what went wrong. Most cases don't reach for this: loops use `while x? as v`, and a handler that can fail returns `T or E` and lets its router fold (`return dispatch(req) or |e| error_response(e)`).
 
 ## Conditions and Narrowing
 
@@ -742,7 +763,11 @@ const theme = load_theme() or fallback  // T or E — failed, so fallback
 
 Deleting the `if r?` narrowing family costs less than it looks like. On results the high-frequency operations are `try` and the fold; the narrowing family was the rare one, and where it's wanted `is` covers it in the same number of tokens.
 
-Three operators stay shared, each because the operation genuinely doesn't care which branch went bad. `?.` is short-circuit projection, where the `?` binds to the dot rather than to the value — and it can't be folded into `try`, because `try` has to bind loosely or `try store.get(id)` would parse as `(try store).get(id)`. `!` asserts the good branch without claiming which branch failed. `match` is multi-arm dispatch.
+Two operators stay shared, each because the operation genuinely doesn't care which branch went bad: `!` asserts the good branch without claiming which one failed, and `match` is multi-arm dispatch.
+
+`?.` was the hard case. It survived an earlier draft of this rule on the argument that the `?` binds to the dot rather than to the value — which was a fudge. The real objection isn't the marking, it's that `r?.field` threads a `T or E` into a `Field or E`: a wrapped-value pipeline, the shape ruled out by the extract-early argument above, and the reason there's no `map`/`and_then`. It was also the last place Rask read `?` as Rust reads it, meaning propagation. Extract first (`(try r).field`), or bind and use.
+
+The cost measured out at nothing: across stdlib, examples, projects and tests there was not one `try … ?.` — every `?.` in the tree is an optional chain. Optional chaining stays because it isn't a pipeline; `user?.profile?.name` asks whether the path is there and terminates in `or`, `?`, or `!`.
 
 **ER44 (a fold operator, not a fold method).** The error-model redesign removed `.unwrap_or_else` and pointed its migration at `try { … } else |e| f(e)`. That was wrong: the block form early-returns the transformed error, so it propagates and cannot produce a value. Nothing covered the *terminal* fold — collapsing `T or E` into `T` at a boundary with nothing above it. Every program has some: routers, `main`, task bodies.
 

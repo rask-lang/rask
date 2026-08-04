@@ -899,7 +899,7 @@ const dto = try json.decode(body) or BadRequest("bad JSON")   // replace + propa
 const text = try fs.read_text(p) or |e| context("reading {p}", e)
 ```
 
-`?` marks absence, `or` and `try` mark errors — so a line says which kind of failure it handles. `?.`, `!` and `match` are shared, because those operations don't care which branch went bad.
+`?` marks absence, `or` and `try` mark errors — so a line says which kind of failure it handles. Nothing with a `?` applies to a result, `?.` included; extract first (`(try r).field`). Only `!` and `match` are shared.
 
 See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
