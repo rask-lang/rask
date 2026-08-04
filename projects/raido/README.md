@@ -109,7 +109,7 @@ func transform(x: int) -> int or string {
 // Error handling
 const result = process(42) or |e| {
     log("failed: {e}")
-    return 0
+    0                       // last expression is the value — `result` is 0 on error
 }
 ```
 

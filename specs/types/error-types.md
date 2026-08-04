@@ -118,7 +118,7 @@ Why return-only for errors? Construction in assignment/field positions makes the
 | **ER15: Force** | `r!` | Extracts T, or panics using `E.message()`; `r! "msg"` overrides with a custom message |
 | **ER16: Propagate** | `try x` | Extracts the success payload, or returns early with the other branch. Shape-agnostic: on a `T or E` the error propagates, widened (ER31/ER31a/ER32); on a `T?` the absence propagates. The enclosing function's other branch has to match — see ER47 |
 | **ER17: Propagate block** | `try { … }` | Each `try` inside propagates; the first other-branch value short-circuits out. Shape follows ER16 |
-| **ER18: Error-context block** | `try { … } or \|e\| transform(e)` | Catches any E from the block, applies `transform`, then returns the result |
+| **ER18: Block with a handler** | `try { … } or \|e\| …` | The block is the left side of an ordinary `or`, so the same rule applies: a value folds, a `return` leaves. `try { … } or \|e\| return f(e)` is the block spelling of ER46 |
 
 <!-- test: skip -->
 ```rask
@@ -131,10 +131,10 @@ const size = (try read_file(path)).len()
 // Force
 const config = load_config()!
 
-// Error-context block
+// A block as the left side of `or` — same rule, so `return` to leave
 const content = try {
     try fs.read_text(path)
-} or |e| context("reading {path}", e)
+} or |e| return context("reading {path}", e)
 ```
 
 ER13, ER19, ER20 and ER26 are retired — the `?.` chain on results, the `if r?` predicate and its `as v` bind, and the `!r?` parse error, all of which assumed `?` worked on results. Narrowing a result is `is` (ER23). ER21 and ER22 survive: the `else`-narrows and `else as e` rules were never about `?`, so they re-home onto the `is` test unchanged.
@@ -158,6 +158,7 @@ What you put after it is an ordinary expression. Two things an expression can be
 | **ER14: Other branch** | `x or v` yields the success payload, or `v`. Works on `T?` and `T or E` alike — supplying the other branch doesn't care why the good branch was missing |
 | **ER14a: The right side sets the result type** | Three cases, checked in order. **Still wrapped:** if the right side is itself two-branch with the *same* success type, the result keeps that shape and the chain continues — `T?` with `T?` gives `T?`, `T or E1` with `T or E2` gives `T or E2`. **Collapsed:** if the right side is the bare success type `T`, the result is `T`. **Diverging:** if the right side is `Never`, the result is `T`. Anything else is a type error |
 | **ER44: Using the error** | `x or \|e\| f(e)` binds `e: E`. Only on `T or E` — `none` carries nothing to bind, so this form on an optional is a compile error |
+| **ER44a: `\|e\|` is a binding, not a closure** | The right side runs in the enclosing scope: `return`, `break` and `continue` inside it belong to the enclosing function, not to the `\|e\|`. Same as `with … as x { … }` (`mem.borrowing/W1`), which shares the shape for the same reason. This is what makes `x or \|e\| return f(e)` leave the function rather than fold |
 | **ER45: Diverging right side** | The right side may be any expression, `return`/`break`/`continue`/`panic(…)` included. It is `Never`-typed, so nothing constrains it to `T`, and the keyword says on the line that control leaves. This is how absence becomes an error: `opt or return MyError` |
 | **ER46: `\|e\|` composes with it** | The binding form and the diverging form are independent: `x or \|e\| return f(e)` transforms the error and leaves. No separate rule |
 | **ER47: `try` matches shapes** | `try x` needs the enclosing function's other branch to accept what it propagates. `try r` in a `T?`-returning function is a compile error — an error isn't absence, and silently dropping it would lose information; write `r or return none` to say you're dropping it. `try opt` in a `T or E`-returning function is a compile error — absence isn't an error, and inventing one is what `opt or return MyError` states explicitly |
@@ -219,6 +220,29 @@ const cfg = try load_from_disk() or load_from_env() or load_from_net()
 Discarding the earlier errors is the same information loss as `r or v`, and the same linearity rule applies (ER43): an error carrying a must-consume payload can't be dropped this way.
 
 **Reading a line.** `or` introduces the other branch; what follows says what that branch does. A value means the expression produces it. A `return`, `break` or `continue` means control leaves, and the keyword is right there in the line saying so. There is no rule about which one the type system expects — `Never` coerces, exactly as it does in an `if` branch or a match arm.
+
+**The `|e|` is not a closure.** It looks like one — Rask closures are `|x| expr` — but the right side of `or` is an ordinary expression in the enclosing scope, with `e` bound in it. So `return` there exits the function, which is the whole point of ER45/ER46:
+
+<!-- test: skip -->
+```rask
+const text = fs.read_text(path) or |e| return context("reading {path}", e)
+//                                     ^^^^^^ leaves `load_config`, not a closure
+
+const text = fs.read_text(path) or |e| {         // braces are fine, still not a closure
+    log("failed to read {path}: {e.message()}")
+    return context("reading {path}", e)
+}
+```
+
+`with pool[h] as entity { … }` already works this way — a binding plus a real block, where `return`/`try`/`break`/`continue` mean what they say. `or |e|` is the same shape for the same reason. Were it a closure, CF26 would capture the `return` and the transform-and-leave form would be unwritable.
+
+**`try` and `or` don't combine.** `try x` yields a plain `T`, and `or` needs a two-branch left side, so `try x or …` is ill-typed on its own terms — there is no rule to remember and no form to learn. The two are alternatives, and they differ on one question: **is the original error kept or replaced?**
+
+| | The error |
+|---|---|
+| `try x` | kept, and converted to this function's error type (ER31/ER31a/ER32) |
+| `x or return E` | replaced by `E` |
+| `x or \|e\| return f(e)` | replaced by something derived from it |
 
 **Why `try` still exists** when `try r` is shaped like `r or |e| return e`: it is the single most common operation in the language, it is shorter, it puts the marker at the front of the line where a reader scanning the left margin finds it, and the error-conversion rules (widening into a union, wrapping into a boundary enum, boxing into `any Error`) are attached to it. `rask lint` suggests `try r` when it sees the long form written out.
 

@@ -180,7 +180,7 @@ Operator surface — `?` is absence-specific, `or` and `try` work on both shapes
 | `x? as v` | test and bind `v` |
 | `x?.field` | optional chain — projects when present, `none` otherwise. Optionals only |
 | `x or v` | the other branch: this value. Must be a `T` |
-| `x or \|e\| f(e)` | the other branch: this value, from the error — results only |
+| `x or \|e\| f(e)` | the other branch: this value, from the error — results only. `\|e\|` binds, it is **not** a closure: `return` inside belongs to the enclosing function, like `with … as x` |
 | `x or return y` | the other branch leaves the function |
 | `x or \|e\| return f(e)` | leaves, carrying a transformed error |
 | `x or break` / `or continue` / `or panic(…)` | leaves the loop, or panics (`or panic` = `x! "…"`) |
