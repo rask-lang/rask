@@ -251,7 +251,7 @@ let item = queue.pop() is Some else { break }
 
 ```raido
 // Null coalescing
-const defense = shield or default_shield
+const defense = shield ?? default_shield
 
 // Force unwrap -- panics on None
 const order = orders.get(ship.id)!

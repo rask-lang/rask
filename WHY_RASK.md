@@ -86,7 +86,7 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 - **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly. Same mechanism for custom allocators: `using Allocator` threads an arena or fixed-buffer allocator without polluting every function signature
 - **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
 - **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `or |e| return` chains transformation with leaving. See below
-- **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `or`, `!`, `== none`). Match on `T?` is a style lint. Flow narrowing on `const` bindings. Kotlin/TypeScript nullable typing, not Rust Option
+- **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `== none`). Match on `T?` is a style lint. Flow narrowing on `const` bindings. Kotlin/TypeScript nullable typing, not Rust Option
 - **Must-use task handles** — `spawn(|| { work() })` returns a handle that must be joined or detached. Forgetting is a compile error
 - **No call-site coloring** — I/O pauses green tasks transparently. No `async`/`await` at call sites. But `using Multitasking` propagates through signatures (scope-level coloring) — you don't write `.await`, but you do declare the capability. This is a deliberate tradeoff: uncolored calls, colored signatures
 
@@ -108,7 +108,7 @@ The disjointness rule (T ≠ E) is the price — enforced via Rask's nominal-vs-
 **Option isn't an enum.** Rust's `Option<T>` is literally `enum { Some(T), None }` — you `match` or `if let`. In Rask, `T?` is a builtin status type with an operator-only surface. `match` on `T?` is a compile error.
 
 ```rask
-const name = user?.profile?.display_name or "Anonymous"
+const name = user?.profile?.display_name ?? "Anonymous"
 if user == none { return default() }
 if user? as u { greet(u) }
 ```

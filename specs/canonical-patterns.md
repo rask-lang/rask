@@ -41,7 +41,7 @@ Rask uses words where other languages use symbols:
 | Concept | Rask | Alternative |
 |---------|------|------------|
 | Error propagation | `try expr` | `expr?` |
-| Other branch | `x or v` | `x ?? v` |
+| Other branch | `x ?? v` (absent) / `x or v` (failed) | one operator for both shapes |
 | Ownership transfer | `own value` | implicit move |
 | Pattern check | `if x? as v { … }` | `let Some(v) = x` |
 | Result type | `T or E` | `Result<T, E>` |
@@ -218,7 +218,7 @@ func route(req: Request) -> Response {
 }
 ```
 
-Plain `or` supplies a value instead when the error isn't needed: `const port = read_port() or 8080`.
+Plain `or` supplies a value instead when the error isn't needed: `const port = read_port() or 8080`. On an optional that's `??`.
 
 **Anti-patterns:**
 - `x!` in production code — crashes on error. Use `try` or `match`.
@@ -274,14 +274,14 @@ if opt? as v {
 }
 
 // Fallback — provide a default
-const name = opt or "anonymous"
+const name = opt ?? "anonymous"
 
 // Early exit if absent — the binding keeps its name
 if opt == none { return none }
 use(opt)   // opt: T here (early-exit narrow)
 
 // Absence should leave — one line
-const v = opt or return MyError.NotFound
+const v = opt ?? return MyError.NotFound
 
 // Full handling — both branches matter, use if/else (not match)
 if opt? {
@@ -668,7 +668,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
 | Handle errors | `try` (propagate), `or \|e\| return` (with context), `or \|e\| f(e)` (fold), `match` (handle) |
 | Clean up resources | `ensure` |
-| Handle optionals | `if x?`, `or v`, `or return`, `match` |
+| Handle optionals | `if x?`, `?? v`, `?? return`, `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `StringBuilder` |
 | Share state | `Shared<T>`, channels |

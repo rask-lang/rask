@@ -766,11 +766,11 @@ One-liners cover the common cases — `try` propagates, `or` supplies the other 
 
 ```rask
 const data = try read_file(path)                              // propagate the error
-const ms = raw.parse() or return BadRequest("not a number")   // absence → leave
-const port = config.port or 8080                              // a value instead
+const ms = raw.parse() ?? return BadRequest("not a number")   // absence → leave
+const port = config.port ?? 8080                              // a value instead
 ```
 
-`or` always produces a value; leaving is `try`'s job or an ordinary `if` (`type.errors/ER48`).
+A `?` in the line means absence; no `?` means failure. `try` is failure-only (`type.errors/ER47`).
 
 ### Loops
 
@@ -882,27 +882,28 @@ func load_config() -> Config or (IoError | ParseError) {
 }
 ```
 
-**The `or` family.** `or` supplies the other branch — the same keyword as the type (`T or E`, and `T?` is `T or none`). What follows it is an ordinary expression: a value, or a `return`.
+**One operator per shape.** `??` supplies the absent branch, `or` the failing one — the same keyword the type uses. What follows either is an ordinary expression: a value, or a `return`.
 
 | Form | The other branch |
 |------|------------------|
-| `x or v` | is this value |
-| `x or \|e\| f(e)` | is this value, computed from the error |
-| `x or return y` | leaves the function |
-| `x or \|e\| return f(e)` | leaves, carrying a transformed error |
-| `try x` | propagates the other branch — the error (widened) for a result, `none` for an optional |
+| `x ?? v` | **absence:** is this value |
+| `r or v` | **failure:** is this value |
+| `r or \|e\| f(e)` | is this value, computed from the error |
+| `x ?? return y` / `r or return y` | leaves the function |
+| `r or \|e\| return f(e)` | leaves, carrying a transformed error |
+| `try r` | propagates the error, widened into the function's error union |
 
 ```rask
-const port = config.port or 8080                                 // a value instead
-return dispatch(req) or |e| error_response(e)                    // fold at a boundary
-const ms = raw.parse() or return BadRequest("bad ms")            // absence → leave
-const dto = json.decode(body) or return BadRequest("bad JSON")   // error → leave
+const port = config.port ?? 8080                                 // absence → a value
+const ms = raw.parse() ?? return BadRequest("bad ms")            // absence → leave
+const item = queue.pop() ?? break                                // absence → leave the loop
+const dto = json.decode(body) or return BadRequest("bad JSON")   // failure → leave
 const text = fs.read_text(p) or |e| return context("reading {p}", e)
-const item = queue.pop() or break                                // leave the loop
+return dispatch(req) or |e| error_response(e)                    // fold at a boundary
 const data = try read_file(path)                                 // the common case
 ```
 
-`?` is absence-specific — nothing with a `?` applies to a result, `?.` included; extract first (`(try r).field`). `or` and `try` are shape-agnostic. `or |e|` is results-only, since it binds a payload.
+**One operator per shape**, and the line shows which: `??` and the `?`-family for absence, `or` and `try` for failure. Nothing with a `?` applies to a result, `?.` included — project with `try r.field`, where `try` attaches to the fallible step.
 
 See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
@@ -1197,7 +1198,7 @@ println("{sum}")
 | Optional | `T?` | Sugar for `T or none`; bare value + `none` literal, no `Some`/`None` |
 | Error union | `T or E` | No `Ok`/`Err` — bare T auto-wraps at return; E is its own type |
 | Error prop | `try expr` | Prefix keyword |
-| Other branch | `expr or v` / `or \|e\| f(e)` | Produces a `T`; nothing propagates |
+| Other branch | `x ?? v` (absent) / `r or v` (failed) | Produces a `T`; nothing propagates |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
 | Guard extraction | `const v = x is P else { }` | Enum patterns only; binds to outer scope |

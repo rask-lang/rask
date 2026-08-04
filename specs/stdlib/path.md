@@ -119,8 +119,8 @@ WHY: Rask paths are UTF-8. Non-UTF-8 filenames are lossy-converted at the system
 import path
 
 func output_path(input: Path, ext: string) -> Path {
-    const dir = input.parent() or Path.from(".")
-    const name = input.stem() or "output"
+    const dir = input.parent() ?? Path.from(".")
+    const name = input.stem() ?? "output"
     return dir / "{name}.{ext}"
 }
 ```

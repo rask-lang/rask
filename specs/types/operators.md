@@ -24,7 +24,7 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 | 10 | `&` | Bitwise AND | Left |
 | 9 | `^` | Bitwise XOR | Left |
 | 8 | `\|` | Bitwise OR | Left |
-| 7 | `or` | Other branch (`type.errors/ER14`) | Left |
+| 7 | `??` `or` | Other branch — `??` for absence, `or` for failure (`type.optionals/OPT11`, `type.errors/ER14`) | Left |
 | 6 | `==` `!=` `<` `>` `<=` `>=` | Comparison | None |
 | 5 | `&&` | Logical AND | Left |
 | 4 | `\|\|` | Logical OR | Left |
@@ -34,11 +34,11 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 
 Postfix `?`, `?.` and `!` bind with field access and calls at 15 — tighter than everything below. `x! == y` is `(x!) == y`; `x?.f + 1` is `(x?.f) + 1`. Note the two `!`s: postfix force at 15, prefix boolean NOT at 14.
 
-`or` binds tighter than comparison and looser than the bitwise operators, so `port or 8080 == want` is `(port or 8080) == want` — the reading you want, without parens. It is **left**-associative, which is the correct grouping for a chain: the right side sets the result type, so `a or b or fallback` stays wrapped through `b` and collapses at `fallback` (`type.errors/ER14a`). The compiler doesn't implement the still-wrapped case yet — [#578](https://github.com/rask-lang/rask/issues/578).
+Both share one level and bind tighter than comparison, looser than the bitwise operators, so `port ?? 8080 == want` is `(port ?? 8080) == want` — the reading you want, without parens. It is **left**-associative, which is the correct grouping for a chain: the right side sets the result type, so `a or b or fallback` stays wrapped through `b` and collapses at `fallback` (`type.errors/ER14a`). The compiler doesn't implement the still-wrapped case yet — [#578](https://github.com/rask-lang/rask/issues/578).
 
-A diverging right side — `or return x`, `or break`, `or continue`, `or panic(…)` — is legal and `Never`-typed (`type.errors/ER45`). `return` binds loosely enough to take the rest of the expression, so `x or return a or b` is `x or return (a or b)`; parenthesise if you meant otherwise.
+A diverging right side — `return x`, `break`, `continue`, `panic(…)` — is legal on either operator and `Never`-typed (`type.errors/ER45`). `return` binds loosely enough to take the rest of the expression, so `x ?? return a ?? b` is `x ?? return (a ?? b)`; parenthesise if you meant otherwise.
 
-`try` is a loose prefix: `try store.get(id)` is `try (store.get(id))`, not `(try store).get(id)`. That is deliberate — the tight reading would break every method call on a fallible receiver — and it is why projecting off a propagated value needs parens: `(try read_file(p)).len()`.
+`try` is a loose prefix, but it attaches to the fallible step of the postfix chain rather than to the whole of it (`type.errors/ER16a`): `try store.get(id)` is `try (store.get(id))`, while `try read_file(p).len()` is `(try read_file(p)).len()`. A wrapped value has no payload methods, so normally only one placement type-checks; when two do it is an error asking for parens.
 
 ## Indexing
 

@@ -172,19 +172,20 @@ func read_config(path: string) -> Config or (IoError | ParseError) {
 }
 ```
 
-Operator surface — `?` is absence-specific, `or` and `try` work on both shapes:
+Operator surface — one operator per shape; a `?` in the line means absence:
 
 | Form | Meaning |
 |---|---|
 | `x?` | `bool` — present test on an optional; narrows a `const` scrutinee inside the block |
 | `x? as v` | test and bind `v` |
 | `x?.field` | optional chain — projects when present, `none` otherwise. Optionals only |
-| `x or v` | the other branch: this value. Must be a `T` |
+| `x ?? v` | **optionals:** that, or this instead. Must be a `T` |
+| `r or v` | **results:** that, or this instead. Must be a `T` |
 | `x or \|e\| f(e)` | the other branch: this value, from the error — results only. `\|e\|` binds, it is **not** a closure: `return` inside belongs to the enclosing function, like `with … as x` |
-| `x or return y` | the other branch leaves the function |
+| `x ?? return y` / `r or return y` | the other branch leaves the function |
 | `x or \|e\| return f(e)` | leaves, carrying a transformed error |
-| `x or break` / `or continue` / `or panic(…)` | leaves the loop, or panics (`or panic` = `x! "…"`) |
-| `try x` | extract, or propagate the other branch — the error (widened) for a result, `none` for an optional. Shapes must match the enclosing function |
+| `?? break` / `or continue` / `?? panic(…)` | leaves the loop, or panics (`panic` form = `x! "…"`) |
+| `try r` | **results only:** extract, or return the error, widened into the function's error union |
 | `r!` / `r! "msg"` | extract or panic |
 | `if r is IoError as e { }` | error-side type test and bind |
 | `const v = x is Pattern else { return }` | pattern guard, enum patterns only |
@@ -193,7 +194,7 @@ Operator surface — `?` is absence-specific, `or` and `try` work on both shapes
 
 `try r` is the propagate form: shaped like `r or |e| return e`, but the widening, boundary-enum wrapping and `any Error` boxing rules are attached to `try`, so a bare `return e` doesn't get them. It's also where a reader scanning the left margin finds the exits, which is why it stays.
 
-`?` is absence-specific; `or` and `try` are shape-agnostic. Nothing with a `?` in it applies to a result: no `r?` success test, no `if r?` narrowing, no `r?.field` chain — use `is`, and extract before projecting (`(try r).field`). `or |e|` is the one results-only form (it binds a payload). `!` and `match` work on both.
+**One operator per shape, and the line shows which.** `??` and the rest of the `?`-family are absence; `or` and `try` are failure. Nothing with a `?` applies to a result — no `r?` test, no `if r?` narrowing, no `r?.field` chain; use `is`, and project with `try r.field` (`try` attaches to the fallible step). `!` and `match` work on both.
 
 - Auto-wrap for `T or E` fires **only at `return`**; optionals widen at any position (ER9–ER11).
 - Every error type satisfies `ErrorMessage` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.

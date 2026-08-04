@@ -7,7 +7,7 @@
 >
 > **One part superseded (2026-07-30, issue #488).** This proposal deleted OPT4 by folding "`T??` is forbidden" into the duplicate-variant rule. That didn't survive generics: `func head<T>(v: Vec<T>) -> T?` produced `T??` for every optional `T`. Optionals now nest, with the layers kept distinct — see `type.optionals/OPT28`–OPT31. The rest of the proposal stands.
 >
-> **A second part superseded (2026-08-03, issues #565/#573/#574).** The `?`-family here spans both shapes, `??` included. It no longer does: `?` marks absence only, and `or` — the same keyword as the type, since `T?` *is* `T or none` — supplies the other branch on both shapes. `??` is gone, `?.` no longer applies to results, `try` on an optional must name the error it becomes (`try opt or MyError`), and `.to_result` is retired. See `type.errors/ER12`–ER18 and ER44–ER48. The unification argument itself is unaffected — it's what made one value-level keyword possible for both shapes.
+> **A second part superseded (2026-08-03, issues #565/#573/#574).** The `?`-family here spans both shapes, `??` included. It no longer does. There is **one operator per shape**: the `?`-family (`?`, `?.`, `??`, `== none`) for absence, and `or`/`try` for failure. So `??` survives but narrows to optionals, `?.` and `r?` no longer apply to results (use `is`), `try` is failure-only (absence propagates with `?? return none`), and `.to_result` is retired in favour of `opt ?? return err`. See `type.errors/ER12`–ER18 and ER44–ER48. The unification argument itself stands — `T?` being `T or none` is what lets the two operator sets share their typing rules rather than being two systems, as in Swift.
 
 
 # Option Unification
@@ -131,7 +131,7 @@ Every line of Rask source code compiles identically. The changes are all inside 
 | Chain | `x?.field` | `x?.field` |
 | Fallback | `x ?? default` | `x ?? default` |
 | Force | `x!` | `x!` |
-| Propagate | `try x` | `try x` |
+| Propagate | `try x` | `x ?? return none` (`try` is failure-only) |
 | Present check | `x?`, `x == none` | `x?`, `x == none` |
 | Narrow | `if x?`, `if x? as v` | `if x?`, `if x? as v` |
 | Auto-wrap at return | works | works (by widening) |

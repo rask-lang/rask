@@ -136,7 +136,7 @@ extend DateTime {
     }
 
     public func from_json(value: JsonValue) -> DateTime or JsonError {
-        const s = value.as_string() or return JsonError.TypeError("expected string for DateTime")
+        const s = value.as_string() ?? return JsonError.TypeError("expected string for DateTime")
         return try DateTime.parse_iso8601(s)
     }
 }
