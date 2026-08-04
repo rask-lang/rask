@@ -9,7 +9,7 @@
 
 Optionals aren't a separate kind of type. They're a particular union shape with dedicated operator surface. The `?`-family handles absence, and everything else (auto-wrap, linearity, equality) falls out of the general union rules.
 
-One operator per shape for the value-instead case: `??` on an optional, `or` on a result ([error-types.md](error-types.md) ER14). Neither leaves the function — that's `try`'s job, on either shape, and it's the marker that says a line can exit (ER48).
+One operator per shape for the value-instead case: `??` on an optional, `or` on a result ([error-types.md](error-types.md) ER14). Neither transfers control — they supply the value being bound. `try` is the marker that says a line can exit (ER48).
 
 ## The Type
 
@@ -52,7 +52,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT8: Absent literal** | `none` | absent value; type widens at use |
 | **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
 | **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
-| **OPT11: Other branch** | `x ?? default` | unwraps `x` if present, else evaluates `default`. The right side sets the result type: a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining (`type.errors/ER14a`). It may `break`, `continue` or `panic(…)`, but not `return` — that's `try`'s job (ER48) |
+| **OPT11: Other branch** | `x ?? default` | unwraps `x` if present, else evaluates `default`. The right side is a **value** — a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining (`type.errors/ER14a`). It never transfers control: `return`, `break`, `continue` and `panic(…)` are rejected (ER48) |
 | **OPT12: Propagate absence** | `try x` | in a function returning some `U?`, unwraps if present, else returns `none`. Elsewhere it needs a clause saying what leaves: `try x else return MyError` (`type.errors/ER45`, ER47). `??` never leaves the function (ER48) |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
 | **OPT15: Absent check** | `x == none` / `x != none` | plain equality; `x?` and `x == none` narrow identically |
@@ -69,17 +69,20 @@ const name = user?.display_name
 
 As soon as a right side is bare `T`, the chain collapses to `T` and a further `??` is a type error. The chain works flat because the right side sets the result type — see [error-types.md](error-types.md) ER14a. (The compiler doesn't implement the still-wrapped case yet, so a flat chain needs parentheses until [#578](https://github.com/rask-lang/rask/issues/578) lands.)
 
-The right side is an ordinary expression. It may `break`, `continue` or `panic(…)` — local exits, visible where they are — but not `return`: leaving the function carries `try` (`type.errors/ER48`).
+The right side supplies the value that gets bound, so it can only be a value. Control flow doesn't produce one: `return` is `try`'s job, a loop exit is an `if`, and an assert is `!` (`type.errors/ER48`).
 
 <!-- test: skip -->
 ```rask
 const theme = config.theme ?? "default"                 // a value instead
-const item = queue.pop() ?? break                       // leaves the loop, not the function
-const home = env("HOME") ?? panic("no HOME")            // same as env("HOME")!
+const home = env("HOME")! "HOME must be set"            // assert — `!`, not `??`
 
 // leaving the function carries `try`, and the clause writes the exit out
 const user = try load_user(id) else return ApiError.NoUser
 const prof = try load_user(id)                          // in a `U?`-returning function
+
+// leaving a loop is an ordinary `if` on the narrow
+const instr = code.get(i)
+if instr == none: break
 ```
 
 There is no `?? |e|` form — `none` carries no payload to bind. That's `or |e|`, on the failure shape (ER44).
@@ -259,8 +262,9 @@ No optional-specific equality rule.
 | `x?.field` on `T??` | OPT3/OPT30 | Compile error — the outer payload is `T?`, not a struct. Narrow first |
 | `Vec<T?>.first()` | OPT28 | `T??` — outer says "vec empty", inner says "slot empty" |
 | `?.` on `T or E or none` | OPT3 | Compile error suggesting layering: `(T or E)?` or `T or (E?)` |
-| `x ?? break` / `?? continue` / `?? panic(…)` | OPT11 | Legal — local exits |
 | `x ?? return E` | ER48 | Compile error pointing at `try x else return E` |
+| `x ?? break` / `?? continue` | ER48 | Compile error — use an `if` on the narrow (OPT21) |
+| `x ?? panic(…)` | ER48 | Compile error pointing at `x! "…"` |
 | `x ?? \|e\| f(e)` | OPT11 | Compile error — no payload to bind. That form is `or \|e\|`, on the failure shape |
 | `x or v` on an optional | OPT3/ER14 | Compile error — `or` is failure-only. Use `??` |
 | `try x` in a `U?`-returning function | OPT12 | Legal — absence propagates as absence |

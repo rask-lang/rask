@@ -882,7 +882,7 @@ func load_config() -> Config or (IoError | ParseError) {
 }
 ```
 
-**`try` marks every exit.** `??` supplies the absent branch and `or` the failing one — neither leaves the function. Any line that can exit carries `try`, and its `else` clause must diverge, so the exit is written out.
+**`try` marks every exit.** `??` supplies the absent branch and `or` the failing one — both produce values and never transfer control. Any line that can exit the function carries `try`, and its `else` clause must diverge, so the exit is written out.
 
 | Form | Leaves? | The other branch |
 |------|---------|------------------|
@@ -895,7 +895,6 @@ func load_config() -> Config or (IoError | ParseError) {
 
 ```rask
 const port = config.port ?? 8080                                 // no `try` — nothing leaves
-const item = queue.pop() ?? break                                // leaves the loop only
 return dispatch(req) or |e| error_response(e)                    // handled at a boundary
 
 const data = try read_file(path)                                 // `try` — leaves

@@ -146,7 +146,7 @@ ER13, ER19, ER20 and ER26 are retired — the `?.` chain on results, the `if r?`
 
 Every optional form carries a `?`. No failure form does. That's the whole mnemonic — you never look up which operator applies, because the type's own spelling tells you.
 
-**`or` never leaves the function.** Every line that can exit wears `try`, so "does control leave here?" is answered by looking at the line rather than by reading the right-hand side.
+**`or` produces a value; `try` transfers control.** No form does both, so "does control leave this line?" is answered by whether `try` is on it.
 
 | Rule | Form | Leaves? | The other branch |
 |------|------|---------|------------------|
@@ -158,11 +158,11 @@ Every optional form carries a `?`. No failure form does. That's the whole mnemon
 
 | Rule | Description |
 |------|-------------|
-| **ER14: Other branch** | `r or v` yields the success payload, or `v`. Results only — absence uses `??` (`type.optionals/OPT11`). `v` may `break`, `continue` or `panic(…)`, which are local and visible; it may **not** `return`, because leaving the function is `try`'s job (ER48) |
+| **ER14: Other branch** | `r or v` yields the success payload, or `v`. Results only — absence uses `??` (`type.optionals/OPT11`). `v` is a **value**: it may not `return`, `break`, `continue` or `panic(…)`. `or` exists to produce the thing being bound, and control flow doesn't produce anything (ER48) |
 | **ER44: Using the error** | `r or \|e\| f(e)` binds `e: E` and yields `f(e): T`. Nothing leaves |
 | **ER45: `try … else`** | The `else` clause replaces what `try` would have propagated. Its body **must diverge** — the same rule as the pattern guard (`ctrl.flow/CF13`) — so the `return` is written out and the control path is visible at the line. `try r else return E` needs no binding; `try r else \|e\| return f(e)` binds the old error first |
 | **ER47: `try` supplies or is supplied** | Bare `try x` propagates the other branch unchanged, so the enclosing function's other branch has to accept it: `try r` needs an error type, `try opt` needs a `T?` return. With an `else`, that constraint lifts — the clause says what leaves, so `try opt else return MyError` and `try r else return none` are both fine |
-| **ER48: `or` and `??` don't `return`** | A `return` on the right of `or` or `??` is a compile error pointing at `try … else`. Everything that leaves the function carries `try`; nothing else does |
+| **ER48: `or` and `??` never transfer control** | `return`, `break`, `continue` and `panic(…)` on the right of `or` or `??` are compile errors, each pointing at its own replacement: `try … else return` to leave the function, an `if` for a loop exit, `x!` to assert. `Never` coercion is untouched everywhere else in the language |
 
 <!-- test: skip -->
 ```rask
@@ -173,27 +173,24 @@ const theme = load_theme() or Theme.default()     // result — `or`, error igno
 // A value computed from the error — the fold at a boundary
 return dispatch(req) or |e| error_response(e)
 
-// Leave, naming the error — same shape of line, one operator each
+// Leave, naming the error
 const ms = try raw.parse() else return ApiError.BadRequest("ms must be non-negative")
 const dto = try json.decode(req.body) else return ApiError.BadRequest("invalid JSON")
 
 // Leave, transforming the error first
 const text = try fs.read_text(path) else |e| return context("reading {path}", e)
 
-// Leave the loop
-const item = queue.pop() ?? break
-
 // Propagate unchanged — the common case, and the reason `try` exists
 const data = try read_file(path)
 
-// Braces when the right side needs more than one expression
-const text = fs.read_text(path) or |e| {
+// Braces when the clause needs more than one expression — still has to diverge
+const text = try fs.read_text(path) else |e| {
     log("failed to read {path}: {e.message()}")
     return context("reading {path}", e)
 }
 ```
 
-The right side of `or` is an expression, and a block is an expression, so braces are available whenever they help and never required for a single one.
+Both the `or` right side and the `else` clause are expressions, and a block is an expression, so braces are available whenever they help and never required for a single one.
 
 ### Chaining [ER14a]
 
@@ -220,7 +217,7 @@ const cfg = try load_from_disk() or load_from_env() or load_from_net()
 
 Discarding the earlier errors is the same information loss as `r or v`, and the same linearity rule applies (ER43): an error carrying a must-consume payload can't be dropped this way.
 
-**Reading a line.** Look for `try`. If it's there, control can leave this line, and the `else` clause — if any — says with what. If it isn't, nothing leaves: `or` and `??` produce values. That's the whole of it, and it's a glance rather than an inference.
+**Reading a line.** Look for `try`. If it's there, control can leave this line, and the `else` clause — if any — says with what. If it isn't, nothing leaves at all: `or` and `??` produce values and only values. That's the whole of it, and it's a glance rather than an inference.
 
 **In statement position** — a `void or E` call whose result you aren't binding — the same forms apply, and the fold is the one that reads best: the success type is `void`, so a void-returning handler needs no ceremony.
 
@@ -311,28 +308,30 @@ const size = text.len()
 
 Optional chaining is a different animal and stays: `user?.profile?.name` asks one question — is the whole path there? — and lands in `or`, `?`, or `!` immediately, rather than carrying a wrapper onward.
 
-### Loop Exits and Panics [ER14]
+### Loop Exits and Asserts [ER48]
 
-`break`, `continue` and `panic(…)` stay legal on the right of `or` and `??`. They don't leave the function, they're visible where they are, and the one-liner is worth keeping:
-
-<!-- test: skip -->
-```rask
-const item = queue.pop() ?? break                   // out of the loop
-const line = reader.next() ?? continue              // next iteration
-const home = env("HOME") ?? panic("no HOME")        // same as `env("HOME")!`
-```
-
-`return` is the one that needs `try`, because a function exit is the thing a reader has to be able to find by scanning. When the check reads better as a condition than as a fallback, the early-exit narrow is still there (ER24, OPT21):
+`or` and `??` supply the value that gets bound. Nothing that transfers control produces a value, so nothing that transfers control belongs there — `return`, `break`, `continue` and `panic(…)` are all rejected, each with its own replacement.
 
 <!-- test: skip -->
 ```rask
-const dto = json.decode(body)
-if dto is JsonError {
-    log("bad body from {req.peer}")
-    return Response.bad_request("invalid JSON")
-}
-save(dto)                                 // dto: Dto from here
+// leaving the function
+const dto = try json.decode(body) else return Response.bad_request("bad json")
+
+// leaving the loop — an ordinary `if` on the early-exit narrow (ER24, OPT21)
+const instr = code.get(i)
+if instr == none: break
+step(instr)                          // instr: Instr from here
+
+// skipping an iteration
+const name = entry.as_string()
+if name == none: continue
+use(name)
+
+// asserting — `!` already is this, with a shorter spelling
+const home = env("HOME")! "HOME must be set"
 ```
+
+The loop cases cost a second line. That's the price of `or` meaning exactly one thing, and the `if` names the condition where `?? break` didn't.
 
 ## Conditions and Narrowing
 
@@ -639,7 +638,8 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `try r else v` where `v` doesn't diverge | ER45 | Compile error — the clause must diverge, so the exit is written out |
 | `r or return X` | ER48 | Compile error pointing at `try r else return X` |
 | `x ?? return X` | ER48 | Compile error pointing at `try x else return X` |
-| `r or break` / `or continue` / `or panic(…)` | ER14 | Legal — local and visible; only `return` needs `try` |
+| `r or break` / `or continue` | ER48 | Compile error — use an `if` on the narrow |
+| `r or panic(…)` | ER48 | Compile error pointing at `r! "…"` |
 | `r or v` where `v: E` | ER14 | Type error — `or` produces a `T`. To leave with it, `try r else return v` |
 | `try a.b().c` with one fallible step | ER16a | Legal — `try` attaches to that step; no parens |
 | `try v.map(f)` where both `v` and `v.map` are fallible | ER16a | Compile error — two placements type-check; parenthesise |
@@ -920,7 +920,19 @@ Scan the left margin and you have every exit point. That is the property the who
 
 This is what #573 asked for, with the missing half added. Dropping the `|e|` binding when the error isn't used was the right request; dropping the `return` along with it hid the control flow.
 
-**`break` and `continue` are exempt.** They stay legal on `or` and `??`, because a loop exit is local — it's visible where it is, and it doesn't change what the function returns. The thing a reader needs to find by scanning is the function exits.
+**Why nothing diverges on the right of `or`.** The visibility argument above is real, but there's a simpler one underneath it: in `const x = expr or v`, the `or` clause exists to supply **the value that gets bound to `x`**. A `return` doesn't produce a value — it abandons the binding. It typechecks only because `Never` coerces, which is the type system permitting something the operator's own purpose contradicts.
+
+That argument doesn't stop at `return`. `break` and `continue` don't produce a value either, so an earlier draft that allowed them was inconsistent for the same reason. They're rejected too, and the loop guard is an ordinary `if`:
+
+<!-- test: skip -->
+```rask
+const instr = code.get(i)
+if instr == none: break
+```
+
+That costs a second line at 14 sites in the current tree. Worth it for `or` meaning exactly one thing with no carve-outs — and the `if` names the condition, which `?? break` didn't.
+
+`panic(…)` costs nothing to reject: `x! "message"` already is that operation, and it's shorter.
 
 **Rejected alternatives for the bail-out form.** Four were tried before landing here:
 

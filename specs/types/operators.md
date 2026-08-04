@@ -36,7 +36,7 @@ Postfix `?`, `?.` and `!` bind with field access and calls at 15 — tighter tha
 
 Both share one level and bind tighter than comparison, looser than the bitwise operators, so `port ?? 8080 == want` is `(port ?? 8080) == want` — the reading you want, without parens. It is **left**-associative, which is the correct grouping for a chain: the right side sets the result type, so `a or b or fallback` stays wrapped through `b` and collapses at `fallback` (`type.errors/ER14a`). The compiler doesn't implement the still-wrapped case yet — [#578](https://github.com/rask-lang/rask/issues/578).
 
-`break`, `continue` and `panic(…)` are legal on the right of either operator and `Never`-typed. `return` is **not** — leaving the function carries `try` (`type.errors/ER48`), whose `else` clause holds the `return`.
+Neither operator accepts a diverging right side: they supply the value being bound, and `return`/`break`/`continue`/`panic(…)` don't produce one (`type.errors/ER48`). Leaving the function is `try … else return`; a loop exit is an `if`; an assert is `!`.
 
 `try` is a loose prefix, but it attaches to the fallible step of the postfix chain rather than to the whole of it (`type.errors/ER16a`): `try store.get(id)` is `try (store.get(id))`, while `try read_file(p).len()` is `(try read_file(p)).len()`. A wrapped value has no payload methods, so normally only one placement type-checks; when two do it is an error asking for parens.
 
