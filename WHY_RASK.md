@@ -85,7 +85,7 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 - **Immutable refcounted strings** — `string` is Copy (16 bytes), immutable, atomically refcounted. Copies like a primitive. The compiler elides refcount ops in most cases (`comp.string-refcount-elision`). Go's string ergonomics without GC
 - **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly. Same mechanism for custom allocators: `using Allocator` threads an arena or fixed-buffer allocator without polluting every function signature
 - **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
-- **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `or |e| return` chains transformation with leaving. See below
+- **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `try … else |e| return` chains transformation with leaving; `try` marks every line control can leave. See below
 - **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `== none`). Match on `T?` is a style lint. Flow narrowing on `const` bindings. Kotlin/TypeScript nullable typing, not Rust Option
 - **Must-use task handles** — `spawn(|| { work() })` returns a handle that must be joined or detached. Forgetting is a compile error
 - **No call-site coloring** — I/O pauses green tasks transparently. No `async`/`await` at call sites. But `using Multitasking` propagates through signatures (scope-level coloring) — you don't write `.await`, but you do declare the capability. This is a deliberate tradeoff: uncolored calls, colored signatures
@@ -131,10 +131,10 @@ enum FetchError {
 
 No `thiserror` macro, no hand-written match.
 
-**`or |e| return` form.** Transform and leave in one step:
+**`try … else |e| return` form.** Transform and leave in one step:
 
 ```rask
-const data = fs.read(path) or |e| return context("reading {path}", e)
+const data = try fs.read(path) else |e| return context("reading {path}", e)
 ```
 
 Rust needs `fs::read(path).map_err(|e| ...)?`.
@@ -326,8 +326,8 @@ The catch: functions that spawn tasks need `using Multitasking` in their signatu
 
 ```rask
 func load_config(path: string) -> Config or _ {
-    const text = fs.read(path) or |e| return context("reading {path}", e)
-    const config = parse(text) or |e| return context("parsing {path}", e)
+    const text = try fs.read(path) else |e| return context("reading {path}", e)
+    const config = try parse(text) else |e| return context("parsing {path}", e)
     return config
 }
 ```
@@ -362,7 +362,7 @@ func import_users(path: string, mutate db: Database) -> i64 or ImportError {
 
     let imported = 0
     for line in file.lines() {
-        const text = line or |e| return ImportError.ReadError(e)
+        const text = try line else |e| return ImportError.ReadError(e)
         const parts = text.split(",")
         if parts.len() != 2 {
             return ImportError.BadFormat("expected name,email on line {imported + 1}")
@@ -400,7 +400,7 @@ fn import_users(path: &str, db: &mut Database) -> Result<i64, ImportError> {
 
 No single line is revolutionary. The differences are incremental:
 
-- `or |e| return …` vs `.map_err(|e| ...)?` — same idea, less nesting
+- `try … else |e| return …` vs `.map_err(|e| ...)?` — same idea, less nesting
 - `return ImportError.BadFormat(...)` vs `return Err(ImportError::BadFormat(...))` — no wrapper
 - `return imported` vs `Ok(imported)` — no wrapper
 - `parts[0].trim()` vs `parts[0].trim().to_string()` — Copy strings

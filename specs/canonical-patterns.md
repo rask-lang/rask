@@ -41,7 +41,8 @@ Rask uses words where other languages use symbols:
 | Concept | Rask | Alternative |
 |---------|------|------------|
 | Error propagation | `try expr` | `expr?` |
-| Other branch | `x ?? v` (absent) / `x or v` (failed) | one operator for both shapes |
+| Handle it here | `x ?? v` (absent) / `r or v` (failed) | one operator for both shapes |
+| Leave the function | `try x`, `try x else return E` | an unmarked `return` mid-expression |
 | Ownership transfer | `own value` | implicit move |
 | Pattern check | `if x? as v { … }` | `let Some(v) = x` |
 | Result type | `T or E` | `Result<T, E>` |
@@ -155,7 +156,7 @@ Future stdlib additions must follow these patterns; `rask lint` enforces them. S
 
 ## Error Handling
 
-Propagate with `try`, handle with `match`, add context with `or |e| return`.
+Propagate with `try`, handle with `match`, add context with `try … else |e| return`.
 
 ```rask
 // Propagation — pass the error up as-is
@@ -186,15 +187,15 @@ Use `try ... or` to add context when propagating errors. Stdlib provides `Contex
 ```rask
 // Application code — human-readable context chains
 func load_config(path: string) -> Config or ContextError {
-    const text = fs.read_text(path) or |e| return context("reading {path}", e)
-    return Config.parse(text) or |e| return context("parsing {path}", e)
+    const text = try fs.read_text(path) else |e| return context("reading {path}", e)
+    return try Config.parse(text) else |e| return context("parsing {path}", e)
 }
 // Output: "reading /app.toml: file not found"
 
 // Library code — typed domain errors (callers can match)
 func load_config(path: string) -> Config or ConfigError {
-    const text = fs.read_text(path) or |e| return ConfigError.Io { path, source: e }
-    return Config.parse(text) or |e| return ConfigError.Parse { path, source: e }
+    const text = try fs.read_text(path) else |e| return ConfigError.Io { path, source: e }
+    return try Config.parse(text) else |e| return ConfigError.Parse { path, source: e }
 }
 
 // Block form — when you need side effects before leaving
@@ -204,7 +205,7 @@ const text = fs.read_text(path) or |e| {
 }
 
 // No binding — the original error carries nothing worth keeping
-const dto = json.decode(req.body) or return ApiError.BadRequest("invalid JSON")
+const dto = try json.decode(req.body) else return ApiError.BadRequest("invalid JSON")
 ```
 
 ### The terminal fold
@@ -224,7 +225,7 @@ Plain `or` supplies a value instead when the error isn't needed: `const port = r
 - `x!` in production code — crashes on error. Use `try` or `match`.
 - Long `if result is E as e` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
-- Using `context()` in library code where callers need to match on error types — use typed domain errors with `or |e| return` instead.
+- Using `context()` in library code where callers need to match on error types — use typed domain errors with `try … else |e| return` instead.
 - `if r is T as v { return v } else as e { return f(e) }` at a boundary — that's the fold, write `r or |e| f(e)`.
 
 See [types/error-types.md](types/error-types.md).
@@ -281,7 +282,7 @@ if opt == none { return none }
 use(opt)   // opt: T here (early-exit narrow)
 
 // Absence should leave — one line
-const v = opt ?? return MyError.NotFound
+const v = try opt else return MyError.NotFound
 
 // Full handling — both branches matter, use if/else (not match)
 if opt? {
@@ -666,9 +667,9 @@ why: `own` transfers ownership — the caller can no longer access the value.
 |-----------|------------------|
 | Construct | Struct literal, `from_*`, `.new()`, `.with_*` |
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
-| Handle errors | `try` (propagate), `or \|e\| return` (with context), `or \|e\| f(e)` (fold), `match` (handle) |
+| Handle errors | `try` (propagate), `try … else` (exit with something else), `or \|e\| f(e)` (handle here), `match` |
 | Clean up resources | `ensure` |
-| Handle optionals | `if x?`, `?? v`, `?? return`, `match` |
+| Handle optionals | `if x?`, `?? v`, `try … else`, `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `StringBuilder` |
 | Share state | `Shared<T>`, channels |

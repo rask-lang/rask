@@ -181,18 +181,18 @@ Operator surface — one operator per shape; a `?` in the line means absence:
 | `x?.field` | optional chain — projects when present, `none` otherwise. Optionals only |
 | `x ?? v` | **optionals:** that, or this instead. Must be a `T` |
 | `r or v` | **results:** that, or this instead. Must be a `T` |
-| `x or \|e\| f(e)` | the other branch: this value, from the error — results only. `\|e\|` binds, it is **not** a closure: `return` inside belongs to the enclosing function, like `with … as x` |
-| `x ?? return y` / `r or return y` | the other branch leaves the function |
-| `x or \|e\| return f(e)` | leaves, carrying a transformed error |
-| `?? break` / `or continue` / `?? panic(…)` | leaves the loop, or panics (`panic` form = `x! "…"`) |
-| `try r` | **results only:** extract, or return the error, widened into the function's error union |
+| `r or \|e\| f(e)` | that, or this value built from the error — results only |
+| `?? break` / `or continue` / `?? panic(…)` | local exits; visible where they are |
+| `try x` | **leaves:** propagate the other branch (error widened, or `none` in a `T?` fn) |
+| `try x else return v` | **leaves:** exit with `v` instead |
+| `try x else \|e\| return f(e)` | **leaves:** exit with something built from the error |
 | `r!` / `r! "msg"` | extract or panic |
 | `if r is IoError as e { }` | error-side type test and bind |
 | `const v = x is Pattern else { return }` | pattern guard, enum patterns only |
 
-`or` is the union keyword at the value level, matching the type (`T or E`; `T?` is `T or none`). The right side is an ordinary expression: a value produces it, a `return`/`break`/`continue` leaves — and the keyword is in the line saying so. No rule about which one the type system expects; `Never` coerces as it does in any `if` branch.
+**`try` on the line means control can leave it — and nothing else does.** `or` and `??` handle the failure here and produce a value; a `return` on their right side is a compile error pointing at `try … else`. The `else` clause must diverge, so the exit is written out rather than implied by a bare value. Scan the left margin and you have every exit point in the function.
 
-`try r` is the propagate form: shaped like `r or |e| return e`, but the widening, boundary-enum wrapping and `any Error` boxing rules are attached to `try`, so a bare `return e` doesn't get them. It's also where a reader scanning the left margin finds the exits, which is why it stays.
+The error-conversion rules — widening into a union, wrapping into a boundary enum, boxing into `any Error` — are attached to `try`, so bare `try r` does work no other form does. `try` also places itself in a postfix chain: `try read_file(p).len()` needs no parens (`type.errors/ER16a`).
 
 **One operator per shape, and the line shows which.** `??` and the rest of the `?`-family are absence; `or` and `try` are failure. Nothing with a `?` applies to a result — no `r?` test, no `if r?` narrowing, no `r?.field` chain; use `is`, and project with `try r.field` (`try` attaches to the fallible step). `!` and `match` work on both.
 

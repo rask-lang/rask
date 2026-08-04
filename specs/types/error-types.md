@@ -116,7 +116,7 @@ Why return-only for errors? Construction in assignment/field positions makes the
 | **ER12: No `?` on a result** | `r?` / `r?.field` | Compile error, both forms. `?` marks absence; a result's other branch is an error. Test with `is` (ER23) or `match`; to project, extract first |
 | **ER14: Other branch** | `r or v` | Yields T when present, else `v`. Results only — the absent branch of a `T?` uses `??` (`type.optionals/OPT11`). See the `or` family below |
 | **ER15: Force** | `r!` | Extracts T, or panics using `E.message()`; `r! "msg"` overrides with a custom message |
-| **ER16: Propagate** | `try r` | Extracts T, or returns early with E widened to the current function's error type (ER31/ER31a/ER32). Results only — absence uses `?? return none` (ER47) |
+| **ER16: Propagate** | `try x` | Extracts the success payload, or returns early with the other branch: an error widened into this function's error type (ER31/ER31a/ER32), or `none` in a `T?`-returning function. An `else` clause overrides what leaves (ER45) |
 | **ER16a: Chain placement** | `try a.b().c` | `try` attaches to the one step in the postfix chain that is fallible — `try read_file(p).len()` is `(try read_file(p)).len()`, `try store.get(id)` is `try (store.get(id))`. A wrapped value has no payload methods, so normally exactly one placement type-checks. If two do, that's a compile error asking for parentheses. `try` does not slide into call arguments |
 | **ER17: Propagate block** | `try { … }` | Each `try` inside propagates; the first other-branch value short-circuits out. Shape follows ER16 |
 | **ER18: Block with a handler** | `try { … } or \|e\| …` | The block is the left side of an ordinary `or`, so the same rule applies: a value folds, a `return` leaves. `try { … } or \|e\| return f(e)` is the block spelling of ER46 |
@@ -135,7 +135,7 @@ const config = load_config()!
 // A block as the left side of `or` — same rule, so `return` to leave
 const content = try {
     try fs.read_text(path)
-} or |e| return context("reading {path}", e)
+} else |e| return context("reading {path}", e)
 ```
 
 ER13, ER19, ER20 and ER26 are retired — the `?.` chain on results, the `if r?` predicate and its `as v` bind, and the `!r?` parse error, all of which assumed `?` worked on results. Narrowing a result is `is` (ER23). ER21 and ER22 survive: the `else`-narrows and `else as e` rules were never about `?`, so they re-home onto the `is` test unchanged.
@@ -146,25 +146,23 @@ ER13, ER19, ER20 and ER26 are retired — the `?.` chain on results, the `if r?`
 
 Every optional form carries a `?`. No failure form does. That's the whole mnemonic — you never look up which operator applies, because the type's own spelling tells you.
 
-What you put after it is an ordinary expression. Two things an expression can be:
+**`or` never leaves the function.** Every line that can exit wears `try`, so "does control leave here?" is answered by looking at the line rather than by reading the right-hand side.
 
-| Rule | Form | The other branch | Result |
-|------|------|------------------|--------|
-| **ER14** | `x or v` | is this value | the expression has type `T` |
-| **ER44** | `x or \|e\| f(e)` | is this value, computed from the error | the expression has type `T` |
-| **ER45** | `x or return y` | leaves the function | `Never` on that path |
-| **ER46** | `x or \|e\| return f(e)` | leaves, carrying a transformed error | `Never` on that path |
-| **ER47** | `try r` | propagates as-is | the success payload |
+| Rule | Form | Leaves? | The other branch |
+|------|------|---------|------------------|
+| **ER14** | `r or v` | no | is this value |
+| **ER44** | `r or \|e\| f(e)` | no | is this value, computed from the error |
+| **ER16** | `try r` | **yes** | propagates as-is, widened into this function's error type |
+| **ER45** | `try r else return e_val` | **yes** | exits with `e_val` |
+| **ER46** | `try r else \|e\| return f(e)` | **yes** | exits with something built from the old error |
 
 | Rule | Description |
 |------|-------------|
-| **ER14: Other branch** | `x or v` yields the success payload, or `v`. Works on `T?` and `T or E` alike — supplying the other branch doesn't care why the good branch was missing |
-| **ER14a: The right side sets the result type** (applies to `??` alike) | Three cases, checked in order. **Still wrapped:** if the right side is itself two-branch with the *same* success type, the result keeps that shape and the chain continues — `T?` with `T?` gives `T?`, `T or E1` with `T or E2` gives `T or E2`. **Collapsed:** if the right side is the bare success type `T`, the result is `T`. **Diverging:** if the right side is `Never`, the result is `T`. Anything else is a type error |
-| **ER44: Using the error** | `x or \|e\| f(e)` binds `e: E`. Only on `T or E` — `none` carries nothing to bind, so this form on an optional is a compile error |
-| **ER44a: `\|e\|` is a binding, not a closure** | The right side runs in the enclosing scope: `return`, `break` and `continue` inside it belong to the enclosing function, not to the `\|e\|`. Same as `with … as x { … }` (`mem.borrowing/W1`), which shares the shape for the same reason. This is what makes `x or \|e\| return f(e)` leave the function rather than fold |
-| **ER45: Diverging right side** | The right side may be any expression, `return`/`break`/`continue`/`panic(…)` included. It is `Never`-typed, so nothing constrains it to `T`, and the keyword says on the line that control leaves. This is how absence becomes an error: `opt or return MyError` |
-| **ER46: `\|e\|` composes with it** | The binding form and the diverging form are independent: `x or \|e\| return f(e)` transforms the error and leaves. No separate rule |
-| **ER47: `try` is failure-only** | `try` propagates an error, so it applies to `T or E` and not to `T?`. `try opt` is a compile error: absence isn't an error, and inventing one is what `opt ?? return MyError` states explicitly. Propagating absence as absence is `opt ?? return none`. The mirror case — a result in a `T?`-returning function — is `r or return none`, which says plainly that the error detail is being dropped |
+| **ER14: Other branch** | `r or v` yields the success payload, or `v`. Results only — absence uses `??` (`type.optionals/OPT11`). `v` may `break`, `continue` or `panic(…)`, which are local and visible; it may **not** `return`, because leaving the function is `try`'s job (ER48) |
+| **ER44: Using the error** | `r or \|e\| f(e)` binds `e: E` and yields `f(e): T`. Nothing leaves |
+| **ER45: `try … else`** | The `else` clause replaces what `try` would have propagated. Its body **must diverge** — the same rule as the pattern guard (`ctrl.flow/CF13`) — so the `return` is written out and the control path is visible at the line. `try r else return E` needs no binding; `try r else \|e\| return f(e)` binds the old error first |
+| **ER47: `try` supplies or is supplied** | Bare `try x` propagates the other branch unchanged, so the enclosing function's other branch has to accept it: `try r` needs an error type, `try opt` needs a `T?` return. With an `else`, that constraint lifts — the clause says what leaves, so `try opt else return MyError` and `try r else return none` are both fine |
+| **ER48: `or` and `??` don't `return`** | A `return` on the right of `or` or `??` is a compile error pointing at `try … else`. Everything that leaves the function carries `try`; nothing else does |
 
 <!-- test: skip -->
 ```rask
@@ -176,11 +174,11 @@ const theme = load_theme() or Theme.default()     // result — `or`, error igno
 return dispatch(req) or |e| error_response(e)
 
 // Leave, naming the error — same shape of line, one operator each
-const ms = raw.parse() ?? return ApiError.BadRequest("ms must be non-negative")
-const dto = json.decode(req.body) or return ApiError.BadRequest("invalid JSON")
+const ms = try raw.parse() else return ApiError.BadRequest("ms must be non-negative")
+const dto = try json.decode(req.body) else return ApiError.BadRequest("invalid JSON")
 
 // Leave, transforming the error first
-const text = fs.read_text(path) or |e| return context("reading {path}", e)
+const text = try fs.read_text(path) else |e| return context("reading {path}", e)
 
 // Leave the loop
 const item = queue.pop() ?? break
@@ -222,25 +220,25 @@ const cfg = try load_from_disk() or load_from_env() or load_from_net()
 
 Discarding the earlier errors is the same information loss as `r or v`, and the same linearity rule applies (ER43): an error carrying a must-consume payload can't be dropped this way.
 
-**Reading a line.** `or` introduces the other branch; what follows says what that branch does. A value means the expression produces it. A `return`, `break` or `continue` means control leaves, and the keyword is right there in the line saying so. There is no rule about which one the type system expects — `Never` coerces, exactly as it does in an `if` branch or a match arm.
+**Reading a line.** Look for `try`. If it's there, control can leave this line, and the `else` clause — if any — says with what. If it isn't, nothing leaves: `or` and `??` produce values. That's the whole of it, and it's a glance rather than an inference.
 
 **In statement position** — a `void or E` call whose result you aren't binding — the same forms apply, and the fold is the one that reads best: the success type is `void`, so a void-returning handler needs no ceremony.
 
 <!-- test: skip -->
 ```rask
-try save(d)                          // propagate — the usual one
-save(d) or return IoError.Full       // replace and leave
-save(d) or |e| log(e.message())      // handle here: `log` returns void, so this typechecks
-save(d)                              // W2: unused result of type `void or IoError`
+try save(d)                                     // propagate — the usual one
+try save(d) else return IoError.Full            // replace and leave
+save(d) or |e| log(e.message())                 // handle here: `log` returns void ✓
+save(d)                                         // W2: unused result of type `void or IoError`
 ```
 
-`save(d) or IoError.Full` is a type error — without a `return`, the right side must be the success type, and that's `void`. Deliberately ignoring the error is `const _ = save(d)`, which silences W2 the same way any other unused binding does (`tool.warnings/W3`).
+`save(d) or IoError.Full` is a type error — `or` produces the success type, and that's `void`. Deliberately ignoring the error is `const _ = save(d)`, which silences W2 the same way any other unused binding does (`tool.warnings/W3`).
 
 **The `|e|` is not a closure.** It looks like one — Rask closures are `|x| expr` — but the right side of `or` is an ordinary expression in the enclosing scope, with `e` bound in it. So `return` there exits the function, which is the whole point of ER45/ER46:
 
 <!-- test: skip -->
 ```rask
-const text = fs.read_text(path) or |e| return context("reading {path}", e)
+const text = try fs.read_text(path) else |e| return context("reading {path}", e)
 //                                     ^^^^^^ leaves `load_config`, not a closure
 
 const text = fs.read_text(path) or |e| {         // braces are fine, still not a closure
@@ -251,15 +249,18 @@ const text = fs.read_text(path) or |e| {         // braces are fine, still not a
 
 `with pool[h] as entity { … }` already works this way — a binding plus a real block, where `return`/`try`/`break`/`continue` mean what they say. `or |e|` is the same shape for the same reason. Were it a closure, CF26 would capture the `return` and the transform-and-leave form would be unwritable.
 
-**`try` and `or` don't combine.** `try r` yields a plain `T`, and `or` needs a two-branch left side, so `try r or …` is ill-typed on its own terms — there is no rule to remember and no form to learn. The two are alternatives, and they differ on one question: **is the original error kept or replaced?**
+**`try` and `or` don't overlap.** They answer different questions, and a line uses one or the other:
 
-| | The error |
+| | |
 |---|---|
-| `try r` | kept, and converted to this function's error type (ER31/ER31a/ER32) |
-| `r or return E` / `x ?? return E` | replaced by `E` |
-| `r or \|e\| return f(e)` | replaced by something derived from it |
+| `try r` | leaves, keeping the error (converted to this function's error type — ER31/ER31a/ER32) |
+| `try r else return E` | leaves, replacing it |
+| `try r else \|e\| return f(e)` | leaves, replacing it with something derived from it |
+| `r or v` | **doesn't leave** — the error is handled here |
 
-**Why `try` still exists** when `try r` is shaped like `r or |e| return e`: it is the single most common operation in the language, it is shorter, it puts the marker at the front of the line where a reader scanning the left margin finds it, and the error-conversion rules (widening into a union, wrapping into a boundary enum, boxing into `any Error`) are attached to it. `rask lint` suggests `try r` when it sees the long form written out.
+An earlier draft let `or` return as well, which meant two spellings for leaving and no way to tell from the line whether one had happened. `try` owning every exit removes both problems, and the mandatory `return` in the `else` clause means the exit is never implied by a bare value.
+
+**Why the marker goes at the front.** `try` is the most common operation in the language (369 sites in the tree) and putting it at the head of the line means a reader scanning the left margin sees every place control can leave. That is the property the whole split is for. The error-conversion rules — widening into a union, wrapping into a boundary enum, boxing into `any Error` — are attached to `try` as well, so bare `try r` does work no other form does.
 
 **`try` doesn't care which shape it's given.** It propagates the other branch, whatever that branch is — an error from a `T or E`, an absence from a `T?`:
 
@@ -272,11 +273,11 @@ func lookup(id: UserId) -> Profile? {
 
 func load(path: string) -> Config or IoError {
     const text = try fs.read_text(path)   // failed → this function returns the IoError
-    return Config.parse(text) or |e| return IoError.Malformed(path)
+    return try Config.parse(text) else return IoError.Malformed(path)
 }
 ```
 
-What it can't do is cross the shapes — see ER47. Those two cases are the ones where something would have to be invented or silently dropped, and both have an explicit spelling with `or return`.
+Bare `try` needs the caller's other branch to accept what it propagates (ER47). When it doesn't, the `else` clause says what leaves instead.
 
 ### Absence and Error Are Spelled Differently
 
@@ -287,8 +288,8 @@ What it can't do is cross the shapes — see ER47. Those two cases are the ones 
 | test / bind | `x?`, `x? as v`, `x == none` | `r is T as v`, `r is E as e` |
 | project | `x?.field` | `try r.field` (ER16a places the `try`) |
 | other branch | `x or v` | `r or v`, `r or \|e\| f(e)` |
-| propagate | — (`?? return none`) | `try r` |
-| leave otherwise | `x or return e_val` | `r or \|e\| return f(e)` |
+| propagate | `try x` (in a `T?` fn) | `try r` |
+| leave otherwise | `try x else return e_val` | `try r else \|e\| return f(e)` |
 | assert / dispatch | `x!`, `match` | `r!`, `match` |
 
 One operator per shape, and the shape is visible in the line: the `?`-family for absence, `or` and `try` for failure. Nothing has to be looked up.
@@ -310,21 +311,18 @@ const size = text.len()
 
 Optional chaining is a different animal and stays: `user?.profile?.name` asks one question — is the whole path there? — and lands in `or`, `?`, or `!` immediately, rather than carrying a wrapper onward.
 
-### Leaving Without an Error [ER45]
+### Loop Exits and Panics [ER14]
 
-`return` in the other branch doesn't have to carry an error. Anything a `return` can do in a statement, it can do here — and so can `break` and `continue`:
+`break`, `continue` and `panic(…)` stay legal on the right of `or` and `??`. They don't leave the function, they're visible where they are, and the one-liner is worth keeping:
 
 <!-- test: skip -->
 ```rask
-const item = queue.pop() ?? break                   // optional → `??`
-const line = reader.next() ?? continue              // optional → `??`
-const cfg  = load() or return Response.error(500)   // result → `or`, plain value returned
-const home = env("HOME") ?? panic("no HOME")        // optional; same as `env("HOME")!`
+const item = queue.pop() ?? break                   // out of the loop
+const line = reader.next() ?? continue              // next iteration
+const home = env("HOME") ?? panic("no HOME")        // same as `env("HOME")!`
 ```
 
-`panic(…)` on the right is legal on either operator and equals `x!` with a custom message. The `!` form stays because it's shorter for the assert-and-move-on case.
-
-When the check reads better as a condition than as a fallback, the early-exit narrow is still there (ER24, OPT21) and names what went wrong:
+`return` is the one that needs `try`, because a function exit is the thing a reader has to be able to find by scanning. When the check reads better as a condition than as a fallback, the early-exit narrow is still there (ER24, OPT21):
 
 <!-- test: skip -->
 ```rask
@@ -571,7 +569,7 @@ public func load_config(path: string) -> Config or (IoError | ParseError) {
 }
 ```
 
-Each `try expr` where `expr` returns `T or E` contributes `E`. Each bare error return in the body contributes that error's type. `expr or return e_val` and `expr or |e| return f(e)` contribute the type of what is returned. A non-diverging `or` (`expr or v`, `expr or |e| f(e)`) contributes **nothing** — no error leaves the function. The inferred union is deduplicated and sorted alphabetically for deterministic output.
+Each `try expr` where `expr` returns `T or E` contributes `E`. Each bare error return in the body contributes that error's type. `try expr else return e_val` and `try expr else |e| return f(e)` contribute the type of what is returned. `or` and `??` contribute **nothing** — no error leaves the function through them. The inferred union is deduplicated and sorted alphabetically for deterministic output.
 
 ## Linear Resources in Errors
 
@@ -634,33 +632,23 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `T?` where `T` is itself optional | ER3b | Legal — two-layer optional, see [optionals.md](optionals.md) |
 | `T or i32` (primitive E) | ER4 | Compile error — E lacks `ErrorMessage` |
 | `T or none` | ER4 | Legal — `none` is exempt from the `ErrorMessage` bound |
-| `try o` on an optional | ER47 | Compile error — `try` propagates errors. Use `o ?? return MyError`, or `o ?? return none` to propagate absence |
-| `try r` in a `U?`-returning function | ER47 | Compile error — an error isn't absence. Use `r or return none` to drop it deliberately |
+| `try o` in a `U?`-returning function | ER47 | Legal — absence propagates as absence |
+| `try o` in a `T or E`-returning function, no `else` | ER47 | Compile error — nothing to propagate as an error. Add `else return MyError` |
+| `try o else return MyError` | ER45 | Legal anywhere — the clause says what leaves |
+| `try r else return none` in a `T?`-returning function | ER45 | Legal — drops the error detail, and says so |
+| `try r else v` where `v` doesn't diverge | ER45 | Compile error — the clause must diverge, so the exit is written out |
+| `r or return X` | ER48 | Compile error pointing at `try r else return X` |
+| `x ?? return X` | ER48 | Compile error pointing at `try x else return X` |
+| `r or break` / `or continue` / `or panic(…)` | ER14 | Legal — local and visible; only `return` needs `try` |
+| `r or v` where `v: E` | ER14 | Type error — `or` produces a `T`. To leave with it, `try r else return v` |
 | `try a.b().c` with one fallible step | ER16a | Legal — `try` attaches to that step; no parens |
 | `try v.map(f)` where both `v` and `v.map` are fallible | ER16a | Compile error — two placements type-check; parenthesise |
-| `try` on narrower E into wider union | ER31 | Auto-widen succeeds |
-| `try` on `E` into an enum with one `Variant(E)` | ER31a | Auto-wrap succeeds |
-| `try` on `E` into an enum with two `Variant(E)`s | ER31a | Compile error — name the variant with `or \|e\| return …` |
-| `try` on `E` into an enum with a `Variant(E, Context)` | ER31a | No wrap; falls through to the plain mismatch |
-| `try` into `any Error` | ER32 | Auto-box succeeds |
-| `r or err_value` where `err_value: E` | ER14 | Type error — the other branch needs a `T`. Add `return` to leave with it as an error |
-| `r or return X` | ER45 | Legal — control leaves; `X` follows the enclosing function's return rules (ER9) |
-| `o or return MyError` | ER45 | Legal — this is how absence becomes an error |
-| `r or return none` in a `T?`-returning function | ER45 | Legal — drops the error detail and leaves with absence |
-| `r or break` / `or continue` / `or panic(…)` | ER45 | Legal — `or panic(…)` equals `r! "…"`. Same for `??` on an optional |
 | `r or \|e\| f(e)` where `f(e): T` | ER44 | The expression is that `T`; nothing leaves |
-| `r or \|e\| return f(e)` | ER46 | Legal — transforms, then leaves |
 | `o or …` on an optional | ER14 | Compile error — `or` is for failure. Use `??` |
 | Unused `e` in `r or \|e\| f(e)` | ER44 | Lint suggesting `r or v` |
-| `r or \|e\| return e` | ER47 | Legal; lint suggests `try r`, which also applies the widening rules |
-| `a or b or fallback`, all same `T` | ER14a | Legal and flat — `a or b` stays wrapped, `fallback` collapses it |
-| `(a or fallback) or b` | ER14a | Type error — the chain already collapsed, so the left side isn't two-branch |
-| `a or b` where `a: T??` and `b: T?` | ER14a/OPT30 | Collapses to `T?` — success types differ, so it isn't the chaining case |
 | `x or v` where `x` is neither `T?` nor `T or E` | ER14 | Type error — `or` needs a two-branch left side |
 | `a or b` on two bools | ER14 | Type error suggesting `\|\|` |
-| `void_call() or E` with no `return` | ER14 | Type error — the success type is `void`. Add `return`, or handle it: `or \|e\| log(e)` |
-| `void_call() or \|e\| log(e)` | ER44 | Legal — `log` returns `void`, which is the success type |
-| bare `void_call()` on a `void or E` | `tool.warnings/W2` | Warning, not an error. `const _ = void_call()` to silence it deliberately |
+| `void_call() or E` | ER14 | Type error — the success type is `void`. Use `try void_call() else return E`, or handle it with `or \|e\| log(e)` |
 | `r or v` where `E` carries a linear payload | ER43 | Compile error — the error is discarded, and a linear payload may not be. Use `r or \|e\| …` and consume it, or `match` |
 | `r?` as a bool | ER12 | Parse error — `?` is absence. Use `if r is E`, or `match` |
 | `r? && s?` in condition | ER25 | Legal bool; neither narrows |
@@ -749,18 +737,47 @@ FIX: Construct via a function that returns T or E, or use
      explicit branch construction helpers.
 ```
 
-**Error value on the other branch without `return` [ER14]:**
+**`return` on the right of `or` [ER48]:**
+```
+ERROR [type.errors/ER48]: `or` doesn't leave the function
+   |
+7  |  const dto = json.decode(body) or return ApiError.BadRequest("bad json")
+   |                                   ^^^^^^ this returns
+
+WHY: every line that can exit the function carries `try`, so a reader scanning
+     the left margin sees all of them. `or` handles the error here instead.
+
+FIX: const dto = try json.decode(body) else return ApiError.BadRequest("bad json")
+```
+
+**Error value where a `T` is expected [ER14]:**
 ```
 ERROR [type.errors/ER14]: `or` needs a value of type `i32` here
    |
 7  |  const ms = raw.parse() or ApiError.BadRequest("bad duration")
    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is an ApiError
 
-WHY: `or` supplies the other branch. Without a `return` it produces a value,
-     so it has to be the same type as the good branch.
+WHY: `or` handles the failure here and produces a value, so it has to be the
+     same type as the good branch.
 
-FIX: leave with it instead:
-     const ms = raw.parse() or return ApiError.BadRequest("bad duration")
+FIX: to leave with it instead:
+     const ms = try raw.parse() else return ApiError.BadRequest("bad duration")
+```
+
+**`else` clause that doesn't diverge [ER45]:**
+```
+ERROR [type.errors/ER45]: the `else` clause of a `try` must diverge
+   |
+4  |  const dto = try json.decode(body) else ApiError.BadRequest("bad json")
+   |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ falls through
+
+WHY: `try` means control can leave here. Writing the exit out — rather than
+     letting a bare value imply it — is what keeps the path visible.
+
+FIX: else return ApiError.BadRequest("bad json")
+
+  or, if you meant to handle it here rather than leave:
+     const dto = json.decode(body) or fallback_dto()
 ```
 
 **Binding form on an optional [ER44]:**
@@ -775,24 +792,20 @@ WHY: The binding form folds an *error* into a value. Absence has no payload.
 FIX: const port = config.port or default_port()
 ```
 
-**`try` on an optional [ER47]:**
+**`try` on an optional with nothing to propagate [ER47]:**
 ```
-ERROR [type.errors/ER47]: `try` propagates an error; this is an optional
+ERROR [type.errors/ER47]: `try` has nothing to propagate here
    |
 4  |  const x = try maybe_value
-   |            ^^^ maybe_value: T?  (= T or none)
+   |            ^^^ maybe_value: T?, but this function returns `Config or IoError`
 
-WHY: `none` is the absent sentinel, not an error. `try` has nothing here to
-     hand to the caller as one.
+WHY: bare `try` hands the other branch to the caller unchanged, and `none` isn't
+     an error. Either say what should leave, or return an optional.
 
-FIX: say what absence should become:
-     const x = maybe_value ?? return IoError.NotFound
-
-  or propagate the absence itself, if this function returns an optional:
-     const x = maybe_value ?? return none
+FIX: const x = try maybe_value else return IoError.NotFound
 ```
 
-The mirror case is a result in a `T?`-returning function: an error isn't absence, and propagating it as `none` would silently drop the detail. `r or return none` says you're dropping it; `.ok()` keeps the wrapper for chaining.
+In a function that returns an optional, `try opt` is fine — absence propagates as absence. The mirror case is a result in a `T?`-returning function: `try r else return none`, which says plainly that the error detail is being dropped. `.ok()` keeps the wrapper for chaining.
 
 **`?` used as a success test on a result [ER12]:**
 ```
@@ -824,7 +837,7 @@ FIX: if r is f64 as v { use(v) }          (test the success side)
 2. **One shape, not two.** Half of Rust's vocabulary is `Option`↔`Result` plumbing (`ok`, `ok_or`, `err`, …). `T?` being `T or none` on the same machinery deletes the category — `.ok()` is the one conversion that remains (cross-shape `try`, above).
 3. **Operators can't breed.** Methods grow by one-line PR — that's how the zoo happened. An operator is a language change gated by the Ceremony Test (`CORE_DESIGN`). The family is *frozen by construction*: a handful of forms around one mental template (test, extract, other-branch, force, propagate, chain), learned once as a unit. Swift's `?`/`!`/`??` and Zig's `orelse`/`catch` are the precedent that a small closed operator set for this territory is learnable in a day and then disappears into fluency.
 
-The corollary is a discipline: the family beats the method zoo exactly as long as it stays frozen. An ergonomic itch is answered by composing existing operators or writing a `match` — never by minting form nine. And no combinator methods through the back door: a `map_err` in the stdlib would be the zoo regrowing (`std.api/SD4`); the error-transform need is served by `or |e| return …` (ER46).
+The corollary is a discipline: the family beats the method zoo exactly as long as it stays frozen. An ergonomic itch is answered by composing existing operators or writing a `match` — never by minting form nine. And no combinator methods through the back door: a `map_err` in the stdlib would be the zoo regrowing (`std.api/SD4`); the error-transform need is served by `try … else |e| return …` (ER46).
 
 **ER1 (builtin sum).** The old spec said `Result<T, E>` was a normal enum with `T or E` as sugar. In practice Result had dedicated sugar, auto-Ok wrapping, `try` propagation, `any Error` boxing, origin tracking, and union widening — more bespoke surface than any user enum. Making `T or E` a builtin lets the spec stop pretending.
 
@@ -885,43 +898,49 @@ return dispatch(req) or |e| error_response(e)
 
 The alternative was a method (`.recover(|e| …)`), and a method is how the zoo starts. The operator family already had the pieces, so the fold composes what's there instead of minting a form for the occasion.
 
-**ER45 (the other branch may be a `return`).** `?? return` used to be the idiom for bailing out, and #565 rejected it: `x ?? 50` produces a value, `x ?? return err` transfers control, and one operator meaning both is a reader tax. That argument was about `??`. It doesn't survive the rename, for two reasons.
+**ER45/ER48 (`try` owns every exit).** Two designs were tried before this one and both failed on visibility.
 
-`??` is *named* for coalescing — "null-coalescing operator" — so control flow on its right is a surprise about what the operator does. `or` claims less: it introduces the other branch and says nothing about whether that branch produces a value or leaves. Both readings are honest for `or`; only one was honest for `??`.
+`?? return` — the original — let one operator both supply a value and transfer control, so reading a line meant looking past the operator to find out which. #565 rejected it.
 
-And the objection's own principle was "control flow looks like control flow". Under this rule it does — there is a literal `return` in the line:
+Routing exits through `or` instead — `r or return E` — fixed the double-reading but created a worse problem: `try r` and `r or return E` both let an error leave, so *whether a line can exit the function* was no longer answerable by looking at it. Two spellings for one job, and the more common one wasn't marked.
+
+The rule that fixes both: **every line that can exit the function carries `try`, and nothing else does.**
 
 <!-- test: skip -->
 ```rask
-const port = config.port or 8080                         // a value
-const ms = raw.parse() or return BadRequest("bad ms")     // leaves, and says so
+const port = config.port ?? 8080                     // no `try` — nothing leaves
+const theme = load_theme() or Theme.default()        // no `try` — handled here
+const data = try read_file(path)                     // `try` — leaves
+const dto  = try json.decode(b) else return BadRequest("bad json")   // `try` — leaves
 ```
 
-What that buys is the deletion of a rule. The intermediate design routed leaving through `try`, which meant learning that the value after `or` is an `E` under `try` and a `T` without it — type-level disambiguation the reader had to carry. Now there is nothing to disambiguate: the right side is an expression, `Never` coerces the way it already does in an `if` branch or a match arm, and `return`'s own rules (ER9 auto-wrap) decide what the returned value means.
+Scan the left margin and you have every exit point. That is the property the whole design is for, and it's why the marker goes at the front rather than in the middle.
 
-It also restores the one-liners that the `try`-only version had taken away — `queue.pop() or break`, `reader.next() or continue`, `env("HOME") or panic("no HOME")` — none of which needed a new rule to become legal again.
+**Why the `else` clause must diverge.** An earlier draft allowed `try r else v`, with `v` implicitly becoming the propagated error. It's shorter, and it was wrong in the same way: `else v` reads as "use `v` instead" and performs a return. Requiring the clause to diverge — the same rule as the pattern guard, `ctrl.flow/CF13` — means the `return` is written where it happens. `try` says control may leave; `else return v` says with what.
 
-**The cost, stated plainly.** `try r` at the head of a line let a reader scan the left margin for the places control can leave; `or return` puts that marker mid-line. This is why `try` survives as its own form rather than becoming a macro for `r or |e| return e`: for the most common case by far — 412 sites in the tree — the front-of-line marker is worth having, and `try` is where the widening, boundary-enum wrapping and boxing rules live (ER31/ER31a/ER32). A bare `return e` gets none of those, so the two are not interchangeable and `rask lint` points the long form back at `try`.
+This is what #573 asked for, with the missing half added. Dropping the `|e|` binding when the error isn't used was the right request; dropping the `return` along with it hid the control flow.
+
+**`break` and `continue` are exempt.** They stay legal on `or` and `??`, because a loop exit is local — it's visible where it is, and it doesn't change what the function returns. The thing a reader needs to find by scanning is the function exits.
 
 **Rejected alternatives for the bail-out form.** Four were tried before landing here:
 
 1. **`else` for all of it** — `const v = x else { return }`, extending the pattern guard. Grammatically free, but `else` says nothing about *what* went wrong: reading `x else { … }` doesn't tell you whether `x` was absent or failed.
 2. **A presence guard construct** — same objection, plus it needed CF13's diverging-block rule to be restated for two more scrutinee shapes.
-3. **Routing every exit through `try`** — `try x or e_val`. This works, but `try x or y` is not `try` applied to a well-typed `x or y` (on its own, `raw.parse() or BadRequest(…)` has a right side of the wrong type), so it is a single production masquerading as a composition. It also had no answer for `break`.
+3. **A diverging right side on `or`** — `r or return E`. Reads well and composes, but it means two ways to leave the function and neither one marked. Replaced by `try r else return E`.
 4. **`expr? else return X`** — postfix `?` is a bool, so `expr?` would be a bool alone and an unwrapped `T` with an `else`. One token, two result types.
-5. **`try` on optionals *instead of* `or return`** — the propagation half of this is now the rule (ER16), but it does not replace `or return`: 7 sites in the tree propagate absence as absence, against 47 that turn absence into a named error or a plain value. Those 47 want something `try` cannot express.
+5. **`try` on optionals *instead of* an explicit clause** — bare `try opt` propagates absence, which is right in a `T?`-returning function and covers 7 sites in the tree. The other 47 turn absence into a named error or a plain value, and those need the clause: `try opt else return E`.
 
 **ER47 (`try` is failure-only).** `try` means "hand this error to my caller". An optional has no error to hand over, so `try opt` would have to invent one — the objection the old cross-shape diagnostic always made. Propagating absence as absence is real but rare (7 sites in the tree against 47 that turn absence into something else), and `opt ?? return none` covers it in one line while saying what is returned.
 
 An intermediate draft made `try` shape-agnostic, with a 2×2 of which combinations were legal. Under one-operator-per-shape that table stops existing: `try` belongs to the `or` family, so using it on an optional isn't a rule violation, it's the wrong keyword — the same class of mistake as `??` on a result. Structure doing the work a rule was doing.
 
-`.to_result(err)` stays retired: that was `opt ?? return err` spelled as a method.
+`.to_result(err)` stays retired: that was `try opt else return err` spelled as a method.
 
 **ER16a (`try` finds its place in the chain).** `try` has to bind loosely, or `try store.get(id)` would read as `(try store).get(id)`. That used to mean projecting off a propagated value needed parentheses — `(try read_file(p)).len()`. It doesn't: a wrapped value has no payload methods, so in `try a.b().c` at most one placement of the `try` type-checks, and the compiler can find it.
 
 The exception is real but narrow. `map`, `and_then` and `filter` exist on the wrapper *and* on sequences, so `try v.map(f)` with `v: Vec<i32> or E` has two placements that both type-check. That's a compile error asking for parentheses, not a silent pick. `try` also doesn't slide into call arguments — `f(try g())` is written where it means.
 
-**ER44/ER46 (the binding is never mandatory).** In real code the replace-the-error case discards the binding constantly — the validation example wrote `else |e| ApiError.BadRequest("invalid JSON")` six times in one file, never touching `e`. A binding required by grammar and ignored by the author is ceremony with no reader benefit, which is what #573 asked to remove. Under this rule it falls out rather than needing a rule: `|e|` is how you *get* the error, so you write it when you want it. `x or return E` and `x or |e| return f(e)` are the same form with and without a payload you happened to need.
+**ER44/ER46 (the binding is never mandatory).** In real code the replace-the-error case discards the binding constantly — the validation example wrote `else |e| ApiError.BadRequest("invalid JSON")` six times in one file, never touching `e`. A binding required by grammar and ignored by the author is ceremony with no reader benefit, which is what #573 asked to remove. Under this rule it falls out rather than needing a rule: `|e|` is how you *get* the error, so you write it when you want it. `try x else return E` and `try x else |e| return f(e)` are the same form with and without a payload you happened to need — and the `return` stays in both, which is the half #573 didn't ask for but needed.
 
 ### Patterns & Guidance
 
@@ -939,8 +958,8 @@ The exception is real but narrow. `map`, `and_then` and `filter` exist on the wr
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ContextError {
-    const text = fs.read_text(path) or |e| return context("reading {path}", e)
-    return Config.parse(text) or |e| return context("parsing {path}", e)
+    const text = try fs.read_text(path) else |e| return context("reading {path}", e)
+    return try Config.parse(text) else |e| return context("parsing {path}", e)
 }
 ```
 
@@ -949,8 +968,8 @@ func load_config(path: string) -> Config or ContextError {
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ConfigError {
-    const text = fs.read_text(path) or |e| return ConfigError.Io { path, source: e }
-    return Config.parse(text) or |e| return ConfigError.Parse { path, source: e }
+    const text = try fs.read_text(path) else |e| return ConfigError.Io { path, source: e }
+    return try Config.parse(text) else |e| return ConfigError.Parse { path, source: e }
 }
 ```
 

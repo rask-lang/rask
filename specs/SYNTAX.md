@@ -766,11 +766,11 @@ One-liners cover the common cases — `try` propagates, `or` supplies the other 
 
 ```rask
 const data = try read_file(path)                              // propagate the error
-const ms = raw.parse() ?? return BadRequest("not a number")   // absence → leave
+const ms = try raw.parse() else return BadRequest("not a number")   // absence → leave
 const port = config.port ?? 8080                              // a value instead
 ```
 
-A `?` in the line means absence; no `?` means failure. `try` is failure-only (`type.errors/ER47`).
+A `?` in the line means absence; no `?` means failure. `try` on the line means control can leave it (`type.errors/ER48`).
 
 ### Loops
 
@@ -882,25 +882,26 @@ func load_config() -> Config or (IoError | ParseError) {
 }
 ```
 
-**One operator per shape.** `??` supplies the absent branch, `or` the failing one — the same keyword the type uses. What follows either is an ordinary expression: a value, or a `return`.
+**`try` marks every exit.** `??` supplies the absent branch and `or` the failing one — neither leaves the function. Any line that can exit carries `try`, and its `else` clause must diverge, so the exit is written out.
 
-| Form | The other branch |
-|------|------------------|
-| `x ?? v` | **absence:** is this value |
-| `r or v` | **failure:** is this value |
-| `r or \|e\| f(e)` | is this value, computed from the error |
-| `x ?? return y` / `r or return y` | leaves the function |
-| `r or \|e\| return f(e)` | leaves, carrying a transformed error |
-| `try r` | propagates the error, widened into the function's error union |
+| Form | Leaves? | The other branch |
+|------|---------|------------------|
+| `x ?? v` | no | **absence:** is this value |
+| `r or v` | no | **failure:** is this value |
+| `r or \|e\| f(e)` | no | is this value, computed from the error |
+| `try x` | **yes** | propagates the other branch |
+| `try x else return y` | **yes** | exits with `y` |
+| `try x else \|e\| return f(e)` | **yes** | exits with something built from the error |
 
 ```rask
-const port = config.port ?? 8080                                 // absence → a value
-const ms = raw.parse() ?? return BadRequest("bad ms")            // absence → leave
-const item = queue.pop() ?? break                                // absence → leave the loop
-const dto = json.decode(body) or return BadRequest("bad JSON")   // failure → leave
-const text = fs.read_text(p) or |e| return context("reading {p}", e)
-return dispatch(req) or |e| error_response(e)                    // fold at a boundary
-const data = try read_file(path)                                 // the common case
+const port = config.port ?? 8080                                 // no `try` — nothing leaves
+const item = queue.pop() ?? break                                // leaves the loop only
+return dispatch(req) or |e| error_response(e)                    // handled at a boundary
+
+const data = try read_file(path)                                 // `try` — leaves
+const ms   = try raw.parse() else return BadRequest("bad ms")
+const dto  = try json.decode(body) else return BadRequest("bad JSON")
+const text = try fs.read_text(p) else |e| return context("reading {p}", e)
 ```
 
 **One operator per shape**, and the line shows which: `??` and the `?`-family for absence, `or` and `try` for failure. Nothing with a `?` applies to a result, `?.` included — project with `try r.field`, where `try` attaches to the fallible step.
