@@ -175,11 +175,11 @@ const present: Config?? = load_config()        // widens through both layers
 
 ## Methods
 
-None. `T?` has no combinators — the operator surface is the whole API.
+None. `T?` has no methods at all — the operator surface is the whole API, and the same is true of `T or E` (`type.errors`).
 
 `map`, `filter` and `and_then` used to be here. They exist to thread a *wrapped* value through a pipeline, which is the shape the operators deliberately replace: `try` gets the value or leaves now, `??` gets the value or a substitute now. Once nothing threads wrapped values, a combinator has no job — and measurement agreed, with **zero** uses of any of the three on an optional across stdlib, examples, projects and tests.
 
-Lifting into a result is `try x else return MyError` (`type.errors/ER45`); the reverse is `.ok()` on the result (`type.errors`).
+Lifting into a result is `try x else return MyError` (`type.errors/ER45`); the reverse is `r or none` (`type.errors/ER14a`). Both directions are operators that already exist, so neither shape needs a conversion method.
 
 ## Linear Resources
 
