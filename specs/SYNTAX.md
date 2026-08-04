@@ -890,7 +890,8 @@ func load_config() -> Config or (IoError | ParseError) {
 | `r or v` | no | **failure:** is this value |
 | `r or \|e\| f(e)` | no | is this value, computed from the error |
 | `try x` | **yes** | propagates the other branch |
-| `try x else return y` | **yes** | exits with `y` |
+| `try x else return y` | **yes** | leaves the function with `y` |
+| `try x else break` / `else continue` | **yes** | leaves the loop |
 | `try x else \|e\| return f(e)` | **yes** | exits with something built from the error |
 
 ```rask

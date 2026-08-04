@@ -183,13 +183,14 @@ Operator surface — one operator per shape; a `?` in the line means absence:
 | `r or v` | **results:** that, or this instead. Must be a `T` |
 | `r or \|e\| f(e)` | that, or this value built from the error — results only |
 | `try x` | **leaves:** propagate the other branch (error widened, or `none` in a `T?` fn) |
-| `try x else return v` | **leaves:** exit with `v` instead |
+| `try x else return v` | **leaves:** exit the function with `v` |
+| `try x else break` / `else continue` | **leaves:** exit the loop — the clause takes any divergence |
 | `try x else \|e\| return f(e)` | **leaves:** exit with something built from the error |
 | `r!` / `r! "msg"` | extract or panic |
 | `if r is IoError as e { }` | error-side type test and bind |
 | `const v = x is Pattern else { return }` | pattern guard, enum patterns only |
 
-**`try` on the line means control can leave it — and nothing else does.** `or` and `??` supply the value being bound, so nothing that transfers control belongs on their right: `return` points at `try … else`, a loop exit at an `if`, an assert at `!`. The `else` clause must diverge, so the exit is written out rather than implied by a bare value. Scan the left margin and you have every exit point in the function.
+**`try` on the line means control can leave it — and nothing else does.** Bare `try` leaves to the caller; the `else` clause redirects it and takes any divergence (`return`, `break`, `continue`, `panic`), the same latitude the pattern guard has. `or` and `??` supply the value being bound, so control flow on their right is a compile error pointing at `try … else`. The `else` clause must diverge, so the exit is written out rather than implied by a bare value. Scan the left margin and you have every exit point in the function.
 
 The error-conversion rules — widening into a union, wrapping into a boundary enum, boxing into `any Error` — are attached to `try`, so bare `try r` does work no other form does. `try` also places itself in a postfix chain: `try read_file(p).len()` needs no parens (`type.errors/ER16a`).
 
