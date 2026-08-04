@@ -388,25 +388,22 @@ Match earns its keep on multi-error unions. Two-branch cases usually read better
 
 ## Methods
 
-Four compiler-provided methods on `T or E`. Each preserves the wrapper for chaining; operators always extract or panic.
+One. `T or E` has no combinators.
 
 | Method | Signature | Behavior |
 |--------|-----------|----------|
-| `map` | `func<U>(take self, f: \|T\| -> U) -> U or E` | Transform success |
-| `map_err` | `func<E2: ErrorMessage>(take self, f: \|E\| -> E2) -> T or E2` | Translate error |
-| `and_then` | `func<U>(take self, f: \|T\| -> U or E) -> U or E` | Chain Result-returning |
-| `ok` | `func(take self) -> T?` | Drop error, lift to Option |
+| `ok` | `func(take self) -> T?` | Drop the error, lift to an optional |
 
 <!-- test: skip -->
 ```rask
-const translated = parse(input).map_err(|e| AppError.Parse(e))
-const profile = load_user(id).and_then(|u| load_profile(u.id))
-const maybe_v = compute().ok()
+const maybe_v = compute().ok()      // "I don't care why it failed"
 ```
 
-Methods removed from the old spec: `.unwrap_or`, `.unwrap_or_else`, `.is_ok`, `.is_err`, `.to_option`, `.to_error`, `.on_err`. Operators and the four surviving methods cover every case — `.unwrap_or` is `x or v` (ER14), `.unwrap_or_else` is `x or |e| f(e)` (ER44). See the [redesign proposal](error-model-redesign-proposal.md) for the full migration map.
+`.ok()` survives because it's a **shape conversion**, not a combinator — it's the one place a `T or E` legitimately becomes a `T?`, and 52 sites in the tree use it.
 
-There is deliberately no fold *method*. A fold ends the error's journey, and journey-endings belong to the operator family — a `.recover()` would be the first step back toward the method zoo the redesign removed (`std.api/SD4`).
+Everything else is gone: `map`, `map_err`, `and_then`, and previously `unwrap_or`, `unwrap_or_else`, `is_ok`, `is_err`, `to_option`, `to_error`, `on_err`. The operator family covers the work — `.unwrap_or` is `r or v`, `.unwrap_or_else` is `r or |e| f(e)`, `.map_err` is `try r else |e| return f(e)`.
+
+There is no fold *method* either. A fold ends the error's journey, and journey-endings belong to the operator family — a `.recover()` would be the first step back toward the zoo the redesign removed (`std.api/SD4`).
 
 ## Union Widening, Wrapping, and Boxing
 
@@ -636,7 +633,7 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `r or panic(…)` | ER48 | Compile error pointing at `r! "…"` or `try r else panic(…)` |
 | `r or v` where `v: E` | ER14 | Type error — `or` produces a `T`. To leave with it, `try r else return v` |
 | `try a.b().c` with one fallible step | ER16a | Legal — `try` attaches to that step; no parens |
-| `try v.map(f)` where both `v` and `v.map` are fallible | ER16a | Compile error — two placements type-check; parenthesise |
+| `try r.ok()` where `T` also has an `ok` method | ER16a | Compile error — two placements type-check; parenthesise |
 | `r or \|e\| f(e)` where `f(e): T` | ER44 | The expression is that `T`; nothing leaves |
 | `o or …` on an optional | ER14 | Compile error — `or` is for failure. Use `??` |
 | Unused `e` in `r or \|e\| f(e)` | ER44 | Lint suggesting `r or v` |
@@ -833,6 +830,8 @@ FIX: if r is f64 as v { use(v) }          (test the success side)
 
 The corollary is a discipline: the family beats the method zoo exactly as long as it stays frozen. An ergonomic itch is answered by composing existing operators or writing a `match` — never by minting form nine. And no combinator methods through the back door: a `map_err` in the stdlib would be the zoo regrowing (`std.api/SD4`); the error-transform need is served by `try … else |e| return …` (ER46).
 
+That discipline was stated here for two revisions while the Methods section below still listed `map`, `map_err`, `and_then` and `filter` — the argument was made and the surface kept anyway, so the operators were added *on top of* the zoo instead of in place of it. Measurement settled it: across stdlib, examples, projects and tests, `and_then` has zero uses, `map` and `filter` on either wrapper zero (every hit is a sequence), `map_err` two. Only `.ok()` earns its place, at 52. `T?` now has no methods and `T or E` has that one, so the trade the operators were supposed to buy is finally paid for.
+
 **ER1 (builtin sum).** The old spec said `Result<T, E>` was a normal enum with `T or E` as sugar. In practice Result had dedicated sugar, auto-Ok wrapping, `try` propagation, `any Error` boxing, origin tracking, and union widening — more bespoke surface than any user enum. Making `T or E` a builtin lets the spec stop pretending.
 
 **ER3 (disjointness).** Type-based branch disambiguation at construction (no `Ok`/`Err` wrappers) only works if T ≠ E. Rask's existing nominal-vs-alias split gives this for free: nominal types are distinct, aliases are transparent. The escape hatch is newtype, not a wrapper keyword.
@@ -940,15 +939,15 @@ Note what Swift and Rust both allow in that block: *any* divergence, not just `r
 4. **`expr? else return X`** — postfix `?` is a bool, so `expr?` would be a bool alone and an unwrapped `T` with an `else`. One token, two result types.
 5. **`try` on optionals *instead of* an explicit clause** — bare `try opt` propagates absence, which is right in a `T?`-returning function and covers 7 sites in the tree. The other 47 turn absence into a named error or a plain value, and those need the clause: `try opt else return E`.
 
-**ER47 (`try` is failure-only).** `try` means "hand this error to my caller". An optional has no error to hand over, so `try opt` would have to invent one — the objection the old cross-shape diagnostic always made. Propagating absence as absence is real but rare (7 sites in the tree against 47 that turn absence into something else), and `opt ?? return none` covers it in one line while saying what is returned.
+**ER47 (`try` works on both shapes).** A draft restricted `try` to results, on the argument that "hand this error to my caller" needs an error to hand over. That drew the line in the wrong place. What `try` actually means is "get the good branch or leave" — and both shapes have a good branch and a way of not having one. Restricting it to results left absence with no way to leave a function at all, since `or` and `??` never transfer control (ER48). One keyword, one meaning, both shapes.
 
-An intermediate draft made `try` shape-agnostic, with a 2×2 of which combinations were legal. Under one-operator-per-shape that table stops existing: `try` belongs to the `or` family, so using it on an optional isn't a rule violation, it's the wrong keyword — the same class of mistake as `??` on a result. Structure doing the work a rule was doing.
+What *is* shape-specific is what the bare form propagates, and that's ER47's whole content: `try r` hands out an error so the function needs an error branch, `try opt` hands out `none` so it needs a `T?` return. The `else` clause overrides the propagated value, and with it the constraint — which is why `try opt else return MyError` and `try r else return none` both work. Reading a `try` still tells you where control goes; which shape it came from is in the callee's signature, where it belongs.
 
 `.to_result(err)` stays retired: that was `try opt else return err` spelled as a method.
 
 **ER16a (`try` finds its place in the chain).** `try` has to bind loosely, or `try store.get(id)` would read as `(try store).get(id)`. That used to mean projecting off a propagated value needed parentheses — `(try read_file(p)).len()`. It doesn't: a wrapped value has no payload methods, so in `try a.b().c` at most one placement of the `try` type-checks, and the compiler can find it.
 
-The exception is real but narrow. `map`, `and_then` and `filter` exist on the wrapper *and* on sequences, so `try v.map(f)` with `v: Vec<i32> or E` has two placements that both type-check. That's a compile error asking for parentheses, not a silent pick. `try` also doesn't slide into call arguments — `f(try g())` is written where it means.
+The exception is narrow enough to be hard to hit. It needs a method name that exists on the wrapper *and* on the payload, and the wrapper has exactly one method — so it takes a `T` with its own `ok` before `try r.ok()` has two placements that type-check. That's a compile error asking for parentheses, not a silent pick. (An earlier draft had this exception everywhere, because the wrapper carried `map`/`filter`/`and_then` and so did every sequence. Cutting the combinators cut the ambiguity with them.) `try` also doesn't slide into call arguments — `f(try g())` is written where it means.
 
 **ER44/ER46 (the binding is never mandatory).** In real code the replace-the-error case discards the binding constantly — the validation example wrote `else |e| ApiError.BadRequest("invalid JSON")` six times in one file, never touching `e`. A binding required by grammar and ignored by the author is ceremony with no reader benefit, which is what #573 asked to remove. Under this rule it falls out rather than needing a rule: `|e|` is how you *get* the error, so you write it when you want it. `try x else return E` and `try x else |e| return f(e)` are the same form with and without a payload you happened to need — and the `return` stays in both, which is the half #573 didn't ask for but needed.
 

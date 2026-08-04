@@ -175,22 +175,11 @@ const present: Config?? = load_config()        // widens through both layers
 
 ## Methods
 
-Three compiler-provided methods on `T or none`. Each preserves the wrapper for chaining; operators always extract or panic. Lifting absence into an error is `try x else return MyError` (ER45), not a method — `.to_result` is gone.
+None. `T?` has no combinators — the operator surface is the whole API.
 
-| Method | Signature | Behavior |
-|--------|-----------|----------|
-| `map` | `func<U>(take self, f: \|T\| -> U) -> U?` | Transform if present; absent stays absent |
-| `filter` | `func(take self, pred: \|T\| -> bool) -> T?` | Keep if predicate true; else absent |
-| `and_then` | `func<U>(take self, f: \|T\| -> U?) -> U?` | Chain Option-returning operations |
+`map`, `filter` and `and_then` used to be here. They exist to thread a *wrapped* value through a pipeline, which is the shape the operators deliberately replace: `try` gets the value or leaves now, `??` gets the value or a substitute now. Once nothing threads wrapped values, a combinator has no job — and measurement agreed, with **zero** uses of any of the three on an optional across stdlib, examples, projects and tests.
 
-<!-- test: skip -->
-```rask
-const valid_email = lookup_user(id)
-    .filter(|u| u.is_active)
-    .map(|u| u.email)
-
-const profile = load_user(id).and_then(|u| load_profile(u.id))
-```
+Lifting into a result is `try x else return MyError` (`type.errors/ER45`); the reverse is `.ok()` on the result (`type.errors`).
 
 ## Linear Resources
 
