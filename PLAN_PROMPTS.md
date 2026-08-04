@@ -91,7 +91,7 @@ numeric cast falls through and returns the target type unchecked.
 Spec: `as` is lossless widening only (CV1–CV4). Narrowing (i32 as i8), sign reinterpretation
 (i32 as u32 when negative-capable), float<->int via `as`, int-to-char (CH5), and int-to-bool (BL3)
 are compile errors. The sanctioned lossy forms are separate syntax (CV5–CV10): `truncate to T`,
-`saturate to T`, `try convert to T` (returns T?), and explicit float-to-int forms — read the spec
+`saturate to T`, `convert to T?`, and explicit float-to-int forms — read the spec
 for the exact surface; none of it is parsed today (grep the lexer/parser first to confirm).
 
 This is a two-part task; do them in order:

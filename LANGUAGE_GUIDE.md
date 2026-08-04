@@ -152,7 +152,7 @@ type alias Bytes = Vec<u8>                   // transparent alias
 ```
 
 - Tuples: `(a, b)`, arity ≥ 2. Unions `A | B` appear only in error position.
-- Conversions: `as` is lossless-widening only. Lossy needs a named op: `x truncate to u8`, `x saturate to u8`, `x try convert to u8` (returns optional) (`type.primitives`).
+- Conversions: `as` is lossless-widening only. Lossy needs a named op: `x truncate to u8`, `x saturate to u8`, `x convert to u8?` (the `?` marks the partial one — `none` if it doesn't fit) (`type.primitives`).
 - Integer overflow **panics in all builds**. Opt out per-value with `Wrapping<T>`/`Saturating<T>` from `num` (`type.integer-overflow`).
 - Floats are not Hashable/Comparable — structs containing `f64` can't be Map keys or `sort()`ed without a custom conformance (HA4/CO4).
 
