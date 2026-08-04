@@ -119,7 +119,7 @@ Why return-only for errors? Construction in assignment/field positions makes the
 | **ER16: Extract or leave** | `try x` | Extracts the success payload, or **control leaves here**. Bare, it leaves to the caller: an error widened into this function's error type (ER31/ER31a/ER32), or `none` in a `T?`-returning function. An `else` clause redirects it anywhere that diverges (ER45) |
 | **ER16a: Chain placement** | `try a.b().c` | `try` attaches to the one step in the postfix chain that is fallible — `try read_file(p).len()` is `(try read_file(p)).len()`, `try store.get(id)` is `try (store.get(id))`. A wrapped value has no payload methods, so normally exactly one placement type-checks. If two do, that's a compile error asking for parentheses. `try` does not slide into call arguments |
 | **ER17: Propagate block** | `try { … }` | Each `try` inside propagates; the first other-branch value short-circuits out. Shape follows ER16 |
-| **ER18: Block with a handler** | `try { … } or \|e\| …` | The block is the left side of an ordinary `or`, so the same rule applies: a value folds, a `return` leaves. `try { … } or \|e\| return f(e)` is the block spelling of ER46 |
+| **ER18: Block with a clause** | `try { … } else \|e\| …` | The `else` clause covers the whole block: the first error from any inner `try` goes to it. Same rule as ER45 — the clause must diverge |
 
 <!-- test: skip -->
 ```rask
@@ -132,7 +132,7 @@ const size = try read_file(path).len()
 // Force
 const config = load_config()!
 
-// A block as the left side of `or` — same rule, so `return` to leave
+// A block with a clause — covers the whole block, and must diverge (ER18)
 const content = try {
     try fs.read_text(path)
 } else |e| return context("reading {path}", e)
@@ -140,9 +140,11 @@ const content = try {
 
 ER13, ER19, ER20 and ER26 are retired — the `?.` chain on results, the `if r?` predicate and its `as v` bind, and the `!r?` parse error, all of which assumed `?` worked on results. Narrowing a result is `is` (ER23). ER21 and ER22 survive: the `else`-narrows and `else as e` rules were never about `?`, so they re-home onto the `is` test unchanged.
 
-## The `or` Family
+## The Two Halves
 
-`or` is the keyword the type uses — `T or E` — and it means the same thing at the value level: **`or` supplies the failing branch.** Optionals get their own operator, `??`, for the absent branch (`type.optionals/OPT11`); the two are deliberately not the same token.
+`or` is the keyword the type uses — `T or E` — and it means the same thing at the value level: **`or` supplies the failing branch.** Optionals get `??` for the absent branch (`type.optionals/OPT11`); the two are deliberately not the same token.
+
+Neither transfers control. **`try` is the half that can**, and its `else` clause says where control goes.
 
 Every optional form carries a `?`. No failure form does. That's the whole mnemonic — you never look up which operator applies, because the type's own spelling tells you.
 
