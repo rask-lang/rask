@@ -16,20 +16,27 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 
 | Prec | Operators | Description | Assoc |
 |------|-----------|-------------|-------|
-| 14 | `()` `[]` `.` | Grouping, indexing, field | Left |
-| 13 | `!` `~` `-` (unary) | NOT, bitwise NOT, negate | Right |
-| 12 | `*` `/` `%` | Mul, div, remainder | Left |
-| 11 | `+` `-` | Add, subtract | Left |
-| 10 | `<<` `>>` | Bit shifts | Left |
-| 9 | `&` | Bitwise AND | Left |
-| 8 | `^` | Bitwise XOR | Left |
-| 7 | `\|` | Bitwise OR | Left |
+| 15 | `()` `[]` `.` `?` `?.` `!` (postfix) | Grouping, indexing, field, absence, force | Left |
+| 14 | `!` `~` `-` (unary) | NOT, bitwise NOT, negate | Right |
+| 13 | `*` `/` `%` | Mul, div, remainder | Left |
+| 12 | `+` `-` | Add, subtract | Left |
+| 11 | `<<` `>>` | Bit shifts | Left |
+| 10 | `&` | Bitwise AND | Left |
+| 9 | `^` | Bitwise XOR | Left |
+| 8 | `\|` | Bitwise OR | Left |
+| 7 | `or` | Other branch (`type.errors/ER14`) | Left |
 | 6 | `==` `!=` `<` `>` `<=` `>=` | Comparison | None |
 | 5 | `&&` | Logical AND | Left |
 | 4 | `\|\|` | Logical OR | Left |
 | 3 | `..` `..=` | Range | None |
-| 2 | `try` (prefix) `or` `!` (postfix) | Propagation, other-branch, force | Left |
+| 2 | `try` (prefix) | Propagation | — |
 | 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | Assignment | Right |
+
+Postfix `?`, `?.` and `!` bind with field access and calls at 15 — tighter than everything below. `x! == y` is `(x!) == y`; `x?.f + 1` is `(x?.f) + 1`. Note the two `!`s: postfix force at 15, prefix boolean NOT at 14.
+
+`or` binds tighter than comparison and looser than the bitwise operators, so `port or 8080 == want` is `(port or 8080) == want` — the reading you want, without parens. It is **left**-associative and its right side must be a bare `T`, so a multi-step chain needs parens today: `a or (b or fallback)`. See [issue #578](https://github.com/rask-lang/rask/issues/578).
+
+`try` is a loose prefix: `try store.get(id)` is `try (store.get(id))`, not `(try store).get(id)`. That is deliberate — the tight reading would break every method call on a fallible receiver — and it is why projecting off a propagated value needs parens: `(try read_file(p)).len()`.
 
 ## Indexing
 

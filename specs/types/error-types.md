@@ -137,7 +137,7 @@ const content = try {
 } or |e| context("reading {path}", e)
 ```
 
-ER13, ER19–ER22 and ER26 are retired — the `?.` chain on results, the `if r?` narrowing family, and the `!r?` parse error, all of which assumed `?` worked on results. Narrowing a result is `is` (ER23).
+ER13, ER19, ER20 and ER26 are retired — the `?.` chain on results, the `if r?` predicate and its `as v` bind, and the `!r?` parse error, all of which assumed `?` worked on results. Narrowing a result is `is` (ER23). ER21 and ER22 survive: the `else`-narrows and `else as e` rules were never about `?`, so they re-home onto the `is` test unchanged.
 
 ## The `or` Family
 
@@ -249,6 +249,8 @@ Narrowing rides on `const`. See [optionals.md](optionals.md) for the shared sema
 | Rule | Description |
 |------|-------------|
 | **ER23: Type pattern narrow** | `if r is ErrType as e { … }` narrows and binds when `r`'s error side is (or contains) `ErrType`. Works for widened unions: `if r is IoError as io { … }`. `if r is T as v` tests the success side the same way |
+| **ER21: else branch narrows** | On a const scrutinee, the `else` of an `is` test narrows to the complement: `if r is Config { … } else { … }` gives the error side in the `else` |
+| **ER22: Bind in else** | `if r is Config as c { … } else as e { … }` binds the complement in the `else` branch |
 | **ER24: Early-exit narrow** | If a branch diverges, the fall-through is narrowed to the opposite variant |
 | **ER25: Compound does not narrow** | `r is A && s is B` is a legal bool but does not narrow either side |
 
@@ -260,11 +262,14 @@ if r is f64 as v {
     use(v)                        // v: f64
 }
 
+if r is f64 { use(r) }
+else as e { log(e.message()) }    // e: DivError            [ER22]
+
 if r is DivError as e {
     log(e.message())              // e: DivError
     return
 }
-// r: f64 here (early-exit narrow)
+// r: f64 here (early-exit narrow)   [ER24]
 ```
 
 ## Match

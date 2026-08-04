@@ -63,11 +63,11 @@ cache = get_current_user()               // User widens at assignment
 <!-- test: skip -->
 ```rask
 const name = user?.display_name
-    or user?.email
-    or "anon"
+    or (user?.email
+    or "anon")
 ```
 
-As soon as a right side is bare `T`, the chain collapses to `T` and a further `or` is a type error.
+As soon as a right side is bare `T`, the chain collapses to `T` and a further `or` is a type error. `or` is left-associative and its right side must be a bare `T`, so a multi-step chain needs the parens shown above — writing it flat is a type error today. Grouping it right by default is [issue #578](https://github.com/rask-lang/rask/issues/578).
 
 The right side of `or` is always a value — it never leaves the function. Two things follow:
 
