@@ -245,7 +245,7 @@ Writing the `?` on the target says the same thing in the marker the language alr
 <!-- test: skip -->
 ```rask
 const x = big_val convert to i8?          // i8? — none if it doesn't fit
-const n = try (x convert to i64?) or MyError.OutOfRange
+const n = (x convert to i64?) or return MyError.OutOfRange
 ```
 
 The old spelling put two unrelated `try`s in that second line. `truncate to` and `saturate to` are total, so a `?` on *their* target is a type error — the `?` is what marks a conversion as partial.

@@ -36,6 +36,8 @@ Postfix `?`, `?.` and `!` bind with field access and calls at 15 — tighter tha
 
 `or` binds tighter than comparison and looser than the bitwise operators, so `port or 8080 == want` is `(port or 8080) == want` — the reading you want, without parens. It is **left**-associative and its right side must be a bare `T`, so a multi-step chain needs parens today: `a or (b or fallback)`. See [issue #578](https://github.com/rask-lang/rask/issues/578).
 
+A diverging right side — `or return x`, `or break`, `or continue`, `or panic(…)` — is legal and `Never`-typed (`type.errors/ER45`). `return` binds loosely enough to take the rest of the expression, so `x or return a or b` is `x or return (a or b)`; parenthesise if you meant otherwise.
+
 `try` is a loose prefix: `try store.get(id)` is `try (store.get(id))`, not `(try store).get(id)`. That is deliberate — the tight reading would break every method call on a fallible receiver — and it is why projecting off a propagated value needs parens: `(try read_file(p)).len()`.
 
 ## Indexing

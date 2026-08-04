@@ -766,7 +766,7 @@ One-liners cover the common cases — `try` propagates, `or` supplies the other 
 
 ```rask
 const data = try read_file(path)                              // propagate the error
-const ms = try raw.parse() or BadRequest("not a number")      // absence → a named error
+const ms = raw.parse() or return BadRequest("not a number")   // absence → leave
 const port = config.port or 8080                              // a value instead
 ```
 
@@ -882,21 +882,24 @@ func load_config() -> Config or (IoError | ParseError) {
 }
 ```
 
-**The `or` family.** `or` supplies the other branch — the same keyword as the type (`T or E`, and `T?` is `T or none`). `try` says an error may leave this function, and that one bit decides what the value after `or` is:
+**The `or` family.** `or` supplies the other branch — the same keyword as the type (`T or E`, and `T?` is `T or none`). What follows it is an ordinary expression: a value, or a `return`.
 
-| Form | The value after `or` is | Result |
-|------|------------------------|--------|
-| `x or v` | a `T` | folds — nothing leaves |
-| `x or \|e\| f(e)` | a `T` from the error | folds — nothing leaves |
-| `try x or e_val` | an `E` | that error leaves |
-| `try x or \|e\| f(e)` | an `E` from the old one | that error leaves |
+| Form | The other branch |
+|------|------------------|
+| `x or v` | is this value |
+| `x or \|e\| f(e)` | is this value, computed from the error |
+| `x or return y` | leaves the function |
+| `x or \|e\| return f(e)` | leaves, carrying a transformed error |
+| `try r` | propagates the error, widened into the function's error union |
 
 ```rask
-const port = config.port or 8080                              // a value instead
-return dispatch(req) or |e| error_response(e)                 // fold at a boundary
-const ms = try raw.parse() or BadRequest("bad ms")            // absence → named error
-const dto = try json.decode(body) or BadRequest("bad JSON")   // replace + propagate
-const text = try fs.read_text(p) or |e| context("reading {p}", e)
+const port = config.port or 8080                                 // a value instead
+return dispatch(req) or |e| error_response(e)                    // fold at a boundary
+const ms = raw.parse() or return BadRequest("bad ms")            // absence → leave
+const dto = json.decode(body) or return BadRequest("bad JSON")   // error → leave
+const text = fs.read_text(p) or |e| return context("reading {p}", e)
+const item = queue.pop() or break                                // leave the loop
+const data = try read_file(path)                                 // the common case
 ```
 
 `?` marks absence, `or` and `try` mark errors — so a line says which kind of failure it handles. Nothing with a `?` applies to a result, `?.` included; extract first (`(try r).field`). Only `!` and `match` are shared.

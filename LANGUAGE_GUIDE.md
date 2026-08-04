@@ -179,18 +179,19 @@ Operator surface — `?` for absence, `or`/`try` for errors:
 | `x?` | `bool` — present test on an optional; narrows a `const` scrutinee inside the block |
 | `x? as v` | test and bind `v` |
 | `x?.field` | optional chain — projects when present, `none` otherwise. Optionals only |
-| `x or v` | the other branch: a value instead. `v` must be a `T`, and never diverges |
-| `x or \|e\| f(e)` | the other branch, computed from the error — results only |
+| `x or v` | the other branch: this value. Must be a `T` |
+| `x or \|e\| f(e)` | the other branch: this value, from the error — results only |
+| `x or return y` | the other branch leaves the function |
+| `x or \|e\| return f(e)` | leaves, carrying a transformed error |
+| `x or break` / `or continue` / `or panic(…)` | leaves the loop, or panics (`or panic` = `x! "…"`) |
 | `try r` | extract, or return the error (widened into the function's error union) |
-| `try x or e_val` | replace the other branch with an error, then propagate |
-| `try x or \|e\| f(e)` | transform the error, then propagate |
 | `r!` / `r! "msg"` | extract or panic |
 | `if r is IoError as e { }` | error-side type test and bind |
 | `const v = x is Pattern else { return }` | pattern guard, enum patterns only |
 
-`or` is the union keyword at the value level, matching the type (`T or E`; `T?` is `T or none`). One question decides what follows it: **is there a `try`?** With `try`, an error leaves this function, so the value after `or` is an `E`. Without, nothing leaves, so it's a `T`. Writing the wrong one is a type error on that line, since `T ≠ E`.
+`or` is the union keyword at the value level, matching the type (`T or E`; `T?` is `T or none`). The right side is an ordinary expression: a value produces it, a `return`/`break`/`continue` leaves — and the keyword is in the line saying so. No rule about which one the type system expects; `Never` coerces as it does in any `if` branch.
 
-`or` never diverges. To leave with something that isn't an error — `break`, `continue`, a plain `return` — use an `if` on the early-exit narrow.
+`try r` is the propagate form: shaped like `r or |e| return e`, but the widening, boundary-enum wrapping and `any Error` boxing rules are attached to `try`, so a bare `return e` doesn't get them. It's also where a reader scanning the left margin finds the exits, which is why it stays.
 
 `?` marks absence, `or` and `try` mark errors, so a line says which kind of failure it handles. Nothing with a `?` in it applies to a result: no `r?` success test, no `if r?` narrowing, no `r?.field` chain — use `is`, and extract before projecting (`(try r).field`). Shared across both shapes: only `!` and `match`.
 

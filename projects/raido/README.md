@@ -107,7 +107,7 @@ func transform(x: int) -> int or string {
 }
 
 // Error handling
-const result = try process(42) or |e| {
+const result = process(42) or |e| {
     log("failed: {e}")
     return 0
 }

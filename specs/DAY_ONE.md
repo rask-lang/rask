@@ -18,7 +18,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 4. **Parameter modes.** Read-only by default. `mutate` marks mutable access at both ends — `func f(mutate x: T)` and `f(mutate x)`. `take` consumes; callers may write `own x` for emphasis. Receivers are never marked.
 
-5. **Errors are values.** `T or E` in the return type. `try` propagates, `or` supplies the other branch, `!` panics with the error's message. No exceptions. `?` is for absence only — `or` and `try` are the error words.
+5. **Errors are values.** `T or E` in the return type. `try` propagates; `or` supplies the other branch — a value, or a `return` that leaves. `!` panics with the error's message. No exceptions. `?` is for absence only.
 
 6. **Optionals.** `T?` is "value or absent." `if x? as v` unwraps and narrows; `x or v` supplies a value instead.
 

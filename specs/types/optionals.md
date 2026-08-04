@@ -34,7 +34,7 @@ Construction follows the general union widening rule: a value of type `A` widens
 
 | Rule | Description |
 |------|-------------|
-| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x or default`, or `try x or MyError` |
+| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x or default`, or `x or return MyError` |
 | **OPT6: `none` widens at use** | `none` has type `none` on its own; widens to `T or none` at any position with a target union type |
 
 <!-- test: skip -->
@@ -52,8 +52,8 @@ cache = get_current_user()               // User widens at assignment
 | **OPT8: Absent literal** | `none` | absent value; type widens at use |
 | **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
 | **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
-| **OPT11: Other branch** | `x or default` | unwraps `x` if present, else yields `default`. `default`'s type must match the inner `T`, and may not diverge. `or` is the union keyword at the value level — see [error-types.md](error-types.md) ER14 |
-| **OPT12: Absence is not an error** | `try x` | compile error. `none` is the absent sentinel, so propagating it would invent an error. Say what it becomes: `try x or MyError` (ER45/ER47) |
+| **OPT11: Other branch** | `x or default` | unwraps `x` if present, else evaluates `default`. A value there must have the inner type `T`; a `return`/`break`/`continue`/`panic(…)` leaves instead. `or` is the union keyword at the value level — see [error-types.md](error-types.md) ER14/ER45 |
+| **OPT12: Absence is not an error** | `try x` | compile error. `none` is the absent sentinel, so propagating it would invent an error. Say what it becomes: `x or return MyError` (ER45/ER47) |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
 | **OPT15: Absent check** | `x == none` / `x != none` | plain equality; `x?` and `x == none` narrow identically |
 | **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x == none` |
@@ -69,18 +69,17 @@ const name = user?.display_name
 
 As soon as a right side is bare `T`, the chain collapses to `T` and a further `or` is a type error. `or` is left-associative and its right side must be a bare `T`, so a multi-step chain needs the parens shown above — writing it flat is a type error today. Grouping it right by default is [issue #578](https://github.com/rask-lang/rask/issues/578).
 
-The right side of `or` is always a value — it never leaves the function. Two things follow:
+The right side is an ordinary expression, so it either produces the value or leaves:
 
 <!-- test: skip -->
 ```rask
-const theme = config.theme or "default"                    // a value instead
-
-const user = load_user(id)
-if user == none { return }                                  // leaving is an `if`
-greet(user)                                                 // user: User here
+const theme = config.theme or "default"               // a value instead
+const user = load_user(id) or return ApiError.NoUser   // leave, naming the error
+const item = queue.pop() or break                      // leave the loop
+const home = env("HOME") or panic("no HOME")           // same as env("HOME")!
 ```
 
-The binding form `or |e|` is an *error* fold (ER44) and doesn't apply to optionals — `none` carries no payload to bind. On an optional it's a compile error pointing at plain `or`.
+The binding form `or |e|` is an *error* form (ER44) and doesn't apply to optionals — `none` carries no payload to bind. On an optional it's a compile error pointing at plain `or`.
 
 ## Conditions and Narrowing
 
@@ -172,7 +171,7 @@ const present: Config?? = load_config()        // widens through both layers
 
 ## Methods
 
-Three compiler-provided methods on `T or none`. Each preserves the wrapper for chaining; operators always extract or panic. Lifting absence into an error is `try x or MyError` (ER45), not a method — `.to_result` is gone.
+Three compiler-provided methods on `T or none`. Each preserves the wrapper for chaining; operators always extract or panic. Lifting absence into an error is `x or return MyError` (ER45), not a method — `.to_result` is gone.
 
 | Method | Signature | Behavior |
 |--------|-----------|----------|
@@ -257,14 +256,14 @@ No optional-specific equality rule.
 | `x?.field` on `T??` | OPT3/OPT30 | Compile error — the outer payload is `T?`, not a struct. Narrow first |
 | `Vec<T?>.first()` | OPT28 | `T??` — outer says "vec empty", inner says "slot empty" |
 | `?.` on `T or E or none` | OPT3 | Compile error suggesting layering: `(T or E)?` or `T or (E?)` |
-| `x or return` / `or break` / `or panic(…)` | OPT11/ER48 | Compile error — `or` produces a value. Use `try x or MyError`, or an `if` |
+| `x or return E` / `or break` / `or panic(…)` | OPT11/ER45 | Legal — control leaves; this is how absence becomes an error |
 | `x or \|e\| f(e)` on an optional | OPT11 | Compile error — no payload to bind. Use plain `or` |
-| `try x` with no `or` | OPT12 | Compile error naming the fix: `try x or MyError` |
+| `try x` | OPT12 | Compile error naming the fix: `x or return MyError` |
 | `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
 | Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
 | `!x?` syntax | OPT16 | Parse error suggesting `x == none` |
 | Linear `?.field` | OPT25 | Compile error — cannot partially move |
-| `try x or MyError` in a function whose error union excludes `MyError` | OPT12/ER31 | Compile error — the named error must reach the function's error type |
+| `x or return MyError` where `MyError` isn't in the function's return type | OPT12/ER9 | Compile error — normal `return` rules apply |
 | `match` on `T?` with two arms | OPT27 | Legal; style lint suggests operators |
 | `const x = none` | OPT8 | Legal. `x: none`. Widens at later use site |
 | `none == none` | equality | `true`. Standard equality on a zero-field type |
@@ -372,12 +371,12 @@ func greet(id: UserId) -> string {
 }
 ```
 
-When absence should leave as an *error* rather than as a different value, that's one line:
+When absence should leave rather than produce a value, that's one line:
 
 <!-- test: skip -->
 ```rask
 func greet(id: UserId) -> string or ApiError {
-    const user = try load_user(id) or ApiError.NotFound(id)
+    const user = load_user(id) or return ApiError.NotFound(id)
     return "Hello, {user.name}"
 }
 ```
