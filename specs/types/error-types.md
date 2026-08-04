@@ -155,6 +155,7 @@ What you put after it is an ordinary expression. Two things an expression can be
 | Rule | Description |
 |------|-------------|
 | **ER14: Other branch** | `x or v` yields the success payload, or `v`. Works on `T?` and `T or E` alike — supplying the other branch doesn't care why the good branch was missing |
+| **ER14a: The right side sets the result type** | Three cases, checked in order. **Still wrapped:** if the right side is itself two-branch with the *same* success type, the result keeps that shape and the chain continues — `T?` with `T?` gives `T?`, `T or E1` with `T or E2` gives `T or E2`. **Collapsed:** if the right side is the bare success type `T`, the result is `T`. **Diverging:** if the right side is `Never`, the result is `T`. Anything else is a type error |
 | **ER44: Using the error** | `x or \|e\| f(e)` binds `e: E`. Only on `T or E` — `none` carries nothing to bind, so this form on an optional is a compile error |
 | **ER45: Diverging right side** | The right side may be any expression, `return`/`break`/`continue`/`panic(…)` included. It is `Never`-typed, so nothing constrains it to `T`, and the keyword says on the line that control leaves. This is how absence becomes an error: `opt or return MyError` |
 | **ER46: `\|e\|` composes with it** | The binding form and the diverging form are independent: `x or \|e\| return f(e)` transforms the error and leaves. No separate rule |
@@ -190,6 +191,31 @@ const text = fs.read_text(path) or |e| {
 ```
 
 The right side of `or` is an expression, and a block is an expression, so braces are available whenever they help and never required for a single one.
+
+### Chaining [ER14a]
+
+Because the right side sets the result type, a chain of fallbacks reads flat and needs no parentheses. `or` is left-associative, and that's the correct grouping:
+
+<!-- test: skip -->
+```rask
+const name = user?.display_name or user?.email or "anon"
+//           \_____ T? ______/    \___ T? ___/    \ T /
+//           \________ T? _____________________/
+//           \_______________ string ______________/
+```
+
+Each step whose right side is still a `T?` stays wrapped and keeps going; the first bare `T` collapses it. A further `or` after the collapse is a type error, because the left side is no longer two-branch.
+
+The same rule gives "first source that works" on results, keeping the last error:
+
+<!-- test: skip -->
+```rask
+const cfg = try load_from_disk() or load_from_env() or load_from_net()
+//                T or DiskError    T or EnvError     T or NetError
+//          result: T or NetError — earlier errors are discarded
+```
+
+Discarding the earlier errors is the same information loss as `r or v`, and the same linearity rule applies (ER43): an error carrying a must-consume payload can't be dropped this way.
 
 **Reading a line.** `or` introduces the other branch; what follows says what that branch does. A value means the expression produces it. A `return`, `break` or `continue` means control leaves, and the keyword is right there in the line saying so. There is no rule about which one the type system expects — `Never` coerces, exactly as it does in an `if` branch or a match arm.
 
@@ -565,6 +591,9 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `o or \|e\| …` on an optional | ER44 | Compile error — `none` carries nothing to bind. Use `o or v` or `o or return …` |
 | Unused `e` in `r or \|e\| f(e)` | ER44 | Lint suggesting `r or v` |
 | `r or \|e\| return e` | ER47 | Legal; lint suggests `try r`, which also applies the widening rules |
+| `a or b or fallback`, all same `T` | ER14a | Legal and flat — `a or b` stays wrapped, `fallback` collapses it |
+| `(a or fallback) or b` | ER14a | Type error — the chain already collapsed, so the left side isn't two-branch |
+| `a or b` where `a: T??` and `b: T?` | ER14a/OPT30 | Collapses to `T?` — success types differ, so it isn't the chaining case |
 | `x or v` where `x` is neither `T?` nor `T or E` | ER14 | Type error — `or` needs a two-branch left side |
 | `a or b` on two bools | ER14 | Type error suggesting `\|\|` |
 | `r or v` where `E` carries a linear payload | ER43 | Compile error — the error is discarded, and a linear payload may not be. Use `r or \|e\| …` and consume it, or `match` |

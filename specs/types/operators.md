@@ -34,7 +34,7 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 
 Postfix `?`, `?.` and `!` bind with field access and calls at 15 — tighter than everything below. `x! == y` is `(x!) == y`; `x?.f + 1` is `(x?.f) + 1`. Note the two `!`s: postfix force at 15, prefix boolean NOT at 14.
 
-`or` binds tighter than comparison and looser than the bitwise operators, so `port or 8080 == want` is `(port or 8080) == want` — the reading you want, without parens. It is **left**-associative and its right side must be a bare `T`, so a multi-step chain needs parens today: `a or (b or fallback)`. See [issue #578](https://github.com/rask-lang/rask/issues/578).
+`or` binds tighter than comparison and looser than the bitwise operators, so `port or 8080 == want` is `(port or 8080) == want` — the reading you want, without parens. It is **left**-associative, which is the correct grouping for a chain: the right side sets the result type, so `a or b or fallback` stays wrapped through `b` and collapses at `fallback` (`type.errors/ER14a`). The compiler doesn't implement the still-wrapped case yet — [#578](https://github.com/rask-lang/rask/issues/578).
 
 A diverging right side — `or return x`, `or break`, `or continue`, `or panic(…)` — is legal and `Never`-typed (`type.errors/ER45`). `return` binds loosely enough to take the rest of the expression, so `x or return a or b` is `x or return (a or b)`; parenthesise if you meant otherwise.
 

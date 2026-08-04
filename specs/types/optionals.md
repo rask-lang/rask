@@ -52,7 +52,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT8: Absent literal** | `none` | absent value; type widens at use |
 | **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
 | **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
-| **OPT11: Other branch** | `x or default` | unwraps `x` if present, else evaluates `default`. A value there must have the inner type `T`; a `return`/`break`/`continue`/`panic(…)` leaves instead. `or` is the union keyword at the value level — see [error-types.md](error-types.md) ER14/ER45 |
+| **OPT11: Other branch** | `x or default` | unwraps `x` if present, else evaluates `default`. The right side sets the result type: a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining, a `return`/`break`/`continue`/`panic(…)` leaves. See [error-types.md](error-types.md) ER14/ER14a/ER45 |
 | **OPT12: Absence is not an error** | `try x` | compile error. `none` is the absent sentinel, so propagating it would invent an error. Say what it becomes: `x or return MyError` (ER45/ER47) |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
 | **OPT15: Absent check** | `x == none` / `x != none` | plain equality; `x?` and `x == none` narrow identically |
@@ -63,11 +63,11 @@ cache = get_current_user()               // User widens at assignment
 <!-- test: skip -->
 ```rask
 const name = user?.display_name
-    or (user?.email
-    or "anon")
+    or user?.email
+    or "anon"
 ```
 
-As soon as a right side is bare `T`, the chain collapses to `T` and a further `or` is a type error. `or` is left-associative and its right side must be a bare `T`, so a multi-step chain needs the parens shown above — writing it flat is a type error today. Grouping it right by default is [issue #578](https://github.com/rask-lang/rask/issues/578).
+As soon as a right side is bare `T`, the chain collapses to `T` and a further `or` is a type error. The chain works flat because the right side sets the result type — see [error-types.md](error-types.md) ER14a. (The compiler doesn't implement the still-wrapped case yet, so a flat chain needs parentheses until [#578](https://github.com/rask-lang/rask/issues/578) lands.)
 
 The right side is an ordinary expression, so it either produces the value or leaves:
 
