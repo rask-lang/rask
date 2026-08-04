@@ -890,7 +890,7 @@ func load_config() -> Config or (IoError | ParseError) {
 | `x or \|e\| f(e)` | is this value, computed from the error |
 | `x or return y` | leaves the function |
 | `x or \|e\| return f(e)` | leaves, carrying a transformed error |
-| `try r` | propagates the error, widened into the function's error union |
+| `try x` | propagates the other branch — the error (widened) for a result, `none` for an optional |
 
 ```rask
 const port = config.port or 8080                                 // a value instead
@@ -902,7 +902,7 @@ const item = queue.pop() or break                                // leave the lo
 const data = try read_file(path)                                 // the common case
 ```
 
-`?` marks absence, `or` and `try` mark errors — so a line says which kind of failure it handles. Nothing with a `?` applies to a result, `?.` included; extract first (`(try r).field`). Only `!` and `match` are shared.
+`?` is absence-specific — nothing with a `?` applies to a result, `?.` included; extract first (`(try r).field`). `or` and `try` are shape-agnostic. `or |e|` is results-only, since it binds a payload.
 
 See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 

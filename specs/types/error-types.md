@@ -116,8 +116,8 @@ Why return-only for errors? Construction in assignment/field positions makes the
 | **ER12: No `?` on a result** | `r?` / `r?.field` | Compile error, both forms. `?` marks absence; a result's other branch is an error. Test with `is` (ER23) or `match`; to project, extract first |
 | **ER14: Other branch** | `r or v` | Yields T when present, else `v`. `v` must have type T — see the `or` family below |
 | **ER15: Force** | `r!` | Extracts T, or panics using `E.message()`; `r! "msg"` overrides with a custom message |
-| **ER16: Propagate** | `try r` | Extracts T, or returns early with E widened to the current function's error type |
-| **ER17: Propagate block** | `try { … }` | Each `try` inside propagates; the first E short-circuits out |
+| **ER16: Propagate** | `try x` | Extracts the success payload, or returns early with the other branch. Shape-agnostic: on a `T or E` the error propagates, widened (ER31/ER31a/ER32); on a `T?` the absence propagates. The enclosing function's other branch has to match — see ER47 |
+| **ER17: Propagate block** | `try { … }` | Each `try` inside propagates; the first other-branch value short-circuits out. Shape follows ER16 |
 | **ER18: Error-context block** | `try { … } or \|e\| transform(e)` | Catches any E from the block, applies `transform`, then returns the result |
 
 <!-- test: skip -->
@@ -151,6 +151,7 @@ What you put after it is an ordinary expression. Two things an expression can be
 | **ER44** | `x or \|e\| f(e)` | is this value, computed from the error | the expression has type `T` |
 | **ER45** | `x or return y` | leaves the function | `Never` on that path |
 | **ER46** | `x or \|e\| return f(e)` | leaves, carrying a transformed error | `Never` on that path |
+| **ER47** | `try x` | propagates as-is | the success payload |
 
 | Rule | Description |
 |------|-------------|
@@ -159,7 +160,7 @@ What you put after it is an ordinary expression. Two things an expression can be
 | **ER44: Using the error** | `x or \|e\| f(e)` binds `e: E`. Only on `T or E` — `none` carries nothing to bind, so this form on an optional is a compile error |
 | **ER45: Diverging right side** | The right side may be any expression, `return`/`break`/`continue`/`panic(…)` included. It is `Never`-typed, so nothing constrains it to `T`, and the keyword says on the line that control leaves. This is how absence becomes an error: `opt or return MyError` |
 | **ER46: `\|e\|` composes with it** | The binding form and the diverging form are independent: `x or \|e\| return f(e)` transforms the error and leaves. No separate rule |
-| **ER47: `try` is the propagate form** | `try r` extracts `T` or returns the error, widened into the current function's error union (ER31/ER31a/ER32). Shape-wise it is `r or \|e\| return e`, but the widening rules are `try`'s — a bare `return e` doesn't get them. Results only: `try` on an optional is a compile error, since `none` is not an error to propagate |
+| **ER47: `try` matches shapes** | `try x` needs the enclosing function's other branch to accept what it propagates. `try r` in a `T?`-returning function is a compile error — an error isn't absence, and silently dropping it would lose information; write `r or return none` to say you're dropping it. `try opt` in a `T or E`-returning function is a compile error — absence isn't an error, and inventing one is what `opt or return MyError` states explicitly |
 
 <!-- test: skip -->
 ```rask
@@ -221,6 +222,23 @@ Discarding the earlier errors is the same information loss as `r or v`, and the 
 
 **Why `try` still exists** when `try r` is shaped like `r or |e| return e`: it is the single most common operation in the language, it is shorter, it puts the marker at the front of the line where a reader scanning the left margin finds it, and the error-conversion rules (widening into a union, wrapping into a boundary enum, boxing into `any Error`) are attached to it. `rask lint` suggests `try r` when it sees the long form written out.
 
+**`try` doesn't care which shape it's given.** It propagates the other branch, whatever that branch is — an error from a `T or E`, an absence from a `T?`:
+
+<!-- test: skip -->
+```rask
+func lookup(id: UserId) -> Profile? {
+    const user = try find_user(id)        // absent → this function returns none
+    return try user.profile               // same again
+}
+
+func load(path: string) -> Config or IoError {
+    const text = try fs.read_text(path)   // failed → this function returns the IoError
+    return Config.parse(text) or |e| return IoError.Malformed(path)
+}
+```
+
+What it can't do is cross the shapes — see ER47. Those two cases are the ones where something would have to be invented or silently dropped, and both have an explicit spelling with `or return`.
+
 ### Absence and Error Are Spelled Differently
 
 `?` marks absence. `or` and `try` mark errors. Nothing crosses over, so a line tells you which kind of failure it's handling without your having to remember what the scrutinee was.
@@ -228,13 +246,15 @@ Discarding the earlier errors is the same information loss as `r or v`, and the 
 | | Optionals `T?` | Errors `T or E` |
 |---|---|---|
 | test / bind | `x?`, `x? as v`, `x == none` | `r is T as v`, `r is E as e` |
-| other branch | `x or v` | `r or v`, `r or \|e\| f(e)` |
-| leave | `x or return e_val` | `try r`, `r or \|e\| return f(e)` |
 | project | `x?.field` | extract first: `(try r).field` |
-| assert | `x!` | `r!` |
-| dispatch | `match` | `match` |
+| other branch | `x or v` | `r or v`, `r or \|e\| f(e)` |
+| propagate | `try x` | `try r` |
+| leave otherwise | `x or return e_val` | `r or \|e\| return f(e)` |
+| assert / dispatch | `x!`, `match` | `r!`, `match` |
 
-Only two operators are shared, and each is shared because the operation genuinely doesn't care which branch went bad:
+`?` is the absence-specific half: the type marker, the presence test, the optional chain. `or` and `try` are **shape-agnostic** — they mean "the other branch" and "propagate the other branch" whichever shape they're given. Only `or |e|` is results-only, because it binds a payload and `none` hasn't got one.
+
+Two operators are shared outright, each because the operation genuinely doesn't care which branch went bad:
 
 - **`!`** asserts the good branch and panics otherwise. It never claims *which* branch failed; only the panic message differs (`"none"` versus `e.message()`).
 - **`match`** is multi-arm dispatch, shape-neutral by construction.
@@ -575,7 +595,10 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `T?` where `T` is itself optional | ER3b | Legal — two-layer optional, see [optionals.md](optionals.md) |
 | `T or i32` (primitive E) | ER4 | Compile error — E lacks `ErrorMessage` |
 | `T or none` | ER4 | Legal — `none` is exempt from the `ErrorMessage` bound |
-| `try o` on an optional | ER47 | Compile error — `none` is not an error. Use `o or return MyError` |
+| `try o` in a `U?`-returning function | ER16 | Legal — absence propagates as absence |
+| `try o` in a `T or E`-returning function | ER47 | Compile error — absence isn't an error. Use `o or return MyError` |
+| `try r` in a `U?`-returning function | ER47 | Compile error — an error isn't absence. Use `r or return none` to drop it deliberately |
+| `try o` where `o: T??` | ER16/OPT30 | Propagates the outer absence; the expression is `T?` |
 | `try` on narrower E into wider union | ER31 | Auto-widen succeeds |
 | `try` on `E` into an enum with one `Variant(E)` | ER31a | Auto-wrap succeeds |
 | `try` on `E` into an enum with two `Variant(E)`s | ER31a | Compile error — name the variant with `or \|e\| return …` |
@@ -710,21 +733,24 @@ WHY: The binding form folds an *error* into a value. Absence has no payload.
 FIX: const port = config.port or default_port()
 ```
 
-**`try` on an optional [ER47]:**
+**Cross-shape `try` [ER47]:**
 ```
-ERROR [type.errors/ER47]: `try` needs an error to propagate
+ERROR [type.errors/ER47]: `try` can't turn absence into an error
    |
 4  |  const x = try maybe_value
-   |            ^^^ maybe_value: T?  (= T or none)
+   |            ^^^ maybe_value: T?  — but this function returns `Config or IoError`
 
-WHY: `none` is the absent sentinel, not an error. Propagating it would mean
-     inventing an error out of absence.
+WHY: `try` propagates the other branch into the caller's. `none` is the absent
+     sentinel, not an error, so there is nothing here to propagate as one —
+     the compiler would have to invent it.
 
 FIX: Say what absence should become:
-     const x = maybe_value or return MyError.NotFound
+     const x = maybe_value or return IoError.NotFound
 ```
 
-The reverse case — a `T or E` in a `T?`-returning function — is `r or return none`, which leaves with absence and says plainly that the error detail is being dropped. Use `.ok()` instead when the wrapper should survive for chaining.
+The mirror case is a result in a `T?`-returning function: an error isn't absence, and propagating it as `none` would silently drop the detail. `r or return none` says you're dropping it; `.ok()` keeps the wrapper for chaining.
+
+In a function that returns an optional, `try opt` is fine — absence propagates as absence, nothing is invented.
 
 **`?` used as a success test on a result [ER12]:**
 ```
@@ -837,9 +863,24 @@ It also restores the one-liners that the `try`-only version had taken away — `
 2. **A presence guard construct** — same objection, plus it needed CF13's diverging-block rule to be restated for two more scrutinee shapes.
 3. **Routing every exit through `try`** — `try x or e_val`. This works, but `try x or y` is not `try` applied to a well-typed `x or y` (on its own, `raw.parse() or BadRequest(…)` has a right side of the wrong type), so it is a single production masquerading as a composition. It also had no answer for `break`.
 4. **`expr? else return X`** — postfix `?` is a bool, so `expr?` would be a bool alone and an unwrapped `T` with an `else`. One token, two result types.
-5. **`try` on optionals, so `or return` wouldn't be needed** — it doesn't reach. `try` has exactly one thing it can do with what it finds, and the absence cases in real code mostly want something else. Measured across stdlib, examples and projects: 7 sites propagate absence as absence (what `try opt` could shorten), against 47 that turn absence into a named error or a plain value — `self.peek() or return LexError.UnterminatedString(line)`, `self.url.find("?") or return self.url`, `self.peek() or return Token.Eof`. So it could only be additive sugar for the minority case, at the price of `try` gaining a second meaning and the `?`/`or` shape split being re-crossed. It also reads worse where it would apply: `or return none` puts the returned value on the line, `try opt` sends the reader to the signature.
+5. **`try` on optionals *instead of* `or return`** — the propagation half of this is now the rule (ER16), but it does not replace `or return`: 7 sites in the tree propagate absence as absence, against 47 that turn absence into a named error or a plain value. Those 47 want something `try` cannot express.
 
-**ER47 (`try` doesn't apply to optionals).** Bare `try opt` is rejected for the reason the older cross-shape diagnostic gave: `none` is the absent sentinel, and propagating it as an error fabricates an error out of absence. `opt or return MyError` fabricates nothing — the author writes the error on the line. That also retires `.to_result(err)`, which was this operation spelled as a method.
+**ER16/ER47 (`try` is shape-agnostic; the shapes just have to match).** An earlier draft of this rule made `try` results-only, on the argument that "try announces a failure, and absence isn't a failure." That doesn't hold up. `try` doesn't announce a failure, it announces that control may leave here — and absence leaving is leaving. Rust and Swift both apply one propagation operator to both shapes and it isn't a source of confusion; you can't tell the shape from the line in either, and nobody asks to.
+
+Making it results-only also cost a rule rather than saving one: it meant carrying a carve-out ("`try` doesn't apply to optionals") on top of the general form. The rule that replaces it is the one the old cross-shape diagnostic was always describing — `try` propagates the other branch, and the enclosing function's other branch has to accept it:
+
+<!-- test: skip -->
+```rask
+func lookup(id: UserId) -> Profile? {
+    const user = try find_user(id)      // absent → return none. Nothing invented.
+}
+```
+
+The two cells that stay errors are the ones where something would have to be invented or silently dropped: absence into an error type (invent), and an error into `none` (drop). Both have an explicit spelling — `opt or return MyError`, `r or return none` — which is why they're worth rejecting rather than guessing at.
+
+What `try opt` does *not* do is replace `or return`. Counted across stdlib, examples and projects: 7 sites propagate absence as absence, against 47 that turn absence into a named error or a plain value (`self.peek() or return LexError.UnterminatedString(line)`, `self.url.find("?") or return self.url`). `try` has exactly one thing it can do with what it finds; those 47 want something else. The two forms cover different work.
+
+`.to_result(err)` stays retired either way — that was `opt or return err` spelled as a method.
 
 **ER44/ER46 (the binding is never mandatory).** In real code the replace-the-error case discards the binding constantly — the validation example wrote `else |e| ApiError.BadRequest("invalid JSON")` six times in one file, never touching `e`. A binding required by grammar and ignored by the author is ceremony with no reader benefit, which is what #573 asked to remove. Under this rule it falls out rather than needing a rule: `|e|` is how you *get* the error, so you write it when you want it. `x or return E` and `x or |e| return f(e)` are the same form with and without a payload you happened to need.
 

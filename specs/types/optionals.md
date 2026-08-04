@@ -1,15 +1,15 @@
 <!-- id: type.optionals -->
 <!-- status: decided -->
-<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family (?, ?., !, == none) marks absence and applies to any two-variant union where one variant is none; `or` supplies the other branch. No Some/None constructors, no try on optionals. Narrowing rides on const. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
+<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family (?, ?., == none) is absence-specific; `or` and `try` are shape-agnostic — the other branch, and propagate the other branch. No Some/None constructors. Narrowing rides on const. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
 <!-- depends: types/types.md, types/union-types.md, types/error-types.md, control/control-flow.md -->
 
 # Optionals
 
 `T?` is shorthand for `T or none`. `none` is a built-in zero-field type — lowercase, like `void`. There is no `Option<T>` enum and no `Some`/`None` constructors; present values are bare, `none` is the absent sentinel.
 
-Optionals aren't a separate kind of type. They're a particular union shape with dedicated operator surface. The `?`-family marks absence, `or` supplies the other branch, and everything else (auto-wrap, linearity, equality) falls out of the general union rules.
+Optionals aren't a separate kind of type. They're a particular union shape with dedicated operator surface. The `?`-family marks absence, `or` and `try` handle the other branch, and everything else (auto-wrap, linearity, equality) falls out of the general union rules.
 
-`?` means absence and nothing else — it never appears on a result's success test. Errors are handled by `or`, `try`, and `is`, so a line tells you which kind of failure it deals with ([error-types.md](error-types.md) ER12).
+`?` is absence-specific — it never appears on a result's success test or chain ([error-types.md](error-types.md) ER12). `or` and `try` are shape-agnostic: they mean "the other branch" and "propagate the other branch" on either shape. `or |e|` is the one results-only form, since it binds a payload and `none` hasn't got one.
 
 ## The Type
 
@@ -17,7 +17,7 @@ Optionals aren't a separate kind of type. They're a particular union shape with 
 |------|-------------|
 | **OPT1: `T?` is sugar for `T or none`** | The parser desugars `T?` to `T or none` before type checking; the rest of the compiler sees a regular union |
 | **OPT2: `none` is a built-in zero-field type** | Lowercase, follows the primitive convention. One inhabitant, also spelled `none`. Not user-definable |
-| **OPT3: `?`-family restricted to `T or none`** | `?`, `?.`, `== none` apply only when the operand is a two-variant union with one variant `none` — never on a `T or E` (`type.errors/ER12`). `or` and `!` work on both shapes. Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
+| **OPT3: `?`-family restricted to `T or none`** | `?`, `?.`, `== none` apply only when the operand is a two-variant union with one variant `none` — never on a `T or E` (`type.errors/ER12`). `or`, `try` and `!` work on both shapes. Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
 | **OPT4: No user wrapper** | No `Some` keyword, constructor, or pattern. Bare values on the present path |
 
 <!-- test: skip -->
@@ -34,7 +34,7 @@ Construction follows the general union widening rule: a value of type `A` widens
 
 | Rule | Description |
 |------|-------------|
-| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x or default`, or `x or return MyError` |
+| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x or default`, `try x`, or `x or return MyError` |
 | **OPT6: `none` widens at use** | `none` has type `none` on its own; widens to `T or none` at any position with a target union type |
 
 <!-- test: skip -->
@@ -53,7 +53,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
 | **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
 | **OPT11: Other branch** | `x or default` | unwraps `x` if present, else evaluates `default`. The right side sets the result type: a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining, a `return`/`break`/`continue`/`panic(…)` leaves. See [error-types.md](error-types.md) ER14/ER14a/ER45 |
-| **OPT12: Absence is not an error** | `try x` | compile error. `none` is the absent sentinel, so propagating it would invent an error. Say what it becomes: `x or return MyError` (ER45/ER47) |
+| **OPT12: Propagate absence** | `try x` | in a function returning some `U?`, unwraps if present, else returns `none`. `try` propagates the other branch whatever the shape (`type.errors/ER16`). In a `T or E`-returning function this is a compile error — absence isn't an error; say what it becomes with `x or return MyError` (ER47) |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
 | **OPT15: Absent check** | `x == none` / `x != none` | plain equality; `x?` and `x == none` narrow identically |
 | **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x == none` |
@@ -77,6 +77,7 @@ const theme = config.theme or "default"               // a value instead
 const user = load_user(id) or return ApiError.NoUser   // leave, naming the error
 const item = queue.pop() or break                      // leave the loop
 const home = env("HOME") or panic("no HOME")           // same as env("HOME")!
+const prof = try load_user(id)                         // absent → return none (OPT12)
 ```
 
 The binding form `or |e|` is an *error* form (ER44) and doesn't apply to optionals — `none` carries no payload to bind. On an optional it's a compile error pointing at plain `or`.
@@ -258,12 +259,13 @@ No optional-specific equality rule.
 | `?.` on `T or E or none` | OPT3 | Compile error suggesting layering: `(T or E)?` or `T or (E?)` |
 | `x or return E` / `or break` / `or panic(…)` | OPT11/ER45 | Legal — control leaves; this is how absence becomes an error |
 | `x or \|e\| f(e)` on an optional | OPT11 | Compile error — no payload to bind. Use plain `or` |
-| `try x` | OPT12 | Compile error naming the fix: `x or return MyError` |
+| `try x` in a `U?`-returning function | OPT12 | Legal — absence propagates as absence |
+| `try x` in a `T or E`-returning function | OPT12/ER47 | Compile error naming the fix: `x or return MyError` |
 | `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
 | Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
 | `!x?` syntax | OPT16 | Parse error suggesting `x == none` |
 | Linear `?.field` | OPT25 | Compile error — cannot partially move |
-| `x or return MyError` where `MyError` isn't in the function's return type | OPT12/ER9 | Compile error — normal `return` rules apply |
+| `x or return MyError` where `MyError` isn't in the function's return type | ER9 | Compile error — normal `return` rules apply |
 | `match` on `T?` with two arms | OPT27 | Legal; style lint suggests operators |
 | `const x = none` | OPT8 | Legal. `x: none`. Widens at later use site |
 | `none == none` | equality | `true`. Standard equality on a zero-field type |

@@ -172,7 +172,7 @@ func read_config(path: string) -> Config or (IoError | ParseError) {
 }
 ```
 
-Operator surface — `?` for absence, `or`/`try` for errors:
+Operator surface — `?` is absence-specific, `or` and `try` work on both shapes:
 
 | Form | Meaning |
 |---|---|
@@ -184,7 +184,7 @@ Operator surface — `?` for absence, `or`/`try` for errors:
 | `x or return y` | the other branch leaves the function |
 | `x or \|e\| return f(e)` | leaves, carrying a transformed error |
 | `x or break` / `or continue` / `or panic(…)` | leaves the loop, or panics (`or panic` = `x! "…"`) |
-| `try r` | extract, or return the error (widened into the function's error union) |
+| `try x` | extract, or propagate the other branch — the error (widened) for a result, `none` for an optional. Shapes must match the enclosing function |
 | `r!` / `r! "msg"` | extract or panic |
 | `if r is IoError as e { }` | error-side type test and bind |
 | `const v = x is Pattern else { return }` | pattern guard, enum patterns only |
@@ -193,7 +193,7 @@ Operator surface — `?` for absence, `or`/`try` for errors:
 
 `try r` is the propagate form: shaped like `r or |e| return e`, but the widening, boundary-enum wrapping and `any Error` boxing rules are attached to `try`, so a bare `return e` doesn't get them. It's also where a reader scanning the left margin finds the exits, which is why it stays.
 
-`?` marks absence, `or` and `try` mark errors, so a line says which kind of failure it handles. Nothing with a `?` in it applies to a result: no `r?` success test, no `if r?` narrowing, no `r?.field` chain — use `is`, and extract before projecting (`(try r).field`). Shared across both shapes: only `!` and `match`.
+`?` is absence-specific; `or` and `try` are shape-agnostic. Nothing with a `?` in it applies to a result: no `r?` success test, no `if r?` narrowing, no `r?.field` chain — use `is`, and extract before projecting (`(try r).field`). `or |e|` is the one results-only form (it binds a payload). `!` and `match` work on both.
 
 - Auto-wrap for `T or E` fires **only at `return`**; optionals widen at any position (ER9–ER11).
 - Every error type satisfies `ErrorMessage` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.
