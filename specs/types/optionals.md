@@ -83,7 +83,7 @@ const item = try queue.pop() else break
 const name = try entry.as_string() else continue
 ```
 
-There is no `?? |e|` form — `none` carries no payload to bind. That's `or |e|`, on the failure shape (ER44).
+There is no `?? e =>` form — `none` carries no payload to bind. That's `or e =>`, on the failure shape (ER44).
 
 ## Conditions and Narrowing
 
@@ -252,7 +252,7 @@ No optional-specific equality rule.
 | `x ?? return E` | ER48 | Compile error pointing at `try x else return E` |
 | `x ?? break` / `?? continue` | ER48 | Compile error — use `try x else break` |
 | `x ?? panic(…)` | ER48 | Compile error pointing at `x! "…"` |
-| `x ?? \|e\| f(e)` | OPT11 | Compile error — no payload to bind. That form is `or \|e\|`, on the failure shape |
+| `x ?? \|e\| f(e)` | OPT11 | Compile error — no payload to bind. That form is `or e =>`, on the failure shape |
 | `x or v` on an optional | OPT3/ER14 | Compile error — `or` is failure-only. Use `??` |
 | `try x` bare, anywhere | OPT12/ER47 | Compile error naming the fix: `try x else return none`, or whatever should leave |
 | `try x else return none` | OPT12 | Legal — the ordinary way to propagate absence |

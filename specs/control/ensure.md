@@ -114,7 +114,7 @@ Cleanup actions may fail. Errors are ignored by default; opt-in handling with an
 | Rule | Description |
 |------|-------------|
 | **ER1: Default ignore** | If ensure body returns an error, error silently ignored |
-| **ER2: Opt-in or clause** | `ensure expr or \|e\| handler` passes error to handler |
+| **ER2: Opt-in or clause** | `ensure expr or e => handler` passes error to handler |
 | **ER3: Infallible handler** | The `or` handler must not use `try`—nowhere to propagate |
 | **ER4: try forbidden** | Cannot use `try` inside ensure body |
 | **ER5: Multi-failure independent** | When multiple ensures run (LIFO), each runs regardless of whether previous ensures failed. Errors are independent — each is ignored (ER1) or handled by its own `or` clause (ER2). The function's return value is unaffected by ensure failures |
@@ -123,12 +123,12 @@ Cleanup actions may fail. Errors are ignored by default; opt-in handling with an
 ```rask
 ensure file.close()                        // ER1: errors silently ignored
 
-ensure file.close() or |e| log(e)       // ER2: handle the error
+ensure file.close() or e => log(e)       // ER2: handle the error
 
-ensure file.close() or |_| panic("!")   // ER2: panic on error
+ensure file.close() or _ => panic("!")   // ER2: panic on error
 
 ensure { try file.close() }                     // ❌ Error: ER4
-ensure file.close() or |e| { try fallible() }   // ❌ Error: ER3
+ensure file.close() or e => { try fallible() }   // ❌ Error: ER3
 ```
 
 **Multiple ensure failures (ER5):**
@@ -137,13 +137,13 @@ ensure file.close() or |e| { try fallible() }   // ❌ Error: ER3
 ```rask
 func process() -> void or Error {
     const a = try open("a.txt")
-    ensure a.close() or |e| log("a close failed: {e}")
+    ensure a.close() or e => log("a close failed: {e}")
 
     const b = try open("b.txt")
-    ensure b.close() or |e| log("b close failed: {e}")
+    ensure b.close() or e => log("b close failed: {e}")
 
     const c = try open("c.txt")
-    ensure c.close() or |e| log("c close failed: {e}")
+    ensure c.close() or e => log("c close failed: {e}")
 
     try do_work()
     return
@@ -366,21 +366,21 @@ FIX: Remove try and optionally handle errors with an or clause:
   ensure file.close()
 
   // Handle errors
-  ensure file.close() or |e| log(e)
+  ensure file.close() or e => log(e)
 ```
 
 **Using `try` in an `or` handler [ER3]:**
 ```
 ERROR [ctrl.ensure/ER3]: cannot use try in an or handler
    |
-5  |  ensure file.close() or |e| { try log(e) }
+5  |  ensure file.close() or e => { try log(e) }
    |                                  ^^^ try forbidden in an or handler
 
 WHY: Else handlers run during scope exit—there's nowhere to propagate errors.
 
 FIX: Use infallible operations in the or handler:
 
-  ensure file.close() or |e| println("Failed: {}", e)
+  ensure file.close() or e => println("Failed: {}", e)
 ```
 
 **Linear resource not consumed [L2]:**
@@ -441,7 +441,7 @@ WHY: Ensure errors are silently ignored by default.
 
 FIX: Add an or clause to handle errors:
 
-  ensure file.close() or |e| log("Close failed: {}", e)
+  ensure file.close() or e => log("Close failed: {}", e)
 
   // Or explicitly handle errors without ensure
   try file.close()

@@ -888,20 +888,20 @@ func load_config() -> Config or (IoError | ParseError) {
 |------|---------|------------------|
 | `x ?? v` | no | **absence:** is this value |
 | `r or v` | no | **failure:** is this value |
-| `r or \|e\| f(e)` | no | is this value, computed from the error |
+| `r or e => f(e)` | no | is this value, computed from the error |
 | `try x` | **yes** | propagates the other branch |
 | `try x else return y` | **yes** | leaves the function with `y` |
 | `try x else break` / `else continue` | **yes** | leaves the loop |
-| `try x else \|e\| return f(e)` | **yes** | exits with something built from the error |
+| `try x else e => return f(e)` | **yes** | exits with something built from the error |
 
 ```rask
 const port = config.port ?? 8080                                 // no `try` — nothing leaves
-return dispatch(req) or |e| error_response(e)                    // handled at a boundary
+return dispatch(req) or e => error_response(e)                    // handled at a boundary
 
 const data = try read_file(path)                                 // `try` — leaves
 const ms   = try raw.parse() else return BadRequest("bad ms")
 const dto  = try json.decode(body) else return BadRequest("bad JSON")
-const text = try fs.read_text(p) else |e| return context("reading {p}", e)
+const text = try fs.read_text(p) else e => return context("reading {p}", e)
 ```
 
 **One operator per shape**, and the line shows which: `??` and the `?`-family for absence, `or` and `try` for failure. Nothing with a `?` applies to a result, `?.` included — project with `try r.field`, where `try` attaches to the fallible step.

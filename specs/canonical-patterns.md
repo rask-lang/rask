@@ -156,7 +156,7 @@ Future stdlib additions must follow these patterns; `rask lint` enforces them. S
 
 ## Error Handling
 
-Propagate with `try`, handle with `match`, add context with `try … else |e| return`.
+Propagate with `try`, handle with `match`, add context with `try … else e => return`.
 
 ```rask
 // Propagation — pass the error up as-is
@@ -187,19 +187,19 @@ Use `try ... or` to add context when propagating errors. Stdlib provides `Contex
 ```rask
 // Application code — human-readable context chains
 func load_config(path: string) -> Config or ContextError {
-    const text = try fs.read_text(path) else |e| return context("reading {path}", e)
-    return try Config.parse(text) else |e| return context("parsing {path}", e)
+    const text = try fs.read_text(path) else e => return context("reading {path}", e)
+    return try Config.parse(text) else e => return context("parsing {path}", e)
 }
 // Output: "reading /app.toml: file not found"
 
 // Library code — typed domain errors (callers can match)
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_text(path) else |e| return ConfigError.Io { path, source: e }
-    return try Config.parse(text) else |e| return ConfigError.Parse { path, source: e }
+    const text = try fs.read_text(path) else e => return ConfigError.Io { path, source: e }
+    return try Config.parse(text) else e => return ConfigError.Parse { path, source: e }
 }
 
 // Block form — when you need side effects before leaving
-const text = fs.read_text(path) or |e| {
+const text = fs.read_text(path) or e => {
     log("failed to read {path}: {e.message()}")
     return context("reading {path}", e)
 }
@@ -215,7 +215,7 @@ The outermost boundary — a router, `main`, a task body — has nothing above i
 ```rask
 // Router: every handler's error becomes a response
 func route(req: Request) -> Response {
-    return dispatch(req) or |e| error_response(e)
+    return dispatch(req) or e => error_response(e)
 }
 ```
 
@@ -225,8 +225,8 @@ Plain `or` supplies a value instead when the error isn't needed: `const port = r
 - `x!` in production code — crashes on error. Use `try` or `match`.
 - Long `if result is E as e` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
-- Using `context()` in library code where callers need to match on error types — use typed domain errors with `try … else |e| return` instead.
-- `if r is T as v { return v } else as e { return f(e) }` at a boundary — that's the fold, write `r or |e| f(e)`.
+- Using `context()` in library code where callers need to match on error types — use typed domain errors with `try … else e => return` instead.
+- `if r is T as v { return v } else as e { return f(e) }` at a boundary — that's the fold, write `r or e => f(e)`.
 
 See [types/error-types.md](types/error-types.md).
 
@@ -667,7 +667,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 |-----------|------------------|
 | Construct | Struct literal, `from_*`, `.new()`, `.with_*` |
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
-| Handle errors | `try` (propagate), `try … else` (exit with something else), `or \|e\| f(e)` (handle here), `match` |
+| Handle errors | `try` (propagate), `try … else` (exit with something else), `or e => f(e)` (handle here), `match` |
 | Clean up resources | `ensure` |
 | Handle optionals | `if x?`, `?? v`, `try … else`, `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
