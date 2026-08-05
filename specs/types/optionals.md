@@ -1,6 +1,6 @@
 <!-- id: type.optionals -->
 <!-- status: decided -->
-<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family (?, ?., ??, == none) handles absence and never transfers control; `try` is the exit marker on both shapes, and its else clause says where control goes. No Some/None constructors. Narrowing rides on const. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
+<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family (?, ?., ??) plus `is none` handles absence and never transfers control; `try` is the exit marker on both shapes, and its else clause says where control goes. No Some/None constructors. Narrowing rides on const. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
 <!-- depends: types/types.md, types/union-types.md, types/error-types.md, control/control-flow.md -->
 
 # Optionals
@@ -17,7 +17,7 @@ One operator per shape for the value-instead case: `??` on an optional, `or` on 
 |------|-------------|
 | **OPT1: `T?` is sugar for `T or none`** | The parser desugars `T?` to `T or none` before type checking; the rest of the compiler sees a regular union |
 | **OPT2: `none` is a built-in zero-field type** | Lowercase, follows the primitive convention. One inhabitant, also spelled `none`. Not user-definable |
-| **OPT3: `?`-family restricted to `T or none`** | `?`, `?.`, `??`, `== none` apply only when the operand is a two-variant union with one variant `none` — never on a `T or E` (`type.errors/ER12`). `!` and `try` work on both shapes; `or` is failure-only. Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
+| **OPT3: `?`-family restricted to `T or none`** | `?`, `?.`, `??` apply only when the operand is a two-variant union with one variant `none` — never on a `T or E` (`type.errors/ER12`). `!` and `try` work on both shapes; `or` is failure-only. Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
 | **OPT4: No user wrapper** | No `Some` keyword, constructor, or pattern. Bare values on the present path |
 
 <!-- test: skip -->
@@ -55,8 +55,8 @@ cache = get_current_user()               // User widens at assignment
 | **OPT11: Other branch** | `x ?? default` | unwraps `x` if present, else evaluates `default`. The right side is a **value** — a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining (`type.errors/ER14a`). It never transfers control: `return`, `break`, `continue` and `panic(…)` are rejected (ER48) |
 | **OPT12: Extract or leave** | `try x` | unwraps if present, else **control leaves here**. Bare, it returns `none` — so it needs a `U?`-returning function. An `else` clause redirects it anywhere that diverges: `try x else return MyError`, `try x else break` (`type.errors/ER45`) |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
-| **OPT15: Absent check** | `x == none` / `x != none` | plain equality; `x?` and `x == none` narrow identically |
-| **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x == none` |
+| **OPT15: Absent check** | `x is none` | tests the absent branch; narrows identically to `x?`. Presence is `x?` — there is no `is not none`. `x == none` still typechecks as ordinary equality on a zero-field type, but lints to `is none` (`tool.lint/I5`) |
+| **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x is none` |
 
 `??` chains while the left side stays wrapped:
 
@@ -94,7 +94,7 @@ Narrowing rides on `const` — the same rule for any union with a recognised pre
 | **OPT18: `if x?` narrows** | On a const scrutinee, `if x?` narrows `x` to `T` inside the block |
 | **OPT19: `if x? as v` binds** | Binds a const `v: T` in the block; works for `mut` scrutinees, and for renaming |
 | **OPT20: Both branches narrow** | On a const scrutinee, the `else` branch narrows `x` to `none` |
-| **OPT21: Early-exit narrow** | If a branch of `if x == none { … }` diverges, `x` is `T` in the fall-through |
+| **OPT21: Early-exit narrow** | If a branch of `if x is none { … }` diverges, `x` is `T` in the fall-through |
 | **OPT22: No compound narrowing** | `x? && y?` is a legal bool expression but does not narrow either side — use nested `if` or `as v` bind |
 | **OPT23: No field-path narrow through mut** | `player.weapon` narrows iff the full path is rooted in a `const` binding. With `mut` anywhere in the path, use `if player.weapon? as w` |
 
@@ -113,7 +113,7 @@ if cache? as c {
 
 // Early-exit guard
 const user: User? = load()
-if user == none {
+if user is none {
     return
 }
 greet(user)                   // user: User after the guard
@@ -154,7 +154,7 @@ Collapsing the layers would throw the distinction away — an empty vec and an e
 |------|-------------|
 | **OPT28: Layers stay distinct** | `T?` where `T` is itself `U or none` is a two-layer optional. `none` is exempt from the duplicate-variant rule ([union-types.md](union-types.md) U5) for this reason: it carries no payload, so the layers are told apart by position, not by type |
 | **OPT29: `none` binds outermost** | A bare `none` literal at a `T??` position means the *outer* absent. To produce an inner absent, widen a value that already has the inner optional type |
-| **OPT30: Operators act on the outer layer** | `?`, `??`, `!`, `== none` and `match` all see the outer layer only. `if x? as v` binds `v` at the inner type; unwrap again to reach the value. `??`'s right side must therefore have the inner *optional* type, not the payload type |
+| **OPT30: Operators act on the outer layer** | `?`, `??`, `!`, `is none` and `match` all see the outer layer only. `if x? as v` binds `v` at the inner type; unwrap again to reach the value. `??`'s right side must therefore have the inner *optional* type, not the payload type |
 | **OPT31: Depth is part of the type** | `T?`, `T??` and `T???` are three different types. Widening adds layers (a `T` reaches a `T??` position, an inner absent stays inner); nothing ever removes one implicitly |
 
 <!-- test: skip -->
@@ -225,7 +225,7 @@ user?.name ?? "guest"
 |------------|---------------|
 | `match x { none => a, v => f(v) }` | `if x? { f(x) } else { a }` |
 | `match x { none => default, u => u.name }` | `x?.name ?? default` |
-| `match x { none => return, v => v }` | `if x == none { return }` then use `x` |
+| `match x { none => return, v => v }` | `if x is none { return }` then use `x` |
 | `match x { none => panic("…"), v => v }` | `x! "…"` |
 
 The lint is non-fatal. Match earns its keep on multi-error unions where the dispatch genuinely has more than two outcomes.
@@ -234,7 +234,7 @@ The lint is non-fatal. Match earns its keep on multi-error unions where the disp
 
 Equality on `T or none` follows the general union equality rule:
 
-- `x == none` / `x != none` — present/absent predicate (canonical form for the absent check)
+- `x is none` — the absent check (canonical). Presence is `x?`
 - `x == y` where both are `T?` — true if both absent, or both present and inner values equal
 
 No optional-specific equality rule.
@@ -259,7 +259,7 @@ No optional-specific equality rule.
 | `try x else break` / `else continue` | OPT12/ER45 | Legal — the clause takes any divergence |
 | `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
 | Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
-| `!x?` syntax | OPT16 | Parse error suggesting `x == none` |
+| `!x?` syntax | OPT16 | Parse error suggesting `x is none` |
 | Linear `?.field` | OPT25 | Compile error — cannot partially move |
 | `try x else return MyError` where `MyError` isn't in the function's return type | ER9 | Compile error — normal `return` rules apply |
 | `match` on `T?` with two arms | OPT27 | Legal; style lint suggests operators |
@@ -308,7 +308,7 @@ ERROR [type.optionals/OPT16]: cannot negate `x?` with prefix `!`
 8  |  if !user? { return }
    |     ^^^^^^ mixes prefix ! with suffix ? ; fights the parse
 
-FIX: if user == none { return }
+FIX: if user is none { return }
 ```
 
 **Match on `T or none` with two arms [style lint, non-fatal]:**
@@ -335,7 +335,23 @@ SUGGEST: user?.name ?? default_name()
 
 **OPT3 (restrict operators to two-variant unions).** Generalising `?.` to pass through other variants makes result types unreadable — `user?.profile?.name` on `User or DBError or none` returns `string or DBError or DBError or none`. Coherent but unteachable. Layering is the cleaner discipline; operators stay simple.
 
-**OPT16 (`!x?` forbidden).** `!x?` parses right-to-left but reads left-to-right as "not present" — the directions fight. `x == none` is unambiguous. The rule is specific to `!` directly applied to a `?`-suffixed expression; other uses of `!` on booleans stay normal.
+**OPT15 (`is none`, not `== none`).** The absent check used to be spelled with equality, which meant asking a *shape* question with the *value* verb. `is` tests a branch everywhere else in the language — `r is IoError`, `shape is Circle` — and `T?` is `T or none`, so `x is none` is that same test on the same machinery, not a new form. It also puts the absent check inside the family: before this, the memorable set was `?`, `?.`, `??`, `!`, and absence was outside it in a different register, with `!x?` banned (OPT16) and nothing obvious to reach for instead.
+
+Presence stays `x?` and there is no `is not none`. Two spellings of presence (`x?` and `x != none`) collapse to one, and negation was the direction OPT16 already rules out.
+
+`x == none` isn't made illegal. `none` is a zero-field type with one inhabitant, so equality on it is ordinary and `none == none` is `true` — banning the comparison in one position while it works in another would be a special case earning nothing. A lint carries the preference instead.
+
+**Why `x? as v` survives (and `x is T as v` doesn't replace it).** `is` and `as` compose on results because `E` can be a union: `r is ParseError as e` genuinely *selects* among alternatives. An optional has exactly two branches, so naming the non-`none` one carries no information — and it costs real noise when the payload is generic:
+
+<!-- test: skip -->
+```rask
+if player_ent.target? as handle { … }                      // T? is binary; the type adds nothing
+if player_ent.target is Handle<Entity> as handle { … }     // same test, spelled out
+```
+
+So test-and-bind is the one row where the two shapes don't share a construct, and that's the honest outcome rather than a gap: `is` needs a branch name where branches are open, and can't use one where there are only two.
+
+**OPT16 (`!x?` forbidden).** `!x?` parses right-to-left but reads left-to-right as "not present" — the directions fight. `x is none` is unambiguous. The rule is specific to `!` directly applied to a `?`-suffixed expression; other uses of `!` on booleans stay normal.
 
 **OPT27 (match is a lint, not an error).** Hard errors should enforce safety or correctness, not style. Match on a two-arm union is perfectly safe; it's just verbose. A lint catches the common case.
 
@@ -364,7 +380,7 @@ const theme = config.theme ?? "default"
 ```rask
 func greet(id: UserId) -> string {
     const user = load_user(id)
-    if user == none { return "Hello, guest" }
+    if user is none { return "Hello, guest" }
     return "Hello, {user.name}"          // user: User here
 }
 ```

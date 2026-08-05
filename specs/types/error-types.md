@@ -285,7 +285,7 @@ Bare `try` needs the caller's other branch to accept what it propagates (ER47). 
 
 | | Optionals `T?` | Errors `T or E` |
 |---|---|---|
-| test / bind | `x?`, `x? as v`, `x == none` | `r is T as v`, `r is E as e` |
+| test / bind | `x?`, `x? as v`, `x is none` | `r is T as v`, `r is E as e` |
 | project | `x?.field` | `try r.field` (ER16a places the `try`) |
 | other branch | `x or v` | `r or v`, `r or \|e\| f(e)` |
 | propagate | `try x` (in a `T?` fn) | `try r` |
@@ -857,7 +857,7 @@ The honest cost: `func cached<T>(…) -> T or CacheError` is not total over `T`,
 
 **ER3b (`none` is the one variant that layers).** Disjointness exists so that *branch selection stays decidable* — on the producing side (which branch does `return x` pick?) and on the consuming side (which branch does `match … { E as e }` name?). Substituting `T = E` breaks the consuming side irreparably, because `E` carries a payload the caller wants and now names two branches.
 
-`none` is different on both counts. It carries no payload, and its layers are reached in order: the outer operators (`?`, `or`, `!`, `== none`) act on the outer layer, and the inner layer is only visible after narrowing through it. One rule — a bare `none` literal means the outer absent — closes the only remaining ambiguity. So `none` layers and payload variants don't. See [optionals.md](optionals.md).
+`none` is different on both counts. It carries no payload, and its layers are reached in order: the outer operators (`?`, `or`, `!`, `is none`) act on the outer layer, and the inner layer is only visible after narrowing through it. One rule — a bare `none` literal means the outer absent — closes the only remaining ambiguity. So `none` layers and payload variants don't. See [optionals.md](optionals.md).
 
 **ER4 (ErrorMessage bound).** A minimum bound on E solves three problems at once: (1) `r!` can always produce a useful panic message; (2) primitives can't accidentally be error types, so `i32 or i32` style ambiguities don't arise; (3) richer capabilities (context, codes, stack traces) layer opt-in on top without forcing complexity on simple errors.
 

@@ -317,7 +317,7 @@ Don't reintroduce without strong reason.
 5. **Flow typing for mut bindings.** The `const`/`mut` split makes flow typing unnecessary. Mut narrowing requires explicit `as` bind.
 6. **Type-theoretic union (with disjointness in the union sense).** Terminology error early in the design. `T or E` is a sum type with a runtime tag, not a type-theoretic union. The disjointness rule is for *branch disambiguation at construction*, not for union soundness.
 7. **`is some` / `is ok` keywords.** `some` and `ok` would be destructure-only keywords with no construction counterpart. Inconsistent.
-8. **`x == none` and `is none` both available.** Kept `== none` as the absent form. `is none` not pursued — `is <variant>` is enum-only.
+8. **`x == none` and `is none` both available.** Kept `== none` as the absent form. `is none` not pursued — `is <variant>` is enum-only. **(Reversed — the premise stopped being true.)** Optional unification made `T?` desugar to `T or none` (`type.optionals/OPT1`) and `none` a zero-field *type* (OPT2), so `x is none` is a type-pattern test (`type.errors/ER23`), not an enum-variant test. `is none` is now the canonical absent check and `== none` lints (`tool.lint/I5`). Item 7 above still holds and for the same reason it always did: `some` and `ok` aren't types, so there's nothing for `is` to test.
 9. **Matching on Option.** Covered above — operators suffice and keep the builtin framing honest.
 
 ## Worked example
