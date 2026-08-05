@@ -165,6 +165,7 @@ Every optional form carries a `?`. No failure form does. That's the whole mnemon
 | **ER44: Using the error** | `r or \|e\| f(e)` binds `e: E` and yields `f(e): T`. Nothing leaves |
 | **ER45: `try … else`** | The `else` clause says where control goes instead of to the caller. Its body **must diverge**, and any divergence will do — `return`, `break`, `continue`, `panic(…)` — exactly the pattern guard's rule (`ctrl.flow/CF13`). `try r else return E` needs no binding; `try r else \|e\| return f(e)` binds the old error first |
 | **ER47: bare `try` means an error leaves** | Bare `try r` propagates the error to the caller, so the enclosing function needs an error branch that accepts it. **On an optional, `try` requires an `else` clause** — `try opt` alone is a compile error asking what should leave. Absence exits are always written: `try opt else return none`, `try opt else return MyError`, `try opt else break`. The clause also lifts the error-branch constraint, so `try r else return none` is fine too |
+| **ER45a: the `else` clause needs parens in a comma list** | Inside an argument list, struct literal, or collection literal, `try x else <diverge>` must be parenthesised: `f((try g() else return E), other)`. Bare, it's a compile error asking for them. `or` and `??` need nothing — they don't diverge, so there's no exit to locate |
 | **ER48: `or` and `??` never transfer control** | `return`, `break`, `continue` and `panic(…)` on the right of `or` or `??` are compile errors pointing at `try … else`, which is where control flow lives. The two operators supply the value being bound; `try` is the one that can leave. `Never` coercion is untouched everywhere else in the language |
 
 <!-- test: skip -->
@@ -627,6 +628,9 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `try o else return MyError` | ER45 | Legal anywhere — the clause says what leaves |
 | `try r else return none` in a `T?`-returning function | ER45 | Legal — drops the error detail, and says so |
 | `try r else v` where `v` doesn't diverge | ER45 | Compile error — the clause must diverge, so the exit is written out |
+| `Config { host: try g() else return E, port: 8080 }` | ER45a | Compile error asking for parens around the `try … else` |
+| `Config { host: (try g() else return E), port: 8080 }` | ER45a | Legal — the parens show where the exit ends |
+| `Config { host: g() ?? "localhost", port: 8080 }` | ER45a | Legal, no parens — `??` can't leave the function |
 | `try r else break` / `else continue` / `else panic(…)` | ER45 | Legal — any divergence, same as the pattern guard (CF13) |
 | `r or return X` | ER48 | Compile error pointing at `try r else return X` |
 | `x ?? return X` | ER48 | Compile error pointing at `try x else return X` |
@@ -969,6 +973,28 @@ What *is* shape-specific is what the bare form propagates, and that's ER47's who
 **ER16a (`try` finds its place in the chain).** `try` has to bind loosely, or `try store.get(id)` would read as `(try store).get(id)`. That used to mean projecting off a propagated value needed parentheses — `(try read_file(p)).len()`. It doesn't: a wrapped value has no payload methods, so in `try a.b().c` at most one placement of the `try` type-checks, and the compiler can find it.
 
 The rule has no exception, and that fell out of cutting the methods rather than being designed in. Ambiguity needs a name that resolves on the wrapper *and* on the payload; with zero methods on the wrapper there's nothing to collide, so the compiler always finds the one placement. An earlier draft had the exception firing constantly — the wrapper carried `map`/`filter`/`and_then` and so did every sequence, making `try v.map(f)` need parentheses — and a later one had it surviving for `ok` alone. Both are gone. `try` also doesn't slide into call arguments: `f(try g())` is written where it means.
+
+**ER45a (parens in a comma list).** Found by writing the config-loading shape, which every program has:
+
+<!-- test: skip -->
+```rask
+return Config {
+    host: try get(raw, "host") else return ConfigError.Missing("host"),    // needs parens
+    port: 8080,
+}
+```
+
+The comma does end the `return`'s expression, so this could just be allowed. The reason not to: ER45 makes the `return` mandatory so the exit is *visible*, and an exit sitting in the middle of a field list is visible in the letter and hidden in practice — you scan a struct literal for fields, not for places the function might leave from. Parens put a boundary around it, which is the same move ER16a makes when a `try`'s placement is genuinely unclear.
+
+`or` and `??` are exempt because they can't leave the function (ER48), so `host: get(raw, "host") ?? "localhost"` needs nothing. The rule keys on divergence, which is exactly the thing that has to be findable.
+
+Zero sites in the tree pay for this — the house style extracts first anyway, and the extracted version reads better:
+
+<!-- test: skip -->
+```rask
+const host = try get(raw, "host") else return ConfigError.Missing("host")
+return Config { host: host, port: 8080 }
+```
 
 **ER44/ER46 (the binding is never mandatory).** In real code the replace-the-error case discards the binding constantly — the validation example wrote `else |e| ApiError.BadRequest("invalid JSON")` six times in one file, never touching `e`. A binding required by grammar and ignored by the author is ceremony with no reader benefit, which is what #573 asked to remove. Under this rule it falls out rather than needing a rule: `|e|` is how you *get* the error, so you write it when you want it. `try x else return E` and `try x else |e| return f(e)` are the same form with and without a payload you happened to need — and the `return` stays in both, which is the half #573 didn't ask for but needed.
 
