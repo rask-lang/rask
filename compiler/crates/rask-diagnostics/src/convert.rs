@@ -344,7 +344,7 @@ impl ToDiagnostic for rask_types::TypeError {
                         ))
                         .with_fix(
                             "supply the missing case — `{value ?? \"none\"}` — or narrow \
-                             first with `if const v = value { … }`",
+                             first with `if value? as v { … }`",
                         );
                 } else {
                     diag = diag.with_fix(format!(
