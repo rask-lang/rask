@@ -1,6 +1,6 @@
 <!-- id: type.errors -->
 <!-- status: decided -->
-<!-- summary: T or E is a builtin sum type with type-based branch disambiguation. No Ok/Err wrappers. Disjointness rule (T ≠ E) via the nominal/alias split, checked at the call site once a generic's type argument is known. E must implement ErrorMessage. Auto-wrap fires only at return. `or` supplies the other branch (a T alone, an E under try); `try` marks that an error may leave the function; `?` is absence-only, so results narrow with `is`. No ??, no fold method, no presence guard. -->
+<!-- summary: T or E is a builtin sum type with type-based branch disambiguation. No Ok/Err wrappers. Disjointness rule (T ≠ E) via the nominal/alias split, checked at the call site once a generic's type argument is known. E must implement ErrorMessage. Auto-wrap fires only at return. `or` supplies a value and never transfers control; `try` is the only exit marker, and a bare one always means an error is going to the caller — on an optional its else clause is required. `?` is absence-only, so results narrow with `is`. Neither wrapper has methods. No ?? on results, no fold method, no presence guard. -->
 <!-- depends: types/types.md, types/optionals.md, types/union-types.md, types/type-aliases.md -->
 
 # Error Types
@@ -116,7 +116,7 @@ Why return-only for errors? Construction in assignment/field positions makes the
 | **ER12: No `?` on a result** | `r?` / `r?.field` | Compile error, both forms. `?` marks absence; a result's other branch is an error. Test with `is` (ER23) or `match`; to project, extract first |
 | **ER14: Other branch** | `r or v` | Yields T when present, else `v`. Results only — the absent branch of a `T?` uses `??` (`type.optionals/OPT11`). See the `or` family below |
 | **ER15: Force** | `r!` | Extracts T, or panics using `E.message()`; `r! "msg"` overrides with a custom message |
-| **ER16: Extract or leave** | `try x` | Extracts the success payload, or **control leaves here**. Bare, it leaves to the caller: an error widened into this function's error type (ER31/ER31a/ER32), or `none` in a `T?`-returning function. An `else` clause redirects it anywhere that diverges (ER45) |
+| **ER16: Extract or leave** | `try x` | Extracts the success payload, or **control leaves here**. Bare on a result, it hands the error to the caller, widened into this function's error type (ER31/ER31a/ER32). On an optional it needs an `else` clause naming what leaves (ER47). Either way the `else` clause can redirect anywhere that diverges (ER45) |
 | **ER16a: Chain placement** | `try a.b().c` | `try` attaches to the one step in the postfix chain that is fallible — `try read_file(p).len()` is `(try read_file(p)).len()`, `try store.get(id)` is `try (store.get(id))`. The wrappers have no methods at all, so exactly one placement type-checks and no parentheses are needed. `try` does not slide into call arguments |
 | **ER17: Propagate block** | `try { … }` | Each `try` inside propagates; the first other-branch value short-circuits out. Shape follows ER16 |
 | **ER18: Block with a clause** | `try { … } else \|e\| …` | The `else` clause covers the whole block: the first error from any inner `try` goes to it. Same rule as ER45 — the clause must diverge |
@@ -164,7 +164,7 @@ Every optional form carries a `?`. No failure form does. That's the whole mnemon
 | **ER14: Other branch** | `r or v` yields the success payload, or `v`. Results only — absence uses `??` (`type.optionals/OPT11`). `v` is a **value**: it may not `return`, `break`, `continue` or `panic(…)`. `or` exists to produce the thing being bound, and control flow doesn't produce anything (ER48) |
 | **ER44: Using the error** | `r or \|e\| f(e)` binds `e: E` and yields `f(e): T`. Nothing leaves |
 | **ER45: `try … else`** | The `else` clause says where control goes instead of to the caller. Its body **must diverge**, and any divergence will do — `return`, `break`, `continue`, `panic(…)` — exactly the pattern guard's rule (`ctrl.flow/CF13`). `try r else return E` needs no binding; `try r else \|e\| return f(e)` binds the old error first |
-| **ER47: `try` supplies or is supplied** | Bare `try x` propagates the other branch unchanged, so the enclosing function's other branch has to accept it: `try r` needs an error type, `try opt` needs a `T?` return. With an `else`, that constraint lifts — the clause says what leaves, so `try opt else return MyError` and `try r else return none` are both fine |
+| **ER47: bare `try` means an error leaves** | Bare `try r` propagates the error to the caller, so the enclosing function needs an error branch that accepts it. **On an optional, `try` requires an `else` clause** — `try opt` alone is a compile error asking what should leave. Absence exits are always written: `try opt else return none`, `try opt else return MyError`, `try opt else break`. The clause also lifts the error-branch constraint, so `try r else return none` is fine too |
 | **ER48: `or` and `??` never transfer control** | `return`, `break`, `continue` and `panic(…)` on the right of `or` or `??` are compile errors pointing at `try … else`, which is where control flow lives. The two operators supply the value being bound; `try` is the one that can leave. `Never` coercion is untouched everywhere else in the language |
 
 <!-- test: skip -->
@@ -277,7 +277,7 @@ func load(path: string) -> Config or IoError {
 }
 ```
 
-Bare `try` needs the caller's other branch to accept what it propagates (ER47). When it doesn't, the `else` clause says what leaves instead.
+Bare `try` always means the same thing: an error is on its way to the caller. Absence never leaves silently — on an optional the `else` clause is required, and it names what goes out (ER47).
 
 ### Absence and Error Are Spelled Differently
 
@@ -288,8 +288,8 @@ Bare `try` needs the caller's other branch to accept what it propagates (ER47). 
 | test / bind | `x?`, `x? as v`, `x is none` | `r is T as v`, `r is E as e` |
 | project | `x?.field` | `try r.field` (ER16a places the `try`) |
 | other branch | `x or v` | `r or v`, `r or \|e\| f(e)` |
-| propagate | `try x` (in a `T?` fn) | `try r` |
-| leave otherwise | `try x else return e_val` | `try r else \|e\| return f(e)` |
+| leave, propagating | `try x else return none` | `try r` |
+| leave, transforming | `try x else return MyError` | `try r else \|e\| return f(e)` |
 | assert / dispatch | `x!`, `match` | `r!`, `match` |
 | convert to the other | `try x else return MyError` | `r or none` |
 
@@ -622,8 +622,8 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `T?` where `T` is itself optional | ER3b | Legal — two-layer optional, see [optionals.md](optionals.md) |
 | `T or i32` (primitive E) | ER4 | Compile error — E lacks `ErrorMessage` |
 | `T or none` | ER4 | Legal — `none` is exempt from the `ErrorMessage` bound |
-| `try o` in a `U?`-returning function | ER47 | Legal — absence propagates as absence |
-| `try o` in a `T or E`-returning function, no `else` | ER47 | Compile error — nothing to propagate as an error. Add `else return MyError` |
+| `try o` bare, any function | ER47 | Compile error — absence has no destination of its own. Add `else return none`, or whatever should leave |
+| `try o else return none` in a `U?`-returning function | ER45/ER47 | Legal — the ordinary way to propagate absence |
 | `try o else return MyError` | ER45 | Legal anywhere — the clause says what leaves |
 | `try r else return none` in a `T?`-returning function | ER45 | Legal — drops the error detail, and says so |
 | `try r else v` where `v` doesn't diverge | ER45 | Compile error — the clause must diverge, so the exit is written out |
@@ -797,7 +797,7 @@ WHY: bare `try` hands the other branch to the caller unchanged, and `none` isn't
 FIX: const x = try maybe_value else return IoError.NotFound
 ```
 
-In a function that returns an optional, `try opt` is fine — absence propagates as absence. The mirror case is a result in a `T?`-returning function: `try r else return none`, which says plainly that the error detail is being dropped. To drop it without leaving, `r or none`.
+Propagating absence out of a function is `try opt else return none` — the clause is required, so the line says what leaves (ER47). The mirror case is a result in a `T?`-returning function: `try r else return none`, which reads the same and says plainly that the error detail is being dropped. To drop it without leaving, `r or none`.
 
 **`?` used as a success test on a result [ER12]:**
 ```
@@ -944,9 +944,23 @@ Note what Swift and Rust both allow in that block: *any* divergence, not just `r
 2. **A presence guard construct** — same objection, plus it needed CF13's diverging-block rule to be restated for two more scrutinee shapes.
 3. **A diverging right side on `or`** — `r or return E`. Reads well and composes, but it means two ways to leave the function and neither one marked. Replaced by `try r else return E`.
 4. **`expr? else return X`** — postfix `?` is a bool, so `expr?` would be a bool alone and an unwrapped `T` with an `else`. One token, two result types.
-5. **`try` on optionals *instead of* an explicit clause** — bare `try opt` propagates absence, which is right in a `T?`-returning function and covers 7 sites in the tree. The other 47 turn absence into a named error or a plain value, and those need the clause: `try opt else return E`.
+5. **Bare `try` on an optional** — see ER47 below. It was in a draft, on a miscount, and stress-testing killed it.
 
-**ER47 (`try` works on both shapes).** A draft restricted `try` to results, on the argument that "hand this error to my caller" needs an error to hand over. That drew the line in the wrong place. What `try` actually means is "get the good branch or leave" — and both shapes have a good branch and a way of not having one. Restricting it to results left absence with no way to leave a function at all, since `or` and `??` never transfer control (ER48). One keyword, one meaning, both shapes.
+**ER47 (bare `try` means an error leaves).** `try` works on both shapes — that part is settled, because `or` and `??` never transfer control (ER48), so without it absence would have no way to leave a function at all. What took two tries is whether the *bare* form should work on an optional.
+
+A draft allowed it, so `try opt` propagated `none` and `try r` propagated the error. Stress-testing a real function killed it. `sst_point_lookup` in the LSM example returns `KeyValue? or SstError` and calls both shapes two lines apart:
+
+<!-- test: skip -->
+```rask
+const index = try read_sstable_index(meta.path)            // -> Vec<BlockIndex> or SstError
+const target_block = try find_block_for_key(index, key)    // -> i32?
+```
+
+Identical syntax, opposite meanings. The first leaves through the **error** branch — the disk read failed. The second leaves through the **success** branch — the key isn't in this table, which is a normal answer. Nothing in either line says which, and a reader has to open another file and check two signatures to find out. That's the objection that retired standalone `else` ("is the `x` none, or does the `x` error?") reappearing on `try`, and the version this replaced was *clearer*: `find_block_for_key(index, key) ?? return none` says what leaves.
+
+So bare `try` is results-only, and it costs nothing. Of the 72 absence-exits in the tree, 65 already name a specific target (`?? return Token.Eof`, `?? break`, `?? panic("missing")`), and the remaining 7 are written `?? return none` — by hand, explicitly. Zero sites want the implicit form. The earlier draft justified it as "covers 7 sites", which counted sites where it *could* apply rather than sites that wanted it; those same 7 keep writing the `return none` they already write.
+
+The payoff is that `try` has exactly one reading everywhere. See a bare `try` and an error is on its way to the caller — no signature lookup, no dependence on the callee's shape. Absence leaving a function is always spelled out, which is the same principle that made the `else` clause carry its own `return` (ER45).
 
 What *is* shape-specific is what the bare form propagates, and that's ER47's whole content: `try r` hands out an error so the function needs an error branch, `try opt` hands out `none` so it needs a `T?` return. The `else` clause overrides the propagated value, and with it the constraint — which is why `try opt else return MyError` and `try r else return none` both work. Reading a `try` still tells you where control goes; which shape it came from is in the callee's signature, where it belongs.
 

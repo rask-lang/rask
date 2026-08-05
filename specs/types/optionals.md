@@ -17,7 +17,7 @@ One operator per shape for the value-instead case: `??` on an optional, `or` on 
 |------|-------------|
 | **OPT1: `T?` is sugar for `T or none`** | The parser desugars `T?` to `T or none` before type checking; the rest of the compiler sees a regular union |
 | **OPT2: `none` is a built-in zero-field type** | Lowercase, follows the primitive convention. One inhabitant, also spelled `none`. Not user-definable |
-| **OPT3: `?`-family restricted to `T or none`** | `?`, `?.`, `??` apply only when the operand is a two-variant union with one variant `none` — never on a `T or E` (`type.errors/ER12`). `!` and `try` work on both shapes; `or` is failure-only. Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
+| **OPT3: `?`-family restricted to `T or none`** | `?`, `?.`, `??` apply only when the operand is a two-variant union with one variant `none` — never on a `T or E` (`type.errors/ER12`). `!` and `try` work on both shapes, though `try` on an optional needs its `else` clause (OPT12); `or` is failure-only. Wider shapes (`T or E or none`) are a compile error pointing at the layering pattern |
 | **OPT4: No user wrapper** | No `Some` keyword, constructor, or pattern. Bare values on the present path |
 
 <!-- test: skip -->
@@ -34,7 +34,7 @@ Construction follows the general union widening rule: a value of type `A` widens
 
 | Rule | Description |
 |------|-------------|
-| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x ?? default`, `try x`, or `try x else <diverge>` |
+| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x ?? default`, or `try x else <diverge>` |
 | **OPT6: `none` widens at use** | `none` has type `none` on its own; widens to `T or none` at any position with a target union type |
 
 <!-- test: skip -->
@@ -53,7 +53,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
 | **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
 | **OPT11: Other branch** | `x ?? default` | unwraps `x` if present, else evaluates `default`. The right side is a **value** — a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining (`type.errors/ER14a`). It never transfers control: `return`, `break`, `continue` and `panic(…)` are rejected (ER48) |
-| **OPT12: Extract or leave** | `try x` | unwraps if present, else **control leaves here**. Bare, it returns `none` — so it needs a `U?`-returning function. An `else` clause redirects it anywhere that diverges: `try x else return MyError`, `try x else break` (`type.errors/ER45`) |
+| **OPT12: Extract or leave** | `try x else <diverge>` | unwraps if present, else **control leaves here** — and the clause always says what leaves: `try x else return none`, `try x else return MyError`, `try x else break`. The clause is **required** on an optional; bare `try x` is a compile error, because a bare `try` means an error is going to the caller (`type.errors/ER47`). Any divergence works (ER45) |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
 | **OPT15: Absent check** | `x is none` | tests the absent branch; narrows identically to `x?`. Presence is `x?` — there is no `is not none`. `x == none` still typechecks as ordinary equality on a zero-field type, but lints to `is none` (`tool.lint/I5`) |
 | **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x is none` |
@@ -77,7 +77,7 @@ const theme = config.theme ?? "default"                 // a value — no contro
 const home = env("HOME")! "HOME must be set"            // assert — `!`, not `??`
 
 // control leaving carries `try`; the clause says where it goes
-const prof = try load_user(id)                          // to the caller, as `none`
+const prof = try load_user(id) else return none         // to the caller, as `none`
 const user = try load_user(id) else return ApiError.NoUser
 const item = try queue.pop() else break
 const name = try entry.as_string() else continue
@@ -254,8 +254,8 @@ No optional-specific equality rule.
 | `x ?? panic(…)` | ER48 | Compile error pointing at `x! "…"` |
 | `x ?? \|e\| f(e)` | OPT11 | Compile error — no payload to bind. That form is `or \|e\|`, on the failure shape |
 | `x or v` on an optional | OPT3/ER14 | Compile error — `or` is failure-only. Use `??` |
-| `try x` in a `U?`-returning function | OPT12 | Legal — absence propagates as absence |
-| `try x` elsewhere, no clause | OPT12/ER47 | Compile error naming the fix: `try x else return MyError` |
+| `try x` bare, anywhere | OPT12/ER47 | Compile error naming the fix: `try x else return none`, or whatever should leave |
+| `try x else return none` | OPT12 | Legal — the ordinary way to propagate absence |
 | `try x else break` / `else continue` | OPT12/ER45 | Legal — the clause takes any divergence |
 | `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
 | Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
