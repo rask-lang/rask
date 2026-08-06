@@ -135,7 +135,7 @@ const task = event is Ready else { break }
 // task available here
 ```
 
-The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `or` supplies the other branch, `try` propagates the error, and leaving on absence or failure is an ordinary `if` on the early-exit narrow (`type.optionals/OPT21`, `type.errors/ER24`):
+The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `orelse` supplies the other branch (a value, or an exit like `orelse break`), `try` propagates, and an ordinary `if` on the early-exit narrow works too (`type.optionals/OPT21`, `type.errors/ER24`):
 
 ```rask
 const item = queue.pop()
@@ -451,9 +451,9 @@ FIX: Match the number of bindings, use _ to discard:
 
 The diverging `else` requirement (CF13) ensures the binding is always valid after the statement.
 
-**Why the guard stayed enum-only.** An earlier draft dropped the `is` clause so the guard covered `T?` and `T or E` too, replacing the `x ?? return` idiom. It was cut: `const v = x else { … }` doesn't say whether `x` was absent or failed, which is exactly the distinction the operator surface otherwise marks (`?` for absence, `or`/`try` for errors). The two-branch builtins didn't need a construct anyway — early-exit narrowing already binds and bails in two lines, and the `if` names the condition.
+**Why the guard stayed enum-only.** An earlier draft dropped the `is` clause so the guard covered `T?` and `T or E` too, replacing the `x orelse return` idiom. It was cut: `const v = x else { … }` doesn't name the condition, and the two-branch builtins didn't need a construct anyway — `orelse` already handles the miss inline with the exit written out, and early-exit narrowing binds and bails in two lines with the `if` naming the condition.
 
-**CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Optionals use dedicated operators (`?`, `? as v`, `or`); results use `or`, `try`, and `is` with a type pattern.
+**CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Optionals use dedicated operators (`?`, `? as v`, `orelse`); results use `orelse`, `try`, and `is` with a type pattern.
 
 **CF22-25 (labels):** Labels enable breaking/continuing outer loops without extra flags or state. The `label:` syntax is clear and unambiguous.
 

@@ -432,7 +432,7 @@ extend FileError {
 }
 
 // Usage:
-try read_config(file) else e => return e.close_and_convert()
+read_config(file) orelse e => return e.close_and_convert()
 ```
 
 **Compound resources with ensure:**

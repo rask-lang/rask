@@ -35,7 +35,7 @@ Quick navigation by task or concept:
 | "How do I..." | See |
 |---------------|-----|
 | Return errors from functions | [types/error-types.md](types/error-types.md) |
-| Handle optional values | [types/optionals.md](types/optionals.md) (T?, ??) |
+| Handle optional values | [types/optionals.md](types/optionals.md) (T?, orelse) |
 | Propagate errors automatically | [types/error-types.md](types/error-types.md) (try operator) |
 
 ### Concurrency

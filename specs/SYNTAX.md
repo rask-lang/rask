@@ -762,15 +762,15 @@ if conn is ConnectError as e { return e }
 use(conn)                                      // conn: Connection here
 ```
 
-One-liners cover the common cases — `try` propagates, `or` supplies the other branch:
+One-liners cover the common cases — `try` propagates, `orelse` supplies the other branch:
 
 ```rask
 const data = try read_file(path)                              // propagate the error
-const ms = try raw.parse() else return BadRequest("not a number")   // absence → leave
-const port = config.port ?? 8080                              // a value instead
+const ms = raw.parse() orelse return BadRequest("not a number")     // absence → leave
+const port = config.port orelse 8080                          // a value instead
 ```
 
-A `?` in the line means absence; no `?` means failure. `try` on the line means control can leave it (`type.errors/ER48`).
+Both words work on optionals and results alike. `try` propagates the bad branch to the caller; `orelse`'s right side is a value to carry on with, or an exit written where it happens (`type.errors/ER14`).
 
 ### Loops
 
@@ -871,7 +871,7 @@ Pool access, `ensure` cleanup, and `@resource` types are shown in the sections a
 // Optional shorthand — bare value auto-wraps
 const x: i32? = 42
 const name = user?.profile?.name    // `none` if any step is `none`
-const port = config.port or 8080
+const port = config.port orelse 8080
 const must_exist = optional!
 
 // Error union
@@ -882,29 +882,28 @@ func load_config() -> Config or (IoError | ParseError) {
 }
 ```
 
-**`try` marks every exit.** `??` supplies the absent branch and `or` the failing one — both produce values and never transfer control. Any line that can exit the function carries `try`, and its `else` clause must diverge, so the exit is written out.
+**One family, two words.** `try` propagates the bad branch to the caller unchanged. `orelse` handles it here — the right side is a value to carry on with, or any divergence (`return`, `break`, `continue`, `panic(…)`), so every exit is written where it happens. Both words work on both shapes.
 
 | Form | Leaves? | The other branch |
 |------|---------|------------------|
-| `x ?? v` | no | **absence:** is this value |
-| `r or v` | no | **failure:** is this value |
-| `r or e => f(e)` | no | is this value, computed from the error |
+| `x orelse v` | no | is this value |
+| `r orelse e => f(e)` | no | is this value, computed from the error |
 | `try x` | **yes** | propagates the other branch |
-| `try x else return y` | **yes** | leaves the function with `y` |
-| `try x else break` / `else continue` | **yes** | leaves the loop |
-| `try x else e => return f(e)` | **yes** | exits with something built from the error |
+| `x orelse return y` | **yes — and the line says so** | leaves the function with `y` |
+| `x orelse break` / `orelse continue` | **yes — and the line says so** | leaves the loop |
+| `r orelse e => return f(e)` | **yes — and the line says so** | exits with something built from the error |
 
 ```rask
-const port = config.port ?? 8080                                 // no `try` — nothing leaves
-return dispatch(req) or e => error_response(e)                    // handled at a boundary
+const port = config.port orelse 8080                             // nothing leaves
+return dispatch(req) orelse e => error_response(e)                // handled at a boundary
 
-const data = try read_file(path)                                 // `try` — leaves
-const ms   = try raw.parse() else return BadRequest("bad ms")
-const dto  = try json.decode(body) else return BadRequest("bad JSON")
-const text = try fs.read_text(p) else e => return context("reading {p}", e)
+const data = try read_file(path)                                 // propagates — leaves
+const ms   = raw.parse() orelse return BadRequest("bad ms")
+const dto  = json.decode(body) orelse return BadRequest("bad JSON")
+const text = fs.read_text(p) orelse e => return context("reading {p}", e)
 ```
 
-**One operator per shape**, and the line shows which: `??` and the `?`-family for absence, `or` and `try` for failure. Nothing with a `?` applies to a result, `?.` included — project with `try r.field`, where `try` attaches to the fallible step.
+The `?`-family stays absence-only: nothing with a `?` applies to a result, `?.` included — project with `try r.field`, where `try` attaches to the fallible step.
 
 See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
@@ -1199,7 +1198,7 @@ println("{sum}")
 | Optional | `T?` | Sugar for `T or none`; bare value + `none` literal, no `Some`/`None` |
 | Error union | `T or E` | No `Ok`/`Err` — bare T auto-wraps at return; E is its own type |
 | Error prop | `try expr` | Prefix keyword |
-| Other branch | `x ?? v` (absent) / `r or v` (failed) | Produces a `T`; nothing propagates |
+| Other branch | `x orelse v` | Both shapes; right side is a value or a written-out exit |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
 | Guard extraction | `const v = x is P else { }` | Enum patterns only; binds to outer scope |

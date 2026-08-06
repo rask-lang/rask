@@ -282,7 +282,7 @@ extend UndoStack<T: Encode + Decode> {
     }
 
     func pop(self) -> Pool<T> or DecodeError {
-        const bytes = self.history.pop() ?? return DecodeError.Empty
+        const bytes = self.history.pop() orelse return DecodeError.Empty
         return Pool.from_bytes(bytes)
     }
 }
