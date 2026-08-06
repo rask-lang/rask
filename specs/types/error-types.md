@@ -286,6 +286,19 @@ const target = find_block_for_key(index, key) orelse return none    // -> i32? ;
 const kv = try sst_point_lookup(sst, key) orelse continue    // (try …) orelse … — ER16b
 ```
 
+The composite reads as one idiom — **error up, absence here** — and its meaning isn't a new rule. `T? or E` is `(T?) or E`, and operators act on the outer layer (`type.optionals/OPT30`, the same principle that makes `T??` work): `try` binds first and peels the outer bad branch — the error — leaving a `T?` for `orelse`. The phrase is also self-identifying: on a plain result or plain optional it doesn't type-check (`try` already produced the payload), so `try … orelse` on one operand always means the callee is flat.
+
+In an **infallible** function the flat shape has nowhere to propagate and three live branches, so neither operator consumes it — `match` with three arms is the right tool there, and the three outcomes genuinely differ:
+
+<!-- test: skip -->
+```rask
+match store.get(key) {
+    string as v      => println(v),
+    none             => println("absent"),
+    StoreError as e  => println("failed: {e.message()}"),
+}
+```
+
 ## Conditions and Narrowing
 
 Narrowing rides on `const`. See [optionals.md](optionals.md) for the shared semantics; on `T or E` the predicate is a type pattern rather than `?`.
@@ -739,10 +752,12 @@ ERROR [type.errors/ER47]: `try` is ambiguous here — two branches could leave
    |                 are "the bad branch"
 
 WHY: bare `try` propagates the bad branch, and this operand has two of them.
+     The composite means: error up, absence here.
 
-FIX: peel the error, then say what absence does (`try` binds tighter, no parens):
-     const kv = try sst_point_lookup(sst, key) orelse return none
+FIX: const kv = try sst_point_lookup(sst, key) orelse return none
      const kv = try sst_point_lookup(sst, key) orelse continue
+     (`try` binds tighter — no parens. It peels the error; `orelse` says what
+      absence does.)
 ```
 
 The mirror case is a result in a `T?`-returning function: `r orelse return none`, which says plainly that the error detail is being dropped. To drop it without leaving, `r orelse none`.
